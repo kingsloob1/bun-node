@@ -178,7 +178,7 @@ describe("captured text through real runs", () => {
     ];
   }
 
-  for (const mode of ["worker", "in-process"] as const) {
+  for (const mode of ["worker-thread", "in-process"] as const) {
     it(`stores exactly util.format's text for a ${mode} run`, async () => {
       const lines = await capturedLines(mode);
       const got = lines

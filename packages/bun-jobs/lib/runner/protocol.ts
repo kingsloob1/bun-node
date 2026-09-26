@@ -25,7 +25,11 @@ export const PROTOCOL_VERSION = 1;
 export const CHILD_ENV = {
   /** `"1"` inside a runner child, so a module can skip side effects. */
   marker: "BUN_JOBS_CHILD",
-  /** Which executor started it. */
+  /**
+   * Which executor started it: `"child-process"` or `"worker-thread"`, the
+   * run's own `ctx.mode` (unset in-process, where no executor starts
+   * anything). Before 1r the values were `"spawn"` and `"worker"`.
+   */
   mode: "BUN_JOBS_MODE",
   /** The namespace the run belongs to. */
   namespace: "BUN_JOBS_NAMESPACE",
@@ -69,7 +73,7 @@ export interface SerializableContext<TArgs = unknown> {
   forwardLogs: boolean;
   /**
    * Whether the child should capture its handler's console calls and send
-   * them as `output` messages. Set only for a `worker` run, which shares no
+   * them as `output` messages. Set only for a `worker-thread` run, which shares no
    * pipe with its parent; absent means no.
    */
   captureConsole?: boolean;
@@ -195,7 +199,7 @@ export type ChildToParent =
       message: string;
       fields: LogFields;
     }
-  // One console call a `worker` run made, formatted and newline-terminated;
+  // One console call a `worker-thread` run made, formatted and newline-terminated;
   // sent only when the context asked for `captureConsole`.
   | {
       t: "output";

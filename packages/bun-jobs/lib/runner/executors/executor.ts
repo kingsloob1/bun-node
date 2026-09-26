@@ -65,7 +65,7 @@ export interface ExecutorEvents {
   onOutputEnd?: (stream: "stdout" | "stderr") => void;
   /**
    * The handler wrote to the console in a realm it shares: an `in-process`
-   * run's `console`, or a `worker` run's. Called once per console call with
+   * run's `console`, or a `worker-thread` run's. Called once per console call with
    * its formatted text, ending in a newline. Only fired when the run was
    * started with `captureConsole`; a spawned child's console reaches
    * `onOutput` through its pipes instead.
@@ -115,8 +115,8 @@ export interface ExecutorStartOptions<TArgs = unknown> {
   /**
    * Whether to capture the handler's `console.log/info/debug/warn/error` calls
    * and report them through `events.onConsole`. Honoured by the `in-process`
-   * and `worker` executors, whose runs share a console; ignored by `spawn`,
-   * whose pipes already carry it. Defaults to `false`.
+   * and `worker-thread` executors, whose runs share a console; ignored by
+   * `child-process`, whose pipes already carry it. Defaults to `false`.
    */
   captureConsole?: boolean;
   /** Callbacks for events the run produces. */

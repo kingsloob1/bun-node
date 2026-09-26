@@ -1192,7 +1192,7 @@ decisions by the user frame it:
 |---|---|---|
 | U1 | The local targets are **`"in-process"` \| `"worker-thread"` \| `"child-process"`** | JavaScript may yet gain real threads, and `"thread"` would then be ambiguous. `worker-thread` names what bun-jobs actually uses, a Web `Worker` (`runner/executors/worker.ts:68`). `child-process` is the symmetric name. The pair mirrors `node:worker_threads` and `node:child_process`, which is where a reader has met both words before |
 | U2 | **`isolation` is replaced by `target`, not aliased.** Its worker-level spellings `"worker"` and `"spawn"` go with it | The text that stood here kept `isolation`, deprecated in docs, "because it is shipped". **That premise was false**: the packages are unpublished, which is the same fact `control-plane-rename.md` §1 built Phase 0 on. There is no compatibility obligation, so there is no alias, no deprecation and no dual-option `ConfigError` |
-| U3 | **Runners are out of scope.** `ExecutionMode` (`"spawn" \| "worker" \| "in-process"`, `drivers/driver.ts:163`) does not change | It is persisted (`RunRecord.mode`, `driver.ts:179`; the stored `config:executionMode` and `config:allowed`) and on the wire (`EXECUTION_MODES`, `api/contract/constants.ts:564`; `ExecutionModeDto`, `api/contract/types.ts:2305`). The two vocabularies coexist until the runner follow-up (Phase 1r, §11), and §4.2.5 says where a user meets both |
+| U3 | **Runners are out of scope.** `ExecutionMode` (`"spawn" \| "worker" \| "in-process"`, `drivers/driver.ts:163`) does not change | It is persisted (`RunRecord.mode`, `driver.ts:179`; the stored `config:executionMode` and `config:allowed`) and on the wire (`EXECUTION_MODES`, `api/contract/constants.ts:564`; `ExecutionModeDto`, `api/contract/types.ts:2305`). The two vocabularies coexisted until the runner follow-up (Phase 1r, §11), which has since moved runners to the worker's words; §4.2.5 records the bridge and its removal |
 | U4 | **`{ endpoint }` is Phase 2** | `WorkerTarget` ships without it, but every object form carries a `kind` discriminant, so Phase 2 widens the union without breaking a `switch` |
 
 **The name `WorkerTarget` is free.** Phase 0 renamed the old addressee type
@@ -1229,12 +1229,10 @@ records each choice, the alternatives it was chosen over, and why).
  * - a {@link WorkerTargetFactory}: anything else, including a transport this
  *   package does not ship.
  *
- * Runners name the same two mechanisms differently: a runner's
- * `executionMode` says `"worker"` and `"spawn"`, a worker's target
- * `"worker-thread"` and `"child-process"` — different fields, in different
- * vocabularies. Inside the processor the runner's spelling survives: an
- * attempt on a worker thread runs with `BUN_JOBS_MODE=worker`, one in a
- * child process with `BUN_JOBS_MODE=spawn`.
+ * A runner's `executionMode` uses the same three words. Inside the
+ * processor the attempt sees its target's own spelling: `ctx.mode` and
+ * `BUN_JOBS_MODE` are `"worker-thread"` on a worker thread and
+ * `"child-process"` in a child process.
  *
  * Not remotely configurable: changing where code runs is a rebuild.
  */
@@ -1706,55 +1704,35 @@ The UI renders absent as "—" (the UI session's rule). Nothing in Phase 1 adds
 a `?target=` filter to `GET /workers`; the UI filters client-side if it wants
 to.
 
-#### 4.2.5 Two vocabularies, until Phase 1r
+#### 4.2.5 Two vocabularies, until Phase 1r — ended by Phase 1r
 
-A worker says `worker-thread`/`child-process`; a runner still says
-`worker`/`spawn`. Both describe the same executors, so a reader meets both:
+**Superseded by Phase 1r (as built, 2026-09-25).** Runners now say
+`"worker-thread"`/`"child-process"` too, so there is one vocabulary and the
+mapping this section described is gone:
 
-| Worker `target` | Runner `executionMode`, `RunRecord.mode`, `EXECUTION_MODES` | `BUN_JOBS_MODE` in the child |
-|---|---|---|
-| `"in-process"` | `"in-process"` | unset |
-| `"worker-thread"` | `"worker"` | `worker` (`runner/executors/worker.ts:76`) |
-| `"child-process"` | `"spawn"` | `spawn` (`runner/executors/spawn.ts:110`) |
+- `RUNNER_MODE` (`queue/workerTarget.ts`, which mapped `"worker-thread"` →
+  `"worker"` and `"child-process"` → `"spawn"`) is deleted. The target builds
+  its `RunContext` with `mode: target.kind`, and the executor choice in
+  `#executorFor` still switches on the kind.
+- `BUN_JOBS_MODE` is set by each executor from its own `mode`
+  (`[CHILD_ENV.mode]: this.mode`, `runner/executors/spawn.ts`,
+  `runner/executors/worker.ts`), so a job's child sees `child-process` or
+  `worker-thread` — the target's own spelling — and a runner's child sees the
+  same word as its `RunRecord.mode`. Unset in-process, as before.
+- `SerializableContext.mode` (`runner/protocol.ts`) carries the new values.
 
-What stays in the runner's vocabulary on purpose, because it is the runner's
-protocol and U3 leaves it alone:
+The copies of the old mapping sentence are rewritten, not merely deleted: the
+`target` JSDoc (`queue/types.ts`), the `WorkerTargetMode` JSDoc
+(`queue/workerTarget.ts`) and the README's target section and
+`executionMode` row now say the words match. The examples
+(`10-options/worker-targets.ts`, `07-runner/execution-modes.ts`) and the
+playground's `BUN_JOBS_MODE` copy are the stacked PR 2 and PR 3.
 
-- the `BUN_JOBS_MODE` value a job child sees;
-- the internal `RunContext.mode` the target builds for the shared executors.
-  Before Phase 1 it was `mode: this.mode`
-  (`688d376:packages/bun-jobs/lib/queue/isolation.ts:167`), which worked only
-  because the two vocabularies were identical. It is now `mode:
-  RUNNER_MODE[target.kind]` (`queue/workerTarget.ts:613`), where `RUNNER_MODE`
-  (`:371-376`) maps `"worker-thread"` → `"worker"` and `"child-process"` →
-  `"spawn"`, and the executor choice in `#executorFor` (`:698-709`) switches on
-  the target's kind;
-- `SerializableContext.mode` (`runner/protocol.ts:55`).
-
-A job's processor never sees `RunContext`. It gets a `ProcessorContext`, built
-in the child by `isolatedJob` (`runner/bootstrap/child-runtime.ts:545-556`),
-which carries no mode. So the only runner spelling a processor can observe is
-the environment variable. `__tests__/worker-target.test.ts:103` asserts it per
-target: `spawn` for child-process, `worker` for worker-thread, unset
-in-process.
-
-**The mapping sentence must appear, verbatim in meaning, in:**
-
-- the `target` JSDoc (§4.2.1, `queue/types.ts:1120-1125`) and the
-  `WorkerTargetMode` JSDoc (`queue/workerTarget.ts:71-73`) — done;
-- the README's target section (`README.md:2410-2422`, with the table), and
-  the runner's `executionMode` row (`README.md:2592`) — both done;
-- `examples/bun-jobs/10-options/worker-isolation.ts` and
-  `examples/bun-jobs/07-runner/execution-modes.ts`, which show a worker's
-  target beside a runner's mode (the examples session's requirement; the
-  stacked examples PR). `688d376:examples/bun-jobs/10-options/worker-isolation.ts:237-239` asserts `BUN_JOBS_MODE === mode`, which goes
-  from true to false once `mode` is `"worker-thread"`. That is a runtime
-  coupling the compiler cannot see; it must compare against the mapped value.
-  `:1158` and `:1164` compare `BUN_JOBS_MODE` with the literals `"spawn"` and
-  `"worker"`, stay correct, and are the natural place to show the mapping;
-- the playground's `processors/checksum.ts:77` and `processors/preview.ts:66`,
-  which report `BUN_JOBS_MODE` under a field called `isolation` (the UI
-  session's rewrite).
+What this section recorded before Phase 1r, for the history: a worker said
+`worker-thread`/`child-process` while a runner said `worker`/`spawn`; a job's
+child saw `BUN_JOBS_MODE=worker`/`spawn`, and
+`__tests__/worker-target.test.ts` asserted exactly that. That test now asserts
+`worker-thread`/`child-process`.
 
 #### 4.2.6 Why the factory does not return the runner's `Executor`
 
@@ -2078,6 +2056,14 @@ value of `BUN_JOBS_MODE` in every child (`runner/executors/spawn.ts:110`,
 `worker.ts:76`). Renaming it is a migration: a reader that accepts both
 spellings, a DTO change, and a sweep of the UI and the examples. That is
 Phase 1r (§11), deliberately separate so that Phase 1 carries no migration.
+
+**Note from the Phase 1r design check (2026-09-25).** None of the above is
+changed by Phase 1. How Phase 1r treats the stored values is in §11, Phase 1r:
+the recommendation, pending decision D1, is to normalise on read,
+permanently, with no migration. Run history is not
+immutable, because the process that ran a run rewrites its record whole when
+it settles; and the stored names, the legacy spellings' reading and the tuning
+keys `spawn`/`worker` are on its do-not-change list.
 
 #### Do not change: strings
 
@@ -4233,48 +4219,907 @@ untouched.
 
 ### Phase 1r — runner spellings (a separate, migration-bearing follow-up)
 
-**Not part of Phase 1** (U3). It gives runners the same words as workers, so
-that the vocabulary table in §4.2.5 can be deleted. It is a migration because
-the old spellings are stored and on the wire:
+**Not part of Phase 1** (U3). It gives runners the words workers already use,
+so the vocabulary table in §4.2.5 can be deleted. Decided by the user: runners
+move to `"worker-thread"` and `"child-process"`, so there is one vocabulary.
 
-- **New public spellings.** `executionMode` and `allowedOverrides.executionModes`
-  take `"in-process" | "worker-thread" | "child-process"`. `ExecutionMode`
-  (`drivers/driver.ts:162`) and `RunContext.mode` (`runner/types.ts:103`,
-  which a handler *does* see) change with them. `BUN_JOBS_MODE`'s value is
-  decided here too.
-- **A reader that accepts both.** Normalise `"spawn"` → `"child-process"` and
-  `"worker"` → `"worker-thread"` wherever a stored value is read: run history
-  (`RunRecord.mode`, JSON inside every driver's state blob, e.g.
-  `sql-driver.ts:1840-1851`), `config:executionMode` and `config:allowed`
-  (`runner/config.ts:38-58`). Write only the new spellings. No
-  rolling-upgrade guarantee is needed (unpublished), but the user's running
-  playground and any deployment's history must read cleanly.
-- **The API DTO change.** `EXECUTION_MODES` (`api/contract/constants.ts:547`)
-  and `ExecutionModeDto` (`api/contract/types.ts:2258`, used at
-  `:2282,2374,2392,2431,2475`) move to the new spellings. The config route
-  accepts the old ones on input for one release, since a UI tab open across
-  the upgrade will send them.
+**Status: design checked 2026-09-25** against `origin/develop` at `0a8e580`
+(Phase 1 merged), on `feat/runner-execution-modes`. Every `file:line` below is
+from that tree unless it says otherwise. The five decisions (D1–D5) were
+**settled by the user on 2026-09-25**; each section below keeps its options
+and says what was decided and why. **PR 1 (the library half) is built** on
+this branch; "As built" at the end of this section lists where the code
+departs from the text above it.
 
-**Size, measured on `688d376`** (`git grep -E
-'executionModes?|ExecutionMode|EXECUTION_MODES|BUN_JOBS_MODE|ctx\.mode|context\.mode'`,
-before classification, so an upper bound):
+| # | Decision | Decided |
+|---|---|---|
+| **D1** | How old stored values are read | **Normalise on read, permanently.** No migration. Normalise in the runner layer, with the serializer as a second guard. Write only the new spellings (as recommended) |
+| **D2** | Mixed versions during an upgrade | **Upgrade every process that shares a store together**, a documented precondition (README "Upgrading"), not code. Expand/contract considered and not taken (as recommended) |
+| **D3** | `BUN_JOBS_MODE` | **Change it** to `child-process` / `worker-thread`, set from the executor's own `mode` (as recommended) |
+| **D4** | Type names | **Two separate declarations with identical values**: `ExecutionMode` (runners) and `WorkerTargetMode` (workers). The user's choice, **not** the recommendation (`WorkerTargetMode = ExecutionMode`); no type test pins them equal |
+| **D5** | API input | **New spellings only**: an old spelling is a 400 with a hint. No `JOBS_API_PROTOCOL_VERSION` bump (as recommended) |
 
-| Area | Files | Lines |
-|---|--:|--:|
-| `packages/bun-jobs/lib` | 22 | 175 |
-| `packages/bun-jobs/__tests__` | 44 | 257 |
-| `packages/bun-jobs/README.md` | 1 | 9 |
-| `packages/bun-jobs-ui` | 17 | 133 |
-| `examples` | 36 | 137 |
-| `playground` | 4 | 9 |
+**Corrections to this section's 2026-09-25 draft:**
 
-**Effort:** bun-jobs ~3 d (spellings, the normalising reader on every driver
-with old-value fixtures, the DTO and OpenAPI, tests), examples ~1.5 d, UI
-~1 d. It needs the same stacked-PR merge as Phase 1, and its own
-do-not-change list: the `r:` key, the `config:` state *names* and the
-cursors stay exactly as `control-plane-rename.md` §6 lists them. **Place:**
-after Phase 1, independent of 1.5 and 2. It can run whenever the examples and
-UI sessions have a window.
+- The line numbers were from `688d376`. On `0a8e580` they are
+  `ExecutionMode` at `drivers/driver.ts:163` (not `:162`), `EXECUTION_MODES` at
+  `api/contract/constants.ts:564` (not `:547`), and `ExecutionModeDto` at
+  `api/contract/types.ts:2305`, used at `:2329,2421,2439,2478,2522` (not
+  `:2258`/`:2282,2374,2392,2431,2475`).
+- *"The config route accepts the old ones on input for one release, since a
+  UI tab open across the upgrade will send them"* is withdrawn. Measured
+  against the UI code, a stale tab cannot offer an old spelling after its next
+  refetch. See D5.
+- A brief for this check described run history as immutable. It is not. The
+  process that ran a run writes the record twice: appended at start, then
+  replaced whole when the run settles (`runner/BunRunner.ts:1856-1862` passes
+  the whole record to `updateHistory`). After that it is only trimmed
+  (`keepHistory`) or cleared. D1 and D2 rest on this.
+- The size table was an upper bound from a different pattern. The classified
+  inventory below replaces it.
+- **Path change pending in the examples session:**
+  `examples/bun-jobs/10-options/worker-isolation.ts` is being renamed to
+  `10-options/worker-targets.ts`, with the same content and the same 111
+  checks. Line numbers below cite the file as it is on `0a8e580`. Read them
+  against the new name once that commit lands.
+
+#### What changes: the contract diff
+
+This is the deliverable the UI session asked for. "New-spelled" means the
+value is always new-spelled, **whatever was stored** (D1).
+
+| Surface | Before (`0a8e580`) | After |
+|---|---|---|
+| `EXECUTION_MODES` (`api/contract/constants.ts:564`, JSDoc `:548-563`) | `["spawn", "worker", "in-process"] as const` | `["child-process", "worker-thread", "in-process"] as const`, position for position, so `child-process` stays first and the default |
+| `ExecutionModeDto` (`api/contract/types.ts:2305`) | `(typeof EXECUTION_MODES)[number]`, i.e. `"spawn" \| "worker" \| "in-process"` | Same definition, now `"child-process" \| "worker-thread" \| "in-process"` |
+| `RunRecordDto.mode` (`:2329`) | `ExecutionModeDto` | Same type; new-spelled |
+| `RunnerConfigValues.executionMode` (`:2421`), i.e. `RunnerConfigDto.effective` and `.code` | `ExecutionModeDto` | Same type; new-spelled |
+| **`RunnerConfigDto.allowed?` (`:2478`), the override dialog's list.** The UI's `availableModes`/`unavailableModes` (`bun-jobs-ui/app/screens/runners/actions/config.ts:292-305`) filter `EXECUTION_MODES` by it, and `ConfigEditorDialog.tsx:89-98` builds the picker from the result | `ExecutionModeDto[]`, JSDoc "less `spawn` and `worker`" | Same type; new-spelled. JSDoc and the schema description (`api/schemas/runners.ts:165`) say "less `child-process` and `worker-thread`" |
+| `RunnerConfigBody.executionMode?` (`:2439`) | `ExecutionModeDto \| null` | Same type. New spellings only on input (D5) |
+| `RunnerInfoDto.executionMode?` (`:2522`) | `ExecutionModeDto` | Same type; new-spelled |
+| Schemas: `ExecutionModeSchema = s.enum(EXECUTION_MODES)` (`api/schemas/runners.ts:50`, used `:71,135,163,275`) and the body enum (`:210-218`) | Follow the constant | Follow the constant. The generated OpenAPI enum changes with it. No OpenAPI document is committed, and the UI's `__tests__/app/docs/http/openapiFixture.ts` holds no execution mode (grep: 0) |
+| AsyncAPI, WebSocket payloads | No execution mode anywhere (below) | Unchanged |
+| `ExecutionMode` (`drivers/driver.ts:163`) | Same union as the DTO. `__tests__/api/api-contract.type-test.ts:681` asserts `Equal<ExecutionModeDto, ExecutionMode>` | New values (D4) |
+| `RunContext.mode` (`runner/types.ts:103`, what a handler sees), `SerializableContext.mode` (`runner/protocol.ts:55`) | Old values | New values |
+| `BUN_JOBS_MODE` value | `spawn` / `worker` / unset | D3 |
+
+In the UI, the picker's labels are keyed by the DTO, so the compiler will catch
+them: `EXECUTION_MODE_LABELS` (`app/screens/runners/actions/config.ts:32-37`)
+is the only compile-coupled line in `app/`. The run's "Execution" row
+(`app/screens/runners/RunRecord.tsx:60`) and the runner summary
+(`RunnerScreen.tsx:147`) render the value raw.
+
+**If an old spelling ever reached the UI**, the picker would lose it without
+saying so. `availableModes` filters it out, and `ConfigEditorDialog.tsx:96-98`
+re-adds the in-force mode with `EXECUTION_MODE_LABELS[mode]` undefined, which
+gives a blank option. That is why D1 enforces the rule at the serializer too.
+
+#### Where the value is stored, per driver
+
+**No driver interprets the mode.** Every driver stores a runner as opaque
+strings and JSON: the state fields as a string hash, and the history as JSON
+records. `git grep -n -i -E "\bmode\b|executionMode" -- lib/drivers` finds the
+type at `driver.ts:163,179`, and every other hit is another sense (retention
+mode, the `worker` event kind, `ClaimStatementOptions["worker"]`).
+
+**No `CHECK`, enum or validator constrains it.** Checked as follows:
+
+- `git grep -E "CHECK \(|CHECK\("` over `lib/drivers` finds nothing.
+- `git grep -i -E "createCollection|validator|jsonSchema"` over `lib/drivers`
+  finds nothing.
+- The only SQL column involved is `kv.value`. It is `JSON` on Postgres
+  (`sql/dialect.ts:1333`) and on MySQL/MariaDB (`:1536`; MariaDB's `JSON` is
+  `LONGTEXT` with a validity check only, per `:1586`), and `TEXT` on SQLite
+  (`:1782`), in `sql/schema.ts:785-793`.
+
+**No index touches the mode.**
+
+- The SQL `kv` table's key is `(ns, kv_key)` (`schema.ts:787`).
+- The Mongo `kv` collection's only index is `{ ns: 1, key: 1 }`
+  (`mongo/mongo-driver.ts:6009`).
+
+Normalise-on-read is therefore the only storage-side change on every backend.
+
+The stored values:
+
+| Stored value | Written by | Rewritten when | Kind |
+|---|---|---|---|
+| `RunRecord.mode` in the history | the running process: `mode: this.#executionMode` (`BunRunner.ts:1584`), appended at `:1590-1595` | once, at settle, **whole** (`:1856-1862`); then only trimmed or cleared | history, write-once-per-phase, owned by the process that ran it |
+| state field `executionMode` (the effective mode) | every owner, `#configStateFields` (`BunRunner.ts:1157-1170`) | every owner start (`:414-427`) and adopt (`:1141-1145`) | mutable, self-healing |
+| `config:code` (JSON, includes `executionMode`) | same, `:1162` | same | mutable, self-healing |
+| `config:allowed` (JSON array of modes) | same, `:1163` | same | mutable, self-healing |
+| `config:executionMode` (the override) | **only a controller**: `runnerConfigFields` (`runner/config.ts:475`) via `RunnerController.#writeConfig` (`RunnerController.ts:575-578`). The owner never writes it: it is not in `#configStateFields` | only when someone writes or resets it (`config.ts:537-543`) | mutable, **not** self-healing: an old spelling stays until a controller touches it |
+| `config:error` (a message naming the mode in prose) | the owner (`BunRunner.ts:1103-1110`, `:1166-1168`) | every start and adopt | prose, left as is |
+
+Runner records are never removed (the bun-jobs session's finding, #137; not
+re-verified here). A runner nobody restarts keeps its old `executionMode`,
+`config:code` and `config:allowed` for good, and any runner keeps an old
+`config:executionMode` override for good.
+
+**Not stored anywhere:**
+
+- **Stats and metrics.** No stat and no metric is keyed by mode. The `stat:*`
+  counters and `RUNNER_RUN_COUNTERS` (`drivers/metrics.ts:188-215`) have no
+  mode dimension.
+- **Cursors.** A history cursor is `rh1.` (`drivers/runHistory.ts:95`) plus the
+  binding `[ns, runner, order]` (`:111-113`) and the key
+  `(startedAt, runId)`. None of them is the mode.
+- **Stored runner events.** They carry `runId`, `durationMs`, `error` and
+  `reason` only (`shared/events.ts:100-140`).
+
+Per driver:
+
+| Driver | State fields | History | Settle (the whole-record rewrite) |
+|---|---|---|---|
+| memory | `RunnerState.fields`, a `Map` (`memory-driver.ts:164-180`) | `RunRecord[]` in the process (`:641-652`) | `:654-668`, `{ ...stored, ...patch }`. Nothing survives a restart: `git grep -i -E "snapshot\|persist"` finds nothing, so a memory store never holds an old value in practice |
+| file | `<runnerDir>/state.json` `{ fields, history, queued }` (`file-driver.ts:5478-5497`), rewritten whole under `state.lock` (`:5522-5540`) | same file (`:832-843`) | `:846-864`, spread merge |
+| SQL (Postgres, MySQL, MariaDB, SQLite) | one `kv` row, `kv_key = "<key>:state"`, `value` = JSON `{ fields, history, queued }` (`sql-driver.ts:8358-8377`), read-modify-written in a transaction (`:8386-8462`) | the same JSON (`:1841-1853`) | `:1855-1873`, spread merge inside `#mutateState` |
+| Redis | hash `…:r:{id}:state` (`redis/keys.ts:214-226`; `HSET`/`HDEL` at `redis-driver.ts:891-921`) | list `…:r:{id}:history` of JSON strings (`APPEND_HISTORY`, `scripts.ts:3205`) | `redis-driver.ts:956-985` merges in the client. `UPDATE_HISTORY` (`scripts.ts:3339-3349`) decodes an entry only to match `runId`, then `LSET`s the whole string. No script reads `mode` |
+| MongoDB | `kv` document, `fields.<name>` strings plus `counters` (`mongo-driver.ts:1889-1932`) | `history`, an array of JSON strings, `$push` at position 0 with `$slice` (`:1968-1985`) | `:1987-2021` replaces the entry matched by value, `$set history.$` |
+
+**Real data, measured.** A read-only query (`sqlite3 "file:…?mode=ro"`) of the
+user's playground store, `bun-node/playground/.data/jobs.db` (SQLite, table
+`bun_jobs_kv`: `ns TEXT, kv_key TEXT, value TEXT, updated_at INTEGER`), found:
+
+- `r:backup:state`: 50 history records with `mode: "spawn"`;
+- `r:backup` and `r:reindex`: effective `executionMode: "spawn"` and
+  `config:code` `{"executionMode":"spawn",…}`;
+- `config:allowed` `["spawn","in-process"]` on both, and
+  `["spawn","worker","in-process"]` on `r:archive`;
+- one override, `config:executionMode: "in-process"` on `r:archive`, which is
+  the same in both vocabularies.
+
+The playground's processors also return `BUN_JOBS_MODE` inside job return
+values (`playground/processors/checksum.ts:77`, `preview.ts:66`). That is user
+data, and the library never reads it back.
+
+#### Where it is on the wire
+
+**The management API.** The DTOs and schemas are in the contract diff above.
+The serializers that emit a mode are:
+
+- `toRunRecordDto` (`api/serialize.ts:562-604`, `mode: record.mode` at `:572`);
+- `toRunnerConfigDto` (`:645-668`);
+- `toRunnerInfoDto` (`:673-735`, the `executionMode` key at `:691`, `lastRun`
+  at `:734`, `local.activeRuns` at `:716-719`).
+
+`RunnerController.info()` passes the stored `executionMode` through with a
+bare cast, validating nothing (`RunnerController.ts:487-489`). Today an old
+spelling reaches the API from there unchanged.
+
+**Errors that echo it:**
+
+- 409 `CONFIG_NOT_ALLOWED` puts `executionMode` and the `allowed` list in its
+  message and context (`api/routes/runners.ts:205-223`);
+- 400 `VALIDATION` comes from the body enum;
+- `RunnerConfigDto.error.message` is the owner's prose.
+
+**Response validation** (`validateResponses`, default `false`,
+`api/config.ts:1495`) only *logs* a mismatch (`api/routes/define.ts:253-261`).
+That makes it a usable test oracle for an old spelling leaking out.
+
+**WebSocket and AsyncAPI carry no execution mode.** The runner event payloads
+are `shared/events.ts:100-140`. `git grep` over `api/spec`, `api/ws` and the
+UI's AsyncAPI fixtures finds `"worker"` only as the worker event kind.
+
+**The parent↔child protocol.** `SerializableContext.mode` crosses the boundary
+in the `start` message (`runner/executors/spawn.ts:124`, `worker.ts:158`). The
+child copies it into the handler's `RunContext.mode`
+(`runner/bootstrap/child-runtime.ts:243`) and branches on it at `:306`
+(`ctx.mode === "worker"` turns on realm console capture).
+
+`BUN_JOBS_MODE` is **not** set from `ctx.mode`. Each executor hard-codes it:
+`"spawn"` at `spawn.ts:110`, `"worker"` at `worker.ts:76`. `protocol.ts:29`
+only names the variable.
+
+This is not a version boundary. The child entry is resolved from the package
+itself (`spawn.ts:39`, `worker.ts:34`), so a parent and its child are always
+one install, and `PROTOCOL_VERSION` (`protocol.ts:22`) needs no bump.
+
+#### D1. Reading old stored values — decided: (a), normalise on read, permanently
+
+**Decided (the user, 2026-09-25): (a).** No migration; only new spellings
+are written. The reason: `updateHistory` merges the whole record at settle
+(`BunRunner.ts:1857-1861`), so a migration races in-flight runs; runner
+records are never removed; and the `config:executionMode` override does not
+self-heal. The analysis follows.
+
+**(a) Normalise on read, and write only the new spellings.** One pure
+function, proposed as `normalizeExecutionMode(raw: string): ExecutionMode |
+undefined` in `runner/config.ts` beside `isExecutionMode` (`:172`). It maps
+`"spawn"` → `"child-process"` and `"worker"` → `"worker-thread"`, returns a
+new spelling as itself, and returns anything else as `undefined`.
+
+It is applied in the runner layer, the one owner of the stored shape:
+
+- `parseValues` (`config.ts:205-223`, `config:code`);
+- `readStoredRunnerConfig` (`:226-266`): `config:allowed` at `:229-231`, which
+  today *silently drops* an unknown value, and the raw override at `:237-239`,
+  which `resolveRunnerConfig` (`:352-384`) and `runnerConfigFields`'s
+  `allowed` check then see normalised;
+- `describeRunnerConfig` (`:588-598`, the effective mode);
+- `RunnerController.info()` (`:487-489`, replacing the cast);
+- the four history reads:
+  - `BunRunner.history()` (`:685`), which also feeds `info().lastRun` at `:778`;
+  - `BunRunner.historyPage()` (`:699-705`);
+  - `RunnerController.history()` (`:382`), and `info().lastRun` (`:467,477`);
+  - `readHistoryPage` (`drivers/runHistory.ts:269-291`), which both
+    `historyPage`s use.
+
+**The serializer is a second guard.** `toRunRecordDto`, `toRunnerConfigDto`
+and `toRunnerInfoDto` call the same function, so "the wire never carries an
+old spelling outbound" (the UI session's requirement) holds at the serializer
+itself. It holds even for a path that reaches the serializer without the
+runner layer, and it can be tested there directly.
+
+**The drivers are untouched.** `listHistory`/`getState` keep returning the
+stored bytes. A driver does not know that `config:allowed` is JSON of modes,
+and a third-party driver would not either. The JSDoc says so.
+
+*Cost:* no driver code. One test per backend (the gate below).
+
+**(b) A one-off migration that rewrites stored values** (a `syncSchema`-style
+step with `dryRun`). The cost, per driver:
+
+- **SQL:** rewrite the JSON of every `r:%:state` row inside `#mutateState`'s
+  transaction.
+- **Redis:** `HSET` the fields and `LSET` every history entry, runner by
+  runner.
+- **MongoDB:** rewrite `fields.*` and every history string.
+- **file:** rewrite every `state.json` under its lock.
+- **memory:** nothing.
+
+The problems:
+
+1. **It cannot find the data.** No driver can list namespaces: `RunnerDriver`
+   has `listRunners(ns)` and nothing above it. The migration would have to be
+   told every namespace.
+2. **It is not a schema sync.** `syncSchema` is DDL-only by contract
+   (`drivers/schemaSync.ts:11-40`) and exists only on SQL and MongoDB. A data
+   rewrite is a new API on five drivers.
+3. **It races with settle**, the bun-jobs session's finding, confirmed. The
+   process that ran a run writes the whole record back at settle
+   (`BunRunner.ts:1856-1862`), and every driver merges it whole: memory
+   `:654-668`, file `:846-864`, SQL `:1855-1873`, Redis `:956-985` (then
+   `LSET`), Mongo `:1987-2021` (`$set history.$`). An old process settling a
+   run it started writes `"spawn"` back over a record the migration just
+   rewrote. Old owners also rewrite `executionMode`, `config:code` and
+   `config:allowed` on every start and adopt. **A migration can never be
+   declared finished while an old writer exists.**
+4. **It never removes (a).** Anything an old process writes after the
+   migration still needs reading. So (b) is (a) plus a new cross-driver API.
+
+**(c) Both** has (b)'s costs and no benefit over (a).
+
+**Recommended: (a), and permanently. It is not a transitional shim.**
+
+- Runner records are never removed.
+- `config:executionMode` is rewritten only by a controller.
+- History keeps up to `keepHistory` records until trimmed.
+
+So old spellings stay readable for as long as the store exists, and the
+legacy table goes on the do-not-change list below. The code already reads
+what an older version stored in two places: `parseRunnerConfigError` reads an
+error stored before `keys` existed (`config.ts:144-169`), and
+`RunRecord.force` reads a record written before it existed
+(`drivers/driver.ts:150-156`).
+
+**Code input is not stored input, and is treated differently.** The runner's
+`executionMode` *option* is not validated at runtime today:
+
+- `resolveRunnerOptions` only defaults it (`runner/options.ts:199`);
+- `#createExecutor` sends every value it does not name to the spawn executor
+  (`BunRunner.ts:826-835`).
+
+After the rename, a JavaScript caller's (or a cast's) `executionMode:
+"worker"` would silently run in a child process.
+
+Recommended as part of (a):
+
+- `resolveRunnerOptions` throws a `ConfigError` for an old spelling, with a
+  hint. It does not translate. This is Phase 1's rule for `isolation`
+  (`queue/workerTarget.ts:444-451`: "silently ignoring the old key would run a
+  file meant for a child process on the claim loop's own thread").
+- `#createExecutor` becomes exhaustive.
+- `allowedOverrides.executionModes` already throws (`options.ts:81-88`); it
+  gains the same hint.
+- The worker-target hint (`workerTarget.ts:408-425`, `"spawn" is a runner's
+  executionMode; a worker's is "child-process"`) becomes false. It is
+  rewritten as `"spawn" is the old spelling of "child-process"`, and its tests
+  change with it (`__tests__/worker-target.test.ts:690-701`,
+  `worker-isolation.ts:1137-1148`).
+
+**What stays old-spelled, deliberately:**
+
+- a `config:error` message stored before the upgrade. It is prose, and the
+  owner's next start or adopt rewrites it;
+- the playground's stored job return values.
+
+**No reader shows two spellings for one mechanism side by side**, the examples
+session's constraint. After (a), every mode value a reader gets is
+new-spelled. The one exception is that stale `config:error` prose, which the
+UI already labels as the owner's message ("The owner refused Execution mode:
+…").
+
+#### D2. Mixed versions during an upgrade — decided: (b), upgrade together
+
+**Decided (the user, 2026-09-25): (b).** All processes sharing a store
+upgrade together, a documented precondition (the README's "Upgrading from
+`"spawn"` and `"worker"`" section), not code. Expand/contract, (a), was
+considered and not taken: it costs a write-side translation at four sites and
+two merge windows, and D1(a) stays after it anyway. The analysis follows.
+
+**(a) Expand, then contract.** Release N reads both spellings and keeps
+*writing* the old one. Release N+1 switches the writes.
+
+The cost is a write-side translation at four sites while everything in memory
+speaks the new words:
+
+- the run record at start (`BunRunner.ts:1584`) and at settle (`:1856-1862`);
+- `#configStateFields` (`:1157-1170`);
+- `runnerConfigFields` (`config.ts:475`).
+
+The in-process events (`started`, `finished`, `configured`) would then carry a
+different spelling from the store. On top of that come two merge windows, each
+with its own examples and UI sweep. And after N+1, D1(a) stays anyway.
+
+**(b) Upgrade every process that shares a store together**, stated in the
+README and in the PR as a precondition.
+
+**What breaks if (b) is wrong**, meaning an old process runs against a store
+a new one writes. This is read from the code, not run:
+
+1. **An old owner refuses a new-spelled override.** `resolveRunnerConfig`
+   answers `executionMode "child-process" is not an execution mode`
+   (`config.ts:355-359`), keeps its code's mode and records `config:error`. A
+   new owner of the *same* runner adopts it. Runs of one runner then execute
+   in different modes depending on which process takes them, with a visible
+   `config:error`.
+2. **An old process drops new spellings from `config:allowed`**
+   (`config.ts:229-231`). An old API then serves an `allowed` list without the
+   child modes.
+3. **An old process rejects a new-spelled `config:code`** (`parseValues`,
+   `:205-215`), so `describeRunnerConfig` returns `undefined`. An old API then
+   answers 409 `RUNNER_NOT_CONFIGURABLE` for that runner. Two owners on
+   different versions keep rewriting `config:code` and `config:allowed` at
+   every start and adopt, so the state flips between the spellings.
+4. **An old API passes `"child-process"` through its cast**
+   (`RunnerController.ts:487-489`) to an old UI, whose label lookup is
+   `undefined`: a blank option in the picker.
+5. **An old API's body enum answers 400** to a new UI's `"child-process"`.
+
+None of this loses data, crashes a run or corrupts history. All of it heals
+once the last old process is gone: new owners rewrite the self-healing fields
+at start, and D1(a) reads the rest.
+
+**Recommended: (b).**
+
+- The packages are unpublished.
+- The one running deployment, the playground, is **one process**. Its two
+  `BunJobs` contexts share one driver *instance* (`playground/README.md:36`),
+  which cannot cross a process, and its children are the same install.
+- The failure above is bounded and visible.
+
+Writing the new spelling where an old process can still read it is what (b)
+does to a deployment that breaks the precondition. That is why the
+precondition is written down rather than assumed.
+
+**One trap specific to this repo (inference):** several checkouts of this repo
+exist side by side. Two of them pointing their playground at the same Redis or
+Postgres database (`PLAYGROUND_DRIVER=redis PLAYGROUND_URL=…`) *is* a mixed
+deployment. The precondition says so.
+
+If the packages are published later, (a) is the pattern for a rolling upgrade,
+and D1(a) is already its first half.
+
+#### D3. `BUN_JOBS_MODE` — decided: (a), change it
+
+**Decided (the user, 2026-09-25): (a).** The value is `child-process` /
+`worker-thread`, set from the executor's own `mode`
+(`[CHILD_ENV.mode]: this.mode`), not hard-coded. The reason: keeping one
+surface on the old words is the permanent two-vocabulary state 1r exists to
+end, and every reader of the variable is in this repo. The analysis follows.
+
+**Facts.**
+
+- **Where it is set.** Each executor sets it as a constant (`spawn.ts:110`,
+  `worker.ts:76`), and it is unset in-process.
+- **Who reads it.** Nothing in `lib/` reads it back (`git grep BUN_JOBS_MODE`
+  finds only those two lines, `protocol.ts:29` and JSDoc). The readers in the
+  repo are:
+  - the test fixtures `__tests__/fixtures/handlers/environment.ts:8` and
+    `job-double.ts:25`, asserted at `runner-modes.test.ts:151` (runner,
+    `spawn` only; no runner test asserts the `worker` value) and
+    `worker-target.test.ts:142-154`;
+  - the examples: `10-options/processors/isolation-report.ts:112`, asserted by
+    the tour (`worker-isolation.ts:147-150,267-269,1222-1232`), and
+    `10-options/utilities.ts:1697`;
+  - the playground: `processors/checksum.ts:77` and `processors/preview.ts:66`.
+- **The compiler cannot help.** It is a string in the environment, so a
+  handler comparing it is not checked. The list above is every reader in the
+  repo, and the packages are unpublished, so there are none outside it.
+
+**(a) Change it** to `child-process` / `worker-thread` (in-process stays
+unset), set from the executor's own `mode` (`[CHILD_ENV.mode]: this.mode`) so
+it cannot drift from `RunRecord.mode`. The consequences:
+
+- `RUNNER_MODE` (`workerTarget.ts:367-376`) is deleted. A job's `RunContext.mode`
+  is simply the target's kind.
+- §4.2.5's table is deleted, together with its copies:
+  - README `:2410-2422`;
+  - the `target` JSDoc (`queue/types.ts:1120-1125`);
+  - the `WorkerTargetMode` JSDoc (`workerTarget.ts:71-73`).
+- **The examples tour's `BUN_JOBS_MODE_ON` table collapses to the identity and
+  is removed**, not kept as dead weight.
+- **The mapping sentence becomes false, not merely stale.** "The attempt's own
+  process still sees `BUN_JOBS_MODE=worker` / `spawn`" appears in the tour
+  header (`worker-isolation.ts:21`, `:140-144`) and in
+  `07-runner/execution-modes.ts:21-22`. It is prose, so no check catches it.
+  It is on the examples PR's to-do list.
+- A handler that compared the old strings gets no compiler help. The only such
+  readers are the ones listed above.
+
+**(b) Keep `spawn` / `worker`.** Runners and workers both say
+`"child-process"`, while the variable alone says `spawn`, for good. The
+consequences:
+
+- Every place that shows both must say that `BUN_JOBS_MODE` alone kept the old
+  spelling, and why (a contract with handler code). That is the README, the
+  tour, `execution-modes.ts` and the playground copy.
+- The mapping table survives in the README and the tour, reduced to one column.
+
+**Recommended: (a).** The variable answers "which executor started me". After
+1r every other surface names that executor `child-process` / `worker-thread`,
+and keeping one surface on the old words is the permanent two-vocabulary state
+Phase 1r exists to end. With no published handler code and a complete list of
+readers, the break is contained.
+
+**For the playground copy the UI session is writing now:**
+
+- **Under (a):** the processors report `process.env.BUN_JOBS_MODE` raw, and the
+  copy uses the new spellings, the same words as the worker's `target`, with
+  no mapping. Until 1r merges the value is still `spawn` / `worker`. So copy
+  that lands *before* 1r should show the raw value and name neither spelling.
+- **Under (b):** the copy must carry the mapping sentence.
+
+#### D4. The type names — decided: two separate types with identical values
+
+**Decided (the user, 2026-09-25): two declarations, not an alias.** This is
+the user's choice, *not* the recommendation below. `ExecutionMode`
+(`drivers/driver.ts`) becomes `"child-process" | "worker-thread" |
+"in-process"`; `WorkerTargetMode` (`queue/workerTarget.ts`) stays its own
+declaration with the same values. Both JSDocs say the values match today by
+design and may diverge. **No type test pins them equal**, since that would
+undo the choice; `LOCAL_KINDS` stays its own list. The options as analysed
+follow.
+
+**(a) Two names, one union.** `ExecutionMode` stays the runner's and the
+store's type in `drivers/driver.ts:163`, with the new values.
+`WorkerTargetMode` (`queue/workerTarget.ts:75`) becomes `export type
+WorkerTargetMode = ExecutionMode`. Supporting changes:
+
+- `LOCAL_KINDS` (`workerTarget.ts:354-358`) is built from `EXECUTION_MODES`;
+- a type test asserts `Equal<WorkerTargetMode, ExecutionMode>`, beside the
+  existing `Equal<ExecutionModeDto, ExecutionMode>`
+  (`api-contract.type-test.ts:681`).
+
+`workerTarget.ts` already imports from `../drivers/index` (`:1`), so this adds
+no new dependency direction.
+
+**(b) One name.** Drop `WorkerTargetMode` (approved as N1 today, 27
+references) or drop `ExecutionMode` (the stored type). Churn, and one of the
+two contexts then reads wrong.
+
+**(c) A third, shared name** aliased by both. Candidates such as
+`LocalTargetMode` and `ExecutionTarget` are unused (0 hits), but a third name
+for one thing adds a word rather than removing one.
+
+**Recommended: (a).** Each name reads right where it is used: a runner's
+*execution mode*, a worker's *target*. The alias turns a future divergence into
+a failing type test rather than drift. **Not taken** — see the decision
+above: the user kept two declarations, so a divergence is allowed rather than
+caught.
+
+**Collision check.** Under (a) no new public name is introduced. The internal
+helper `normalizeExecutionMode` is unused, and so are `LEGACY_EXECUTION_MODES`
+and `LegacyExecutionMode`, if the legacy table wants a name. Each gave 0 hits
+from `git grep -I -i -w -- packages examples playground`, with `ExecutionModeDto`
+(15) and `WorkerTargetMode` (27) as the positive controls.
+
+#### D5. The API — decided: (a), new spellings only
+
+**Decided (the user, 2026-09-25): (a).** The API accepts only the new
+spellings; an old one is a 400 with a hint naming its replacement. No
+`JOBS_API_PROTOCOL_VERSION` bump. The reason: the in-repo UI is the only
+client, and a stale tab costs a reload. The analysis follows.
+
+**Facts.** `EXECUTION_MODES`' values change on the wire. Every consumer in the
+repo:
+
+- the UI: the picker and `configBody` (`app/screens/runners/actions/config.ts:186-200`);
+- `examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1046`, a raw `PUT`;
+- the tests;
+- `RunnerController.updateConfig`, the TypeScript-typed library path, through
+  `runnerConfigFields`.
+
+The packages are unpublished, so the in-repo UI is the only real client. It is
+served beside the API by the same process (`jobsUi({ api })`), so the only
+mixed case is a stale tab. Traced through the UI code:
+
+- A tab open across the upgrade refetches the configuration, and its
+  `availableModes` filters its *old* `EXECUTION_MODES` by the *new* `allowed`
+  (`config.ts:300-305`). So it cannot offer `spawn` / `worker` any more.
+- It sends an old spelling only from a dialog opened before the upgrade and
+  submitted after (the form is prefilled at `config.ts:105-112`).
+
+**(a) New spellings only.** An old spelling gets 400 `VALIDATION` from the
+body enum over HTTP. On the library path it gets a `ConfigError` with reason
+`"invalid"` and the "old spelling of …" hint (`config.ts:458-462`).
+
+**(b) Accept old spellings on input for a transition.** Either widen the body
+enum to five values, so the OpenAPI document advertises the legacy values, or
+special-case them ahead of validation, so the schema stops being the validator.
+Either way the input is mapped before it is stored.
+
+**Recommended: (a).** The stale-tab case costs a 400 naming the new values,
+and a reload fixes it. The UI session will send only new spellings.
+
+**Sub-question, the protocol version.** Recommended: **do not bump**
+`JOBS_API_PROTOCOL_VERSION` (`constants.ts:16`). Nothing reads it: the UI
+re-exports it (`app/api/contract.ts:28`) and never compares it, so a bump would
+imply a negotiation that does not exist.
+
+#### Do not change
+
+- **Stored names:**
+  - the state fields `executionMode`, `config:executionMode`, `config:allowed`,
+    `config:code`, `config:error`, `config:runMode`, `config:maxConcurrency`
+    and `config:seq`/`appliedSeq`/`appliedAt`/`updatedAt`
+    (`runner/config.ts:38-59`);
+  - the field name `RunRecord.mode`;
+  - the runner key prefix `r:`;
+  - the history cursor `rh1.` with its binding `[ns, runner, order]`
+    (`runHistory.ts:95,111-113`), and the do-not-change list of
+    `control-plane-rename.md` §6.
+- **Stored values already written.** They are never rewritten in place (D1).
+  The legacy table, `"spawn"` → `"child-process"` and `"worker"` →
+  `"worker-thread"`, is **permanent**. A later cleanup must not delete it
+  while any store might hold the old values, and that is every store that
+  exists today.
+- **The tuning option keys `spawn` and `worker`.** On runners they are
+  `runner/types.ts:838-841`. On worker targets they are `spawn?`/`worker?`
+  (`workerTarget.ts:363-364`, approved N2). They name the Bun API they
+  configure (`Bun.spawn`, `new Worker`), not a mode.
+- **Class and file names:** `SpawnExecutor`, `WorkerExecutor`,
+  `InProcessExecutor`, `executors/spawn.ts`, `executors/worker.ts`,
+  `bootstrap/spawn-entry.ts`, `bootstrap/worker-entry.ts`.
+- **The variable *name* `BUN_JOBS_MODE`** and the other `CHILD_ENV` keys
+  (`protocol.ts:25-38`). Only the value is D3.
+- **`IsolatedJob`, `IsolatedJobProcessor`** and "not available in an isolated
+  job" (N9).
+- **Phase 1's `isolation` guard** (`workerTarget.ts:446-449`, "(was "spawn") …
+  (was "worker")", still true) and its tests
+  (`worker-target.test.ts:731-735`).
+- **The negative controls** that keep an old spelling as a *target* a type
+  error (`workerTarget.type-test.ts:58,60,64`).
+- **The SQL transaction-isolation lines** of §4.5.
+
+#### Inventory, classified
+
+**Pattern.** The case-insensitive pattern the brief named (`"spawn"`,
+`'spawn'`, `"worker"`, `'worker'`, `executionmode`, `execution_modes`,
+`bun_jobs_mode`, `\bmode:`) finds 1,364 lines in `packages examples playground
+benchmarks scripts`. It misses prose and bare reads, so a second pattern was
+added: `` `spawn` ``, `` `worker` ``, `ctx.mode`, `context.mode`,
+`record.mode`, `run.mode`, and `(spawn|worker): "`. The union is **1,497
+lines**.
+
+**Sense.** Each line is classified by sense first:
+
+- **M**, the execution mode: **1,053 lines, 1,416 occurrences**;
+- **U**, unrelated: **444 lines**. These are the `worker` event kind, the API's
+  `mode: "jobs" | "runner" | "both"`, `WorkerControlMode` `subscribe`/`poll`,
+  retention `mode`, the `worker` path segment, `BunJobs["worker"]`, logger
+  names, UI "Worker" labels and plurals, and "error mode" prose.
+
+The rules, with 43 hand overrides from reading the lines, are reproducible
+from this check's scratch files. They were spot-checked, not proved. Read the
+figures as ±5%.
+
+**Coupling, for the M lines.**
+
+- **COMPILE is measured, not guessed.** On a simulated head (an archive of
+  `0a8e580` in a separate directory, with `bun install`), changing *only*
+  `ExecutionMode` and `EXECUTION_MODES` took `bun scripts/typecheck.ts` from
+  16 of 16 clean (the negative control) to 10 of 16 failing. It gave **131
+  unique error lines**: 126 inside the grep, and 5 whose literal sits on
+  another line. Add 1 more (`app/.../config.ts:35`) that tsc masks behind the
+  excess property on `:34`.
+- **RUNTIME** means a literal the compiler cannot see: an assertion, a JSON
+  body, an environment value, message text or a raw state write.
+- **SURVIVES** means identifiers only (`executionMode: x`,
+  `ExecutionModeDto`). Under D4(a) it needs no edit.
+- **KEEP** means on the do-not-change list.
+
+| Area | Owner (role) | COMPILE | RUNTIME | SURVIVES | PROSE | KEEP | **M lines / occ. / files** |
+|---|---|--:|--:|--:|--:|--:|---|
+| `packages/bun-jobs/lib` | bun-jobs session (the examples session reviews `lib/runner/**`) | 9 | 9 | 144 | 62 | 2 | **226 / 317 / 29** |
+| `packages/bun-jobs/__tests__` | bun-jobs session | 69 (+5 outside the grep) | 45 | 206 | 23 | 5 | **348 / 467 / 60** |
+| `packages/bun-jobs/README.md` | bun-jobs session | — | — | — | 34 | — | **34 / 57 / 1** |
+| `packages/bun-jobs/bench` | bun-jobs session | 1 | 7 | 0 | 1 | 0 | **9 / 11 / 3** |
+| `packages/bun-jobs-ui/app` | UI session | 2 | 0 | 47 | 3 | 0 | **52 / 64 / 11** |
+| `packages/bun-jobs-ui/__tests__` | UI session | 19 | 28 | 74 | 5 | 0 | **126 / 163 / 17** |
+| `packages/bun-jobs-ui/README.md` | UI session | — | — | — | 1 | — | **1 / 1 / 1** |
+| `examples/bun-jobs` | examples session | 22 | 32 | 78 | 41 | 0 | **173 / 232 / 35** |
+| `examples/bun-jobs-ui` | examples session | 3 | 9 | 26 | 8 | 0 | **46 / 55 / 8** |
+| `playground` | UI session | 2 (`runners.ts:39,80`) | 2 (the two `BUN_JOBS_MODE` reads) | 5 | 29 (much of it the `isolation`-era prose already being rewritten) | 0 | **38 / 49 / 7** |
+| `bun-nest`, `bun-common`, `benchmarks/`, `scripts/` | — | 0 | 0 | 0 | 0 | 0 | **0**: every hit is another sense |
+| **Total** | | **127 + 5** | **132** | **580** | **207** | **7** | **1,053 / 1,416** |
+
+**What to size the work by is the coupled columns, 264 lines.**
+
+- The UI half is small: 2 lines in `app/`, the `EXECUTION_MODE_LABELS` keys
+  and their text, plus 3 prose lines. Its tests are 47 coupled lines in 6
+  files. The draft's upper bound of 133 counted every `executionMode`
+  identifier.
+- `lib/` is 18 coupled lines:
+  - the 9 compile lines: `workerTarget.ts:374-375`,
+    `child-runtime.ts:306`, `BunRunner.ts:830,1629,1728`, `spawn.ts:36`,
+    `worker.ts:31` and `options.ts:199`;
+  - the runtime ones: `spawn.ts:110`, `worker.ts:76` (D3), and the hint text
+    at `workerTarget.ts:418-421`.
+
+  To those add the new code of D1: the normaliser, 9 read points and 3
+  serializer guards.
+
+**PERSISTED and WIRE lines in `lib/`.** These are the M lines where a value
+crosses into storage or onto the wire, a subset of the table:
+
+- **Persisted writes:** `BunRunner.ts:1584`, `:1856-1862`, `:1157-1170` and
+  `config.ts:475`.
+- **Persisted reads:** `config.ts:205-266,340-384,580-619`,
+  `RunnerController.ts:382,406,463-489` and `BunRunner.ts:685,699-705,774-778`,
+  plus `runHistory.ts:269-291`.
+- **Wire:**
+  - `constants.ts:564`;
+  - `types.ts:2305,2329,2421,2439,2478,2522`;
+  - `schemas/runners.ts:50,71,135,163-167,210-218,275`;
+  - `serialize.ts:572,645-668,691`;
+  - `routes/runners.ts:205-223`;
+  - `protocol.ts:55`, `spawn.ts:110,124`, `worker.ts:76,158` and
+    `child-runtime.ts:243,306`.
+
+**Tests that write old values raw today.** `fix-runner-b17.test.ts:174`,
+`runner-config-error-keys.test.ts:88`, `runner-config.test.ts:397`, and the
+examples' `10-options/cross-process-control.ts:992,1059`, write
+`config:executionMode` straight into state. After D1 they keep passing *only
+because* the normaliser works. A mechanical sweep should convert them to the
+new spelling and move the legacy coverage into the dedicated suite below, so
+that no test covers the legacy path by accident.
+
+#### Work, owners and sequencing
+
+Phases 0 and 1 set the pattern: stacked PRs, gated on the combined head, and
+landed as one merge commit so `develop` is never red.
+
+1. **The user settles D1–D5.**
+2. **PR 1, the library** (the bun-jobs session, on
+   `feat/runner-execution-modes`). It covers:
+   - bun-jobs `lib/`: the type and constant, the executors, the exhaustive
+     `#createExecutor`, `child-runtime.ts:306`, the removal of `RUNNER_MODE`,
+     the hint text, options validation, and the normaliser with its read
+     points and serializer guards;
+   - `__tests__/`: the 114 coupled lines, plus the new suites below;
+   - `README.md`: the 34 prose lines, and the §4.2.5 table's removal under
+     D3(a);
+   - `bench/`.
+
+   Sign-offs:
+   - the bun-jobs session for all of it;
+   - **the examples session for the `lib/runner/**` public surface**: the
+     `RunContext.mode` values, `BUN_JOBS_MODE`, the option validation messages
+     and the hint;
+   - **the UI session for the contract diff above.**
+3. **PR 2, the examples** (the examples session, stacked on PR 1). It covers
+   the 66 coupled lines and 49 prose lines in `examples/bun-jobs` and
+   `examples/bun-jobs-ui`, including:
+   - under D3(a), removing `BUN_JOBS_MODE_ON` and rewriting the now-false
+     mapping sentences in the tour (`worker-targets.ts` once renamed) and
+     `07-runner/execution-modes.ts`;
+   - the raw state writes in `cross-process-control.ts`;
+   - `examples/bun-jobs/README.md:156`.
+4. **PR 3, the UI and the playground** (the UI session, which will do its
+   half itself, stacked on PR 1). It covers:
+   - `app/`: the label keys and text, and the 3 prose lines;
+   - the UI tests: 47 coupled lines and 5 prose lines;
+   - the playground: `runners.ts:39,80`, the processors' `BUN_JOBS_MODE` copy
+     (D3) and the prose.
+
+   The app, the UI's `__tests__/app/pkg` project and the playground are all
+   typechecked by `scripts/typecheck.ts`. So **PR 1 is not green without PR 2
+   and PR 3**, and all three merge together: run the gate on PR 1's branch
+   with PR 2 and PR 3 merged into it, then land PR 1 as one merge commit.
+
+   Alternatively, PR 1 carries the 4 compile lines in `app/` and the
+   playground with the UI session's sign-off, and PR 3 follows. The UI session
+   has said it will take its half, so the stacked form is proposed.
+
+**Gate** (the combined head, a fresh worktree, `@kingsleyweb/*` resolving
+inside it):
+
+- `bun scripts/typecheck.ts`: 16 of 16. `CI=1 bunx eslint .` in
+  `packages/bun-jobs`, `packages/bun-jobs-ui`, `examples/bun-jobs`,
+  `examples/bun-jobs-ui` and `playground`.
+- **The old-spelling read suite**, required-green (proposed
+  `__tests__/runner-legacy-modes.test.ts`, an unused name). It runs on
+  **every backend of all five drivers**: memory, file, SQLite, Postgres,
+  MySQL, MariaDB, Redis and MongoDB. It uses `helpers/backends.ts`, skipping
+  visibly when a URL is unset and failing when one is set but unreachable.
+  Per backend:
+  1. **Write old-shaped data**, first through the driver primitives
+     (`setState`, `appendHistory`), then **raw, bypassing the driver's write
+     path**. "Raw" means:
+     - SQL: an `UPDATE` of `kv.value` with a hand-written JSON literal;
+     - Redis: `HSET` and `LPUSH` of hand-written strings;
+     - MongoDB: `updateOne` on the `kv` document;
+     - file: `state.json` written by hand;
+     - memory: primitives only, since there is no raw store.
+
+     This is the examples session's point: a translation that works on memory
+     can fail on a backend that stores the raw string. The old shape is:
+     - history records with `mode: "spawn"` and `mode: "worker"`;
+     - `executionMode: "spawn"`;
+     - `config:code` `{"executionMode":"worker",…}`;
+     - `config:allowed` `["spawn","worker","in-process"]`;
+     - `config:executionMode: "worker"`.
+  2. **Negative control.** The raw driver read (`listHistory`, `getState`)
+     still returns the old spelling, so the fixture provably wrote one.
+  3. **Read through the new code, and assert only new spellings.**
+     - Via `RunnerController`: `info()` (with `executionMode`,
+       `config.effective`, `config.code`, `config.allowed` and `lastRun.mode`),
+       `history()` and `historyPage()`.
+     - Via the API, with `validateResponses: true` and a collecting logger
+       that must record no "did not match its schema" line: the runner, its
+       runs and its config.
+     - A `PUT {executionMode:"child-process"}` is accepted, because the
+       stored `allowed` read normalised. A `PUT {executionMode:"spawn"}` gets
+       400.
+  4. **An owner started on that state adopts the override.** It adopts
+     `config:executionMode: "worker"` as `worker-thread` with no
+     `config:error`, and rewrites `executionMode`, `config:code` and
+     `config:allowed` in the new spelling. The override itself is still
+     `"worker"` in storage and still reads as `worker-thread`.
+  5. **Mutation check.** With the normaliser call removed from
+     `readStoredRunnerConfig`, the suite fails on `allowed`, the silent-drop
+     symptom.
+- **The other new tests:**
+  - old spellings in `executionMode` and `allowedOverrides.executionModes`
+    throw, with the hint;
+  - `BUN_JOBS_MODE` per mode, for runners and worker targets alike. Today
+    runners assert only `spawn` (`runner-modes.test.ts:151`);
+  - ~~`Equal<WorkerTargetMode, ExecutionMode>`~~ — dropped: D4 was decided
+    as two separate declarations, and this test would pin them together.
+- `bun test` in `packages/bun-jobs` with all five URLs exported.
+- `bun test` in `packages/bun-jobs-ui`, and `--randomize` with two seeds.
+- `bun run build:types` and `bun scripts/consumer-check.ts packages/bun-jobs`:
+  96 of 96. No new export is proposed; if the normaliser is exported, add it
+  to `consumer-check.json`.
+- **Examples:** `bun run-all.ts` in `examples/bun-jobs` and
+  `examples/bun-jobs-ui` on memory plus one server. Then **the full 8-backend
+  sweep**: 71 of 71 per backend, all five URLs exported, quoting what ran. It
+  includes `07-runner/execution-modes.ts` and the history examples
+  (`10-options/run-logs-and-clears.ts` and
+  `10-options/cross-process-control.ts`).
+- **A real-data smoke test.** Run the new playground against a **copy** of the
+  user's `playground/.data/jobs.db` (the 50 `"spawn"` records and the old
+  `config:allowed` above; never the original). The runners' Settings… dialog
+  must offer the new spellings, and each run's "Execution" row must show
+  `child-process`.
+- **The do-not-change check.** `git grep -c` on the base and on the head, for
+  the stored names, the cursor prefix, the tuning keys, the executor class and
+  file names, the `CHILD_ENV` names, the `isolation` guard and the N9 names.
+  Each must be identical.
+
+**Effort, revised.**
+
+| Work | Owner | Effort |
+|---|---|---|
+| The type, the constant, the executors, the exhaustive switch, `child-runtime.ts:306`, removing `RUNNER_MODE`, the hint text, options validation | bun-jobs | 0.5 d |
+| The normaliser: 9 read points and 3 serializer guards, with JSDoc | bun-jobs | 0.5 d |
+| Tests: the 114 coupled lines, and converting the raw legacy writes | bun-jobs | 0.5 d |
+| The old-spelling read suite across 8 backends, with raw writes per driver, plus the options, env and type tests | bun-jobs | 1.25 d |
+| README and JSDoc prose (about 96 lines), removing the mapping table, `bench/` | bun-jobs | 0.5 d |
+| Gate, including the real-data smoke test | bun-jobs | 0.5 d |
+| **Total, the library PR** | | **~3.75 d** (was ~3 d: the per-driver raw-write suite and options validation are new) |
+| The examples sweep: 66 coupled lines, 49 prose lines, D3's table and sentences, and the 8-backend sweep | examples | ~1.5 d (unchanged) |
+| The UI: 2 app lines plus prose, 47 test lines | UI | ~0.5 d |
+| The playground: 4 coupled lines, the D3 copy, the prose | UI | ~0.25 d |
+| **UI total** | | **~0.75 d** (was ~1 d) |
+
+§11's summary table still says "~3 d, examples ~1.5 d, UI ~1 d". It is left
+alone here because other branches edit it. Update it when this phase merges.
+
+**Place.** After Phase 1, which has merged, and independent of 1.5 and 2. It
+runs whenever the examples and UI sessions have a window. The earliest useful
+moment is **before the UI session's playground copy lands** (D3).
+
+#### As built (PR 1, the library half)
+
+Built on `feat/runner-execution-modes`, off `0a8e580`. Where the code departs
+from the text above, the code is what shipped and this list is the
+reconciliation:
+
+1. **`readHistoryPage` stays raw.** It lives in `drivers/runHistory.ts`, and
+   `lib/drivers/**` is untouched: a driver, and this driver-level helper
+   beside `listHistory`, returns what it stored. That is also the examples
+   session's constraint — old-spelled data must stay writable (and readable
+   raw) through `setState`, `appendHistory` and `updateHistory` — and it
+   avoids `drivers/` importing `runner/`. Its two callers normalise instead,
+   so the read points are ten, not nine: in `runner/config.ts`, `parseValues`
+   (`config:code`), `parseAllowed` (`config:allowed`), the override in
+   `readStoredRunnerConfig`, and `describeRunnerConfig`'s effective mode; in
+   `RunnerController`, `info()`'s `executionMode` (the bare cast is gone) and
+   `lastRun`, `history()` and `historyPage()`; in `BunRunner`, `history()`
+   (which `info().lastRun` reads) and `historyPage()`.
+2. **The normaliser runs before any filter.** `parseAllowed` maps every
+   entry through `normalizeExecutionMode` first, then keeps the canonical
+   order without repeats; only a value that is a mode in neither spelling is
+   dropped, and a stored value that is not an array reads as absent (before,
+   `.filter` on it threw). A stored `["spawn","worker"]` reads as exactly
+   `["child-process","worker-thread"]`.
+3. **An override that is no mode in either spelling is kept raw**, so the
+   owner still refuses it by name (`executionMode "telepathy" is not an
+   execution mode`).
+4. **The helpers** are `normalizeExecutionMode(raw: unknown)` (not
+   `raw: string`), `normalizeRunRecord`/`normalizeRunRecords`,
+   `isLegacyExecutionMode`, `legacyExecutionModeHint`,
+   `LEGACY_EXECUTION_MODES` and `LegacyExecutionMode`, all in
+   `runner/config.ts` and none exported from the package root, so
+   `consumer-check.json` is unchanged.
+5. **The serializer guard** (`wireExecutionMode` in `api/serialize.ts`) is in
+   `toRunRecordDto`, `toRunnerConfigDto` (effective, code and `allowed`,
+   translated and never filtered) and `toRunnerInfoDto` (`executionMode`;
+   `lastRun` and `local.activeRuns` go through `toRunRecordDto`). A value that
+   is no mode in either spelling is passed through for `validateResponses` to
+   report, rather than invented.
+6. **`RunnerController.info()`**: a stored effective mode that is no mode in
+   either spelling falls back to the local runner's, and is otherwise left
+   out.
+7. **D5's 400 carries the hint over HTTP too.** The text above had the HTTP
+   path answer the plain enum 400; the decision asked for a hint. `s.enum`
+   gained a `hints` option (`api/schema/builder.ts`); the hints are held in a
+   `WeakMap` beside the validator (`api/schema/validate.ts`) and appended to
+   the enum's message and to a nullable enum's `anyOf` fallback, so
+   `{"executionMode":"spawn"}` answers `Expected "child-process" or
+   "worker-thread" or "in-process" or null, received string: "spawn" is the
+   old spelling of "child-process"`. They are not emitted into the OpenAPI
+   document (asserted in `api-runner-config.test.ts`).
+8. **Options** are checked by a new `resolveExecutionMode` in
+   `runner/options.ts`, which refuses any value that is not a current mode —
+   not only the old spellings — with the hint when it is one:
+   `executionMode must be one of child-process, worker-thread, in-process,
+   not "worker": "worker" is the old spelling of "worker-thread"`.
+   `allowedOverrides.executionModes` and `runnerConfigFields` append the
+   same hint.
+9. **`#createExecutor`** switches on all three modes and its `default` is a
+   `never` check that throws a `ConfigError`.
+10. **The worker-target hint** comes from the same `legacyExecutionModeHint`:
+    `target must be …, not "spawn": "spawn" is the old spelling of
+    "child-process"`.
+11. **D4** leaves `LOCAL_KINDS` its own list, as the separate declarations
+    imply.
+12. **`bench/`**: the `execution` field and values, the labels
+    (`BunRunner (child-process)`, `BunRunner (worker-thread)`) and the
+    README's contender table. The contender *ids* `bun-runner-spawn` and
+    `bun-runner-worker` are kept: they are CLI names (`-c bun-runner-spawn`),
+    like the `spawn`/`worker` tuning keys.
+13. **The old-spelling suite** is `__tests__/runner-legacy-modes.test.ts`.
+    Raw writes on MySQL and MariaDB double the backslashes of the
+    hand-written literal, since both read `\` in a string literal as an
+    escape and `config:code` is JSON inside JSON.
+14. **README**: the §4.2.5 table is gone, and a new "Upgrading from
+    `"spawn"` and `"worker"`" section under `BunRunner` carries D1's
+    read-not-migrated note and D2's precondition.
 
 ### Phase 1.5 — summon-compute (committed)
 
@@ -4486,7 +5331,8 @@ script. Cancellation and streaming progress/logs moved into Phase 2a on
 if two people are available.** Phases 0 and 1 are small and unblock
 everything else. Phase 1r (runner spellings) depends only on Phase 1 and fits
 any window the examples and UI sessions have. Until it lands, §4.2.5's
-vocabulary table is the documented bridge.
+vocabulary table is the documented bridge. (Phase 1r's library half is built:
+§4.2.5 now records the table's removal.)
 
 Phase 1.5's minimum useful ship (1.5a + 1.5b, ~17.5 d) serves the commonest
 request, "I do not want a worker running 24/7", on every host that can reach

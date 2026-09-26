@@ -71,7 +71,7 @@ function isAlive(pid: number): boolean {
 
 describe("kill escalation: spawn", () => {
   it("SIGKILLs a child that catches SIGTERM and blocks its loop", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       timeout: 100,
       closeTimeout: 150,
       killTimeout: 150,
@@ -96,7 +96,7 @@ describe("kill escalation: spawn", () => {
   }, 20_000);
 
   it("lets a well-behaved child unwind before any signal", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       file: fixture("graceful"),
       timeout: 100,
       closeTimeout: 2000,
@@ -116,7 +116,7 @@ describe("kill escalation: spawn", () => {
   }, 20_000);
 
   it("kills immediately when forced", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       closeTimeout: 10_000,
       killTimeout: 10_000,
       args: { ms: 10_000 },
@@ -140,7 +140,7 @@ describe("kill escalation: spawn", () => {
   }, 20_000);
 
   it("fails a child that never reports readiness", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       file: fixture("echo"),
       spawn: {
         startTimeout: 50,
@@ -165,7 +165,7 @@ describe("kill escalation: spawn", () => {
   }, 20_000);
 
   it("stops every run when the runner stops", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       file: fixture("graceful"),
       closeTimeout: 300,
       args: { ms: 10_000 },
@@ -189,7 +189,7 @@ describe("kill escalation: spawn", () => {
 
 describe("kill escalation: worker", () => {
   it("terminates a worker that will not stop", async () => {
-    const runner = makeRunner("worker", {
+    const runner = makeRunner("worker-thread", {
       timeout: 100,
       closeTimeout: 150,
       args: { ms: 10_000 },
@@ -204,7 +204,7 @@ describe("kill escalation: worker", () => {
   }, 20_000);
 
   it("kills a worker immediately when forced", async () => {
-    const runner = makeRunner("worker", {
+    const runner = makeRunner("worker-thread", {
       closeTimeout: 10_000,
       args: { ms: 10_000 },
     });
@@ -277,7 +277,11 @@ describe("the reason a run was killed", () => {
     return { why: await killed, ...(await failed) };
   }
 
-  for (const mode of ["spawn", "worker", "in-process"] as const) {
+  for (const mode of [
+    "child-process",
+    "worker-thread",
+    "in-process",
+  ] as const) {
     it(`carries the caller's reason, and says it was a kill: ${mode}`, async () => {
       const { why, record, error } = await killGracefully(
         mode,
@@ -294,7 +298,7 @@ describe("the reason a run was killed", () => {
   }
 
   it('says "killed" when no reason was given', async () => {
-    const { why, record } = await killGracefully("spawn", undefined);
+    const { why, record } = await killGracefully("child-process", undefined);
     expect(why).toBe("killed");
     expect(record.error?.message).toBe("Run was killed: killed");
   }, 20_000);

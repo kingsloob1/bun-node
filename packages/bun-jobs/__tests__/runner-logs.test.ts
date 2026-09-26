@@ -110,7 +110,10 @@ function textOf(lines: RunLogLine[], stream?: RunLogLine["stream"]): string[] {
 describe("run-log capture: the spawned realms", () => {
   it("captures a child's stdout and stderr as lines, tagged and in order", async () => {
     const driver = new MemoryDriver();
-    const runner = makeRunner("chatty", { driver, executionMode: "spawn" });
+    const runner = makeRunner("chatty", {
+      driver,
+      executionMode: "child-process",
+    });
 
     const record = await runOnce(runner, { out: 3, err: 2 });
     const page = await readLog(driver, runner.namespace, record.runId);
@@ -127,7 +130,10 @@ describe("run-log capture: the spawned realms", () => {
 
   it("stores a trailing chunk with no newline as an ordinary line", async () => {
     const driver = new MemoryDriver();
-    const runner = makeRunner("chatty", { driver, executionMode: "spawn" });
+    const runner = makeRunner("chatty", {
+      driver,
+      executionMode: "child-process",
+    });
 
     const record = await runOnce(runner, { out: 1, tail: "no newline here" });
     const page = await readLog(driver, runner.namespace, record.runId);
@@ -147,7 +153,7 @@ describe("run-log capture: the spawned realms", () => {
     // capture walks back over the continuation bytes.
     const runner = makeRunner("wide", {
       driver,
-      executionMode: "spawn",
+      executionMode: "child-process",
       captureLogs: { maxLineBytes: 64 },
     });
 
@@ -166,7 +172,11 @@ describe("run-log capture: the spawned realms", () => {
   });
 
   it("captures ctx.log() from every realm, with and without a level", async () => {
-    for (const mode of ["in-process", "worker", "spawn"] as ExecutionMode[]) {
+    for (const mode of [
+      "in-process",
+      "worker-thread",
+      "child-process",
+    ] as ExecutionMode[]) {
       const driver = new MemoryDriver();
       const runner = makeRunner("talker", { driver, executionMode: mode });
 

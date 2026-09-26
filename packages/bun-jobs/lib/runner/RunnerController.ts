@@ -24,6 +24,9 @@ import { nextFireDate, normalizeSchedule } from "../shared/schedule";
 import { clearRunnerHistory } from "./clearHistory";
 import {
   describeRunnerConfig,
+  normalizeExecutionMode,
+  normalizeRunRecord,
+  normalizeRunRecords,
   readStoredRunnerConfig,
   runnerConfigFields,
   runnerConfigResetFields,
@@ -370,7 +373,10 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
 
   /* --- introspection ---------------------------------------------------- */
 
-  /** Run history, newest first, from any process that ran it. */
+  /**
+   * Run history, newest first, from any process that ran it. Every record's
+   * `mode` is in the current spelling, whatever an older process stored.
+   */
   async history(limit?: number): Promise<TypedRunRecord<TResult>[]> {
     // The stored result is whatever the handler returned — the declared
     // result type — or the marker `maxResultBytes` put in its place.
@@ -379,11 +385,9 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
     }
 
     await this.#assertKnown();
-    return (await this.driver.listHistory(
-      this.namespace,
-      this.#key,
-      limit,
-    )) as TypedRunRecord<TResult>[];
+    return normalizeRunRecords(
+      await this.driver.listHistory(this.namespace, this.#key, limit),
+    ) as TypedRunRecord<TResult>[];
   }
 
   /**
@@ -391,7 +395,8 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
    * process that ran it.
    *
    * What {@link RunnerController.history} cannot do: reach past the first `limit`
-   * records, which `keepHistory` may hold far more than.
+   * records, which `keepHistory` may hold far more than. Modes read in the
+   * current spelling, as {@link RunnerController.history}'s do.
    */
   async historyPage(
     opts: RunHistoryQuery,
@@ -403,12 +408,16 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
     }
 
     await this.#assertKnown();
-    return (await readHistoryPage(
+    const page = await readHistoryPage(
       this.driver,
       this.namespace,
       this.#key,
       opts,
-    )) as TypedRunHistoryPage<TResult>;
+    );
+    return {
+      ...page,
+      records: normalizeRunRecords(page.records),
+    } as TypedRunHistoryPage<TResult>;
   }
 
   /**
@@ -474,7 +483,9 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
     const lockTtl =
       Number(state.lockTtl) || local?.options.lockTtl || DEFAULT_LOCK_TTL;
     const owner = lock ? parseToken(lock.token) : null;
-    const lastRun = history[0] as TypedRunRecord<TResult> | undefined;
+    const lastRun = history[0]
+      ? (normalizeRunRecord(history[0]) as TypedRunRecord<TResult>)
+      : undefined;
 
     return {
       id: this.id,
@@ -484,9 +495,11 @@ export class RunnerController<TArgs = unknown, TResult = unknown> {
       file: state.file ?? local?.file,
       schedule,
       nextRunAt: nextFireDate(schedule),
+      // Read, not cast: a pre-1r owner stored `"spawn"`/`"worker"` here, and
+      // anything that is no mode in either spelling falls back to the local
+      // runner's, or is left out.
       executionMode:
-        (state.executionMode as SharedRunnerInfo["executionMode"]) ??
-        local?.executionMode,
+        normalizeExecutionMode(state.executionMode) ?? local?.executionMode,
       runMode: (state.runMode as SharedRunnerInfo["runMode"]) ?? local?.runMode,
       queueRuns:
         state.queueRuns === undefined

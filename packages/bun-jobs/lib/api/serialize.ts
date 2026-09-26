@@ -1,6 +1,7 @@
 import type { BunRequest, SerializedError } from "@kingsleyweb/bun-common";
 import type {
   DriverEvent,
+  ExecutionMode,
   JobFlow,
   JobRecord,
   JobState,
@@ -14,6 +15,7 @@ import type {
 } from "../drivers/index";
 import type {
   RunnerConfigInfo,
+  RunnerConfigValues,
   RunnerStatus,
   SharedRunnerInfo,
 } from "../runner/types";
@@ -22,6 +24,7 @@ import type { ResolvedJobsApiSerializers } from "./config";
 import type { JobDefaultKey, JobInclude } from "./contract/constants";
 import type { EventWire } from "./ws/events";
 import { explicitKeys } from "../queue/jobDefaults";
+import { normalizeExecutionMode } from "../runner/config";
 import { JOB_INCLUDES } from "./contract/constants";
 
 /**
@@ -558,6 +561,27 @@ export function toRepeatableDto(
   return options.repeatable ? options.repeatable(dto, record, input.req) : dto;
 }
 
+/**
+ * An execution mode on its way out, in the current spelling.
+ *
+ * The second guard behind the runner layer, which already normalises what it
+ * reads: a record or snapshot that reaches a serializer by another path (a
+ * host's own driver call, a custom source) still never puts `"spawn"` or
+ * `"worker"` on the wire. A value that is no mode in either spelling is left
+ * as it is, for `validateResponses` to report, rather than invented.
+ */
+function wireExecutionMode<T extends string>(mode: T): ExecutionMode | T {
+  return normalizeExecutionMode(mode) ?? mode;
+}
+
+/** {@link wireExecutionMode} over a set of configuration values. */
+function wireConfigValues(values: RunnerConfigValues): RunnerConfigValues {
+  return {
+    ...values,
+    executionMode: wireExecutionMode(values.executionMode),
+  };
+}
+
 /** Shapes a run record, then applies `serialize.run`. */
 export function toRunRecordDto(
   record: RunRecord,
@@ -569,7 +593,7 @@ export function toRunRecordDto(
     runnerId: record.runnerId,
     attempt: record.attempt,
     source: record.source,
-    mode: record.mode,
+    mode: wireExecutionMode(record.mode),
     startedAt: record.startedAt,
     status: record.status,
   };
@@ -644,10 +668,18 @@ export type RunnerConfigDto = RunnerConfigInfo;
  */
 export function toRunnerConfigDto(config: RunnerConfigInfo): RunnerConfigDto {
   return {
-    effective: { ...config.effective },
-    ...(config.code ? { code: { ...config.code } } : {}),
+    effective: wireConfigValues(config.effective),
+    ...(config.code ? { code: wireConfigValues(config.code) } : {}),
     overridden: [...config.overridden],
-    ...(config.allowed ? { allowed: [...config.allowed] } : {}),
+    ...(config.allowed
+      ? {
+          // Translated, never filtered: a shorter list than the owner
+          // published would hide a mode it permits.
+          allowed: [
+            ...new Set(config.allowed.map((mode) => wireExecutionMode(mode))),
+          ],
+        }
+      : {}),
     seq: config.seq,
     ...(config.appliedSeq === undefined
       ? {}
@@ -704,6 +736,9 @@ export function toRunnerInfoDto(
     ) {
       (dto as unknown as Record<string, unknown>)[key] = value;
     }
+  }
+  if (dto.executionMode !== undefined) {
+    dto.executionMode = wireExecutionMode(dto.executionMode);
   }
   if (options.exposeRunnerFiles && info.file !== undefined) {
     dto.file = info.file;

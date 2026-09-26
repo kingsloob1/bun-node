@@ -42,7 +42,7 @@ import type {
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
 import { readHistoryPage } from "../drivers/runHistory";
 import { TypedEmitterBase } from "../shared/emitter";
-import { RunnerStoppedError } from "../shared/errors";
+import { ConfigError, RunnerStoppedError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
 import { HOST, newId, newToken, parseToken } from "../shared/ids";
 import { stringifyBounded } from "../shared/json";
@@ -57,6 +57,7 @@ import { clearRunnerHistory } from "./clearHistory";
 import {
   adoptableExecutionModes,
   fromRunnerConcurrency,
+  normalizeRunRecords,
   readStoredRunnerConfig,
   resolveRunnerConfig,
   RUNNER_CONFIG_STATE,
@@ -679,10 +680,15 @@ export class BunRunner<
 
   /* --- introspection --------------------------------------------------- */
 
-  /** Run history, newest first. */
+  /**
+   * Run history, newest first, with every record's `mode` in the current
+   * spelling — a record a pre-1r process stored says `"spawn"`/`"worker"`.
+   */
   async history(limit?: number): Promise<RunRecord[]> {
     try {
-      return await this.driver.listHistory(this.namespace, this.#key, limit);
+      return normalizeRunRecords(
+        await this.driver.listHistory(this.namespace, this.#key, limit),
+      );
     } catch (error) {
       this.#emitError(error, "history");
       return [];
@@ -694,16 +700,18 @@ export class BunRunner<
    *
    * What {@link BunRunner.history} cannot do: reach past the first `limit`
    * records. `keepHistory` may be far larger than any one page, and without an
-   * offset those older records are stored but unreadable.
+   * offset those older records are stored but unreadable. Modes read in the
+   * current spelling, as {@link BunRunner.history}'s do.
    */
   async historyPage(opts: RunHistoryQuery): Promise<RunHistoryPage> {
     try {
-      return await readHistoryPage(
+      const page = await readHistoryPage(
         this.driver,
         this.namespace,
         this.#key,
         opts,
       );
+      return { ...page, records: normalizeRunRecords(page.records) };
     } catch (error) {
       this.#emitError(error, "history");
       return { records: [], total: 0, offset: 0 };
@@ -822,15 +830,30 @@ export class BunRunner<
 
   /* --- internals -------------------------------------------------------- */
 
-  /** Builds the executor for the mode in force now. */
+  /**
+   * Builds the executor for the mode in force now.
+   *
+   * Exhaustive, with no fallback: a value that is no mode used to reach the
+   * spawn executor silently, so an old `"worker"` would have run in a child
+   * process. Options are checked and stored modes normalised before they get
+   * here, so the throw is for a mode added without an executor.
+   */
   #createExecutor(): Executor {
-    switch (this.#executionMode) {
+    const mode: ExecutionMode = this.#executionMode;
+    switch (mode) {
       case "in-process":
         return new InProcessExecutor(this.options.inProcess);
-      case "worker":
+      case "worker-thread":
         return new WorkerExecutor(this.options.worker);
-      default:
+      case "child-process":
         return new SpawnExecutor(this.options.spawn);
+      default: {
+        const unknown: never = mode;
+        throw new ConfigError(
+          `executionMode "${String(unknown)}" has no executor`,
+          { executionMode: unknown },
+        );
+      }
     }
   }
 
@@ -1626,7 +1649,7 @@ export class BunRunner<
       captureConsole:
         capture !== undefined &&
         this.options.captureLogs.console &&
-        this.#executionMode !== "spawn",
+        this.#executionMode !== "child-process",
       events: {
         onProgress: (value) => this.safeEmit("progress", record, value),
         // The executor is transport and hands messages over untyped; this is
@@ -1725,7 +1748,7 @@ export class BunRunner<
       // Only a spawned run has pipes of its own, and only the ones actually
       // piped: an explicit `"inherit"` leaves nothing for capture to wait for.
       streams:
-        this.#executionMode === "spawn"
+        this.#executionMode === "child-process"
           ? (["stdout", "stderr"] as const).filter(
               (stream) => this.options.spawn[stream] === "pipe",
             )

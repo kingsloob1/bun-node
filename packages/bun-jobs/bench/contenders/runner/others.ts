@@ -27,9 +27,9 @@ export const bree: RunnerContender = {
   id: "bree",
   label: "Bree",
   backend: "memory",
-  execution: "worker",
+  execution: "worker-thread",
   durable: false,
-  note: "a fresh Worker per run, like BunRunner's worker mode; keeps no state between processes",
+  note: "a fresh Worker per run, like BunRunner's worker-thread mode; keeps no state between processes",
   async setup(ctx: RunnerSetupContext): Promise<RunnerHandle> {
     const Bree = (await import("bree")).default;
 

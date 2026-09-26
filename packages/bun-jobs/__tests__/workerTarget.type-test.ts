@@ -54,10 +54,10 @@ export const modes: BunQueueWorkerOptions[] = [
   { ...base, target: "child-process" },
 ];
 
-// The runner's spellings are not a worker's.
-// @ts-expect-error `"spawn"` is a runner's executionMode; a worker's is "child-process".
+// The pre-1r spellings are not a target.
+// @ts-expect-error `"spawn"` is the old spelling of "child-process".
 export const spawn: BunQueueWorkerOptions = { ...base, target: "spawn" };
-// @ts-expect-error `"worker"` is a runner's executionMode; a worker's is "worker-thread".
+// @ts-expect-error `"worker"` is the old spelling of "worker-thread".
 export const worker: BunQueueWorkerOptions = { ...base, target: "worker" };
 
 // `isolation` and `isolationOptions` are gone, not aliased.

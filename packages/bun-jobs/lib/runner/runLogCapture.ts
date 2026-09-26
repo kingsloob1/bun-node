@@ -37,7 +37,7 @@ import {
  * library that writes to the terminal does not), and anything a program the
  * handler itself launched prints to its own stdio rather than inheriting the
  * child's. Capture sees the child's two pipes and its IPC channel, nothing
- * else. A `worker` or `in-process` run has no pipes: its console calls arrive
+ * else. A `worker-thread` or `in-process` run has no pipes: its console calls arrive
  * through `consoleCapture.ts` instead, and reach {@link RunLogCapture.output}
  * exactly as a pipe's chunks do.
  *
@@ -77,7 +77,7 @@ export interface RunLogCaptureInit {
   /**
    * Which of the child's stdio streams are actually piped to this process, so
    * {@link RunLogCapture.close} knows which ends to wait for. Empty for a
-   * `worker` or `in-process` run, which has no pipe of its own.
+   * `worker-thread` or `in-process` run, which has no pipe of its own.
    */
   streams?: readonly ("stdout" | "stderr")[];
   /**

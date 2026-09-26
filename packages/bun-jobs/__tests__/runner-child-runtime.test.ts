@@ -46,7 +46,7 @@ async function drive(
     namespace: "test",
     attempt: 1,
     source: "queued",
-    mode: "worker",
+    mode: "worker-thread",
     startedAt: Date.now(),
     deadline: null,
     args: null,

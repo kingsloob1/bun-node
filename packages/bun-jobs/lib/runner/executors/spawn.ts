@@ -33,7 +33,7 @@ import { CHILD_ENV } from "../protocol";
  */
 export class SpawnExecutor implements Executor {
   /** Which mode this executor implements. */
-  readonly mode: ExecutionMode = "spawn";
+  readonly mode: ExecutionMode = "child-process";
 
   /** The protocol-owning entry point the child actually runs. */
   static readonly entry = fileURLToPath(
@@ -107,7 +107,9 @@ export class SpawnExecutor implements Executor {
           ...process.env,
           ...this.options.env,
           [CHILD_ENV.marker]: "1",
-          [CHILD_ENV.mode]: "spawn",
+          // From the executor itself, so `BUN_JOBS_MODE` can never disagree
+          // with the `RunRecord.mode` of the run it started.
+          [CHILD_ENV.mode]: this.mode,
           [CHILD_ENV.namespace]: context.namespace,
           [CHILD_ENV.runnerId]: context.runnerId,
           [CHILD_ENV.runId]: context.runId,

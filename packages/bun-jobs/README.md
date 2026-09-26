@@ -101,6 +101,7 @@ reference.
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
+  - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
   - [Triggers and run modes](#triggers-and-run-modes)
   - [Handlers, messages and kills](#handlers-messages-and-kills)
   - [Run logs](#run-logs)
@@ -2407,19 +2408,10 @@ JavaScript:
 | `child-process` | `spawn` | | `SpawnOptions`, as in the [runner options](#runner-options). Its `cwd` is where a relative processor file resolves from. |
 | `worker-thread` | `worker` | | `WorkerOptions`, as in the [runner options](#runner-options). |
 
-**Runners name the same two mechanisms differently.** A runner's
-`executionMode` says `"worker"` and `"spawn"` (and its run history records
-those), while a worker's `target` says `"worker-thread"` and `"child-process"`:
-different fields, in different vocabularies. Inside the processor the runner's
-spelling survives — an attempt on a worker thread runs with
-`BUN_JOBS_MODE=worker`, one in a child process with `BUN_JOBS_MODE=spawn` — and
-that environment variable is the only place a processor sees either.
-
-| Worker `target` | Runner `executionMode` | `BUN_JOBS_MODE` in the processor |
-|---|---|---|
-| `"in-process"` | `"in-process"` | unset |
-| `"worker-thread"` | `"worker"` | `worker` |
-| `"child-process"` | `"spawn"` | `spawn` |
+A runner's `executionMode` uses the same three words. Inside the processor
+the attempt sees its target's own spelling: `BUN_JOBS_MODE` is
+`worker-thread` on a worker thread and `child-process` in a child process
+(unset in-process).
 
 `target` is not remotely configurable: changing where code runs is a rebuild.
 The worker's heartbeat record reports it, as
@@ -2589,7 +2581,7 @@ Examples:
 | `name` | `string` | `id` | Display name. |
 | `file` | `string \| URL` | required | The handler file, resolved once, relative to `spawn.cwd` or the cwd. |
 | `schedule` | `ScheduleInput` | none (manual only) | A cron string (five or six fields), interval ms, a `Date`, `{ cron, tz }`, `{ every, anchor }` or `{ at }`. |
-| `executionMode` | `"spawn" \| "worker" \| "in-process"` | `"spawn"` | Where runs execute. A worker's `target` names the same mechanisms `"child-process"` and `"worker-thread"`. |
+| `executionMode` | `"child-process" \| "worker-thread" \| "in-process"` | `"child-process"` | Where runs execute: a fresh child process, a `Worker` thread, or the owner's own event loop. The same words a worker's `target` uses. The spellings before them, `"spawn"` and `"worker"`, are a `ConfigError` naming the current one; see [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker). |
 | `runMode` | `"single" \| "parallel"` | `"single"` | `single` holds a cluster-wide lock. `parallel` lets runs overlap up to `maxConcurrency`, with no lock. |
 | `queueRuns` | `boolean` | `false` | Queue a trigger that cannot start now, instead of dropping it. |
 | `maxQueuedRuns` | `number` | `100` | Trigger queue cap. |
@@ -2616,9 +2608,9 @@ Examples:
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
 | `metrics` | `MetricsOptions` | everything on | What this runner records for [analytics](#analytics): its runs by outcome and their durations, each run in the bucket it finished in. `runners: false` stops the series and `durations: false` the durations, whatever the driver; `resolution` and `secondRetentionMs` reach only a driver built here from a config. The lifetime `stats()` counters are kept either way. See [The `metrics` option](#the-metrics-option). |
 | `control` | `boolean \| "auto"` | `"auto"` | Subscribe to `control` events, so a change made through `BunRunnerManager.controller()` applies within the driver's event latency instead of at the next `syncInterval`. `"auto"` listens where it is cheap — on a driver whose events are pushed (Redis) or held in this process (memory) — and not on one that polls (SQL, MongoDB, the file driver), where a subscription is a query every few dozen milliseconds per runner on the file driver, and on SQL and MongoDB one more channel in the namespace's shared poll (one query per `pollInterval` per namespace, however many subscribe). `true` subscribes on every backend, `false` on none. The sync adopts every change either way, so this decides latency, never whether remote control works. |
-| `allowedOverrides` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"spawn"` and `"worker"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
-| `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). |
-| `worker` | `WorkerOptions` | | `smol`, `name`, `env`, `argv`. |
+| `allowedOverrides` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"child-process"` and `"worker-thread"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
+| `spawn` | `SpawnOptions` | | For `"child-process"`: `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). |
+| `worker` | `WorkerOptions` | | For `"worker-thread"`: `smol`, `name`, `env`, `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
 
 **Upgrading: two runner defaults changed.**
@@ -2632,6 +2624,47 @@ Examples:
   this process's stdout and stderr. See
   [It changes the default stdio of a spawned run](#it-changes-the-default-stdio-of-a-spawned-run).
   Pass `captureLogs: false`, or `"inherit"` for either stream, to go back.
+
+### Upgrading from `"spawn"` and `"worker"`
+
+Runners used to call two of their execution modes `"spawn"` and `"worker"`.
+They are now `"child-process"` and `"worker-thread"`, the words a worker's
+`target` uses, so one mechanism has one name everywhere.
+
+- **Options.** `executionMode: "spawn"` or `"worker"`, and either in
+  `allowedOverrides.executionModes`, is a `ConfigError` naming the
+  replacement (`"spawn" is the old spelling of "child-process"`). It is not
+  translated for you: rename it.
+- **`BUN_JOBS_MODE`** is `child-process` or `worker-thread` (it was `spawn` or
+  `worker`), the same word as the run's `ctx.mode` and `RunRecord.mode`. A
+  handler comparing it needs changing; the compiler cannot see an
+  environment variable.
+- **Stored data is read, not migrated.** A store written before the rename
+  keeps the old spellings: each run record's `mode`, the owner's
+  `executionMode`, `config:code` and `config:allowed`, and a
+  `config:executionMode` override. Nothing rewrites them in place. The runner
+  layer (`BunRunner`, `RunnerController`) and the management API translate
+  them as they read, **permanently**, so every mode they return is in the
+  current spelling. An owner rewrites its own fields at its next start; an
+  override stays stored as it was written until a controller changes or
+  resets it, and is adopted with its current meaning. A driver called
+  directly (`listHistory`, `getState`) returns what it stored.
+- **The management API** returns only the current spellings and accepts only
+  them: `"spawn"` in `PUT …/config` is 400 `VALIDATION`, naming
+  `"child-process"`. A browser tab opened before the upgrade needs a reload.
+- **Upgrade every process that shares a store at the same time.** This is a
+  precondition, not something the code negotiates. An older process refuses
+  a new-spelled override (and records `config:error`), drops new spellings
+  from `config:allowed`, and cannot read a new `config:code`, so its API
+  answers that the runner is not configurable; two owners on different
+  versions rewrite each other's fields at every start. Nothing is lost and
+  nothing crashes, and it all heals once the last older process is gone,
+  but until then one runner's runs execute in whichever mode the process
+  taking them understood. Two checkouts pointing at one database are a mixed
+  deployment too.
+
+A `config:error` message an owner stored before the upgrade may still name an
+old spelling. It is prose, and the owner's next start or adoption rewrites it.
 
 ### Triggers and run modes
 
@@ -2706,7 +2739,8 @@ A handler receives a `RunContext` with these fields:
 - `driverConfig`
 - `driver`, in-process only
 
-Messages cross the process boundary as JSON in `spawn` and `worker` mode:
+Messages cross the process boundary as JSON in `child-process` and
+`worker-thread` mode:
 
 - `runner.send(message, runId?)` delivers to `ctx.onMessage`;
 - `ctx.send(message)` surfaces as the runner's `message` event.
@@ -2776,7 +2810,7 @@ negative or non-finite one is a `ConfigError` at construction.
 | `maxBytes` | `1048576` | Bytes of line text one run's log keeps, counted as UTF-8 bytes of the text alone — not the stream, the timestamp, the level or whatever framing the backend stores around them, so every backend bounds the same number. |
 | `maxLineBytes` | `8192` | The longest a single line may be, in UTF-8 bytes. A longer one is cut on a character boundary and marked `truncated`, never dropped: a megabyte written without a newline — a progress bar, a base64 blob — would otherwise spend the whole per-run byte cap by itself. |
 | `captureBytes` | `8388608` | The most one run may hand to the store over its whole life. The three caps above bound what is *kept*; this bounds what is *written*, so a run in a hot loop costs the backend a bounded number of writes instead of one per line of the million it produced. At the ceiling capture stops and stores one last `log` line saying so. |
-| `console` | `true` | Whether an `in-process` or `worker` run's `console.log`, `info` and `debug` (stored as `stdout`) and `warn` and `error` (stored as `stderr`) are captured. A spawned run's console is captured through its pipes whatever this says. See [What is captured](#what-is-captured). |
+| `console` | `true` | Whether an `in-process` or `worker-thread` run's `console.log`, `info` and `debug` (stored as `stdout`) and `warn` and `error` (stored as `stderr`) are captured. A spawned run's console is captured through its pipes whatever this says. See [What is captured](#what-is-captured). |
 | `redact` | `true` | How secrets are scrubbed from each line before it is stored: `true` for the built-in rules, `false` to store lines verbatim, or `{ keys?, patterns?, defaults?, replacement? }`. Applied before any cap counts the line. See [Secrets are redacted](#secrets-are-redacted). |
 
 **There is no `keepRuns`.** How many runs keep a log is the runner's
@@ -2825,8 +2859,8 @@ ctx.log("done", { fields: { rows: 12, note: "a b" } });
 stores `done rows=12 note="a b"`. A value with whitespace, a quote or an `=`
 is JSON-quoted, and anything that is not a string is JSON. They are rendered
 rather than stored apart because a run log is a log, not a table: one text
-column is what every backend holds and what a reader greps. In `spawn` and
-`worker` mode the call crosses the existing IPC `log` channel, so it also
+column is what every backend holds and what a reader greps. In
+`child-process` and `worker-thread` mode the call crosses the existing IPC `log` channel, so it also
 surfaces as the runner's `log` event — whether or not `forwardLogs` is on.
 
 `ctx.flushLogs()` resolves once the buffered lines have reached the store, and
@@ -2835,7 +2869,7 @@ again when the run settles. It is there for a handler about to do something
 drastic — `process.exit`, a deliberate crash — that wants its last words
 stored first. **What it waits for depends on the mode, and the honest version
 is worth knowing.** In `in-process` mode it awaits the append itself. In
-`spawn` and `worker` mode the lines are stored by the *parent*, so it resolves
+`child-process` and `worker-thread` mode the lines are stored by the *parent*, so it resolves
 once they are on the ordered IPC channel rather than on an acknowledgement
 from the store — the parent has them before the run's outcome reaches it, and
 the flush at settle stores them.
@@ -2854,9 +2888,9 @@ your terminal and your log collector. An explicit `spawn.stdout: "inherit"` or
 Everywhere, anything the handler writes with `ctx.log()`. Beyond that it
 depends on where the run executes:
 
-- a **`spawn`** run's `stdout` and `stderr` are captured line by line from its
+- a **`child-process`** run's `stdout` and `stderr` are captured line by line from its
   pipes;
-- a **`worker`** or **`in-process`** run has no pipes of its own, so its
+- a **`worker-thread`** or **`in-process`** run has no pipes of its own, so its
   console is captured instead: `console.log`, `console.info` and
   `console.debug` are stored as `stdout`, and `console.warn` and
   `console.error` as `stderr` — the streams Bun itself writes them to. Each
@@ -3100,13 +3134,13 @@ process that owns the runner adopts it, and so does one started later.
 const report = jobs.runner({
   id: "report",
   file: "./jobs/report.ts",
-  allowedOverrides: { executionModes: ["spawn", "worker"] }, // never in-process
+  allowedOverrides: { executionModes: ["child-process", "worker-thread"] }, // never in-process
 });
 await report.start();
 
 // In any process sharing the driver and namespace:
 const controller = await jobs.runners.controller("report");
-await controller.updateConfig({ executionMode: "worker" });
+await controller.updateConfig({ executionMode: "worker-thread" });
 await controller.updateConfig({ concurrency: { runMode: "parallel", maxConcurrency: 3 } });
 export const config = await controller.config(); // effective, code, overridden, seq, ...
 await controller.resetConfig(); // back to what the code asks for
@@ -3115,8 +3149,11 @@ await controller.resetConfig(); // back to what the code asks for
 `updateConfig(patch)` takes a merge patch: a field left out is untouched, and
 `null` clears that override.
 
-- `executionMode` is `"spawn"`, `"worker"` or `"in-process"`, and must be one
-  the runner's `allowedOverrides.executionModes` permits.
+- `executionMode` is `"child-process"`, `"worker-thread"` or `"in-process"`,
+  and must be one the runner's `allowedOverrides.executionModes` permits. The
+  old spellings `"spawn"` and `"worker"` are refused (a `ConfigError` with
+  `reason: "invalid"`; over the API, 400 `VALIDATION`), each naming its
+  replacement.
 - `concurrency` writes `runMode` and `maxConcurrency` together, because a cap
   only means something in `parallel` mode: `{ runMode: "single" }`, or
   `{ runMode: "parallel", maxConcurrency }` with a whole number from 1 to 1000,
@@ -3157,7 +3194,7 @@ exclusivity matters.
 **What an owner refuses.** An owner that cannot honour a field drops it, keeps
 its code's value, records why in `error` (naming the field in `error.keys`),
 and logs a warning. That happens for
-a mode its `allowedOverrides` does not permit, and for `"spawn"` or `"worker"` on a
+a mode its `allowedOverrides` does not permit, and for `"child-process"` or `"worker-thread"` on a
 runner built from a driver instance with no `childDriver`, whose handler would
 then reach no backend. Both are refused up front by `updateConfig()` and the
 management API (the owner publishes only the modes it can adopt), so an owner
@@ -5409,7 +5446,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`helpers/crashing-consumer.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/helpers/crashing-consumer.ts) | the consumer process that example kills |
 | [`07-runner`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner) | [`scheduled-runner.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/scheduled-runner.ts) | `BunRunner` on an interval, then cron; events, `history`, `stats`, `info` |
 | | [`manual-trigger.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manual-trigger.ts) | `trigger()` outcomes; `single` vs `parallel`; pause and `force` |
-| | [`execution-modes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/execution-modes.ts) | one handler in `in-process`, `worker` and `spawn` |
+| | [`execution-modes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/execution-modes.ts) | one handler in `in-process`, `worker-thread` and `child-process` |
 | | [`single-run-lock.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/single-run-lock.ts) | three instances of one runner: one runs, one skips, one queues |
 | | [`messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
 | | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |

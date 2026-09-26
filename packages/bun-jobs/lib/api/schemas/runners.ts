@@ -1,4 +1,5 @@
 import { DEFAULT_STALE_RUN_AFTER } from "../../runner/clearHistory";
+import { legacyExecutionModeHint } from "../../runner/config";
 import {
   EXECUTION_MODES,
   MAX_NAME_LENGTH,
@@ -162,7 +163,7 @@ export const RunnerConfigSchema = s.named(
     allowed: s.optional(
       s.array(ExecutionModeSchema, {
         description:
-          "The execution modes an override may choose and this runner's owner can adopt: its `allowedOverrides.executionModes`, less `spawn` and `worker` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.",
+          "The execution modes an override may choose and this runner's owner can adopt: its `allowedOverrides.executionModes`, less `child-process` and `worker-thread` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.",
       }),
     ),
     seq: s.integer({ minimum: 0 }),
@@ -212,6 +213,12 @@ export const RunnerConfigBodySchema = s.named(
         s.enum(EXECUTION_MODES, {
           description:
             "Where runs execute, from the *next* run on. 409 CONFIG_NOT_ALLOWED when the runner's code does not permit it; `null` clears the override.",
+          // New spellings only (D5): an old one is refused, and told which
+          // value replaced it.
+          hints: {
+            spawn: legacyExecutionModeHint("spawn"),
+            worker: legacyExecutionModeHint("worker"),
+          },
         }),
       ),
     ),

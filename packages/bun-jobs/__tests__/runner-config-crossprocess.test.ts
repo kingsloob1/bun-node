@@ -131,9 +131,9 @@ for (const { name, config, available } of READY) {
         const namespace = testNamespace(`runner-config-${name}`);
         const { owner, observed } = await startOwner(config, namespace, {
           RUNNER_CONTROL: "1",
-          // The owner's code forbids `spawn`, so the allow-list is exercised
+          // The owner's code forbids `child-process`, so the allow-list is exercised
           // from a process that never saw the option.
-          EXECUTION_MODES: "in-process,worker",
+          EXECUTION_MODES: "in-process,worker-thread",
         });
 
         const driver = createDriver(config);
@@ -155,14 +155,14 @@ for (const { name, config, available } of READY) {
           },
           code: { executionMode: "in-process", runMode: "single" },
           overridden: [],
-          allowed: ["worker", "in-process"],
+          allowed: ["worker-thread", "in-process"],
           seq: 0,
         });
 
         // Refused here, before anything is written: the allow-list came from
         // the owner, not from this process's knowledge of it.
         const refused = await remote
-          .updateConfig({ executionMode: "spawn" })
+          .updateConfig({ executionMode: "child-process" })
           .catch((error: unknown) => error);
         expect(refused).toBeInstanceOf(ConfigError);
         expect((refused as ConfigError).context).toMatchObject({
@@ -170,7 +170,7 @@ for (const { name, config, available } of READY) {
         });
 
         await remote.updateConfig({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           concurrency: { runMode: "parallel", maxConcurrency: 2 },
         });
 
@@ -181,7 +181,7 @@ for (const { name, config, available } of READY) {
         );
         expect(adopted.pid).toBe(owner.proc.pid);
         expect(adopted).toMatchObject({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           runMode: "parallel",
           maxConcurrency: 2,
           overridden: ["executionMode", "runMode", "maxConcurrency"],
@@ -191,13 +191,13 @@ for (const { name, config, available } of READY) {
         // And the owner wrote the effective values back where every client
         // already looks for them.
         await waitFor(
-          async () => (await remote.info()).executionMode === "worker",
+          async () => (await remote.info()).executionMode === "worker-thread",
           { timeout: 20_000 },
         );
         const after = await remote.config();
         expect(after?.appliedSeq).toBe(after?.seq);
         expect(after?.effective).toEqual({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           runMode: "parallel",
           maxConcurrency: 2,
         });

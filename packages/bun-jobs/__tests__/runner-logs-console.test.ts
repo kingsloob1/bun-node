@@ -25,7 +25,7 @@ import { makeTmpDir, testNamespace } from "./helpers";
 /**
  * Worker-realm console capture (run logs, slice 2).
  *
- * An `in-process` or `worker` run shares a `console`, so capturing it means a
+ * An `in-process` or `worker-thread` run shares a `console`, so capturing it means a
  * process-wide patch that has to know which run each call belongs to. These
  * tests run real handlers through a real `BunRunner` against real drivers —
  * `MemoryDriver`, and `FileDriver` where the append is slow enough for two runs'
@@ -383,7 +383,10 @@ describe("console capture: worker runs", () => {
   it("captures a worker run's console, by stream, in order", async () => {
     const holds = consoleCaptureHolds();
     const driver = new MemoryDriver();
-    const runner = makeRunner("worker", { driver, executionMode: "worker" });
+    const runner = makeRunner("worker-thread", {
+      driver,
+      executionMode: "worker-thread",
+    });
     await runner.start();
 
     const settled = nextSettled(runner);
@@ -399,7 +402,10 @@ describe("console capture: worker runs", () => {
   });
 
   it("keeps two concurrent worker runs apart", async () => {
-    const { alpha, beta } = await concurrentPair(new MemoryDriver(), "worker");
+    const { alpha, beta } = await concurrentPair(
+      new MemoryDriver(),
+      "worker-thread",
+    );
 
     expect(textOf(alpha.page.lines, "stdout")).toEqual(
       expected("ALPHA").stdout,
@@ -411,7 +417,10 @@ describe("console capture: worker runs", () => {
 describe("console capture: spawned runs", () => {
   it("stores a spawned run's console once, from its pipes, not twice", async () => {
     const driver = new MemoryDriver();
-    const runner = makeRunner("spawned", { driver, executionMode: "spawn" });
+    const runner = makeRunner("spawned", {
+      driver,
+      executionMode: "child-process",
+    });
     await runner.start();
 
     const settled = nextSettled(runner);

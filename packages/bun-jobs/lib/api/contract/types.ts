@@ -2473,7 +2473,7 @@ export interface RunnerConfigDto {
   overridden: RunnerConfigKey[];
   /**
    * The execution modes an override may choose and this runner's owner can adopt:
-   * its `allowedOverrides.executionModes`, less `spawn` and `worker` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.
+   * its `allowedOverrides.executionModes`, less `child-process` and `worker-thread` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.
    */
   allowed?: ExecutionModeDto[];
   /** The override's version; `0` when nothing is stored. */

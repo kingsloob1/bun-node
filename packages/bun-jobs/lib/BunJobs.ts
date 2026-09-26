@@ -418,7 +418,7 @@ export class BunJobs<
   /**
    * The driver config a child process needs to reach this backend, when the
    * context was built from one. A driver *instance* cannot cross a process
-   * boundary, so a runner in `spawn` or `worker` mode can only pass this on.
+   * boundary, so a runner in `child-process` or `worker-thread` mode can only pass this on.
    */
   get driverConfig(): DriverConfig | undefined {
     return this.#childDriver;

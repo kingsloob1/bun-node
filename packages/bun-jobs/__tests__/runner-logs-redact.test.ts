@@ -280,7 +280,11 @@ describe("redaction: through real runs", () => {
   const line = `boot password=hunter2 Authorization: Bearer tok.en url=postgres://app:pa55@db/prod`;
   const scrubbed = `boot password=${R} Authorization: Bearer ${R} url=postgres://app:${R}@db/prod`;
 
-  for (const mode of ["in-process", "worker", "spawn"] as ExecutionMode[]) {
+  for (const mode of [
+    "in-process",
+    "worker-thread",
+    "child-process",
+  ] as ExecutionMode[]) {
     it(`scrubs every stream of a ${mode} run before it is stored`, async () => {
       const { runner, driver } = makeRunner({ executionMode: mode });
       const record = await runOnce(runner, {

@@ -406,7 +406,7 @@ describe("DELETE /runners/:runner/history", () => {
       runnerId: "crashed",
       attempt: 1,
       source: "manual",
-      mode: "spawn",
+      mode: "child-process",
       host: "gone",
       startedAt: Date.now() - 2 * DAY,
       status: "running",

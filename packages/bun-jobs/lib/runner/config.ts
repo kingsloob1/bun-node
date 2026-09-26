@@ -1,4 +1,4 @@
-import type { ExecutionMode, JobsDriver } from "../drivers/index";
+import type { ExecutionMode, JobsDriver, RunRecord } from "../drivers/index";
 import type {
   RunnerConfigInfo,
   RunnerConfigKey,
@@ -168,9 +168,83 @@ export function parseRunnerConfigError(
   };
 }
 
-/** Whether a string names an execution mode. */
+/** Whether a string names an execution mode, in the current spelling. */
 export function isExecutionMode(value: string): value is ExecutionMode {
   return (EXECUTION_MODES as readonly string[]).includes(value);
+}
+
+/** The spellings runners used for two execution modes before 1r. */
+export type LegacyExecutionMode = "spawn" | "worker";
+
+/**
+ * What each old spelling means now. **Permanent**: stores written before the
+ * rename hold these values (a run record, `config:allowed`, `config:code`, a
+ * `config:executionMode` override) and nothing rewrites them in place, so the
+ * table is needed for as long as such a store exists. Do not delete it.
+ */
+export const LEGACY_EXECUTION_MODES: Readonly<
+  Record<LegacyExecutionMode, ExecutionMode>
+> = Object.freeze({
+  spawn: "child-process",
+  worker: "worker-thread",
+});
+
+/** Whether a string is one of the old spellings. */
+export function isLegacyExecutionMode(
+  value: unknown,
+): value is LegacyExecutionMode {
+  return value === "spawn" || value === "worker";
+}
+
+/**
+ * Reads a stored execution mode in the current spelling: an old spelling
+ * (`"spawn"`, `"worker"`) is translated, a current one returned as itself,
+ * and anything else is `undefined`.
+ *
+ * For **stored** values only — what a driver hands back. It runs where stored
+ * data enters memory, ahead of every check that knows only the current
+ * spellings, so an old value is translated rather than dropped. Code options
+ * and API input are never translated: an old spelling there is a
+ * `ConfigError` or a 400, with {@link legacyExecutionModeHint}.
+ */
+export function normalizeExecutionMode(
+  raw: unknown,
+): ExecutionMode | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  if (isLegacyExecutionMode(raw)) {
+    return LEGACY_EXECUTION_MODES[raw];
+  }
+  return isExecutionMode(raw) ? raw : undefined;
+}
+
+/**
+ * A stored run record with its `mode` in the current spelling. The same
+ * object when there is nothing to translate; a mode that is neither spelling
+ * is left as stored rather than hiding the record.
+ */
+export function normalizeRunRecord<T extends RunRecord>(record: T): T {
+  const mode = normalizeExecutionMode(record.mode);
+  return mode === undefined || mode === record.mode
+    ? record
+    : { ...record, mode };
+}
+
+/** {@link normalizeRunRecord} over a list, keeping its order. */
+export function normalizeRunRecords<T extends RunRecord>(records: T[]): T[] {
+  return records.map((record) => normalizeRunRecord(record));
+}
+
+/**
+ * The hint for an old spelling given where only the current ones are
+ * accepted — `: "spawn" is the old spelling of "child-process"` — or `""`
+ * for any other value, so it can be appended to a message unconditionally.
+ */
+export function legacyExecutionModeHint(value: unknown): string {
+  return isLegacyExecutionMode(value)
+    ? `: "${value}" is the old spelling of "${LEGACY_EXECUTION_MODES[value]}"`
+    : "";
 }
 
 /** Whether a string names an overlap policy. */
@@ -201,13 +275,18 @@ function parseJson<T>(raw: string | undefined): T | undefined {
   }
 }
 
-/** Reads a set of configuration values out of a JSON state field. */
+/**
+ * Reads a set of configuration values out of a JSON state field. The
+ * execution mode is normalised before it is checked, so a `config:code` an
+ * owner wrote before 1r (`"executionMode":"spawn"`) still reads.
+ */
 function parseValues(raw: string | undefined): RunnerConfigValues | undefined {
-  const parsed = parseJson<Partial<RunnerConfigValues>>(raw);
+  const parsed =
+    parseJson<Partial<Record<keyof RunnerConfigValues, unknown>>>(raw);
+  const executionMode = normalizeExecutionMode(parsed?.executionMode);
   if (
     !parsed ||
-    typeof parsed.executionMode !== "string" ||
-    !isExecutionMode(parsed.executionMode) ||
+    executionMode === undefined ||
     typeof parsed.runMode !== "string" ||
     !isRunMode(parsed.runMode)
   ) {
@@ -215,27 +294,59 @@ function parseValues(raw: string | undefined): RunnerConfigValues | undefined {
   }
 
   return {
-    executionMode: parsed.executionMode,
+    executionMode,
     runMode: parsed.runMode,
     maxConcurrency:
       typeof parsed.maxConcurrency === "number" ? parsed.maxConcurrency : null,
   };
 }
 
-/** Reads every `config:*` field out of a runner's state. */
+/**
+ * Reads a stored `config:allowed` list in the current spelling.
+ *
+ * Each entry is normalised **before** anything is filtered, so an owner's
+ * pre-1r `["spawn","worker","in-process"]` reads as all three modes rather
+ * than losing the two old ones — this list is never removed, and a narrower
+ * one would refuse overrides the code permits. What survives is put in
+ * canonical order without repeats (a mixed list can name one mode twice); only
+ * a value that is no execution mode in either spelling is dropped.
+ * `undefined` when there is no list.
+ */
+function parseAllowed(raw: string | undefined): ExecutionMode[] | undefined {
+  const parsed = parseJson<unknown>(raw);
+  if (!Array.isArray(parsed)) {
+    return undefined;
+  }
+  const modes = new Set(parsed.map((entry) => normalizeExecutionMode(entry)));
+  return EXECUTION_MODES.filter((mode) => modes.has(mode));
+}
+
+/**
+ * Reads every `config:*` field out of a runner's state.
+ *
+ * Execution modes come back in the current spelling: `config:allowed`,
+ * `config:code` and the `config:executionMode` override may hold what a pre-1r
+ * owner or controller wrote, and are normalised here, where they enter memory,
+ * before `resolveRunnerConfig` or `runnerConfigFields` check them. An override
+ * that is no mode in either spelling is kept raw, so the owner can refuse it
+ * by name.
+ */
 export function readStoredRunnerConfig(
   state: Record<string, string>,
 ): StoredRunnerConfig {
-  const allowed = parseJson<string[]>(state[RUNNER_CONFIG_STATE.allowed])
-    ?.filter((mode): mode is ExecutionMode => isExecutionMode(mode))
-    .slice();
+  const allowed = parseAllowed(state[RUNNER_CONFIG_STATE.allowed]);
 
   const error = parseRunnerConfigError(state[RUNNER_CONFIG_STATE.error]);
+  const rawOverrideMode = state[RUNNER_CONFIG_STATE.executionMode];
+  const code = parseValues(state[RUNNER_CONFIG_STATE.code]);
 
   return {
     override: {
-      ...(state[RUNNER_CONFIG_STATE.executionMode] !== undefined
-        ? { executionMode: state[RUNNER_CONFIG_STATE.executionMode] }
+      ...(rawOverrideMode !== undefined
+        ? {
+            executionMode:
+              normalizeExecutionMode(rawOverrideMode) ?? rawOverrideMode,
+          }
         : {}),
       ...(state[RUNNER_CONFIG_STATE.runMode] !== undefined
         ? { runMode: state[RUNNER_CONFIG_STATE.runMode] }
@@ -244,9 +355,7 @@ export function readStoredRunnerConfig(
         ? { maxConcurrency: state[RUNNER_CONFIG_STATE.maxConcurrency] }
         : {}),
     },
-    ...(parseValues(state[RUNNER_CONFIG_STATE.code])
-      ? { code: parseValues(state[RUNNER_CONFIG_STATE.code]) }
-      : {}),
+    ...(code ? { code } : {}),
     // Kept when empty: an owner that can adopt no mode override publishes
     // `[]` (see `adoptableExecutionModes`), and dropping it would read as
     // "unknown, so anything goes".
@@ -277,7 +386,7 @@ export function overriddenKeys(
 /**
  * Whether an owner can actually run in `mode` when an override asks for it:
  * its own code's mode and `in-process` always, and a mode that moves the
- * handler into a child (`spawn`, `worker`) only when the runner has a driver
+ * handler into a child (`child-process`, `worker-thread`) only when the runner has a driver
  * config to hand that child. {@link resolveRunnerConfig} refuses the rest.
  */
 function canSwitchTo(
@@ -320,7 +429,7 @@ export interface ResolveRunnerConfigInput {
   allowed: readonly ExecutionMode[];
   /**
    * Whether the runner can hand a child a driver config (`childDriver`).
-   * Without one, `spawn` and `worker` reach no backend at all, so an override
+   * Without one, `child-process` and `worker-thread` reach no backend at all, so an override
    * asking for either is refused rather than silently breaking the handler.
    */
   hasChildDriver: boolean;
@@ -456,8 +565,10 @@ export function runnerConfigFields(
       fields[RUNNER_CONFIG_STATE.executionMode] = null;
     } else if (mode !== undefined) {
       if (!isExecutionMode(mode)) {
+        // Never translated: an old spelling here is new input, not stored
+        // data, so it is refused with a pointer to the current one.
         throw new ConfigError(
-          `executionMode must be one of ${EXECUTION_MODES.join(", ")}`,
+          `executionMode must be one of ${EXECUTION_MODES.join(", ")}${legacyExecutionModeHint(mode)}`,
           { reason: "invalid", field: "executionMode", executionMode: mode },
         );
       }
@@ -585,17 +696,16 @@ export function describeRunnerConfig(
     return undefined;
   }
 
-  const rawEffectiveMode = state.executionMode;
+  // The owner's plain `executionMode` field, which a pre-1r owner wrote as
+  // `"spawn"`/`"worker"` and which only its next start or adopt rewrites.
+  const effectiveMode = normalizeExecutionMode(state.executionMode);
   const rawEffectiveRunMode = state.runMode;
   const rawEffectiveCap = state.maxConcurrency;
   const parsedCap = Number(rawEffectiveCap);
 
   return {
     effective: {
-      executionMode:
-        rawEffectiveMode !== undefined && isExecutionMode(rawEffectiveMode)
-          ? rawEffectiveMode
-          : stored.code.executionMode,
+      executionMode: effectiveMode ?? stored.code.executionMode,
       runMode:
         rawEffectiveRunMode !== undefined && isRunMode(rawEffectiveRunMode)
           ? rawEffectiveRunMode

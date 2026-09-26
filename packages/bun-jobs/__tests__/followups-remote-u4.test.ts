@@ -330,9 +330,9 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
   it("reaches the runner's other owners without waiting for a sync", async () => {
     const { first, second } = await owners();
 
-    await first.updateConfig({ executionMode: "spawn" });
-    expect(first.executionMode).toBe("spawn");
-    await waitFor(() => second.executionMode === "spawn", {
+    await first.updateConfig({ executionMode: "child-process" });
+    expect(first.executionMode).toBe("child-process");
+    await waitFor(() => second.executionMode === "child-process", {
       message: () => `the other owner is still ${second.executionMode}`,
     });
 
@@ -374,7 +374,7 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
     );
     closers.push(async () => await unsubscribe());
 
-    await runner.updateConfig({ executionMode: "spawn" });
+    await runner.updateConfig({ executionMode: "child-process" });
     await waitFor(() => seen.length === 1, {
       message: () => `${seen.length} control events`,
     });
@@ -398,7 +398,11 @@ describe("root exports", () => {
     expect(EXECUTION_MODES).toBe(contract.EXECUTION_MODES);
     expect(RUNNER_CONFIG_KEYS).toBe(contract.RUNNER_CONFIG_KEYS);
     expect(RUNNER_CONFIG_BOUNDS).toBe(contract.RUNNER_CONFIG_BOUNDS);
-    expect([...EXECUTION_MODES]).toEqual(["spawn", "worker", "in-process"]);
+    expect([...EXECUTION_MODES]).toEqual([
+      "child-process",
+      "worker-thread",
+      "in-process",
+    ]);
   });
 });
 

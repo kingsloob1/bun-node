@@ -152,8 +152,8 @@ cases where it does not.
 
 | Family                | Contenders                                                       |
 | --------------------- | ---------------------------------------------------------------- |
-| **isolated** — the handler is a file, run in its own process or thread | **BunRunner** (spawn), **BunRunner** (worker), Bree |
-| **durable** — the run is coordinated across processes | **BunRunner** (single, spawn, redis), **BunRunner** (single, in-process, redis), **BunRunner** (single, spawn, postgres), Agenda (mongodb), Agenda (redis) |
+| **isolated** — the handler is a file, run in its own process or thread | **BunRunner** (child-process), **BunRunner** (worker-thread), Bree |
+| **durable** — the run is coordinated across processes | **BunRunner** (single, child-process, redis), **BunRunner** (single, in-process, redis), **BunRunner** (single, child-process, postgres), Agenda (mongodb), Agenda (redis) |
 | **in-process timers** — no isolation, no persistence, no coordination | **BunRunner** (in-process), croner, node-cron, node-schedule, toad-scheduler |
 
 The durable family carries a deliberate pair: `single, spawn` takes a

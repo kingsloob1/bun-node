@@ -2,7 +2,7 @@ import type { ConsoleSink } from "./consolePatch";
 import { patchConsole } from "./consolePatch";
 
 /**
- * Console capture for a `worker` run, which has its realm to itself.
+ * Console capture for a `worker-thread` run, which has its realm to itself.
  *
  * `consoleCapture.ts` attributes each call by `AsyncLocalStorage` because an
  * in-process run shares its console with the host and with other runs. A

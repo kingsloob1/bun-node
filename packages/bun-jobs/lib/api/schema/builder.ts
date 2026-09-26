@@ -1,7 +1,7 @@
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import type { JsonSchema, JsonSchemaType } from "./validate";
 import { ConfigError } from "../../shared/errors";
-import { compilePattern, validateJson } from "./validate";
+import { compilePattern, registerEnumHints, validateJson } from "./validate";
 
 /**
  * The management API's schema builder.
@@ -138,6 +138,13 @@ export interface BooleanOptions extends BaseOptions {
 export interface EnumOptions<T extends string> extends BaseOptions {
   /** Value used when the input is absent. */
   default?: T;
+  /**
+   * Text appended to the validation message when the input is one of these
+   * refused strings — a retired spelling pointing at its replacement. Only
+   * the message changes: the value is still refused, and the hints are not
+   * emitted into the OpenAPI document.
+   */
+  hints?: Readonly<Record<string, string>>;
 }
 
 /** Options for `s.array`. */
@@ -359,9 +366,11 @@ export const s = {
         values: [...values],
       });
     }
-    return make(
-      scalar("string", options ?? {}, { enum: [...values] }),
-    ) as never;
+    const schema = make(scalar("string", options ?? {}, { enum: [...values] }));
+    if (options?.hints) {
+      registerEnumHints(schema.json, options.hints);
+    }
+    return schema as never;
   },
 
   /** A list of one item type. */

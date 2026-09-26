@@ -7,7 +7,7 @@ import { patchConsole } from "./consolePatch";
  * with the host and with every other in-process run.
  *
  * A spawned run needs none of this — its console writes to its own pipes,
- * which capture already reads — and a `worker` run is alone in its realm, so
+ * which capture already reads — and a `worker-thread` run is alone in its realm, so
  * it uses the lighter `realmConsole.ts` instead: no `AsyncLocalStorage`, no
  * `node:async_hooks` to load per run. Here the `console` is shared, so one patch
  * serves every run, and the question for each call is *whose* it is. That is

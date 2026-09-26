@@ -26,6 +26,7 @@ import {
 import { ConfigError } from "../shared/errors";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { normalizeSchedule } from "../shared/schedule";
+import { isExecutionMode, legacyExecutionModeHint } from "./config";
 import { createRedactor } from "./redact";
 
 /**
@@ -81,7 +82,7 @@ function resolveExecutionModes(
   for (const mode of modes) {
     if (!(EXECUTION_MODES as readonly string[]).includes(mode)) {
       throw new ConfigError(
-        `allowedOverrides.executionModes must only contain ${EXECUTION_MODES.join(", ")}`,
+        `allowedOverrides.executionModes must only contain ${EXECUTION_MODES.join(", ")}${legacyExecutionModeHint(mode)}`,
         { executionModes: modes, offending: mode },
       );
     }
@@ -90,6 +91,29 @@ function resolveExecutionModes(
   // De-duplicated in the canonical order, so `config:allowed` reads the same
   // however the option was written.
   return EXECUTION_MODES.filter((mode) => modes.includes(mode));
+}
+
+/**
+ * Resolves the `executionMode` option, defaulting to `"child-process"`.
+ *
+ * Checked at runtime, because a JavaScript caller (or a cast) is not held to
+ * the type. An old spelling is refused with a hint rather than translated —
+ * the rule Phase 1 set for `isolation`: taken silently, `"worker"` would have
+ * run on the spawn executor, and translated silently it would hide a
+ * configuration that no longer says what it means. Only *stored* values are
+ * translated (`normalizeExecutionMode`).
+ */
+function resolveExecutionMode(mode: unknown): ExecutionMode {
+  if (mode === undefined) {
+    return "child-process";
+  }
+  if (typeof mode !== "string" || !isExecutionMode(mode)) {
+    throw new ConfigError(
+      `executionMode must be one of ${EXECUTION_MODES.join(", ")}, not ${JSON.stringify(mode)}${legacyExecutionModeHint(mode)}`,
+      { executionMode: mode },
+    );
+  }
+  return mode;
 }
 
 /**
@@ -196,7 +220,7 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
     name: options.name ?? id,
     file: resolveFile(options.file, options.spawn?.cwd),
     schedule: normalizeSchedule(options.schedule),
-    executionMode: options.executionMode ?? "spawn",
+    executionMode: resolveExecutionMode(options.executionMode),
     runMode: options.runMode ?? "single",
     queueRuns: options.queueRuns ?? false,
     maxQueuedRuns: options.maxQueuedRuns ?? DEFAULT_MAX_QUEUED_RUNS,

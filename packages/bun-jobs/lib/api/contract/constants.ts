@@ -551,17 +551,26 @@ export type WorkerEventName = (typeof WORKER_EVENT_TYPES)[number];
  * Where a run executes, as a list rather than only a union, because a form
  * needs the values at runtime:
  *
- * - `spawn`: a child process per run — the only mode a run can be force-killed
- *   in, and the default;
- * - `worker`: a `Worker` per run, sharing the process's memory limits and file
- *   descriptors;
+ * - `child-process`: a child process per run — the only mode a run can be
+ *   force-killed in, and the default;
+ * - `worker-thread`: a `Worker` per run, sharing the process's memory limits
+ *   and file descriptors;
  * - `in-process`: the owner's own event loop, where a CPU-bound handler stalls
  *   everything else in that process, including its workers' lock renewals.
  *
- * `spawn` and `worker` receive `ctx.driverConfig` rather than `ctx.driver`, so
- * a handler reaching for `ctx.driver` works only `in-process`.
+ * `child-process` and `worker-thread` receive `ctx.driverConfig` rather than
+ * `ctx.driver`, so a handler reaching for `ctx.driver` works only
+ * `in-process`.
+ *
+ * The same three values a worker's `target` takes. Stores written before
+ * these spellings may hold `"spawn"` and `"worker"`; every value the API
+ * returns is translated to these, and the API accepts only these on input.
  */
-export const EXECUTION_MODES = ["spawn", "worker", "in-process"] as const;
+export const EXECUTION_MODES = [
+  "child-process",
+  "worker-thread",
+  "in-process",
+] as const;
 
 /**
  * The runner settings a remote override may replace, in the order a form

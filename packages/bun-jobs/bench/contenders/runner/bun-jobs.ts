@@ -47,7 +47,7 @@ function contender(options: {
   /** Report label. */
   label: string;
   /** How the handler is executed. */
-  execution: "in-process" | "worker" | "spawn";
+  execution: "in-process" | "worker-thread" | "child-process";
   /** Whether the trigger takes a cluster-wide lock first. */
   single: boolean;
   /** Backend the runner's state and lock live in. */
@@ -197,24 +197,24 @@ export const bunRunnerContenders: RunnerContender[] = [
   }),
   contender({
     id: "bun-runner-worker",
-    label: "BunRunner (worker)",
-    execution: "worker",
+    label: "BunRunner (worker-thread)",
+    execution: "worker-thread",
     single: false,
     backend: "memory",
     note: "a fresh Worker per run — the same isolation model as Bree",
   }),
   contender({
     id: "bun-runner-spawn",
-    label: "BunRunner (spawn)",
-    execution: "spawn",
+    label: "BunRunner (child-process)",
+    execution: "child-process",
     single: false,
     backend: "memory",
     note: "a fresh process per run, the default: full isolation, and the most expensive",
   }),
   contender({
     id: "bun-runner-single-redis",
-    label: "BunRunner (single, spawn, redis)",
-    execution: "spawn",
+    label: "BunRunner (single, child-process, redis)",
+    execution: "child-process",
     single: true,
     backend: "redis",
     note:
@@ -233,8 +233,8 @@ export const bunRunnerContenders: RunnerContender[] = [
   }),
   contender({
     id: "bun-runner-single-postgres",
-    label: "BunRunner (single, spawn, postgres)",
-    execution: "spawn",
+    label: "BunRunner (single, child-process, postgres)",
+    execution: "child-process",
     single: true,
     backend: "postgres",
     note: "the same two guarantees, exclusivity held in Postgres rather than Redis",

@@ -420,8 +420,8 @@ describe("one definition of each constant", () => {
 
   it("the execution modes are one list, which the runner schema enumerates", () => {
     expect([...Contract.EXECUTION_MODES]).toEqual([
-      "spawn",
-      "worker",
+      "child-process",
+      "worker-thread",
       "in-process",
     ]);
     // `ExecutionModeSchema` is built from that very constant, so a route's
