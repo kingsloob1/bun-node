@@ -1029,6 +1029,16 @@ const GATES = [
     when: ({ meta }) => meta.analytics !== null,
   },
   {
+    // A column of the queue table, filled by one `GET /demand` for the page on
+    // screen. That route needs `queues.list`, which the table already does, so
+    // the column adds only the feature: false in `runner` mode alone.
+    name: "Overview: Demand column",
+    row: "Overview queue table Demand column",
+    map: "boot",
+    needsOf: ["Overview: queue table"],
+    features: ["demand"],
+  },
+  {
     // The Jobs card's band: the analytics series' own total.
     name: "overview: Over the range figure",
     row: 'Overview "Over the range" figure',
@@ -1330,6 +1340,16 @@ const GATES = [
     map: "queue",
     reads: ["workers.list"],
     features: ["workers"],
+  },
+  {
+    // `GET /queues/:queue/demand` on the queue's own map. The feature is true
+    // on every backend and false only in `runner` mode, where there is no queue
+    // screen to hold the panel anyway.
+    name: "panel=demand",
+    row: "Demand panel",
+    map: "queue",
+    reads: ["queues.read"],
+    features: ["demand"],
   },
   {
     name: "panel=throughput",
@@ -3853,6 +3873,8 @@ checkEqual("audit: reads only", onMaps(gates.audit, "boot", "queue"), {
   "queue: jobs table": true,
   "panel=limits": true,
   "panel=workers": true,
+  // `queues.read` is a read, so read-only audit has the Demand panel too.
+  "panel=demand": true,
   "panel=throughput": true,
   "panel=repeatables": true,
   "job: screen": true,
@@ -6103,6 +6125,27 @@ checkEqual(
     boot,
   })["overview: Workers row key link"],
   false,
+);
+/** `/meta` as a `runner`-mode API answers it: the demand routes not served. */
+const withoutDemand = {
+  ...meta,
+  features: { ...meta.features, demand: false },
+};
+checkEqual(
+  "the demand gates: the panel wherever `queues.read` is, read-only audit's included, and the Overview column; both gone with meta.features.demand false (runner mode)",
+  [
+    screenGates({ meta, sections, boot, queue: maps.mail! })["panel=demand"],
+    screenGates({ meta, sections, boot, queue: maps.audit! })["panel=demand"],
+    screenGates({ meta, sections, boot, queue: maps.payroll! })["panel=demand"],
+    screenGates({ meta, sections, boot })["Overview: Demand column"],
+    screenGates({ meta: withoutDemand, sections, boot, queue: maps.mail! })[
+      "panel=demand"
+    ],
+    screenGates({ meta: withoutDemand, sections, boot })[
+      "Overview: Demand column"
+    ],
+  ],
+  [true, true, false, true, false, false],
 );
 
 /* ------------------------------------------------------------------ */

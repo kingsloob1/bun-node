@@ -23,6 +23,7 @@ import { JobDefaultsPanel } from "../lazy";
 import { canAddJobs, useCanMutate } from "./gating";
 import { JobsTable } from "./JobsTable";
 import { useQueueLive, useRefreshInterval } from "./live";
+import { DemandPanel } from "./panels/DemandPanel";
 import { useJobDefaultsGate } from "./panels/jobDefaultsGate";
 import { LimitsPanel } from "./panels/LimitsPanel";
 import { RepeatablesPanel } from "./panels/RepeatablesPanel";
@@ -36,6 +37,7 @@ export type PanelId =
   | "limits"
   | "job-defaults"
   | "workers"
+  | "demand"
   | "throughput"
   | "repeatables";
 
@@ -184,6 +186,7 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   const meta = useMeta();
   const canMutate = useCanMutate();
   const canWorkers = useCan("workers.list");
+  const canRead = useCan("queues.read");
   const canMetrics = useCan("metrics.read");
   const canRepeatables = useCan("repeatables.list");
   const jobDefaults = useJobDefaultsGate();
@@ -227,6 +230,15 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
       value: "workers",
       label: "Workers",
       render: () => <WorkersPanel queue={queue} />,
+    });
+  }
+  // Every backend serves it (`features.demand` is false only in `runner`
+  // mode); whether its figures are exact is in each answer.
+  if (meta.features.demand && canRead) {
+    panels.push({
+      value: "demand",
+      label: "Demand",
+      render: () => <DemandPanel queue={queue} />,
     });
   }
   if (meta.features.throughput && canMetrics) {

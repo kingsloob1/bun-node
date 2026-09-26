@@ -9,6 +9,7 @@ import { AppProviders } from "../../app/providers";
 import { createQueryClient } from "../../app/queryClient";
 import { render } from "./dom";
 import {
+  demandFixture,
   jobsSeriesFixture,
   metaFixture,
   overviewFixture,
@@ -31,6 +32,19 @@ export function defaultHandlers(): Record<string, MockHandler | MockReply> {
     "GET /queues": { body: queueListFixture() },
     "GET /queues/emails/throughput": { body: throughputFixture() },
     "GET /queues/reports/throughput": { body: throughputFixture() },
+    "GET /queues/emails/demand": { body: demandFixture() },
+    "GET /queues/reports/demand": {
+      body: demandFixture({ queue: "reports", waiting: 4, demand: 4 }),
+    },
+    // Answers for the queues asked, in their order, as the route does.
+    "GET /demand": (call) => ({
+      body: {
+        queues: call.query
+          .getAll("queues")
+          .map((queue) => demandFixture({ queue })),
+        truncated: false,
+      },
+    }),
     "GET /workers": { body: workersFixture },
     // The analytics routes. The roll-ups answer the rows; the same route with
     // `ids=` / `keys=` answers one series per name, which is how a visible
