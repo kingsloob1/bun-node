@@ -4,8 +4,9 @@ import type {
   StartStage,
 } from "./fixtures/processes/close-during-start";
 import { join } from "node:path";
+import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import { createDriver } from "../lib/index";
+import { BunQueueWorker, createDriver, MemoryDriver } from "../lib/index";
 import {
   closeDuringStart,
   RUNNING_CALLS,
@@ -211,3 +212,69 @@ for (const backend of BACKENDS) {
     },
   );
 }
+
+describe("run() on a worker that has been closed", () => {
+  /** A memory driver that counts the startup calls `run()` makes. */
+  function countingDriver() {
+    const driver = new MemoryDriver();
+    const calls = { connect: 0, ensureQueue: 0 };
+    const connect = driver.connect.bind(driver);
+    const ensureQueue = driver.ensureQueue.bind(driver);
+    driver.connect = async () => {
+      calls.connect++;
+      await connect();
+    };
+    driver.ensureQueue = async (...args) => {
+      calls.ensureQueue++;
+      await ensureQueue(...args);
+    };
+    closers.push(async () => await driver.close());
+    return { driver, calls };
+  }
+
+  it("is a no-op after the worker ran and closed: no reconnect, no ready", async () => {
+    const { driver, calls } = countingDriver();
+    const worker = new BunQueueWorker("closed-rerun", async () => "ok", {
+      namespace: testNamespace("closed-rerun"),
+      driver,
+      logger: noopLogger,
+      maintenance: false,
+    });
+    closers.push(async () => await worker.close({ force: true }));
+
+    const ready = new Promise<void>((resolve) =>
+      worker.once("ready", () => resolve()),
+    );
+    void worker.run();
+    await ready;
+    await worker.close();
+
+    const before = { ...calls };
+    let readyAgain = false;
+    worker.on("ready", () => {
+      readyAgain = true;
+    });
+
+    await worker.run();
+
+    expect(calls).toEqual(before);
+    expect(readyAgain).toBe(false);
+    expect(worker.isRunning).toBe(false);
+  });
+
+  it("is a no-op on a worker closed before it ever ran", async () => {
+    const { driver, calls } = countingDriver();
+    const worker = new BunQueueWorker("closed-never-ran", async () => "ok", {
+      namespace: testNamespace("closed-never-ran"),
+      driver,
+      logger: noopLogger,
+      maintenance: false,
+    });
+
+    await worker.close();
+    await worker.run();
+
+    expect(calls).toEqual({ connect: 0, ensureQueue: 0 });
+    expect(worker.isRunning).toBe(false);
+  });
+});

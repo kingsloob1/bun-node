@@ -1390,11 +1390,17 @@ export class BunQueueWorker<
    * A `close()` that lands while this is still starting — connecting,
    * creating the queue, reading its control entries — ends it there, and it
    * resolves: nothing is armed, no `ready` is emitted, and the process is not
-   * held.
+   * held. On a worker already closed it resolves at once and does nothing: a
+   * closed worker is not restarted.
    */
   async run(): Promise<void> {
     if (this.#running) {
       return await this.#stopped.promise;
+    }
+    // A closed worker stays closed (`#closing` is never reset), so running it
+    // again would only open a connection for the startup checks to abandon.
+    if (this.#closing) {
+      return;
     }
 
     this.#running = true;
