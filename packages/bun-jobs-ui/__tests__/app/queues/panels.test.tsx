@@ -453,6 +453,7 @@ describe("the other panels", () => {
       "Limits",
       "Job defaults",
       "Workers",
+      "Demand",
       "Throughput",
       "Repeatables",
     ]);
@@ -471,6 +472,7 @@ describe("the other panels", () => {
     expect(await panelLabels()).toEqual([
       "Job defaults",
       "Workers",
+      "Demand",
       "Throughput",
       "Repeatables",
     ]);
@@ -483,6 +485,7 @@ describe("the other panels", () => {
       expect(await panelLabels()).toEqual([
         "Job defaults",
         "Workers",
+        "Demand",
         "Throughput",
         "Repeatables",
       ]),
@@ -505,6 +508,7 @@ describe("the other panels", () => {
     expect(await panelLabels()).toEqual([
       "Limits",
       "Job defaults",
+      "Demand",
       "Repeatables",
     ]);
   });
@@ -525,7 +529,7 @@ describe("the other panels", () => {
         },
       },
     });
-    expect(await panelLabels()).toEqual(["Limits", "Job defaults"]);
+    expect(await panelLabels()).toEqual(["Limits", "Job defaults", "Demand"]);
   });
 
   it("renders no panels at all when none is allowed", async () => {
@@ -539,6 +543,7 @@ describe("the other panels", () => {
               workers: false,
               throughput: false,
               jobDefaults: false,
+              demand: false,
             },
           }),
         },
