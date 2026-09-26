@@ -2179,8 +2179,7 @@ summoned one with `jobs.worker(...)`. It is also exported from
 counts them), no other worker's active jobs left with nobody alive to finish
 them, and nothing coming due within `idleFor`. It must hold continuously for
 `idleFor`, checked every `idleCheckInterval`, at the cost of one demand count
-and one worker listing per check — two listings until the worker's own record
-has been found. The worker's own `drained` event is not used:
+and one worker listing per check. The worker's own `drained` event is not used:
 it fires on the first empty pass, before a dead worker's locks have lapsed.
 
 | Option | Type | Default | Meaning |
@@ -2216,10 +2215,9 @@ in the Redis driver's options.
 **Signals.**
 
 - The handlers are installed before `run()` connects, so a stop during boot
-  still exits 0, even when `run()` then fails. A stop that arrives before the
-  worker is ready is held until it is, then closes it before its first claim;
-  the backstop is armed at once, so a slow start is still out by the
-  platform's kill or the deadline.
+  still exits 0. A stop that arrives before the worker is ready closes it at
+  once, with `force` — nothing has been claimed yet — which ends the startup
+  there, however long the connect would have taken.
 - A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
   held hostage by a drain. A first SIGINT arriving during an idle or deadline
   close is the platform's stop, not a second Ctrl-C.
@@ -2240,8 +2238,8 @@ a signal, `deadline − 250` ms at the deadline, none for an idle stop with no
 deadline. The target's own close is reserved from the package's close
 constants — 4,500 ms for a `"child-process"` or `"worker-thread"` target
 (500 ms forced), nothing for `"in-process"`, and 5,000 ms either way for a
-custom one, or while the worker's own record has not yet said which target it
-runs. Then:
+custom one, which may ignore `force`. The kind is `worker.target.kind`, known
+from the worker's construction on every driver. Then:
 
 - **graceful** while the budget covers that and `tailReserve`, with the jobs
   given the rest as `close({ timeout })`;
@@ -2253,13 +2251,9 @@ runs. Then:
 | Grace | Child-process target | In-process target |
 |---|---|---|
 | 0 s (Railway's default) | `force`; the backstop still waits 1 s for it | `force` |
-| 5 s (Fly's default) | `force` | graceful, jobs get 3,750 ms, once the target is known; `force` before |
+| 5 s (Fly's default) | `force` | graceful, jobs get 3,750 ms |
 | 10 s (Cloud Run) | graceful, jobs get 4,250 ms | graceful, jobs get 8,750 ms |
 | 30 s (ECS, Heroku, Kubernetes) | graceful, jobs get 24,250 ms | graceful, jobs get 28,750 ms |
-
-The target is known once the worker's first heartbeat record has been read,
-normally within a second of starting; until then it is budgeted as a custom
-target, which on Fly's default grace means `force`.
 
 A **hard backstop** exits the process at the end of the budget if `close()`
 has not returned — a custom target whose `close()` hangs, say — with an error

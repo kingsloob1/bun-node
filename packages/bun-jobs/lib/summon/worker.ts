@@ -4,11 +4,7 @@ import type { JobMapOf } from "../queue/types";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { WorkerTargetKind } from "../shared/workers";
 import process from "node:process";
-import {
-  listWorkerRecords,
-  readDemand,
-  supportsWorkers,
-} from "../drivers/readApis";
+import { readDemand, supportsWorkers } from "../drivers/readApis";
 import { TARGET_CLOSE_GRACE, TARGET_CLOSE_REAP } from "../queue/workerTarget";
 import { DEFAULT_CLOSE_TIMEOUT } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
@@ -47,8 +43,8 @@ export interface RunSummonedOptions {
   idleFor?: number;
   /**
    * How often idleness, parking and the deadline are checked, in ms. Each
-   * idle check costs one `countDemand` and one worker listing, two until the
-   * worker's own record has been found. Defaults to `5_000`.
+   * idle check costs one `countDemand`, which includes one worker listing.
+   * Defaults to `5_000`.
    */
   idleCheckInterval?: number;
   /**
@@ -193,15 +189,15 @@ export const RUN_SUMMONED_DEFAULTS = {
  *   is `TARGET_CLOSE_GRACE + TARGET_CLOSE_REAP` (4,500 ms), forced is
  *   `TARGET_CLOSE_REAP` (500 ms);
  * - `"in-process"`: nothing of its own;
- * - `"custom"`, or a target not yet known: the worker's bound on any
+ * - `"custom"`: the worker's bound on any
  *   target's close, `DEFAULT_CLOSE_TIMEOUT` (5,000 ms), either way, since it
  *   may ignore `force`.
  *
  * Internal; exported for its tests.
  */
 export function summonTargetClose(
-  /** The target's kind, from the worker's record; `undefined` when unknown. */
-  kind: WorkerTargetKind | undefined,
+  /** The target's kind: `worker.target.kind`. */
+  kind: WorkerTargetKind,
   /** Whether the close is forced. */
   force: boolean,
 ): number {
@@ -244,8 +240,8 @@ export interface SummonCloseDecision {
 export function summonCloseRule(input: {
   /** The time until the hard backstop, in ms; `Infinity` for none. */
   budget: number;
-  /** The target's kind; `undefined` when unknown. */
-  kind: WorkerTargetKind | undefined;
+  /** The target's kind: `worker.target.kind`. */
+  kind: WorkerTargetKind;
   /** {@link RunSummonedOptions.tailReserve}. */
   tailReserve: number;
 }): SummonCloseDecision {
@@ -362,6 +358,8 @@ type SummonedWorker = Pick<
   | "ref"
   | "driver"
   | "logger"
+  | "target"
+  | "config"
   | "state"
   | "activeCount"
   | "isRunning"
@@ -517,8 +515,6 @@ class SummonedRun {
   #failed = 0;
   /** Whether the worker has emitted `ready` (or failed to start). */
   #ready = false;
-  /** A stop asked for before `ready`, carried out once it fires. */
-  #pendingStop: SummonedStop | undefined;
   /** Set once closing has started: `close()` is called at most once. */
   #closing: SummonedStop | undefined;
   /** Whether it has finished. */
@@ -533,10 +529,8 @@ class SummonedRun {
   #deadlineAt: number | undefined;
   /** The deadline the deadline timer is armed for. */
   #deadlineArmedFor: number | undefined;
-  /** The target's kind, once the worker's own record has been read. */
-  #targetKind: WorkerTargetKind | undefined;
-  /** Whether the worker's own record has been seen, so it can be discounted. */
-  #selfListed = false;
+  /** The target's kind, known from the worker's construction. */
+  readonly #targetKind: WorkerTargetKind;
   /** Whether a SIGINT has been received: a second one exits at once. */
   #sawSigint = false;
   /** Whether the current pause is one SIGTSTP made. */
@@ -564,8 +558,6 @@ class SummonedRun {
   #startFailed = false;
   /** The warning for a close that outlives its budget, without a backstop. */
   #overrunWarning: ReturnType<typeof setTimeout> | undefined;
-  /** The quick retries reading the worker's own record after `ready`. */
-  #lookupTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     /** The worker. */
@@ -580,6 +572,7 @@ class SummonedRun {
     this.#options = options;
     this.#logger = options.logger;
     this.#deadlineAt = options.readDeadline();
+    this.#targetKind = worker.target.kind;
   }
 
   /** Installs everything, starts the worker, and settles with the result. */
@@ -590,33 +583,27 @@ class SummonedRun {
     this.#worker.run().then(
       () => {
         // `run()` resolves once the claim loop stops, which a close in
-        // progress already accounts for; one nobody here started is seen
-        // through the `closed` event. A `run()` that resolves without ever
-        // having been ready ended in a close during startup (a worker may
-        // resolve rather than reject then): a stop held for `ready` would
-        // otherwise wait for good, so it is carried out now. Its `close()`
-        // joins the one already done.
-        if (!this.#ready) {
-          this.#ready = true;
-          const pending = this.#pendingStop;
-          this.#pendingStop = undefined;
-          if (pending !== undefined) {
-            this.#beginClose(pending);
-          }
+        // progress already accounts for, and so does a close of ours that
+        // ended the startup: the worker then resolves `run()` without
+        // `ready`. A close by anyone else is seen through the `closed`
+        // event. What is left is a worker that was closed before it was
+        // handed over: its `run()` does nothing and resolves at once, with no
+        // `ready` and no `closed`, and nothing else would ever end this.
+        if (!this.#ready && this.#closing === undefined && !this.#done) {
+          this.#closing = { reason: "closed" };
+          this.#logger.info("Summoned worker was already closed", {
+            reason: "closed",
+          });
+          this.#finish(this.#closing);
         }
       },
       (error: unknown) => {
+        // A failure after a close of ours began is the worker's to swallow:
+        // it resolves `run()` then. Reaching here, nothing had stopped it.
         this.#logger.error("Summoned worker could not start", { error });
         this.#ready = true;
         this.#startFailed = true;
-        // A signal that arrived while it was starting still decides the
-        // outcome: the platform is stopping it, and a stop exits 0. Anything
-        // else is a failed start, and exits 1.
-        const pending = this.#pendingStop;
-        this.#pendingStop = undefined;
-        this.#beginClose(
-          pending?.reason === "signal" ? pending : { reason: "error" },
-        );
+        this.#beginClose({ reason: "error" });
       },
     );
 
@@ -654,19 +641,12 @@ class SummonedRun {
     }
   };
 
-  /**
-   * Synchronous, inside the `ready` event: a close started here marks the
-   * worker closing before its claim loop takes its first turn.
-   */
+  /** The worker is running: start watching idleness and parking. */
   readonly #onReady = (): void => {
     this.#ready = true;
-    const pending = this.#pendingStop;
-    if (pending !== undefined) {
-      this.#pendingStop = undefined;
-      this.#beginClose(pending);
-      return;
+    if (this.#closing === undefined && !this.#done) {
+      this.#startWatching();
     }
-    this.#startWatching();
   };
 
   #onStopSignal(signal: NodeJS.Signals): void {
@@ -683,7 +663,7 @@ class SummonedRun {
       }
       this.#sawSigint = true;
     }
-    if (this.#closing !== undefined || this.#pendingStop !== undefined) {
+    if (this.#closing !== undefined) {
       this.#logger.info("Summoned worker already stopping; signal noted", {
         signal,
       });
@@ -780,8 +760,6 @@ class SummonedRun {
     this.#backstop = undefined;
     clearTimeout(this.#overrunWarning);
     this.#overrunWarning = undefined;
-    clearTimeout(this.#lookupTimer);
-    this.#lookupTimer = undefined;
   }
 
   /**
@@ -880,8 +858,7 @@ class SummonedRun {
   /**
    * The backstop's timer. A close that has started gets at least the floor
    * first, so a budget at or below zero still lets a forced close kill a
-   * child-process target's children before the process goes. A stop still
-   * waiting for `ready` has claimed nothing, and exits at once.
+   * child-process target's children before the process goes.
    */
   #fireBackstop(): void {
     const floor =
@@ -895,8 +872,7 @@ class SummonedRun {
         return;
       }
     }
-    const reason =
-      this.#closing?.reason ?? this.#pendingStop?.reason ?? "signal";
+    const reason = this.#closing?.reason ?? "signal";
     const code = codeFor(reason);
     this.#logger.error(
       "Summoned worker did not finish closing within its budget: exiting now. Jobs still held are recovered as stalled.",
@@ -907,52 +883,7 @@ class SummonedRun {
 
   /* --- idleness, parking, the deadline, the target --------------------- */
 
-  /** Reads the worker's own record, for its target and to discount it. */
-  async #lookupSelf(): Promise<void> {
-    const worker = this.#worker;
-    if (this.#selfListed || !supportsWorkers(worker.driver)) {
-      return;
-    }
-    const records = await listWorkerRecords(
-      worker.driver,
-      worker.ref,
-      Date.now(),
-    );
-    const self = records.find((record) => record.id === worker.id);
-    if (self !== undefined) {
-      this.#selfListed = true;
-      this.#targetKind = self.target?.kind;
-    }
-  }
-
-  /** Retries {@link SummonedRun.lookupSelf} quickly after `ready`, until the first report lands. */
-  #scheduleLookup(attempt: number): void {
-    if (
-      this.#done ||
-      this.#closing !== undefined ||
-      this.#selfListed ||
-      attempt >= 20
-    ) {
-      return;
-    }
-    this.#lookupTimer = setTimeout(
-      () => {
-        this.#lookupTimer = undefined;
-        void this.#lookupSelf()
-          .catch((error: unknown) => {
-            this.#logger.debug("Could not read the worker's own record yet", {
-              error,
-            });
-          })
-          .finally(() => this.#scheduleLookup(attempt + 1));
-      },
-      attempt === 0 ? 50 : Math.min(250, this.#options.idleCheckInterval),
-    );
-    this.#lookupTimer.unref();
-  }
-
   #startWatching(): void {
-    this.#scheduleLookup(0);
     this.#tick = setInterval(
       () => void this.#check(),
       this.#options.idleCheckInterval,
@@ -1010,20 +941,24 @@ class SummonedRun {
       return;
     }
 
-    const [demand] = await Promise.all([
-      readDemand(worker.driver, worker.ref, { now, cap: 1 }),
-      this.#lookupSelf(),
-    ]);
+    const demand = await readDemand(worker.driver, worker.ref, {
+      now,
+      cap: 1,
+    });
     if (this.#closing !== undefined || this.#done) {
       return;
     }
+    // The count includes this worker's own record wherever it keeps one.
+    // Its first report is not awaited, so the first check may not see it
+    // yet: that reads one other worker too few, which only ever delays an
+    // exit, never hastens one.
+    const selfListed =
+      supportsWorkers(worker.driver) &&
+      worker.config.effective.reportInterval > 0;
     const idle = isSummonIdle({
       ownActive: worker.activeCount,
       demand,
-      otherLiveWorkers: Math.max(
-        0,
-        demand.workers - (this.#selfListed ? 1 : 0),
-      ),
+      otherLiveWorkers: Math.max(0, demand.workers - (selfListed ? 1 : 0)),
       now,
       idleFor,
     });
@@ -1041,31 +976,11 @@ class SummonedRun {
   /* --- stopping -------------------------------------------------------- */
 
   #requestStop(stop: SummonedStop): void {
-    if (
-      this.#closing !== undefined ||
-      this.#pendingStop !== undefined ||
-      this.#done
-    ) {
+    if (this.#closing !== undefined || this.#done) {
       return;
     }
     if (stop.reason === "signal") {
       this.#noteSignal();
-    }
-    if (stop.reason === "deadline" && this.#deadlineAt !== undefined) {
-      // Bounded now, not once the worker is ready: a start that outlasts the
-      // deadline must not carry the process past it.
-      this.#armLimit(
-        this.#deadlineAt - RUN_SUMMONED_DEFAULTS.backstopMargin,
-        "deadline",
-      );
-    }
-    if (!this.#ready) {
-      this.#pendingStop = stop;
-      this.#logger.info(
-        "Summoned worker asked to stop while starting; stopping once ready",
-        { ...stop },
-      );
-      return;
     }
     this.#beginClose(stop);
   }
@@ -1091,17 +1006,22 @@ class SummonedRun {
     }
     const until = limits.length === 0 ? undefined : Math.min(...limits);
     const budget = until === undefined ? Number.POSITIVE_INFINITY : until - now;
-    const decision: SummonCloseDecision = this.#startFailed
-      ? {
-          force: true,
-          budget,
-          targetClose: summonTargetClose(this.#targetKind, true),
-        }
-      : (this.#options.probe?.closeRule ?? summonCloseRule)({
-          budget,
-          kind: this.#targetKind,
-          tailReserve,
-        });
+    // Before `ready` nothing has been claimed, and a graceful close would
+    // first wait out the connect it interrupts: a forced one ends the
+    // startup at once, and the worker resolves `run()` for it.
+    const early = !this.#ready;
+    const decision: SummonCloseDecision =
+      this.#startFailed || early
+        ? {
+            force: true,
+            budget,
+            targetClose: summonTargetClose(this.#targetKind, true),
+          }
+        : (this.#options.probe?.closeRule ?? summonCloseRule)({
+            budget,
+            kind: this.#targetKind,
+            tailReserve,
+          });
 
     if (until !== undefined) {
       this.#armLimit(until, reason);
@@ -1111,13 +1031,15 @@ class SummonedRun {
     this.#logger.info(
       this.#startFailed
         ? "Summoned worker closing with force after a failed start"
-        : decision.force
-          ? "Summoned worker closing with force: the budget does not cover a graceful close"
-          : "Summoned worker closing gracefully",
+        : early
+          ? "Summoned worker closing with force before it was ready: nothing claimed yet"
+          : decision.force
+            ? "Summoned worker closing with force: the budget does not cover a graceful close"
+            : "Summoned worker closing gracefully",
       {
         ...stop,
         mode,
-        target: this.#targetKind ?? "unknown",
+        target: this.#targetKind,
         budget: Number.isFinite(budget) ? Math.floor(budget) : null,
         targetClose: decision.targetClose,
         tailReserve,
@@ -1189,11 +1111,10 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  *
  * - **Signals first.** The handlers are installed synchronously, before
  *   `run()` connects and before this returns its promise, so a platform
- *   stopping the unit during boot still gets a clean exit 0 — also when
- *   `run()` then fails. A stop asked for before the worker is ready is held
- *   until it is, then closes before the first claim; the backstop (or the
- *   in-invocation warning) is armed at once, so a slow start cannot carry
- *   the process past the platform's kill or the deadline.
+ *   stopping the unit during boot still gets a clean exit 0. A stop that
+ *   arrives before the worker is ready closes it at once, with `force`:
+ *   nothing has been claimed, and the close ends the startup, however long
+ *   the connect would have taken.
  * - **The close rule.** Once closing starts, the budget `A` is the time left
  *   until the hard backstop: `grace − 250` after a signal, `deadline − 250`
  *   otherwise, none for an idle stop with no deadline. The close is graceful,

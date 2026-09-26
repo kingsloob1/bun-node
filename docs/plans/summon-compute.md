@@ -1493,17 +1493,15 @@ graceful choice never needs revisiting except by the backstop.
 **As built in PR-4 (2026-09-26)**, where the code differs from the above
 [M/D; the code wins]:
 
-- **The target's kind comes from the worker's own heartbeat record.** The
-  worker has no public getter for its target and PR-4 may not edit it, so
-  `runSummoned` reads its own record (by id) for `target.kind`. Until the
-  record is seen, or on a driver without worker records, it budgets as
-  `"custom"` (5,000 ms graceful and forced). `"worker-thread"` is budgeted
-  like `"child-process"`: one executor, the same constants. A public
-  `worker.target` getter would make this exact.
+- **The target's kind is `worker.target.kind`** (#198), exact from the
+  worker's construction on every driver. `"worker-thread"` is budgeted like
+  `"child-process"`: one executor, the same constants.
 - **`SummonedExit.reason` also has `"closed"`**: something other than
   `runSummoned` closed the worker.
-- **A stop before `ready` is held**, then started inside the `ready` event, so
-  the worker is closing before its first claim.
+- **A stop before `ready` closes at once, with `force`**: nothing has been
+  claimed, and a close during startup ends it there (#199), so `run()`
+  resolves without `ready`. A graceful close would first wait out the connect
+  it interrupts.
 - **The parked exit does not apply to `"until-stopped"`**, whose platform
   would restart the worker into the same stop.
 - **The backstop is armed only with `exit`** (never in `"in-invocation"`);
@@ -1514,19 +1512,15 @@ graceful choice never needs revisiting except by the backstop.
   from `--bun-jobs-summon-mode=`, `deadline` from
   `--bun-jobs-summon-max-lifetime-ms=`, `grace` from
   `--bun-jobs-summon-grace-ms=`.
-- **A failed `run()` closes with `force`** and exits 1, without the rule —
-  unless a signal arrived while it was starting: then it exits 0 with reason
-  `"signal"`, since the platform was stopping it anyway (#195 review).
+- **A failed `run()` closes with `force`** and exits 1, without the rule. A
+  signal during the start has already closed the worker, whose `run()` then
+  resolves rather than fails (#199): that exits 0 with reason `"signal"`.
 - **The backstop has a floor** (#195 review): it never fires sooner than
   `forcedCloseFloor` (1,000 ms = `TARGET_CLOSE_REAP` + 500 ms of round trips)
   after the close started, so a budget at or below zero (Railway's 0 s) still
   lets the forced close kill a child-process target's children. Without it,
   on Postgres, the backstop fired 2 ms into the forced close and orphaned the
-  child. A stop still waiting for `ready` has claimed nothing and exits at
-  once.
-- **A deadline stop before `ready` arms its bound at once** (#195 review):
-  the backstop, or in `"in-invocation"` the warning, at `deadline − 250`, as a
-  signal's does.
+  child.
 - **`pauseSignals` defaults to `false`** (#195 review): handling SIGTSTP stops
   Ctrl-Z suspending the process, so a platform that sends it opts in.
 - **Known gap: a signal during a graceful close cannot shorten it.**

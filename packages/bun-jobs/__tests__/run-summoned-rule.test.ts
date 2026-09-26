@@ -43,8 +43,6 @@ describe("summonTargetClose", () => {
     // A custom target may ignore `force`: the worker's bound either way.
     expect(summonTargetClose("custom", false)).toBe(DEFAULT_CLOSE_TIMEOUT);
     expect(summonTargetClose("custom", true)).toBe(DEFAULT_CLOSE_TIMEOUT);
-    // Not yet known: the most it could be.
-    expect(summonTargetClose(undefined, false)).toBe(DEFAULT_CLOSE_TIMEOUT);
   });
 });
 
@@ -267,6 +265,21 @@ describe("runSummoned in-process, exit: false", () => {
 });
 
 describe("runSummoned with a run() that resolves before ready", () => {
+  it('a worker closed before it was handed over resolves "closed" rather than waiting for good', async () => {
+    const worker = new BunQueueWorker("closed-first", async () => "x", {
+      namespace: "run-summoned-closed-first",
+      driver: new MemoryDriver(),
+      logger: noopLogger,
+    });
+    await worker.close();
+    const exit = await Promise.race([
+      runSummoned(worker, { exit: false, signals: false, logger: noopLogger }),
+      Bun.sleep(3_000).then(() => "hung" as const),
+    ]);
+    expect(exit).not.toBe("hung");
+    expect(exit).toMatchObject({ reason: "closed", code: 0 });
+  });
+
   /**
    * A stand-in worker whose `run()` resolves without ever emitting `ready`,
    * as a worker does when a close ends its startup. Only the surface
@@ -283,6 +296,8 @@ describe("runSummoned with a run() that resolves before ready", () => {
       ref: { ns: "stub", queue: "stub" },
       driver: new MemoryDriver(),
       logger: noopLogger,
+      target: { kind: "in-process", processor: "function" },
+      config: { effective: { reportInterval: 10_000 } },
       state: "running",
       activeCount: 0,
       isRunning: false,
@@ -306,7 +321,7 @@ describe("runSummoned with a run() that resolves before ready", () => {
     };
   }
 
-  it("carries out a stop held for ready instead of waiting for good", async () => {
+  it("a stop before ready closes the worker at once, and settles when run() resolves without ready", async () => {
     const { worker, closes } = startupClosedWorker();
     // A deadline already past: the stop is due at once, before `ready`.
     const exit = await Promise.race([

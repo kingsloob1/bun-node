@@ -10,9 +10,11 @@ import type { RunSummonedProbe } from "../../../lib/summon/worker";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { noopLogger } from "@kingsleyweb/bun-common";
+import { supportsWorkers } from "../../../lib/drivers/readApis";
 import {
   BunQueue,
   BunQueueWorker,
+  createDriver,
   MemoryDriver,
   runSummoned,
 } from "../../../lib/index";
@@ -33,6 +35,8 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  *   names), `unreachable` (a Postgres URL nothing listens on),
  *   `slow-connect:<ms>` (memory, whose `connect()` takes that long), or
  *   `slow-fail:<ms>` (memory, whose `connect()` fails after that long).
+ * - `NO_RECORDS=1`: the driver can store no worker records. `SLOW_CONNECT_MS`:
+ *   its `connect()` takes that much longer, on any driver.
  * - `NAMESPACE`: the namespace, so a test can purge it from a shared server
  *   afterwards. Defaults to one named after the pid.
  * - `TARGET`: `in-process` (default), `child-process`, or `custom-hang` (a
@@ -166,7 +170,45 @@ const target: WorkerTarget =
       ? { kind: "child-process", closeTimeout: 30_000, killTimeout: 30_000 }
       : "in-process";
 
-const driver = makeDriver();
+/**
+ * The driver as configured, then shaped by two more knobs: `NO_RECORDS=1`
+ * takes away every way it has to store worker records (the native worker
+ * methods and queue-state listing), and `SLOW_CONNECT_MS` delays its
+ * `connect()` — on a server-backed driver too, which is built here as an
+ * instance for it.
+ */
+function shapeDriver(
+  configured: JobsDriver | DriverConfig,
+): JobsDriver | DriverConfig {
+  const slow = Number(env.SLOW_CONNECT_MS ?? 0);
+  if (env.NO_RECORDS !== "1" && slow === 0) {
+    return configured;
+  }
+  const instance =
+    "connect" in configured ? configured : createDriver(configured);
+  if (env.NO_RECORDS === "1") {
+    for (const method of [
+      "registerWorker",
+      "removeWorker",
+      "listWorkers",
+      "listQueueState",
+    ] as const) {
+      Object.defineProperty(instance, method, { value: undefined });
+    }
+  }
+  if (slow > 0) {
+    const connect = instance.connect.bind(instance);
+    Object.defineProperty(instance, "connect", {
+      value: async () => {
+        await Bun.sleep(slow);
+        await connect();
+      },
+    });
+  }
+  return instance;
+}
+
+const driver = shapeDriver(makeDriver());
 const options = JSON.parse(env.OPTIONS ?? "{}") as RunSummonedOptions;
 const startedAt = Date.now();
 if (env.DEADLINE_IN_MS !== undefined) {
@@ -226,7 +268,7 @@ const queue =
 const jobData = { pidFile, spinMs: 120_000, napMs: jobMs };
 
 worker.on("ready", () => {
-  report("ready");
+  report("ready", { records: supportsWorkers(worker.driver) });
   const jobs = Number(env.JOBS ?? 0);
   for (let index = 0; index < jobs; index++) {
     void queue?.add("work", jobData, { attempts: 1 });

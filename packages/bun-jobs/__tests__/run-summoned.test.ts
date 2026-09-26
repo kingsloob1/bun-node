@@ -168,6 +168,7 @@ function logged(message: string): (line: Line) => boolean {
 }
 
 const CLOSING = "Summoned worker closing";
+const CLOSING_EARLY = "Summoned worker closing with force before it was ready";
 const STOPPED = "Summoned worker stopped";
 const BACKSTOP = "Summoned worker did not finish closing";
 
@@ -507,9 +508,7 @@ describe("runSummoned, in a real process", () => {
     const { code } = await exitOf(fixture);
 
     expect(code).toBe(0);
-    expect(fixture.lines.some(logged("Summoned worker asked to stop"))).toBe(
-      true,
-    );
+    expect(fixture.lines.some(logged(CLOSING_EARLY))).toBe(true);
     expect(fixture.lines.some((line) => line.event === "active")).toBe(false);
     expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
       reason: "signal",
@@ -713,9 +712,9 @@ describe("the close rule, with a child-process target", () => {
  * arrive before the worker is ready, and a start that fails after a signal.
  */
 describe("runSummoned at the budget's edges", () => {
-  it("a deadline reached while run() is still connecting is bounded by the backstop", async () => {
+  it("a deadline reached while run() is still connecting closes at once, not after the connect", async () => {
     // Connecting takes 8 s; the deadline is 3 s away, so the stop is due at
-    // once and the backstop at 2.75 s.
+    // once, and closes the worker then.
     const fixture = start({
       DRIVER: "slow-connect:8000",
       DEADLINE_IN_MS: "3000",
@@ -724,49 +723,74 @@ describe("runSummoned at the budget's edges", () => {
     const { code, at } = await exitOf(fixture);
 
     expect(code).toBe(0);
-    expect(fixture.lines.some(logged("Summoned worker asked to stop"))).toBe(
-      true,
-    );
-    expect(fixture.lines.find(logged(BACKSTOP))?.fields?.reason).toBe(
+    expect(fixture.lines.find(logged(CLOSING_EARLY))?.fields).toMatchObject({
+      reason: "deadline",
+      force: true,
+    });
+    expect(fixture.lines.find(logged(STOPPED))?.fields?.reason).toBe(
       "deadline",
     );
+    expect(fixture.lines.some(logged(BACKSTOP))).toBe(false);
     expect(fixture.lines.some((line) => line.event === "ready")).toBe(false);
-    // Gone by the deadline, not held until the 8 s connect ends.
-    expect(at - booting.at).toBeLessThan(3_000 + SLACK);
+    // Gone at once: not held until the 8 s connect ends, nor until the deadline.
+    expect(at - booting.at).toBeLessThan(SLACK);
   }, 30_000);
 
-  it('"in-invocation" warns at the deadline while run() is still connecting', async () => {
+  it('"in-invocation" resolves at once for a deadline reached while run() is still connecting', async () => {
     const fixture = start({
       DRIVER: "slow-connect:8000",
       DEADLINE_IN_MS: "3000",
       OPTIONS: JSON.stringify({ mode: "in-invocation" }),
     });
     const booting = await fixture.waitFor((line) => line.event === "booting");
-    const warning = await fixture.waitFor(
-      logged("Summoned worker's close outlived its deadline"),
-    );
     const result = await fixture.waitFor((line) => line.event === "result");
     expect((await exitOf(fixture)).code).toBe(0);
 
-    // Warned at the deadline, well before the connect ended and it resolved.
-    expect(warning.at - booting.at).toBeLessThan(3_000 + SLACK);
-    expect(warning.at).toBeLessThan(result.at);
     expect(result).toMatchObject({ reason: "deadline", code: 0 });
+    expect(result.at - booting.at).toBeLessThan(SLACK);
+    expect(fixture.lines.some((line) => line.event === "ready")).toBe(false);
   }, 30_000);
 
-  it("a signal held while run() is connecting still exits 0 when run() then fails", async () => {
+  it("a signal while run() is connecting exits 0, even from a start that would have failed", async () => {
     const fixture = start({ DRIVER: "slow-fail:1500" });
     await fixture.waitFor((line) => line.event === "booting");
     fixture.signal("SIGTERM");
     const { code } = await exitOf(fixture);
 
     expect(code).toBe(0);
-    expect(fixture.lines.some(logged("Summoned worker could not start"))).toBe(
-      true,
-    );
+    expect(fixture.lines.some(logged(CLOSING_EARLY))).toBe(true);
     expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
       reason: "signal",
       signal: "SIGTERM",
+      code: 0,
+    });
+  }, 30_000);
+
+  it("knows the target's kind from construction, on a driver that keeps no worker records", async () => {
+    // In-process on Fly's 5 s grace: graceful, with the jobs given
+    // 4,750 − 0 − 1,000 ms. A kind read from a record would be unknown here,
+    // and a custom target's 5 s bound would force the close.
+    const fixture = start({ NO_RECORDS: "1", JOBS: "1", JOB_MS: "1500" }, [
+      "--bun-jobs-summon-id=kind",
+      "--bun-jobs-summon-grace-ms=5000",
+    ]);
+    const ready = await fixture.waitFor((line) => line.event === "ready");
+    expect(ready.records).toBe(false);
+    await fixture.waitFor((line) => line.event === "active");
+    fixture.signal("SIGTERM");
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    const fields = fixture.lines.find(logged(CLOSING))?.fields ?? {};
+    expect(fields).toMatchObject({
+      reason: "signal",
+      target: "in-process",
+      targetClose: 0,
+      force: false,
+    });
+    expect(fields.timeout).toBe((fields.budget as number) - 1_000);
+    expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
+      completed: 1,
       code: 0,
     });
   }, 30_000);
@@ -800,7 +824,7 @@ const EDGE_BACKENDS: EdgeBackend[] = [
 for (const backend of EDGE_BACKENDS) {
   const url = backend.variable ? process.env[backend.variable] : undefined;
   if (backend.variable && !url) {
-    describe.skip(`zero grace on ${backend.name}: not configured`, () => {
+    describe.skip(`stops at the edges on ${backend.name}: not configured`, () => {
       it(`runs when ${backend.variable} is set`, () => {});
     });
     continue;
@@ -817,7 +841,7 @@ for (const backend of EDGE_BACKENDS) {
     continue;
   }
 
-  describe(`zero grace on ${backend.name}`, () => {
+  describe(`stops at the edges on ${backend.name}`, () => {
     /** Runs a child-process spin target, SIGTERMs it with no grace, and reports. */
     async function zeroGrace(probe?: "no-floor"): Promise<{
       fixture: Fixture;
@@ -863,6 +887,39 @@ for (const backend of EDGE_BACKENDS) {
         killIfOurs(pid);
       }
     }
+
+    it("closes at once for a stop before ready, without waiting for the connect", async () => {
+      const namespace = `run-summoned-early-${process.pid}-${Date.now()}`;
+      if (config) {
+        cleanups.push(async () => {
+          const driver = createDriver(config);
+          await driver.connect();
+          await driver.purge(namespace);
+          await driver.close();
+        });
+      }
+      // Connecting takes 3 s longer than it would.
+      const fixture = start({
+        DRIVER: backend.name,
+        NAMESPACE: namespace,
+        SLOW_CONNECT_MS: "3000",
+      });
+      await fixture.waitFor((line) => line.event === "booting");
+      const sent = fixture.signal("SIGTERM");
+      const { code, at } = await exitOf(fixture);
+
+      expect(code).toBe(0);
+      expect(fixture.lines.find(logged(CLOSING_EARLY))?.fields).toMatchObject({
+        reason: "signal",
+        force: true,
+      });
+      expect(fixture.lines.find(logged(STOPPED))?.fields?.reason).toBe(
+        "signal",
+      );
+      expect(fixture.lines.some((line) => line.event === "ready")).toBe(false);
+      // Out before the slow connect would even have finished.
+      expect(at - sent).toBeLessThan(3_000);
+    }, 30_000);
 
     it("forces the close, which kills the child before the backstop can fire", async () => {
       const { fixture, code, aliveAfter } = await zeroGrace();
