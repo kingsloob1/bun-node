@@ -1,0 +1,10 @@
+{
+  // The transport spikes are evidence for docs/plans/remote-transports.md:
+  // throwaway measurements, run one at a time with `bun <file>.ts`. This file
+  // exists so an editor resolves them against Bun's types instead of an
+  // inferred project with none. Deliberately not in scripts/typecheck.ts —
+  // a spike records what one Bun version did; it is not maintained code.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}

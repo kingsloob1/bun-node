@@ -15,7 +15,7 @@ for (const ct of ["", "text/event-stream", "application/octet-stream", "applicat
   const q = ct ? `?ct=${encodeURIComponent(ct)}` : "";
   const s = performance.now();
   const done = Promise.withResolvers<string>();
-  const sock = await Bun.connect({ hostname: "127.0.0.1", port: server.port, socket: { data(_s, d) { done.resolve(d.toString()); } } });
+  const sock = await Bun.connect({ hostname: "127.0.0.1", port: server.port!, socket: { data(_s, d) { done.resolve(d.toString()); } } });
   sock.write(`GET /${q} HTTP/1.1\r\nHost: x\r\n\r\n`);
   const first = await done.promise; const rawMs = Math.round(performance.now() - s); sock.end();
   const s2 = performance.now();
