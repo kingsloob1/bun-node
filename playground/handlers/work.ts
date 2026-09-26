@@ -18,9 +18,9 @@ export interface WorkArgs {
  * the runner screen: `ctx.log()` lines (the `log` stream), `console.log`/
  * `console.info` on `stdout`, and `console.warn` (every run, on its second
  * step) and `console.error` (when it fails) on `stderr`. Every execution
- * mode captures all of it: a `spawn` run through its pipes, a `worker` or
- * `in-process` run by attributing each console call to the run that made it
- * — the output still reaches this process's terminal too.
+ * mode captures all of it: a `child-process` run through its pipes, a
+ * `worker-thread` or `in-process` run by attributing each console call to the
+ * run that made it — the output still reaches this process's terminal too.
  *
  * Its first `stdout` line carries a made-up `apiKey=…`, so the run log shows
  * capture's default redaction: the value is stored redacted, not as printed.
@@ -29,11 +29,11 @@ export default defineHandler<WorkArgs, string>(async (ctx) => {
   const ms = ctx.args?.ms ?? 2_000 + Math.floor(Math.random() * 6_000);
   ctx.logger.info("working", { ms });
   // Where this run is executing, with the evidence rather than only the
-  // label: a `spawn` run is a pid of its own, a `worker` run shares the
-  // parent's pid off the main thread, and `in-process` is the parent's pid on
-  // it. `archive` is the runner whose mode can be changed from the UI
-  // (Settings… offers all three), so switching it and triggering a run shows
-  // this line change.
+  // label: a `child-process` run is a pid of its own, a `worker-thread` run
+  // shares the parent's pid off the main thread, and `in-process` is the
+  // parent's pid on it. `archive` is the runner whose mode can be changed from
+  // the UI (Settings… offers all three), so switching it and triggering a run
+  // shows this line change.
   ctx.log(
     `running ${ctx.mode} — pid ${process.pid}, main thread ${String(isMainThread)}`,
     {

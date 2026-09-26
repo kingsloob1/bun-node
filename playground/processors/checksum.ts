@@ -89,7 +89,7 @@ export default defineProcessor<ChecksumData, ChecksumResult>(
     let digest = job.data.seed ?? 1;
     for (let block = 1; block <= blocks; block++) {
       // The only cancellation point there is: the loop below never yields, so
-      // a `spawn` child that ignored this could only be stopped by killing it
+      // a child process that ignored this could only be stopped by killing it
       // (which is what `wedge.ts` demonstrates).
       if (ctx.signal.aborted) {
         throw new Error(`hashing ${job.data.file} was cancelled`);

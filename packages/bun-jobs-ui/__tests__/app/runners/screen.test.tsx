@@ -88,7 +88,7 @@ describe("the runner screen", () => {
     expect(summaryValue("Registered here")).toBe("Yes (local)");
     expect(summaryValue("File")).toBeNull();
     expect(summaryValue("Schedule")).toBe("Cron 0 3 * * * in Europe/London");
-    expect(summaryValue("Execution mode")).toBe("worker");
+    expect(summaryValue("Execution mode")).toBe("worker-thread");
     expect(summaryValue("Run mode")).toBe("single");
     expect(summaryValue("Queues triggers")).toBe("Yes, up to 100");
     expect(summaryValue("Max concurrency")).toBe("unlimited");

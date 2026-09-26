@@ -82,7 +82,7 @@ describe("clear history: the confirmation", () => {
   it("reads the effective run mode from the config over the snapshot's", async () => {
     const config: RunnerConfigDto = {
       effective: {
-        executionMode: "worker",
+        executionMode: "worker-thread",
         runMode: "single",
         maxConcurrency: null,
       },
