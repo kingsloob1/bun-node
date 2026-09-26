@@ -691,6 +691,148 @@ for (const { name, available, backend } of backends) {
           await driver.close();
         }
       }, 30_000);
+
+      it(`has the owning BunRunner read its old history in the new spelling (${method === "raw" ? "raw" : "through the driver"})`, async () => {
+        // `BunRunner.history()` and `historyPage()` are read points of their
+        // own: a library caller holding the runner never goes through a
+        // controller or a serializer, so nothing else would translate for it.
+        const h = await setup();
+        const driver = h.driver();
+        const ns = testNamespace(`legacy-local-${name}`);
+        const id = `local-${method}-${suffix()}`;
+        await seed(h, driver, method, ns, id, oldFields(id));
+        await expectStoredOld(driver, ns, id, [
+          "spawn",
+          "worker",
+          "in-process",
+        ]);
+
+        const runner = new BunRunner({
+          id,
+          namespace: ns,
+          file: ENV_HANDLER,
+          executionMode: "in-process",
+          driver,
+          childDriver: h.config,
+          waitToExit: false,
+          logger: noopLogger,
+        });
+        try {
+          await runner.start();
+          // No run is triggered, so every record read here is one the seed
+          // stored in the old spelling.
+          const history = await runner.history();
+          expect(history.map((record) => record.mode)).toEqual([
+            "worker-thread",
+            "child-process",
+          ]);
+          const page = await runner.historyPage({
+            offset: 0,
+            limit: 10,
+            order: "desc",
+          });
+          expect(page.total).toBe(2);
+          expect(page.records.map((record) => record.mode)).toEqual([
+            "worker-thread",
+            "child-process",
+          ]);
+          const ascending = await runner.historyPage({
+            offset: 0,
+            limit: 1,
+            order: "asc",
+          });
+          expect(ascending.records.map((record) => record.mode)).toEqual([
+            "child-process",
+          ]);
+          const info = await runner.info();
+          expect(info.lastRun?.mode).toBe("worker-thread");
+          expect(oldSpellings(history)).toEqual([]);
+          expect(oldSpellings(page)).toEqual([]);
+          expect(oldSpellings(info)).toEqual([]);
+
+          // The stored bytes are untouched: the translation is on read only.
+          expect(
+            (await driver.listHistory(ns, runnerKey(id))).map(
+              (record) => record.mode as string,
+            ),
+          ).toEqual(["worker", "spawn"]);
+        } finally {
+          await runner.stop({ force: true });
+          await driver.close().catch(() => {});
+        }
+      }, 30_000);
+
+      it(`serves old data from the process that owns the runner, through every serializer (${method === "raw" ? "raw" : "through the driver"})`, async () => {
+        // The API routes to the local runner here, so each wire value passes
+        // a runner-layer read point and then a serializer guard.
+        const h = await setup();
+        const driver = h.driver();
+        const ns = testNamespace(`legacy-local-api-${name}`);
+        const id = `local-api-${method}-${suffix()}`;
+        await seed(h, driver, method, ns, id, oldFields(id));
+
+        const jobs = new BunJobs({ namespace: ns, driver, logger: noopLogger });
+        try {
+          const runner = jobs.runner({
+            id,
+            file: ENV_HANDLER,
+            executionMode: "in-process",
+            childDriver: h.config,
+            waitToExit: false,
+          });
+          const api = harness({ jobs });
+
+          /** Reads the runner, its runs and the list, and checks all of it. */
+          const readAll = async (effective: ExecutionMode) => {
+            const one = await api.call("GET", `/runners/${id}`);
+            expect(one.status).toBe(200);
+            expect(one.body.isLocal).toBe(true);
+            expect(one.body.executionMode).toBe(effective);
+            expect(one.body.lastRun.mode).toBe("worker-thread");
+            expect(oldSpellings(one.body)).toEqual([]);
+
+            const runs = await api.call(
+              "GET",
+              `/runners/${id}/history?order=asc`,
+            );
+            expect(runs.status).toBe(200);
+            expect(
+              (runs.body.items as { mode: ExecutionMode }[]).map(
+                (run) => run.mode,
+              ),
+            ).toEqual(["child-process", "worker-thread"]);
+            expect(oldSpellings(runs.body)).toEqual([]);
+
+            const list = await api.call("GET", "/runners");
+            expect(list.status).toBe(200);
+            expect(oldSpellings(list.body)).toEqual([]);
+          };
+
+          // Registered, not started: the stored `executionMode` is still the
+          // pre-1r owner's `"spawn"`, and it is what the API reports.
+          await readAll("child-process");
+
+          // Started: it adopts the old `"worker"` override and rewrites its
+          // own fields; the history it did not write stays old-spelled.
+          await runner.start();
+          expect(runner.executionMode).toBe("worker-thread");
+          await readAll("worker-thread");
+          const config = await api.call("GET", `/runners/${id}`);
+          expect(config.body.config.effective.executionMode).toBe(
+            "worker-thread",
+          );
+          expect(config.body.config.allowed).toEqual([
+            "child-process",
+            "worker-thread",
+            "in-process",
+          ]);
+
+          expect(api.mismatches()).toEqual([]);
+        } finally {
+          await jobs.close();
+          await driver.close().catch(() => {});
+        }
+      }, 30_000);
     }
 
     it('has an owner adopt an old "worker" override as worker-thread, and run in it', async () => {

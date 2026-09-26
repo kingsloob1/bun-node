@@ -2648,7 +2648,9 @@ They are now `"child-process"` and `"worker-thread"`, the words a worker's
   current spelling. An owner rewrites its own fields at its next start; an
   override stays stored as it was written until a controller changes or
   resets it, and is adopted with its current meaning. A driver called
-  directly (`listHistory`, `getState`) returns what it stored.
+  directly (`listHistory`, `getState`), and the root export
+  `readHistoryPage`, which pages a driver's history, return what was stored;
+  `runner.historyPage()` and `controller.historyPage()` translate.
 - **The management API** returns only the current spellings and accepts only
   them: `"spawn"` in `PUT …/config` is 400 `VALIDATION`, naming
   `"child-process"`. A browser tab opened before the upgrade needs a reload.

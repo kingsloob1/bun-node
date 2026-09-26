@@ -5119,7 +5119,32 @@ reconciliation:
     escape and `config:code` is JSON inside JSON.
 14. **README**: the §4.2.5 table is gone, and a new "Upgrading from
     `"spawn"` and `"worker"`" section under `BunRunner` carries D1's
-    read-not-migrated note and D2's precondition.
+    read-not-migrated note and D2's precondition. The precondition is also
+    one line of JSDoc on `ExecutionMode`, `LEGACY_EXECUTION_MODES` and
+    `BunRunnerOptions.executionMode`, where someone setting a mode reads it.
+15. **Review of #179 — two read points were untested.** `BunRunner.history()`
+    and `BunRunner.historyPage()` were only reached through a controller in
+    the suite, so removing either normaliser failed nothing. The suite now
+    has, on all eight backends and for both seeding methods, a case where the
+    owning `BunRunner` reads its old history (`history()`, `historyPage()` in
+    both orders, `info().lastRun`), and a case where the API is served by the
+    process that owns the runner, before and after it starts. Removing the
+    normaliser at either point now fails 15 cases (8 backends through the
+    driver, 7 raw). A serializer guard removed alone still fails only its unit
+    test, by design, since the runner layer translates first; removed together
+    with its upstream read point it fails end to end (the `toRunRecordDto`
+    guard with `BunRunner.historyPage`'s point is caught only by the new
+    owning-process API case). The config guards (`effective`, `code`,
+    `allowed`) cannot be reached through a local runner, whose configuration
+    is in memory; the controller cases cover them.
+
+**Follow-ups, outside this PR:**
+
+- `RunnerController.info()` still casts the stored `runMode` unchecked
+  (`runMode: (state.runMode as SharedRunnerInfo["runMode"]) ?? local?.runMode`),
+  one line below the `executionMode` cast 1r removed. A stored value that is
+  not an overlap policy reaches the API as is. Not a spelling issue, so left
+  for its own change.
 
 ### Phase 1.5 — summon-compute (committed)
 

@@ -688,7 +688,8 @@ export interface BunRunnerOptions<TArgs = unknown> {
   /**
    * Where runs execute: `"child-process"` (the default), `"worker-thread"` or
    * `"in-process"`. The pre-1r spellings `"spawn"` and `"worker"` are a
-   * `ConfigError` naming the current one.
+   * `ConfigError` naming the current one. Upgrade every process sharing this
+   * runner's store together: an older one refuses a new-spelled override.
    */
   executionMode?: ExecutionMode;
   /**
@@ -839,9 +840,15 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * before writing it.
    */
   allowedOverrides?: RunnerAllowedOverrides;
-  /** Child-process options, for `executionMode: "child-process"`. */
+  /**
+   * Child-process options, for `executionMode: "child-process"`. Named after
+   * the Bun API it configures (`Bun.spawn`), not the mode.
+   */
   spawn?: SpawnOptions;
-  /** Worker options, for `executionMode: "worker-thread"`. */
+  /**
+   * Worker options, for `executionMode: "worker-thread"`. Named after the API
+   * it configures (the `Worker` constructor), not the mode.
+   */
   worker?: WorkerOptions;
   /** In-process options, for `executionMode: "in-process"`. */
   inProcess?: InProcessOptions;

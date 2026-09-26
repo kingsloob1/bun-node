@@ -172,6 +172,8 @@ export type RunSource = "schedule" | "manual" | "queued" | "resume";
  * `"worker"`. A driver returns what it stored, unchanged; the runner layer
  * (`RunnerController`, `BunRunner`) and the management API's serializers
  * translate them on read, so every value they hand out is one of these three.
+ * Upgrade every process sharing a store at once: an older one cannot read the
+ * new spellings.
  */
 export type ExecutionMode = "child-process" | "worker-thread" | "in-process";
 

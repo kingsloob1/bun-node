@@ -265,6 +265,11 @@ export function pageRunHistory(
  * {@link RunHistoryPage.offset}, its page is discarded and the history is read
  * whole instead. Correctness over a round trip, and only on a cursor request —
  * an absent `offset` on an offset request is just `query.offset`.
+ *
+ * Driver-level, like `listHistory`: records come back as stored, so a store
+ * written before 1r answers `mode: "spawn"`/`"worker"`. For records in the
+ * current spelling, use `BunRunner.historyPage()` or
+ * `RunnerController.historyPage()`.
  */
 export async function readHistoryPage(
   /** The driver holding the history. */

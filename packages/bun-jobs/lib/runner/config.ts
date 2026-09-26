@@ -180,7 +180,9 @@ export type LegacyExecutionMode = "spawn" | "worker";
  * What each old spelling means now. **Permanent**: stores written before the
  * rename hold these values (a run record, `config:allowed`, `config:code`, a
  * `config:executionMode` override) and nothing rewrites them in place, so the
- * table is needed for as long as such a store exists. Do not delete it.
+ * table is needed for as long as such a store exists. Do not delete it. It
+ * reads old values only; it does not let an older process read new ones, so
+ * every process sharing a store upgrades at once.
  */
 export const LEGACY_EXECUTION_MODES: Readonly<
   Record<LegacyExecutionMode, ExecutionMode>
