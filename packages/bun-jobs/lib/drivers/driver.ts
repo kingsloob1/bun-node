@@ -820,18 +820,21 @@ export interface DemandCounts {
    * Jobs in `active` that this driver's own {@link QueueDriver.recoverStalled}
    * would recover at `now` — exactly that set, whatever it is on this engine.
    *
-   * Every engine takes the `active` jobs whose lock has lapsed. They differ on
-   * an `active` job with **no** lock (`lockExpiresAt` null), and this figure
-   * follows each one's sweep rather than a rule of its own: memory, SQL and
-   * MongoDB skip such a job, so it is not counted there; Redis scores it at
-   * `createdAt` and the file driver names its marker `0`, so their sweeps
-   * recover it and it is counted there. A sweep that changes which jobs it
-   * recovers changes this figure with it.
+   * Every engine in this package takes the same set: the `active` jobs whose
+   * lock has lapsed, **and** any `active` job with no lock at all
+   * (`lockExpiresAt` null), which has no holder to settle it and so is
+   * stalled now. Until issue #185 memory, SQL and MongoDB skipped a lockless
+   * job and left it `active` for good while Redis and file recovered it; this
+   * figure followed each sweep, and follows it still. Every job counted here
+   * is also in {@link DemandCounts.active}, so `stalled <= active`.
    */
   stalled: number;
   /**
-   * Jobs in `active`, lapsed or not: the same figure
-   * {@link QueueDriver.countJobs} reports as `active` on this driver.
+   * Every job in `active`, lapsed, live or lockless. It equals
+   * {@link QueueDriver.countJobs}' `active` except on Postgres and SQLite
+   * while a lockless `active` row exists: `countJobs` there follows the
+   * `active` listing, which leaves such a row out, while this figure must
+   * hold every job `stalled` counts.
    */
   active: number;
   /**
@@ -2701,6 +2704,13 @@ export interface QueueDriver {
    * `dead` once they have stalled `maxStalledCount` times. Clears the lock
    * and `workerId`, but keeps `processedBy`: "last claimed by the worker that
    * died" is the diagnostic.
+   *
+   * A job is stalled at `now` when it is `active` and its lock has lapsed
+   * (`lockExpiresAt <= now`) **or it has no lock** (`lockExpiresAt` null): a
+   * lockless `active` job has no holder, so nothing else would ever move it.
+   * It is recovered by the same rules — `stalledCount` goes up, so past
+   * `maxStalledCount` it is buried. No API leaves one; a driver-level `addJob`
+   * of an `active` record without a lock, or a write outside the driver, can.
    */
   recoverStalled: (
     q: QueueRef,

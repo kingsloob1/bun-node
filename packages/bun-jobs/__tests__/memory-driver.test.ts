@@ -145,8 +145,9 @@ describe("memory driver: the active index", () => {
       expect(counts.active).toBe(active);
       expect(counts.active).toBe(walked.length);
       expect(counts.stalled).toBe(
+        // Lapsed or lockless: what the sweep takes (#185).
         walked.filter(
-          (job) => job.lockExpiresAt !== null && job.lockExpiresAt <= now,
+          (job) => job.lockExpiresAt === null || job.lockExpiresAt <= now,
         ).length,
       );
       return active;
@@ -302,8 +303,15 @@ describe("memory driver: the active index", () => {
     });
     expect(await driver.getJob(q, "added-active")).toBeNull();
 
-    // What is left is the lockless job, which no sweep here recovers.
+    // Out: the lockless job, which the stalled sweep takes now (#185) — it
+    // leaves the set as any recovered job does.
     expect(await check()).toBe(1);
+    await expectStep(-1, async () => {
+      expect((await driver.recoverStalled(q, now, 5, 10)).requeued).toEqual([
+        "lockless",
+      ]);
+    });
+    expect(await check()).toBe(0);
 
     // Out: the whole namespace purged, and the queue read afresh.
     await driver.purge(q.ns);
