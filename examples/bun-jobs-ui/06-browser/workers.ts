@@ -48,8 +48,9 @@
  *   `worker-target`, `worker-target-kind`, `worker-target-processor`,
  *   `worker-target-predates`, `worker-target-differs` and
  *   `worker-target-group`. A worker's buttons are in
- *   `[role="group"][aria-label="Actions for worker <id>"]`, and its target
- *   badge is the State cell's `.badge.worker-target`.
+ *   `[role="group"][aria-label="Actions for worker <id>"]`; in the State
+ *   cell, its state badge is `data-testid="worker-state"` and its target
+ *   badge `.badge.worker-target`.
  * - **The refusal needs a view older than the worker.** The row offers only
  *   what the worker's state takes, so a 409 happens to a real user only when
  *   somebody else changed the worker after the page last read it. This host
@@ -98,8 +99,8 @@
  *   its conditions: "In process" for every worker here, since each runs a
  *   function in its own process. A record written without `target` gets no
  *   badge at all, never "In process", which is only the default. So a State
- *   cell's whole text is not the state; the state is its first badge that is
- *   not the target. The worker page's Target card states one target once,
+ *   cell's whole text is not the state; the state is the badge the UI names
+ *   `worker-state`. The worker page's Target card states one target once,
  *   lists each with its instances where they differ, and shows "—" with a
  *   line saying so for an instance too old to report. This API does not set
  *   `serialize.exposeProcessorFiles`, and these workers run no file, so no
@@ -774,7 +775,7 @@ function cellTitle(id: string, header: string): string {
 interface StateCell {
   /** The state badge's text: "Running", "Paused", "Stopping", …. */
   state: string | null;
-  /** The badges after it that are not the target: "Change pending", "Not reporting". */
+  /** The cell's other badges, bar the target: "Change pending", "Not reporting". */
   conditions: string[];
   /**
    * The target badge's whole text, its visually hidden "Runs in: " prefix
@@ -790,20 +791,22 @@ interface StateCell {
  *
  * The cell holds several badges, so its whole text is not the state: the
  * target badge sits in it too, after the others, with a visually hidden
- * "Runs in: " that `textContent` includes. The UI marks the target badge with
- * the class `worker-target` and gives the state badge no marker of its own
- * (`StateCell` in `app/screens/workers/WorkerTable.tsx`), so the state is the
- * cell's first badge that is not the target — which is how the UI's own test
- * reads it (`__tests__/app/workers/target.test.tsx`).
+ * "Runs in: " that `textContent` includes. The UI names the state badge
+ * `data-testid="worker-state"` and marks the target badge with the class
+ * `worker-target` (`StateCell` in `app/screens/workers/WorkerTable.tsx`), so
+ * each is read by its own marker, never by position: a badge added ahead of
+ * the state would otherwise be read as the state. A cell without exactly one
+ * state badge reads `state: null`, which every check here fails on.
  */
 const STATE_CELLS = `[...document.querySelectorAll('tr[data-testid^="worker-row-"]')].map((row) => {
   const headers = [...row.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim());
   const cell = row.children[headers.indexOf("State")];
-  const badges = cell ? [...cell.querySelectorAll(".badge:not(.worker-target)")].map((badge) => badge.textContent.trim()) : [];
+  const states = cell ? cell.querySelectorAll('[data-testid="worker-state"]') : [];
+  const conditions = cell ? [...cell.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"])')].map((badge) => badge.textContent.trim()) : [];
   const target = cell ? cell.querySelector(".badge.worker-target") : null;
   return [row.dataset.testid.slice("worker-row-".length), {
-    state: badges[0] ?? null,
-    conditions: badges.slice(1),
+    state: states.length === 1 ? states[0].textContent.trim() : null,
+    conditions,
     target: target ? target.textContent : null,
     targetTitle: target ? target.getAttribute("title") : null,
   }];
@@ -2949,15 +2952,18 @@ try {
     (await record(ids.exports))?.control?.pending,
     true,
   );
-  // The State cell's badges bar the target (`.worker-target`), which sits
-  // after them and says nothing about the worker's condition.
+  // The state badge (`worker-state`), then the State cell's other badges bar
+  // the target (`.worker-target`), which says nothing about the worker's
+  // condition.
   checkEqual(
     "the instance row: Stopping, and Change pending",
     await view.evaluate<unknown>(
       poll(`(() => {
         const row = document.querySelector('[data-testid="worker-row-${ids.exports}"]');
-        const badges = row ? [...row.querySelectorAll(".badge:not(.worker-target)")].map((badge) => badge.textContent.trim()) : [];
-        return badges.includes("Stopping") ? badges : null;
+        const state = row ? row.querySelectorAll('[data-testid="worker-state"]') : [];
+        if (state.length !== 1 || state[0].textContent.trim() !== "Stopping") return null;
+        const others = [...row.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"])')].map((badge) => badge.textContent.trim());
+        return [state[0].textContent.trim(), ...others];
       })()`),
     ),
     ["Stopping", "Change pending"],
