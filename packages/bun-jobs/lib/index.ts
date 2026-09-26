@@ -920,3 +920,13 @@ export {
   type SummonedArgs,
   summonedFromArgs,
 } from "./summon/args";
+
+/* ------------------------------------------------------------------ *
+ * A summoned worker's run: `runSummoned(worker)` starts it, handles the
+ * platform's signals, and stops it inside the platform's grace.
+ * ------------------------------------------------------------------ */
+export {
+  runSummoned,
+  type RunSummonedOptions,
+  type SummonedExit,
+} from "./summon/worker";
