@@ -1481,6 +1481,38 @@ graceful choice never needs revisiting except by the backstop.
   (`state: "stopped"`) serves nothing and costs money; it exits with reason
   `"parked"` after `idleFor`, whatever demand says [D].
 
+**As built in PR-4 (2026-09-26)**, where the code differs from the above
+[M/D; the code wins]:
+
+- **The target's kind comes from the worker's own heartbeat record.** The
+  worker has no public getter for its target and PR-4 may not edit it, so
+  `runSummoned` reads its own record (by id) for `target.kind`. Until the
+  record is seen, or on a driver without worker records, it budgets as
+  `"custom"` (5,000 ms graceful and forced). `"worker-thread"` is budgeted
+  like `"child-process"`: one executor, the same constants. A public
+  `worker.target` getter would make this exact.
+- **`SummonedExit.reason` also has `"closed"`**: something other than
+  `runSummoned` closed the worker.
+- **A stop before `ready` is held**, then started inside the `ready` event, so
+  the worker is closing before its first claim.
+- **The parked exit does not apply to `"until-stopped"`**, whose platform
+  would restart the worker into the same stop.
+- **The backstop is armed only with `exit`** (never in `"in-invocation"`);
+  with `exit: false` the close rule still budgets for the platform's kill.
+- **"A second SIGINT" means one after an earlier SIGINT.** A first SIGINT
+  during an idle or deadline close is the platform's stop, not exit 130.
+- **Defaults come from the arguments, not the environment** (§5.5): `mode`
+  from `--bun-jobs-summon-mode=`, `deadline` from
+  `--bun-jobs-summon-max-lifetime-ms=`, `grace` from
+  `--bun-jobs-summon-grace-ms=`.
+- **A failed `run()` closes with `force`** and exits 1, without the rule.
+- **A worker that is already running is a `ConfigError`**: `runSummoned`
+  starts it.
+- **Measured** (Q38): a graceful child-process close is 4,006 ms in the
+  target plus ~6 ms reaping, a forced one 5–19 ms in all, and the tail after
+  the target 5–15 ms on local servers. `tailReserve` stays 1,000 ms for a
+  remote database.
+
 ### 5.4 Registration, so the guard releases
 
 On `BunQueueWorkerOptions` (`queue/types.ts:910`) [D] — the option is
@@ -1608,8 +1640,11 @@ environment. PR-2's tests reproduce it as their negative control [M].
   `WorkerSummonProvenance.id` is required.
 - **`mode` and `deadlineAt` are "as requested by the summoner"** and never
   defaulted: absent when not requested, per the rule behind `target` and
-  `sweeps`. PR-4 reports the worker's own resolved mode through a getter, the
-  way `#report` writes `sweeps` from what the worker actually arms.
+  `sweeps`. **Reporting the worker's own resolved mode moves to PR-6**
+  (revised 2026-09-26): it is a worker-record/DTO field, so a contract
+  change, and PR-4 does not touch the worker. `runSummoned` resolves the
+  mode itself: `options.mode`, else `--bun-jobs-summon-mode=`, else
+  `"exit-on-idle"`.
 - **`summon` on a driver that cannot store worker records
   (`!supportsWorkers`) is a `ConfigError`**, like `reportInterval: 0`: either
   way the worker could never report, so never release its attempt.
@@ -3237,6 +3272,11 @@ run-all.ts` in `examples/bun-jobs-ui`.
   bun-jobs session, which owns the close path this PR budgets for and must
   not edit.
 - **Risk: medium.** Signal delivery under Bun, `process.exit` during a close.
+- **As built** (2026-09-26): the deviations are listed at the end of §5.3.
+  Tests add a `RUN_SUMMONED_PROBE` seam (a symbol on the options, like
+  `DEMAND_READ_PROBE`) so the negative control can swap in the draft's
+  graceful close. **The end-to-end handoff test waits for PR-3's fixture**;
+  PR-4 ships its own (`__tests__/fixtures/processes/run-summoned.ts`).
 
 ### 13.6 PR-5 — The depth endpoint and Prometheus
 
@@ -3261,7 +3301,9 @@ run-all.ts` in `examples/bun-jobs-ui`.
   in `JOBS_API_ACTIONS`, `JOBS_API_MUTATIONS` and `JOBS_API_OPT_IN_ACTIONS`;
   `summon` [S13] in `QUEUE_EVENT_TYPES`); `shared/events.ts`,
   `api/contract/ws.ts`, `api/ws/events.ts`, `BunQueue`'s re-emit (§9.1);
-  `SummonStatusDto`; AsyncAPI; the controller publishing `summon`.
+  `SummonStatusDto`; AsyncAPI; the controller publishing `summon`; **the
+  worker's resolved summon mode on its record and `WorkerDto`** (moved from
+  PR-4, §5.5: a contract change).
 - **Ships.** Operators see and drive summoning through the API; the UI can
   build its card.
 - **Tests.** The routes, `409 SUMMON_NOT_CONFIGURED`, the action's gating

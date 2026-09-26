@@ -93,6 +93,7 @@ reference.
 - [Debounce and throttle](#debounce-and-throttle)
 - [Flows](#flows)
 - [Reading a queue: search, totals, workers and throughput](#reading-a-queue-search-totals-workers-and-throughput)
+- [Summoned workers: `runSummoned`](#summoned-workers-runsummoned)
 - [Who ran a job: worker attribution](#who-ran-a-job-worker-attribution)
 - [Jobs added in a range, and sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
 - [Where attempts run: `target`](#where-attempts-run-target)
@@ -2078,6 +2079,9 @@ id. **Absent `summon` means one of two things**: the worker was not summoned,
 or it is too old to say. Nothing tells them apart, so a reader shows no badge
 rather than claiming either.
 
+To run such a worker until it is no longer needed and stop it inside its
+platform's grace, see [Summoned workers: `runSummoned`](#summoned-workers-runsummoned).
+
 Examples:
 
 - [`10-options/read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)
@@ -2131,6 +2135,130 @@ never kept cannot be rebuilt.
 Throughput is a minute per bucket, for one queue at a time. Per-second
 buckets, the namespace total in one read, and series for runners and
 workers are [analytics](#analytics).
+
+## Summoned workers: `runSummoned`
+
+A worker started on demand — by a summoner, a scaler or a platform's job
+runner — needs to do three things an always-on worker does not: exit once the
+queue no longer needs it, stop cleanly inside whatever grace its platform
+gives after a stop signal, and exit with a code the platform will not read as
+a crash. `runSummoned(worker, options?)` does all three, so the platform's
+entry point is one file:
+
+```ts
+// worker.ts: the one file a summoned platform runs
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+import { handlers } from "./jobs";
+
+const summon = summonedFromArgs(); // --bun-jobs-summon-*= on the command line
+const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver });
+const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
+await runSummoned(worker, { idleFor: 30_000 }); // runs, then exits the process
+```
+
+It starts `worker.run()` itself, so construct the worker without `autorun`
+(an already running worker is a `ConfigError`). It is also exported from
+`@kingsleyweb/bun-jobs/summon`.
+
+**Idle means nothing left for it**: no job in flight here, no demand
+(`waiting`, due and stalled jobs, as [`queue.getDemand()`](#reading-a-queue-search-totals-workers-and-throughput)
+counts them), no other worker's active jobs left with nobody alive to finish
+them, and nothing coming due within `idleFor`. It must hold continuously for
+`idleFor`, checked every `idleCheckInterval`, at the cost of one demand count
+and one worker listing per check. The worker's own `drained` event is not used:
+it fires on the first empty pass, before a dead worker's locks have lapsed.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `mode` | `"exit-on-idle" \| "until-stopped" \| "in-invocation"` | the summoner's `--bun-jobs-summon-mode=`, else `"exit-on-idle"` | `"exit-on-idle"` exits once idle for `idleFor`. `"until-stopped"` never exits on idle or when parked, only on a signal or the deadline, for a platform that restarts an exited service. `"in-invocation"` is `"exit-on-idle"` that resolves instead of exiting and installs no signal handlers, for a Lambda handler. |
+| `idleFor` | `number` | `30000` | How long idleness must hold before it stops, in ms; also how long a parked worker waits before it exits. |
+| `idleCheckInterval` | `number` | `5000` | How often idleness, parking and a function `deadline` are checked, in ms. |
+| `deadline` | `number \| () => number` | now + the summoner's `--bun-jobs-summon-max-lifetime-ms=`, else none | The latest it may run to, epoch ms. A function is re-read at every check. |
+| `shutdownBuffer` | `number` | `7000` | Stop claiming this long before `deadline`, in ms, so jobs in flight can settle. |
+| `grace` | `number` | the summoner's `--bun-jobs-summon-grace-ms=`, else `10000` | How long the platform waits after its stop signal before `SIGKILL`, in ms. The worker cannot learn it from the platform. |
+| `tailReserve` | `number` | `1000` | What to keep for `close()`'s work after the target has closed (deregistering, flushing, the driver), in ms. Measured at 5–15 ms against local servers; the rest is headroom for a remote one. |
+| `signals` | `NodeJS.Signals[] \| false` | `["SIGTERM", "SIGINT"]` | Signals that start a stop. SIGINT because Fly sends it by default. `false` installs none. |
+| `pauseSignals` | `boolean` | `true` | Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run jobs over an hour. |
+| `exit` | `boolean` | `true`; `false` in `"in-invocation"` | Call `process.exit(code)` once closed, and arm the hard backstop. |
+| `logger` | `LoggerLike` | the worker's | Where it logs each decision. |
+
+**What it resolves with**, or would have exited with (`SummonedExit`):
+
+| Field | What it is |
+|---|---|
+| `reason` | `"idle"`, `"parked"` (an operator stopped it), `"signal"`, `"deadline"`, `"error"` (`run()` failed), or `"closed"` (something other than `runSummoned` closed the worker). |
+| `signal` | The signal, for `"signal"`. |
+| `ranForMs` | How long it ran. |
+| `completed`, `failed` | Jobs it completed, attempts it failed. |
+| `code` | `0` for every reason but `"error"`, which is `1`. |
+
+**Exit 0 is deliberate.** Several platforms restart a non-zero exit (Fly and
+Railway by default, ACI even under `Never`), so only a `run()` that failed —
+a driver it could not connect to — exits `1`. On an unreachable Redis,
+`run()` currently takes about 31 s to fail, because the Redis client
+auto-reconnects with Bun's defaults; allow for it in a boot budget.
+
+**Signals.**
+
+- The handlers are installed before `run()` connects, so a stop during boot
+  still exits 0. A stop that arrives before the worker is ready is held until
+  it is, then closes it before its first claim.
+- A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
+  held hostage by a drain. A first SIGINT arriving during an idle or deadline
+  close is the platform's stop, not a second Ctrl-C.
+- SIGTSTP pauses claiming and SIGCONT resumes it — but only a pause SIGTSTP
+  made. An operator's pause, taken before or after, survives the SIGCONT.
+- A worker an operator parked (`state: "stopped"`) serves nothing and costs
+  money, so after `idleFor` it exits with `"parked"`, whatever demand says —
+  except under `"until-stopped"`, whose platform would only restart it.
+
+**The close rule.** `close()` is called exactly once. When closing starts,
+the budget is the time left before the platform's kill: `grace − 250` ms after
+a signal, `deadline − 250` ms at the deadline, none for an idle stop with no
+deadline. The target's own close is reserved from the package's close
+constants — 4,500 ms for a `"child-process"` or `"worker-thread"` target
+(500 ms forced), nothing for `"in-process"`, and 5,000 ms either way for a
+custom one, or while the worker's own record has not yet said which target it
+runs. Then:
+
+- **graceful** while the budget covers that and `tailReserve`, with the jobs
+  given the rest as `close({ timeout })`;
+- **`force`** otherwise: jobs in flight are abandoned and recovered as stalled
+  — what `SIGKILL` would have done anyway — but the record is unregistered,
+  the sweep leases handed over and a child-process target's children killed
+  first, so nothing is orphaned.
+
+| Grace | Child-process target | In-process target |
+|---|---|---|
+| 0 s (Railway's default) | `force` | `force` |
+| 5 s (Fly's default) | `force` | graceful, jobs get 3,750 ms |
+| 10 s (Cloud Run) | graceful, jobs get 4,250 ms | graceful, jobs get 8,750 ms |
+| 30 s (ECS, Heroku, Kubernetes) | graceful, jobs get 24,250 ms | graceful, jobs get 28,750 ms |
+
+A **hard backstop** exits the process at the end of the budget if `close()`
+has not returned — a custom target whose `close()` hangs, say — with an error
+log line rather than a silent `SIGKILL`; abandoned jobs are recovered as
+stalled, as ever. `"in-invocation"` (and `exit: false`) arms none: it must
+return, so it logs a warning when the close outlives its deadline instead.
+Raise the platform's grace where it can be raised (Fly's `kill_timeout`,
+Railway's `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`): a short grace against a long
+job means the job runs twice.
+
+For Lambda, where the worker must live inside one invocation, build the worker
+in the handler, never at module scope:
+
+```ts
+export async function handler(_event: unknown, context: { getRemainingTimeInMillis: () => number }) {
+  const worker = jobs.worker("emails", handlers);
+  return await runSummoned(worker, {
+    mode: "in-invocation",
+    deadline: () => Date.now() + context.getRemainingTimeInMillis(),
+  });
+}
+```
+
+It resolves with nothing left behind: no timer, no sweep lease, no signal
+handler.
 
 ## Who ran a job: worker attribution
 
