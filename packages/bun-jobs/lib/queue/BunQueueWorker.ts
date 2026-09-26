@@ -40,7 +40,10 @@ import type {
   WorkerEventsOf,
 } from "./types";
 import type { WorkerControlEntry } from "./workerControl";
-import type { WorkerTargetExecutor } from "./workerTarget";
+import type {
+  WorkerTargetCloseOptions,
+  WorkerTargetExecutor,
+} from "./workerTarget";
 import process from "node:process";
 import {
   createDeferred,
@@ -1561,9 +1564,24 @@ export class BunQueueWorker<
   /**
    * Stops claiming, waits for jobs in flight, and releases what it owns.
    *
-   * A job still running at `timeout` has its signal aborted; its lock is then
-   * left to expire, so another worker recovers it as stalled rather than the
-   * job being lost.
+   * A job still running at `timeout` — or at once, with `force` — has its
+   * signal aborted, and is no longer waited for. What happens to its run then
+   * depends on where it runs:
+   *
+   * - **On a `"child-process"` or `"worker-thread"` target** the run is ended
+   *   for certain before `close()` returns. With `force` it is killed at once,
+   *   its cleanup skipped. When `timeout` runs out it is asked to stop first,
+   *   and given up to 4000 ms (`TARGET_CLOSE_GRACE`) to clean up and end; one
+   *   that has not is killed. Either way, a process exiting straight after
+   *   `close()` leaves nothing running behind it.
+   * - **In-process**, a processor that honours its signal ends; one that
+   *   ignores it cannot be stopped, and runs on while the process lives.
+   *
+   * A run that ends, killed or not, is recorded as a failed attempt, retried
+   * if it has attempts left, when that write lands before the worker's driver
+   * closes. Otherwise — and for a run that never ends — the job's lock is left
+   * to expire, and another worker recovers it as stalled rather than the job
+   * being lost.
    */
   async close(options?: { force?: boolean; timeout?: number }): Promise<void> {
     // Held for as long as closing takes, whatever `waitToExit` says. A caller
@@ -1624,10 +1642,13 @@ export class BunQueueWorker<
     if (options?.force) {
       this.#abandonActive();
 
-      // Deliberately no wait. A processor that ignores its signal must not
-      // hold shutdown hostage; its lock lapses and the stalled sweep returns
-      // the job to the queue, so the work is delayed rather than lost.
-      await this.#closeTarget();
+      // Deliberately no wait on the jobs themselves. A processor that ignores
+      // its signal must not hold shutdown hostage; its lock lapses and the
+      // stalled sweep returns the job to the queue, so the work is delayed
+      // rather than lost. A built-in target's runs are killed here, though,
+      // at once — `force` said not to wait, so they get no grace — because a
+      // child left running would outlive the process (#166).
+      await this.#closeTarget({ force: true });
       await this.#unregister();
       await this.#flushThroughput();
       await this.#metrics.close();
@@ -1699,13 +1720,18 @@ export class BunQueueWorker<
   }
 
   /**
-   * Releases what a custom target holds, once the attempts have settled or
-   * been abandoned. Bounded like a built-in target's stop, by
+   * Releases what the target holds, once the attempts have settled or been
+   * abandoned: a custom target's resources, or the built-in child-process and
+   * worker-thread target's runs still being killed, which it kills outright
+   * before anything here waits (#166). Bounded like a built-in target's stop, by
    * `DEFAULT_CLOSE_TIMEOUT`: the worker's own state has settled by now, so a
    * `close()` that never returns is logged and left behind rather than
    * allowed to hang the shutdown. A rejection is logged the same way.
    */
-  async #closeTarget(): Promise<void> {
+  async #closeTarget(
+    /** `{ force: true }` from a forced close, passed on; absent otherwise. */
+    options?: WorkerTargetCloseOptions,
+  ): Promise<void> {
     const target = this.#target;
     if (!target?.close) {
       return;
@@ -1713,7 +1739,9 @@ export class BunQueueWorker<
 
     try {
       const closed = await Promise.race([
-        Promise.resolve(target.close()).then(() => "closed" as const),
+        Promise.resolve(
+          options?.force ? target.close({ force: true }) : target.close(),
+        ).then(() => "closed" as const),
         sleep(DEFAULT_CLOSE_TIMEOUT, { unref: true }).then(
           () => "timeout" as const,
         ),
@@ -2071,6 +2099,18 @@ export class BunQueueWorker<
       throw error;
     }
 
+    // A forced close does not wait for this pass, so it can have started while
+    // the claim was out — and the records the claim brought back must not be
+    // started now. Run, they would meet a target that has already closed and
+    // spend an attempt on a job that never ran: its last, for a job with one.
+    // Left alone, each one's lock lapses and the stalled sweep returns it to
+    // the queue — one stall, which `maxStalledCount` allows, and no attempt.
+    // The driver has no way to hand a claim back without either.
+    if (records.length > 0 && this.#closing) {
+      await this.#declineClaimed(records, reservation, false);
+      return 0;
+    }
+
     if (reservation) {
       await this.#limiter!.commit(
         reservation,
@@ -2088,15 +2128,29 @@ export class BunQueueWorker<
 
     const reserved = reservation !== null && reservation.grant > 0;
 
-    for (const record of records) {
-      if (reserved) {
-        this.#reservedIds.add(record.id);
+    for (const [index, record] of records.entries()) {
+      // The same rule as above, for a close that landed during the commit or
+      // during the previous record's scheduling: from here, nothing starts.
+      if (this.#closing) {
+        await this.#declineClaimed(records.slice(index), reservation, true);
+        return index;
       }
 
       // Schedule the series' next occurrence *before* running this one, so a
       // crash mid-job cannot end the series.
       if (record.repeatKey) {
         await this.#scheduleNextRepeat(record);
+
+        // Declined after scheduling is a crash at this point, which the series
+        // already survives: the stalled run schedules again when it runs.
+        if (this.#closing) {
+          await this.#declineClaimed(records.slice(index), reservation, true);
+          return index;
+        }
+      }
+
+      if (reserved) {
+        this.#reservedIds.add(record.id);
       }
 
       const running = this.#process(record).finally(() => {
@@ -2109,6 +2163,47 @@ export class BunQueueWorker<
     }
 
     return records.length;
+  }
+
+  /**
+   * Leaves claimed records unstarted, because the worker is closing, and gives
+   * back the capacity reserved for them. Their locks are left to lapse, so the
+   * stalled sweep returns them to the queue.
+   *
+   * Before the reservation is committed, committing it with nothing claimed
+   * gives back all of it — the running count, the queue's rate window and
+   * each name's tentative charge — exactly as a claim that found nothing
+   * would. After, each record's share of the running count goes back the way
+   * a finished job's does; its place in a rate window stays taken until the
+   * window ends, as the commit recorded it.
+   */
+  async #declineClaimed(
+    /** The records not to start. */
+    records: JobRecord[],
+    /** What was reserved for the claim, or `null` with no limits. */
+    reservation: Reservation | null,
+    /** Whether the reservation was already committed with these records. */
+    committed: boolean,
+  ): Promise<void> {
+    this.#logger.debug(
+      "Leaving claimed jobs unstarted: the worker is closing, and their locks will lapse",
+      { jobIds: records.map((record) => record.id) },
+    );
+
+    if (!reservation || reservation.grant === 0 || !this.#limiter) {
+      return;
+    }
+
+    if (!committed) {
+      await this.#limiter
+        .commit(reservation, [], Date.now())
+        .catch((error: unknown) => this.#emitError(error, "limits"));
+      return;
+    }
+
+    for (const record of records) {
+      this.#limiter.release(record.name);
+    }
   }
 
   /** Reserves capacity under the queue's limits, or `null` when it has none. */

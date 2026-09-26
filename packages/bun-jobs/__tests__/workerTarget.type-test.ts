@@ -17,6 +17,7 @@ import type {
   LocalWorkerTarget,
   WORKER_TARGET_KINDS,
   WorkerTarget,
+  WorkerTargetCloseOptions,
   WorkerTargetExecutor,
   WorkerTargetFactory,
   WorkerTargetInfo,
@@ -143,6 +144,25 @@ assertTrue<
     WorkerTargetMode | LocalWorkerTarget | WorkerTargetFactory
   >
 >();
+
+/* --- a target's close() may be told the close is forced ------------------- */
+
+// Optional and additive: the no-argument `close` above still satisfies it.
+assertTrue<
+  Equals<
+    Parameters<NonNullable<WorkerTargetExecutor["close"]>>,
+    [options?: WorkerTargetCloseOptions]
+  >
+>();
+assertTrue<Equals<WorkerTargetCloseOptions, { force?: boolean }>>();
+export const honoursForce = {
+  name: "forceful",
+  run: async () => null,
+  close: async (options) => {
+    const force: boolean | undefined = options?.force;
+    void force;
+  },
+} satisfies WorkerTargetExecutor;
 
 /* --- defineProcessors takes what BunJobs hands out ------------------------- */
 

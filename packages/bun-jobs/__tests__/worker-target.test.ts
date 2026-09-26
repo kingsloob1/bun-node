@@ -980,6 +980,65 @@ describe("target: a custom factory", () => {
     expect(order).toEqual(["attempt settled", "target closed"]);
   }, 20_000);
 
+  it("tells the target's close() when the close is forced, and only then", async () => {
+    /** What each worker's target close() was handed, by how it was closed. */
+    const received = new Map<string, unknown[]>();
+
+    for (const how of ["forced", "plain", "timed out"] as const) {
+      const driver = new MemoryDriver();
+      const namespace = testNamespace();
+      let started!: () => void;
+      const running = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const worker = new BunQueueWorker("custom-force", async () => null, {
+        namespace,
+        driver,
+        logger: noopLogger,
+        pollInterval: 5,
+        waitToExit: false,
+        target: () => ({
+          name: "forceful",
+          // Ignores its signal, so a close with a timeout really runs out.
+          run: async () => {
+            started();
+            await new Promise(() => {});
+          },
+          close: (...args: unknown[]) => {
+            received.set(how, args);
+          },
+        }),
+      });
+      void worker.run();
+
+      // A forced close and one that times out each have an attempt to give up
+      // on; a plain close has none, or it would wait for it.
+      if (how !== "plain") {
+        const queue = new BunQueue("custom-force", {
+          namespace,
+          driver,
+          logger: noopLogger,
+        });
+        closers.push(() => queue.close());
+        await queue.add("stuck", {});
+        await running;
+      }
+
+      await worker.close(
+        how === "forced"
+          ? { force: true }
+          : how === "timed out"
+            ? { timeout: 50 }
+            : undefined,
+      );
+    }
+
+    expect(received.get("forced")).toEqual([{ force: true }]);
+    // Not `{ force: false }`: nothing at all, as before the option existed.
+    expect(received.get("plain")).toEqual([]);
+    expect(received.get("timed out")).toEqual([]);
+  }, 20_000);
+
   it("does not let a target's close() that never resolves hang worker.close()", async () => {
     const { logger, events } = createTestLogger();
     let closeCalls = 0;

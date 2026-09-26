@@ -591,6 +591,7 @@ export {
   type WorkerSelector,
   type WorkerTarget,
   type WorkerTargetAttempt,
+  type WorkerTargetCloseOptions,
   type WorkerTargetContext,
   type WorkerTargetExecutor,
   type WorkerTargetFactory,
