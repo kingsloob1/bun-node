@@ -69,10 +69,11 @@ const RUN_ALONE = [
  * failure.
  */
 const SLOW_FIRST = [
-  // 61s, and the longest example in the package by a factor of three: it boots
-  // a Worker and a child process, one per target, then waits out a runaway
-  // processor's kill. Starting it last would leave the pool waiting on it alone.
-  "02-queues/isolated-processors.ts",
+  // The longest of the pooled examples, longest first, as measured on memory
+  // (19.6 s, 14.5 s, 13.8 s, 4.3 s). Starting one of them last would leave the
+  // pool waiting on it alone. `02-queues/isolated-processors.ts` headed this
+  // list at 61 s while closing a worker orphaned its runaway child process
+  // (#166); since the fix (#176) it takes about a second and needs no place here.
   "10-options/runner-options.ts",
   "10-options/draft-and-process-every.ts",
   "10-options/job-options.ts",
