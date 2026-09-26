@@ -1,5 +1,6 @@
 import type {
   AddedRange,
+  DemandCounts,
   JobPage,
   JobQuery,
   JobRecord,
@@ -12,7 +13,7 @@ import type {
 } from "./driver";
 import type { JobCursorKey } from "./jobCursor";
 import type { BufferWriteResult } from "./metrics";
-import { NotSupportedError } from "../shared/errors";
+import { ConfigError, NotSupportedError } from "../shared/errors";
 import { compareCodePoints } from "../shared/strings";
 import {
   emptyAddedCounts,
@@ -714,6 +715,244 @@ export function sortWorkers(workers: WorkerInfo[]): WorkerInfo[] {
     (a, b) =>
       a.startedAt - b.startedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
+}
+
+/* ------------------------------------------------------------------ *
+ * Demand
+ * ------------------------------------------------------------------ */
+
+/**
+ * How far {@link readDemand} counts each figure by default. Past it a figure
+ * reads `10_000` and `capped` is `true`: a scaler targeting one worker per
+ * 500 jobs needs no more.
+ */
+export const DEFAULT_DEMAND_CAP = 10_000;
+
+/** A queue's demand at one instant: what a summoner and the depth endpoint read. */
+export interface QueueDemand {
+  /** The instant it describes, epoch ms: the `now` it was computed at. */
+  at: number;
+  /** Whether claiming is paused. A paused queue demands nothing. */
+  paused: boolean;
+  /** Jobs in `waiting`. */
+  waiting: number;
+  /** Jobs in `delayed` or `failed` (retry pending) whose `runAt` has passed. */
+  dueNow: number;
+  /**
+   * Jobs in `active` whose worker died holding them: the ones this driver's
+   * stalled sweep would recover now (see {@link DemandCounts.stalled}).
+   */
+  stalled: number;
+  /** Jobs in `active`, lapsed or not. */
+  active: number;
+  /**
+   * Live workers on the queue, from its heartbeat records — every live record,
+   * parked and paused ones included: the question it answers is whether
+   * anything alive may still hold the active jobs' locks. `0` on a driver that
+   * keeps no worker records.
+   */
+  workers: number;
+  /** The earliest `runAt` still in the future, or `null` for none. */
+  nextDueAt: number | null;
+  /** `paused ? 0 : waiting + dueNow + stalled`: work a worker could claim now. */
+  demand: number;
+  /**
+   * `paused ? 0 : demand + (active − stalled)`: everything not finished, each
+   * job once — a stalled job is in both `stalled` and `active`.
+   */
+  outstanding: number;
+  /**
+   * `true` when a count reached the cap, so the true figure is at least this
+   * one. `demand` and `outstanding` are sums of capped figures, so they can
+   * exceed the cap, and are lower bounds when this is set.
+   */
+  capped: boolean;
+  /**
+   * `false` when the driver has no `countDemand` and the figures come from the
+   * fallback: `dueNow` is then `1` or `0` (from `nextDelayedAt`), `stalled` is
+   * `active` when no worker is live, and `nextDueAt` is known only while
+   * nothing is due. Correct as a trigger, approximate as a count.
+   */
+  exact: boolean;
+}
+
+/**
+ * Raw counts reported under a cap, the way {@link DemandCounts} requires:
+ * each figure as `min(count, cap)`, and `capped` when any reached past it.
+ *
+ * A driver counts each figure up to `cap + 1` and hands the counts here, so
+ * "exactly `cap`" and "more than `cap`" stay apart. `nextDueAt` passes
+ * through: it is one probe, never capped.
+ */
+export function capDemandCounts(
+  counts: Omit<DemandCounts, "capped">,
+  cap: number,
+): DemandCounts {
+  const figures = [
+    counts.waiting,
+    counts.dueNow,
+    counts.stalled,
+    counts.active,
+  ];
+
+  return {
+    waiting: Math.min(counts.waiting, cap),
+    dueNow: Math.min(counts.dueNow, cap),
+    stalled: Math.min(counts.stalled, cap),
+    active: Math.min(counts.active, cap),
+    nextDueAt: counts.nextDueAt,
+    capped: figures.some((figure) => figure > cap),
+  };
+}
+
+/** Refuses a cap that is not a positive safe integer. */
+export function assertDemandCap(cap: number): void {
+  if (!Number.isSafeInteger(cap) || cap < 1) {
+    throw new ConfigError(
+      `A demand cap must be a positive integer, got ${String(cap)}`,
+      { cap },
+    );
+  }
+}
+
+/**
+ * The order a driver whose `countDemand` reads are separate round trips (the
+ * file and MongoDB drivers) takes them in: every source before its
+ * destination. Recovery moves `active` → `waiting` and promotion moves
+ * `delayed`/`failed` → `waiting`, so reading `active` and the due jobs before
+ * `waiting` counts a job either moves mid-call twice at worst, never zero
+ * times. A claim moves `waiting` → `active`, the other way, so a job claimed
+ * mid-call can be in neither: `demand` is still right (a claimed job is not
+ * demand), and `outstanding` is short by it until the next read.
+ */
+export const DEMAND_READ_ORDER = ["active", "dueNow", "waiting"] as const;
+
+/** One of `countDemand`'s separate reads: see {@link DEMAND_READ_ORDER}. */
+export type DemandRead = (typeof DEMAND_READ_ORDER)[number];
+
+/**
+ * A test seam on a separate-read driver: set under
+ * {@link DEMAND_READ_PROBE} on the driver instance, it runs code between
+ * `countDemand`'s reads, and can reorder them for a negative control. Nothing
+ * in the package sets it.
+ */
+export interface DemandReadProbe {
+  /**
+   * The order to take the reads in instead of {@link DEMAND_READ_ORDER}. Only
+   * a negative control sets it, to show that the wrong order loses a job.
+   */
+  order?: readonly DemandRead[];
+  /** Called after each read completes, before the next begins. */
+  after?: (read: DemandRead) => Promise<void> | void;
+}
+
+/** The property a {@link DemandReadProbe} is set under on a driver instance. */
+export const DEMAND_READ_PROBE: unique symbol = Symbol.for(
+  "@kingsleyweb/bun-jobs:demand-read-probe",
+);
+
+/**
+ * Takes a separate-read driver's `countDemand` reads in
+ * {@link DEMAND_READ_ORDER}, or as a {@link DemandReadProbe} set on `driver`
+ * says.
+ */
+export async function runDemandReads(
+  driver: object,
+  reads: Record<DemandRead, () => Promise<void>>,
+): Promise<void> {
+  const probe = (driver as { [DEMAND_READ_PROBE]?: DemandReadProbe })[
+    DEMAND_READ_PROBE
+  ];
+
+  for (const read of probe?.order ?? DEMAND_READ_ORDER) {
+    await reads[read]();
+    await probe?.after?.(read);
+  }
+}
+
+/**
+ * A queue's demand at `now`: the driver's {@link QueueDriver.countDemand},
+ * plus whether the queue is paused and how many workers are live.
+ *
+ * On a driver without `countDemand` it falls back to `countJobs`,
+ * `nextDelayedAt` and the worker records, and says so with `exact: false`:
+ *
+ * ```
+ * demand = waiting + (nextDelayedAt <= now ? 1 : 0) + (active > 0 && workers == 0 ? active : 0)
+ * ```
+ *
+ * which is right as a trigger and approximate as a count, and whose
+ * `countJobs` may scan retained history. Listing the worker records drops
+ * lapsed ones on a driver that keeps them in queue state, as every listing
+ * does; the driver's own count writes nothing.
+ */
+export async function readDemand(
+  driver: QueueDriver,
+  q: QueueRef,
+  options: {
+    /** The instant to read at, epoch ms. Defaults to `Date.now()`. */
+    now?: number;
+    /** Count each figure up to this many. Defaults to {@link DEFAULT_DEMAND_CAP}. */
+    cap?: number;
+  } = {},
+): Promise<QueueDemand> {
+  const now = options.now ?? Date.now();
+  const cap = options.cap ?? DEFAULT_DEMAND_CAP;
+  assertDemandCap(cap);
+
+  const pending = Promise.all([
+    driver.isQueuePaused(q),
+    supportsWorkers(driver)
+      ? listWorkerRecords(driver, q, now).then((live) => live.length)
+      : Promise.resolve(0),
+  ]);
+
+  let paused: boolean;
+  let workers: number;
+  let counts: DemandCounts;
+  let exact: boolean;
+
+  if (typeof driver.countDemand === "function") {
+    [[paused, workers], counts] = await Promise.all([
+      pending,
+      driver.countDemand(q, now, { cap }),
+    ]);
+    exact = true;
+  } else {
+    const [byState, next] = await Promise.all([
+      driver.countJobs(q),
+      driver.nextDelayedAt(q),
+    ]);
+    [paused, workers] = await pending;
+    counts = capDemandCounts(
+      {
+        waiting: byState.waiting,
+        dueNow: next !== null && next <= now ? 1 : 0,
+        stalled: byState.active > 0 && workers === 0 ? byState.active : 0,
+        active: byState.active,
+        nextDueAt: next !== null && next > now ? next : null,
+      },
+      cap,
+    );
+    exact = false;
+  }
+
+  const demand = paused ? 0 : counts.waiting + counts.dueNow + counts.stalled;
+
+  return {
+    at: now,
+    paused,
+    waiting: counts.waiting,
+    dueNow: counts.dueNow,
+    stalled: counts.stalled,
+    active: counts.active,
+    workers,
+    nextDueAt: counts.nextDueAt,
+    demand,
+    outstanding: paused ? 0 : demand + (counts.active - counts.stalled),
+    capped: counts.capped,
+    exact,
+  };
 }
 
 /* ------------------------------------------------------------------ *

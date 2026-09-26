@@ -43,7 +43,33 @@ function makeDriver(options: { keyPrefix?: string } = {}): RedisDriver {
 }
 
 if (URL) {
-  driverContract("redis", async () => ({ driver: makeDriver() }));
+  driverContract("redis", async () => {
+    const driver = makeDriver();
+
+    return {
+      driver,
+      // As the add script leaves a job added `active` with no lock: the hash
+      // field empty, and the active set scoring it at `createdAt`.
+      unlockActive: async (q, id) => {
+        const client = new BunRedis(URL);
+        try {
+          const keys = driver.keys.queue(q);
+          const createdAt = await client.hget(
+            `${keys.jobPrefix}${id}`,
+            "createdAt",
+          );
+          await client.send("HSET", [
+            `${keys.jobPrefix}${id}`,
+            "lockExpiresAt",
+            "",
+          ]);
+          await client.send("ZADD", [keys.active, String(createdAt), id]);
+        } finally {
+          client.close();
+        }
+      },
+    };
+  });
 } else {
   describe.skip("driver contract: redis (set BUN_JOBS_TEST_REDIS_URL)", () => {
     it("is not configured", () => {});

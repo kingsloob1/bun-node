@@ -1,5 +1,6 @@
 import type {
   AddedRange,
+  DemandCounts,
   MetricsQuery,
   NamespaceMetricsQuery,
   PendingOptionsRewrite,
@@ -14,6 +15,7 @@ import type {
   RunnerRunCounters,
   WorkerMetricsRef,
 } from "../../lib/drivers/metrics";
+import type { DemandRead, DemandReadProbe } from "../../lib/drivers/readApis";
 import type {
   ChildOutcome,
   JobFlow,
@@ -42,6 +44,7 @@ import {
   countAddedByScan,
   emptyAddedCounts,
   JOB_STATES,
+  readDemand,
   supportsCreatedSort,
 } from "../../lib/drivers/index";
 import {
@@ -61,6 +64,10 @@ import {
   workerTotalsOf,
   zeroCounters,
 } from "../../lib/drivers/metrics";
+import {
+  DEMAND_READ_ORDER,
+  DEMAND_READ_PROBE,
+} from "../../lib/drivers/readApis";
 import {
   ConfigError,
   countQueues,
@@ -122,11 +129,26 @@ async function promotion(
  */
 export function driverContract(
   name: string,
-  factory: () => Promise<{ driver: JobsDriver; cleanup?: () => Promise<void> }>,
+  factory: () => Promise<{
+    /** The driver under test, not yet connected. */
+    driver: JobsDriver;
+    /** Run once the suite ends, after the driver is closed. */
+    cleanup?: () => Promise<void>;
+    /**
+     * Clears the lock of an `active` job with a raw write under the API —
+     * `lock_expires_at = NULL`, `lockExpiresAt: null`, or an empty hash field
+     * with the job rescored as the add script scores a lockless one — which is
+     * how the `countDemand` cases plant a lockless `active` job where no API
+     * leaves one. Without it they add an `active` record with no lock through
+     * `addJob`, the driver-level write memory and file have.
+     */
+    unlockActive?: (q: QueueRef, id: string) => Promise<void>;
+  }>,
 ): void {
   describe(`driver contract: ${name}`, () => {
     let driver: JobsDriver;
     let cleanup: (() => Promise<void>) | undefined;
+    let unlockActive: ((q: QueueRef, id: string) => Promise<void>) | undefined;
     const ns = testNamespace("contract");
     const other = testNamespace("contract-other");
 
@@ -134,6 +156,7 @@ export function driverContract(
       const created = await factory();
       driver = created.driver;
       cleanup = created.cleanup;
+      unlockActive = created.unlockActive;
       await driver.connect();
     });
 
@@ -5575,6 +5598,630 @@ export function driverContract(
     });
 
     /* --- discovery and purge ------------------------------------------ */
+
+    /* --- demand ------------------------------------------------------- */
+
+    describe("countDemand", () => {
+      /** A queue of this case's own. They all live in `ns`, which `afterAll` purges. */
+      function scope(name: string): QueueRef {
+        return { ns, queue: `demand-${name}` };
+      }
+
+      /** Every figure zero, as an empty queue answers. */
+      const EMPTY = {
+        waiting: 0,
+        dueNow: 0,
+        stalled: 0,
+        active: 0,
+        nextDueAt: null,
+        capped: false,
+      };
+
+      /** `countDemand`, which every driver in this package implements. */
+      async function demand(
+        q: QueueRef,
+        now: number,
+        cap = 100,
+      ): Promise<DemandCounts> {
+        expect(typeof driver.countDemand).toBe("function");
+        return await driver.countDemand!(q, now, { cap });
+      }
+
+      /**
+       * Puts job `id` in `active` through a real claim at `claimedAt`, holding
+       * a lock of `lockMs` from then. The queue must have nothing else waiting,
+       * so seed active jobs before any waiting ones.
+       */
+      async function activate(
+        q: QueueRef,
+        id: string,
+        claimedAt: number,
+        lockMs: number,
+      ): Promise<void> {
+        await driver.addJob(
+          q,
+          makeJob({ id, runAt: claimedAt - 1, createdAt: claimedAt - 1 }),
+        );
+        const claimed = await driver.claimJob(q, {
+          workerId: "demand-worker",
+          token: newToken(),
+          lockMs,
+          now: claimedAt,
+        });
+        expect(claimed?.id).toBe(id);
+      }
+
+      /**
+       * Plants an `active` job with no lock. No API leaves one, so it takes a
+       * write under the API: the factory's raw `unlockActive` on a real claim
+       * (SQL, MongoDB, Redis), or a driver-level add of an `active` record with
+       * `lockExpiresAt: null` (memory, file). Checked to have landed.
+       */
+      async function plantLockless(
+        q: QueueRef,
+        id: string,
+        now: number,
+      ): Promise<void> {
+        if (unlockActive) {
+          await activate(q, id, now - 120_000, 1_000);
+          await unlockActive(q, id);
+        } else {
+          await driver.addJob(
+            q,
+            makeJob({
+              id,
+              state: "active",
+              createdAt: now - 120_000,
+              runAt: now - 120_000,
+              processedOn: now - 120_000,
+              attemptsMade: 1,
+              lockToken: newToken(),
+              lockExpiresAt: null,
+              workerId: "demand-worker",
+            }),
+          );
+        }
+
+        expect(await driver.getJob(q, id)).toMatchObject({
+          state: "active",
+          lockExpiresAt: null,
+        });
+      }
+
+      /**
+       * A queue holding one of everything, at `now`: 2 lapsed and 1 live
+       * `active`; 3 `waiting` (one with a future `runAt`, the clock-skew case);
+       * 2 due and 2 future `delayed`; 1 due and 1 future `failed`; and
+       * `completed`, `dead` and `waiting-children` jobs that must never count.
+       */
+      async function seedMixed(q: QueueRef, now: number): Promise<void> {
+        await activate(q, "lapsed-1", now - 60_000, 1_000);
+        await activate(q, "lapsed-2", now - 50_000, 1_000);
+        await activate(q, "live", now - 1_000, 60_000);
+
+        const children: JobFlow = {
+          parent: null,
+          children: [{ queue: q.queue, id: "absent-child" }],
+          pending: 1,
+          values: {},
+          failures: {},
+          recorded: false,
+        };
+
+        await driver.addJobs(q, [
+          makeJob({ id: "w-1", runAt: now - 10 }),
+          makeJob({ id: "w-2", runAt: now }),
+          makeJob({ id: "w-skewed", runAt: now + 30_000 }),
+          makeJob({ id: "d-due-1", state: "delayed", runAt: now - 5_000 }),
+          makeJob({ id: "d-due-2", state: "delayed", runAt: now }),
+          makeJob({ id: "d-later", state: "delayed", runAt: now + 20_000 }),
+          makeJob({ id: "d-latest", state: "delayed", runAt: now + 40_000 }),
+          makeJob({
+            id: "f-due",
+            state: "failed",
+            runAt: now - 1,
+            attemptsMade: 1,
+            maxAttempts: 3,
+          }),
+          makeJob({
+            id: "f-later",
+            state: "failed",
+            runAt: now + 5_000,
+            attemptsMade: 1,
+            maxAttempts: 3,
+          }),
+          makeJob({
+            id: "done",
+            state: "completed",
+            runAt: now - 9_000,
+            finishedOn: now - 8_000,
+          }),
+          makeJob({
+            id: "buried",
+            state: "dead",
+            runAt: now - 9_000,
+            finishedOn: now - 8_000,
+          }),
+          makeJob({
+            id: "parent",
+            state: "waiting-children",
+            runAt: now - 9_000,
+            flow: children,
+          }),
+        ]);
+      }
+
+      /** The seeded queue's figures, as `seedMixed` describes them. */
+      const MIXED = {
+        waiting: 3,
+        dueNow: 3,
+        stalled: 2,
+        active: 3,
+        nextDueAt: 5_000,
+        capped: false,
+      };
+
+      it("counts a seeded queue exactly, and agrees with countJobs where it should", async () => {
+        const q = scope("mixed");
+        const now = Date.now();
+        await seedMixed(q, now);
+
+        const counts = await demand(q, now);
+        expect(counts).toEqual({ ...MIXED, nextDueAt: now + MIXED.nextDueAt });
+
+        const byState = await driver.countJobs(q);
+        expect(counts.waiting).toBe(byState.waiting);
+        expect(counts.active).toBe(byState.active);
+      });
+
+      it("counts a due retry in dueNow, and a future one only as nextDueAt", async () => {
+        const q = scope("due-failed");
+        const now = Date.now();
+        await driver.addJobs(q, [
+          makeJob({
+            id: "retry-due",
+            state: "failed",
+            runAt: now - 100,
+            attemptsMade: 1,
+            maxAttempts: 3,
+          }),
+          makeJob({
+            id: "retry-later",
+            state: "failed",
+            runAt: now + 7_000,
+            attemptsMade: 1,
+            maxAttempts: 3,
+          }),
+        ]);
+
+        expect(await demand(q, now)).toEqual({
+          ...EMPTY,
+          dueNow: 1,
+          nextDueAt: now + 7_000,
+        });
+      });
+
+      it("never counts completed, dead or waiting-children jobs", async () => {
+        const q = scope("finished");
+        const now = Date.now();
+        await driver.addJobs(q, [
+          makeJob({
+            id: "c",
+            state: "completed",
+            runAt: now - 5_000,
+            finishedOn: now - 1_000,
+          }),
+          makeJob({
+            id: "d",
+            state: "dead",
+            runAt: now - 5_000,
+            finishedOn: now - 1_000,
+          }),
+          makeJob({
+            id: "p",
+            state: "waiting-children",
+            runAt: now - 5_000,
+            flow: {
+              parent: null,
+              children: [{ queue: q.queue, id: "missing" }],
+              pending: 1,
+              values: {},
+              failures: {},
+              recorded: false,
+            },
+          }),
+        ]);
+
+        // The negative control: the jobs are there, and in those states.
+        const byState = await driver.countJobs(q);
+        expect(byState.completed).toBe(1);
+        expect(byState.dead).toBe(1);
+        expect(byState["waiting-children"]).toBe(1);
+
+        expect(await demand(q, now)).toEqual(EMPTY);
+      });
+
+      it("caps each figure at cap, and reports capped only past it", async () => {
+        const now = Date.now();
+        const queues = {
+          waiting: scope("cap-waiting"),
+          dueNow: scope("cap-due"),
+          stalled: scope("cap-stalled"),
+          active: scope("cap-active"),
+        };
+
+        await driver.addJobs(queues.waiting, [
+          makeJob({ id: "a", runAt: now }),
+          makeJob({ id: "b", runAt: now }),
+          makeJob({ id: "c", runAt: now }),
+        ]);
+        // Across both scheduled states, so the cap applies to their sum.
+        await driver.addJobs(queues.dueNow, [
+          makeJob({ id: "a", state: "delayed", runAt: now - 3 }),
+          makeJob({ id: "b", state: "delayed", runAt: now - 2 }),
+          makeJob({ id: "c", state: "failed", runAt: now - 1 }),
+          makeJob({ id: "later", state: "delayed", runAt: now + 9_000 }),
+        ]);
+        for (const id of ["a", "b", "c"]) {
+          await activate(queues.stalled, id, now - 60_000, 1_000);
+          await activate(queues.active, id, now - 1_000, 60_000);
+        }
+
+        // At `cap` the figure is exact and nothing is capped.
+        expect(await demand(queues.waiting, now, 3)).toEqual({
+          ...EMPTY,
+          waiting: 3,
+        });
+        expect(await demand(queues.dueNow, now, 3)).toEqual({
+          ...EMPTY,
+          dueNow: 3,
+          nextDueAt: now + 9_000,
+        });
+        expect(await demand(queues.stalled, now, 3)).toEqual({
+          ...EMPTY,
+          stalled: 3,
+          active: 3,
+        });
+        expect(await demand(queues.active, now, 3)).toEqual({
+          ...EMPTY,
+          active: 3,
+        });
+
+        // One past it, the figure reads `cap` and says it is a lower bound.
+        // `nextDueAt` is never capped.
+        expect(await demand(queues.waiting, now, 2)).toEqual({
+          ...EMPTY,
+          waiting: 2,
+          capped: true,
+        });
+        expect(await demand(queues.dueNow, now, 2)).toEqual({
+          ...EMPTY,
+          dueNow: 2,
+          nextDueAt: now + 9_000,
+          capped: true,
+        });
+        expect(await demand(queues.stalled, now, 2)).toEqual({
+          ...EMPTY,
+          stalled: 2,
+          active: 2,
+          capped: true,
+        });
+        expect(await demand(queues.active, now, 2)).toEqual({
+          ...EMPTY,
+          active: 2,
+          capped: true,
+        });
+      });
+
+      it("ignores whether the queue is paused", async () => {
+        const q = scope("paused");
+        const now = Date.now();
+        await seedMixed(q, now);
+        const before = await demand(q, now);
+
+        await driver.pauseQueue(q);
+        try {
+          expect(await driver.isQueuePaused(q)).toBe(true);
+          expect(await demand(q, now)).toEqual(before);
+        } finally {
+          await driver.resumeQueue(q);
+        }
+      });
+
+      it("writes nothing: no job moves, no event is published, no queue appears", async () => {
+        const q = scope("read-only");
+        const now = Date.now();
+        await seedMixed(q, now);
+
+        /** Everything a write by `countDemand` could change, read back. */
+        const snapshot = async () => {
+          const jobs: Record<string, JobRecord[]> = {};
+          for (const state of JOB_STATES) {
+            jobs[state] = await driver.listJobs(q, [state], {
+              offset: 0,
+              limit: 1_000,
+              order: "asc",
+            });
+          }
+          return {
+            queues: (await driver.listQueues(ns)).sort(),
+            counts: await driver.countJobs(q),
+            jobs,
+            paused: await driver.isQueuePaused(q),
+            next: await driver.nextDelayedAt(q),
+          };
+        };
+
+        const received: string[] = [];
+        const unsubscribe = await driver.subscribe(
+          ns,
+          "queue",
+          q.queue,
+          (event) => received.push(event.type),
+        );
+
+        try {
+          const before = await snapshot();
+          // The seed holds exactly what a sweep or a promotion would move.
+          expect(before.counts.active).toBeGreaterThan(0);
+          expect(before.counts.delayed).toBeGreaterThan(0);
+
+          for (let i = 0; i < 3; i++) {
+            await demand(q, now);
+          }
+
+          // An unknown queue is read as empty and not brought into being.
+          const ghost = scope("never-used");
+          expect(await demand(ghost, now)).toEqual(EMPTY);
+
+          expect(await snapshot()).toEqual(before);
+          expect(before.queues).not.toContain(ghost.queue);
+
+          // A sentinel, so the subscription is shown to be live: anything
+          // `countDemand` published would have arrived before it.
+          await driver.publish(
+            queueEvent(
+              { ns, target: q.queue, type: "promoted", origin: newToken() },
+              { id: "sentinel" },
+            ),
+          );
+          await waitFor(() => received.length > 0, {
+            message: "the sentinel never arrived, so silence proves nothing",
+          });
+          expect(received).toEqual(["promoted"]);
+        } finally {
+          await unsubscribe();
+        }
+      });
+
+      it("counts as stalled exactly what recoverStalled then recovers, a lockless active job included", async () => {
+        const q = scope("stalled-agrees");
+        const now = Date.now();
+        await activate(q, "lapsed-1", now - 60_000, 1_000);
+        await activate(q, "lapsed-2", now - 50_000, 1_000);
+        await plantLockless(q, "lockless", now);
+        await activate(q, "live", now - 1_000, 60_000);
+
+        const before = await demand(q, now);
+        // Taken before the sweep moves anything.
+        expect(before.active).toBe((await driver.countJobs(q)).active);
+
+        // A limit above the count, so the sweep is not what stops it.
+        const swept = await driver.recoverStalled(q, now, 5, 1_000);
+        const recovered = [...swept.requeued, ...swept.dead];
+
+        // Agreement, on every engine, whichever way it treats the lockless job.
+        expect(before.stalled).toBe(recovered.length);
+        // Not vacuous: both lapsed jobs are recovered everywhere, the live one
+        // nowhere.
+        expect(recovered).toEqual(
+          expect.arrayContaining(["lapsed-1", "lapsed-2"]),
+        );
+        expect(recovered).not.toContain("live");
+
+        // And afterwards nothing left is stalled, by either account.
+        expect((await demand(q, now)).stalled).toBe(0);
+        const again = await driver.recoverStalled(q, now, 5, 1_000);
+        expect([...again.requeued, ...again.dead]).toEqual([]);
+      });
+
+      /**
+       * D2's read order, on the drivers whose reads are separate round trips:
+       * a job that promotion or recovery moves mid-call is counted twice at
+       * worst, never missed — and the reversed order, the negative control,
+       * must lose it.
+       */
+      describe("read order", () => {
+        const SEPARATE_READS = ["file", "mongodb"];
+
+        /** Runs `countDemand` with `probe` set between its reads. */
+        async function probed(
+          q: QueueRef,
+          now: number,
+          probe: DemandReadProbe,
+        ): Promise<DemandCounts> {
+          const slot = driver as unknown as Record<symbol, unknown>;
+          slot[DEMAND_READ_PROBE] = probe;
+          try {
+            return await demand(q, now);
+          } finally {
+            delete slot[DEMAND_READ_PROBE];
+          }
+        }
+
+        it("takes separate reads only where it says it does", async () => {
+          const q = scope("order-reads");
+          const reads: string[] = [];
+          await probed(q, Date.now(), {
+            after: (read) => void reads.push(read),
+          });
+
+          expect(reads).toEqual(
+            SEPARATE_READS.includes(driver.name) ? [...DEMAND_READ_ORDER] : [],
+          );
+        });
+
+        it("counts a job promoted mid-call twice at worst; the reversed order loses it", async () => {
+          if (!SEPARATE_READS.includes(driver.name)) {
+            return;
+          }
+
+          const now = Date.now();
+          const run = async (
+            name: string,
+            order?: readonly DemandRead[],
+          ): Promise<DemandCounts> => {
+            const q = scope(name);
+            await driver.addJob(
+              q,
+              makeJob({ id: "due", state: "delayed", runAt: now - 1_000 }),
+            );
+            let moved = false;
+
+            return await probed(q, now, {
+              ...(order ? { order } : {}),
+              // Between the due read and the waiting read, whichever is first.
+              after: async (read) => {
+                if (!moved && (read === "dueNow" || read === "waiting")) {
+                  moved = true;
+                  expect(
+                    (await promotion(driver.promoteDelayed(q, now, 10)))
+                      .promoted,
+                  ).toBe(1);
+                }
+              },
+            });
+          };
+
+          const right = await run("order-promote");
+          expect(right.dueNow + right.waiting).toBe(2);
+
+          const reversed = await run(
+            "order-promote-reversed",
+            [...DEMAND_READ_ORDER].reverse(),
+          );
+          expect(reversed.dueNow + reversed.waiting).toBe(0);
+        });
+
+        it("counts a job recovered mid-call twice at worst; the reversed order loses it", async () => {
+          if (!SEPARATE_READS.includes(driver.name)) {
+            return;
+          }
+
+          const now = Date.now();
+          const run = async (
+            name: string,
+            order?: readonly DemandRead[],
+          ): Promise<DemandCounts> => {
+            const q = scope(name);
+            await activate(q, "stalls", now - 60_000, 1_000);
+            let moved = false;
+
+            return await probed(q, now, {
+              ...(order ? { order } : {}),
+              // Between the active read and the waiting read, whichever is first.
+              after: async (read) => {
+                if (!moved && (read === "active" || read === "waiting")) {
+                  moved = true;
+                  expect(
+                    (await driver.recoverStalled(q, now, 5, 10)).requeued,
+                  ).toEqual(["stalls"]);
+                }
+              },
+            });
+          };
+
+          const right = await run("order-recover");
+          expect(right.stalled + right.waiting).toBe(2);
+
+          const reversed = await run(
+            "order-recover-reversed",
+            [...DEMAND_READ_ORDER].reverse(),
+          );
+          expect(reversed.stalled + reversed.waiting).toBe(0);
+        });
+      });
+
+      describe("readDemand", () => {
+        it("adds pause and workers, and derives demand and outstanding", async () => {
+          const q = scope("read-demand");
+          const now = Date.now();
+          await seedMixed(q, now);
+
+          const read = await readDemand(driver, q, { now, cap: 100 });
+          expect(read).toMatchObject({
+            at: now,
+            paused: false,
+            ...MIXED,
+            nextDueAt: now + MIXED.nextDueAt,
+            workers: 0,
+            demand: MIXED.waiting + MIXED.dueNow + MIXED.stalled,
+            outstanding:
+              MIXED.waiting +
+              MIXED.dueNow +
+              MIXED.stalled +
+              (MIXED.active - MIXED.stalled),
+            exact: true,
+          });
+
+          await driver.pauseQueue(q);
+          try {
+            const paused = await readDemand(driver, q, { now, cap: 100 });
+            // The backlog is still reported; it demands nothing.
+            expect(paused).toMatchObject({
+              paused: true,
+              ...MIXED,
+              nextDueAt: now + MIXED.nextDueAt,
+              demand: 0,
+              outstanding: 0,
+            });
+          } finally {
+            await driver.resumeQueue(q);
+          }
+        });
+
+        it("falls back to countJobs and nextDelayedAt on a driver without countDemand, and says so", async () => {
+          const q = scope("read-demand-fallback");
+          const now = Date.now();
+          await seedMixed(q, now);
+
+          const bare = new Proxy(driver, {
+            get(target, property) {
+              if (property === "countDemand") {
+                return undefined;
+              }
+              const value: unknown = Reflect.get(target, property, target);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+
+          const read = await readDemand(bare, q, { now, cap: 100 });
+          // `dueNow` is only whether something is due, `stalled` every active
+          // job while no worker is live, and the next due time unknown while
+          // something is already due.
+          expect(read).toMatchObject({
+            waiting: MIXED.waiting,
+            dueNow: 1,
+            active: MIXED.active,
+            stalled: MIXED.active,
+            workers: 0,
+            nextDueAt: null,
+            capped: false,
+            exact: false,
+          });
+          expect(read.demand).toBeGreaterThan(0);
+        });
+
+        it("refuses a cap that is not a positive integer", async () => {
+          const q = scope("read-demand-cap");
+          for (const cap of [0, -1, 1.5, Number.NaN]) {
+            await expect(readDemand(driver, q, { cap })).rejects.toThrow(
+              ConfigError,
+            );
+          }
+        });
+      });
+    });
 
     /* --- read APIs ---------------------------------------------------- */
 

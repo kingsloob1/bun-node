@@ -111,15 +111,27 @@ for (const server of SERVERS) {
     continue;
   }
 
-  driverContract(server.adapter, async () => ({
-    driver: new SqlDriver({
-      url: server.url,
-      adapter: server.adapter,
-      // A prefix per run, so concurrent suites on one server never share a
-      // table — the namespace keeps rows apart, this keeps migrations apart.
-      tablePrefix: `bun_jobs_test_`,
-    }),
-  }));
+  driverContract(server.adapter, async () => {
+    const raw = rawClient(server.url!);
+    const bind = (n: number) => (server.adapter === "postgres" ? `$${n}` : "?");
+
+    return {
+      driver: new SqlDriver({
+        url: server.url,
+        adapter: server.adapter,
+        // A prefix per run, so concurrent suites on one server never share a
+        // table — the namespace keeps rows apart, this keeps migrations apart.
+        tablePrefix: `bun_jobs_test_`,
+      }),
+      unlockActive: async (q, id) => {
+        await raw.unsafe(
+          `UPDATE bun_jobs_test_jobs SET lock_expires_at = NULL
+            WHERE ns = ${bind(1)} AND queue = ${bind(2)} AND id = ${bind(3)}`,
+          [q.ns, q.queue, id],
+        );
+      },
+    };
+  });
 }
 
 /**

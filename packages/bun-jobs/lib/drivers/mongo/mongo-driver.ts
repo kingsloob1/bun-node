@@ -12,6 +12,7 @@ import type {
   ChildRecordResult,
   ClaimOptions,
   ClearJobLogsResult,
+  DemandCounts,
   DriverCapabilities,
   DriverEvent,
   EventKind,
@@ -149,10 +150,12 @@ import {
   workerTotalsOf,
 } from "../metrics";
 import {
+  capDemandCounts,
   emptyCounts,
   escapeRegExp,
   jobFilter,
   orderByIds,
+  runDemandReads,
   sortWorkers,
   sumBuckets,
   sumStates,
@@ -4547,6 +4550,84 @@ export class MongoDriver implements JobsDriver {
   }
 
   /** Every queue's state counts in the namespace, as one aggregation. */
+  /**
+   * One `countDocuments(filter, { limit: cap + 1 })` per figure and one
+   * `find().sort({ runAt: 1 }).limit(1)` per scheduled state: seven round
+   * trips, not one snapshot, so taken in `DEMAND_READ_ORDER` (`readApis.ts`):
+   * `active` first, then the due jobs, then `waiting`. A job that recovery or
+   * promotion moves during the call is counted twice at worst, never missed.
+   * A job claimed during it can be in neither, which `demand` does not mind
+   * and `outstanding` shows until the next read.
+   *
+   * - `stalled`: `{ state: "active", lockExpiresAt: { $lte: now } }` — **the
+   *   filter {@link MongoDriver.recoverStalled} selects by**, so exactly the
+   *   set it would recover. `$lte` never matches `null`, so a lockless
+   *   `active` document is not in it.
+   * - `active`: `{ state: "active" }`, as `countJobs` counts it (no predicate).
+   * - `dueNow`: `{ state, runAt: { $lte: now } }` for `delayed`, then `failed`.
+   * - `waiting`: `{ state: "waiting" }`.
+   * - `nextDueAt`: the least `runAt > now` of each scheduled state.
+   *
+   * **Measured**, 8 queues of 49,064 documents each (64 `active`, 5,000
+   * `waiting`, 3,000 scheduled, 40,000 `completed`, …) and with 10× the
+   * `completed` history: 6.66 ms → 6.79 ms, every figure a covered `IXSCAN`
+   * with 0 documents examined (`stalled` on `LOCK_INDEX`; `active`, `dueNow`,
+   * `waiting` and the `runAt` probes on `PROMOTION_INDEX`, the planner's
+   * pick). `countJobs` 50.1 ms → 397.6 ms; hinted onto the `(ns, queue)`
+   * index without `state`, the no-index control, 661 ms → 5,388 ms. `cap`
+   * bounds the keys read: at `limit: 1000` against 5,000 waiting, 1,000 keys
+   * were examined.
+   */
+  async countDemand(
+    q: QueueRef,
+    now: number,
+    options: { cap: number },
+  ): Promise<DemandCounts> {
+    const jobs = await this.#jobs();
+    const limit = Math.max(1, Math.floor(options.cap)) + 1;
+    const scope = { ns: q.ns, queue: q.queue };
+    const count = async (filter: FilterLike): Promise<number> =>
+      await jobs.countDocuments({ ...scope, ...filter }, { limit });
+    const counts = { waiting: 0, dueNow: 0, stalled: 0, active: 0 };
+    const due: number[] = [];
+
+    await runDemandReads(this, {
+      active: async () => {
+        counts.stalled = await count({
+          state: "active",
+          lockExpiresAt: { $lte: now },
+        });
+        counts.active = await count({ state: "active" });
+      },
+      dueNow: async () => {
+        for (const state of SCHEDULED) {
+          counts.dueNow += await count({ state, runAt: { $lte: now } });
+        }
+
+        for (const state of SCHEDULED) {
+          const next = await jobs
+            .find({ ...scope, state, runAt: { $gt: now } })
+            .sort({ runAt: 1 })
+            .limit(1)
+            .project<{ runAt: number }>({ runAt: 1, _id: 0 })
+            .toArray();
+
+          if (next[0] && typeof next[0].runAt === "number") {
+            due.push(next[0].runAt);
+          }
+        }
+      },
+      waiting: async () => {
+        counts.waiting = await count({ state: "waiting" });
+      },
+    });
+
+    return capDemandCounts(
+      { ...counts, nextDueAt: due.length === 0 ? null : Math.min(...due) },
+      options.cap,
+    );
+  }
+
   async countJobsByQueue(
     ns: string,
   ): Promise<Record<string, Record<JobState, number>>> {

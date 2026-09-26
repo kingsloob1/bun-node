@@ -296,6 +296,7 @@ describe.skipIf(!URL)(
         order: "asc",
       });
       await driver.countJobs(q);
+      await driver.countDemand(q, now, { cap: 100 });
       await driver.findJobs(q, {
         states: ["waiting", "completed"],
         offset: 0,

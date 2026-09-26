@@ -1746,6 +1746,47 @@ return {
 `;
 
 /**
+ * How much work a worker could claim at `now`, for `countDemand`: one script,
+ * so one round trip and one atomic snapshot — no promotion, recovery or claim
+ * lands between two of its figures. Reads only; it writes nothing.
+ *
+ * - `stalled`: `ZCOUNT active -inf now`. The active set is scored by
+ *   `lockExpiresAt` — by `createdAt` for a job added `active` with none — and
+ *   RECOVER_STALLED takes `ZRANGEBYSCORE active -inf now`, so this is exactly
+ *   the set that sweep would recover, a lockless job included.
+ * - `active`: `ZCARD active`, as COUNT_JOBS counts it.
+ * - due `delayed` and `failed`: `ZCOUNT <set> -inf now` each (scored by
+ *   `runAt`).
+ * - `waiting`: `ZCARD wait`, as COUNT_JOBS counts it.
+ * - the earliest `runAt > now` in each scheduled set: `ZRANGEBYSCORE <set>
+ *   (now +inf WITHSCORES LIMIT 0 1`.
+ *
+ * Every figure is O(log n) in the set it reads, and none reads `completed` or
+ * `dead`. The counts come back exact; the driver applies the cap.
+ *
+ * ARGV: prefix, now. Returns stalled, active, due delayed, due failed,
+ * waiting, then the next delayed and next failed due times ('' for none).
+ */
+export const COUNT_DEMAND = `${QUEUE_PRELUDE}
+local now = ARGV[2]
+
+local function nextAfter(set)
+  local head = redis.call('ZRANGEBYSCORE', set, '(' .. now, '+inf', 'WITHSCORES', 'LIMIT', 0, 1)
+  return head[2] or ''
+end
+
+return {
+  redis.call('ZCOUNT', ACTIVE, '-inf', now),
+  redis.call('ZCARD', ACTIVE),
+  redis.call('ZCOUNT', DELAYED, '-inf', now),
+  redis.call('ZCOUNT', FAILED, '-inf', now),
+  redis.call('ZCARD', WAIT),
+  nextAfter(DELAYED),
+  nextAfter(FAILED),
+}
+`;
+
+/**
  * One chunk of a state's set, filtered inside the script by the attribution
  * filters, answering each surviving job's id and — when the query needs it —
  * its name, never the payload. What `findJobs` walks when a query names jobs,

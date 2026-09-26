@@ -6,6 +6,7 @@ import type {
   JobRef,
   JobsDriver,
   JobState,
+  QueueDemand,
   QueueRef,
   RepeatRecord,
   ThroughputBucket,
@@ -79,6 +80,7 @@ import {
   jobOrderFields,
   jobWalkIsSeekable,
   listWorkerRecords,
+  readDemand,
   refuseUnseekableWalk,
   resolveDriver,
   sortsByCreated,
@@ -1178,6 +1180,38 @@ export class BunQueue<
     await this.connect();
     const counts = await this.driver.countJobs(this.ref);
     return state ? counts[state] : counts;
+  }
+
+  /**
+   * How much work the queue has for a worker right now: waiting jobs, delayed
+   * and retrying jobs already due, and jobs whose worker died holding them —
+   * plus what is running, whether the queue is paused, and how many workers
+   * are live.
+   *
+   * ```ts
+   * const { demand, workers } = await queue.getDemand();
+   * if (demand > 0 && workers === 0) startAWorker();
+   * ```
+   *
+   * A few bounded reads on every driver in this package, never a scan of
+   * retained history, and it writes nothing: due jobs are counted where they
+   * stand, not promoted. A paused queue reports its backlog with `demand` and
+   * `outstanding` at `0`. Each figure is counted up to `cap` (`10_000` by
+   * default); past it the figure is `cap` and `capped` is `true`. On a
+   * third-party driver without `countDemand` the figures are approximate and
+   * `exact` is `false`.
+   */
+  async getDemand(options?: {
+    /**
+     * Count each figure up to this many; past it the figure reads `cap` and
+     * `capped` is `true`. A positive integer. Defaults to `10_000`.
+     */
+    cap?: number;
+  }): Promise<QueueDemand> {
+    await this.connect();
+    return await readDemand(this.driver, this.ref, {
+      ...(options?.cap !== undefined ? { cap: options.cap } : {}),
+    });
   }
 
   /* --- managing -------------------------------------------------------- */

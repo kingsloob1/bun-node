@@ -5,6 +5,7 @@ import type {
   ChildRecordResult,
   ClaimOptions,
   ClearJobLogsResult,
+  DemandCounts,
   DriverCapabilities,
   DriverEvent,
   EventKind,
@@ -118,6 +119,7 @@ import {
   zeroCounters,
 } from "./metrics";
 import {
+  capDemandCounts,
   jobFilter,
   matchesFilter,
   orderByIds,
@@ -218,6 +220,25 @@ interface QueueState {
    * {@link MemoryDriver.#delete}, like {@link QueueState.waiting}.
    */
   scheduled: Set<string>;
+  /**
+   * Ids of the jobs that are `active`, so `countDemand` reads the running jobs
+   * instead of walking every retained one.
+   *
+   * Maintained by {@link MemoryDriver.#enterIndexes} and
+   * {@link MemoryDriver.#leaveIndexes}, which every state change (through
+   * {@link MemoryDriver.#setState}), `addJob` and {@link MemoryDriver.#delete}
+   * already call — so a job leaves it however it leaves `active`: settled,
+   * buried, recovered, or removed. One that missed an exit would be counted as
+   * running for good, which is what the suite's set-against-a-walk cases
+   * check after each one.
+   *
+   * Measured (one queue, 64 active among 49,064 retained jobs, and with 10×
+   * the `completed` history): `countDemand` walking every job took 0.49 ms →
+   * 8.99 ms; with this set, 0.089 ms → 0.131 ms. Its write-side price, claim
+   * plus complete over 20,000 jobs, interleaved: 779k/s without, 770k/s with
+   * (−1.2%, inside the run-to-run spread).
+   */
+  active: Set<string>;
   /**
    * A min-heap of the scheduled jobs by `runAt`, so promotion and
    * `nextDelayedAt` look at the earliest instead of walking every retained
@@ -1599,6 +1620,86 @@ export class MemoryDriver implements JobsDriver {
     return sortWorkers(live);
   }
 
+  /**
+   * Synchronous, so one snapshot: nothing can move between the figures.
+   * `waiting` is the waiting index's length; `active` the active-id set's
+   * size; `stalled` a walk of that set, not of the queue; `dueNow` and
+   * `nextDueAt` a walk of the scheduled set. Retained history is never
+   * read. Measured with 64 active among 49,064 retained jobs, and 10× the
+   * history: 0.089 ms → 0.131 ms (the walk of every job it replaced, 0.49 ms
+   * → 8.99 ms; `countJobs` 0.58 ms → 13.1 ms).
+   *
+   * **`stalled` is exactly what {@link MemoryDriver.recoverStalled} takes:**
+   * `active` with a lock, lapsed at `now`. That sweep skips a job with no lock
+   * (`null <= now` is `true` in JavaScript, so both test for `null` first).
+   *
+   * An unknown queue is read as empty and **not** created: a read that
+   * brought a queue into being would make it appear in `listQueues`.
+   */
+  async countDemand(
+    q: QueueRef,
+    now: number,
+    options: { cap: number },
+  ): Promise<DemandCounts> {
+    const queue = this.#namespaces.get(q.ns)?.queues.get(q.queue);
+
+    if (!queue) {
+      return {
+        waiting: 0,
+        dueNow: 0,
+        stalled: 0,
+        active: 0,
+        nextDueAt: null,
+        capped: false,
+      };
+    }
+
+    const limit = options.cap + 1;
+    let stalled = 0;
+
+    for (const id of queue.active) {
+      if (stalled >= limit) {
+        break;
+      }
+
+      const job = queue.jobs.get(id);
+
+      if (job && job.lockExpiresAt !== null && job.lockExpiresAt <= now) {
+        stalled++;
+      }
+    }
+
+    let dueNow = 0;
+    let nextDueAt: number | null = null;
+
+    // Not stopped at the cap: `nextDueAt` is never capped, and the set holds
+    // scheduled jobs only, never history.
+    for (const id of queue.scheduled) {
+      const job = queue.jobs.get(id);
+
+      if (!job) {
+        continue;
+      }
+
+      if (job.runAt <= now) {
+        dueNow++;
+      } else if (nextDueAt === null || job.runAt < nextDueAt) {
+        nextDueAt = job.runAt;
+      }
+    }
+
+    return capDemandCounts(
+      {
+        waiting: queue.waiting.length - queue.waitingFrom,
+        dueNow,
+        stalled,
+        active: queue.active.size,
+        nextDueAt,
+      },
+      options.cap,
+    );
+  }
+
   async countJobsByQueue(
     ns: string,
   ): Promise<Record<string, Record<JobState, number>>> {
@@ -2681,6 +2782,7 @@ export class MemoryDriver implements JobsDriver {
         waiting: [],
         waitingFrom: 0,
         scheduled: new Set(),
+        active: new Set(),
         due: [],
         finished: {
           completed: { ids: [], from: 0, keys: new Map() },
@@ -2756,8 +2858,9 @@ export class MemoryDriver implements JobsDriver {
   }
 
   /**
-   * Puts a job in the scheduled or finished index its state keeps. Read by
-   * key, so the caller sets `runAt` or `finishedOn` **before** the state.
+   * Puts a job in the scheduled, active or finished index its state keeps.
+   * Read by key, so the caller sets `runAt` or `finishedOn` **before** the
+   * state.
    */
   #enterIndexes(queue: QueueState, job: JobRecord): void {
     switch (job.state) {
@@ -2766,19 +2869,25 @@ export class MemoryDriver implements JobsDriver {
         queue.scheduled.add(job.id);
         duePush(queue.due, { runAt: job.runAt, seq: dueSeq++, id: job.id });
         return;
+      case "active":
+        queue.active.add(job.id);
+        return;
       case "completed":
       case "dead":
         this.#enterFinished(queue, queue.finished[job.state], job);
     }
   }
 
-  /** Takes a job out of the scheduled or finished index its state keeps. */
+  /** Takes a job out of the scheduled, active or finished index its state keeps. */
   #leaveIndexes(queue: QueueState, job: JobRecord): void {
     switch (job.state) {
       case "delayed":
       case "failed":
         // Its heap entry is dropped when it surfaces.
         queue.scheduled.delete(job.id);
+        return;
+      case "active":
+        queue.active.delete(job.id);
         return;
       case "completed":
       case "dead":
