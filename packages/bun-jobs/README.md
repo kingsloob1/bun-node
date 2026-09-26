@@ -998,8 +998,9 @@ Example:
   grace), and nothing a forced close would not wait for is waited for. Both
   calls resolve once the close has finished; neither rejects because a
   graceful step was cut short. A force during a forced close, and a `close()`
-  without `force` during any close, change nothing. A later call's `timeout`
-  is ignored: `force` is the way to cut a graceful close short.
+  without `force` during any close, change nothing, and also resolve once the
+  close has finished — on a worker that never ran as well. A later call's
+  `timeout` is ignored: `force` is the way to cut a graceful close short.
 - `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
   claiming and running its background passes — liveness and housekeeping
   alike — drains its jobs in flight, and keeps

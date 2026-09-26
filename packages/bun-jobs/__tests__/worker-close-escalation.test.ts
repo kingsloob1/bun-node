@@ -376,13 +376,13 @@ for (const backend of BACKENDS) {
         const graceful = set.worker.close({ timeout: GRACE_MS });
         await timers.graceArmed;
         const again = set.worker.close();
-        // It waits for the claim loop, as it always has, and aborts nothing.
-        expect(await within(again, PROMPT_MS)).not.toBe("pending");
+        // It aborts nothing, and waits with the first call for the drain.
+        const both = Promise.all([graceful, again]);
+        expect(await within(both, 200)).toBe("pending");
         expect(set.signals[0]!.aborted).toBe(false);
-        expect(await within(graceful, 200)).toBe("pending");
 
         set.release();
-        expect(await within(graceful, PROMPT_MS)).not.toBe("pending");
+        expect(await within(both, PROMPT_MS)).not.toBe("pending");
         expect(set.signals[0]!.aborted).toBe(false);
         expect([...timers.intervals.values()]).toEqual([]);
         expect(set.events).toEqual({ closing: 1, closed: 1 });

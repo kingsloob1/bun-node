@@ -881,8 +881,8 @@ export class BunQueueWorker<
    */
   #escalated = createDeferred<void>();
   /**
-   * Settles when the close under way has finished, however it ended. What a
-   * forcing `close()` that joins a close already under way waits for.
+   * Settles when the close under way has finished, however it ended. What
+   * every `close()` that joins a close already under way waits for.
    */
   #closeDone = createDeferred<void>();
   /**
@@ -1754,8 +1754,9 @@ export class BunQueueWorker<
    *   error. Both calls resolve once the close has finished.
    * - `close({ force: true })` during a forced (or already escalated) close
    *   changes nothing, and resolves once that close has finished.
-   * - `close()` without `force` changes nothing either: it resolves when the
-   *   claim loop has stopped, as it always has.
+   * - `close()` without `force` changes nothing either, and also resolves
+   *   once the close has finished — on a worker that never ran as on one
+   *   that did. A call after the close has finished resolves at once.
    *
    * A later call's `timeout` is ignored: the graceful wait keeps the timeout
    * it started with. `force` is the way to cut it short.
@@ -1795,16 +1796,14 @@ export class BunQueueWorker<
     timeout?: number;
   }): Promise<void> {
     if (this.#closing) {
-      if (options?.force) {
-        // Escalates a graceful close; a forced one is left exactly as it is.
-        if (!this.#closeForced) {
-          this.#escalate();
-        }
-        await this.#closeDone.promise;
-        return;
+      // Escalates a graceful close; a forced one is left exactly as it is.
+      if (options?.force && !this.#closeForced) {
+        this.#escalate();
       }
-
-      await this.#stopped.promise;
+      // Every call resolves when the close does. Waiting for the claim loop
+      // instead, as a graceful re-entry once did, hung for good on a worker
+      // that never ran: it has no loop, so nothing ever ended the wait.
+      await this.#closeDone.promise;
       return;
     }
 
