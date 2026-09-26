@@ -1,4 +1,5 @@
 import type { Schema } from "../schema/builder";
+import { DEFAULT_DEMAND_CAP } from "../../drivers/index";
 import { DEFAULT_JOBS_API_LIMITS } from "../config";
 import {
   JOB_DEFAULT_BACKOFF_TYPES,
@@ -379,8 +380,7 @@ export const QueueDemandSchema = s.named(
         "`paused ? 0 : demand + (active − stalled)`: every unfinished job, each once. What a scale-style scaler (a KEDA `ScaledObject`, CREMA) reads, since it stays above zero while a worker is busy.",
     }),
     capped: s.boolean({
-      description:
-        "`true` when a figure reached the count cap (10 000, fixed), so the figures are lower bounds. `demand` and `outstanding` are sums of capped figures and can exceed it.",
+      description: `\`true\` when a figure reached the count cap (${DEFAULT_DEMAND_CAP.toLocaleString("en-US")}, \`DEFAULT_DEMAND_CAP\`, fixed), so the figures are lower bounds. \`demand\` and \`outstanding\` are sums of capped figures and can exceed it.`,
     }),
     exact: s.boolean({
       description:
@@ -403,7 +403,8 @@ export const QueueDemandListSchema = s.named(
 
 /**
  * The query both demand routes share: the representation. There is no `cap`:
- * the routes count to the package default, 10 000, whatever the caller asks.
+ * the routes count to the package default, `DEFAULT_DEMAND_CAP`, whatever the
+ * caller asks.
  */
 const demandQueryProperties = () => ({
   format: s.optional(
@@ -424,9 +425,10 @@ export function queueDemandListQuerySchema(maxQueues: number) {
   return s.query(
     s.object({
       queues: s.optional(
+        // No `maxItems`: it would count a repeated name, and the bound is on
+        // distinct names, which the route checks after removing repeats.
         s.array(s.string({ minLength: 1, maxLength: MAX_NAME_LENGTH }), {
-          maxItems: maxQueues,
-          description: `The queues to read, repeated or comma-separated, in the order given; every visible queue when absent. A name the caller cannot see (unknown, outside the allowlist, or refused \`queues.read\` under \`listQueues: "authorized"\`) is left out, never an error. At most ${maxQueues} (\`limits.maxQueues\`).`,
+          description: `The queues to read, repeated or comma-separated, in the order given, each once; every visible queue when absent. A name the caller cannot see (unknown, outside the allowlist, or refused \`queues.read\` under \`listQueues: "authorized"\`) is left out, never an error. At most ${maxQueues} distinct names (\`limits.maxQueues\`); more is 400 \`VALIDATION\`, and a repeat does not count.`,
         }),
       ),
       ...demandQueryProperties(),

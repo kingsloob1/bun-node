@@ -445,6 +445,21 @@ export type QueueDemandListQueryOk = Expect<
 export type QueueDemandIsRootOk = Expect<
   Equal<Omit<Contract.QueueDemandDto, "queue">, Root.QueueDemand>
 >;
+// The depth endpoint's wire types are root exports too, like their siblings
+// (`QueueSummaryDto`, `WorkerDto`, `MetaDto`): each is the contract's own, so a
+// removed export fails here (`Root` has no such member).
+export type RootQueueDemandDtoOk = Expect<
+  Equal<Root.QueueDemandDto, Contract.QueueDemandDto>
+>;
+export type RootQueueDemandListDtoOk = Expect<
+  Equal<Root.QueueDemandListDto, Contract.QueueDemandListDto>
+>;
+export type RootQueueDemandQueryOk = Expect<
+  Equal<Root.QueueDemandQuery, Contract.QueueDemandQuery>
+>;
+export type RootQueueDemandListQueryOk = Expect<
+  Equal<Root.QueueDemandListQuery, Contract.QueueDemandListQuery>
+>;
 type QueueDemandWithoutExact = Equal<
   Omit<Contract.QueueDemandDto, "queue" | "exact">,
   Root.QueueDemand
@@ -1440,8 +1455,8 @@ type DemandFlagOptional = Equal<
   Pick<Contract.MetaDto["features"], "demand">,
   { demand?: boolean }
 >;
-// @ts-expect-error — always reported: a UI marks the demand figures
-// approximate on `false`, and must not have to guess.
+// @ts-expect-error — always reported: `false` means the demand routes are not
+// served here (runner mode), and a UI hides the demand card rather than guess.
 export type DemandFlagOptionalCaught = Expect<DemandFlagOptional>;
 export type MetaCsrfOk = Expect<
   DeepEqual<Contract.MetaCsrfDto, Infer<typeof MetaCsrfSchema>>

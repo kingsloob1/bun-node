@@ -58,9 +58,7 @@ describe("escaping", () => {
     );
     // Every line is one line: the line feed in the value did not split it.
     for (const line of text.slice(0, -1).split("\n")) {
-      expect(line.startsWith("#") || line.startsWith("bunjobs_queue_")).toBe(
-        true,
-      );
+      expect(line.startsWith("#") || line.startsWith("bunjobs_")).toBe(true);
     }
   });
 });
@@ -129,10 +127,20 @@ describe("renderPrometheus", () => {
 
 describe("renderDemandExposition", () => {
   it("reports each figure under its own family, booleans as 0 or 1, one sample per queue", () => {
-    const text = renderDemandExposition("shop", [
-      demand("a"),
-      { ...demand("b"), paused: false, capped: false, demand: 9 },
-    ]);
+    const text = renderDemandExposition(
+      "shop",
+      [
+        demand("a"),
+        {
+          ...demand("b"),
+          paused: false,
+          capped: false,
+          exact: false,
+          demand: 9,
+        },
+      ],
+      { truncated: true },
+    );
     const samples = text
       .split("\n")
       .filter((line) => line && !line.startsWith("#"));
@@ -155,8 +163,15 @@ describe("renderDemandExposition", () => {
       'bunjobs_queue_paused{ns="shop",queue="b"} 0',
       'bunjobs_queue_demand_capped{ns="shop",queue="a"} 1',
       'bunjobs_queue_demand_capped{ns="shop",queue="b"} 0',
+      'bunjobs_queue_demand_exact{ns="shop",queue="a"} 1',
+      'bunjobs_queue_demand_exact{ns="shop",queue="b"} 0',
+      'bunjobs_demand_truncated{ns="shop"} 1',
     ]);
     expect(text.endsWith("\n")).toBe(true);
+    // Truncation defaults to 0, and is present even with no queue at all.
+    expect(renderDemandExposition("shop", [])).toContain(
+      'bunjobs_demand_truncated{ns="shop"} 0\n',
+    );
     expect(PROMETHEUS_CONTENT_TYPE).toBe(
       "text/plain; version=0.0.4; charset=utf-8",
     );

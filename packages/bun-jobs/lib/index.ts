@@ -150,6 +150,10 @@ export {
 export type {
   JobDefaultBackoff,
   JobDefaultsValues,
+  QueueDemandDto,
+  QueueDemandListDto,
+  QueueDemandListQuery,
+  QueueDemandQuery,
 } from "./api/contract/types";
 export { createJobsApi } from "./api/createJobsApi";
 

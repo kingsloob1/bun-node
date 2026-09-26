@@ -1764,7 +1764,13 @@ bounds (§6.4).
 **As shipped (PR-5, 2026-09-26)** [S]: each family is one group with its own
 `# HELP` and `# TYPE … gauge` lines (the sample above shows one family's; the
 format requires them per family), label values escape `\`, `"` and line
-feed, and the body ends with a line feed. `Content-Type` is `text/plain;
+feed, and the body ends with a line feed. There are **11 families**: the eight
+above, `bunjobs_queue_demand_capped`, `bunjobs_queue_demand_exact` (0 when the
+figures come from the fallback, so a scaler can see what JSON's `exact`
+says), and the namespace-level `bunjobs_demand_truncated{ns}` (1 when
+`GET /demand` left visible queues out past `limits.maxQueues`, always 0 on the
+per-queue route) — added after #193's review: many scalers read an absent
+series as 0, so a silently cut scrape would scale to zero over a backlog. `Content-Type` is `text/plain;
 version=0.0.4; charset=utf-8`. Content negotiation offers `text/plain;
 version=0.0.4`, so `Accept: text/plain`, `text/plain;version=0.0.4` and a
 Prometheus server's scrape header select the exposition; no `Accept`, `*/*`, a

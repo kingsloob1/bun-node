@@ -186,25 +186,54 @@ export const DEMAND_METRICS: readonly {
     help: "1 when a figure reached the count cap, so the figures are lower bounds, else 0.",
     read: (d) => (d.capped ? 1 : 0),
   },
+  {
+    name: "bunjobs_queue_demand_exact",
+    help: "1 when the figures are counted directly, 0 when they come from the approximate fallback of a driver without countDemand: right as a trigger, approximate as a count.",
+    read: (d) => (d.exact ? 1 : 0),
+  },
 ];
 
 /**
+ * The namespace-level family: one sample per scrape, labelled `ns` alone.
+ * A queue left out of a scrape is an absent series, which many scalers read
+ * as 0 — scale to zero over a backlog — so the cut is said in the scrape.
+ */
+export const DEMAND_TRUNCATED_METRIC = {
+  /** The metric name. */
+  name: "bunjobs_demand_truncated",
+  /** Its `# HELP`. */
+  help: "1 when more queues were visible than limits.maxQueues, so some have no series in this scrape, else 0. Always 0 on a one-queue read.",
+} as const;
+
+/**
  * The demand of `queues` in namespace `ns` as one scrape: every family of
- * {@link DEMAND_METRICS}, one sample per queue, labelled `ns` and `queue`.
+ * {@link DEMAND_METRICS}, one sample per queue, labelled `ns` and `queue`,
+ * then {@link DEMAND_TRUNCATED_METRIC}, one sample labelled `ns`. Every
+ * scrape has the same families, whichever route served it.
  */
 export function renderDemandExposition(
   ns: string,
   queues: readonly QueueDemandDto[],
+  options: {
+    /** Whether some visible queues were left out of `queues`. Defaults to `false`. */
+    truncated?: boolean;
+  } = {},
 ): string {
-  return renderPrometheus(
-    DEMAND_METRICS.map((metric) => ({
+  return renderPrometheus([
+    ...DEMAND_METRICS.map((metric) => ({
       name: metric.name,
       help: metric.help,
-      type: "gauge",
+      type: "gauge" as const,
       samples: queues.map((demand) => ({
         labels: { ns, queue: demand.queue },
         value: metric.read(demand),
       })),
     })),
-  );
+    {
+      name: DEMAND_TRUNCATED_METRIC.name,
+      help: DEMAND_TRUNCATED_METRIC.help,
+      type: "gauge",
+      samples: [{ labels: { ns }, value: options.truncated ? 1 : 0 }],
+    },
+  ]);
 }

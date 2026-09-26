@@ -23,6 +23,7 @@ import type { RangeQueryInput } from "./analytics";
 import type { AnyRouteDef, RouteServices } from "./define";
 import {
   countAdded,
+  DEFAULT_DEMAND_CAP,
   emptyAddedCounts,
   supportsWorkers,
   THROUGHPUT_BUCKET_MS,
@@ -38,6 +39,8 @@ import {
 } from "../contract/constants";
 import { ApiError, mapCallSiteError } from "../errors";
 import {
+  DEMAND_METRICS,
+  DEMAND_TRUNCATED_METRIC,
   PROMETHEUS_CONTENT_TYPE,
   PROMETHEUS_MEDIA_TYPE,
   renderDemandExposition,
@@ -528,39 +531,53 @@ function sendExposition(
   res: BunResponse,
   ns: string,
   demands: readonly QueueDemandDto[],
+  truncated = false,
 ): Record<string, never> {
   res.setHeader("Content-Type", PROMETHEUS_CONTENT_TYPE);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Vary", "Accept");
   res.status(200);
-  res.send(renderDemandExposition(ns, demands));
+  res.send(renderDemandExposition(ns, demands, { truncated }));
   return {};
 }
 
-/** A sample of the exposition, for the docs. */
-const DEMAND_EXPOSITION_EXAMPLE = [
-  "# HELP bunjobs_queue_demand Jobs a worker could claim now: waiting + due + stalled. 0 while the queue is paused.",
-  "# TYPE bunjobs_queue_demand gauge",
-  'bunjobs_queue_demand{ns="shop",queue="emails"} 15',
-  "# HELP bunjobs_queue_outstanding Every unfinished job, each once: demand plus the active jobs a live worker holds. 0 while the queue is paused.",
-  "# TYPE bunjobs_queue_outstanding gauge",
-  'bunjobs_queue_outstanding{ns="shop",queue="emails"} 16',
-  "…",
-  "",
-].join("\n");
+/**
+ * A sample of the exposition, for the docs: the renderer's own output for one
+ * queue, so the example cannot drift from what is served.
+ */
+const DEMAND_EXPOSITION_EXAMPLE = renderDemandExposition("shop", [
+  {
+    queue: "emails",
+    at: 0,
+    paused: false,
+    waiting: 12,
+    dueNow: 3,
+    stalled: 0,
+    active: 1,
+    workers: 0,
+    nextDueAt: null,
+    demand: 15,
+    outstanding: 16,
+    capped: false,
+    exact: true,
+  },
+]);
+
+/** The families of every demand scrape, named once for the docs. */
+const DEMAND_FAMILIES = [...DEMAND_METRICS, DEMAND_TRUNCATED_METRIC]
+  .map((metric) => `\`${metric.name}\``)
+  .join(", ");
 
 /** The other representation both demand routes serve. */
 const DEMAND_ALTERNATES = {
   [PROMETHEUS_MEDIA_TYPE]: {
-    description:
-      "The Prometheus text exposition, one gauge family per figure (`bunjobs_queue_demand`, `_outstanding`, `_waiting`, `_due`, `_stalled`, `_active`, `_workers`, `_paused`, `_demand_capped`), each sample labelled `ns` and `queue`. Served as `text/plain; version=0.0.4; charset=utf-8` for `?format=prometheus`, or an `Accept` preferring `text/plain`.",
+    description: `The Prometheus text exposition: ${DEMAND_METRICS.length + 1} gauge families (${DEMAND_FAMILIES}). Each per-queue sample is labelled \`ns\` and \`queue\`; \`${DEMAND_TRUNCATED_METRIC.name}\` is one sample labelled \`ns\`, 1 when \`GET /demand\` left visible queues out (always 0 on the per-queue route), since an absent series reads as 0 to many scalers. \`bunjobs_queue_demand_exact\` is 0 where the figures come from the approximate fallback. Served as \`text/plain; version=0.0.4; charset=utf-8\` for \`?format=prometheus\`, or an \`Accept\` preferring \`text/plain\`.`,
     example: DEMAND_EXPOSITION_EXAMPLE,
   },
 } as const;
 
 /** What both demand routes say about their figures, once. */
-const DEMAND_NOTE =
-  "A few bounded reads per queue on every built-in driver, never a scan of retained history; each figure is counted up to 10 000 (fixed: the routes take no `cap`), and `capped` says when one went past. Unlike `/counts`, due delayed jobs, due retries and stalled jobs are counted, and a paused queue answers `demand` and `outstanding` as `0` over its unchanged backlog, so one number is the answer. Point a launch-style scaler (a KEDA `ScaledJob`, an ACA event job) at `demand`, a scale-style one (a KEDA `ScaledObject`, CREMA) at `outstanding`. `exact` is `false` only on a custom driver without `countDemand`, whose fallback is right as a trigger and approximate as a count; it is the only signal of approximate figures (`features.demand` says only that these routes are served).\n\n`?format=prometheus` (or an `Accept` preferring `text/plain`) answers the Prometheus text exposition instead of JSON; errors are `application/problem+json` either way. Listing the live workers removes lapsed worker records where the backend prunes them, as `GET /workers` does; no job is touched.";
+const DEMAND_NOTE = `A few bounded reads per queue on every built-in driver, never a scan of retained history; each figure is counted up to ${DEFAULT_DEMAND_CAP.toLocaleString("en-US")} (\`DEFAULT_DEMAND_CAP\`, fixed: the routes take no \`cap\`), and \`capped\` says when one went past. Unlike \`/counts\`, due delayed jobs, due retries and stalled jobs are counted, and a paused queue answers \`demand\` and \`outstanding\` as \`0\` over its unchanged backlog, so one number is the answer. Point a launch-style scaler (a KEDA \`ScaledJob\`, an ACA event job) at \`demand\`, a scale-style one (a KEDA \`ScaledObject\`, CREMA) at \`outstanding\`. \`exact\` is \`false\` only on a custom driver without \`countDemand\`, whose fallback is right as a trigger and approximate as a count; it is the only signal of approximate figures (\`features.demand\` says only that these routes are served).\n\n\`?format=prometheus\` (or an \`Accept\` preferring \`text/plain\`) answers the Prometheus text exposition instead of JSON; errors are \`application/problem+json\` either way. Listing the live workers removes lapsed worker records where the backend prunes them, as \`GET /workers\` does; no job is touched.`;
 
 /** Errors every route naming a queue can answer with. */
 const QUEUE_ERRORS = ["INVALID_NAME", "QUEUE_NOT_FOUND"] as const;
@@ -685,8 +702,16 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         if (query.queues !== undefined) {
           // Asked for by name: kept in the order asked, once each, and only
           // where reachable. A miss is checked against the backend as
-          // \`GET /queues/{queue}\` checks it, at most once per cache window.
+          // `GET /queues/{queue}` checks it, at most once per cache window.
           const asked = [...new Set(query.queues)];
+          // The bound is on distinct names, so it is checked here rather
+          // than by the schema, which would count a repeat.
+          if (asked.length > limits.maxQueues) {
+            const message = `At most ${limits.maxQueues} distinct queues may be named (\`limits.maxQueues\`), got ${asked.length}`;
+            throw new ApiError("VALIDATION", 400, message, {
+              issues: [{ target: "query", path: "queues", message }],
+            });
+          }
           const reachable = await mapBounded(
             asked,
             async (name) => await services.queues.has(name),
@@ -710,7 +735,12 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           async (name) => await demandOf(await services.queues.get(name)),
         );
         if (wantsExposition(req, query.format)) {
-          return sendExposition(res, services.config.namespace, queues);
+          return sendExposition(
+            res,
+            services.config.namespace,
+            queues,
+            truncated,
+          );
         }
         return { body: { queues, truncated }, headers: { Vary: "Accept" } };
       },

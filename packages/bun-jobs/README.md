@@ -1988,8 +1988,9 @@ to the default 10,000, and `capped` says when one went past.
 
 With `?format=prometheus`, or an `Accept` preferring `text/plain` (as a
 Prometheus server's scrape does), either answers the Prometheus text
-exposition, `text/plain; version=0.0.4; charset=utf-8`: one gauge family per
-figure, each sample labelled with the namespace and the queue.
+exposition, `text/plain; version=0.0.4; charset=utf-8`: eleven gauge
+families, ten per queue (each sample labelled with the namespace and the
+queue) and one for the namespace.
 
 ```text
 # HELP bunjobs_queue_demand Jobs a worker could claim now: waiting + due + stalled. 0 while the queue is paused.
@@ -1997,11 +1998,16 @@ figure, each sample labelled with the namespace and the queue.
 bunjobs_queue_demand{ns="shop",queue="emails"} 15
 ```
 
-The families are `bunjobs_queue_demand`, `_outstanding`, `_waiting`, `_due`,
-`_stalled`, `_active`, `_workers`, `_paused` (0 or 1) and `_demand_capped` (1
-when the figures are lower bounds). `exact` in each answer is the only signal
-of approximate figures (`false` on a driver without `countDemand`);
-`/meta`'s `features.demand` says only that the routes are served.
+The per-queue families are `bunjobs_queue_demand`, `_outstanding`,
+`_waiting`, `_due`, `_stalled`, `_active`, `_workers`, `_paused` (0 or 1),
+`_demand_capped` (1 when the figures are lower bounds) and `_demand_exact` (0
+when they come from the approximate fallback). The namespace family,
+`bunjobs_demand_truncated{ns}`, is 1 when `GET /demand` left visible queues
+out (more than `limits.maxQueues`), and always 0 on the per-queue route: many
+scalers read an absent series as 0, which would scale to zero over a backlog.
+`exact` in each answer is the only signal of approximate figures (`false` on a
+driver without `countDemand`); `/meta`'s `features.demand` says only that the
+routes are served.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,

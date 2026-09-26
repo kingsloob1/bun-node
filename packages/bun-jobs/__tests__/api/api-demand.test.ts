@@ -3,7 +3,10 @@ import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createJobsApi } from "../../lib/api/createJobsApi";
-import { DEMAND_METRICS } from "../../lib/api/prometheus";
+import {
+  DEMAND_METRICS,
+  DEMAND_TRUNCATED_METRIC,
+} from "../../lib/api/prometheus";
 import { FEATURE_ROUTES } from "../../lib/api/routes/meta";
 import { DEFAULT_DEMAND_CAP } from "../../lib/drivers/index";
 import {
@@ -205,6 +208,18 @@ function valueOf(
   )?.value;
 }
 
+/** The namespace's `bunjobs_demand_truncated` sample in a parsed exposition. */
+function truncatedOf(
+  parsed: ReturnType<typeof parseExposition>,
+): number | undefined {
+  const samples = parsed.samples.filter(
+    (sample) => sample.name === "bunjobs_demand_truncated",
+  );
+  expect(samples).toHaveLength(1);
+  expect(Object.keys(samples[0]!.labels)).toEqual(["ns"]);
+  return samples[0]!.value;
+}
+
 /** A memory driver whose `countDemand` is hidden: a driver of somebody else's. */
 function withoutCountDemand(): JobsDriver {
   return new Proxy(new MemoryDriver(), {
@@ -377,9 +392,15 @@ describe("the Prometheus exposition", () => {
       "bunjobs_queue_workers",
       "bunjobs_queue_paused",
       "bunjobs_queue_demand_capped",
+      "bunjobs_queue_demand_exact",
+      "bunjobs_demand_truncated",
     ]);
     for (const sample of parsed.samples) {
-      expect(sample.labels).toEqual({ ns: jobs.namespace, queue: "a" });
+      expect(sample.labels).toEqual(
+        sample.name === "bunjobs_demand_truncated"
+          ? { ns: jobs.namespace }
+          : { ns: jobs.namespace, queue: "a" },
+      );
     }
     const figures = {
       bunjobs_queue_demand: BACKLOG.demand,
@@ -391,15 +412,19 @@ describe("the Prometheus exposition", () => {
       bunjobs_queue_workers: 0,
       bunjobs_queue_paused: 0,
       bunjobs_queue_demand_capped: 0,
+      bunjobs_queue_demand_exact: 1,
+      // One queue is never a cut, so always 0 here: the families stay uniform.
+      bunjobs_demand_truncated: 0,
     };
     expect(
       Object.fromEntries(
         parsed.samples.map((sample) => [sample.name, sample.value]),
       ),
     ).toEqual(figures);
-    expect(DEMAND_METRICS.map((metric) => metric.name)).toEqual(
-      parsed.families,
-    );
+    expect([
+      ...DEMAND_METRICS.map((metric) => metric.name),
+      DEMAND_TRUNCATED_METRIC.name,
+    ]).toEqual(parsed.families);
   });
 
   it("is chosen by an Accept preferring text/plain, and JSON otherwise; format overrides Accept", async () => {
@@ -456,8 +481,10 @@ describe("the Prometheus exposition", () => {
     const parsed = parseExposition(
       await (await raw(h, "/demand?format=prometheus")).text(),
     );
-    expect(parsed.families).toHaveLength(DEMAND_METRICS.length);
-    expect(parsed.samples).toHaveLength(DEMAND_METRICS.length * 2);
+    expect(parsed.families).toHaveLength(DEMAND_METRICS.length + 1);
+    // Two samples per queue family, one for the namespace's truncation.
+    expect(parsed.samples).toHaveLength(DEMAND_METRICS.length * 2 + 1);
+    expect(truncatedOf(parsed)).toBe(0);
     expect(valueOf(parsed, "bunjobs_queue_demand", "a")).toBe(5);
     expect(valueOf(parsed, "bunjobs_queue_demand", "b")).toBe(1);
     expect(new Set(parsed.samples.map((sample) => sample.labels.ns))).toEqual(
@@ -585,7 +612,62 @@ describe("authorization and visibility", () => {
     expect(read.body.truncated).toBe(true);
     const refused = await h.call("GET", "/demand?queues=a,b,c");
     expect(refused.status).toBe(400);
-    expect(refused.body.issues[0]).toMatchObject({ path: "queues" });
+    expect(refused.body.code).toBe("VALIDATION");
+    expect(refused.body.issues[0]).toMatchObject({
+      target: "query",
+      path: "queues",
+    });
+  });
+
+  it("says in the scrape when /demand left queues out, so an absent series is not read as 0", async () => {
+    const jobs = context(new MemoryDriver(), "demand-trunc-prom");
+    for (const name of ["a", "b", "c"]) {
+      await seed(jobs, name, [{ id: `${name}-1`, state: "waiting" }]);
+    }
+    const cut = harness({ jobs, limits: { queueCacheMs: 0, maxQueues: 2 } });
+    const scrape = parseExposition(
+      await (await raw(cut, "/demand?format=prometheus")).text(),
+    );
+    expect(scrape.samples.some((sample) => sample.labels.queue === "c")).toBe(
+      false,
+    );
+    expect(truncatedOf(scrape)).toBe(1);
+    // Named explicitly, nothing is cut: the bound refuses instead.
+    const named = parseExposition(
+      await (await raw(cut, "/demand?queues=a,b&format=prometheus")).text(),
+    );
+    expect(truncatedOf(named)).toBe(0);
+
+    // Control: room for every queue, nothing cut, and `c` is there.
+    const whole = harness({ jobs, limits: { queueCacheMs: 0, maxQueues: 3 } });
+    const all = parseExposition(
+      await (await raw(whole, "/demand?format=prometheus")).text(),
+    );
+    expect(valueOf(all, "bunjobs_queue_demand", "c")).toBe(1);
+    expect(truncatedOf(all)).toBe(0);
+  });
+
+  it("bounds ?queues= by distinct names: a repeat does not count", async () => {
+    const jobs = context(new MemoryDriver(), "demand-distinct");
+    for (const name of ["a", "b", "c"]) {
+      await seed(jobs, name, [{ id: `${name}-1`, state: "waiting" }]);
+    }
+    const h = harness({ jobs, limits: { queueCacheMs: 0, maxQueues: 2 } });
+    const names = (response: { body: { queues: { queue: string }[] } }) =>
+      response.body.queues.map((one) => one.queue);
+
+    const repeated = await h.call("GET", "/demand?queues=a,a,a");
+    expect(repeated.status).toBe(200);
+    expect(names(repeated)).toEqual(["a"]);
+    // A repeated key is not split on commas, so repeat the key for this form.
+    const two = await h.call(
+      "GET",
+      "/demand?queues=b&queues=a&queues=b&queues=a",
+    );
+    expect(two.status).toBe(200);
+    expect(names(two)).toEqual(["b", "a"]);
+    // Control: three distinct names are one too many.
+    expect((await h.call("GET", "/demand?queues=a,b,c,a")).status).toBe(400);
   });
 
   it("serves the scaler recipe: a read-only API allowed queues.read and nothing else", async () => {
@@ -646,6 +728,12 @@ describe("the fallback, and features.demand", () => {
       exact: false,
     });
 
+    // The scrape says so too: a scaler reading Prometheus sees exact 0.
+    const scrape = parseExposition(
+      await (await raw(h, "/demand?format=prometheus")).text(),
+    );
+    expect(valueOf(scrape, "bunjobs_queue_demand_exact", "a")).toBe(0);
+
     // Control: the same seed on a driver that counts demand is exact.
     const exact = context(new MemoryDriver(), "demand-fallback-control");
     await seed(exact, "a", [
@@ -662,6 +750,10 @@ describe("the fallback, and features.demand", () => {
       demand: 3,
       exact: true,
     });
+    const exactScrape = parseExposition(
+      await (await raw(control, "/queues/a/demand?format=prometheus")).text(),
+    );
+    expect(valueOf(exactScrape, "bunjobs_queue_demand_exact", "a")).toBe(1);
   });
 
   it("is false in runner mode, where the demand routes are not served", async () => {
