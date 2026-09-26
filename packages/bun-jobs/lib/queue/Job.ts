@@ -250,7 +250,14 @@ export class Job<TData = unknown, TResult = unknown> {
     return this.repeatKey !== null;
   }
 
-  /** The lock token held by the worker processing it, if any. */
+  /**
+   * The lock token of the claim holding it, if any — what that attempt's
+   * heartbeat, `extendLock()`, completion and failure writes must match.
+   * Drawn fresh for every claim, not derived from the worker: the same worker
+   * re-claiming a job holds a different token than its earlier claim did.
+   * Shaped `host:pid:<uuid>:<worker id>`; the worker id there only says who
+   * holds it. `null` while unclaimed.
+   */
   get lockToken(): string | null {
     return this.#record.lockToken;
   }

@@ -64,6 +64,7 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`events.ts`](./02-queues/events.ts) | every queue and worker event, name-scoped events (`completed:refund`), watching another process with `subscribe` / `publish` |
 | [`bulk-and-management.ts`](./02-queues/bulk-and-management.ts) | `addBulk`, `count`, `list`, `update`, cluster-wide `pause` / `resume`, `drain`, `clean` |
 | [`searching-and-paging.ts`](./02-queues/searching-and-paging.ts) | `list` narrowed by `name` and `search`, `page` with the total a paginated table needs, `getJobs` by id |
+| [`demand.ts`](./02-queues/demand.ts) | `getDemand`: `waiting`, due jobs counted where they stand, `stalled` once a dead worker's lock lapses, `demand` and `outstanding`; paused, `cap` and `capped`; `readDemand`'s fallback (`exact: false`) on a driver without `countDemand` |
 | [`workers-and-throughput.ts`](./02-queues/workers-and-throughput.ts) | `listWorkers` and `reportInterval`, `getThroughput` a minute at a time, `getQueueSummaries`, printed as a dashboard |
 | [`isolated-processors.ts`](./02-queues/isolated-processors.ts) | a processor **file** on each `target` — `in-process`, `worker-thread` (a `Worker`) and `child-process`; a runaway processor stopped by its timeout; `defineProcessor` |
 

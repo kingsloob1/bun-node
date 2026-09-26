@@ -2,12 +2,14 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   ChildOutcome,
   ChildRecordResult,
+  FailOutcome,
   JobRecord,
   JobRef,
   JobsDriver,
   PromotionRead,
   QueueRef,
   RepeatRecord,
+  Retention,
   StoredJobOptions,
   WorkerConfigInfo,
   WorkerControlInfo,
@@ -84,7 +86,7 @@ import {
   UnrecoverableJobError,
 } from "../shared/errors";
 import { queueEvent, workerEvent } from "../shared/events";
-import { HOST, newId, newToken } from "../shared/ids";
+import { HOST, newClaimToken, newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Pulse, waitForAny } from "../shared/wait";
@@ -314,6 +316,44 @@ type SettledOutcome =
       error: SerializedError;
     };
 
+/**
+ * The lock `record`'s attempt holds: the token its own claim stamped, which
+ * {@link BunQueueWorker}'s claim pass sets on every record it takes. Never the
+ * worker's — see `newClaimToken`. The fallback never matches a held lock, so a
+ * record that somehow has none is refused rather than settled.
+ */
+function heldLock(record: JobRecord): string {
+  return record.lockToken ?? "";
+}
+
+/**
+ * One claim of one job, running on this worker — the key of every piece of
+ * per-attempt state the worker keeps (`#active`, `#aborts`, `#heartbeats`).
+ *
+ * **Keyed per attempt, never by job id.** The same worker can hold two
+ * attempts at one job: at a concurrency above one, its own stalled sweep can
+ * hand back a job whose abandoned attempt is still running, and a free slot
+ * claims it again. Keyed by id, the second attempt's entries overwrote the
+ * first's, and the first's cleanup then deleted the second's — clearing its
+ * heartbeat (so it stalled again and died), dropping it from the in-flight
+ * count (so the worker ran more than its concurrency), from what `close()`
+ * waits for, and from what a forced close aborts; and a limiter charge was
+ * released once for two attempts. An object per claimed record cannot
+ * collide, even for a batch that shares one lock token.
+ */
+interface Attempt {
+  /** The job as this claim took it; its `lockToken` is this claim's own. */
+  readonly record: JobRecord;
+  /**
+   * Whether this claim was charged to a limiter reservation, so that its end
+   * is exactly one release — and cleared by that release. A job claimed while
+   * the queue had no limits was never counted, and releasing it anyway took
+   * it off a lease still holding jobs that were, so limits set again later
+   * under-counted this worker and admitted more than their cap (B7).
+   */
+  reserved: boolean;
+}
+
 /** How a stored `completed` or `dead` job ended. */
 function settledOutcome(record: JobRecord): SettledOutcome {
   return record.state === "completed"
@@ -427,8 +467,9 @@ export function deriveWorkerKey(parts: {
  * processes* and nothing more, so two workers built here under one key (two
  * replicas of a shard in one process, or simply two plain
  * `new BunQueueWorker("mail", ...)`) collided on it. They would then share a
- * heartbeat record, a lock token and a limiter lease, which is the very
- * corruption the derived id exists to make impossible.
+ * heartbeat record and a limiter lease, which is the very corruption the
+ * derived id exists to make impossible. (Not a lock token: each claim draws
+ * its own — see `newClaimToken`.)
  */
 let workerSerial = 0;
 
@@ -437,9 +478,9 @@ let workerSerial = 0;
  * process.
  *
  * Derived rather than random so it can be computed in the constructor, which
- * is what keeps `readonly id` possible: the lock token and the limiter's lease
- * holder are fixed there, and deferring them to `run()` would be a far larger
- * change.
+ * is what keeps `readonly id` possible: the heartbeat record's key and the
+ * limiter's lease holder are fixed there, and deferring them to `run()` would
+ * be a far larger change.
  */
 export function incarnationTag(
   host: string,
@@ -606,9 +647,11 @@ export class BunQueueWorker<
   readonly #target: WorkerTargetExecutor | undefined;
   /**
    * The heartbeat record's `target`, derived once from the very target
-   * `#target` was built from, so the record cannot disagree with it.
+   * `#target` was built from, so the record cannot disagree with it. Frozen,
+   * because {@link BunQueueWorker.target} hands out this very object and the
+   * memory driver keeps a reference to it in the record it stores.
    */
-  readonly #targetInfo: WorkerTargetInfo;
+  readonly #targetInfo: Readonly<WorkerTargetInfo>;
   /**
    * The heartbeat record's `summon`: the `summon` option, checked and copied
    * field by field in the constructor. `undefined` for a worker nobody
@@ -635,8 +678,14 @@ export class BunQueueWorker<
   readonly #ownsDriver: boolean;
   /** Logger bound to this worker. */
   readonly #logger: Logger;
-  /** The lock token every claim by this worker carries. */
-  readonly #token: string;
+  /**
+   * This worker's identity on the events it publishes (`origin`), stable for
+   * its whole life. **Not a lock**: every claim mints its own token (see
+   * {@link #claimUpToConcurrency}), because a lock shared by all of a
+   * worker's claims let an abandoned attempt settle, renew or fail the same
+   * worker's later claim of the same job (#187).
+   */
+  readonly #origin: string;
   /** Named backoff strategies, for jobs that name one. */
   readonly #backoffs: BackoffStrategies;
   /**
@@ -649,14 +698,6 @@ export class BunQueueWorker<
    */
   readonly #workerRef: { key: string; host: string; pid: number };
   readonly #limiter: QueueLimiter | undefined;
-  /**
-   * Ids of the running jobs claimed under a limiter reservation — the only
-   * ones whose end is a release. A job claimed while the queue had no limits
-   * was never counted, and releasing it anyway took it off a lease still
-   * holding jobs that were counted, so limits set again later under-counted
-   * this worker and admitted more than their cap (B7).
-   */
-  readonly #reservedIds = new Set<string>();
   /**
    * The queue's stored job defaults as this worker last read them — read
    * only to build a repeat series' next occurrence, trusted for
@@ -729,16 +770,20 @@ export class BunQueueWorker<
    * wait in a row: the first is usually a job that arrived a moment ago.
    */
   #instantIdle = false;
-  /** Jobs in flight, by id. */
-  readonly #active = new Map<string, Promise<void>>();
+  /**
+   * Attempts in flight, by {@link Attempt} — not by job id, so two attempts
+   * at the same job both count against the concurrency and `close()` waits
+   * for both.
+   */
+  readonly #active = new Map<Attempt, Promise<void>>();
   /**
    * Fired each time a running job leaves `#active`, so a full or limited
    * worker waits on one signal rather than on every running job's promise —
    * those left a reaction per wait on each still-running job (B1).
    */
   readonly #slotFreed = new Pulse();
-  /** Controllers for the jobs in flight, so they can be aborted. */
-  readonly #aborts = new Map<string, AbortController>();
+  /** Controllers for the attempts in flight, so they can be aborted. */
+  readonly #aborts = new Map<Attempt, AbortController>();
   /** Completion writes still in flight, so `close()` does not abandon one. */
   readonly #settling = new Set<Promise<void>>();
   /** Publishes still in flight, which `close()` waits for. */
@@ -825,6 +870,13 @@ export class BunQueueWorker<
   #running = false;
   /** Whether `close()` has been called. */
   #closing = false;
+  /**
+   * Whether `close()` has closed the driver this worker owns. Read by a
+   * `run()` that the close overtook during startup: a forced close does not
+   * wait for it, so the driver may have been closed before a connect that
+   * was already under way opened it again.
+   */
+  #driverClosed = false;
   /** Whether this worker is locally paused. */
   #paused = false;
   /** Resolves when the claim loop has stopped. */
@@ -850,8 +902,8 @@ export class BunQueueWorker<
    */
   #nextDue: { at: number | null; epoch: number } | undefined;
   /**
-   * Each running job's lock renewal, by job id: the timer, and what it needs
-   * to renew with.
+   * Each running attempt's lock renewal, by {@link Attempt}: the timer, and
+   * what it needs to renew with.
    *
    * The record and the controller are kept beside the timer because a
    * configuration change has to re-arm every renewal in flight — at the new
@@ -859,7 +911,7 @@ export class BunQueueWorker<
    * only do that if it can call `#heartbeat` for a job it did not start.
    */
   readonly #heartbeats = new Map<
-    string,
+    Attempt,
     {
       /** The renewal timer. */
       timer: ReturnType<typeof setInterval>;
@@ -961,13 +1013,13 @@ export class BunQueueWorker<
         this.processStartedAt,
         ++workerSerial,
       )}`;
-    this.#token = newToken(this.id);
+    this.#origin = newToken(this.id);
     this.#workerRef = { key: this.key, host: HOST, pid: process.pid };
 
     const { driver, owned } = resolveDriver(options.driver, options.metrics);
     this.driver = driver;
     this.#ownsDriver = owned;
-    this.#completions = new CompletionBatcher(driver, this.ref, this.#token);
+    this.#completions = new CompletionBatcher(driver, this.ref);
 
     const lockDuration = options.lockDuration ?? DEFAULT_LOCK_DURATION;
     this.#concurrency = Math.max(1, options.concurrency ?? 1);
@@ -1079,7 +1131,7 @@ export class BunQueueWorker<
       workerId: this.id,
       logger: this.#logger,
     });
-    this.#targetInfo = describeTarget(target, this.#target);
+    this.#targetInfo = Object.freeze(describeTarget(target, this.#target));
     this.#metrics = new WorkerMetricsRecorder({
       driver,
       ref: this.ref,
@@ -1221,7 +1273,12 @@ export class BunQueueWorker<
     }
   }
 
-  /** How many jobs are in flight. */
+  /**
+   * How many attempts are in flight, which is what the concurrency caps.
+   * Usually one per job; two for a job whose abandoned attempt — its lock
+   * lapsed and the stalled sweep handed it back — is still running beside the
+   * attempt that claimed it again, since both hold a slot.
+   */
   get activeCount(): number {
     return this.#active.size;
   }
@@ -1311,15 +1368,42 @@ export class BunQueueWorker<
     return this.#logger;
   }
 
+  /**
+   * Where this worker's attempts run, as its heartbeat record reports it
+   * (`WorkerInfo.target`): the kind, whether the processor is a function or a
+   * file, a custom executor's `name`, and a processor file's absolute path.
+   *
+   * Known from the constructor on, so a caller need not wait for the first
+   * report to land. It is the very object the record publishes, frozen, so
+   * it always equals what `listWorkers()` returns for this worker. `file` is
+   * included: this is the configuring application asking in-process, and
+   * `serialize.exposeProcessorFiles` governs only what the management API
+   * serves.
+   */
+  get target(): Readonly<WorkerTargetInfo> {
+    return this.#targetInfo;
+  }
+
   /* --- lifecycle --------------------------------------------------------- */
 
   /**
    * Consumes until closed. Resolves when the loop has stopped and every job
    * in flight has settled, so a supervising process can simply await it.
+   *
+   * A `close()` that lands while this is still starting — connecting,
+   * creating the queue, reading its control entries — ends it there, and it
+   * resolves: nothing is armed, no `ready` is emitted, and the process is not
+   * held. On a worker already closed it resolves at once and does nothing: a
+   * closed worker is not restarted.
    */
   async run(): Promise<void> {
     if (this.#running) {
       return await this.#stopped.promise;
+    }
+    // A closed worker stays closed (`#closing` is never reset), so running it
+    // again would only open a connection for the startup checks to abandon.
+    if (this.#closing) {
+      return;
     }
 
     this.#running = true;
@@ -1327,15 +1411,32 @@ export class BunQueueWorker<
 
     try {
       await this.driver.connect();
-      await this.driver.ensureQueue(this.ref);
+      // Each startup await is re-checked against a close that landed during
+      // it, and a closed worker goes no further: `close()` has already
+      // cleared the timers, so anything armed after it would outlive it.
+      if (!this.#closing) {
+        await this.driver.ensureQueue(this.ref);
+      }
     } catch (error) {
-      // Never started, so nothing will ever stop: without this, `#running`
-      // stayed true and `#stopped` never resolved, and a later `close()` —
-      // which waits for the loop to stop — hung for good. A `run()` called
-      // again tries to connect again rather than joining a dead start.
-      this.#running = false;
-      this.#stopped.resolve();
-      throw error;
+      if (!this.#closing) {
+        // Never started, so nothing will ever stop: without this, `#running`
+        // stayed true and `#stopped` never resolved, and a later `close()` —
+        // which waits for the loop to stop — hung for good. A `run()` called
+        // again tries to connect again rather than joining a dead start.
+        this.#running = false;
+        this.#stopped.resolve();
+        throw error;
+      }
+      // A close was asked for, and most likely caused this — a forced close
+      // shuts the driver under the connect. Either way the worker was never
+      // going to start, so `run()` ends the way a close ends it.
+      this.#logger.debug("Startup failed after close() was called", {
+        error,
+      });
+    }
+
+    if (this.#closing) {
+      return await this.#abandonStart();
     }
 
     this.#armMaintenance();
@@ -1351,6 +1452,11 @@ export class BunQueueWorker<
     // Before the loop turns, never after: a worker whose stop was recorded
     // against its key must not claim one job on the way to finding that out.
     await this.#adoptControl({ initial: true });
+    if (this.#closing) {
+      // What startup armed above, `close()` has cleared; this goes no
+      // further, so no `ready`, no announced state and no hold on the process.
+      return await this.#abandonStart();
+    }
     this.#armControl();
     // The first announcement, once startup has settled what the worker is —
     // `running`, `paused`, or `stopped` by a stop recorded against its key —
@@ -1367,6 +1473,28 @@ export class BunQueueWorker<
     this.#holdProcess();
     void this.#loop();
     return await this.#stopped.promise;
+  }
+
+  /**
+   * Ends a `run()` that a `close()` overtook during startup, before the claim
+   * loop was started: stands down as the loop's own exit would, so a graceful
+   * close waiting for it carries on.
+   *
+   * A forced close does not wait, and may already have closed the driver —
+   * possibly before a connect it could not cancel opened it again, which
+   * would keep the process alive for good. So an owned driver the close has
+   * closed is closed once more. A graceful close is still waiting here, and
+   * closes the driver itself after.
+   */
+  async #abandonStart(): Promise<void> {
+    if (this.#ownsDriver && this.#driverClosed) {
+      await this.driver.close().catch((error: unknown) => {
+        this.#logger.debug("Could not close the driver again", { error });
+      });
+    }
+
+    this.#running = false;
+    this.#stopped.resolve();
   }
 
   /** Stops claiming. Jobs in flight are left to finish. */
@@ -1676,6 +1804,7 @@ export class BunQueueWorker<
 
       if (this.#ownsDriver) {
         await this.driver.close();
+        this.#driverClosed = true;
       }
 
       this.#running = false;
@@ -1728,6 +1857,7 @@ export class BunQueueWorker<
 
     if (this.#ownsDriver) {
       await this.driver.close();
+      this.#driverClosed = true;
     }
 
     this.#running = false;
@@ -1999,7 +2129,7 @@ export class BunQueueWorker<
             ns: this.namespace,
             target,
             type,
-            origin: this.#token,
+            origin: this.#origin,
           },
           payload,
         ),
@@ -2081,6 +2211,13 @@ export class BunQueueWorker<
       return 0;
     }
 
+    // A lock of this claim's own, drawn now — never the worker's, and never
+    // anything computed before this call. The same worker re-claiming a job
+    // its own sweep took back must not share a token with the abandoned claim,
+    // whose completion is not awaited and can land late: sharing one let that
+    // completion record the abandoned result over the recovered one (#187).
+    // `newClaimToken` says why it is random rather than a counter.
+    const token = newClaimToken(this.id);
     let records: JobRecord[];
 
     try {
@@ -2090,7 +2227,7 @@ export class BunQueueWorker<
         {
           workerId: this.id,
           worker: this.#workerRef,
-          token: this.#token,
+          token,
           lockMs: this.#options.lockDuration,
           now,
           ...(reservation && reservation.excludeNames.length > 0
@@ -2125,6 +2262,16 @@ export class BunQueueWorker<
     if (records.length > 0 && this.#closing) {
       await this.#declineClaimed(records, reservation, false);
       return 0;
+    }
+
+    // Every driver reports the token its claim stamped, and every write this
+    // attempt makes — heartbeat, lock extension, completion, failure, and the
+    // processor's own `extendLock()` and `fail()` — reads it off the record.
+    // The claim's own value is what the driver stored, so it is the one kept:
+    // a driver that reported something else would otherwise have its jobs
+    // settle under a lock nobody holds.
+    for (const record of records) {
+      record.lockToken = token;
     }
 
     if (reservation) {
@@ -2165,17 +2312,14 @@ export class BunQueueWorker<
         }
       }
 
-      if (reserved) {
-        this.#reservedIds.add(record.id);
-      }
-
-      const running = this.#process(record).finally(() => {
-        this.#active.delete(record.id);
-        this.#aborts.delete(record.id);
+      const attempt: Attempt = { record, reserved };
+      const running = this.#process(attempt).finally(() => {
+        this.#active.delete(attempt);
+        this.#aborts.delete(attempt);
         this.#slotFreed.notify();
       });
 
-      this.#active.set(record.id, running);
+      this.#active.set(attempt, running);
     }
 
     return records.length;
@@ -2295,8 +2439,9 @@ export class BunQueueWorker<
     return known.at !== null && known.at <= now ? undefined : known.at;
   }
 
-  /** Runs one job and records how it ended. */
-  async #process(record: JobRecord): Promise<void> {
+  /** Runs one attempt at a job and records how it ended. */
+  async #process(attempt: Attempt): Promise<void> {
+    const { record } = attempt;
     /** The reason the processor gave `job.fail()`, which settles the attempt. */
     let failedWith: UnrecoverableJobError | undefined;
     /** Whether the processor has returned or thrown, so `fail()` is too late. */
@@ -2334,13 +2479,13 @@ export class BunQueueWorker<
       },
       onEvent: async (event) => await this.#onJobEvent(event),
     });
-    this.#aborts.set(record.id, controller);
+    this.#aborts.set(attempt, controller);
 
     const heartbeat = setInterval(() => {
       void this.#heartbeat(record, controller);
     }, this.#options.heartbeatInterval);
     heartbeat.unref?.();
-    this.#heartbeats.set(record.id, { timer: heartbeat, record, controller });
+    this.#heartbeats.set(attempt, { timer: heartbeat, record, controller });
 
     // Built on first use: most processors never log, and a child logger is an
     // object and a copy of its bindings for every job.
@@ -2430,9 +2575,10 @@ export class BunQueueWorker<
       // The map's timer, not `heartbeat`: a configuration change may have
       // replaced it, and clearing the one this call created would leave the
       // replacement renewing a lock for a job that has finished.
-      clearInterval(this.#heartbeats.get(record.id)?.timer ?? heartbeat);
-      this.#heartbeats.delete(record.id);
-      if (this.#reservedIds.delete(record.id)) {
+      clearInterval(this.#heartbeats.get(attempt)?.timer ?? heartbeat);
+      this.#heartbeats.delete(attempt);
+      if (attempt.reserved) {
+        attempt.reserved = false;
         this.#limiter?.release(record.name);
       }
     }
@@ -2516,9 +2662,9 @@ export class BunQueueWorker<
    * second time. Most such failures are the database saying "busy, try again"
    * (a deadlock victim, a lock wait timeout), which a short wait cures.
    *
-   * Every write retried here is conditional on this worker's lock token, so a
-   * repeat of one that did land, its reply lost, changes nothing and answers
-   * `false`. The retries stop at a quarter of the lock duration, so they can
+   * Every write retried here is conditional on the lock token of the claim
+   * that took the job, so a repeat of one that did land, its reply lost,
+   * changes nothing and answers `false`. The retries stop at a quarter of the lock duration, so they can
    * never outlive the lock they depend on.
    */
   async #persist<T>(write: () => Promise<T>): Promise<T> {
@@ -2554,7 +2700,7 @@ export class BunQueueWorker<
    */
   async #expireLock(record: JobRecord): Promise<void> {
     await this.driver
-      .extendJobLock(this.ref, record.id, this.#token, 0, Date.now())
+      .extendJobLock(this.ref, record.id, heldLock(record), 0, Date.now())
       .catch(() => false);
   }
 
@@ -2602,6 +2748,7 @@ export class BunQueueWorker<
 
     this.#completions.add({
       id: record.id,
+      token: heldLock(record),
       result: stored,
       retention: completionRetention,
       settle: (kept) => {
@@ -2616,7 +2763,7 @@ export class BunQueueWorker<
             await this.driver.completeJob(
               this.ref,
               record.id,
-              this.#token,
+              heldLock(record),
               stored,
               completionRetention,
               Date.now(),
@@ -3358,6 +3505,29 @@ export class BunQueueWorker<
       : false;
 
     const now = Date.now();
+    /**
+     * Whether a try of the failure write threw, so it may have landed with
+     * only its reply lost. Until one has, a refusal is the whole truth: every
+     * driver checks the lock and writes in one atomic step, so a refused try
+     * wrote nothing, and nothing before it of this attempt's could have.
+     */
+    let uncertain = false;
+    const failJob = async (outcome: FailOutcome): Promise<boolean> => {
+      try {
+        return await this.driver.failJob(
+          this.ref,
+          record.id,
+          heldLock(record),
+          serialized,
+          outcome,
+          now,
+          record.opts.keepStacktraces,
+        );
+      } catch (error) {
+        uncertain = true;
+        throw error;
+      }
+    };
 
     // Retried like a completion, for the same reason: see `#persist`. The
     // write checks the lock token and the job's state itself, so a repeat of
@@ -3366,23 +3536,17 @@ export class BunQueueWorker<
       if (delay !== false) {
         const runAt = now + delay;
         const written = await this.#persist(
-          async () =>
-            await this.driver.failJob(
-              this.ref,
-              record.id,
-              this.#token,
-              serialized,
-              { retry: true, runAt },
-              now,
-              record.opts.keepStacktraces,
-            ),
+          async () => await failJob({ retry: true, runAt }),
         );
 
         // The retry is scheduled now, possibly before whatever this worker
         // last heard was due next: its empty passes must promote again.
         noteScheduled(this.driver, this.ref);
 
-        if (!written && !(await this.#failureLanded(record, serialized))) {
+        if (
+          !written &&
+          !(uncertain && (await this.#failureLanded(record, serialized, false)))
+        ) {
           this.safeEmit("lockLost", job);
           return;
         }
@@ -3399,28 +3563,24 @@ export class BunQueueWorker<
         return;
       }
 
+      const retention = record.flow?.parent ? false : record.opts.removeOnFail;
       const written = await this.#persist(
-        async () =>
-          await this.driver.failJob(
-            this.ref,
-            record.id,
-            this.#token,
-            serialized,
-            {
-              retry: false,
-              retention: record.flow?.parent ? false : record.opts.removeOnFail,
-            },
-            now,
-            record.opts.keepStacktraces,
-          ),
+        async () => await failJob({ retry: false, retention }),
       );
 
       // Refused, and not because an earlier try of this very write landed:
       // the job is someone else's now — most often buried from outside by
-      // `Job.fail()`, which announced `failed` and `dead` itself. Saying so
-      // again would deliver both twice; nor is its letter or its parent this
-      // worker's to see to.
-      if (!written && !(await this.#failureLanded(record, serialized))) {
+      // `Job.fail()`, which announced `failed` and `dead` itself, or completed
+      // by the attempt that recovered it. Saying so again would deliver both
+      // twice, or announce a failure that never happened; nor is its letter or
+      // its parent this worker's to see to.
+      if (
+        !written &&
+        !(
+          uncertain &&
+          (await this.#failureLanded(record, serialized, retention))
+        )
+      ) {
         this.safeEmit("lockLost", job);
         return;
       }
@@ -3460,25 +3620,38 @@ export class BunQueueWorker<
   /**
    * Whether a failure write this worker saw refused had in fact landed: an
    * earlier try whose reply was lost wrote it, and the retry that followed
-   * found the lock already released. Told apart from a job someone else
-   * settled — buried from outside, recovered as stalled — by reading the job
-   * back: ours is `failed` or `dead` with exactly the failure this worker
+   * found the lock already released. Asked only once a try has thrown — a
+   * refusal with none before it wrote nothing. Told apart from a job someone
+   * else settled — buried from outside, recovered as stalled — by reading the
+   * job back: ours is `failed` or `dead` with exactly the failure this worker
    * wrote.
    *
-   * A job that is gone reads as ours: retention may have removed it the
-   * moment our write landed, and reporting a failure that happened beats
-   * losing it.
+   * A job that is gone reads as ours only when `retention` — what our write
+   * asked for, `false` for a retry — could have removed it the moment the
+   * write landed. Otherwise something else removed it: most often the attempt
+   * that recovered the job completing it, under completion retention, and
+   * reporting that as our failure would announce one that never happened and
+   * file its dead letter. When our retention could have removed it, the two
+   * cannot be told apart — no driver leaves a trace of a removed job — and
+   * reporting a failure that happened beats losing it.
    */
   async #failureLanded(
     record: JobRecord,
     written: SerializedError,
+    retention: Retention,
   ): Promise<boolean> {
     const now = await this.driver
       .getJob(this.ref, record.id)
       .catch(() => undefined);
 
-    if (now === undefined || now === null) {
+    // Unreadable: no evidence either way, and a lost failure is the worse
+    // mistake, as before.
+    if (now === undefined) {
       return true;
+    }
+
+    if (now === null) {
+      return retention !== false;
     }
 
     return (
@@ -3551,7 +3724,7 @@ export class BunQueueWorker<
       const held = await this.driver.extendJobLock(
         this.ref,
         record.id,
-        this.#token,
+        heldLock(record),
         this.#options.lockDuration,
         Date.now(),
       );
@@ -4176,14 +4349,14 @@ export class BunQueueWorker<
    * `lockDuration` can pass before the new timer's first tick.
    */
   #rearmJobHeartbeats(): void {
-    for (const [id, running] of this.#heartbeats) {
+    for (const [attempt, running] of this.#heartbeats) {
       clearInterval(running.timer);
 
       const timer = setInterval(() => {
         void this.#heartbeat(running.record, running.controller);
       }, this.#options.heartbeatInterval);
       timer.unref?.();
-      this.#heartbeats.set(id, { ...running, timer });
+      this.#heartbeats.set(attempt, { ...running, timer });
 
       void this.#heartbeat(running.record, running.controller);
     }
@@ -4211,7 +4384,7 @@ export class BunQueueWorker<
               ns: this.namespace,
               target: this.queueName,
               type,
-              origin: this.#token,
+              origin: this.#origin,
             },
             payload,
           ),
@@ -4353,8 +4526,9 @@ export class BunQueueWorker<
    * Looks, once, for another live worker registered under this worker's id.
    *
    * Sharing an id is already a latent corruption — the id names the heartbeat
-   * record, the lock token and the limiter's lease holder — and the derived
-   * id makes it impossible by accident. It is still possible on purpose, by
+   * record and the limiter's lease holder — and the derived id makes it
+   * impossible by accident. (Lock tokens are not at stake: each claim draws
+   * its own, and the id is only their trailing, diagnostic part.) It is still possible on purpose, by
    * passing the same explicit `id` twice, so the first report says so rather
    * than letting two workers quietly overwrite each other's records.
    *

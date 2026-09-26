@@ -752,7 +752,7 @@ executor could have seen the invoke, release the job without moving
 ### 4.9 Idempotency, fencing, and lost responses
 
 WR §5.8 is reused unchanged: the per-job `idempotencyKey`, the monotonic
-`fence`, and the gateway's settle conditional on its lock token. What the
+`fence`, and the gateway's settle conditional on the claim's lock token. What the
 bindings add is **re-attachment before retry**, so that a response lost to an
 intermediary does not become a second run [D]:
 

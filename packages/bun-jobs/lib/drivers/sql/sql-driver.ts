@@ -293,6 +293,28 @@ const STATES: JobState[] = [
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
 
+/**
+ * The lock condition of a stalled `active` row at `now` (a bound placeholder):
+ * its lock has lapsed, or it has **no lock at all**. `recoverStalled` moves by
+ * it, and selects — as `countDemand` counts `stalled` — by its two halves
+ * apart, each on its own index, so the figure is exactly the set the sweep
+ * takes.
+ *
+ * `lock_expires_at <= now` alone never matches `NULL`, so a lockless `active`
+ * row used to be left `active` for good, where Redis and the file driver
+ * recover one (issue #185). A row with no lock has no holder to settle it, so
+ * it is stalled now. No write path of this driver leaves one: every claim sets
+ * `state` and `lock_expires_at` in one `UPDATE` (`claimAssignments`), every
+ * settle clears them together, and the column has existed since the first
+ * schema, so no `syncSchema` ever added it under an existing `active` row.
+ * What does leave one is `addJob` given an `active` record without a lock (a
+ * restore or a migration — a record is placed in the state it names) or a
+ * write outside the driver.
+ */
+function stalledLock(now: string): string {
+  return `(lock_expires_at IS NULL OR lock_expires_at <= ${now})`;
+}
+
 /** States whose due time `updateJob` may move. */
 const PENDING: JobState[] = ["waiting", "delayed"];
 
@@ -2697,9 +2719,11 @@ export class SqlDriver implements JobsDriver {
       // statements: pick an id, take that id, read it back.
       //
       // Reading back by lock token instead looks simpler and is wrong: a
-      // worker uses one token for its whole life, so with any concurrency
-      // above one the read returns a job it already holds — and that job is
-      // then processed a second time. Measured, six of forty jobs ran twice.
+      // token is not unique to one job — a worker's batch shares one, and a
+      // driver cannot assume more of a caller than the contract says — so the
+      // read can return a job the caller already holds, which is then
+      // processed a second time. Measured, when workers kept one token for
+      // life, six of forty jobs ran twice.
       const pick = this.#binder();
       const candidate = await this.#one<{ id: string }>(
         this.dialect.claimCandidate({
@@ -4590,13 +4614,18 @@ export class SqlDriver implements JobsDriver {
    * `cap + 1` index entries (checked: at `LIMIT 1000` against 5,000 waiting,
    * Postgres, MySQL and MariaDB read 1,000):
    *
-   * - `stalled`: `state = 'active' AND lock_expires_at <= now` — **the very
+   * - `stalled`: `state = 'active'` and {@link stalledLock} — **the very
    *   predicate {@link SqlDriver.recoverStalled} selects by**, so it is exactly
-   *   the set that sweep would recover. A `NULL` lock never matches `<=`, so a
-   *   lockless `active` row is in neither.
-   * - `active`: `state = 'active'` plus exactly `#listNotNull(["active"])`, so
-   *   it equals `countJobs().active`: a lockless row is left out on Postgres
-   *   and SQLite (their partial `ix_…_lock`) and counted on MySQL and MariaDB.
+   *   the set that sweep would recover, a lockless `active` row included. Two
+   *   subqueries summed, the lapsed locks (`ix_…_lock`, as before) and the
+   *   `NULL` ones, as the sweep's two branches are.
+   * - `active`: `state = 'active'`, **every** active row, a lockless one
+   *   included, so `stalled` is a subset of it on every engine and
+   *   `active − stalled` in `outstanding` never goes negative. That is
+   *   `countJobs().active` on MySQL and MariaDB; on Postgres and SQLite
+   *   `countJobs` follows the `active` listing's `LOCK_NOT_NULL` (see
+   *   `#countNotNull`) and leaves a lockless row out, so there the two differ
+   *   by exactly the lockless rows — which the next sweep recovers.
    * - `dueNow`: one subquery each for `delayed` and `failed`, `run_at <= now`.
    * - `waiting`: `state = 'waiting'`.
    * - `nextDueAt`: `MIN(run_at) … AND run_at > now` **per state**, never over
@@ -4624,6 +4653,18 @@ export class SqlDriver implements JobsDriver {
    * Which `(ns, queue, state …)` index serves `waiting` and `active` varies by
    * engine and even by table size (`ix_…_due` or `ix_…_claim`); all are
    * covering, so nothing here hints one.
+   *
+   * **Since #185** (the table above is from before it): `active` no longer
+   * reads the partial `ix_…_lock`, and the lockless half of `stalled` is an
+   * eighth subquery. On Postgres and SQLite, whose `ix_…_lock` holds no
+   * `NULL`, it walks the queue's `active` rows on the `(ns, queue, state)`
+   * prefix of `ix_…_due` and tests the lock per row — the queue's running
+   * jobs, never history; MySQL and MariaDB read the `NULL` end of their plain
+   * `ix_…_lock`. Measured on 200,065 rows (64 locked `active`, 1 lockless),
+   * the whole statement before → after: Postgres 1.08–1.11 → 1.12–1.14 ms,
+   * SQLite 0.48–0.50 → 0.49–0.51 ms, MariaDB 13.8–15.1 → 14.1–14.5 ms, MySQL
+   * 76–89 → 74–90 ms — inside run-to-run spread (MySQL's is the capped
+   * 10,001-row `waiting` count on that fixture, unchanged by this).
    */
   async countDemand(
     q: QueueRef,
@@ -4643,17 +4684,18 @@ export class SqlDriver implements JobsDriver {
       `(SELECT COUNT(*) FROM (SELECT 1 ${where(condition)} LIMIT ${limit}) t_${name}) AS ${name}`;
     const earliest = (name: string, state: string) =>
       `(SELECT MIN(run_at) ${where(() => `state = '${state}' AND run_at > ${bind(now)}`)}) AS ${name}`;
-    const activeNotNull = this.#listNotNull(["active"])
-      .map((condition) => ` AND ${condition}`)
-      .join("");
 
     const row = await this.#one<Record<string, number | string | null>>(
       `SELECT ${[
         count(
-          "stalled",
+          "stalled_lapsed",
           () => `state = 'active' AND lock_expires_at <= ${bind(now)}`,
         ),
-        count("active", () => `state = 'active'${activeNotNull}`),
+        count(
+          "stalled_lockless",
+          () => `state = 'active' AND lock_expires_at IS NULL`,
+        ),
+        count("active", () => `state = 'active'`),
         count(
           "due_delayed",
           () => `state = 'delayed' AND run_at <= ${bind(now)}`,
@@ -4680,7 +4722,9 @@ export class SqlDriver implements JobsDriver {
         // Each state was counted to `cap + 1` on its own, so their sum still
         // reaches past `cap` whenever either did.
         dueNow: figure("due_delayed") + figure("due_failed"),
-        stalled: figure("stalled"),
+        // The two halves of `stalledLock`, counted apart for the reason
+        // `recoverStalled` selects them apart.
+        stalled: figure("stalled_lapsed") + figure("stalled_lockless"),
         active: figure("active"),
         nextDueAt: nexts.length === 0 ? null : Math.min(...nexts),
       },
@@ -6586,15 +6630,44 @@ export class SqlDriver implements JobsDriver {
   ): Promise<{ requeued: string[]; dead: string[] }> {
     await this.connect();
 
+    const batch = Math.max(1, Math.floor(limit));
     const scan = this.#binder();
-    const stalled = await this.#all<{ id: string; stalled_count: number }>(
-      `SELECT id, stalled_count FROM ${this.#tables.jobs}
-        WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
-          AND state = 'active' AND lock_expires_at <= ${scan.bind(now)}
-        ORDER BY lock_expires_at ASC
-        LIMIT ${Math.max(1, Math.floor(limit))}`,
+    // Two branches, each limited on its own and each on the index that serves
+    // it, rather than one `lock_expires_at IS NULL OR … <= now`: the lapsed
+    // branch is the statement this sweep always ran, a range on `ix_…_lock`,
+    // and the lockless one reads the queue's `active` rows (on MySQL and
+    // MariaDB, whose `ix_…_lock` is not partial, the `NULL` end of that same
+    // index). Wrapped as derived tables because SQLite allows a `LIMIT` only on
+    // a whole compound select. `stalledLock` says why a lockless row is taken.
+    // The condition is a callback, run after `ns` and `queue` are bound: `?`
+    // placeholders are positional, so values must be bound in text order.
+    const branch = (alias: string, lock: () => string, order: string) =>
+      `SELECT * FROM (
+         SELECT id, stalled_count, lock_expires_at FROM ${this.#tables.jobs}
+          WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
+            AND state = 'active' AND ${lock()}${order}
+          LIMIT ${batch}) ${alias}`;
+    const rows = await this.#all<{
+      id: string;
+      stalled_count: number | string;
+      lock_expires_at: number | string | null;
+    }>(
+      `${branch("t_lockless", () => "lock_expires_at IS NULL", "")}
+       UNION ALL
+       ${branch(
+         "t_lapsed",
+         () => `lock_expires_at <= ${scan.bind(now)}`,
+         " ORDER BY lock_expires_at ASC",
+       )}`,
       scan.values,
     );
+    // Lockless first, as the lock that lapsed longest ago: no engine agrees on
+    // where `NULL` sorts, so the order is settled here rather than by SQL.
+    const lapsedAt = (row: (typeof rows)[number]) =>
+      row.lock_expires_at === null ? -Infinity : Number(row.lock_expires_at);
+    const stalled = rows
+      .sort((a, b) => lapsedAt(a) - lapsedAt(b))
+      .slice(0, batch);
 
     const requeued: string[] = [];
     const dead: string[] = [];
@@ -6613,7 +6686,7 @@ export class SqlDriver implements JobsDriver {
                 run_at = ${bind(now)}, finished_on = ${bind(buried ? now : null)},
                 lock_token = NULL, lock_expires_at = NULL, worker_id = NULL
           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(row.id)}
-            AND state = 'active' AND lock_expires_at <= ${bind(now)}`,
+            AND state = 'active' AND ${stalledLock(bind(now))}`,
         values,
       );
 

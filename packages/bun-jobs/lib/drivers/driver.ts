@@ -820,18 +820,21 @@ export interface DemandCounts {
    * Jobs in `active` that this driver's own {@link QueueDriver.recoverStalled}
    * would recover at `now` — exactly that set, whatever it is on this engine.
    *
-   * Every engine takes the `active` jobs whose lock has lapsed. They differ on
-   * an `active` job with **no** lock (`lockExpiresAt` null), and this figure
-   * follows each one's sweep rather than a rule of its own: memory, SQL and
-   * MongoDB skip such a job, so it is not counted there; Redis scores it at
-   * `createdAt` and the file driver names its marker `0`, so their sweeps
-   * recover it and it is counted there. A sweep that changes which jobs it
-   * recovers changes this figure with it.
+   * Every engine in this package takes the same set: the `active` jobs whose
+   * lock has lapsed, **and** any `active` job with no lock at all
+   * (`lockExpiresAt` null), which has no holder to settle it and so is
+   * stalled now. Until issue #185 memory, SQL and MongoDB skipped a lockless
+   * job and left it `active` for good while Redis and file recovered it; this
+   * figure followed each sweep, and follows it still. Every job counted here
+   * is also in {@link DemandCounts.active}, so `stalled <= active`.
    */
   stalled: number;
   /**
-   * Jobs in `active`, lapsed or not: the same figure
-   * {@link QueueDriver.countJobs} reports as `active` on this driver.
+   * Every job in `active`, lapsed, live or lockless. It equals
+   * {@link QueueDriver.countJobs}' `active` except on Postgres and SQLite
+   * while a lockless `active` row exists: `countJobs` there follows the
+   * `active` listing, which leaves such a row out, while this figure must
+   * hold every job `stalled` counts.
    */
   active: number;
   /**
@@ -1181,7 +1184,12 @@ export interface JobRecord {
   failedReason: SerializedError | null;
   /** Recent failures, newest first, capped by `keepStacktraces`. */
   stacktrace: SerializedError[];
-  /** Token of the worker holding the job, while active. */
+  /**
+   * The lock of the claim holding the job, while active: the
+   * {@link ClaimOptions.token} it was claimed under. A worker draws a fresh
+   * one for every claim, so the same worker claiming the job again holds a
+   * different lock, and the earlier claim's writes no longer match.
+   */
   lockToken: string | null;
   /** When that lock expires, in epoch milliseconds. */
   lockExpiresAt: number | null;
@@ -1258,7 +1266,11 @@ export interface ClaimOptions {
    * {@link DriverCapabilities.jobAttribution} may ignore it.
    */
   worker?: { key: string; host: string; pid: number };
-  /** The lock token to stamp on the job. */
+  /**
+   * The lock token to stamp on the job, which the holder's extend, complete
+   * and fail writes must then carry. `BunQueueWorker` draws a fresh one for
+   * every claim call; jobs taken in one batch share it.
+   */
   token: string;
   /** How long the claim's lock lives, in milliseconds. */
   lockMs: number;
@@ -1496,8 +1508,8 @@ export interface WorkerInfo {
   /**
    * The worker's id: its **incarnation**, unique among live workers and new
    * every time the process starts, unless the worker was given an explicit
-   * one. Load-bearing — it names the heartbeat record, the lock token and the
-   * limiter's lease — so two live workers must never share it.
+   * one. Load-bearing — it names the heartbeat record and the limiter's lease
+   * — so two live workers must never share it.
    */
   id: string;
   /**
@@ -1523,7 +1535,11 @@ export interface WorkerInfo {
   pid: number;
   /** How many jobs it runs at once. */
   concurrency: number;
-  /** How many jobs it was running at its last report. */
+  /**
+   * How many attempts it was running at its last report. Counted per attempt,
+   * like its concurrency: a job whose abandoned attempt is still running
+   * beside its recovered one counts twice, because both hold a slot.
+   */
   active: number;
   /**
    * Whether it was locally paused at its last report. Kept for compatibility
@@ -2688,6 +2704,13 @@ export interface QueueDriver {
    * `dead` once they have stalled `maxStalledCount` times. Clears the lock
    * and `workerId`, but keeps `processedBy`: "last claimed by the worker that
    * died" is the diagnostic.
+   *
+   * A job is stalled at `now` when it is `active` and its lock has lapsed
+   * (`lockExpiresAt <= now`) **or it has no lock** (`lockExpiresAt` null): a
+   * lockless `active` job has no holder, so nothing else would ever move it.
+   * It is recovered by the same rules — `stalledCount` goes up, so past
+   * `maxStalledCount` it is buried. No API leaves one; a driver-level `addJob`
+   * of an `active` record without a lock, or a write outside the driver, can.
    */
   recoverStalled: (
     q: QueueRef,
@@ -2893,6 +2916,30 @@ export type DriverConfig = {
       keyPrefix?: string;
       /** How long a single blocking wait lasts, at most. Defaults to 5 seconds. */
       maxBlockSeconds?: number;
+      /**
+       * How long a first connect may take, in ms, before it fails with a
+       * `DriverError`. Defaults to `1000`; `0` leaves it to the retry policy.
+       * Only a connection that has never connected is bounded by it. See
+       * `RedisDriverOptions.firstConnectTimeout`.
+       */
+      firstConnectTimeout?: number;
+      /**
+       * Bun's per-attempt `connectionTimeout`, ms. Defaults to Bun's `10000`.
+       * A timed-out attempt is not retried, so a short one gives up on a slow
+       * server after one attempt.
+       */
+      connectionTimeout?: number;
+      /**
+       * Bun's `maxRetries` for a dropped connection. Defaults to Bun's `20`,
+       * about 31 seconds of backoff before one operation fails; the next
+       * operation retries again.
+       */
+      maxRetries?: number;
+      /**
+       * Bun's `autoReconnect`. Defaults to `true`; with `false` a dropped
+       * connection is reconnected only when an operation needs it.
+       */
+      autoReconnect?: boolean;
     }
   | {
       type: "sql";

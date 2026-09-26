@@ -233,6 +233,8 @@ method by method:
    are pending in this heap".
 7. **The lock token.** `#token = newToken()` once per worker incarnation. Every
    settle is conditional on it. It is process-scoped by construction.
+   *(Since #187 there is no `#token`: every claim draws its own with
+   `newClaimToken()`, still process-scoped.)*
 8. **`close()`** drains `#active`, `#settling`, `#publishing` — all local
    promise sets.
 
@@ -723,6 +725,9 @@ ago**, and one of them changes the analysis: **Lambda Managed Instances
    which corrupts the heartbeat record, the lock token and the concurrency
    lease simultaneously. `BunQueueWorkerOptions.id` already warns that two
    workers sharing an id corrupt all three; this is that hazard, industrialised.
+   *(Since #187 the lock token is drawn per claim, at claim time, so restored
+   copies no longer share one; the derived id, and with it the heartbeat record
+   and the concurrency lease, still would.)*
 5. **`sql.listen` cannot be used behind RDS Proxy.** bun-jobs' `SqlDriver`
    uses `sql.listen` for push events on Postgres, so a worker behind RDS Proxy
    must fall back to polling. **This is a real, present-day limitation of the
@@ -2779,7 +2784,8 @@ through it (§5.3 there). Neither adds a job state.
    answers a duplicate from the cache without re-running. **SHOULD**, because
    an isolate with no store cannot.
 2. **Fencing token** — `fence = "${lockToken}:${claimedAt}"`. `lockToken` is
-   the gateway's `#token`, `claimedAt` the epoch ms of the claim. It is
+   the claim's lock token (per claim since #187; the gateway's `#token` when
+   this was written), `claimedAt` the epoch ms of the claim. It is
    monotonic per job: a re-claim after a stall always has a larger
    `claimedAt`. A remote that writes anything durable records the highest
    `fence` it has seen per job id and **rejects** an invoke carrying a lower
