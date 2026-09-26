@@ -1569,8 +1569,16 @@ export const handler = async (_event: unknown, context: { getRemainingTimeInMill
 
 Construct the worker in the handler, never at module scope. A worker built
 during Init would outlive the invocation into a freeze [V/I, aws §2]. Under
-Lambda MicroVMs it would also share its id and lock token across every
-restored VM [V, aws §4.7].
+Lambda MicroVMs it would also share its worker id across every restored VM
+[V, aws §4.7]. Its lock token is not shared: since #187/#191 a token is minted
+per claim, at claim time (`${HOST}:${pid}:${uuid}:${workerId}`, read with
+`parseToken`), and the #191 follow-up draws that uuid from an unbuffered
+source (`node:crypto`'s `randomUUID({ disableEntropyCache: true })`), so
+restored VMs do not repeat one. The global `crypto.randomUUID()` would not
+do: it and `getRandomValues` share an entropy cache that a snapshot copies
+(measured by the bun-jobs session on Bun 1.4.3). The shared worker id still
+makes the restored VMs' heartbeat records collide. PR-3's marker `epoch` uses
+the same unbuffered source, for the same reason.
 
 
 ### 5.5 The identity channel: arguments only (revised 2026-09-26)
@@ -1640,6 +1648,31 @@ still start two processes with the same id. PR-3 adds **claim-once**: the
 first process to atomically claim an attempt id wins; a second claimant
 (a platform double-start, or any descendant that somehow sees the arguments)
 loses and runs unsummoned. PR-2 does not build it.
+
+**As built in PR-3 (2026-09-26)** [S, `lib/summon/claim.ts`]:
+
+- **The claim** is a reserved queue-state entry per attempt,
+  `__win:summon-claim:<hash of id>`, holding `{ capacity, holders[], at }`,
+  written only by compare-and-set. A worker claims in its first report, before
+  any record says it was summoned. An attempt for `count > 1` starts all its
+  units with one id, so the controller opens the entry with `capacity: count`
+  before calling the summoner; otherwise the first claimant creates it with
+  capacity 1. "Once" therefore means "at most `count` live processes".
+- **A restart is not a double start.** A platform restart (a scale-style
+  service, a container restart policy) runs the same arguments in a process
+  with a new worker id. **The rule: a claimant may take a holder's place when
+  that holder is gone — its worker record is not among the live ones
+  (`listWorkerRecords` at the claimant's `now`) and the holder's `until` has
+  passed**, `until` being its claim time plus one record lifetime
+  (`reportInterval × 3`), so a holder that has claimed but not yet written its
+  first record is never taken for dead. The takeover is a compare-and-set on
+  the entry, like the claim.
+- **A displaced holder steps down.** A summoned worker re-reads its place on
+  every later report; if it was taken over (it was only paused, not dead), it
+  runs unsummoned from then on, so two live records never carry one id for
+  more than a report interval.
+- Claim entries are swept, at most hourly, from a controller's poll once
+  older than `max(24 h, maxLifetime + bootBudget)`.
 
 ---
 

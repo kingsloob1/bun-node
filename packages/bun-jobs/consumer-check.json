@@ -26,6 +26,8 @@
         "WORKER_TARGET_KINDS",
         "SUMMON_ARGS",
         "summonedFromArgs",
+        "SummonController",
+        "defineSummoner",
         "ConfigError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
@@ -56,7 +58,13 @@
         "MetaDto",
         "JobDto",
         "QueueDemand",
-        "DemandCounts"
+        "DemandCounts",
+        "SummonPolicy",
+        "Summoner",
+        "SummonRequest",
+        "SummonResult",
+        "SummonCheckResult",
+        "SummonStatus"
       ],
       "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;\nexport const _summoned: t.BunQueueWorkerOptions = { namespace: \"shop\", driver, summon: m.summonedFromArgs([]) };\nexport type _summonMode = Expect<IsAny<t.WorkerSummonProvenance[\"mode\"]>>;\nexport type _demand = Expect<IsAny<Awaited<ReturnType<typeof emails.getDemand>>[\"outstanding\"]>>;\nexport const _demandTyped: Equal<Awaited<ReturnType<typeof emails.getDemand>>, t.QueueDemand> = true;"
     },
@@ -82,6 +90,31 @@
         "WorkerTargetInfoDto",
         "WorkerSummonProvenanceDto"
       ]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/summon",
+      "values": [
+        "SummonController",
+        "defineSummoner",
+        "summonedFromArgs",
+        "SUMMON_ARGS"
+      ],
+      "types": [
+        "SummonPolicy",
+        "Summoner",
+        "SummonRequest",
+        "SummonResult",
+        "SummonCheckResult",
+        "SummonStatus",
+        "SummonCapabilities",
+        "ProviderCallContext"
+      ],
+      "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/summon",
+      "values": ["SummonController", "defineSummoner"],
+      "types": ["SummonPolicy"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",

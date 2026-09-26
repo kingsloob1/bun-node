@@ -32,6 +32,7 @@ import type {
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
+import type { SummonPolicy } from "./summon/types";
 import {
   countQueues,
   listWorkerRecords,
@@ -56,6 +57,7 @@ import { ConfigError, NotSupportedError } from "./shared/errors";
 import { assertDateParser, parseDuration } from "./shared/humanTime";
 import { assertNamespace, assertSegment } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
+import { ATTACH_QUEUE, SummonController } from "./summon/controller";
 
 /** Options for a {@link BunJobs} context. */
 export interface BunJobsOptions {
@@ -148,6 +150,20 @@ export interface BunJobsOptions {
    * series are the term that grows with the number of workers.
    */
   metrics?: MetricsOptions;
+  /**
+   * Summon compute for these queues, keyed by queue name: a
+   * `SummonController` per entry, built with the context and closed first by
+   * `close()`. Each starts polling at once, and hears the adds of every queue
+   * of its name this context creates (`triggers.onAdd`).
+   *
+   * Needs a driver another process can reach, with queue state and worker
+   * records (a `ConfigError` at construction otherwise — the memory driver
+   * cannot summon). In a process that was itself summoned, or in a runner
+   * child, each controller is **inert** unless its policy says
+   * `fromSummoned: true`, so a config module shared with the worker cannot
+   * make it summon more workers. Unset by default: nothing is summoned.
+   */
+  summon?: Record<string, SummonPolicy>;
 }
 
 /**
@@ -349,6 +365,10 @@ export class BunJobs<
   readonly #workerOrdinals = new Map<string, number>();
   /** Notifiers opened here, closed with the context. */
   readonly #notifiers = new Set<JobsNotifier>();
+  /** Summon controllers, by queue name: from the `summon` option and `summonController()`. */
+  readonly #summonControllers = new Map<string, SummonController>();
+  /** The `summon` option, for `summonController()` to find a queue's policy in. */
+  readonly #summonPolicies: Readonly<Record<string, SummonPolicy>>;
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: RegistryWorker<TJobs> | undefined;
   /**
@@ -408,6 +428,19 @@ export class BunJobs<
       driver,
       logger: options.logger,
     });
+
+    this.#summonPolicies = { ...options.summon };
+    try {
+      for (const queue of Object.keys(this.#summonPolicies)) {
+        this.summonController(queue);
+      }
+    } catch (error) {
+      // A policy refused half-way must not leave the ones before it polling.
+      for (const controller of this.#summonControllers.values()) {
+        void controller.close();
+      }
+      throw error;
+    }
   }
 
   /** The context's logger. */
@@ -529,8 +562,56 @@ export class BunJobs<
     });
 
     this.#queues.set(name, queue);
+    this.#summonControllers.get(name)?.[ATTACH_QUEUE](queue);
     this.#followInNotifiers("queue", name);
     return queue;
+  }
+
+  /**
+   * The summon controller for a queue, created on first use — from `policy`
+   * when given, else from this context's `summon` option — and returned as
+   * it is afterwards (a `policy` passed then is ignored).
+   *
+   * ```ts
+   * const controller = jobs.summonController("emails", {
+   *   summoner: defineSummoner({ kind: "my-cloud", invoke: startWorker }),
+   * });
+   * await controller.check();   // or let its triggers run
+   * ```
+   *
+   * It hears the adds of the queue by this name that this context creates,
+   * and is closed first by `close()`.
+   *
+   * @throws {ConfigError} when there is no policy for the queue, or the
+   *   policy or driver cannot summon (see `SummonController`).
+   */
+  summonController(queue: string, policy?: SummonPolicy): SummonController {
+    const existing = this.#summonControllers.get(queue);
+    if (existing) {
+      return existing;
+    }
+    const resolved = policy ?? this.#summonPolicies[queue];
+    if (resolved === undefined) {
+      throw new ConfigError(
+        `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,
+        { queue },
+      );
+    }
+    const controller = new SummonController({
+      ...resolved,
+      driver: this.driver,
+      namespace: this.namespace,
+      queue: assertSegment(queue, "queue"),
+      ...(this.#loggerOption === undefined
+        ? {}
+        : { logger: this.#loggerOption }),
+    });
+    this.#summonControllers.set(queue, controller);
+    const existingQueue = this.#queues.get(queue);
+    if (existingQueue) {
+      controller[ATTACH_QUEUE](existingQueue);
+    }
+    return controller;
   }
 
   /**
@@ -1223,6 +1304,14 @@ export class BunJobs<
 
   /** The body of {@link BunJobs.close}, under its hold on the process. */
   async #close(options?: { timeout?: number }): Promise<void> {
+    // First, so no check is in flight when the queues and the driver go.
+    await Promise.allSettled(
+      [...this.#summonControllers.values()].map(
+        async (controller) => await controller.close(),
+      ),
+    );
+    this.#summonControllers.clear();
+
     await Promise.allSettled(
       [...this.#notifiers].map((notifier) => notifier.close()),
     );

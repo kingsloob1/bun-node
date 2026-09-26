@@ -99,6 +99,8 @@ reference.
   - [One file, many job names: `defineProcessors`](#one-file-many-job-names-defineprocessors)
   - [A custom target](#a-custom-target)
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
+- [Summoning a worker](#summoning-a-worker)
+  - [Summon policy](#summon-policy)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -1304,6 +1306,7 @@ Examples:
 | `service` | `string` | | What this service is called. Every worker created here reports it, and it is the first segment of each worker's stable key, `[service.]queue[.name\|.ordinal]`. Set it whenever several services share a backend and a namespace: otherwise a [configuration override](#controlling-workers-from-another-process) written for `mail` reaches whichever of them consumes a queue called `mail`. |
 | `workerControl` | `boolean` | `true` | Whether the workers created here obey pause, resume, stop, start and configuration overrides written by another process. It is passed as each worker's `control`, and a worker's own `control` option wins. On by default here, unlike on a `BunQueueWorker` you construct. It costs one subscription per worker where the driver pushes events, and, where it does not, one read per queue per driver instance every `control.interval` (2 seconds by default), plus each worker's two reads only when an instruction or override was written. See [Controlling workers from another process](#controlling-workers-from-another-process). |
 | `metrics` | `MetricsOptions` | everything on, per-second, 5 minutes of it | What is recorded for [analytics](#analytics). Handed to the driver the context builds from a config (a config naming its own `metrics` wins), and merged field by field under every runner and worker created here, whose own `metrics` wins. See [The `metrics` option](#the-metrics-option). |
+| `summon` | `Record<string, SummonPolicy>` | | A [summon controller](#summoning-a-worker) per queue named, built with the context and closed first by `close()`. A `ConfigError` on a driver that cannot summon (the memory driver). Inert in a summoned process or a runner child unless the policy says `fromSummoned`. |
 
 The context has these members:
 
@@ -2071,7 +2074,15 @@ not rely on that alone.
 
 A malformed argument throws a `ConfigError`, and so does `summon` on a worker
 that could never report — `reportInterval: 0`, or a driver that cannot store
-worker records — since it could never release its attempt. The management API
+worker records — since it could never release its attempt, and on a driver
+without queue state. **Claim-once:** before its first record says it was
+summoned, a worker claims its attempt id in queue state; a second process
+started with the same id (a platform's double start) finds it taken and runs
+as an ordinary worker, with no `summon` on its record (`worker.summon` is
+`undefined` there). A **restart** is not a double start: a process started
+with the same arguments takes the place of one whose worker record has
+lapsed, and a worker whose place was taken while it was merely stalled runs
+unsummoned from its next report. The management API
 serves `handle` only with `serialize.exposeSummonHandles` (default `false`,
 and independent of `exposeHosts`): an ECS task ARN contains the AWS account
 id. **Absent `summon` means one of two things**: the worker was not summoned,
@@ -2629,6 +2640,102 @@ Examples:
 
 - [`02-queues/isolated-processors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/isolated-processors.ts)
 - [`10-options/worker-targets.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-targets.ts)
+
+## Summoning a worker
+
+A `SummonController` watches one queue and starts compute when it has work
+and no worker: it reads the queue's [demand](#reading-a-queue-search-totals-workers-and-throughput),
+and when a worker is needed it calls a **summoner** — one HTTP call, one
+`ssh`, anything that starts a process running an ordinary worker.
+
+```ts
+import { BunJobs, defineSummoner } from "@kingsleyweb/bun-jobs";
+
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: {
+    emails: {
+      summoner: defineSummoner({
+        kind: "my-cloud",
+        invoke: async (request) => {
+          // request.argv carries --bun-jobs-summon-id=… and friends: pass
+          // them to the process, and request.dedupeKey as an idempotency key.
+          await startWorkerOnMyCloud(request.argv, request.dedupeKey);
+        },
+      }),
+    },
+  },
+});
+```
+
+The summoned process runs the worker with `summon: summonedFromArgs()` (see
+[worker records](#reading-a-queue-search-totals-workers-and-throughput)); its
+first heartbeat record carries the attempt's id, which is what releases the
+attempt. `jobs.summonController("emails")` returns the controller, and one can
+be built directly: `new SummonController({ driver, namespace, queue,
+summoner })`. `controller.check()` runs one check now — with every trigger
+off, that is the one-shot form for a cron or a scheduled function.
+
+**One summon per backlog, however many controllers.** Every guard lives in
+the driver, in one reserved queue-state entry per queue written only by
+compare-and-set: the attempts on their way (each counts as a worker until it
+registers or its `bootBudget` passes), the failures, the backoff, the circuit
+and the budget. A second controller, in any process, finds the first's
+attempt pending or loses the write, and calls nothing.
+
+**What triggers a check.** A local add through a queue the context created
+(`triggers.onAdd`: free while a serving worker is known, and one debounced
+check however many jobs a bulk add brings); an event another process
+published (`triggers.events`: only producers that publish, and never a bulk
+add); and a poll every 30 s (`triggers.poll`), the only trigger that sees a
+delayed job or a retry come due, or a dead worker's lock lapse. Put the
+controller on a long-lived process — the management API server is the usual
+one — and add it to producers only when latency matters.
+
+**The driver** must be reachable from another process, with queue state and
+worker records: the memory driver is a `ConfigError`, and the file and SQLite
+drivers only summon onto the same host. In a process that was itself summoned
+(`--bun-jobs-summon-id=`) or a runner child (`BUN_JOBS_CHILD=1`) a controller
+is **inert** unless its policy says `fromSummoned: true`, so a config module a
+worker shares cannot make it summon more workers. A process such a worker
+spawns cannot know it descends from one; its controller is live, but under the
+same per-queue guards as every other.
+
+Each attempt that changes state emits `summon` on the controller
+(`{ id, outcome, kind, … }`: `started`, `registered`, `lost`, `failed`,
+`unavailable`, `deduped`, `already-running`, `budget-exhausted`, `released`)
+and is logged. `controller.status()` reads the shared state, and
+`controller.reset()` clears failures, backoff and an open circuit.
+
+### Summon policy
+
+| Option | Default | Meaning |
+|---|---|---|
+| `summoner` | required | A `Summoner` from `defineSummoner`, or a bare function. |
+| `triggers` | on, on, `30_000`, `250` | `onAdd`, `events` (where events cross processes), `poll` (ms or `false`), `debounce` (ms). |
+| `bootBudget` | the summoner's (`180_000`) | How long an attempt counts as a worker on its way. |
+| `maxWorkers` | `1` | The most summoned workers at once. |
+| `jobsPerWorker` | `Infinity` | Outstanding jobs per worker before another is wanted. |
+| `maxPending` | `maxWorkers` | The most unregistered attempts at once. |
+| `cooldown` | `10_000` | The least time between two attempts. |
+| `backoff` | `30_000` to `900_000` | The wait after a failed or lost attempt, doubling. |
+| `circuit` | `5` failures, `900_000` | When to stop, and for how long. |
+| `budget` | `30`/hour, `300`/day | Attempts per queue. A hit never fails a job. |
+| `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
+| `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |
+| `scaleDown` | `300_000` | Scale style: how long nothing is outstanding before the count goes to 0. |
+| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. |
+| `env` | `{}` | Static environment for every request. Never identity. |
+| `fromSummoned` | `false` | Whether the controller runs in a summoned process or runner child. |
+
+`defineSummoner` also takes `style` (`"launch"`, `"scale"` with a `release`,
+or `"wake"`), `passes` (`"argv"`, or `"none"` when the platform's command line
+is fixed: attempts are then released by a worker's start time), `dedupe` (how
+long and in which characters `request.dedupeKey` may be) and `shutdown`. A
+request's `id` never repeats, even after the queue's state is purged, and
+everything in it but `demand` and `reason` is a pure function of that id, so a
+platform that remembers idempotency tokens can be handed it as one.
 
 ## BunRunner
 

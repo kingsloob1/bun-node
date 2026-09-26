@@ -920,3 +920,37 @@ export {
   type SummonedArgs,
   summonedFromArgs,
 } from "./summon/args";
+
+/* ------------------------------------------------------------------ *
+ * Summoning: a controller that starts compute when a queue has work and no
+ * worker, and the summoners it calls. Also at `@kingsleyweb/bun-jobs/summon`.
+ * ------------------------------------------------------------------ */
+export {
+  defineSummoner,
+  type DefineSummonerOptions,
+  type PendingSummon,
+  type ProviderApiVersions,
+  type ProviderCallContext,
+  type ProviderIdentity,
+  type SummonCapabilities,
+  type SummonCheckResult,
+  SummonController,
+  type SummonControllerEvents,
+  type SummonControllerOptions,
+  type SummonDedupe,
+  type Summoner,
+  type SummonerFunction,
+  type SummonEventPayload,
+  type SummonFacet,
+  type SummonLastOutcome,
+  type SummonMarker,
+  type SummonOutcomeKind,
+  type SummonPolicy,
+  type SummonReason,
+  type SummonReleaseRequest,
+  type SummonRequest,
+  type SummonResult,
+  type SummonSkipReason,
+  type SummonStatus,
+  type UnitStatus,
+} from "./summon/index";
