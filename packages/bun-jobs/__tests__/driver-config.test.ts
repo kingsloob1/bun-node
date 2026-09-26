@@ -50,6 +50,10 @@ describe("createDriver: the config surface", () => {
         url: "redis://127.0.0.1:6379/15",
         keyPrefix: "cfg",
         maxBlockSeconds: 0.25,
+        firstConnectTimeout: 2_000,
+        connectionTimeout: 5_000,
+        maxRetries: 5,
+        autoReconnect: true,
       },
       {
         type: "sql",

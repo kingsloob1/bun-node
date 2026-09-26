@@ -1,4 +1,6 @@
+import type { RandomUUIDOptions } from "node:crypto";
 import type { DriverConfig, JobsDriver } from "../lib/index";
+import nodeCrypto from "node:crypto";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
 import { BunQueue, BunQueueWorker, createDriver } from "../lib/index";
@@ -126,6 +128,18 @@ async function stallAndRecover(
   /** How each completion write was answered, in order. */
   const answered: string[] = [];
   const firstAnswer = gate();
+  /**
+   * Opens once both attempts' completion writes have been answered. The store
+   * reads `completed` as soon as the recovered write lands, but the worker
+   * reports it only once the driver's reply is back, so a test that asserts on
+   * `answered` as soon as the store settles can still find one entry.
+   */
+  const bothAnswered = gate();
+  const answer = (entry: string) => {
+    answered.push(entry);
+    firstAnswer.open();
+    if (answered.length >= 2) bothAnswered.open();
+  };
 
   if (options.hold) {
     const original = driver.completeJob.bind(driver);
@@ -149,6 +163,8 @@ async function stallAndRecover(
   const stalled = gate();
   let attempts = 0;
   let renewal: Renewal | undefined;
+  /** What stopped the abandoned attempt's renewals, when something did. */
+  let renewalError: unknown;
 
   const worker = new BunQueueWorker(
     "claim-token",
@@ -185,7 +201,9 @@ async function stallAndRecover(
               afterHeartbeat: await lockOf(),
             };
           })()
-            .catch(() => undefined)
+            .catch((error: unknown) => {
+              renewalError = error;
+            })
             .finally(() => renewed.open());
         }
 
@@ -218,12 +236,10 @@ async function stallAndRecover(
 
   worker.on("stalled", () => stalled.open());
   worker.on("completed", (_job, value) => {
-    answered.push(`completed ${String(value)}`);
-    firstAnswer.open();
+    answer(`completed ${String(value)}`);
   });
   worker.on("lockLost", () => {
-    answered.push("lockLost");
-    firstAnswer.open();
+    answer("lockLost");
   });
 
   void worker.run();
@@ -242,6 +258,16 @@ async function stallAndRecover(
     },
   );
 
+  // Each attempt's completion is answered with exactly one of `completed` or
+  // `lockLost`; wait for the second answer rather than read `answered` early.
+  await within(bothAnswered.promise, "both completion writes' answers").catch(
+    (error: unknown) => {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}: ${JSON.stringify({ state: record?.state, answered })}`,
+      );
+    },
+  );
+
   return {
     outcome: {
       state: record?.state,
@@ -250,6 +276,7 @@ async function stallAndRecover(
       attempts,
     },
     renewal,
+    renewalError,
     answered,
   };
 }
@@ -282,11 +309,15 @@ for (const { name, config, available } of BACKENDS) {
     }, 30_000);
 
     it("does not let the abandoned claim renew the recovered claim's lock", async () => {
-      const { outcome, renewal } = await stallAndRecover(config, {
+      const { outcome, renewal, renewalError } = await stallAndRecover(config, {
         hold: false,
         renew: true,
       });
 
+      // Named, so a renewal that threw says why rather than reading `undefined`.
+      expect({ renewalError: renewalError && String(renewalError) }).toEqual({
+        renewalError: undefined,
+      });
       expect(renewal).toBeDefined();
       expect(renewal!.before).not.toBeNull();
       expect({
@@ -372,9 +403,9 @@ describe("a claim's token", () => {
     }
   });
 
-  it("is drawn from the CSPRNG at claim time, not at construction", async () => {
-    const drawn: string[] = [];
-    const original = crypto.randomUUID.bind(crypto);
+  it("is drawn at claim time, not at construction, past Bun's entropy buffer", async () => {
+    const drawn: { value: string; options?: RandomUUIDOptions }[] = [];
+    const original = nodeCrypto.randomUUID.bind(nodeCrypto);
     let spy: ReturnType<typeof spyOn> | undefined;
 
     try {
@@ -382,15 +413,22 @@ describe("a claim's token", () => {
         // Installed only once the worker exists, so anything it computed in its
         // constructor is invisible here: a snapshot of a process after init,
         // restored into several VMs, would replay exactly that.
-        spy = spyOn(crypto, "randomUUID").mockImplementation(() => {
-          const value = original();
-          drawn.push(value);
-          return value;
-        });
+        spy = spyOn(nodeCrypto, "randomUUID").mockImplementation(
+          (options?: RandomUUIDOptions) => {
+            const value = original(options);
+            drawn.push({ value, options });
+            return value;
+          },
+        );
       });
 
       for (const token of tokens) {
-        expect(drawn).toContain(token.split(":")[2] ?? "");
+        const uuid = token.split(":")[2] ?? "";
+        const draw = drawn.find((one) => one.value === uuid);
+        expect(draw).toBeDefined();
+        // Bun's cached path hands out UUIDs buffered 128 at a time, which a
+        // snapshot would copy along with the rest of the process.
+        expect(draw!.options).toEqual({ disableEntropyCache: true });
       }
     } finally {
       spy?.mockRestore();

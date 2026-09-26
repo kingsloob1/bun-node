@@ -63,6 +63,10 @@ export function createDriver(config: DriverConfig): JobsDriver {
         cluster: config.cluster,
         keyPrefix: config.keyPrefix,
         maxBlockSeconds: config.maxBlockSeconds,
+        firstConnectTimeout: config.firstConnectTimeout,
+        connectionTimeout: config.connectionTimeout,
+        maxRetries: config.maxRetries,
+        autoReconnect: config.autoReconnect,
         metrics: config.metrics,
       });
     default:

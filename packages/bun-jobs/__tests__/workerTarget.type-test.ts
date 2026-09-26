@@ -12,6 +12,7 @@
  */
 import type {
   BunJobs,
+  BunQueueWorker,
   BunQueueWorkerOptions,
   JobDefinition,
   LocalWorkerTarget,
@@ -163,6 +164,20 @@ export const honoursForce = {
     void force;
   },
 } satisfies WorkerTargetExecutor;
+
+/* --- a worker says where its attempts run ---------------------------------- */
+
+// The heartbeat record's own type, read-only: `worker.target` is the very
+// object the record publishes, so a caller must not be able to change it.
+assertTrue<Equals<BunQueueWorker["target"], Readonly<WorkerTargetInfo>>>();
+declare const running: BunQueueWorker;
+// Still usable wherever a `WorkerTargetInfo` is wanted (the record's field).
+export const described: WorkerTargetInfo = running.target;
+export const kind: WorkerTargetKind = running.target.kind;
+// @ts-expect-error the description is read-only.
+running.target.kind = "custom";
+// @ts-expect-error a getter, with no setter.
+running.target = described;
 
 /* --- defineProcessors takes what BunJobs hands out ------------------------- */
 

@@ -845,7 +845,7 @@ interface JobDocument {
    * from elsewhere) round-trips as it was written.
    */
   processedBy?: JobWorkerRef;
-  /** That worker's lock token. Absent while unclaimed. */
+  /** The holding claim's lock token. Absent while unclaimed. */
   lockToken?: string | null;
   /** When the lock expires. Absent while unclaimed. */
   lockExpiresAt?: number | null;
@@ -1136,6 +1136,31 @@ const PROMOTION_INDEX = {
 } as const satisfies Record<string, 1>;
 
 /** The stalled-recovery index's key, which a listing of `active` walks. */
+/**
+ * The lock filter of a stalled `active` document at `now`: its lock has
+ * lapsed, or it has **no lock at all** (`null`, or the field missing).
+ * {@link MongoDriver.recoverStalled} selects and moves by it and
+ * {@link MongoDriver.countDemand} counts `stalled` by it, so the figure is
+ * exactly the set the sweep takes.
+ *
+ * `{ $not: { $gt: now } }` rather than `{ $lte: now }`: a comparison operator
+ * never matches `null`, so the old filter left a lockless `active` document
+ * `active` for good, where Redis and the file driver recover one (issue
+ * #185). A document with no lock has no holder to settle it, so it is stalled
+ * now. The negation keeps one index range on `LOCK_INDEX` (`null` sorts before
+ * every number, so `[MinKey, now]` holds both), and an ascending sort on
+ * `lockExpiresAt` still walks it in order, lockless first.
+ *
+ * No write path of this driver leaves one: every claim sets `state` and
+ * `lockExpiresAt` in one single-document update, and every settle clears
+ * them together. What does is `addJob` given an `active` record without a
+ * lock (a restore or a migration — a record is placed in the state it names)
+ * or a write outside the driver.
+ */
+function stalledLock(now: number): FilterLike {
+  return { $not: { $gt: now } };
+}
+
 const LOCK_INDEX = {
   ns: 1,
   queue: 1,
@@ -4560,10 +4585,10 @@ export class MongoDriver implements JobsDriver {
    *
    * - `active`, read first: `{ state: "active" }`, as `countJobs` counts it
    *   (no predicate).
-   * - `stalled`, read next: `{ state: "active", lockExpiresAt: { $lte: now } }`
-   *   — **the filter {@link MongoDriver.recoverStalled} selects by**, so
-   *   exactly the set it would recover. `$lte` never matches `null`, so a
-   *   lockless `active` document is not in it.
+   * - `stalled`, read next: `{ state: "active", lockExpiresAt: { $not: {
+   *   $gt: now } } }` ({@link stalledLock}) — **the filter
+   *   {@link MongoDriver.recoverStalled} selects by**, so exactly the set it
+   *   would recover, a lockless `active` document included.
    * - `dueNow`: `{ state, runAt: { $lte: now } }` for `delayed`, then `failed`.
    * - `waiting`: `{ state: "waiting" }`.
    * - `nextDueAt`: the least `runAt > now` of each scheduled state.
@@ -4602,7 +4627,7 @@ export class MongoDriver implements JobsDriver {
         counts.active = await count({ state: "active" });
         counts.stalled = await count({
           state: "active",
-          lockExpiresAt: { $lte: now },
+          lockExpiresAt: stalledLock(now),
         });
       },
       dueNow: async () => {
@@ -5331,7 +5356,7 @@ export class MongoDriver implements JobsDriver {
         ns: q.ns,
         queue: q.queue,
         state: "active",
-        lockExpiresAt: { $lte: now },
+        lockExpiresAt: stalledLock(now),
       })
       .sort({ lockExpiresAt: 1 })
       .limit(Math.max(1, Math.floor(limit)))
@@ -5350,7 +5375,7 @@ export class MongoDriver implements JobsDriver {
         {
           _id: document._id,
           state: "active",
-          lockExpiresAt: { $lte: now },
+          lockExpiresAt: stalledLock(now),
         },
         {
           $set: {

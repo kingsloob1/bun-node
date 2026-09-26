@@ -1258,6 +1258,80 @@ describe("target: the heartbeat record", () => {
   });
 });
 
+describe("target: the worker's own getter", () => {
+  const file = handler("job-double");
+
+  /** Each kind a worker resolves, with the processor it takes. */
+  const cases: [
+    string,
+    string | (() => Promise<unknown>),
+    WorkerTarget | undefined,
+    WorkerInfo["target"],
+  ][] = [
+    [
+      "in-process, a function",
+      async () => null,
+      undefined,
+      { kind: "in-process", processor: "function" },
+    ],
+    [
+      "in-process, a file",
+      file,
+      "in-process",
+      { kind: "in-process", processor: "file", file },
+    ],
+    [
+      "worker-thread",
+      file,
+      "worker-thread",
+      { kind: "worker-thread", processor: "file", file },
+    ],
+    [
+      "child-process",
+      file,
+      { kind: "child-process", killTimeout: 100 },
+      { kind: "child-process", processor: "file", file },
+    ],
+    [
+      "custom, with its name",
+      async () => null,
+      () => ({ name: "grpc-pool", run: async () => null }),
+      { kind: "custom", processor: "function", name: "grpc-pool" },
+    ],
+  ];
+
+  for (const [label, processor, target, expected] of cases) {
+    it(`equals what the heartbeat record reports (${label})`, async () => {
+      const { worker, record } = reporting(processor, target);
+
+      // Known before any report lands.
+      expect(worker.target).toEqual(expected!);
+      expect((await record()).target).toEqual(worker.target);
+    });
+  }
+
+  it("cannot be changed through, so the record keeps what the worker does", async () => {
+    const { worker, record } = reporting(file, "child-process");
+    const described = worker.target;
+
+    expect(Object.isFrozen(described)).toBe(true);
+    // The same object every time, and the one the record carries.
+    expect(worker.target).toBe(described);
+    expect(() => {
+      (described as { kind: string }).kind = "custom";
+    }).toThrow(TypeError);
+    expect(() => {
+      delete (described as { file?: string }).file;
+    }).toThrow(TypeError);
+
+    expect((await record()).target).toEqual({
+      kind: "child-process",
+      processor: "file",
+      file,
+    });
+  });
+});
+
 /* --- defineProcessors ------------------------------------------------------ */
 
 describe("defineProcessors", () => {

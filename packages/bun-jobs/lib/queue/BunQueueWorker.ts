@@ -2,12 +2,14 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   ChildOutcome,
   ChildRecordResult,
+  FailOutcome,
   JobRecord,
   JobRef,
   JobsDriver,
   PromotionRead,
   QueueRef,
   RepeatRecord,
+  Retention,
   StoredJobOptions,
   WorkerConfigInfo,
   WorkerControlInfo,
@@ -466,8 +468,9 @@ export function deriveWorkerKey(parts: {
  * processes* and nothing more, so two workers built here under one key (two
  * replicas of a shard in one process, or simply two plain
  * `new BunQueueWorker("mail", ...)`) collided on it. They would then share a
- * heartbeat record, a lock token and a limiter lease, which is the very
- * corruption the derived id exists to make impossible.
+ * heartbeat record and a limiter lease, which is the very corruption the
+ * derived id exists to make impossible. (Not a lock token: each claim draws
+ * its own — see `newClaimToken`.)
  */
 let workerSerial = 0;
 
@@ -476,9 +479,9 @@ let workerSerial = 0;
  * process.
  *
  * Derived rather than random so it can be computed in the constructor, which
- * is what keeps `readonly id` possible: the lock token and the limiter's lease
- * holder are fixed there, and deferring them to `run()` would be a far larger
- * change.
+ * is what keeps `readonly id` possible: the heartbeat record's key and the
+ * limiter's lease holder are fixed there, and deferring them to `run()` would
+ * be a far larger change.
  */
 export function incarnationTag(
   host: string,
@@ -645,9 +648,11 @@ export class BunQueueWorker<
   readonly #target: WorkerTargetExecutor | undefined;
   /**
    * The heartbeat record's `target`, derived once from the very target
-   * `#target` was built from, so the record cannot disagree with it.
+   * `#target` was built from, so the record cannot disagree with it. Frozen,
+   * because {@link BunQueueWorker.target} hands out this very object and the
+   * memory driver keeps a reference to it in the record it stores.
    */
-  readonly #targetInfo: WorkerTargetInfo;
+  readonly #targetInfo: Readonly<WorkerTargetInfo>;
   /**
    * The heartbeat record's `summon`: the `summon` option, checked and copied
    * field by field in the constructor. `undefined` for a worker nobody
@@ -874,6 +879,13 @@ export class BunQueueWorker<
   #running = false;
   /** Whether `close()` has been called. */
   #closing = false;
+  /**
+   * Whether `close()` has closed the driver this worker owns. Read by a
+   * `run()` that the close overtook during startup: a forced close does not
+   * wait for it, so the driver may have been closed before a connect that
+   * was already under way opened it again.
+   */
+  #driverClosed = false;
   /** Whether this worker is locally paused. */
   #paused = false;
   /** Resolves when the claim loop has stopped. */
@@ -1130,7 +1142,7 @@ export class BunQueueWorker<
       workerId: this.id,
       logger: this.#logger,
     });
-    this.#targetInfo = describeTarget(target, this.#target);
+    this.#targetInfo = Object.freeze(describeTarget(target, this.#target));
     this.#metrics = new WorkerMetricsRecorder({
       driver,
       ref: this.ref,
@@ -1367,15 +1379,42 @@ export class BunQueueWorker<
     return this.#logger;
   }
 
+  /**
+   * Where this worker's attempts run, as its heartbeat record reports it
+   * (`WorkerInfo.target`): the kind, whether the processor is a function or a
+   * file, a custom executor's `name`, and a processor file's absolute path.
+   *
+   * Known from the constructor on, so a caller need not wait for the first
+   * report to land. It is the very object the record publishes, frozen, so
+   * it always equals what `listWorkers()` returns for this worker. `file` is
+   * included: this is the configuring application asking in-process, and
+   * `serialize.exposeProcessorFiles` governs only what the management API
+   * serves.
+   */
+  get target(): Readonly<WorkerTargetInfo> {
+    return this.#targetInfo;
+  }
+
   /* --- lifecycle --------------------------------------------------------- */
 
   /**
    * Consumes until closed. Resolves when the loop has stopped and every job
    * in flight has settled, so a supervising process can simply await it.
+   *
+   * A `close()` that lands while this is still starting — connecting,
+   * creating the queue, reading its control entries — ends it there, and it
+   * resolves: nothing is armed, no `ready` is emitted, and the process is not
+   * held. On a worker already closed it resolves at once and does nothing: a
+   * closed worker is not restarted.
    */
   async run(): Promise<void> {
     if (this.#running) {
       return await this.#stopped.promise;
+    }
+    // A closed worker stays closed (`#closing` is never reset), so running it
+    // again would only open a connection for the startup checks to abandon.
+    if (this.#closing) {
+      return;
     }
 
     this.#running = true;
@@ -1383,15 +1422,32 @@ export class BunQueueWorker<
 
     try {
       await this.driver.connect();
-      await this.driver.ensureQueue(this.ref);
+      // Each startup await is re-checked against a close that landed during
+      // it, and a closed worker goes no further: `close()` has already
+      // cleared the timers, so anything armed after it would outlive it.
+      if (!this.#closing) {
+        await this.driver.ensureQueue(this.ref);
+      }
     } catch (error) {
-      // Never started, so nothing will ever stop: without this, `#running`
-      // stayed true and `#stopped` never resolved, and a later `close()` —
-      // which waits for the loop to stop — hung for good. A `run()` called
-      // again tries to connect again rather than joining a dead start.
-      this.#running = false;
-      this.#stopped.resolve();
-      throw error;
+      if (!this.#closing) {
+        // Never started, so nothing will ever stop: without this, `#running`
+        // stayed true and `#stopped` never resolved, and a later `close()` —
+        // which waits for the loop to stop — hung for good. A `run()` called
+        // again tries to connect again rather than joining a dead start.
+        this.#running = false;
+        this.#stopped.resolve();
+        throw error;
+      }
+      // A close was asked for, and most likely caused this — a forced close
+      // shuts the driver under the connect. Either way the worker was never
+      // going to start, so `run()` ends the way a close ends it.
+      this.#logger.debug("Startup failed after close() was called", {
+        error,
+      });
+    }
+
+    if (this.#closing) {
+      return await this.#abandonStart();
     }
 
     this.#armMaintenance();
@@ -1407,6 +1463,11 @@ export class BunQueueWorker<
     // Before the loop turns, never after: a worker whose stop was recorded
     // against its key must not claim one job on the way to finding that out.
     await this.#adoptControl({ initial: true });
+    if (this.#closing) {
+      // What startup armed above, `close()` has cleared; this goes no
+      // further, so no `ready`, no announced state and no hold on the process.
+      return await this.#abandonStart();
+    }
     this.#armControl();
     // The first announcement, once startup has settled what the worker is —
     // `running`, `paused`, or `stopped` by a stop recorded against its key —
@@ -1423,6 +1484,28 @@ export class BunQueueWorker<
     this.#holdProcess();
     void this.#loop();
     return await this.#stopped.promise;
+  }
+
+  /**
+   * Ends a `run()` that a `close()` overtook during startup, before the claim
+   * loop was started: stands down as the loop's own exit would, so a graceful
+   * close waiting for it carries on.
+   *
+   * A forced close does not wait, and may already have closed the driver —
+   * possibly before a connect it could not cancel opened it again, which
+   * would keep the process alive for good. So an owned driver the close has
+   * closed is closed once more. A graceful close is still waiting here, and
+   * closes the driver itself after.
+   */
+  async #abandonStart(): Promise<void> {
+    if (this.#ownsDriver && this.#driverClosed) {
+      await this.driver.close().catch((error: unknown) => {
+        this.#logger.debug("Could not close the driver again", { error });
+      });
+    }
+
+    this.#running = false;
+    this.#stopped.resolve();
   }
 
   /** Stops claiming. Jobs in flight are left to finish. */
@@ -1732,6 +1815,7 @@ export class BunQueueWorker<
 
       if (this.#ownsDriver) {
         await this.driver.close();
+        this.#driverClosed = true;
       }
 
       this.#running = false;
@@ -1784,6 +1868,7 @@ export class BunQueueWorker<
 
     if (this.#ownsDriver) {
       await this.driver.close();
+      this.#driverClosed = true;
     }
 
     this.#running = false;
@@ -2588,9 +2673,9 @@ export class BunQueueWorker<
    * second time. Most such failures are the database saying "busy, try again"
    * (a deadlock victim, a lock wait timeout), which a short wait cures.
    *
-   * Every write retried here is conditional on this worker's lock token, so a
-   * repeat of one that did land, its reply lost, changes nothing and answers
-   * `false`. The retries stop at a quarter of the lock duration, so they can
+   * Every write retried here is conditional on the lock token of the claim
+   * that took the job, so a repeat of one that did land, its reply lost,
+   * changes nothing and answers `false`. The retries stop at a quarter of the lock duration, so they can
    * never outlive the lock they depend on.
    */
   async #persist<T>(write: () => Promise<T>): Promise<T> {
@@ -3431,6 +3516,29 @@ export class BunQueueWorker<
       : false;
 
     const now = Date.now();
+    /**
+     * Whether a try of the failure write threw, so it may have landed with
+     * only its reply lost. Until one has, a refusal is the whole truth: every
+     * driver checks the lock and writes in one atomic step, so a refused try
+     * wrote nothing, and nothing before it of this attempt's could have.
+     */
+    let uncertain = false;
+    const failJob = async (outcome: FailOutcome): Promise<boolean> => {
+      try {
+        return await this.driver.failJob(
+          this.ref,
+          record.id,
+          heldLock(record),
+          serialized,
+          outcome,
+          now,
+          record.opts.keepStacktraces,
+        );
+      } catch (error) {
+        uncertain = true;
+        throw error;
+      }
+    };
 
     // Retried like a completion, for the same reason: see `#persist`. The
     // write checks the lock token and the job's state itself, so a repeat of
@@ -3439,23 +3547,17 @@ export class BunQueueWorker<
       if (delay !== false) {
         const runAt = now + delay;
         const written = await this.#persist(
-          async () =>
-            await this.driver.failJob(
-              this.ref,
-              record.id,
-              heldLock(record),
-              serialized,
-              { retry: true, runAt },
-              now,
-              record.opts.keepStacktraces,
-            ),
+          async () => await failJob({ retry: true, runAt }),
         );
 
         // The retry is scheduled now, possibly before whatever this worker
         // last heard was due next: its empty passes must promote again.
         noteScheduled(this.driver, this.ref);
 
-        if (!written && !(await this.#failureLanded(record, serialized))) {
+        if (
+          !written &&
+          !(uncertain && (await this.#failureLanded(record, serialized, false)))
+        ) {
           this.safeEmit("lockLost", job);
           return;
         }
@@ -3472,28 +3574,24 @@ export class BunQueueWorker<
         return;
       }
 
+      const retention = record.flow?.parent ? false : record.opts.removeOnFail;
       const written = await this.#persist(
-        async () =>
-          await this.driver.failJob(
-            this.ref,
-            record.id,
-            heldLock(record),
-            serialized,
-            {
-              retry: false,
-              retention: record.flow?.parent ? false : record.opts.removeOnFail,
-            },
-            now,
-            record.opts.keepStacktraces,
-          ),
+        async () => await failJob({ retry: false, retention }),
       );
 
       // Refused, and not because an earlier try of this very write landed:
       // the job is someone else's now — most often buried from outside by
-      // `Job.fail()`, which announced `failed` and `dead` itself. Saying so
-      // again would deliver both twice; nor is its letter or its parent this
-      // worker's to see to.
-      if (!written && !(await this.#failureLanded(record, serialized))) {
+      // `Job.fail()`, which announced `failed` and `dead` itself, or completed
+      // by the attempt that recovered it. Saying so again would deliver both
+      // twice, or announce a failure that never happened; nor is its letter or
+      // its parent this worker's to see to.
+      if (
+        !written &&
+        !(
+          uncertain &&
+          (await this.#failureLanded(record, serialized, retention))
+        )
+      ) {
         this.safeEmit("lockLost", job);
         return;
       }
@@ -3533,25 +3631,38 @@ export class BunQueueWorker<
   /**
    * Whether a failure write this worker saw refused had in fact landed: an
    * earlier try whose reply was lost wrote it, and the retry that followed
-   * found the lock already released. Told apart from a job someone else
-   * settled — buried from outside, recovered as stalled — by reading the job
-   * back: ours is `failed` or `dead` with exactly the failure this worker
+   * found the lock already released. Asked only once a try has thrown — a
+   * refusal with none before it wrote nothing. Told apart from a job someone
+   * else settled — buried from outside, recovered as stalled — by reading the
+   * job back: ours is `failed` or `dead` with exactly the failure this worker
    * wrote.
    *
-   * A job that is gone reads as ours: retention may have removed it the
-   * moment our write landed, and reporting a failure that happened beats
-   * losing it.
+   * A job that is gone reads as ours only when `retention` — what our write
+   * asked for, `false` for a retry — could have removed it the moment the
+   * write landed. Otherwise something else removed it: most often the attempt
+   * that recovered the job completing it, under completion retention, and
+   * reporting that as our failure would announce one that never happened and
+   * file its dead letter. When our retention could have removed it, the two
+   * cannot be told apart — no driver leaves a trace of a removed job — and
+   * reporting a failure that happened beats losing it.
    */
   async #failureLanded(
     record: JobRecord,
     written: SerializedError,
+    retention: Retention,
   ): Promise<boolean> {
     const now = await this.driver
       .getJob(this.ref, record.id)
       .catch(() => undefined);
 
-    if (now === undefined || now === null) {
+    // Unreadable: no evidence either way, and a lost failure is the worse
+    // mistake, as before.
+    if (now === undefined) {
       return true;
+    }
+
+    if (now === null) {
+      return retention !== false;
     }
 
     return (
@@ -4481,8 +4592,9 @@ export class BunQueueWorker<
    * Looks, once, for another live worker registered under this worker's id.
    *
    * Sharing an id is already a latent corruption — the id names the heartbeat
-   * record, the lock token and the limiter's lease holder — and the derived
-   * id makes it impossible by accident. It is still possible on purpose, by
+   * record and the limiter's lease holder — and the derived id makes it
+   * impossible by accident. (Lock tokens are not at stake: each claim draws
+   * its own, and the id is only their trailing, diagnostic part.) It is still possible on purpose, by
    * passing the same explicit `id` twice, so the first report says so rather
    * than letting two workers quietly overwrite each other's records.
    *

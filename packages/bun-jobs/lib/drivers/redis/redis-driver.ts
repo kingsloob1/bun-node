@@ -1,5 +1,5 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
-import type { RedisClient } from "bun";
+import type { RedisClient, RedisOptions } from "bun";
 import type {
   ConnectionInput,
   ConnectionOptions,
@@ -94,7 +94,7 @@ import {
 } from "../../queue/jobDefaults";
 import { assertWritableStateName } from "../../queue/windows";
 import { resolveConnectionUrl } from "../../shared/connection";
-import { DriverError } from "../../shared/errors";
+import { ConfigError, DriverError } from "../../shared/errors";
 import { safeJsonParse } from "../../shared/json";
 import { runnerKey } from "../../shared/keys";
 import { waitForAny } from "../../shared/wait";
@@ -313,6 +313,62 @@ function stampedRef(ref: JobWorkerRef): JobWorkerRef | null {
 /** How long a blocking pop waits, at most, before the caller checks again. */
 const MAX_BLOCK_SECONDS = 5;
 
+/**
+ * How long a connection that has never connected may take, ms, by default.
+ *
+ * Bun's own policy retries a refused first connect for its whole reconnect
+ * budget — 20 retries, 50 ms doubling to a 2 s cap, 31.2 s measured — so an
+ * unreachable Redis took half a minute to report where a refused Postgres
+ * takes milliseconds. A second still absorbs a server that is a moment late:
+ * Bun retries a refusal within it.
+ */
+const FIRST_CONNECT_TIMEOUT_MS = 1_000;
+
+/** `firstConnectTimeout` checked: a positive number of ms, or `0` (unbounded). */
+function resolveFirstConnectTimeout(value: number | undefined): number {
+  if (value === undefined) {
+    return FIRST_CONNECT_TIMEOUT_MS;
+  }
+  if (value === Infinity) {
+    return 0;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new ConfigError(
+      "The Redis driver's firstConnectTimeout must be a number of ms, or 0",
+      { firstConnectTimeout: value },
+    );
+  }
+  return value;
+}
+
+/**
+ * The client options the driver builds its own client with: only those given,
+ * so every one left out keeps Bun's default.
+ */
+function clientOptions(options: RedisDriverOptions): RedisOptions {
+  const out: RedisOptions = {};
+  if (options.connectionTimeout !== undefined) {
+    out.connectionTimeout = options.connectionTimeout;
+  }
+  if (options.maxRetries !== undefined) {
+    out.maxRetries = options.maxRetries;
+  }
+  if (options.autoReconnect !== undefined) {
+    out.autoReconnect = options.autoReconnect;
+  }
+  return out;
+}
+
+/** `host:port` from a Redis URL, without credentials; `redis` if it cannot be parsed. */
+function redisEndpoint(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}:${parsed.port || "6379"}`;
+  } catch {
+    return "redis";
+  }
+}
+
 /** How long a wake-control list outlives the push that made it, ms. */
 const WAKE_CONTROL_TTL_MS = 60_000;
 
@@ -496,8 +552,71 @@ export interface RedisDriverOptions extends ConnectionInput {
    * blocking waits and pub/sub each need a connection of their own, and the
    * driver opens those from it. Without `url` the constructor throws a
    * `ConfigError`.
+   *
+   * **The driver leaves this client's options alone**: `connectionTimeout`,
+   * `maxRetries`, `autoReconnect` and `firstConnectTimeout` are not applied to
+   * it, it is never closed by the driver, and it is not reconnected once it
+   * has given up — its policy is yours. The blocking and pub/sub connections
+   * are `duplicate()`s of it, so they inherit that policy, but they are the
+   * driver's own: their first connect is bounded by `firstConnectTimeout`.
    */
   client?: RedisClient;
+  /**
+   * How long the driver's first connect may take, in ms, before it fails with
+   * a `DriverError` (`"redis driver failed during connect"`). Defaults to
+   * `1000`, so an unreachable server is reported in about a second, as a
+   * refused Postgres is, rather than after Bun's whole retry budget — about 31
+   * seconds on a refused port.
+   *
+   * It bounds a connection that has **never** succeeded: the command
+   * connection's first connect, and each blocking or pub/sub connection's.
+   * Within it Bun still retries a refusal, so a server that comes up a moment
+   * late is still reached. Once a connection has succeeded, a drop is
+   * recovered under `connectionTimeout`, `maxRetries` and `autoReconnect`
+   * instead. A failed first connect closes the client; the next operation, or
+   * `connect()`, tries again from the start.
+   *
+   * `0` removes the bound, leaving the first connect to that retry policy.
+   * The first connect also ends at `connectionTimeout` when that is shorter:
+   * Bun does not retry an attempt that timed out. Not applied to a supplied
+   * `client`, which the driver neither closes nor reconfigures; the extra
+   * connections it opens from one are the driver's, and are bounded.
+   */
+  firstConnectTimeout?: number;
+  /**
+   * How long one connection attempt may take, in ms, before Bun gives it up —
+   * Bun's `connectionTimeout`, passed through. Defaults to Bun's `10000`.
+   *
+   * **A timed-out attempt is never retried**, whatever `maxRetries` says (Bun
+   * retries a refused or dropped connection, not a slow one). So a short value
+   * turns an unresponsive server into a failure after one attempt; the next
+   * operation then starts a fresh reconnect, so the driver still recovers.
+   * Ignored when `client` is given: that client keeps its own options.
+   */
+  connectionTimeout?: number;
+  /**
+   * How many times Bun retries a dropped connection before it gives up —
+   * Bun's `maxRetries`, passed through. Defaults to Bun's `20`: with its
+   * backoff (50 ms, doubling, capped at 2 s) that is about 31 seconds of
+   * retrying. Operations issued meanwhile wait for the reconnect.
+   *
+   * Once Bun gives up, the next operation starts another round, so a Redis
+   * that is down for longer than the budget is still picked up when it
+   * returns; what the budget sets is how long one operation waits before it
+   * fails. `0` fails an operation at the first refusal. Ignored when `client`
+   * is given.
+   */
+  maxRetries?: number;
+  /**
+   * Whether Bun reconnects a dropped connection in the background — Bun's
+   * `autoReconnect`, passed through. Defaults to `true`.
+   *
+   * With `false` nothing reconnects until an operation needs the connection:
+   * that operation makes one attempt, and fails if it is refused. Pub/sub
+   * subscriptions are restored on whichever reconnect happens. Ignored when
+   * `client` is given.
+   */
+  autoReconnect?: boolean;
   /** How long a blocking wait lasts, at most. Defaults to 5 seconds. */
   maxBlockSeconds?: number;
   /**
@@ -605,8 +724,27 @@ export class RedisDriver implements JobsDriver {
   readonly #missed = new Set<string>();
   /** Channels with listeners, so `close()` can unsubscribe them. */
   readonly #channels = new Map<string, Set<(event: DriverEvent) => void>>();
-  /** Resolves once the client is connected. */
-  #ready: Promise<void> | undefined;
+  /**
+   * The connect in flight, shared by every caller that arrives while it runs;
+   * cleared when it settles, so a failure is retried by the next caller.
+   */
+  #connecting: Promise<void> | undefined;
+  /**
+   * Whether the command connection has ever connected. Until it has, a connect
+   * is bounded by {@link RedisDriver.#firstConnectTimeout}; after, a drop is
+   * Bun's to recover under the retry policy.
+   */
+  #everConnected = false;
+  /**
+   * Whether `close()` has run. A closed driver does not reopen its command
+   * connection on the next operation, so a straggling call after `close()`
+   * fails rather than quietly holding a socket open.
+   */
+  #closed = false;
+  /** Longest a never-yet-connected connection may take to connect, ms; `0` is unbounded. */
+  readonly #firstConnectTimeout: number;
+  /** `host:port` of the server, credentials left out, for connect errors. */
+  readonly #endpoint: string;
 
   constructor(options: RedisDriverOptions) {
     this.#url = resolveConnectionUrl(
@@ -621,7 +759,13 @@ export class RedisDriver implements JobsDriver {
     });
 
     this.#maxBlock = options.maxBlockSeconds ?? MAX_BLOCK_SECONDS;
-    this.#client = options.client ?? new BunRedis(this.#url);
+    this.#firstConnectTimeout = resolveFirstConnectTimeout(
+      options.firstConnectTimeout,
+    );
+    this.#endpoint = redisEndpoint(this.#url);
+    // A supplied client keeps its own options: the policy is the caller's.
+    this.#client =
+      options.client ?? new BunRedis(this.#url, clientOptions(options));
     this.#ownsClient = !options.client;
 
     // No `MetricsLimits`: Redis keeps per-second buckets perfectly well.
@@ -696,9 +840,157 @@ export class RedisDriver implements JobsDriver {
 
   /* --- lifecycle ---------------------------------------------------- */
 
+  /**
+   * Connects the command connection, or waits for the connect in flight.
+   *
+   * The first connect is bounded by `firstConnectTimeout` and fails with a
+   * `DriverError`. After that, this is also what brings an owned connection
+   * back once Bun has given up reconnecting: every operation calls it first,
+   * so the next one after an outage longer than the retry budget starts a
+   * fresh round rather than failing for good. A live connection costs one
+   * property read.
+   */
   async connect(): Promise<void> {
-    this.#ready ??= this.#client.connect().then(() => undefined);
-    await this.#ready;
+    if (!this.#connecting && this.#everConnected) {
+      // A supplied client is connected once, as before: its reconnects are its
+      // own policy, and `connected` cannot even be read through a proxy of one.
+      // A closed driver stays closed.
+      if (!this.#ownsClient || this.#closed || this.#client.connected) {
+        return;
+      }
+    }
+
+    this.#connecting ??= this.#connectCommands().finally(() => {
+      this.#connecting = undefined;
+    });
+    await this.#connecting;
+  }
+
+  /** The body of {@link RedisDriver.connect}: first connect, or a revival. */
+  async #connectCommands(): Promise<void> {
+    const first = !this.#everConnected;
+
+    if (first && this.#ownsClient) {
+      await this.#connectFirst(this.#client);
+    } else {
+      try {
+        // During Bun's own reconnect this joins it; after Bun has given up,
+        // it starts another round under the same policy.
+        await this.#client.connect();
+      } catch (error) {
+        throw this.#connectError(error);
+      }
+    }
+
+    this.#everConnected = true;
+
+    if (!first) {
+      // The pub/sub connection gave up alongside this one, most likely, and
+      // nothing else would bring it back while no new subscription is made.
+      void this.#reviveSubscriber();
+    }
+  }
+
+  /**
+   * Connects a client that has never connected, within the first-connect
+   * budget. On failure the client is closed — which stops Bun retrying in the
+   * background — and a `DriverError` naming the server is thrown. A closed
+   * Bun client can connect again, so the next attempt reuses it.
+   */
+  async #connectFirst(client: RedisClient): Promise<void> {
+    const budget = this.#budget();
+
+    try {
+      const attempt = client.connect();
+      // Closing the client on expiry rejects this too; nobody awaits it then.
+      attempt.catch(() => {});
+      await Promise.race([attempt, budget.expired]);
+    } catch (error) {
+      client.close();
+      throw this.#connectError(error);
+    } finally {
+      budget.clear();
+    }
+  }
+
+  /**
+   * Opens one of the driver's extra connections — blocking or pub/sub — as a
+   * `duplicate()` of the command client, so it shares that client's options,
+   * with its first connect bounded like the command connection's.
+   */
+  async #openConnection(): Promise<RedisClient> {
+    const budget = this.#budget();
+    const made = this.#client.duplicate();
+    let client: RedisClient;
+
+    try {
+      client = await Promise.race([made, budget.expired]);
+    } catch (error) {
+      // A duplicate that arrives after the budget went is nobody's: close it.
+      made.then((late) => late.close()).catch(() => {});
+      throw this.#connectError(error);
+    } finally {
+      budget.clear();
+    }
+
+    await this.#connectFirst(client);
+    return client;
+  }
+
+  /**
+   * A promise that rejects once the first-connect budget has gone, and the
+   * means to cancel its timer. Never rejects when the budget is `0`.
+   */
+  #budget(): { expired: Promise<never>; clear: () => void } {
+    const ms = this.#firstConnectTimeout;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const expired = new Promise<never>((_resolve, reject) => {
+      if (ms > 0) {
+        timer = setTimeout(() => {
+          reject(
+            new Error(`no connection to ${this.#endpoint} within ${ms}ms`),
+          );
+        }, ms);
+      }
+    });
+    // Raced, and abandoned once the race is won: never an unhandled rejection.
+    expired.catch(() => {});
+
+    return { expired, clear: () => clearTimeout(timer) };
+  }
+
+  /**
+   * A connect failure as a `DriverError` whose cause names the server — Bun's
+   * own rejection says only "Connection closed", which names nothing — with
+   * Bun's error kept as the cause's cause. Wraps once.
+   */
+  #connectError(error: unknown): DriverError {
+    if (error instanceof DriverError) {
+      return error;
+    }
+    const prefix = `no connection to ${this.#endpoint}`;
+    const message = error instanceof Error ? error.message : String(error);
+    const cause = message.startsWith(prefix)
+      ? error
+      : new Error(`${prefix}: ${message}`, { cause: error });
+    return new DriverError("redis", "connect", cause, {
+      endpoint: this.#endpoint,
+      firstConnectTimeout: this.#firstConnectTimeout,
+    });
+  }
+
+  /** Reconnects the pub/sub connection when it has given up. Best effort. */
+  async #reviveSubscriber(): Promise<void> {
+    try {
+      const subscriber = await this.#subscriber;
+      if (subscriber && !subscriber.connected) {
+        // Its `onconnect` restores the subscriptions.
+        await subscriber.connect();
+      }
+    } catch {
+      // The next subscription, or the next revival, tries again.
+    }
   }
 
   async close(): Promise<void> {
@@ -726,7 +1018,10 @@ export class RedisDriver implements JobsDriver {
     for (const group of groups) {
       (await group.client.catch(() => undefined))?.close();
     }
-    subscriber?.close();
+    if (subscriber) {
+      subscriber.onconnect = null;
+      subscriber.close();
+    }
     this.#subscriber = undefined;
 
     // Nothing may be carried over to a driver that connects again.
@@ -737,6 +1032,7 @@ export class RedisDriver implements JobsDriver {
     this.#waiters.clear();
     this.#missed.clear();
 
+    this.#closed = true;
     if (this.#ownsClient) {
       this.#client.close();
     }
@@ -3425,16 +3721,7 @@ export class RedisDriver implements JobsDriver {
       this.#channels.set(channel, listeners);
 
       // One subscription per channel, however many listeners it has.
-      await subscriber.subscribe(channel, (message: string) => {
-        const event = safeJsonParse<DriverEvent | null>(message, null);
-        if (!event) {
-          return;
-        }
-
-        for (const each of this.#channels.get(channel) ?? []) {
-          each(event);
-        }
-      });
+      await subscriber.subscribe(channel, this.#dispatcher(channel));
     }
 
     listeners.add(deliver);
@@ -3482,8 +3769,10 @@ export class RedisDriver implements JobsDriver {
       group = {
         // Memoised as a promise, so concurrent first waits share one
         // connection. `??=` on an awaited value checked, awaited and then
-        // assigned, so two first waits opened two and leaked one.
-        client: this.#client.duplicate(),
+        // assigned, so two first waits opened two and leaked one. Connected
+        // within `firstConnectTimeout`, so a wait against a Redis that is down
+        // fails in about a second rather than after Bun's retry budget.
+        client: this.#openConnection(),
         control: this.keys.wakeControl(this.#wakeOwner, q.queue),
         keys: new Set(),
         deadlines: new Set(),
@@ -3632,15 +3921,45 @@ export class RedisDriver implements JobsDriver {
   async #subscriberClient(): Promise<RedisClient> {
     // A promise, so two first subscriptions share one connection — the old
     // `??= await` opened one each and leaked the first.
-    this.#subscriber ??= this.#client.duplicate();
+    this.#subscriber ??= this.#openConnection().then((subscriber) => {
+      // Set once it has connected, so this runs on reconnects only. Bun
+      // reconnects a dropped connection — on its own, or on `connect()` after
+      // it gave up — but never resubscribes it: the new connection has no
+      // channels while Bun still holds their listeners, so every event after a
+      // Redis restart was silently lost. A raw `SUBSCRIBE` puts the server
+      // side back and leaves those listeners as they are: `subscribe()` again
+      // would add a second listener and deliver twice, and unsubscribing
+      // first loses whatever is published in between (both measured).
+      subscriber.onconnect = () => {
+        for (const channel of this.#channels.keys()) {
+          subscriber.send("SUBSCRIBE", [channel]).catch(() => {});
+        }
+      };
+      return subscriber;
+    });
     try {
       const subscriber = await this.#subscriber;
+      // A no-op when live; joins Bun's reconnect, or starts one once it gave up.
       await subscriber.connect();
       return subscriber;
     } catch (error) {
       this.#subscriber = undefined;
-      throw error;
+      throw error instanceof DriverError ? error : this.#connectError(error);
     }
+  }
+
+  /** What delivers a message on `channel` to that channel's listeners. */
+  #dispatcher(channel: string): (message: string) => void {
+    return (message: string) => {
+      const event = safeJsonParse<DriverEvent | null>(message, null);
+      if (!event) {
+        return;
+      }
+
+      for (const each of this.#channels.get(channel) ?? []) {
+        each(event);
+      }
+    };
   }
 
   /**
