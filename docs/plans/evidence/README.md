@@ -1,6 +1,6 @@
 # Plan evidence
 
-The measurements, probes and source surveys the three plan documents in
+The measurements, probes and source surveys the plan documents in
 `docs/plans/` rest on. They are kept because a plan that says "measured" is
 only worth as much as the ability to re-run the measurement — and because
 several conclusions here were **reversed** once someone re-read the source,
@@ -17,6 +17,8 @@ tooling. That is deliberate: the spikes contain **intentional type errors**.
 | `opentelemetry/` | `../opentelemetry.md` | A standalone Bun project measuring OTel span cost and Bun's `AsyncLocalStorage` behaviour |
 | `api-docs/` | `../api-docs-generation.md` | TypeScript spikes for response contracts, decorators and inference |
 | `worker-runtimes/` | `../worker-runtimes.md` | A 14-system prior-art survey read from pinned primary sources |
+| `summon-compute/` | `../summon-compute.md`, `../compute-provider-plugins.md` | Three platform surveys (AWS; Google and Azure; PaaS, SSH and Kubernetes) for starting compute on demand, including a SigV4 signer checked against test vectors and a token helper not yet run against real endpoints. Indexed in its own `README.md` |
+| `remote-transports/` | `../remote-transports.md`, `../worker-runtimes.md` §5 | What Bun provides per network transport, **measured** by 27 re-runnable spikes (loopback, canary build), and which of ~35 platform shapes accept which transport. Indexed in its own `README.md` |
 
 ## Provenance, and why it is marked
 
