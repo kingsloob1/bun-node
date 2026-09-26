@@ -3,26 +3,26 @@ import { isMainThread } from "node:worker_threads";
 import { defineProcessor } from "@kingsleyweb/bun-jobs";
 
 /**
- * One processor file run **two ways at once**: `isolated.ts` puts two workers
- * on the `previews` queue, one with `isolation: "worker"` and one with
- * `isolation: "spawn"`, so the same code is visibly executed in a `Worker`
+ * One processor file run **two ways at once**: `targets.ts` puts two workers
+ * on the `previews` queue, one with `target: "worker-thread"` and one with
+ * `target: "child-process"`, so the same code is visibly executed in a `Worker`
  * thread and in a child process side by side. The result says which ran it,
  * and the Workers page shows the two keys (`api.previews`, `api.previews.2`)
  * taking turns on the same backlog.
  *
- * What each mode buys:
+ * What each target buys:
  *
- * - `"worker"` — a fresh JavaScript context per attempt, in this process. A
- *   processor that leaks module state, or that has to be terminated, can be,
- *   without paying for a process. It shares the pid, so `mainThread: false`
- *   is the evidence it ran off the main thread.
- * - `"spawn"` — a child process: its own heap, its own pid, and the only mode
- *   where a processor that ignores its signal can be killed for certain.
+ * - `"worker-thread"` — a fresh JavaScript context per attempt, in this
+ *   process. A processor that leaks module state, or that has to be
+ *   terminated, can be, without paying for a process. It shares the pid, so
+ *   `mainThread: false` is the evidence it ran off the main thread.
+ * - `"child-process"` — its own heap, its own pid, and the only target where
+ *   a processor that ignores its signal can be killed for certain.
  *
- * It also shows the two things an isolated processor may still decide about
+ * It also shows the two things an off-thread processor may still decide about
  * its own job: it can **throw**, and the worker retries it with the job's
  * backoff across the boundary (the `previews` workers register the custom
- * `"decode-ramp"` strategy `isolated.ts` defines); and it can call
+ * `"decode-ramp"` strategy `targets.ts` defines); and it can call
  * `job.fail()`, which is final — the job dies now, whatever attempts remain,
  * because nothing about a corrupt asset improves on the next try.
  */
@@ -33,12 +33,12 @@ export interface PreviewData {
   asset: string;
   /**
    * Marks the asset as unreadable, so the processor calls `job.fail()` — the
-   * one write an isolated processor can still make that ends the job.
+   * one write an off-thread processor can still make that ends the job.
    */
   corrupt?: boolean;
   /**
-   * The chance one attempt throws, 0–1, so retries cross the isolation
-   * boundary. Defaults to `0.25`.
+   * The chance one attempt throws, 0–1, so retries cross the thread or
+   * process boundary. Defaults to `0.25`.
    */
   flakiness?: number;
 }
@@ -49,12 +49,15 @@ export interface PreviewResult {
   asset: string;
   /** The made-up size of the preview it produced, in bytes. */
   bytes: number;
-  /** The pid that ran it — the playground's in `"worker"` mode, its own in `"spawn"`. */
+  /** The pid that ran it — the playground's on a worker thread, its own in a child process. */
   pid: number;
-  /** Whether it ran on its realm's main thread — `false` in `"worker"` mode. */
+  /** Whether it ran on its realm's main thread — `false` on a worker thread. */
   mainThread: boolean;
-  /** Which executor started it: `"spawn"`, `"worker"`, or `"in-process"`. */
-  isolation: string;
+  /**
+   * Which executor started it: the mode the attempt's process reports in
+   * `BUN_JOBS_MODE`, or `"in-process"` when that is unset.
+   */
+  mode: string;
 }
 
 /** Waits `ms` milliseconds. */
@@ -63,9 +66,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 export default defineProcessor<PreviewData, PreviewResult>(async (job, ctx) => {
-  const isolation = process.env.BUN_JOBS_MODE ?? "in-process";
+  const mode = process.env.BUN_JOBS_MODE ?? "in-process";
   await job.log(
-    `attempt ${ctx.attempt}: decoding ${job.data.asset} (${isolation}, pid ${process.pid}, main thread ${String(isMainThread)})`,
+    `attempt ${ctx.attempt}: decoding ${job.data.asset} (${mode}, pid ${process.pid}, main thread ${String(isMainThread)})`,
   );
 
   await job.updateProgress({ step: "decode", done: 1, of: 3 });
@@ -83,7 +86,7 @@ export default defineProcessor<PreviewData, PreviewResult>(async (job, ctx) => {
       bytes: 0,
       pid: process.pid,
       mainThread: isMainThread,
-      isolation,
+      mode,
     };
   }
 
@@ -108,6 +111,6 @@ export default defineProcessor<PreviewData, PreviewResult>(async (job, ctx) => {
     bytes: 20_000 + Math.floor(Math.random() * 80_000),
     pid: process.pid,
     mainThread: isMainThread,
-    isolation,
+    mode,
   };
 });

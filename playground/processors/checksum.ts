@@ -4,16 +4,17 @@ import { defineProcessor } from "@kingsleyweb/bun-jobs";
 
 /**
  * A deliberately CPU-bound processor, run in a **child process**
- * (`isolation: "spawn"`, see `isolated.ts`).
+ * (`target: "child-process"`, see `targets.ts`).
  *
- * This is what isolation is *for*. The work below is a tight synchronous loop
+ * This is what an off-thread target is *for*. The work below is a tight synchronous loop
  * with no `await` inside it: in-process it would hold the worker's thread for
  * the whole block, and while it did so the claim loop would not claim, the
  * heartbeat timer would not renew any lock, and every other job on that worker
  * would sit still. Run in a child process it burns a CPU the event loop does
  * not own, and the worker carries on claiming, heartbeating and reporting.
  *
- * What the child may use of the job is what `isolation.ts` answers over the
+ * What the child may use of the job is what bun-jobs' `workerTarget.ts`
+ * answers over the
  * executor's message channel: `job.log()`, `job.updateProgress()`,
  * `job.touch()`/`extendLock()`, `ctx.heartbeat()`, `ctx.logger`, `ctx.signal`,
  * `job.fail()` and a flow's children. It has **no driver** — anything that
@@ -21,8 +22,8 @@ import { defineProcessor } from "@kingsleyweb/bun-jobs";
  * says so rather than failing obscurely.
  *
  * Its result records where it ran, which is the only honest evidence that it
- * ran anywhere else: a different pid than the playground's for `"spawn"`, and
- * `mainThread: false` for `"worker"`.
+ * ran anywhere else: a different pid than the playground's in a child
+ * process, and `mainThread: false` on a worker thread.
  */
 
 /** What a checksum job carries. */
@@ -41,12 +42,15 @@ export interface ChecksumResult {
   digest: string;
   /** How many blocks it hashed. */
   blocks: number;
-  /** The pid that ran it — not the playground's, in `"spawn"` mode. */
+  /** The pid that ran it — not the playground's, in a child process. */
   pid: number;
-  /** Whether it ran on its realm's main thread — `false` in `"worker"` mode. */
+  /** Whether it ran on its realm's main thread — `false` on a worker thread. */
   mainThread: boolean;
-  /** Which executor started it: `"spawn"`, `"worker"`, or `"in-process"`. */
-  isolation: string;
+  /**
+   * Which executor started it: the mode the attempt's process reports in
+   * `BUN_JOBS_MODE`, or `"in-process"` when that is unset.
+   */
+  mode: string;
 }
 
 /** How long one block holds its thread, in ms. */
@@ -74,12 +78,12 @@ function burn(ms: number, seed: number): number {
 export default defineProcessor<ChecksumData, ChecksumResult>(
   async (job, ctx) => {
     const blocks = job.data.blocks ?? 4;
-    const isolation = process.env.BUN_JOBS_MODE ?? "in-process";
+    const mode = process.env.BUN_JOBS_MODE ?? "in-process";
 
     // Written through the worker: the child has no driver, so this line is a
     // request on the job channel that the worker answers from its own `Job`.
     await job.log(
-      `hashing ${job.data.file} in ${blocks} blocks (${isolation}, pid ${process.pid})`,
+      `hashing ${job.data.file} in ${blocks} blocks (${mode}, pid ${process.pid})`,
     );
 
     let digest = job.data.seed ?? 1;
@@ -110,7 +114,7 @@ export default defineProcessor<ChecksumData, ChecksumResult>(
       blocks,
       pid: process.pid,
       mainThread: isMainThread,
-      isolation,
+      mode,
     };
   },
 );

@@ -1,6 +1,6 @@
 import type { BunJobs, Job } from "@kingsleyweb/bun-jobs";
-import { startIsolated } from "./isolated";
 import { startScheduling } from "./scheduling";
+import { startTargets } from "./targets";
 
 /**
  * A small, always-moving world for the UI to show:
@@ -20,7 +20,7 @@ import { startScheduling } from "./scheduling";
  * Two more worlds hang off this one, each in its own file because each is
  * about one thing:
  *
- * - `isolated.ts` — `checksums`, `previews` and `imports`, whose workers run
+ * - `targets.ts` — `checksums`, `previews` and `imports`, whose workers run
  *   a processor **file** in a child process or a `Worker`.
  * - `scheduling.ts` — `notifications` and `dead-letters`, where every way of
  *   saying *when*, *how often* and *what if it fails* is seeded once.
@@ -132,14 +132,14 @@ export async function startSimulation(
 
   // The two worlds of their own. Each creates its queues, starts its workers
   // and seeds itself; their workers join the list this module closes.
-  const isolated = await startIsolated(jobs);
+  const offThread = await startTargets(jobs);
   const scheduled = await startScheduling(jobs);
 
   const workersMap = [
     emailWorker,
     reportWorker,
     webhookWorker,
-    ...isolated.workers,
+    ...offThread.workers,
     ...scheduled.workers,
   ];
   for (const worker of [emailWorker, reportWorker, webhookWorker]) {
@@ -206,7 +206,7 @@ export async function startSimulation(
 
   // --- The producer ---
   //
-  // The isolated and scheduled queues are fed too, but sparingly: a checksum
+  // The off-thread and scheduled queues are fed too, but sparingly: a checksum
   // is a child process and a preview a fresh `Worker`, so a steady 2 s drip of
   // them would be a benchmark rather than a playground. `imports` is fed by
   // nobody — each of its jobs has to be killed, and the two seeded ones are
@@ -228,8 +228,8 @@ export async function startSimulation(
                   : roll < 0.9
                     ? scheduled.addNotification()
                     : roll < 0.96
-                      ? isolated.addPreview()
-                      : isolated.addChecksum();
+                      ? offThread.addPreview()
+                      : offThread.addChecksum();
           add.catch((error: unknown) => {
             console.error("playground producer:", error);
           });
