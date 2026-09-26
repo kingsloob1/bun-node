@@ -16,6 +16,7 @@ import {
   useCanControlWorkers,
   workerActionGates,
 } from "./actions/gating";
+import { summonBadgeLabel, summonHint } from "./summon";
 import { targetBadgeLabel, targetHint } from "./target";
 
 /**
@@ -140,6 +141,12 @@ function heartbeatHint(worker: WorkerDto): string | undefined {
  * column. It sits after them, in the neutral tone, and its tooltip says it is
  * how the worker was built, so it does not read as a condition.
  *
+ * A summoned worker's badge comes last, under the same present-or-nothing
+ * rule: a worker with no `summon` was not summoned or is too old to say, so
+ * it shows nothing rather than a "not summoned" it never claimed. It names
+ * the summoner's kind when there is one, and its tooltip gives what the
+ * summoner requested, called a request.
+ *
  * The state badge carries `data-testid="worker-state"`, so a test or example
  * reads the state by name. Picking it by position would silently read
  * whichever badge a later change put first.
@@ -178,6 +185,15 @@ function StateCell({ worker }: { worker: WorkerDto }) {
         >
           <span className="visually-hidden">Runs in: </span>
           {targetBadgeLabel(worker.target)}
+        </Badge>
+      )}{" "}
+      {worker.summon !== undefined && (
+        <Badge
+          className="worker-summon"
+          title={summonHint(worker.summon)}
+          testId="worker-summon-badge"
+        >
+          {summonBadgeLabel(worker.summon)}
         </Badge>
       )}
     </>
