@@ -177,6 +177,47 @@ export const WorkerTargetInfoSchema = s.named(
   ),
 );
 
+/** Where a summoned worker came from, as the contract's `WorkerSummonProvenanceDto`. */
+export const WorkerSummonProvenanceSchema = s.named(
+  "WorkerSummonProvenance",
+  s.object(
+    {
+      id: s.string({
+        description:
+          "The summon attempt's id: always present on a summoned worker.",
+      }),
+      kind: s.optional(
+        s.string({
+          description:
+            'The summoner\'s kind, e.g. `"ecs"` or `"fly"`: what a badge names.',
+        }),
+      ),
+      handle: s.optional(
+        s.string({
+          description:
+            "The platform's own name for the unit (a task ARN, a Fly machine id). Omitted unless `serialize.exposeSummonHandles` is on (default off): an ECS task ARN contains the AWS account id.",
+        }),
+      ),
+      mode: s.optional(
+        s.enum(["exit-on-idle", "until-stopped", "in-invocation"] as const, {
+          description:
+            'The mode as requested by the summoner: `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`. Absent when none was requested, never defaulted. Show a mode you do not know as the raw string: a later server may add one.',
+        }),
+      ),
+      deadlineAt: s.optional(
+        s.integer({
+          description:
+            "The latest it should stop, epoch ms, as requested by the summoner. Absent when none was requested, never defaulted.",
+        }),
+      ),
+    },
+    {
+      description:
+        "Where a summoned worker came from — the worker record's `summon`. Absent means one of two things, and a client cannot tell which: the worker was not summoned, or it is too old to say. So show absence as no badge, never as a claim about how the worker was started.",
+    },
+  ),
+);
+
 /**
  * A worker consuming a queue. Mirrors `WorkerDto`: `host` and `pid` are
  * omitted when `serialize.exposeHosts` is off, and `state`, `key`, `config`
@@ -244,6 +285,7 @@ export const WorkerSchema = s.named(
       }),
     ),
     target: s.optional(WorkerTargetInfoSchema),
+    summon: s.optional(WorkerSummonProvenanceSchema),
     config: s.optional(WorkerConfigSchema),
     control: s.optional(WorkerControlSchema),
     host: s.optional(

@@ -19,7 +19,10 @@ import type {
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { RunProgress } from "../shared/progress";
-import type { WorkerStopPersistence } from "../shared/workers";
+import type {
+  WorkerStopPersistence,
+  WorkerSummonProvenance,
+} from "../shared/workers";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -1125,6 +1128,29 @@ export interface BunQueueWorkerOptions {
    * Not remotely configurable: changing where code runs is a rebuild.
    */
   target?: WorkerTarget;
+  /**
+   * Where this worker was summoned from, written on its heartbeat record as
+   * `summon` so a summon controller can release the attempt and the Workers
+   * page can show a badge. Pass `summonedFromArgs()`, which is `undefined` in
+   * a process nobody summoned, so the same line works in every deployment.
+   *
+   * Absent (the default) for an ordinary worker, which then writes no
+   * `summon` at all. Checked in the constructor: `id` is required (a
+   * non-empty string: it is what makes a worker summoned); `kind` and
+   * `handle`, when given, non-empty strings; `mode`, when given, one of
+   * `"exit-on-idle"`, `"until-stopped"`, `"in-invocation"`; `deadlineAt`,
+   * when given, a whole epoch-ms number. Nothing is defaulted. Only those
+   * five fields are written, so the extra fields `summonedFromArgs()`
+   * returns never reach the record.
+   *
+   * A `ConfigError` whenever the worker could never report, since it could
+   * then never release its attempt: with `reportInterval: 0`, or on a driver
+   * that cannot store worker records. Not remotely configurable.
+   *
+   * `| undefined` is spelled out so `summon: summonedFromArgs()` compiles
+   * under `exactOptionalPropertyTypes` too.
+   */
+  summon?: WorkerSummonProvenance | undefined;
   /**
    * Named backoff strategies, for jobs whose `backoff.type` names one.
    *

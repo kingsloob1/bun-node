@@ -1746,6 +1746,36 @@ export interface WorkerTargetInfoDto {
   file?: string;
 }
 
+/**
+ * Where a summoned worker came from, as its record describes it
+ * (`WorkerDto.summon`): what a Workers-page badge shows.
+ */
+export interface WorkerSummonProvenanceDto {
+  /** The summon attempt's id: always present on a summoned worker. */
+  id: string;
+  /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what the badge names. */
+  kind?: string;
+  /**
+   * The platform's own name for the unit (a task ARN, a Fly machine id).
+   * Infrastructure detail — an ECS task ARN contains the AWS account id — so
+   * omitted unless the server enables `serialize.exposeSummonHandles`
+   * (default `false`).
+   */
+  handle?: string;
+  /**
+   * The mode **as requested by the summoner**: `"exit-on-idle"`,
+   * `"until-stopped"` or `"in-invocation"`. Absent when none was requested;
+   * never defaulted. Show a mode this client does not know as the raw
+   * string: a later server may add one.
+   */
+  mode?: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /**
+   * The latest it should stop, epoch ms, **as requested by the summoner**.
+   * Absent when none was requested; never defaulted.
+   */
+  deadlineAt?: number;
+}
+
 /** What a worker says about being controlled from outside its process. */
 export interface WorkerControlDto {
   /** Whether this worker listens for control at all: its `control` option, and a backend that can store the desired state. */
@@ -1896,6 +1926,16 @@ export interface WorkerDto {
    * queue name.
    */
   target?: WorkerTargetInfoDto;
+  /**
+   * Where it was summoned from: the attempt, the summoner's kind, and the
+   * mode and deadline the summoner requested (and the platform's handle with
+   * `serialize.exposeSummonHandles`).
+   *
+   * **Absent means one of two things, and a client cannot tell which:** the
+   * worker was not summoned, or it is too old to say. So absence means "no
+   * summon badge", never a claim about how the worker was started.
+   */
+  summon?: WorkerSummonProvenanceDto;
   /** Its settings. Absent on an older worker, and when the backend keeps no config. */
   config?: WorkerConfigDto;
   /** Its control state. Absent on a worker that predates remote control — treat that as not controllable. */
