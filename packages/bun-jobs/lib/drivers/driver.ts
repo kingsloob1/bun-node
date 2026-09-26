@@ -2906,6 +2906,30 @@ export type DriverConfig = {
       keyPrefix?: string;
       /** How long a single blocking wait lasts, at most. Defaults to 5 seconds. */
       maxBlockSeconds?: number;
+      /**
+       * How long a first connect may take, in ms, before it fails with a
+       * `DriverError`. Defaults to `1000`; `0` leaves it to the retry policy.
+       * Only a connection that has never connected is bounded by it. See
+       * `RedisDriverOptions.firstConnectTimeout`.
+       */
+      firstConnectTimeout?: number;
+      /**
+       * Bun's per-attempt `connectionTimeout`, ms. Defaults to Bun's `10000`.
+       * A timed-out attempt is not retried, so a short one gives up on a slow
+       * server after one attempt.
+       */
+      connectionTimeout?: number;
+      /**
+       * Bun's `maxRetries` for a dropped connection. Defaults to Bun's `20`,
+       * about 31 seconds of backoff before one operation fails; the next
+       * operation retries again.
+       */
+      maxRetries?: number;
+      /**
+       * Bun's `autoReconnect`. Defaults to `true`; with `false` a dropped
+       * connection is reconnected only when an operation needs it.
+       */
+      autoReconnect?: boolean;
     }
   | {
       type: "sql";
