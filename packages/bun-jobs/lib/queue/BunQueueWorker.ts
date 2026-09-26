@@ -43,10 +43,7 @@ import type {
   WorkerEventsOf,
 } from "./types";
 import type { WorkerControlEntry } from "./workerControl";
-import type {
-  WorkerTargetCloseOptions,
-  WorkerTargetExecutor,
-} from "./workerTarget";
+import type { WorkerTargetExecutor } from "./workerTarget";
 import process from "node:process";
 import {
   createDeferred,
@@ -870,6 +867,24 @@ export class BunQueueWorker<
   #running = false;
   /** Whether `close()` has been called. */
   #closing = false;
+  /**
+   * Whether the close under way is forced: asked for with `force`, or
+   * escalated to one by a `close({ force: true })` that landed during a
+   * graceful close. Once set, a later force changes nothing.
+   */
+  #closeForced = false;
+  /**
+   * Resolved when a `close({ force: true })` escalates the graceful close
+   * under way. Every wait the graceful close makes races it, so an escalated
+   * close stops waiting at whatever step it had reached. Resolved at the end
+   * of every close too, so nothing is left pending on it.
+   */
+  #escalated = createDeferred<void>();
+  /**
+   * Settles when the close under way has finished, however it ended. What a
+   * forcing `close()` that joins a close already under way waits for.
+   */
+  #closeDone = createDeferred<void>();
   /**
    * Whether `close()` has closed the driver this worker owns. Read by a
    * `run()` that the close overtook during startup: a forced close does not
@@ -1726,8 +1741,38 @@ export class BunQueueWorker<
    * closes. Otherwise — and for a run that never ends — the job's lock is left
    * to expire, and another worker recovers it as stalled rather than the job
    * being lost.
+   *
+   * **Called again while a close is under way:**
+   *
+   * - `close({ force: true })` during a *graceful* close **escalates** it.
+   *   From that moment the close is a forced one at whatever step it had
+   *   reached: jobs still running have their signals aborted, the target is
+   *   closed with `{ force: true }` — a graceful target close already under
+   *   way is taken over, so a built-in target's runs are killed at once rather
+   *   than at the end of their grace — and nothing a forced close does not
+   *   wait for is waited for. A graceful step cut short this way is not an
+   *   error. Both calls resolve once the close has finished.
+   * - `close({ force: true })` during a forced (or already escalated) close
+   *   changes nothing, and resolves once that close has finished.
+   * - `close()` without `force` changes nothing either: it resolves when the
+   *   claim loop has stopped, as it always has.
+   *
+   * A later call's `timeout` is ignored: the graceful wait keeps the timeout
+   * it started with. `force` is the way to cut it short.
    */
-  async close(options?: { force?: boolean; timeout?: number }): Promise<void> {
+  async close(options?: {
+    /**
+     * Abort jobs still running at once and do not wait for them, rather than
+     * draining them. Given while a graceful close is under way, escalates it.
+     */
+    force?: boolean;
+    /**
+     * How long a graceful close waits for jobs in flight before aborting them,
+     * in milliseconds. Defaults to `lockDuration`. Ignored with `force`, and on
+     * a call that joins a close already under way.
+     */
+    timeout?: number;
+  }): Promise<void> {
     // Held for as long as closing takes, whatever `waitToExit` says. A caller
     // awaiting this in a signal handler has nothing else keeping the process
     // alive — every wait the worker makes is unref'd — so without it Bun could
@@ -1743,13 +1788,83 @@ export class BunQueueWorker<
   }
 
   /** The body of {@link BunQueueWorker.close}, under its hold on the process. */
-  async #close(options?: { force?: boolean; timeout?: number }): Promise<void> {
+  async #close(options?: {
+    /** As {@link BunQueueWorker.close}'s `force`. */
+    force?: boolean;
+    /** As {@link BunQueueWorker.close}'s `timeout`. */
+    timeout?: number;
+  }): Promise<void> {
     if (this.#closing) {
+      if (options?.force) {
+        // Escalates a graceful close; a forced one is left exactly as it is.
+        if (!this.#closeForced) {
+          this.#escalate();
+        }
+        await this.#closeDone.promise;
+        return;
+      }
+
       await this.#stopped.promise;
       return;
     }
 
     this.#closing = true;
+    this.#closeForced = options?.force === true;
+
+    try {
+      await this.#closeOnce(options?.timeout);
+    } finally {
+      // Nothing may be left waiting on a close that has ended — neither a
+      // forcing caller joined to it nor a race on an escalation that never
+      // came.
+      this.#escalated.resolve();
+      this.#closeDone.resolve();
+    }
+  }
+
+  /**
+   * Turns the graceful close under way into a forced one, from the step it
+   * has reached: aborts every job still running, as a forced close does
+   * first, and wakes each graceful wait, which then stops waiting. Runs at
+   * most once per close — `#closeForced` guards it — so nothing is aborted,
+   * killed or closed twice.
+   */
+  #escalate(): void {
+    this.#closeForced = true;
+    this.#logger.debug("A forced close() escalated the graceful close");
+    this.#abandonActive();
+    this.#escalated.resolve();
+  }
+
+  /**
+   * Waits for `step` unless the close is escalated first. An escalation that
+   * cuts a step short is not the step failing: its rejection, then or later,
+   * is swallowed. A step that rejects on its own, before any escalation,
+   * still rejects.
+   */
+  async #untilEscalated(step: Promise<unknown>): Promise<void> {
+    step.catch(() => undefined);
+    if (this.#closeForced) {
+      return;
+    }
+
+    try {
+      await Promise.race([step, this.#escalated.promise]);
+    } catch (error) {
+      if (!this.#closeForced) {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * One close, from start to finish: graceful unless `#closeForced` says
+   * otherwise, and forced from wherever an escalation finds it.
+   */
+  async #closeOnce(
+    /** How long a graceful close waits for jobs in flight. */
+    timeout: number | undefined,
+  ): Promise<void> {
     this.safeEmit("closing");
     this.#wake.abort();
 
@@ -1783,67 +1898,18 @@ export class BunQueueWorker<
     );
     await this.#controlChain.catch(() => undefined);
 
-    if (options?.force) {
-      this.#abandonActive();
-
+    if (this.#closeForced) {
       // Deliberately no wait on the jobs themselves. A processor that ignores
       // its signal must not hold shutdown hostage; its lock lapses and the
       // stalled sweep returns the job to the queue, so the work is delayed
-      // rather than lost. A built-in target's runs are killed here, though,
+      // rather than lost. A built-in target's runs are killed below, though,
       // at once — `force` said not to wait, so they get no grace — because a
       // child left running would outlive the process (#166).
-      await this.#closeTarget({ force: true });
-      await this.#unregister();
-      await this.#flushThroughput();
-      await this.#metrics.close();
-      await this.#closeDeadLetters();
-      await this.#limiter
-        ?.close()
-        .catch((error: unknown) => this.#emitError(error, "limits"));
-      await Promise.allSettled([...this.#publishing]);
-
-      if (this.#ownsDriver) {
-        await this.driver.close();
-        this.#driverClosed = true;
-      }
-
-      this.#running = false;
-      this.#releaseProcess();
-      this.safeEmit("closed");
-      return;
-    }
-
-    let abandoned = false;
-
-    if (this.#active.size > 0) {
-      const timeout = options?.timeout ?? this.#options.lockDuration;
-      const finished = Promise.allSettled([...this.#active.values()]);
-      const raced = await Promise.race([
-        finished.then(() => "done" as const),
-        sleep(timeout, { unref: true }).then(() => "timeout" as const),
-      ]);
-
-      if (raced === "timeout") {
-        // Out of patience: from here this is a forced close for whatever is
-        // still running. Waiting on those jobs again would hang on exactly the
-        // processor the timeout exists for — one that ignores its signal.
-        this.#abandonActive();
-        abandoned = true;
-      }
-    }
-
-    if (!abandoned) {
-      await Promise.allSettled([...this.#active.values()]);
-    }
-    // Jobs finish before their completions are written, so drain those too.
-    await this.#completions.idle();
-    await Promise.allSettled([...this.#settling]);
-    // Events published on the way here — `completed` among them — before the
-    // driver they are written through can be closed.
-    await Promise.allSettled([...this.#publishing]);
-
-    if (this.#running) {
-      await this.#stopped.promise;
+      this.#abandonActive();
+    } else {
+      // Every wait in here gives way to an escalation (#escalate), which has
+      // already aborted the jobs; what is left is then the forced close's.
+      await this.#drain(timeout);
     }
 
     await this.#closeTarget();
@@ -1854,6 +1920,12 @@ export class BunQueueWorker<
     await this.#limiter
       ?.close()
       .catch((error: unknown) => this.#emitError(error, "limits"));
+    // A graceful close drained these before its target closed; a forced one,
+    // or one escalated on the way, drains them here, before the driver they
+    // are written through is closed.
+    if (this.#closeForced) {
+      await Promise.allSettled([...this.#publishing]);
+    }
 
     if (this.#ownsDriver) {
       await this.driver.close();
@@ -1866,6 +1938,61 @@ export class BunQueueWorker<
   }
 
   /**
+   * A graceful close's waits: for the jobs in flight, up to `timeout`, then
+   * for their completions, the events published on the way and the claim
+   * loop. Each gives way at once to an escalation.
+   */
+  async #drain(
+    /** How long to wait for jobs in flight; `lockDuration` by default. */
+    timeout: number | undefined,
+  ): Promise<void> {
+    let abandoned = false;
+
+    if (this.#active.size > 0) {
+      const finished = Promise.allSettled([...this.#active.values()]);
+      // Cancelled once the race is decided, so a close that finished early
+      // leaves no timer behind it.
+      const patience = new AbortController();
+      const raced = await Promise.race([
+        finished.then(() => "done" as const),
+        sleep(timeout ?? this.#options.lockDuration, {
+          unref: true,
+          signal: patience.signal,
+        }).then(
+          () => "timeout" as const,
+          () => "done" as const,
+        ),
+        this.#escalated.promise.then(() => "escalated" as const),
+      ]);
+      patience.abort();
+
+      if (raced === "timeout" && !this.#closeForced) {
+        // Out of patience: from here this is a forced close for whatever is
+        // still running. Waiting on those jobs again would hang on exactly the
+        // processor the timeout exists for — one that ignores its signal.
+        this.#abandonActive();
+      }
+      abandoned = raced !== "done";
+    }
+
+    if (!abandoned) {
+      await this.#untilEscalated(
+        Promise.allSettled([...this.#active.values()]),
+      );
+    }
+    // Jobs finish before their completions are written, so drain those too.
+    await this.#untilEscalated(this.#completions.idle());
+    await this.#untilEscalated(Promise.allSettled([...this.#settling]));
+    // Events published on the way here — `completed` among them — before the
+    // driver they are written through can be closed.
+    await this.#untilEscalated(Promise.allSettled([...this.#publishing]));
+
+    if (this.#running) {
+      await this.#untilEscalated(this.#stopped.promise);
+    }
+  }
+
+  /**
    * Releases what the target holds, once the attempts have settled or been
    * abandoned: a custom target's resources, or the built-in child-process and
    * worker-thread target's runs still being killed, which it kills outright
@@ -1873,36 +2000,85 @@ export class BunQueueWorker<
    * `DEFAULT_CLOSE_TIMEOUT`: the worker's own state has settled by now, so a
    * `close()` that never returns is logged and left behind rather than
    * allowed to hang the shutdown. A rejection is logged the same way.
+   *
+   * Closed with `{ force: true }` when the close is forced. A graceful target
+   * close still pending when an escalation lands is taken over: the target's
+   * `close({ force: true })` is called on top of it, given a bound of its own,
+   * and the graceful call is no longer waited for — its outcome, whatever it
+   * is, is dropped.
    */
-  async #closeTarget(
-    /** `{ force: true }` from a forced close, passed on; absent otherwise. */
-    options?: WorkerTargetCloseOptions,
-  ): Promise<void> {
+  async #closeTarget(): Promise<void> {
     const target = this.#target;
     if (!target?.close) {
       return;
     }
 
     try {
-      const closed = await Promise.race([
-        Promise.resolve(
-          options?.force ? target.close({ force: true }) : target.close(),
-        ).then(() => "closed" as const),
-        sleep(DEFAULT_CLOSE_TIMEOUT, { unref: true }).then(
-          () => "timeout" as const,
-        ),
-      ]);
-      if (closed === "timeout") {
-        this.#logger.warn(
-          `Target "${target.name}" did not close within ${DEFAULT_CLOSE_TIMEOUT}ms; closing without it`,
-          { target: target.name, timeout: DEFAULT_CLOSE_TIMEOUT },
-        );
+      if (!this.#closeForced) {
+        const graceful = Promise.resolve(target.close());
+        graceful.catch(() => undefined);
+        const outcome = await this.#boundTargetClose(graceful, true);
+        if (outcome !== "escalated") {
+          return this.#reportTargetClose(target.name, outcome);
+        }
       }
+
+      const outcome = await this.#boundTargetClose(
+        Promise.resolve(target.close({ force: true })),
+        false,
+      );
+      this.#reportTargetClose(target.name, outcome);
     } catch (error) {
       this.#logger.warn(`Target "${target.name}" failed to close`, {
         target: target.name,
         error,
       });
+    }
+  }
+
+  /**
+   * Races a target's `close()` against `DEFAULT_CLOSE_TIMEOUT` and, for a
+   * graceful one, an escalation. The bound's timer is cleared once the race is
+   * decided.
+   */
+  async #boundTargetClose(
+    /** The target's `close()`, as a promise. */
+    closing: Promise<void>,
+    /** Whether an escalation also ends the wait: for a graceful close. */
+    escalates: boolean,
+  ): Promise<"closed" | "timeout" | "escalated"> {
+    const bound = new AbortController();
+    try {
+      return await Promise.race([
+        closing.then(() => "closed" as const),
+        sleep(DEFAULT_CLOSE_TIMEOUT, {
+          unref: true,
+          signal: bound.signal,
+        }).then(
+          () => "timeout" as const,
+          () => "closed" as const,
+        ),
+        ...(escalates
+          ? [this.#escalated.promise.then(() => "escalated" as const)]
+          : []),
+      ]);
+    } finally {
+      bound.abort();
+    }
+  }
+
+  /** Warns when a target's `close()` outlasted the worker's bound on it. */
+  #reportTargetClose(
+    /** The target's name, for the message. */
+    name: string,
+    /** How the bounded close ended. */
+    outcome: "closed" | "timeout" | "escalated",
+  ): void {
+    if (outcome === "timeout") {
+      this.#logger.warn(
+        `Target "${name}" did not close within ${DEFAULT_CLOSE_TIMEOUT}ms; closing without it`,
+        { target: name, timeout: DEFAULT_CLOSE_TIMEOUT },
+      );
     }
   }
 
