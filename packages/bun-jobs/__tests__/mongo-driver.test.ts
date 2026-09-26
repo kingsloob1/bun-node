@@ -91,7 +91,29 @@ function makeDriver(options: { collectionPrefix?: string } = {}): MongoDriver {
 }
 
 if (URL) {
-  driverContract("mongodb", async () => ({ driver: makeDriver() }));
+  driverContract("mongodb", async () => {
+    const driver = makeDriver();
+
+    return {
+      driver,
+      unlockActive: async (q, id) => {
+        const { MongoClient } = await import("mongodb");
+        const client = new MongoClient(URL!);
+        await client.connect();
+        try {
+          await client
+            .db(driver.database)
+            .collection(driver.collections.jobs)
+            .updateOne(
+              { ns: q.ns, queue: q.queue, id },
+              { $set: { lockExpiresAt: null } },
+            );
+        } finally {
+          await client.close();
+        }
+      },
+    };
+  });
 } else {
   describe.skip("driver contract: mongodb (set BUN_JOBS_TEST_MONGODB_URL)", () => {
     it("is not configured", () => {});

@@ -794,6 +794,58 @@ export interface PromoteDelayedResult {
   nextDueAt: number | null;
 }
 
+/**
+ * What {@link QueueDriver.countDemand} answers: how much work a worker could
+ * claim at one instant, each figure counted up to a cap.
+ *
+ * Each count is taken up to `cap + 1` and reported as `min(count, cap)`, so
+ * `capped` tells "exactly `cap`" from "more than `cap`". `nextDueAt` is one
+ * probe and is never capped.
+ */
+export interface DemandCounts {
+  /**
+   * Jobs in `waiting`, whatever their `runAt`: the same figure
+   * {@link QueueDriver.countJobs} reports as `waiting`. A waiting job with a
+   * future `runAt` exists only under clock skew, and needs a worker all the
+   * same.
+   */
+  waiting: number;
+  /**
+   * Jobs in `delayed` or `failed` (a retry pending) whose `runAt <= now`: due,
+   * and waiting only for a worker's promotion. Counted where they stand, never
+   * by promoting them.
+   */
+  dueNow: number;
+  /**
+   * Jobs in `active` that this driver's own {@link QueueDriver.recoverStalled}
+   * would recover at `now` — exactly that set, whatever it is on this engine.
+   *
+   * Every engine takes the `active` jobs whose lock has lapsed. They differ on
+   * an `active` job with **no** lock (`lockExpiresAt` null), and this figure
+   * follows each one's sweep rather than a rule of its own: memory, SQL and
+   * MongoDB skip such a job, so it is not counted there; Redis scores it at
+   * `createdAt` and the file driver names its marker `0`, so their sweeps
+   * recover it and it is counted there. A sweep that changes which jobs it
+   * recovers changes this figure with it.
+   */
+  stalled: number;
+  /**
+   * Jobs in `active`, lapsed or not: the same figure
+   * {@link QueueDriver.countJobs} reports as `active` on this driver.
+   */
+  active: number;
+  /**
+   * The earliest `runAt > now` among `delayed` and `failed` jobs, or `null`
+   * when none is scheduled after `now`. Never capped.
+   */
+  nextDueAt: number | null;
+  /**
+   * `true` when at least one figure's true value is above `cap`, so the
+   * figures are lower bounds.
+   */
+  capped: boolean;
+}
+
 /** Identifies one queue: a namespace plus a name. */
 export interface QueueRef {
   /** The namespace the queue lives in. */
@@ -2271,6 +2323,35 @@ export interface QueueDriver {
   ) => Promise<JobRecord[]>;
   /** How many jobs are in each state. */
   countJobs: (q: QueueRef) => Promise<Record<JobState, number>>;
+  /**
+   * How much work a worker could claim at `now`, for summoning and the depth
+   * endpoint: a few bounded reads, never a scan of retained history.
+   *
+   * Optional. Without it `readDemand` (in `readApis.ts`) falls back to
+   * {@link QueueDriver.countJobs}, {@link QueueDriver.nextDelayedAt},
+   * {@link QueueDriver.isQueuePaused} and the worker records, which is correct
+   * as a trigger but approximate as a count, and scans history on some
+   * backends.
+   *
+   * Never counts `completed`, `dead` or `waiting-children`, ignores whether
+   * the queue is paused (the caller adds that), and **never writes**: it
+   * promotes nothing, recovers nothing and publishes nothing. Where its reads
+   * are separate round trips, it reads `active` first, then the due
+   * `delayed`/`failed` jobs, then `waiting` — a source before its destination
+   * — so a job that recovery or promotion moves during the call is counted
+   * twice at worst, never missed.
+   */
+  countDemand?: (
+    q: QueueRef,
+    now: number,
+    options: {
+      /**
+       * Count each figure up to this many; past it the figure is `cap` and
+       * `capped` is `true`. A positive integer.
+       */
+      cap: number;
+    },
+  ) => Promise<DemandCounts>;
   /**
    * A page of jobs narrowed by name or a search, and optionally how many
    * matched in all.

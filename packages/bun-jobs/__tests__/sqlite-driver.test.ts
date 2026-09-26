@@ -25,7 +25,26 @@ async function makeDriver(): Promise<SqlDriver> {
   return new SqlDriver({ url: `sqlite://${join(tmp.path, "jobs.db")}` });
 }
 
-driverContract("sqlite", async () => ({ driver: await makeDriver() }));
+driverContract("sqlite", async () => {
+  const tmp = await makeTmpDir("bun-jobs-sqlite");
+  cleanups.push(tmp.cleanup);
+  const file = join(tmp.path, "jobs.db");
+
+  return {
+    driver: new SqlDriver({ url: `sqlite://${file}` }),
+    // A second connection to the same file, for the write no API makes.
+    unlockActive: async (q, id) => {
+      const db = new Database(file);
+      try {
+        db.query(
+          "UPDATE bun_jobs_jobs SET lock_expires_at = NULL WHERE ns = ? AND queue = ? AND id = ?",
+        ).run(q.ns, q.queue, id);
+      } finally {
+        db.close();
+      }
+    },
+  };
+});
 
 describe("SQL driver: dialect", () => {
   it("works out the engine from the connection string", () => {

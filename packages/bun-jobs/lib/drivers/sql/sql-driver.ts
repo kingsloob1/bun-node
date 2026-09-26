@@ -12,6 +12,7 @@ import type {
   ChildRecordResult,
   ClaimOptions,
   ClearJobLogsResult,
+  DemandCounts,
   DriverCapabilities,
   DriverEvent,
   EditableJobOptionKey,
@@ -159,6 +160,7 @@ import {
   workerMetricsEntity,
 } from "../metrics";
 import {
+  capDemandCounts,
   emptyCounts,
   escapeLike,
   orderByIds,
@@ -4577,6 +4579,113 @@ export class SqlDriver implements JobsDriver {
         ? []
         : [{ state, condition: conditions.join(" AND ") }];
     });
+  }
+
+  /**
+   * One `SELECT` of scalar subqueries, so one statement and one snapshot on
+   * every engine: neither a promotion nor a claim can land between two of its
+   * figures, and the read order does not matter here. Each count is **per
+   * state**, never a `GROUP BY`, and each is
+   * `(SELECT COUNT(*) FROM (SELECT 1 … LIMIT cap + 1) t)`, so it reads at most
+   * `cap + 1` index entries (checked: at `LIMIT 1000` against 5,000 waiting,
+   * Postgres, MySQL and MariaDB read 1,000):
+   *
+   * - `stalled`: `state = 'active' AND lock_expires_at <= now` — **the very
+   *   predicate {@link SqlDriver.recoverStalled} selects by**, so it is exactly
+   *   the set that sweep would recover. A `NULL` lock never matches `<=`, so a
+   *   lockless `active` row is in neither.
+   * - `active`: `state = 'active'` plus exactly `#listNotNull(["active"])`, so
+   *   it equals `countJobs().active`: a lockless row is left out on Postgres
+   *   and SQLite (their partial `ix_…_lock`) and counted on MySQL and MariaDB.
+   * - `dueNow`: one subquery each for `delayed` and `failed`, `run_at <= now`.
+   * - `waiting`: `state = 'waiting'`.
+   * - `nextDueAt`: `MIN(run_at) … AND run_at > now` **per state**, never over
+   *   `state IN ('delayed', 'failed')`: the `IN` form walks every future
+   *   scheduled row (1,500 here) where the per-state one is a one-entry probe
+   *   — Postgres 0.70 ms against 0.12 + 0.12; MySQL 2.0–2.2 against
+   *   0.15–0.20; MariaDB 1.6–1.9 against 0.18–0.22. SQLite probes per state
+   *   either way (0.104–0.109 ms against 0.06–0.12 each), so it shares the
+   *   per-state form.
+   *
+   * **Measured**, medians through the driver's own client, over 8 queues of
+   * 49,064 rows each (64 `active`, 8 of them lapsed; 5,000 `waiting`; 2,000
+   * `delayed`, 1,000 due; 40,000 `completed`; 1,000 `failed`, 500 due; 500
+   * `dead`; 500 `waiting-children`) and the same with 10× the `completed`
+   * history, `cap` 10,000. Every figure's plan is an index-only / covering
+   * range walk on both fixtures, and nothing reads history:
+   *
+   * | engine | `countDemand` | `countJobs` (control) | no index (control) |
+   * |---|---|---|---|
+   * | Postgres 16 | 1.59 → 1.64 ms: 7 index-only subplans on the partial `ix_…_lock` and `ix_…_due`, heap fetches 0; the generic plan a cached statement switches to is the same | 10.2 → 56.2 ms | 211 → 5,630 ms (indexes dropped in a rolled-back transaction) |
+   * | SQLite 3.53 | 0.95 → 1.17 ms: every figure `COVERING INDEX` | 12.5 → 141.8 ms | 18.9 → 164.1 ms (`active` on the primary key) |
+   * | MySQL 8.4 | 5.97 → 5.05 ms: every figure a covering index read; each `LIMIT` derived table is materialised (≤ cap + 1 rows), which is why the whole costs more than its index reads | 57.3 → 430.5 ms | 275 → 2,445 ms (`FORCE INDEX (PRIMARY)`) |
+   * | MariaDB 11.8 | 7.13 → 6.36 ms: every figure `using_index`; the `MIN`s "Select tables optimized away" | 98.0 → 484.2 ms | 609 → 2,412 ms (`FORCE INDEX (PRIMARY)`) |
+   *
+   * Which `(ns, queue, state …)` index serves `waiting` and `active` varies by
+   * engine and even by table size (`ix_…_due` or `ix_…_claim`); all are
+   * covering, so nothing here hints one.
+   */
+  async countDemand(
+    q: QueueRef,
+    now: number,
+    options: { cap: number },
+  ): Promise<DemandCounts> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    const limit = Math.max(1, Math.floor(options.cap)) + 1;
+    // The condition is built by a callback, after `ns` and `queue` are bound:
+    // `?` placeholders are positional, so values must be bound in text order.
+    const where = (condition: () => string) =>
+      `FROM ${this.#tables.jobs}
+         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND ${condition()}`;
+    const count = (name: string, condition: () => string) =>
+      `(SELECT COUNT(*) FROM (SELECT 1 ${where(condition)} LIMIT ${limit}) t_${name}) AS ${name}`;
+    const earliest = (name: string, state: string) =>
+      `(SELECT MIN(run_at) ${where(() => `state = '${state}' AND run_at > ${bind(now)}`)}) AS ${name}`;
+    const activeNotNull = this.#listNotNull(["active"])
+      .map((condition) => ` AND ${condition}`)
+      .join("");
+
+    const row = await this.#one<Record<string, number | string | null>>(
+      `SELECT ${[
+        count(
+          "stalled",
+          () => `state = 'active' AND lock_expires_at <= ${bind(now)}`,
+        ),
+        count("active", () => `state = 'active'${activeNotNull}`),
+        count(
+          "due_delayed",
+          () => `state = 'delayed' AND run_at <= ${bind(now)}`,
+        ),
+        count(
+          "due_failed",
+          () => `state = 'failed' AND run_at <= ${bind(now)}`,
+        ),
+        count("waiting", () => `state = 'waiting'`),
+        earliest("next_delayed", "delayed"),
+        earliest("next_failed", "failed"),
+      ].join(",\n        ")}`,
+      values,
+    );
+
+    const figure = (name: string) => Number(row?.[name] ?? 0);
+    const nexts = [row?.next_delayed, row?.next_failed]
+      .filter((value) => value !== null && value !== undefined)
+      .map(Number);
+
+    return capDemandCounts(
+      {
+        waiting: figure("waiting"),
+        // Each state was counted to `cap + 1` on its own, so their sum still
+        // reaches past `cap` whenever either did.
+        dueNow: figure("due_delayed") + figure("due_failed"),
+        stalled: figure("stalled"),
+        active: figure("active"),
+        nextDueAt: nexts.length === 0 ? null : Math.min(...nexts),
+      },
+      options.cap,
+    );
   }
 
   /**

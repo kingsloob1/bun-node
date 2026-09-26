@@ -86,6 +86,16 @@ changed:
 - **The SSH recipe** assumes no `systemd-run --user` on Railway VMs (§7.7).
 - **The cost table** gains Railway VM pricing (§10.1).
 
+**Updated 2026-09-26: `countDemand` built (PR-1), and §6.4 corrected by it.**
+D4 is measured on all eight backends, each `[U]` replaced by a plan and a
+median; the numbers are also beside each implementation. Five corrections,
+in §6.4's [implementation corrections](#implementation-corrections-2026-09-26):
+`stalled` is exactly what each engine's `recoverStalled` would recover (the
+earlier null-guard rule was wrong on Redis and file), so the lockless contract
+case asserts agreement with the sweep; memory keeps an active-id `Set`;
+`nextDueAt` is a per-state `MIN`; the file driver's work is bounded by the
+backlog, not by `cap`. Q10 is closed.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -402,7 +412,7 @@ Read from the driver, at `now`:
 paused      = isQueuePaused(q)
 waiting     = jobs in `waiting`
 dueNow      = jobs in `delayed` or `failed` with runAt ≤ now          (nextDelayedAt covers both sets)
-stalled     = jobs in `active` whose lock_expires_at ≤ now
+stalled     = jobs in `active` this engine's recoverStalled would recover at now (a lapsed lock; §6.4 D1)
 active      = jobs in `active`
 workers     = live records from listWorkerRecords(q, now)
 
@@ -781,7 +791,13 @@ export interface QueueDemand {
   stalled: number;
   /** Jobs in `active`, lapsed or not. */
   active: number;
-  /** Live, running workers on the queue, from its heartbeat records. */
+  /**
+   * Live workers on the queue, from its heartbeat records: every live record,
+   * parked and paused ones included, as §4.2's `workers` counts them (whether
+   * anything alive may still hold the active jobs' locks). `0` on a driver
+   * that keeps no worker records. (Was "live, running workers"; PR-1 follows
+   * §4.2, 2026-09-26.)
+   */
   workers: number;
   /** The earliest `runAt` still in the future, or `null` for none. */
   nextDueAt: number | null;
@@ -1734,20 +1750,30 @@ which implements it, asked for four things settled here before any code,
 because they are where count work went wrong this month (#159): exactly which
 states count; whether due work is read through promotion or counted directly;
 what the cap returns; and a measured index plan per driver. The first three
-are decided below [D]. The fourth is a plan per driver **marked unmeasured**:
-measuring it is PR-1's first task, and nothing in the table is a finding until
-then. The name is `countDemand`, its answer `DemandCounts` (§13.9 S9).
+are decided below [D]. The fourth was a plan per driver **marked unmeasured**
+until PR-1's first task measured it; D4 now carries the measurements. The name is `countDemand`, its answer `DemandCounts` (§13.9 S9).
 
 **Corrected 2026-09-26 by the bun-jobs session's review** (it implements
 PR-1), each checked against the code: D1 now requires an explicit null guard
-on the JavaScript drivers; D2's "counted twice at worst, never missed" is
+on the JavaScript drivers (superseded the same day by implementation
+correction 1); D2's "counted twice at worst, never missed" is
 narrowed to what holds for a claim; and the lockless-row contract case runs on
 every driver and asserts agreement with `countJobs`, not a fixed answer. The
 [review corrections](#review-corrections-2026-09-26) at the end of this
 section give each one's evidence.
 
+**Line references in §6.4 are re-read at PR-1's head (2026-09-26), not at
+`0a8e580`,** and each names its symbol, so a later move is easy to follow;
+schema references (`schema.ts:596`, `:615`) were unchanged.
+
+**Implemented and measured 2026-09-26 (PR-1).** D4's plans are measured on
+every engine, and building to them corrected five points, recorded in the
+[implementation corrections](#implementation-corrections-2026-09-26): above
+all, `stalled` is defined by each engine's own stalled sweep rather than by a
+null-guard rule, which was wrong on Redis and file.
+
 ```ts
-/** On `QueueDriver` (drivers/driver.ts), beside `countJobs` (:2242). */
+/** On `QueueDriver` (drivers/driver.ts), beside `countJobs` (:2325). */
 /**
  * How much work a worker could claim at `now`, for summoning and the depth
  * endpoint: a few bounded reads, never a scan of retained history.
@@ -1774,9 +1800,10 @@ export interface DemandCounts {
   /** Jobs in `delayed` or `failed` (retry pending) whose `runAt <= now`: due, not yet promoted. */
   dueNow: number;
   /**
-   * Jobs in `active` whose lock has lapsed: `lockExpiresAt !== null && lockExpiresAt <= now`.
-   * A job with no lock is never stalled — and on a JavaScript driver the null
-   * test must be explicit, since `null <= now` is `true` there (D1).
+   * Jobs in `active` that this driver's own `recoverStalled` would recover at
+   * `now` — exactly that set (D1): every lapsed lock, and a lockless job where
+   * the sweep takes one (Redis, file) but not where it skips one (memory,
+   * SQL, Mongo).
    */
   stalled: number;
   /** Jobs in `active`, lapsed or not — the same figure `countJobs(q).active` reports on this driver. */
@@ -1795,16 +1822,41 @@ export interface DemandCounts {
 
 | State, as stored | Counted in | Why |
 |---|---|---|
-| `waiting` | `waiting` | Claimable now, or within clock skew. **No `runAt` predicate**, although every claim path adds `runAt <= now` (SQL `claimWindowFilter`, `drivers/sql/dialect.ts:867-879`; memory `#firstClaimable`) [S]: a waiting job with a future `runAt` exists only when the process that promoted or added it has a clock ahead of the reader's, it needs a worker all the same, and leaving the predicate off keeps the figure equal to `countJobs(q).waiting` — #159's rule that a count must agree with the count beside it |
+| `waiting` | `waiting` | Claimable now, or within clock skew. **No `runAt` predicate**, although every claim path adds `runAt <= now` (SQL `claimWindowFilter`, `drivers/sql/dialect.ts:867-880`; memory `#firstClaimable`) [S]: a waiting job with a future `runAt` exists only when the process that promoted or added it has a clock ahead of the reader's, it needs a worker all the same, and leaving the predicate off keeps the figure equal to `countJobs(q).waiting` — #159's rule that a count must agree with the count beside it |
 | `delayed`, `runAt <= now` | `dueNow` | Due, and waiting only for a worker's promotion (D2) |
-| `failed`, `runAt <= now` | `dueNow` | `failed` is "this attempt failed and another is due at `runAt`" (`drivers/driver.ts:788-796`) [S]: a due retry, the same case |
+| `failed`, `runAt <= now` | `dueNow` | `failed` is "this attempt failed and another is due at `runAt`" (`JobState`, `drivers/driver.ts:857-873`) [S]: a due retry, the same case |
 | `delayed` or `failed`, `runAt > now` | nowhere; the earliest is `nextDueAt` | Not yet work; `runSummoned` and the controller's one-shot timer read `nextDueAt` |
-| `active`, lock lapsed (`lockExpiresAt` not null and `<= now`) | `stalled` **and** `active` | Its worker died holding it; only a worker's stalled sweep returns it (§4.0 R12). **A row with no lock is never `stalled`, and every driver must say so explicitly.** In SQL a `NULL` never matches `<=`; in Mongo `$lte` does not match `null`. **In JavaScript it does**: `lockExpiresAt` is `number \| null` (`drivers/driver.ts:1119`), `null` coerces to `0`, and `null <= Date.now()` is `true` (while `undefined <= Date.now()` is `false`). So the memory and file drivers must guard as the memory driver's `recoverStalled` does, `job.lockExpiresAt === null \|\| job.lockExpiresAt > now` → skip (`memory-driver.ts:2334-2336`). Without the guard every lockless `active` row reads as stalled, which no sweep ever returns (`recoverStalled` skips it), so the controller would summon for it forever. Whether a lockless row is in `active` is the next row's question |
-| `active`, no lock (`lockExpiresAt` null) | `active` **exactly when `countJobs(q).active` counts it on that driver**; never `stalled` | #159 added `LOCK_NOT_NULL` (`drivers/sql/schema.ts:596`) to the `active` count only where it buys a partial index — **Postgres and SQLite** (`#listNotNull`, `sql-driver.ts:4502-4506`; `hasPartialIndexes`, `schema.ts:615`). **MySQL, MariaDB, memory, file and Mongo** count the row. `active` follows `countJobs` on each, which is D1's rule of agreeing with the count beside it |
-| `active`, lock live | `active` only | Somebody holds it. Whether that somebody is alive is `readDemand`'s `orphaned`, from the worker records, not the driver's business |
+| `active`, lock lapsed (`lockExpiresAt` not null and `<= now`) | `stalled` **and** `active` | Its worker died holding it; only a worker's stalled sweep returns it (§4.0 R12). Every engine's sweep recovers it |
+| `active`, no lock (`lockExpiresAt` null) | `stalled` **exactly when this engine's `recoverStalled` recovers it** (Redis, file; not memory, SQL, Mongo — see below); `active` **exactly when `countJobs(q).active` counts it** | `stalled` follows the sweep, below. For `active`: #159 added `LOCK_NOT_NULL` (`drivers/sql/schema.ts:596`) to the `active` count only where it buys a partial index — **Postgres and SQLite** (`#listNotNull`, `sql-driver.ts:4504-4508`; `hasPartialIndexes`, `schema.ts:615`). **MySQL, MariaDB, memory, file, Redis and Mongo** count the row. `active` follows `countJobs` on each, which is D1's rule of agreeing with the count beside it |
+| `active`, lock live | `active` only | Somebody holds it. Whether that somebody is alive is §4.2's `orphaned` (`active > 0 && workers == 0`), which the controller derives from `QueueDemand.workers`; not the driver's business |
 | `completed`, `dead` | never | Finished |
-| `waiting-children` | never | Not runnable until its children settle (`drivers/driver.ts:804`). The crash-repair case is §4.2's accepted gap |
+| `waiting-children` | never | Not runnable until its children settle (`drivers/driver.ts:872-873`). The crash-repair case is §4.2's accepted gap |
 | any state, **queue paused** | the driver counts as usual | `countDemand` ignores pause. `readDemand` sets `demand = outstanding = 0` when `isQueuePaused`, keeps the raw figures, and reports `paused: true`, so the depth endpoint shows a paused backlog as a backlog that demands nothing |
+
+**`stalled` is exactly the set this engine's `recoverStalled` would recover
+at `now`** [D, corrected 2026-09-26]. This replaces the earlier rule that a
+lockless `active` row is "never in `stalled`, on every driver", guarded by an
+explicit null test on the JavaScript drivers. That rule was wrong: it held
+only for memory and SQL (and Mongo). Every engine's sweep takes a job whose
+lock has lapsed; they differ on an `active` job with **no** lock, and
+`countDemand` mirrors each sweep exactly, lockless jobs included where the
+sweep includes them:
+
+| Engine | Its sweep | A lockless `active` job in `stalled` |
+|---|---|---|
+| Memory | skips `lockExpiresAt === null` before comparing (`null <= now` is `true` in JavaScript) | no |
+| SQL, all four | `lock_expires_at <= now`, which `NULL` never matches | no |
+| MongoDB | `lockExpiresAt: { $lte: now }`, which `null` never matches | no |
+| Redis | `ZRANGEBYSCORE active -inf now` (`RECOVER_STALLED`), over a set that scores a lockless job at `createdAt` (the add script's `stamp()` fallback) | **yes** |
+| File | markers prefixed `lockExpiresAt ?? 0` (`#markerFor`), recovered by prefix with no null check | **yes** |
+
+The reason is the trigger's: summoning for a job the sweep will recover is
+right, and summoning for one no sweep recovers would summon forever for
+nothing. **Issue #185 will make memory and SQL recover lockless jobs too;
+defined this way, that fix changes the figure on those engines and this
+section not at all.** Each `countDemand`'s predicate is a copy of its sweep's
+rather than a call to it, so #185 updates both, and the agreement case (D4's
+contract cases) fails until it does.
 
 So `demand = paused ? 0 : waiting + dueNow + stalled` and
 `outstanding = paused ? 0 : demand + (active − stalled)`. **The draft's
@@ -1818,7 +1870,7 @@ stand. It does not call `promoteDelayed`, and does not require promotion to
 have run. Why [D]:
 
 - **The controller must not write.** `promoteDelayed` moves jobs (a write per
-  batch) and is a worker's liveness duty (`BunQueueWorker.ts:2162`, on a 1 Hz
+  batch) and is a worker's liveness duty (`#promote`, `BunQueueWorker.ts:2273`, on a 1 Hz
   timer). A controller in a producer or the API process that promoted would be
   a partial worker: it would move jobs with nobody to claim them, publish
   nothing (`#promote` emits no `promoted`), and add a write to every poll.
@@ -1836,7 +1888,10 @@ destination state**: `stalled` and `active` first (recovery moves `active` →
 `waiting`), then `dueNow` (promotion moves `delayed`/`failed` → `waiting`),
 then `waiting`. A job that **recovery or promotion** moves mid-call is then
 counted twice at worst, never missed; an over-count by the jobs that moved
-during one call is harmless to a trigger and to a scaler [I].
+during one call is harmless to a trigger and to a scaler [I]. On file, a
+promotion holds its marker outside both directories for a moment, so
+`countDemand` counts the held `delayed`/`failed` markers in `dueNow`, read
+with them; without that, the hold would reopen the gap the order closes.
 
 **A claim moves the other way** (`waiting` → `active`), so the order cannot
 cover it: a job claimed between the `active` read and the `waiting` read is in
@@ -1865,9 +1920,11 @@ promotion (negative control: reversing the order must lose the job).
   whose count is O(log n) regardless (Redis) applies the same `min` so the
   contract is uniform.
 - **`nextDueAt` is never capped**: it is one probe.
-- **`readDemand`'s default `cap` is `10_000`**, raised to
-  `maxWorkers × jobsPerWorker` when that is finite and larger, so a capped
-  `outstanding` can never under-state `wanted` [D]. `demand` and `outstanding`
+- **`readDemand`'s default `cap` is `10_000`** (`DEFAULT_DEMAND_CAP`), and
+  `queue.getDemand({ cap })` takes another. **The summon controller (PR-3),
+  not `readDemand`, raises it** to `maxWorkers × jobsPerWorker` when that is
+  finite and larger, so a capped `outstanding` can never under-state `wanted`
+  [D]. `demand` and `outstanding`
   are sums of capped figures, so they can exceed `cap` (up to 3× and 4×); when
   `capped` they are lower bounds.
 - **What the controller does with it:** nothing different. It reads
@@ -1879,45 +1936,63 @@ promotion (negative control: reversing the order must lose the job).
   no `cap` from the caller [D]: a scaler targeting one pod per 500 jobs needs
   no more than 10,000.
 
-#### D4. The index plan per driver — **unmeasured**; measuring it is PR-1's first task
+#### D4. The index plan per driver — **measured 2026-09-26**
 
 #159 measured that a *grouped* count cannot absorb a per-state predicate the
 way a listing can (`countJobs`: Postgres 10.8 ms → 141.8 ms, SQLite 3.1 ms →
 37.7 ms), while a **per-state** count with a predicate cost nothing (1.52 ms
-against 1.49 ms) (`drivers/sql/sql-driver.ts:4519-4556`, and #159's commit)
-[S]. So every figure below is a **per-state** count, never a `GROUP BY`. That
-is the design reason to expect it to be cheap; it is not a measurement of it.
-No index is assumed to serve a figure until its plan is shown.
+against 1.49 ms) (`#countNotNull`'s comment, `drivers/sql/sql-driver.ts:4521-4571`, and #159's commit)
+[S]. So every figure below is a **per-state** count, never a `GROUP BY`.
 
-| Driver | Reads, in order (D2) | Index each should use | Expected cost, **[U] until measured** |
-|---|---|---|---|
-| **Memory** | synchronous, one pass: `waiting` from the waiting index; `dueNow`/`nextDueAt` from `scheduled` (`memory-driver.ts:213-220`); `active`/`stalled` over the queue's jobs | in-heap sets; whether an `active` index exists is to be read in PR-1 | irrelevant to summoning (§4.9 refuses the driver); must be correct for the endpoint and tests |
-| **File** | `readdir` of `index/active` (markers prefixed by lock expiry, `file-driver.ts:3507-3516`), then `index/delayed` and `index/failed` (prefixed by due time, `:3852-3873`), then `index/waiting` | sorted marker names; `stalled`/`dueNow` stop at the first prefix `> now` | O(entries in those directories) per call: one host only |
-| **SQL**, one `SELECT` of scalar subqueries, each `SELECT COUNT(*) FROM (SELECT 1 FROM jobs WHERE ns = ? AND queue = ? AND … LIMIT cap + 1) t` | `stalled`: `state = 'active' AND lock_expires_at <= now`; `active`: `state = 'active'` plus exactly `#listNotNull(["active"])` (so it equals `countJobs().active`, `sql-driver.ts:4502-4517`); `dueNow`: one subquery per state for `delayed` and `failed`, `run_at <= now`; `waiting`: `state = 'waiting'`; `nextDueAt`: per-state `MIN(run_at) … AND run_at > now`, as `nextDelayedAt` does (`:6818-6850`) | `ix_<t>_lock (ns, queue, state, lock_expires_at)`, partial on `LOCK_NOT_NULL` where the engine has partial indexes (`schema.ts:935-941`); `ix_<t>_due (ns, queue, state, run_at)` (`:927-931`); `ix_<t>_claim (ns, queue, state, priority, created_at[, id])` (`:913-925`) or `ix_due` for `waiting` | O(min(matching rows, cap + 1)) per figure: a bounded range walk, never the retained history. One statement is one snapshot on all four engines [I: statement-level consistent read], so D2's order is moot here |
-| ↳ Postgres | as above | partial `ix_lock` | [U] `EXPLAIN (ANALYZE, BUFFERS)` |
-| ↳ SQLite | as above; whether the per-state `MIN` or the `IN` form wins, as `nextDelayedAt` found (`:6824-6831`) | partial `ix_lock` | [U] `EXPLAIN QUERY PLAN` plus timing |
-| ↳ MySQL | as above; `LIMIT` inside a derived table is allowed (inside an `IN` subquery it is not) | plain `ix_lock` (no partial indexes, `hasPartialIndexes`, `schema.ts:615-617`) | [U] `EXPLAIN ANALYZE` |
-| ↳ MariaDB | as MySQL | plain `ix_lock` | [U] `ANALYZE FORMAT=JSON` |
-| **Redis**, one Lua script | `ZCOUNT active -inf now` (active is scored by `lockExpiresAt`), `ZCARD active`, `ZCOUNT delayed -inf now` + `ZCOUNT failed -inf now` (scored by `runAt`), `ZCARD wait`, and `ZRANGEBYSCORE <set> (now +inf LIMIT 0 1` on `delayed` and on `failed` for `nextDueAt`. Scores per set: `scripts.ts:1652-1658` | sorted-set scores; every key of a queue is in one slot (`keys.ts:250`) | O(log n) per figure, one round trip, atomic [I]; [U] timing |
-| **Mongo**, one `countDocuments(filter, { limit: cap + 1 })` per figure, in D2's order, plus one `find().sort({ runAt: 1 }).limit(1)` per scheduled state | `stalled`: `{ ns, queue, state: "active", lockExpiresAt: { $lte: now } }`; `active`: `{ ns, queue, state: "active" }` (as `countJobs`, which has no predicate, `mongo-driver.ts:4277-4287`); `dueNow`: per state `{ state, runAt: { $lte: now } }`; `waiting`: `{ state: "waiting" }` | `LOCK_INDEX` (`mongo-driver.ts:1136-1142`); `PROMOTION_INDEX` (`:1127-1133`); `CLAIM_INDEX` (`:1117-1124`). **Not** `ns_1_queue_1_state_1_runAt_1`, which the draft named and which is retired (§4.0 R9) | O(min(n, cap + 1)) per figure if the plan is a covered `IXSCAN`; seven round trips, not atomic, hence D2's order; [U] `explain("executionStats")` |
+**Measured** as PR-1's first task [M, 2026-09-26], through each driver's own
+client, on #159's fixture (per queue: 64 `active`, 8 of them lapsed; 5,000
+`waiting`; 2,000 `delayed`, 1,000 due; 40,000 `completed`; 1,000 `failed`,
+500 due; 500 `dead`; 500 `waiting-children` — 49,064 rows; 8 queues on SQL
+and MongoDB, one elsewhere, whose per-queue structures are separate) and on a
+variant with **10× the `completed` history**, `cap` 10,000, medians,
+interleaved rounds. The claim proved: **`countDemand` does not move with
+retained history on any engine, while `countJobs` grows 5–11×**, and the
+negative control (the index dropped, or hinted away) grows 4–27×, so the flat
+line is the index and not a small table. Each engine's numbers are also in a
+comment beside its implementation, as `#countNotNull`'s are.
 
-**The measurement (PR-1's first task, before any implementation is
-reviewed):**
+| Driver | Reads, in order (D2) | Index each uses (plan, both fixtures) | `countDemand`, base → 10× history | Controls: `countJobs`; no index |
+|---|---|---|---|---|
+| **Memory** | synchronous, one pass: `waiting` from the waiting index (its length); `active` from an **active-id `Set`** (its size) and `stalled` from a walk of that set; `dueNow`/`nextDueAt` from a walk of `scheduled` | in-heap sets; **the `Set` is new in PR-1** (below) | **0.089 → 0.131 ms** | 0.58 → 13.1 ms; D4's original walk of every job, 0.49 → 8.99 ms |
+| **File** | `readdir` of `index/active`, then `index/delayed`, `index/failed` and the held-marker directory, then `index/waiting`; figures from marker-name prefixes | sorted marker names; no record is opened | **6.75 → 7.50 ms** — **bounded by the backlog, not by `cap`** (below) | 30.6 → 259.4 ms; `readdir` of the record directory, 29.4 → 253.8 ms |
+| **SQL**, one `SELECT` of scalar subqueries, each `(SELECT COUNT(*) FROM (SELECT 1 FROM jobs WHERE ns = ? AND queue = ? AND … LIMIT cap + 1) t)` | `stalled`: `state = 'active' AND lock_expires_at <= now` (the predicate `recoverStalled` selects by); `active`: `state = 'active'` plus exactly `#listNotNull(["active"])`; `dueNow`: one subquery per state for `delayed` and `failed`, `run_at <= now`; `waiting`: `state = 'waiting'`; `nextDueAt`: **per-state** `MIN(run_at) … AND run_at > now` (below) | see the rows below. One statement is one snapshot on all four engines, so D2's order is moot here. `cap` bounds the entries read: at `LIMIT 1000` against 5,000 waiting, Postgres, MySQL and MariaDB read 1,000 | | |
+| ↳ Postgres 16 | as above | Index Only Scan on the partial `ix_lock` (`stalled`, `active`, 3 buffers, heap fetches 0) and on `ix_due` (`dueNow`, `waiting`, the `MIN`s); the generic plan a cached statement switches to after five runs is identical | **1.59 → 1.64 ms** | 10.2 → 56.2 ms; indexes dropped in a rolled-back transaction, 211 → 5,630 ms |
+| ↳ SQLite 3.53 | as above | `COVERING INDEX` `ix_lock` / `ix_due` on every figure | **0.95 → 1.17 ms** | 12.5 → 141.8 ms; `INDEXED BY` the primary key, 18.9 → 164.1 ms |
+| ↳ MySQL 8.4 | as above; `LIMIT` inside a derived table is allowed | covering reads of plain `ix_lock`, `ix_due` or `ix_claim` (the planner's pick varies with table size); the `MIN`s resolved from the index at plan time; each `LIMIT` derived table materialised (≤ cap + 1 rows) | **5.97 → 5.05 ms** | 57.3 → 430.5 ms; `FORCE INDEX (PRIMARY)`, 275 → 2,445 ms |
+| ↳ MariaDB 11.8 | as MySQL | `using_index` on `ix_lock`, `ix_due`, `ix_claim`; the `MIN`s "Select tables optimized away" | **7.13 → 6.36 ms** | 98.0 → 484.2 ms; `FORCE INDEX (PRIMARY)`, 609 → 2,412 ms |
+| **Redis**, one Lua script (`COUNT_DEMAND`) | `ZCOUNT active -inf now` (the range `RECOVER_STALLED` takes), `ZCARD active`, `ZCOUNT delayed -inf now` + `ZCOUNT failed -inf now`, `ZCARD wait`, and `ZRANGEBYSCORE <set> (now +inf WITHSCORES LIMIT 0 1` on `delayed` and on `failed` | sorted-set scores; every key of a queue is in one slot; nothing reads `completed` | **0.049 → 0.046 ms**, one round trip, atomic | 0.045 → 0.046 ms (flat too: neither reads history); no index to drop — walking `completed`, to show the harness would see history, 12.2 → 132.1 ms |
+| **Mongo**, one `countDocuments(filter, { limit: cap + 1 })` per figure, in D2's order, plus one `find().sort({ runAt: 1 }).limit(1)` per scheduled state | `active`: `{ state: "active" }`, then `stalled`: `{ state: "active", lockExpiresAt: { $lte: now } }` (the filter `recoverStalled` selects by) — `active` first, so a recovery between the two leaves `stalled ≤ active`; `dueNow`: per state `{ state, runAt: { $lte: now } }`; `waiting`: `{ state: "waiting" }`; `nextDueAt`: `{ state, runAt: { $gt: now } }` per state | covered `IXSCAN`, 0 documents examined: `LOCK_INDEX` for `stalled`, `PROMOTION_INDEX` (the planner's pick) for the rest. **Not** the retired `ns_1_queue_1_state_1_runAt_1` (§4.0 R9) | **6.66 → 6.79 ms**, seven round trips, not atomic, hence D2's order | 50.1 → 397.6 ms; hinted onto the `(ns, queue)` index without `state`, 661 → 5,388 ms |
 
-- **Fixture:** #159's live mix, 8 queues × 49,064 rows (64 `active`, 5,000
-  `waiting`, 2,000 `delayed`, 40,000 `completed`, 1,000 `failed`, 500 `dead`,
-  500 `waiting-children`) (`sql-driver.ts:4540-4544`), plus a variant with
-  10× the `completed` history.
-- **Per driver and dialect:** the plan (`EXPLAIN` and its equivalents), and
-  medians through the driver, `countDemand` against `countJobs` as the control.
-- **The claim to prove:** `countDemand`'s time does not move with retained
-  history (the 10× variant), while `countJobs`' does. **Negative control:**
-  the same statement with its index dropped (or hinted away) must show the
-  scan, so a flat line is shown to come from the index and not from a small
-  table.
-- **Where it lands:** the numbers go into a comment beside each
-  implementation, the way `#countNotNull`'s do (`sql-driver.ts:4519-4569`),
-  and into this table, replacing each [U]. Q10 closes with it.
+**Not index-served as first specified: memory `active` and `stalled`.** The
+draft read them "over the queue's jobs", which is a walk of every retained
+job: 0.49 ms → 8.99 ms at 10× history. PR-1 keeps an **active-id `Set`**
+beside `scheduled`, maintained in `#enterIndexes`/`#leaveIndexes` — which
+every state change (`#setState`), `addJob` and `#delete` already call, so it
+is left however a job leaves `active`: settled, buried, recovered or removed.
+With it the call is **0.089 → 0.131 ms**. Its write-side price, claim plus
+complete, 20,000 jobs × 10 runs, interleaved: **779k/s without, 770k/s with
+(−1.2%, within noise)**. A set that missed one exit would over-count `active`
+for good, so the suite checks its figures against a walk after every kind of
+exit. **Every other engine is index-served as the draft planned; no new SQL,
+MongoDB, Redis or file index was needed.**
+
+**`nextDueAt` is a per-state `MIN` on Postgres, MySQL and MariaDB, never
+`state IN ('delayed','failed')`.** The `IN` form reads every *future*
+scheduled row (1,500 here, and it grows with the scheduled backlog): Postgres
+0.70 ms against 0.12 + 0.12; MySQL 2.0–2.2 ms and MariaDB 1.6–1.9 ms against
+~0.2 per state. The per-state form is one probe ("optimized away" on
+MySQL/MariaDB). SQLite answers either form with one probe per state (`IN`
+0.104–0.109 ms against 0.06–0.12 each), so it shares the per-state form.
+
+**The file driver's work is bounded by the backlog, not by `cap`.** `readdir`
+returns a whole directory, so a 1M-job `waiting` backlog is 1M names per
+call; `cap` limits only the figure reported. It does not grow with history
+(the table), and the driver is single-host.
 
 **The fallback**, for a third-party driver without `countDemand`
 [I, google-azure §6.4]:
@@ -1931,31 +2006,62 @@ may scan history. `QueueDemand.exact = false` says so, and the controller's
 poll logs one `warn` naming the driver.
 
 **Contract-suite cases** (`__tests__/helpers/driverContract.ts`, run by all
-six driver test files): exact figures on a seeded queue; `capped` exactly when
-a figure exceeds `cap` (at `cap` and at `cap + 1`); a paused queue's figures
-unchanged; `completed`, `dead`, `waiting-children` never counted; a due
-`failed` counted in `dueNow`; a lockless `active` row, **on every driver**,
-never in `stalled` and in `active` exactly when `countJobs(q).active` counts
-it on that engine (so the assertion compares the two, never a fixed answer:
-it is excluded on Postgres and SQLite, counted on MySQL, MariaDB, memory, file
-and Mongo); `countDemand` writes nothing (the queue's state and event log are
-byte-identical after); and D2's order for promotion and recovery (not for a
-claim, D2). **Planting the lockless row** is an `UPDATE` on SQL and an
-`updateOne` on Mongo, but on memory and file there is no SQL: it needs a
-driver-level write (the driver's own job store or index files, through a test
-seam), which the helper must provide per driver.
+six driver test files, so on memory, file, SQLite, Postgres, MySQL, MariaDB,
+Redis and MongoDB): exact figures on a seeded queue (and `waiting`/`active`
+equal to `countJobs`'); `capped` at `cap` (false) and at `cap + 1` (true),
+per figure, `dueNow` across both states; a paused queue's figures unchanged;
+`completed`, `dead` and `waiting-children` never counted; a due `failed` in
+`dueNow`; `countDemand` writes nothing (every job of every state, the counts,
+pause, `nextDelayedAt` and `listQueues` identical after, an unknown queue not
+brought into being, and no event before a sentinel published after); and
+D2's order for promotion and recovery on the separate-read drivers (file,
+Mongo), with the negative control that the reversed order loses the job.
+
+**`stalled` agrees with `recoverStalled`, on every driver** (corrected
+2026-09-26; it was a fixed answer, then agreement with `countJobs`). The seed
+holds two lapsed `active` jobs, one whose lock expires **exactly at `now`**
+(every sweep takes `<= now`, so a `<` in a mirror shows only there), a live
+one, and a **lockless** one. Since
+`countDemand` writes nothing, it runs first; then `recoverStalled` runs with a
+`limit` above the count, and `stalled` must equal what it recovered
+(`requeued` + `dead`) — 4 on Redis and file, 3 elsewhere, from the one
+assertion. `active` is compared with `countJobs(q).active` taken before the
+sweep. **Planting the lockless row** is a raw write under the API on SQL
+(`UPDATE … SET lock_expires_at = NULL`), Mongo (`updateOne`) and Redis (the
+hash field emptied and the job rescored at `createdAt`, as the add script
+places one), and a driver-level `addJob` of an `active` record with
+`lockExpiresAt: null` on memory and file; the factory's `unlockActive` seam
+chooses. Breaking the mirror on any engine fails this case, checked by
+mutation on all eight backends (memory, file, SQLite, Postgres, MySQL,
+MariaDB, Redis, Mongo) two ways: counting the lockless job where the sweep
+skips it (or skipping it where the sweep takes it), and turning the `<=` into
+`<`.
 
 #### Review corrections (2026-09-26)
 
 The bun-jobs session, which implements PR-1, reviewed this section before any
-code and corrected three points. Each was checked against the code; the
+code and corrected three points. Rows 1 and 2 were superseded the same day by
+the implementation corrections below and are kept as history; row 3 stands. Each was checked against the code; the
 first was also confirmed independently by the features session.
 
 | # | Where | What the draft said | Correction | Evidence |
 |---|---|---|---|---|
-| 1 | D1, the lapsed-lock row | "A row with no lock never matches `<=`" | True in SQL, **false in JavaScript**: `null <= now` is `true`. The memory and file drivers need an explicit `lockExpiresAt === null` guard, modelled on `recoverStalled` | `lockExpiresAt: number \| null` (`drivers/driver.ts:1119`); `null <= Date.now()` → `true`, `undefined <= Date.now()` → `false`; `memory-driver.ts:2334-2336`. Without the guard, `stalled` reports rows no sweep returns, and the controller summons for them forever |
-| 2 | D4, the contract case | a lockless row "(SQL only, planted) in neither `stalled` nor `active`, matching `countJobs`" | On **all** drivers: never in `stalled`; in `active` exactly when `countJobs(q).active` counts it there. A fixed answer is unsatisfiable on four engines. Memory and file plant the row with a driver-level write | `countJobs().active` excludes a lockless row only on Postgres and SQLite (`#listNotNull`, `sql-driver.ts:4502-4506`; `LOCK_NOT_NULL`, `schema.ts:596`; `hasPartialIndexes`, `schema.ts:615`); MySQL, MariaDB, memory and file count it |
+| 1 | D1, the lapsed-lock row | "A row with no lock never matches `<=`" | **Superseded 2026-09-26 by implementation correction 1: no longer a rule.** As first corrected: true in SQL, **false in JavaScript**: `null <= now` is `true`. The memory and file drivers need an explicit `lockExpiresAt === null` guard, modelled on `recoverStalled` | `lockExpiresAt: number \| null` (`JobRecord.lockExpiresAt`, `drivers/driver.ts:1187`); `null <= Date.now()` → `true`, `undefined <= Date.now()` → `false`; `memory-driver.ts:2434-2438`. Without the guard, `stalled` reports rows no sweep returns, and the controller summons for them forever |
+| 2 | D4, the contract case | a lockless row "(SQL only, planted) in neither `stalled` nor `active`, matching `countJobs`" | **Superseded 2026-09-26 by implementation correction 2: the case now asserts agreement with `recoverStalled`.** As first corrected: on **all** drivers, never in `stalled`; in `active` exactly when `countJobs(q).active` counts it there. A fixed answer is unsatisfiable on four engines. Memory and file plant the row with a driver-level write | `countJobs().active` excludes a lockless row only on Postgres and SQLite (`#listNotNull`, `sql-driver.ts:4504-4508`; `LOCK_NOT_NULL`, `schema.ts:596`; `hasPartialIndexes`, `schema.ts:615`); MySQL, MariaDB, memory and file count it |
 | 3 | D2, the read order | "counted twice at worst, never missed" | Holds for recovery and promotion, not for a claim (`waiting` → `active`). `demand` is never under-counted; `outstanding` can under-count by the jobs claimed during one call on Mongo and file; SQL and Redis read one snapshot and are unaffected. D2's negative control (reversing the order must lose a promoted job) stands | the order is source-before-destination for recovery and promotion; a claim's source (`waiting`) is read last |
+
+#### Implementation corrections (2026-09-26)
+
+Found while building PR-1 against the measurements, and made in the code and
+in the text above.
+
+| # | Where | What the spec said | Correction | Evidence |
+|---|---|---|---|---|
+| 1 | D1, `stalled` | a lockless `active` row is "never in `stalled`, on every driver", by an explicit null guard on the JavaScript drivers | **Wrong on two engines.** `stalled` is exactly the set this engine's `recoverStalled` would recover. The **file** driver names a lockless `active` marker `lockExpiresAt ?? 0` and its sweep has no null check; **Redis** scores a lockless `active` job at `createdAt`, which `RECOVER_STALLED`'s `ZRANGEBYSCORE active -inf now` includes. So both count it; memory, SQL and Mongo, whose sweeps skip it, do not. #185 changes the figure on memory and SQL with no change to this definition | `file-driver.ts` `#markerFor` and `recoverStalled`; `redis/scripts.ts` `stamp()` in the add script and `recoverStalled`; the agreement case |
+| 2 | D4, the lockless contract case | "never in `stalled`; in `active` exactly when `countJobs(q).active` counts it" | Agreement, not a fixed answer: `countDemand().stalled` equals what `recoverStalled` then recovers, with a lockless row in the seed on every driver | the case, and its mutations |
+| 3 | D4, memory | `active`/`stalled` "over the queue's jobs" | An active-id `Set`, maintained wherever a job enters or leaves `active`, removal included | 0.49 → 8.99 ms walking; 0.089 → 0.131 ms with the set; claim+complete 779k/s → 770k/s |
+| 4 | D4, `nextDueAt` | "per-state `MIN`, as `nextDelayedAt` does" (which uses `IN` on SQLite) | Per-state on Postgres, MySQL and MariaDB is required, never `IN`; SQLite probes per state either way and shares the form | Postgres 0.70 ms against 0.12 + 0.12; MySQL/MariaDB ~2 ms against ~0.2 |
+| 5 | D4, file | "O(entries in those directories)" | The same, said plainly: bounded by the backlog, not by `cap`; `cap` limits the figure only | `readdir` returns whole directories |
 
 ---
 
@@ -2728,9 +2834,10 @@ plan unless it says so.
 
 **From `google-azure.md`** (§10 and [U] rows):
 
-10. **Q10** `EXPLAIN` the §6.2 SQL demand query, and this plan's
-    `countDemand` SQL, on a large table. **Scheduled:** it is PR-1's first
-    task, for every driver and all four SQL dialects (§6.4 D4).
+10. ~~**Q10** `EXPLAIN` the §6.2 SQL demand query, and this plan's
+    `countDemand` SQL, on a large table.~~ **Closed 2026-09-26:** measured
+    on every driver and all four SQL dialects; every figure is index-served,
+    memory's after PR-1's active-id `Set` (§6.4 D4).
 11. **Q11** Whether KEDA's MongoDB scaler passes `$expr`/`$$NOW` through.
 12. **Q12** A KEDA ScaledJob counts running Jobs, not bun-jobs workers
     (raised by `paas-ssh.md` §6.2). Should the demand route offer a
@@ -3002,13 +3109,21 @@ run-all.ts` in `examples/bun-jobs-ui`.
   #166 fix lands.**
 - **Spec.** §6.4, settled before code: the states (D1), direct counting rather
   than promotion (D2), the cap (D3), and the per-driver index plan (D4),
-  unmeasured.
+  measured 2026-09-26 and corrected by the implementation (§6.4's
+  implementation corrections).
 - **Task 1, before implementation is reviewed: the measurement** (§6.4 D4):
   plans and medians per driver and per SQL dialect on #159's fixture and its
   10× history variant, with `countJobs` as the control and a dropped index as
-  the negative control. Script: `packages/bun-jobs/bench/demand.ts`, in the
-  unpublished bench package, against its own databases (`bun_jobs_bench`,
-  Redis db 14), never the suites' [D].
+  the negative control, against the bench databases (`bun_jobs_bench`, Redis
+  db 14), never the suites'. **Done 2026-09-26, as a one-off, not a committed
+  script.** The method and every result are in §6.4 D4; the raw plans,
+  per-sample data and scripts are with the bun-jobs session's findings
+  (`count-demand-plans.md`). The draft named `bench/demand.ts`, but the
+  scripts measured hand-built statements and a patched copy of the memory
+  driver (the active-id `Set` spike) rather than the shipped `countDemand`,
+  so committing them would have put a benchmark of code that does not exist
+  into the bench package. A `bench/demand.ts` that times the shipped method
+  under the bench package's conventions is a follow-up, not part of PR-1.
 - **Scope.** `drivers/driver.ts` (the optional member and `DemandCounts`);
   `drivers/memory-driver.ts`; `drivers/file-driver.ts`;
   `drivers/sql/sql-driver.ts` (and `sql/dialect.ts` if a dialect needs its own

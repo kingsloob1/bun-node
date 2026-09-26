@@ -557,6 +557,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `list(state \| states, { offset, limit = 100, order = "asc", sort = "natural" })` | Returns jobs in the given state or states. Also takes `name`, `search`, and the worker and finish-time filters `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. See [Who ran a job](#who-ran-a-job-worker-attribution). `sort: "createdAt"` orders by creation time on memory, SQL and MongoDB; see [sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `walk(state \| states, { limit, order, after? })` | A page read with a **keyset cursor** — the same filters as `list()`, plus `after`, and answering `{ jobs, offset, next }`. This is how a list is *walked*; `list()` and `page()` are how it is *sampled*. `next` is `null` exactly when the walk is complete. Measured on a draining queue, an `asc` offset walk lost 20 of the 59 jobs that never left the list and the cursor walk lost none; see [Pagination](#pagination-filtering-and-include). Refused for `active` alone, whose key every lock renewal rewrites. |
 | `count()` / `count(state)` | Returns counts for every state, or for one. |
+| `getDemand({ cap = 10_000 })` | How much work is there for a worker right now: `waiting`, due `delayed`/retrying jobs, stalled jobs, `active`, live `workers`, `paused`, and `demand`/`outstanding`. Bounded reads: no job is promoted, recovered or touched, though counting the live workers removes expired worker records, as `listWorkers()` does. See [Demand](#reading-a-queue-search-totals-workers-and-throughput). |
 | `countAdded({ from, to })` | Of the jobs added in `[from, to)`, how many are in each state now. Memory, SQL and MongoDB only; see [Jobs added in a range](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `update(id, { data?, priority?, runAt?, onlyIn? })` | Patches a stored job. `runAt` moves only a waiting or delayed job. `onlyIn` makes the change conditional on the job's state. |
 | `remove(id)` | Removes a job. Refused while the job is active. |
@@ -1945,6 +1946,35 @@ small state, or a name, on a large backlog:
 
 Unfiltered totals are counts on every driver: `COUNT(*)`, `ZCARD`, a directory
 listing.
+
+**Demand.** `queue.getDemand()` answers whether the queue needs a worker, for
+a health check or a scaler of your own:
+
+```ts
+const { demand, outstanding, workers, paused, capped } = await mail.getDemand();
+// demand      = waiting + dueNow + stalled: what a worker could claim now
+// outstanding = demand + (active - stalled): everything not finished, once each
+export const needsWorker = !paused && demand > 0 && workers === 0;
+export const summary = { outstanding, capped };
+```
+
+- `dueNow` counts `delayed` and retrying (`failed`) jobs whose time has come
+  **where they stand**: with no worker running nothing promotes them, and they
+  are counted all the same. The count promotes, recovers and publishes
+  nothing; counting `workers` removes expired worker records on the drivers
+  whose worker listing prunes (memory, SQL, MongoDB), as `listWorkers()` does.
+- `stalled` is exactly what this driver's stalled sweep would recover now: a
+  lapsed lock everywhere, and an `active` job with no lock on Redis and file,
+  whose sweeps recover one (memory, SQL and MongoDB skip it). `active` equals
+  `count("active")`.
+- A paused queue reports its backlog with `demand` and `outstanding` at `0`.
+- Each figure is counted up to `cap` (10,000 by default); past it the figure
+  reads `cap` and `capped` is `true`. `nextDueAt`, the next scheduled job's
+  time, is never capped.
+- Never a scan of retained history: an index range on SQL and MongoDB, one
+  script on Redis, marker listings on file (bounded by the backlog, not by
+  `cap`). On a driver of your own without `countDemand`, a fallback over
+  `countJobs` answers with `exact: false`.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,

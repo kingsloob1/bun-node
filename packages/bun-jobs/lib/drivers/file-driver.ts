@@ -6,6 +6,7 @@ import type {
   ChildRecordResult,
   ClaimOptions,
   ClearJobLogsResult,
+  DemandCounts,
   DriverCapabilities,
   DriverEvent,
   EventKind,
@@ -154,9 +155,11 @@ import {
   workerTotalsOf,
 } from "./metrics";
 import {
+  capDemandCounts,
   jobFilter,
   matchesFilter,
   orderByIds,
+  runDemandReads,
   sortWorkers,
   sumBuckets,
   THROUGHPUT_RETENTION_MS,
@@ -2526,6 +2529,89 @@ export class FileDriver implements JobsDriver {
     }
 
     return counts;
+  }
+
+  /**
+   * Marker names only, never a record: `readdir` of `index/active`, then of
+   * `index/delayed`, `index/failed` and the held-marker directory, then of
+   * `index/waiting` — separate reads, so taken in `DEMAND_READ_ORDER`
+   * (`readApis.ts`), a source before its destination. Retained history (`index/completed`,
+   * `index/dead`) is never listed.
+   *
+   * **The work is bounded by the backlog, not by `cap`.** `readdir` returns a
+   * whole directory, so a 1M-job `waiting` backlog is 1M names per call; `cap`
+   * limits only the figure reported. It does not grow with history. Measured,
+   * one queue of 49,064 jobs (5,000 waiting, 3,000 scheduled, 64 active) and
+   * with 10× the `completed` history: 6.75 ms → 7.50 ms, against `countJobs`
+   * (every state directory) 30.6 ms → 259.4 ms and a `readdir` of the record
+   * directory, the no-index control, 29.4 ms → 253.8 ms.
+   *
+   * - `active` is the markers in `index/active`, as `countJobs` counts them.
+   * - **`stalled` is exactly the set {@link FileDriver.recoverStalled} takes**:
+   *   the `active` markers whose prefix — the lock expiry, padded — is not
+   *   past `now`. A job with no lock is named `0` (`lockExpiresAt ?? 0`) and
+   *   the sweep recovers it without looking at the lock, so it is counted
+   *   here. Crash residue the sweep would file elsewhere rather than recover
+   *   (a marker with no record, or one under a record no longer `active`) is
+   *   counted until a sweep files it, as `countJobs` counts it.
+   * - `dueNow` is the scheduled markers whose prefix (the due time) is not
+   *   past `now`, plus the held ones taken out of `delayed`/`failed`: a
+   *   promotion holds a marker between the two states, and without them a job
+   *   promoted during this call could be missed after all. `nextDueAt` is the
+   *   least prefix past `now` among the same names.
+   * - `waiting` is the markers in `index/waiting`, as `countJobs` counts them.
+   *
+   * Writes nothing: unlike the sweep it heals no holds.
+   */
+  async countDemand(
+    q: QueueRef,
+    now: number,
+    options: { cap: number },
+  ): Promise<DemandCounts> {
+    const index = join(this.#queueDir(q), "index");
+    const prefix = (marker: string): number =>
+      Number(marker.slice(0, marker.indexOf("-")));
+    const counts = { waiting: 0, dueNow: 0, stalled: 0, active: 0 };
+    let nextDueAt: number | null = null;
+
+    await runDemandReads(this, {
+      active: async () => {
+        const markers = await this.#list(join(index, "active"));
+        counts.active = markers.length;
+        // `!(… > now)` rather than `<= now`, as the sweep breaks on `> now`:
+        // a prefix that does not parse is one it would try, not skip.
+        counts.stalled = markers.filter((m) => !(prefix(m) > now)).length;
+      },
+      dueNow: async () => {
+        const markers: string[] = [];
+
+        for (const state of SCHEDULED_STATES) {
+          markers.push(...(await this.#list(join(index, state))));
+        }
+
+        for (const name of await this.#list(this.#heldDir(q))) {
+          const hold = parseHold(name);
+          if (hold && SCHEDULED_STATES.includes(hold.state as JobState)) {
+            markers.push(hold.marker);
+          }
+        }
+
+        for (const marker of markers) {
+          const due = prefix(marker);
+
+          if (!(due > now)) {
+            counts.dueNow++;
+          } else if (nextDueAt === null || due < nextDueAt) {
+            nextDueAt = due;
+          }
+        }
+      },
+      waiting: async () => {
+        counts.waiting = (await this.#list(join(index, "waiting"))).length;
+      },
+    });
+
+    return capDemandCounts({ ...counts, nextDueAt }, options.cap);
   }
 
   /* --- queue: read APIs ------------------------------------------------ */

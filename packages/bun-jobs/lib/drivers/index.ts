@@ -36,6 +36,7 @@ export type {
   ChildRecordResult,
   ClaimOptions,
   ClearJobLogsResult,
+  DemandCounts,
   DriverCapabilities,
   DriverConfig,
   DriverEvent,
@@ -211,8 +212,11 @@ export {
 } from "./pageCursor";
 export { type PromotionRead, readPromotion } from "./promotion";
 export {
+  assertDemandCap,
+  capDemandCounts,
   countAdded,
   countQueues,
+  DEFAULT_DEMAND_CAP,
   emptyCounts,
   escapeLike,
   escapeRegExp,
@@ -227,6 +231,8 @@ export {
   matchesFilter,
   orderByIds,
   type PendingThroughput,
+  type QueueDemand,
+  readDemand,
   registerWorkerRecord,
   removeWorkerRecord,
   sortWorkers,
