@@ -53,6 +53,10 @@ const CLOSE_WINDOW_MS = 500;
 /** The stalling job's name. */
 const STALLS = "stalls";
 
+/**
+ * What `crossProcessBackends` registers — its temp directories — released once
+ * the file ends. Each test's own driver is closed by `closers`, at its end.
+ */
 const backendCleanups: (() => Promise<void>)[] = [];
 
 afterAll(async () => {
@@ -131,7 +135,11 @@ async function stallTwice(
 ) {
   const driver = createDriver(config);
   const namespace = testNamespace("overlap");
-  backendCleanups.push(async () => {
+  // Closed at the end of this test, not the file: registered first, so it runs
+  // after the worker and queue closers below. Held to `afterAll`, every test's
+  // pool stayed open at once — 59 to 90 Postgres connections for these files,
+  // enough to refuse a peer's clients on a shared server.
+  closers.push(async () => {
     await driver.purge(namespace).catch(() => undefined);
     await driver.close();
   });

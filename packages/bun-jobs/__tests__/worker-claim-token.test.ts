@@ -36,7 +36,10 @@ const LOCK_MS = 600;
 /** Longest any gate below may hold, so a broken scenario fails instead of hanging. */
 const GATE_MS = 10_000;
 
-/** Temp directories and server namespaces to release once the suite ends. */
+/**
+ * What `crossProcessBackends` registers — its temp directories — released once
+ * the file ends. Each test's own driver is closed by `closers`, at its end.
+ */
 const backendCleanups: (() => Promise<void>)[] = [];
 
 afterAll(async () => {
@@ -109,7 +112,11 @@ async function stallAndRecover(
 ) {
   const driver = createDriver(config);
   const namespace = testNamespace("claim-token");
-  backendCleanups.push(async () => {
+  // Closed at the end of this test, not the file: registered first, so it runs
+  // after the worker and queue closers below. Held to `afterAll`, every test's
+  // pool stayed open at once — 59 to 90 Postgres connections for these files,
+  // enough to refuse a peer's clients on a shared server.
+  closers.push(async () => {
     await driver.purge(namespace).catch(() => undefined);
     await driver.close();
   });
@@ -301,6 +308,7 @@ describe("a claim's token", () => {
   async function tokensOf(count: number, afterConstruct?: () => void) {
     const driver = createDriver({ type: "memory" });
     const namespace = testNamespace("claim-token-fresh");
+    closers.push(async () => await driver.close());
     const tokens: string[] = [];
     const queue = new BunQueue("fresh", {
       namespace,
