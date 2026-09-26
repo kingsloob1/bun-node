@@ -1057,6 +1057,99 @@ checkEqual(
   [true, true, "completed", 1, "the recovered attempt"],
 );
 
+// The same recovery, with the race the check above can only hope to miss made
+// certain. The abandoned attempt's result is written without being awaited, so
+// its slot frees first and this same worker re-claims the job at once; if that
+// write lands *after* the re-claim, it meets a job that is active again. A lock
+// token that named the worker rather than the claim let it through, and the job
+// was recorded with the abandoned attempt's result (#187). Here that write is
+// held until the recovered attempt has started, the window a loaded machine or
+// a slow round trip opens, and the recovered attempt keeps running until the
+// write is answered. Its own driver, so holding a write touches nothing else.
+{
+  const raceDriver = createDriver(exampleDriver());
+  await raceDriver.connect();
+  const recoveredStarted = Promise.withResolvers<void>();
+  const stalledOnce = Promise.withResolvers<void>();
+  const firstAnswer = Promise.withResolvers<void>();
+  const completeJob = raceDriver.completeJob.bind(raceDriver);
+  let completions = 0;
+  const held: JobsDriver["completeJob"] = async (...args) => {
+    // The first completion write is the abandoned attempt's.
+    if (++completions === 1) {
+      await recoveredStarted.promise;
+    }
+    return await completeJob(...args);
+  };
+  raceDriver.completeJob = held;
+
+  /** How each attempt's result was answered, in order. */
+  const answers: string[] = [];
+  const raceQueue = new BunQueue<Record<string, never>, string>("race", {
+    namespace,
+    driver: raceDriver,
+  });
+  const raceWorker = new BunQueueWorker<Record<string, never>, string>(
+    "race",
+    async (job) => {
+      if (job.stalledCount === 0) {
+        await stalledOnce.promise;
+        return "the abandoned attempt";
+      }
+      recoveredStarted.resolve();
+      await firstAnswer.promise;
+      return "the recovered attempt";
+    },
+    {
+      namespace,
+      driver: raceDriver,
+      maintenance: false,
+      lockDuration: 400,
+      heartbeatInterval: 60_000,
+      stalledInterval: SWEEP_INTERVAL,
+      ...fast,
+    },
+  );
+  raceWorker.on("stalled", () => stalledOnce.resolve());
+  raceWorker.on("completed", (_job, value) => {
+    answers.push(`completed: ${value}`);
+    firstAnswer.resolve();
+  });
+  raceWorker.on("lockLost", () => {
+    answers.push("lockLost");
+    firstAnswer.resolve();
+  });
+  void raceWorker.run();
+
+  const raced = await raceQueue.add("fragile", {});
+  await waitFor(
+    "the raced job to finish",
+    async () => (await raced.refresh())?.state === "completed",
+    LONG,
+  );
+  // Both answers, the late write's and the recovered attempt's.
+  await waitFor(
+    "both attempts to be answered",
+    () => answers.length >= 2,
+    LONG,
+  );
+  const racedDone = await raced.refresh();
+  show("how each attempt was answered", answers);
+  checkEqual(
+    "…and when the abandoned attempt's result lands after this worker re-claimed the job, it is refused: the recovered result is the one recorded",
+    [racedDone?.returnValue, racedDone?.stalledCount, answers],
+    [
+      "the recovered attempt",
+      1,
+      ["lockLost", "completed: the recovered attempt"],
+    ],
+  );
+  await raceWorker.close();
+  await raceQueue.close();
+  // The namespace is shared with the tour's own driver, which purges it.
+  await raceDriver.close();
+}
+
 // Housekeeping, which is exactly what the option turns off: `removeOnComplete`
 // only stamps when a finished job expires, and removing it then is the minute
 // pass's job. So this result outlives its retention for as long as the only
