@@ -2099,6 +2099,18 @@ export class BunQueueWorker<
       throw error;
     }
 
+    // A forced close does not wait for this pass, so it can have started while
+    // the claim was out — and the records the claim brought back must not be
+    // started now. Run, they would meet a target that has already closed and
+    // spend an attempt on a job that never ran: its last, for a job with one.
+    // Left alone, each one's lock lapses and the stalled sweep returns it to
+    // the queue — one stall, which `maxStalledCount` allows, and no attempt.
+    // The driver has no way to hand a claim back without either.
+    if (records.length > 0 && this.#closing) {
+      await this.#declineClaimed(records, reservation, false);
+      return 0;
+    }
+
     if (reservation) {
       await this.#limiter!.commit(
         reservation,
@@ -2116,15 +2128,29 @@ export class BunQueueWorker<
 
     const reserved = reservation !== null && reservation.grant > 0;
 
-    for (const record of records) {
-      if (reserved) {
-        this.#reservedIds.add(record.id);
+    for (const [index, record] of records.entries()) {
+      // The same rule as above, for a close that landed during the commit or
+      // during the previous record's scheduling: from here, nothing starts.
+      if (this.#closing) {
+        await this.#declineClaimed(records.slice(index), reservation, true);
+        return index;
       }
 
       // Schedule the series' next occurrence *before* running this one, so a
       // crash mid-job cannot end the series.
       if (record.repeatKey) {
         await this.#scheduleNextRepeat(record);
+
+        // Declined after scheduling is a crash at this point, which the series
+        // already survives: the stalled run schedules again when it runs.
+        if (this.#closing) {
+          await this.#declineClaimed(records.slice(index), reservation, true);
+          return index;
+        }
+      }
+
+      if (reserved) {
+        this.#reservedIds.add(record.id);
       }
 
       const running = this.#process(record).finally(() => {
@@ -2137,6 +2163,47 @@ export class BunQueueWorker<
     }
 
     return records.length;
+  }
+
+  /**
+   * Leaves claimed records unstarted, because the worker is closing, and gives
+   * back the capacity reserved for them. Their locks are left to lapse, so the
+   * stalled sweep returns them to the queue.
+   *
+   * Before the reservation is committed, committing it with nothing claimed
+   * gives back all of it — the running count, the queue's rate window and
+   * each name's tentative charge — exactly as a claim that found nothing
+   * would. After, each record's share of the running count goes back the way
+   * a finished job's does; its place in a rate window stays taken until the
+   * window ends, as the commit recorded it.
+   */
+  async #declineClaimed(
+    /** The records not to start. */
+    records: JobRecord[],
+    /** What was reserved for the claim, or `null` with no limits. */
+    reservation: Reservation | null,
+    /** Whether the reservation was already committed with these records. */
+    committed: boolean,
+  ): Promise<void> {
+    this.#logger.debug(
+      "Leaving claimed jobs unstarted: the worker is closing, and their locks will lapse",
+      { jobIds: records.map((record) => record.id) },
+    );
+
+    if (!reservation || reservation.grant === 0 || !this.#limiter) {
+      return;
+    }
+
+    if (!committed) {
+      await this.#limiter
+        .commit(reservation, [], Date.now())
+        .catch((error: unknown) => this.#emitError(error, "limits"));
+      return;
+    }
+
+    for (const record of records) {
+      this.#limiter.release(record.name);
+    }
   }
 
   /** Reserves capacity under the queue's limits, or `null` when it has none. */

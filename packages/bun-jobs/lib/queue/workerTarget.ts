@@ -624,6 +624,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    * its child is still being killed until its handle's `done` settles.
    */
   readonly #live = new Set<ExecutorHandle>();
+  /**
+   * The live runs already asked to stop — by their attempt's signal — whose
+   * escalation is under way. A graceful close leaves them to it rather than
+   * asking again and arming a second set of timers.
+   */
+  readonly #stopping = new Set<ExecutorHandle>();
   /** Set by {@link close}; a run asked for after it is refused. */
   #closed = false;
 
@@ -735,6 +741,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     this.#live.add(handle);
 
     const stop = () => {
+      this.#stopping.add(handle);
       handle.stop(String(signal.reason ?? "stop"));
     };
     signal.addEventListener("abort", stop, { once: true });
@@ -760,6 +767,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     } finally {
       signal.removeEventListener("abort", stop);
       this.#live.delete(handle);
+      this.#stopping.delete(handle);
     }
   }
 
@@ -817,7 +825,10 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     }
 
     for (const handle of live) {
-      handle.stop("close");
+      if (!this.#stopping.has(handle)) {
+        this.#stopping.add(handle);
+        handle.stop("close");
+      }
     }
 
     return new Promise<void>((resolve) => {
