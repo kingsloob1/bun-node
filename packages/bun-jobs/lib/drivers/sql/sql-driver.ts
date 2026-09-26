@@ -2697,9 +2697,11 @@ export class SqlDriver implements JobsDriver {
       // statements: pick an id, take that id, read it back.
       //
       // Reading back by lock token instead looks simpler and is wrong: a
-      // worker uses one token for its whole life, so with any concurrency
-      // above one the read returns a job it already holds — and that job is
-      // then processed a second time. Measured, six of forty jobs ran twice.
+      // token is not unique to one job — a worker's batch shares one, and a
+      // driver cannot assume more of a caller than the contract says — so the
+      // read can return a job the caller already holds, which is then
+      // processed a second time. Measured, when workers kept one token for
+      // life, six of forty jobs ran twice.
       const pick = this.#binder();
       const candidate = await this.#one<{ id: string }>(
         this.dialect.claimCandidate({

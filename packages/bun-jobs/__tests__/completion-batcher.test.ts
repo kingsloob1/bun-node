@@ -111,4 +111,71 @@ describe("CompletionBatcher", () => {
 
     expect(written).toEqual(["a", "b"]);
   });
+
+  it("writes each completion under its own claim's token, batching only those that share one", async () => {
+    // A worker draws a token per claim (#187), so completions gathered behind
+    // one write can come from different claims. The plural write takes one
+    // token, and a job written under another claim's token is refused — or,
+    // were it a stale claim of the same job, wrongly accepted.
+    const calls: { token: string; ids: string[] }[] = [];
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stub: Pick<QueueDriver, "completeJob" | "completeJobs"> = {
+      completeJob: async (_q, id, token) => {
+        if (id === "lead") {
+          await first;
+        }
+        calls.push({ token, ids: [id] });
+        return true;
+      },
+      completeJobs: async (_q, token, completions) => {
+        calls.push({ token, ids: completions.map((one) => one.id) });
+        return completions.map((one) => one.id);
+      },
+    };
+    const batcher = new CompletionBatcher(stub as QueueDriver, {
+      ns: "t",
+      queue: "q",
+    });
+    const settled: string[] = [];
+    const add = (id: string, token?: string) =>
+      batcher.add({
+        id,
+        ...(token ? { token } : {}),
+        result: null,
+        retention: false,
+        settle: (kept) => {
+          settled.push(`${id} ${kept}`);
+        },
+        fail: (error) => {
+          settled.push(`${id} failed: ${String(error)}`);
+        },
+      });
+
+    // `lead` holds the write open, so the rest gather into one batch.
+    add("lead", "claim-0");
+    add("a1", "claim-a");
+    add("b1", "claim-b");
+    add("a2", "claim-a");
+    add("orphan");
+    release();
+    await batcher.idle();
+
+    expect(calls).toEqual([
+      { token: "claim-0", ids: ["lead"] },
+      { token: "claim-a", ids: ["a1", "a2"] },
+      { token: "claim-b", ids: ["b1"] },
+    ]);
+    // No token of its own and no default: failed, never written under
+    // someone else's.
+    expect(settled.sort()).toEqual([
+      "a1 true",
+      "a2 true",
+      "b1 true",
+      "lead true",
+      "orphan failed: Error: No lock token for the completion of job orphan",
+    ]);
+  });
 });
