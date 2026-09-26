@@ -644,9 +644,11 @@ export class BunQueueWorker<
   readonly #target: WorkerTargetExecutor | undefined;
   /**
    * The heartbeat record's `target`, derived once from the very target
-   * `#target` was built from, so the record cannot disagree with it.
+   * `#target` was built from, so the record cannot disagree with it. Frozen,
+   * because {@link BunQueueWorker.target} hands out this very object and the
+   * memory driver keeps a reference to it in the record it stores.
    */
-  readonly #targetInfo: WorkerTargetInfo;
+  readonly #targetInfo: Readonly<WorkerTargetInfo>;
   /**
    * The heartbeat record's `summon`: the `summon` option, checked and copied
    * field by field in the constructor. `undefined` for a worker nobody
@@ -1119,7 +1121,7 @@ export class BunQueueWorker<
       workerId: this.id,
       logger: this.#logger,
     });
-    this.#targetInfo = describeTarget(target, this.#target);
+    this.#targetInfo = Object.freeze(describeTarget(target, this.#target));
     this.#metrics = new WorkerMetricsRecorder({
       driver,
       ref: this.ref,
@@ -1354,6 +1356,22 @@ export class BunQueueWorker<
   /** The worker's logger. */
   get logger(): Logger {
     return this.#logger;
+  }
+
+  /**
+   * Where this worker's attempts run, as its heartbeat record reports it
+   * (`WorkerInfo.target`): the kind, whether the processor is a function or a
+   * file, a custom executor's `name`, and a processor file's absolute path.
+   *
+   * Known from the constructor on, so a caller need not wait for the first
+   * report to land. It is the very object the record publishes, frozen, so
+   * it always equals what `listWorkers()` returns for this worker. `file` is
+   * included: this is the configuring application asking in-process, and
+   * `serialize.exposeProcessorFiles` governs only what the management API
+   * serves.
+   */
+  get target(): Readonly<WorkerTargetInfo> {
+    return this.#targetInfo;
   }
 
   /* --- lifecycle --------------------------------------------------------- */
