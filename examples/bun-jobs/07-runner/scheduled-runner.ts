@@ -29,7 +29,7 @@ const runner = new BunRunner<CleanupArgs, CleanupResult>({
   namespace: exampleNamespace("ops"),
   file: new URL("./handlers/cleanup.ts", import.meta.url),
   schedule: 400, // every 400ms, for the demo
-  // Run in this process. `spawn` (the default) isolates each run in a child
+  // Run in this process. `child-process` (the default) isolates each run in a child
   // process; see execution-modes.ts.
   executionMode: "in-process",
   args: { olderThanDays: 30 }, // default arguments for scheduled runs

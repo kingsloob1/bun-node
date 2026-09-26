@@ -81,11 +81,11 @@ async function registerConfigurableElsewhere(
 ): Promise<void> {
   await registerRunnerElsewhere(jobs, id);
   await jobs.driver.setState(jobs.namespace, runnerKey(id), {
-    executionMode: "spawn",
+    executionMode: "child-process",
     runMode: "single",
     maxConcurrency: "Infinity",
     [RUNNER_CONFIG_STATE.code]: JSON.stringify({
-      executionMode: "spawn",
+      executionMode: "child-process",
       runMode: "single",
       maxConcurrency: null,
     }),
@@ -303,7 +303,7 @@ describe("what it refuses", () => {
     });
 
     const res = await h.call("PUT", "/runners/nightly/config", {
-      executionMode: "spawn",
+      executionMode: "child-process",
     });
     expect({ status: res.status, code: res.body.code }).toEqual({
       status: 409,
@@ -312,7 +312,7 @@ describe("what it refuses", () => {
     expect(res.body.detail).toContain("in-process");
     expect(res.body.context).toMatchObject({
       runner: "nightly",
-      executionMode: "spawn",
+      executionMode: "child-process",
       allowed: ["in-process"],
     });
     // A mode it does permit still goes through.
@@ -577,6 +577,13 @@ describe("the documents", () => {
       doc.components.schemas.RunnerConfigBody.properties.executionMode.anyOf[0]
         .enum,
     ).toEqual([...EXECUTION_MODES]);
+    // The old-spelling hints shape the 400's message only: the document
+    // advertises the current values and nothing about the old ones.
+    expect(
+      JSON.stringify(
+        doc.components.schemas.RunnerConfigBody.properties.executionMode,
+      ),
+    ).not.toMatch(/spawn|"worker"|hints/);
 
     // And the errors each route can answer with.
     for (const method of ["put", "delete"] as const) {

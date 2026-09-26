@@ -2,7 +2,7 @@ import type { ChildToParent, ParentToChild } from "../protocol";
 import { runChildProtocol } from "./child-runtime";
 
 /**
- * Entry point for `executionMode: "worker"`.
+ * Entry point for `executionMode: "worker-thread"`.
  *
  * Same protocol as the spawned child, over `postMessage` instead of IPC. A
  * worker cannot exit itself with a code, so `exit` is deliberately absent:

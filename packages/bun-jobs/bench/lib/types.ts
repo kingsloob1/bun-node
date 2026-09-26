@@ -164,7 +164,7 @@ export interface RunnerContender {
   /** True for the library this repository ships. */
   ours?: boolean;
   /** How the handler body is executed, which is the main thing separating these entries. */
-  execution: "in-process" | "worker" | "spawn";
+  execution: "in-process" | "worker-thread" | "child-process";
   /** Whether a trigger is exclusive across processes, which is what makes a run cost more than a function call. */
   durable: boolean;
   /** Scenarios this contender cannot answer, with the reason shown under the table. */

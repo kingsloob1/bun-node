@@ -79,7 +79,7 @@ export function defineHandler<
  *
  * `TToHandler` is what `runner.send()` delivers to `ctx.onMessage` listeners;
  * `TFromHandler` is what `ctx.send()` delivers to the runner's `message` event.
- * Messages cross a process boundary as JSON in `spawn` and `worker` mode, so
+ * Messages cross a process boundary as JSON in `child-process` and `worker-thread` mode, so
  * declare shapes that survive it.
  */
 export interface RunContext<
@@ -126,7 +126,7 @@ export interface RunContext<
    *
    * The message and its fields are rendered to one line of text at capture
    * (`message key=value …`); `options.level` is stored alongside it. In
-   * `spawn` and `worker` mode the call crosses the existing IPC `log` channel,
+   * `child-process` and `worker-thread` mode the call crosses the existing IPC `log` channel,
    * so it also surfaces as the runner's `log` event — whether or not
    * `forwardLogs` is on.
    *
@@ -143,7 +143,7 @@ export interface RunContext<
    * before it does something drastic — `process.exit`, a deliberate crash.
    *
    * **What it waits for depends on the mode.** In `in-process` mode it awaits
-   * the append itself. In `spawn` and `worker` mode the lines are stored by
+   * the append itself. In `child-process` and `worker-thread` mode the lines are stored by
    * the *parent*, so it resolves once they are on the ordered IPC channel: the
    * parent has them before the run's outcome reaches it, and the flush at
    * settle stores them. It never rejects, in any mode.
@@ -576,7 +576,7 @@ export interface RunLogCaptureOptions {
    */
   captureBytes?: number;
   /**
-   * Whether an `in-process` or `worker` run's `console.log`, `info`, `debug`
+   * Whether an `in-process` or `worker-thread` run's `console.log`, `info`, `debug`
    * (stored as `stdout`) and `warn`, `error` (stored as `stderr`) calls are
    * captured. Defaults to `true`. A spawned run's console is captured through
    * its pipes whatever this says.
@@ -648,7 +648,7 @@ export interface ResolvedRunLogCaptureOptions {
   maxLineBytes: number;
   /** The most one run may hand to the store, in UTF-8 bytes; `0` is unbounded. */
   captureBytes: number;
-  /** Whether an `in-process` or `worker` run's console calls are captured. */
+  /** Whether an `in-process` or `worker-thread` run's console calls are captured. */
   console: boolean;
   /**
    * The compiled redactor every line passes through before it is measured
@@ -685,7 +685,12 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * driven only by `trigger()`.
    */
   schedule?: ScheduleInput;
-  /** Where runs execute. Defaults to `"spawn"`. */
+  /**
+   * Where runs execute: `"child-process"` (the default), `"worker-thread"` or
+   * `"in-process"`. The pre-1r spellings `"spawn"` and `"worker"` are a
+   * `ConfigError` naming the current one. Upgrade every process sharing this
+   * runner's store together: an older one refuses a new-spelled override.
+   */
   executionMode?: ExecutionMode;
   /**
    * `"single"` (the default) holds a cluster-wide lock so only one run
@@ -756,9 +761,9 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * can link to its log. `true` (the default) or `false`, or a
    * {@link RunLogCaptureOptions} object to set the caps.
    *
-   * What is captured depends on where the run executes. A `spawn` run's
+   * What is captured depends on where the run executes. A `child-process` run's
    * `stdout` and `stderr` are captured line by line from its pipes, plus
-   * anything it wrote with `ctx.log()`. A `worker` or `in-process` run shares
+   * anything it wrote with `ctx.log()`. A `worker-thread` or `in-process` run shares
    * this process's stdio, so its `ctx.log()` lines are captured, and so are
    * its `console.log/info/debug` (as `stdout`) and `console.warn/error` (as
    * `stderr`) calls, attributed to the run by async context (see
@@ -835,9 +840,15 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * before writing it.
    */
   allowedOverrides?: RunnerAllowedOverrides;
-  /** Child-process options, for `executionMode: "spawn"`. */
+  /**
+   * Child-process options, for `executionMode: "child-process"`. Named after
+   * the Bun API it configures (`Bun.spawn`), not the mode.
+   */
   spawn?: SpawnOptions;
-  /** Worker options, for `executionMode: "worker"`. */
+  /**
+   * Worker options, for `executionMode: "worker-thread"`. Named after the API
+   * it configures (the `Worker` constructor), not the mode.
+   */
   worker?: WorkerOptions;
   /** In-process options, for `executionMode: "in-process"`. */
   inProcess?: InProcessOptions;

@@ -303,7 +303,9 @@ async function execute(
   // would store every line twice) and never for a queue job (whose log is the
   // job's, written with `job.log()`).
   const captureConsole =
-    ctx.captureConsole === true && ctx.mode === "worker" && ctx.kind !== "job";
+    ctx.captureConsole === true &&
+    ctx.mode === "worker-thread" &&
+    ctx.kind !== "job";
 
   try {
     const result = captureConsole

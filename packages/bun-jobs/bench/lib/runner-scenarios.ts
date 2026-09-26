@@ -90,7 +90,7 @@ export async function runRunnerScenario(
         const handle = await build();
         handles.push(handle);
 
-        // A first run pays for module resolution and, in spawn mode, for the
+        // A first run pays for module resolution and, in child-process mode, for the
         // very first child; neither belongs in a steady-state figure.
         for (let i = 0; i < 3; i++) await handle.trigger();
 

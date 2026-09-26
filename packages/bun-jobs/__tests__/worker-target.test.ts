@@ -138,16 +138,17 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
         count: 2,
       });
 
-      // The runner's spelling survives inside the processor: a worker thread
-      // runs with BUN_JOBS_MODE=worker, a child process with =spawn.
+      // The target's own spelling reaches the processor: a worker thread
+      // runs with BUN_JOBS_MODE=worker-thread, a child process with
+      // =child-process — no mapping to the runner's pre-1r words.
       if (mode === "child-process") {
         expect(result.pid).not.toBe(process.pid);
         expect(result.child).toBe("1");
-        expect(result.mode).toBe("spawn");
+        expect(result.mode).toBe("child-process");
       } else if (mode === "worker-thread") {
         expect(result.pid).toBe(process.pid);
         expect(result.child).toBe("1");
-        expect(result.mode).toBe("worker");
+        expect(result.mode).toBe("worker-thread");
       } else {
         expect(result.pid).toBe(process.pid);
         expect(result.child).toBeNull();
@@ -190,7 +191,7 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
     it("gives a flow's jobs their parent, and the parent its children's values and failures", async () => {
       // Every job in the flow runs the same file here, so a child reads
       // `job.parent` and the parent reads its children, all in `mode`. In
-      // `spawn` and `worker` these used to be missing from the job object.
+      // `child-process` and `worker-thread` these used to be missing from the job object.
       const { queue } = setup(mode, "job-children");
       const flow = await queue.addFlow({
         name: "parent",
@@ -684,21 +685,21 @@ describe("target: resolution and errors", () => {
     }
   });
 
-  it("points a runner's spellings at the worker's", () => {
+  it("points the old spellings at the current ones", () => {
     expectConfigError(
       file,
       { target: "spawn" },
-      'target must be "in-process", "worker-thread" or "child-process", not "spawn": "spawn" is a runner\'s executionMode; a worker\'s is "child-process"',
+      'target must be "in-process", "worker-thread" or "child-process", not "spawn": "spawn" is the old spelling of "child-process"',
     );
     expectConfigError(
       file,
       { target: "worker" },
-      'target must be "in-process", "worker-thread" or "child-process", not "worker": "worker" is a runner\'s executionMode; a worker\'s is "worker-thread"',
+      'target must be "in-process", "worker-thread" or "child-process", not "worker": "worker" is the old spelling of "worker-thread"',
     );
     expectConfigError(
       fn,
       { target: { kind: "spawn" } },
-      /not \{ kind: "spawn" \}: "spawn" is a runner's executionMode/,
+      /not \{ kind: "spawn" \}: "spawn" is the old spelling of "child-process"/,
     );
   });
 

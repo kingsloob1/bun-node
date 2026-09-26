@@ -28,7 +28,7 @@ import { toSerializable } from "./spawn";
  */
 export class WorkerExecutor implements Executor {
   /** Which mode this executor implements. */
-  readonly mode: ExecutionMode = "worker";
+  readonly mode: ExecutionMode = "worker-thread";
 
   /** The protocol-owning entry point the worker actually runs. */
   static readonly entry = new URL(
@@ -59,7 +59,7 @@ export class WorkerExecutor implements Executor {
     // (Checked against Bun 1.4.3 on 2026-09-22: `Bun.WorkerOptions` declares
     // none of the three, and passing them anyway leaves `worker.stdout` and
     // its siblings `undefined` while the worker's `console.log` lands on this
-    // process's stdout.) That is why a `worker` run's output is captured by
+    // process's stdout.) That is why a `worker-thread` run's output is captured by
     // patching its realm's console — `realmConsole.ts`, asked for by
     // `captureConsole` in the context and reported back as `output` messages
     // through `events.onConsole` — rather than by reading a pipe the way
@@ -73,7 +73,8 @@ export class WorkerExecutor implements Executor {
         ...process.env,
         ...this.options.env,
         [CHILD_ENV.marker]: "1",
-        [CHILD_ENV.mode]: "worker",
+        // From the executor itself, as `SpawnExecutor` does.
+        [CHILD_ENV.mode]: this.mode,
         [CHILD_ENV.namespace]: context.namespace,
         [CHILD_ENV.runnerId]: context.runnerId,
         [CHILD_ENV.runId]: context.runId,

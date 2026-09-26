@@ -389,7 +389,7 @@ describe("clearing a runner's history", () => {
         runnerId: "history",
         attempt: 1,
         source: "schedule",
-        mode: "spawn",
+        mode: "child-process",
         host: "gone",
         startedAt: crashedAt,
         status: "running",

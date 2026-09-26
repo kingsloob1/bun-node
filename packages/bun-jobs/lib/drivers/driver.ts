@@ -160,8 +160,23 @@ export interface QueuedTrigger {
 /** How a run was asked for. */
 export type RunSource = "schedule" | "manual" | "queued" | "resume";
 
-/** Where a run executed. */
-export type ExecutionMode = "spawn" | "worker" | "in-process";
+/**
+ * Where a run executed: a fresh child process, a `Worker` thread, or the
+ * owner's own event loop.
+ *
+ * The values are the ones a worker's `target` uses (`WorkerTargetMode`), by
+ * design, so one mechanism has one name. The two are separate declarations on
+ * purpose: they match today and may diverge, and neither is defined in terms
+ * of the other.
+ *
+ * A store written before 1r may hold the old spellings, `"spawn"` and
+ * `"worker"`. A driver returns what it stored, unchanged; the runner layer
+ * (`RunnerController`, `BunRunner`) and the management API's serializers
+ * translate them on read, so every value they hand out is one of these three.
+ * Upgrade every process sharing a store at once: an older one cannot read the
+ * new spellings.
+ */
+export type ExecutionMode = "child-process" | "worker-thread" | "in-process";
 
 /** How a run ended. */
 export type RunStatus = "running" | "success" | "failed" | "timeout" | "killed";

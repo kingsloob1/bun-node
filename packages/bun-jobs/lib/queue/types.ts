@@ -1120,12 +1120,10 @@ export interface BunQueueWorkerOptions {
    * `ctx.heartbeat` work through the worker; operations that change the
    * stored job directly are unavailable.
    *
-   * Runners name the same two mechanisms differently: a runner's
-   * `executionMode` says `"worker"` and `"spawn"`, a worker's target
-   * `"worker-thread"` and `"child-process"` — different fields, in different
-   * vocabularies. Inside the processor the runner's spelling survives: an
-   * attempt on a worker thread runs with `BUN_JOBS_MODE=worker`, one in a
-   * child process with `BUN_JOBS_MODE=spawn`.
+   * A runner's `executionMode` uses the same three words. Inside the
+   * processor the attempt sees its target's own spelling: `ctx.mode` and
+   * `BUN_JOBS_MODE` are `"worker-thread"` on a worker thread and
+   * `"child-process"` in a child process.
    *
    * Not remotely configurable: changing where code runs is a rebuild.
    */

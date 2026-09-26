@@ -67,7 +67,7 @@ async function runOnce(
   return await settled;
 }
 
-const MODES: ExecutionMode[] = ["in-process", "worker", "spawn"];
+const MODES: ExecutionMode[] = ["in-process", "worker-thread", "child-process"];
 
 describe.each(MODES)("execution mode: %s", (mode) => {
   it("runs the handler and returns its result", async () => {
@@ -136,11 +136,28 @@ describe.each(MODES)("execution mode: %s", (mode) => {
     expect(history[0]).toMatchObject({ status: "success", mode });
     expect(history[0].durationMs).toBeGreaterThanOrEqual(0);
   }, 20_000);
+
+  it("sets BUN_JOBS_MODE to the run's own mode, and leaves it unset in-process", async () => {
+    const runner = makeRunner(mode, { file: fixture("environment") });
+    await runner.start();
+
+    const { record, result } = await runOnce(runner);
+
+    // The same word as `RunRecord.mode`: the executor sets the variable from
+    // its own `mode`, so the two cannot drift. In-process nothing starts a
+    // runtime, so there is nothing to set.
+    expect(record.mode).toBe(mode);
+    expect((result as { mode: string | null }).mode).toBe(
+      mode === "in-process" ? null : mode,
+    );
+  }, 20_000);
 });
 
 describe("child processes", () => {
   it("tells the handler it is a child", async () => {
-    const runner = makeRunner("spawn", { file: fixture("environment") });
+    const runner = makeRunner("child-process", {
+      file: fixture("environment"),
+    });
     await runner.start();
 
     const { result } = await runOnce(runner);
@@ -148,12 +165,12 @@ describe("child processes", () => {
     expect(result).toMatchObject({
       isChild: true,
       marker: "1",
-      mode: "spawn",
+      mode: "child-process",
     });
   }, 20_000);
 
   it("forwards the child's logger when asked", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       file: fixture("progress"),
       forwardLogs: true,
     });
@@ -170,7 +187,7 @@ describe("child processes", () => {
   }, 20_000);
 
   it("reports a child that exits without a result", async () => {
-    const runner = makeRunner("spawn", { file: fixture("exit") });
+    const runner = makeRunner("child-process", { file: fixture("exit") });
     await runner.start();
 
     const { record, error } = await runOnce(runner);
@@ -181,7 +198,7 @@ describe("child processes", () => {
   }, 20_000);
 
   it("passes the driver config through so a child can reach the backend", async () => {
-    const runner = makeRunner("spawn", {
+    const runner = makeRunner("child-process", {
       file: fixture("environment"),
       driver: { type: "memory" },
     });

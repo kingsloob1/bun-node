@@ -8,18 +8,18 @@
  *
  * | Mode | Isolation | Start-up cost | Can be force-killed |
  * |---|---|---|---|
- * | `spawn` (default) | its own process: a crash, a leak or `process.exit` cannot touch the parent | a new `bun` process | yes — close → `SIGTERM` → `SIGKILL` |
- * | `worker` | its own thread and module graph, shared process | a thread | yes — `worker.terminate()` |
+ * | `child-process` (default) | its own process: a crash, a leak or `process.exit` cannot touch the parent | a new `bun` process | yes — close → `SIGTERM` → `SIGKILL` |
+ * | `worker-thread` | its own thread and module graph, shared process | a thread | yes — `worker.terminate()` |
  * | `in-process` | none: the parent's thread, modules and memory | nothing | no — it can only be *asked* via `ctx.signal` |
  *
- * Pick `spawn` for anything long, heavy or untrusted; `in-process` for small,
+ * Pick `child-process` for anything long, heavy or untrusted; `in-process` for small,
  * frequent, well-behaved work where start-up cost dominates.
  *
  * A queue worker can run its attempts the same ways, through its `target`
- * option (`02-queues/isolated-processors.ts`). Runners and workers name the
- * same two mechanisms differently: a runner's `executionMode` is `"worker"` /
- * `"spawn"`, a worker's `target` is `"worker-thread"` / `"child-process"`, and
- * the attempt's own process still sees `BUN_JOBS_MODE=worker` / `spawn`.
+ * option (`02-queues/isolated-processors.ts`), and in the same words: a
+ * runner's `executionMode` and a worker's `target` are both `"child-process"`
+ * or `"worker-thread"`, and a run or an attempt sees that word as
+ * `BUN_JOBS_MODE` and `ctx.mode`.
  */
 import type { ExecutionMode } from "@kingsleyweb/bun-jobs";
 import type { WhoAmI } from "./handlers/whoami";
@@ -32,7 +32,7 @@ title("Execution modes");
 
 show("parent pid", process.pid);
 
-const modes: ExecutionMode[] = ["in-process", "worker", "spawn"];
+const modes: ExecutionMode[] = ["in-process", "worker-thread", "child-process"];
 
 for (const mode of modes) {
   step(mode);

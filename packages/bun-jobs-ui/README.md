@@ -591,13 +591,13 @@ read only the untargeted map, since an operation has no one queue or runner:
   run logged nothing"), and a finished run whose record already says
   `logLines: 0`, which offers no log and says the same. Every log also states
   what capture sees and what it never does. A run's console output is
-  captured whichever way it runs. A spawned run's piped `stdout` and
+  captured whichever way it runs. A `child-process` run's piped `stdout` and
   `stderr` are captured, unless a stream was explicitly set to `"inherit"`
-  or `"ignore"`. A `worker` or `in-process` run's `console.log`, `info` and
+  or `"ignore"`. A `worker-thread` or `in-process` run's `console.log`, `info` and
   `debug` (as `stdout`) and `warn` and `error` (as `stderr`) are attributed
   to the run that made them, even with two running at once; a listener the
   run triggers synchronously (a `progress` listener that logs, say) counts
-  as the run's too. What escapes, in a worker or in-process run:
+  as the run's too. What escapes, in a `worker-thread` or `in-process` run:
   `process.stdout.write`/`process.stderr.write` and `Bun.write` to the
   standard streams; native code writing to file descriptors 1 and 2; a
   program the handler launched with its own stdio; console methods other

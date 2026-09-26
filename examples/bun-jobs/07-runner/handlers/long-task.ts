@@ -3,8 +3,8 @@
  * messages, and stops cleanly when asked.
  *
  * Messages go both ways. `ctx.send()` surfaces as the runner's `message`
- * event; `runner.send()` arrives here through `ctx.onMessage`. In `spawn` and
- * `worker` modes they cross the process or thread boundary as IPC, so they
+ * event; `runner.send()` arrives here through `ctx.onMessage`. In `child-process`
+ * and `worker-thread` modes they cross the process or thread boundary as IPC, so they
  * must be structured-cloneable.
  */
 import { defineHandler } from "@kingsleyweb/bun-jobs";

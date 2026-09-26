@@ -42,8 +42,8 @@ const runner = new BunRunner<
     ? {
         allowedOverrides: {
           executionModes: process.env.EXECUTION_MODES.split(",") as (
-            | "spawn"
-            | "worker"
+            | "child-process"
+            | "worker-thread"
             | "in-process"
           )[],
         },

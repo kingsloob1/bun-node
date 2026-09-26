@@ -20,7 +20,7 @@ import { toHandler } from "./executor";
  * and the only one that cannot guarantee a run actually stops. A handler that
  * ignores `ctx.signal` keeps running after a timeout; the outcome then says
  * `detached: true` rather than pretending the run is over. Anything that must
- * be killable belongs in `spawn` or `worker` mode.
+ * be killable belongs in `child-process` or `worker-thread` mode.
  */
 export class InProcessExecutor implements Executor {
   /** Which mode this executor implements. */

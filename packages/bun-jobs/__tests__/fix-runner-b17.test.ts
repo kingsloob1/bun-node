@@ -25,7 +25,7 @@ import { testNamespace, waitFor } from "./helpers";
 /**
  * B17: a runner built from a driver *instance* published every mode in
  * `allowedOverrides.executionModes` as `allowed`, so the management API (and the
- * UI) accepted `worker` or `spawn` — which the owner then always refused,
+ * UI) accepted `worker-thread` or `child-process` — which the owner then always refused,
  * having no driver config to hand a child. It now publishes only the modes it
  * can adopt, and a controller refuses the rest before writing anything.
  */
@@ -63,7 +63,7 @@ async function owner(
     file: ECHO_HANDLER,
     executionMode: options.executionMode ?? "in-process",
     allowedOverrides: {
-      executionModes: options.executionModes ?? ["in-process", "worker"],
+      executionModes: options.executionModes ?? ["in-process", "worker-thread"],
     },
     ...(options.childDriver ? { childDriver: options.childDriver } : {}),
     waitToExit: false,
@@ -90,7 +90,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("b17");
     const runner = await owner(driver, namespace, {
-      executionModes: ["spawn", "worker", "in-process"],
+      executionModes: ["child-process", "worker-thread", "in-process"],
     });
 
     expect(runner.config.allowed).toEqual(["in-process"]);
@@ -102,13 +102,17 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
     const namespace = testNamespace("b17");
     const runner = await owner(driver, namespace, {
       childDriver: { type: "memory" },
-      executionModes: ["spawn", "worker", "in-process"],
+      executionModes: ["child-process", "worker-thread", "in-process"],
     });
 
-    expect(runner.config.allowed).toEqual(["spawn", "worker", "in-process"]);
+    expect(runner.config.allowed).toEqual([
+      "child-process",
+      "worker-thread",
+      "in-process",
+    ]);
     expect(await storedAllowed(driver, namespace)).toEqual([
-      "spawn",
-      "worker",
+      "child-process",
+      "worker-thread",
       "in-process",
     ]);
   });
@@ -117,18 +121,18 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("b17");
     const runner = await owner(driver, namespace, {
-      executionMode: "worker",
-      executionModes: ["spawn", "worker", "in-process"],
+      executionMode: "worker-thread",
+      executionModes: ["child-process", "worker-thread", "in-process"],
     });
 
-    expect(runner.config.allowed).toEqual(["worker", "in-process"]);
+    expect(runner.config.allowed).toEqual(["worker-thread", "in-process"]);
   });
 
   it("publishes an empty list, and it is read back as empty, when no permitted mode can be adopted", async () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("b17");
     const runner = await owner(driver, namespace, {
-      executionModes: ["spawn", "worker"],
+      executionModes: ["child-process", "worker-thread"],
     });
 
     expect(runner.config.allowed).toEqual([]);
@@ -141,7 +145,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
     });
     const remote = await manager.controller("b17");
     await expect(
-      remote.updateConfig({ executionMode: "worker" }),
+      remote.updateConfig({ executionMode: "worker-thread" }),
     ).rejects.toThrow(ConfigError);
   });
 
@@ -153,7 +157,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
 
     let caught: unknown;
     try {
-      await runner.updateConfig({ executionMode: "worker" });
+      await runner.updateConfig({ executionMode: "worker-thread" });
     } catch (error) {
       caught = error;
     }
@@ -171,7 +175,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
     // Written raw, as an older controller that trusted the old list would have.
     await driver.connect();
     await writeRunnerConfig(driver, namespace, runnerKey("b17"), {
-      [RUNNER_CONFIG_STATE.executionMode]: "worker",
+      [RUNNER_CONFIG_STATE.executionMode]: "worker-thread",
     });
     const runner = await owner(driver, namespace);
 
@@ -186,7 +190,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
 
 describe("B17: the management API refuses up front", () => {
   const body = {
-    executionMode: "worker",
+    executionMode: "worker-thread",
     concurrency: { runMode: "parallel", maxConcurrency: 3 },
   };
 
@@ -198,7 +202,7 @@ describe("B17: the management API refuses up front", () => {
       id: "b17",
       file: ECHO_HANDLER,
       executionMode: "in-process",
-      allowedOverrides: { executionModes: ["in-process", "worker"] },
+      allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
     });
 
     const res = await h.call("PUT", "/runners/b17/config", body);
@@ -208,7 +212,7 @@ describe("B17: the management API refuses up front", () => {
     });
     expect(res.body.context).toMatchObject({
       runner: "b17",
-      executionMode: "worker",
+      executionMode: "worker-thread",
       allowed: ["in-process"],
     });
 
@@ -232,7 +236,7 @@ describe("B17: the management API refuses up front", () => {
     });
     expect(res.body.context).toMatchObject({
       runner: "b17",
-      executionMode: "worker",
+      executionMode: "worker-thread",
       allowed: ["in-process"],
     });
   });
@@ -245,6 +249,6 @@ describe("B17: the management API refuses up front", () => {
 
     const res = await h.call("PUT", "/runners/b17/config", body);
     expect(res.status).toBe(200);
-    expect(res.body.allowed).toEqual(["worker", "in-process"]);
+    expect(res.body.allowed).toEqual(["worker-thread", "in-process"]);
   });
 });

@@ -77,7 +77,7 @@ function addRunner(
     file: fixture("append"),
     executionMode: "in-process",
     // A config a child could be handed: without one, an override asking for
-    // `spawn` or `worker` is refused, which its own test covers.
+    // `child-process` or `worker-thread` is refused, which its own test covers.
     childDriver: { type: "memory" },
     waitToExit: false,
     syncInterval: 0,
@@ -110,7 +110,7 @@ describe("remote runner configuration", () => {
         maxConcurrency: 3,
       },
       overridden: [],
-      allowed: ["spawn", "worker", "in-process"],
+      allowed: ["child-process", "worker-thread", "in-process"],
       seq: 0,
     });
     expect(info.config.error).toBeUndefined();
@@ -161,10 +161,10 @@ describe("remote runner configuration", () => {
     const remote = await owner.controller<AppendArgs, string>("configurable");
     expect(remote.isLocal).toBe(true);
 
-    await remote.updateConfig({ executionMode: "spawn" });
+    await remote.updateConfig({ executionMode: "child-process" });
 
     // No sync, no event: the controller called the runner itself.
-    expect(runner.executionMode).toBe("spawn");
+    expect(runner.executionMode).toBe("child-process");
   });
 
   it("adopts a stored override at start(), so a restart keeps it", async () => {
@@ -211,9 +211,9 @@ describe("remote runner configuration", () => {
     const remote = await observer.controller<AppendArgs, string>(
       "configurable",
     );
-    await remote.updateConfig({ executionMode: "worker" });
+    await remote.updateConfig({ executionMode: "worker-thread" });
 
-    await waitFor(() => runner.executionMode === "worker", {
+    await waitFor(() => runner.executionMode === "worker-thread", {
       timeout: 4000,
       message: () => `still ${runner.executionMode}`,
     });
@@ -228,9 +228,9 @@ describe("remote runner configuration", () => {
     const remote = await observer.controller<AppendArgs, string>(
       "configurable",
     );
-    await remote.updateConfig({ executionMode: "worker" });
+    await remote.updateConfig({ executionMode: "worker-thread" });
 
-    await waitFor(() => runner.executionMode === "worker", {
+    await waitFor(() => runner.executionMode === "worker-thread", {
       timeout: 4000,
       message: () => `still ${runner.executionMode}`,
     });
@@ -263,20 +263,22 @@ describe("remote runner configuration", () => {
     const remote = await observer.controller<AppendArgs, string>(
       "configurable",
     );
-    await remote.updateConfig({ executionMode: "worker" });
-    await waitFor(() => runner.executionMode === "worker", { timeout: 4000 });
+    await remote.updateConfig({ executionMode: "worker-thread" });
+    await waitFor(() => runner.executionMode === "worker-thread", {
+      timeout: 4000,
+    });
 
     const state = await driver.getState(namespace, KEY);
-    expect(state.executionMode).toBe("worker");
-    expect(state[RUNNER_CONFIG_STATE.executionMode]).toBe("worker");
+    expect(state.executionMode).toBe("worker-thread");
+    expect(state[RUNNER_CONFIG_STATE.executionMode]).toBe("worker-thread");
     expect(JSON.parse(state[RUNNER_CONFIG_STATE.code] ?? "{}")).toMatchObject({
       executionMode: "in-process",
     });
 
     // And the shape a controller with no owner in its process reads.
     const info = await remote.info();
-    expect(info.executionMode).toBe("worker");
-    expect(info.config?.effective.executionMode).toBe("worker");
+    expect(info.executionMode).toBe("worker-thread");
+    expect(info.config?.effective.executionMode).toBe("worker-thread");
     expect(info.config?.code?.executionMode).toBe("in-process");
     expect(info.config?.overridden).toEqual(["executionMode"]);
     expect(info.config?.appliedSeq).toBe(info.config?.seq);
@@ -294,7 +296,7 @@ describe("remote runner configuration", () => {
       "configurable",
     );
     const overridden = await remote.updateConfig({
-      executionMode: "worker",
+      executionMode: "worker-thread",
       concurrency: { runMode: "single" },
     });
     // `single` has no cap to bound, so the concurrency patch clears that
@@ -337,7 +339,7 @@ describe("remote runner configuration — validation", () => {
   it("refuses an execution mode the runner's code does not permit", async () => {
     const { owner, observer } = cluster();
     const runner = addRunner(owner, {
-      allowedOverrides: { executionModes: ["in-process", "worker"] },
+      allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
     });
     await runner.start();
 
@@ -345,14 +347,14 @@ describe("remote runner configuration — validation", () => {
       "configurable",
     );
     const failure = await remote
-      .updateConfig({ executionMode: "spawn" })
+      .updateConfig({ executionMode: "child-process" })
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ConfigError);
     expect((failure as ConfigError).context).toMatchObject({
       reason: "not-allowed",
-      executionMode: "spawn",
-      allowed: ["worker", "in-process"],
+      executionMode: "child-process",
+      allowed: ["worker-thread", "in-process"],
     });
     expect(runner.executionMode).toBe("in-process");
   });
@@ -394,7 +396,7 @@ describe("remote runner configuration — validation", () => {
     // Written straight into state, as a controller from a build that allowed
     // more — or a hand edit — would leave it.
     await driver.setState(namespace, KEY, {
-      [RUNNER_CONFIG_STATE.executionMode]: "spawn",
+      [RUNNER_CONFIG_STATE.executionMode]: "child-process",
       [RUNNER_CONFIG_STATE.maxConcurrency]: "9000",
       [RUNNER_CONFIG_STATE.runMode]: "single",
     });
@@ -451,8 +453,8 @@ describe("remote runner configuration — validation", () => {
     });
     const remote = await manager.controller<AppendArgs, string>("configurable");
     await expect(
-      remote.updateConfig({ executionMode: "spawn" }),
-    ).rejects.toThrow(/does not permit executionMode "spawn"/);
+      remote.updateConfig({ executionMode: "child-process" }),
+    ).rejects.toThrow(/does not permit executionMode "child-process"/);
     expect(runner.executionMode).toBe("in-process");
     expect(runner.config.overridden).toEqual([]);
   });
@@ -471,7 +473,7 @@ describe("remote runner configuration — validation", () => {
 
     const remote = await observer.controller("configurable");
     const failure = await remote
-      .updateConfig({ executionMode: "worker" })
+      .updateConfig({ executionMode: "worker-thread" })
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ConfigError);
@@ -494,7 +496,10 @@ describe("remote runner configuration — validation", () => {
         waitToExit: false,
         logger: noopLogger,
         allowedOverrides: {
-          executionModes: executionModes as ("spawn" | "worker")[],
+          executionModes: executionModes as (
+            | "child-process"
+            | "worker-thread"
+          )[],
         },
       });
 
@@ -522,8 +527,8 @@ describe("remote runner configuration — semantics", () => {
     await waitFor(() => runner.activeRuns.size === 1);
 
     const remote = await owner.controller<AppendArgs, string>("configurable");
-    await remote.updateConfig({ executionMode: "spawn" });
-    expect(runner.executionMode).toBe("spawn");
+    await remote.updateConfig({ executionMode: "child-process" });
+    expect(runner.executionMode).toBe("child-process");
 
     await waitFor(() => records.length === 1, { timeout: 5000 });
     expect(records[0]?.mode).toBe("in-process");
@@ -531,7 +536,7 @@ describe("remote runner configuration — semantics", () => {
     // And the next one uses the new mode.
     await runner.trigger({ args: { marker: "fast", ms: 5 } });
     await waitFor(() => records.length === 2, { timeout: 20_000 });
-    expect(records[1]?.mode).toBe("spawn");
+    expect(records[1]?.mode).toBe("child-process");
   }, 30_000);
 
   it("gates only new runs when the cap is lowered", async () => {

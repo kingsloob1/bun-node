@@ -28,11 +28,14 @@ import { formatNumber } from "../../../format";
  */
 export { EXECUTION_MODES };
 
-/** What each execution mode means, for the picker's hint. */
+/**
+ * What each execution mode means, for the picker's hint. The values are a
+ * worker's `target` kinds too, and the words match its badge.
+ */
 export const EXECUTION_MODE_LABELS: Readonly<Record<ExecutionModeDto, string>> =
   {
-    spawn: "spawn — a child process per run",
-    worker: "worker — a Worker thread per run",
+    "child-process": "child-process — a child process per run",
+    "worker-thread": "worker-thread — a Worker thread per run",
     "in-process": "in-process — in the runner's own process",
   };
 

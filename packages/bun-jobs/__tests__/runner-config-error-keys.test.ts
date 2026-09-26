@@ -53,12 +53,12 @@ const KEY = runnerKey("keys");
 
 /**
  * A started owner built from a driver *instance*, so it has no driver config
- * to hand a child: an override asking for `worker` is one it must refuse.
+ * to hand a child: an override asking for `worker-thread` is one it must refuse.
  */
 async function owner(
   driver: MemoryDriver,
   namespace: string,
-  executionModes: ExecutionMode[] = ["in-process", "worker"],
+  executionModes: ExecutionMode[] = ["in-process", "worker-thread"],
 ): Promise<BunRunner<any, any>> {
   const runner = new BunRunner({
     id: "keys",
@@ -82,10 +82,10 @@ describe("a runner config refusal names the refused settings", () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("error-keys");
     // Stored raw before the owner starts, as an older controller would have:
-    // `worker` needs a child driver this owner does not have, `single` is fine.
+    // `worker-thread` needs a child driver this owner does not have, `single` is fine.
     await driver.connect();
     await writeRunnerConfig(driver, namespace, KEY, {
-      [RUNNER_CONFIG_STATE.executionMode]: "worker",
+      [RUNNER_CONFIG_STATE.executionMode]: "worker-thread",
       [RUNNER_CONFIG_STATE.runMode]: "single",
     });
     const runner = await owner(driver, namespace);
@@ -134,14 +134,14 @@ describe("a runner config refusal names the refused settings", () => {
       override: {
         maxConcurrency: "9000",
         runMode: "sometimes",
-        executionMode: "worker",
+        executionMode: "worker-thread",
       },
       code: {
         executionMode: "in-process",
         runMode: "parallel",
         maxConcurrency: 4,
       },
-      allowed: ["in-process", "worker"],
+      allowed: ["in-process", "worker-thread"],
       hasChildDriver: false,
     });
     expect(resolved.overridden).toEqual([
@@ -155,13 +155,13 @@ describe("a runner config refusal names the refused settings", () => {
 
   it("names nothing when every setting is adopted", () => {
     const resolved = resolveRunnerConfig({
-      override: { runMode: "single", executionMode: "worker" },
+      override: { runMode: "single", executionMode: "worker-thread" },
       code: {
         executionMode: "in-process",
         runMode: "parallel",
         maxConcurrency: 4,
       },
-      allowed: ["in-process", "worker"],
+      allowed: ["in-process", "worker-thread"],
       hasChildDriver: true,
     });
     expect(resolved.refusedKeys).toEqual([]);
@@ -178,7 +178,7 @@ describe("a runner config refusal names the refused settings", () => {
     await driver.setState(namespace, KEY, {
       [RUNNER_CONFIG_STATE.error]: JSON.stringify({
         at: 123,
-        message: 'executionMode "worker" needs a driver config',
+        message: 'executionMode "worker-thread" needs a driver config',
       }),
     });
 
@@ -187,7 +187,7 @@ describe("a runner config refusal names the refused settings", () => {
     );
     expect(described?.error).toEqual({
       at: 123,
-      message: 'executionMode "worker" needs a driver config',
+      message: 'executionMode "worker-thread" needs a driver config',
       keys: [],
     });
 

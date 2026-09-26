@@ -36,7 +36,7 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
     id: "backup",
     file: WORK,
     // A child process: its stdout and stderr are captured from its pipes.
-    executionMode: "spawn",
+    executionMode: "child-process",
     schedule: { every: 30_000 },
     waitToExit: false,
   });
@@ -61,9 +61,9 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
     // playground shares one driver **instance** between its two services, and
     // an instance cannot be handed to a child — so every runner here offers
     // only `in-process`, plus its code's own mode where that is already a
-    // child mode (`backup` and `reindex` keep `spawn` that way). Giving this
-    // one a config of its own is what puts `spawn` and `worker` in its
-    // Settings… dialog.
+    // child mode (`backup` and `reindex` keep `child-process` that way).
+    // Giving this one a config of its own is what puts `child-process` and
+    // `worker-thread` in its Settings… dialog.
     //
     // What the config reaches depends on the backend: with
     // `PLAYGROUND_DRIVER=sqlite` (or postgres, redis, mongo) the child opens
@@ -77,7 +77,7 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
   const reindex = jobs.runner({
     id: "reindex",
     file: WORK,
-    executionMode: "spawn",
+    executionMode: "child-process",
     waitToExit: false,
   });
 

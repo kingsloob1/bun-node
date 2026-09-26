@@ -4,7 +4,7 @@ import process from "node:process";
 import { runChildProtocol } from "./child-runtime";
 
 /**
- * Entry point for `executionMode: "spawn"`.
+ * Entry point for `executionMode: "child-process"`.
  *
  * The child is this file, not the handler: it owns the protocol, so a
  * handler file stays an ordinary module that default-exports a function and

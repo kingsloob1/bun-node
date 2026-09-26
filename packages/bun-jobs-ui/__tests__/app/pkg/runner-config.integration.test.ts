@@ -569,14 +569,14 @@ for (const label of ["memory", "SQLite"]) {
         const id = "cfg-view";
         await startRunner(deploy, deploy.api, id, {
           childDriver: deploy.childDriver,
-          allowedOverrides: { executionModes: ["in-process", "worker"] },
+          allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
         });
         const config = await configOf(deploy, id);
         expect(config).toMatchObject({
           effective: { executionMode: "in-process", runMode: "single" },
           code: { executionMode: "in-process", runMode: "single" },
           overridden: [],
-          allowed: ["worker", "in-process"],
+          allowed: ["worker-thread", "in-process"],
           seq: 0,
         });
         expect(config.error).toBeUndefined();
@@ -597,10 +597,10 @@ for (const label of ["memory", "SQLite"]) {
 
         const dialog = await ui.openSettings();
         const view = dialog.view();
-        // `allowed` is what is offered: spawn is not, and the note says why.
-        expect(view.modeOptions).toEqual(["worker", "in-process"]);
+        // `allowed` is what is offered: child-process is not, and the note says why.
+        expect(view.modeOptions).toEqual(["worker-thread", "in-process"]);
         expect(view.modesLimited).toContain(
-          "spawn is not offered: this runner's code permits only worker, in-process",
+          "child-process is not offered: this runner's code permits only worker-thread, in-process",
         );
         expect(view.executionMode).toBe("in-process");
         expect(view.runMode).toBe("single");
@@ -744,13 +744,13 @@ for (const label of ["memory", "SQLite"]) {
           childDriver: deploy.childDriver,
         });
         const seeded = await direct(deploy, "PUT", `/runners/${id}/config`, {
-          executionMode: "worker",
+          executionMode: "worker-thread",
           concurrency: { runMode: "parallel", maxConcurrency: 2 },
         });
         expect(seeded.status).toBe(200);
         expect(seeded.json).toMatchObject({
           effective: {
-            executionMode: "worker",
+            executionMode: "worker-thread",
             runMode: "parallel",
             maxConcurrency: 2,
           },
@@ -763,7 +763,7 @@ for (const label of ["memory", "SQLite"]) {
         await ui.awaitView((view) => view.settingsOffered);
         const dialog = await ui.openSettings();
         expect(dialog.view()).toMatchObject({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           runMode: "parallel",
           maxConcurrency: "2",
           resetOffered: true,
@@ -789,7 +789,7 @@ for (const label of ["memory", "SQLite"]) {
         const afterNull = writes[0]!.json as ConfigDto;
         expect(afterNull.overridden).toEqual(["executionMode"]);
         expect(afterNull.effective).toEqual({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           runMode: code.runMode,
           maxConcurrency: code.maxConcurrency,
         });
@@ -799,7 +799,7 @@ for (const label of ["memory", "SQLite"]) {
         );
         expect(partly.summary.runMode?.hint).toBeNull();
         expect(partly.summary.executionMode).toEqual({
-          value: "worker",
+          value: "worker-thread",
           hint: `Overridden here; its code asks for ${code.executionMode}`,
         });
 
@@ -845,48 +845,48 @@ for (const label of ["memory", "SQLite"]) {
         const limited = "cfg-limited";
         await startRunner(deploy, deploy.api, limited, {
           childDriver: deploy.childDriver,
-          allowedOverrides: { executionModes: ["in-process", "worker"] },
+          allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
         });
-        const spawn = await direct(
+        const childProcess = await direct(
           deploy,
           "PUT",
           `/runners/${limited}/config`,
-          { executionMode: "spawn" },
+          { executionMode: "child-process" },
         );
-        expect(spawn.status).toBe(409);
-        expect(spawn.json).toMatchObject({
+        expect(childProcess.status).toBe(409);
+        expect(childProcess.json).toMatchObject({
           code: "CONFIG_NOT_ALLOWED",
           context: {
             runner: limited,
-            executionMode: "spawn",
-            allowed: ["worker", "in-process"],
+            executionMode: "child-process",
+            allowed: ["worker-thread", "in-process"],
           },
         });
-        expect((spawn.json as { detail: string }).detail).toContain(
-          "it permits worker, in-process",
+        expect((childProcess.json as { detail: string }).detail).toContain(
+          "it permits worker-thread, in-process",
         );
         expect((await configOf(deploy, limited)).seq).toBe(0);
 
         // A runner built from a driver INSTANCE, its code permitting every
-        // mode: `worker` is refused up front, since it could not adopt it.
+        // mode: `worker-thread` is refused up front, since it could not adopt it.
         const instance = "cfg-instance";
         await startRunner(deploy, deploy.api, instance);
         expect((await configOf(deploy, instance)).allowed).toEqual([
           "in-process",
         ]);
-        const worker = await direct(
+        const workerThread = await direct(
           deploy,
           "PUT",
           `/runners/${instance}/config`,
-          { executionMode: "worker" },
+          { executionMode: "worker-thread" },
         );
-        expect(worker.status).toBe(409);
-        expect(worker.json).toMatchObject({
+        expect(workerThread.status).toBe(409);
+        expect(workerThread.json).toMatchObject({
           code: "CONFIG_NOT_ALLOWED",
-          context: { executionMode: "worker", allowed: ["in-process"] },
+          context: { executionMode: "worker-thread", allowed: ["in-process"] },
         });
 
-        // Reached from the dialog: opened while the owner permitted spawn,
+        // Reached from the dialog: opened while the owner permitted child-process,
         // saved after a redeploy narrowed its code to in-process.
         const narrowed = "cfg-narrowed";
         const before = await startRunner(deploy, deploy.old, narrowed, {
@@ -898,12 +898,12 @@ for (const label of ["memory", "SQLite"]) {
         await ui.awaitView((view) => view.settingsOffered);
         const dialog = await ui.openSettings();
         expect(dialog.view().modeOptions).toEqual([
-          "spawn",
-          "worker",
+          "child-process",
+          "worker-thread",
           "in-process",
         ]);
         expect(dialog.view().modesLimited).toBeNull();
-        dialog.setExecutionMode("spawn");
+        dialog.setExecutionMode("child-process");
         await before.stop({ force: true });
         await startRunner(deploy, deploy.renewed, narrowed, {
           allowedOverrides: { executionModes: ["in-process"] },
@@ -920,13 +920,16 @@ for (const label of ["memory", "SQLite"]) {
         const writes = uiConfigWrites(deploy, narrowed);
         expect(writes).toHaveLength(1);
         expect(JSON.parse(writes[0]!.body!)).toEqual({
-          executionMode: "spawn",
+          executionMode: "child-process",
         });
         expect(writes[0]).toMatchObject({
           status: 409,
           json: {
             code: "CONFIG_NOT_ALLOWED",
-            context: { executionMode: "spawn", allowed: ["in-process"] },
+            context: {
+              executionMode: "child-process",
+              allowed: ["in-process"],
+            },
           },
         });
         await dialog.cancel();
@@ -944,13 +947,13 @@ for (const label of ["memory", "SQLite"]) {
         const deploy = deployment(label);
         const id = "cfg-refused";
         // Before: an owner with a driver config for its children adopts
-        // `worker` (and a parallel cap).
+        // `worker-thread` (and a parallel cap).
         const before = await startRunner(deploy, deploy.old, id, {
           childDriver: deploy.childDriver,
           ...(deploy.pushes ? {} : { syncInterval: POLLED_SYNC_MS }),
         });
         const written = await direct(deploy, "PUT", `/runners/${id}/config`, {
-          executionMode: "worker",
+          executionMode: "worker-thread",
           concurrency: { runMode: "parallel", maxConcurrency: 2 },
         });
         expect(written.status).toBe(200);
@@ -960,13 +963,13 @@ for (const label of ["memory", "SQLite"]) {
             `${label}: the first owner never adopted: ${JSON.stringify(before.config)}`,
         );
         expect(before.config.effective).toEqual({
-          executionMode: "worker",
+          executionMode: "worker-thread",
           runMode: "parallel",
           maxConcurrency: 2,
         });
 
         // After a redeploy, the runner is built from a driver instance: it
-        // cannot hand a Worker a backend, so it refuses the stored `worker`
+        // cannot hand a Worker a backend, so it refuses the stored `worker-thread`
         // and keeps the concurrency override.
         await before.stop({ force: true });
         await startRunner(deploy, deploy.renewed, id);
@@ -983,7 +986,7 @@ for (const label of ["memory", "SQLite"]) {
           appliedSeq: config.seq,
           error: {
             message:
-              'executionMode "worker" needs a driver config for the child, and this runner was built from a driver instance',
+              'executionMode "worker-thread" needs a driver config for the child, and this runner was built from a driver instance',
             // The owner names what it refused; the concurrency override it
             // adopted is not listed.
             keys: ["executionMode"],

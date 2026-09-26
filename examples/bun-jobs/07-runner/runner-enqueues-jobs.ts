@@ -51,7 +51,7 @@ step("The runner: decides who gets one, in a child process");
 const nightly = jobs.runner<NightlyReportArgs, { queued: number }>({
   id: "nightly-report",
   file: new URL("./handlers/nightly-report.ts", import.meta.url),
-  executionMode: "spawn",
+  executionMode: "child-process",
   schedule: { cron: "0 2 * * *", tz: "UTC" }, // 02:00 UTC, in production
   args: {
     recipients: ["ceo@example.com", "cfo@example.com", "ops@example.com"],

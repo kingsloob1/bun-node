@@ -75,7 +75,7 @@ export type OwnerConfigRequired = Expect<
 
 // `maxConcurrency` is nullable — `null` is how "unlimited" crosses JSON.
 export const unlimited: RunnerConfigValues = {
-  executionMode: "spawn",
+  executionMode: "child-process",
   runMode: "parallel",
   maxConcurrency: null,
 };

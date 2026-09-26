@@ -38,7 +38,7 @@ export function runFixture(
     runnerId: "nightly",
     attempt: 1,
     source: "manual",
-    mode: "worker",
+    mode: "worker-thread",
     startedAt: NOW - 5_000,
     status: "running",
     ...overrides,

@@ -1,4 +1,4 @@
-import type { ExecutionMode, JobRecord } from "../drivers/index";
+import type { JobRecord } from "../drivers/index";
 import type {
   Executor,
   ExecutorHandle,
@@ -19,6 +19,7 @@ import type { JobProcessor, ProcessorContext } from "./types";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
+import { legacyExecutionModeHint } from "../runner/config";
 import { toHandler } from "../runner/executors/executor";
 import { SpawnExecutor } from "../runner/executors/spawn";
 import { WorkerExecutor } from "../runner/executors/worker";
@@ -68,9 +69,10 @@ import { ConfigError, UnrecoverableJobError } from "../shared/errors";
  * {@link WorkerTarget}, the `kind` of its object form, and three of the values
  * of the heartbeat record's `target.kind`.
  *
- * Runners spell two of these differently: a `"worker-thread"` target is what
- * a runner calls `executionMode: "worker"`, and a `"child-process"` one is
- * `"spawn"` — the values a job's child sees in `BUN_JOBS_MODE`.
+ * The same values as a runner's `ExecutionMode`, by design: one mechanism has
+ * one name, and an attempt's `ctx.mode` and `BUN_JOBS_MODE` are the target's
+ * own spelling. The two are separate declarations on purpose — they match
+ * today and may diverge.
  */
 export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
 
@@ -380,17 +382,6 @@ const LOCAL_KEYS: Readonly<Record<WorkerTargetMode, readonly string[]>> = {
   "child-process": ["closeTimeout", "killTimeout", "spawn"],
 };
 
-/**
- * The runner's spelling of each off-thread kind: what the shared executors
- * are built for, and the `BUN_JOBS_MODE` a job's child sees.
- */
-const RUNNER_MODE: Readonly<
-  Record<Exclude<WorkerTargetMode, "in-process">, ExecutionMode>
-> = {
-  "worker-thread": "worker",
-  "child-process": "spawn",
-};
-
 /** The allowed modes, as the messages below spell them. */
 const MODES_TEXT = '"in-process", "worker-thread" or "child-process"';
 
@@ -428,14 +419,9 @@ function notATarget(value: unknown): ConfigError {
       : value && typeof value === "object"
         ? (value as { kind?: unknown }).kind
         : undefined;
-  // The runner's spellings get their own hint: a user who knows runners will
-  // type them, and they are the right values one level over.
-  const hint =
-    mode === "spawn"
-      ? ': "spawn" is a runner\'s executionMode; a worker\'s is "child-process"'
-      : mode === "worker"
-        ? ': "worker" is a runner\'s executionMode; a worker\'s is "worker-thread"'
-        : "";
+  // The old spellings get their own hint: runners used them before 1r, so a
+  // user who knew runners will type them.
+  const hint = legacyExecutionModeHint(mode);
   return new ConfigError(
     `target must be ${MODES_TEXT}, not ${describe(value)}${hint}`,
     { target: typeof value === "function" ? "function" : value },
@@ -680,9 +666,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       namespace: runner.namespace,
       attempt: record.attemptsMade,
       source: "queued",
-      // The runner's vocabulary: the shared executors, and the child's
-      // `BUN_JOBS_MODE`, speak it.
-      mode: RUNNER_MODE[target.kind],
+      // The target's own kind, which is also what the shared executors and
+      // the child's `BUN_JOBS_MODE` call it.
+      mode: target.kind,
       startedAt: Date.now(),
       deadline: null,
       args: null,

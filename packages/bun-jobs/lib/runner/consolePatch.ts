@@ -1,7 +1,7 @@
 /**
  * The console patch itself, shared by the two places a run's `console.*`
  * output is captured: `consoleCapture.ts` (an `in-process` run, attributed by
- * `AsyncLocalStorage`) and `realmConsole.ts` (a `worker` run, alone in its
+ * `AsyncLocalStorage`) and `realmConsole.ts` (a `worker-thread` run, alone in its
  * realm, so attributed by a plain module variable).
  *
  * It has **no runtime imports**, and must keep it that way: a worker realm

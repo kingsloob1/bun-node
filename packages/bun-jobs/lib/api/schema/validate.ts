@@ -68,6 +68,32 @@ export interface JsonSchema {
   readonly $ref?: string;
 }
 
+/**
+ * Per enum node, text appended to the "Expected one of" message when the
+ * input is one of these refused strings — a retired spelling, say. Kept out
+ * of the node itself so it never reaches an emitted document. See `s.enum`'s
+ * `hints`.
+ */
+const ENUM_HINTS = new WeakMap<JsonSchema, Readonly<Record<string, string>>>();
+
+/** Registers {@link ENUM_HINTS} for an enum node. */
+export function registerEnumHints(
+  /** The enum's frozen JSON node. */
+  node: JsonSchema,
+  /** Refused value → text appended to its message. */
+  hints: Readonly<Record<string, string>>,
+): void {
+  ENUM_HINTS.set(node, Object.freeze({ ...hints }));
+}
+
+/** The hint registered for `value` on `node`, or `""`. */
+function enumHint(node: JsonSchema, value: unknown): string {
+  const hints = ENUM_HINTS.get(node);
+  return hints && typeof value === "string" && Object.hasOwn(hints, value)
+    ? (hints[value] ?? "")
+    : "";
+}
+
 /** Options for {@link validateJson}. */
 export interface ValidateJsonOptions {
   /** Coerce string input (query and path values) before type checks. Defaults to `false`. */
@@ -287,10 +313,13 @@ function walkAnyOf(
     ctx.issues.push(...best);
     return FAIL;
   }
+  // A nullable enum lands here for a refused string, so its hint is looked
+  // up on the members too.
+  const hint = members.map((member) => enumHint(member, value)).find(Boolean);
   return fail(
     ctx,
     path,
-    `Expected ${describe(node)}, received ${typeOf(value)}`,
+    `Expected ${describe(node)}, received ${typeOf(value)}${hint ?? ""}`,
     "type",
   );
 }
@@ -473,7 +502,7 @@ function walk(
     return fail(
       ctx,
       path,
-      `Expected one of ${node.enum.map((entry) => JSON.stringify(entry)).join(", ")}`,
+      `Expected one of ${node.enum.map((entry) => JSON.stringify(entry)).join(", ")}${enumHint(node, value)}`,
       "discriminator",
     );
   }
