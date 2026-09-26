@@ -943,9 +943,10 @@ export interface BunQueueWorkerOptions {
    * and new on every restart.
    *
    * Give one only if you can guarantee no two live workers share it: it names
-   * the heartbeat record, the lock token and the concurrency limiter's lease,
-   * and two workers sharing it corrupt all three. An explicit id also becomes
-   * the default {@link BunQueueWorkerOptions.key}.
+   * the heartbeat record and the concurrency limiter's lease, and two workers
+   * sharing it corrupt both. (A job's lock token is not derived from it: each
+   * claim draws its own.) An explicit id also becomes the default
+   * {@link BunQueueWorkerOptions.key}.
    */
   id?: string;
   /**
