@@ -903,6 +903,14 @@ export {
   type WorkerEventName,
   type WorkerState,
   type WorkerStopPersistence,
+  type WorkerSummonProvenance,
   type WorkerTargetInfo,
   type WorkerTargetKind,
 } from "./shared/workers";
+
+/* ------------------------------------------------------------------ *
+ * Summoned workers: where a worker started on demand came from. A summoned
+ * worker passes `summon: summonedFromEnv()`, and its heartbeat record says
+ * so (`WorkerInfo.summon`, `WorkerDto.summon`).
+ * ------------------------------------------------------------------ */
+export { SUMMON_ENV, summonedFromEnv } from "./summon/env";

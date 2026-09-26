@@ -25,6 +25,7 @@ import type {
   WorkerEventName,
   WorkerState,
   WorkerStopPersistence,
+  WorkerSummonProvenance,
   WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobEvent } from "./Job";
@@ -92,6 +93,7 @@ import {
   workerConfigCrossFieldIssue,
   workerConfigIssue,
 } from "../shared/workers";
+import { resolveSummonProvenance } from "../summon/provenance";
 import { AttemptWrites } from "./attemptWrites";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
@@ -607,6 +609,12 @@ export class BunQueueWorker<
    * `#target` was built from, so the record cannot disagree with it.
    */
   readonly #targetInfo: WorkerTargetInfo;
+  /**
+   * The heartbeat record's `summon`: the `summon` option, checked and copied
+   * field by field in the constructor. `undefined` for a worker nobody
+   * summoned, which then writes no `summon` at all.
+   */
+  readonly #summon: Readonly<WorkerSummonProvenance> | undefined;
   /** Options with defaults applied. */
   readonly #options: Required<
     Pick<
@@ -985,6 +993,9 @@ export class BunQueueWorker<
       );
     }
     this.#reportInterval = reportInterval;
+    // Checked here, before any side effect, and needs the report interval: a
+    // summoned worker that never reports could never release its attempt.
+    this.#summon = resolveSummonProvenance(options.summon, reportInterval);
 
     this.#derivedConfig =
       options.heartbeatInterval === undefined ? ["heartbeatInterval"] : [];
@@ -4299,6 +4310,9 @@ export class BunQueueWorker<
           // and always written, so absent means "a worker too old to say" —
           // never "in-process".
           target: this.#targetInfo,
+          // Only when the worker was summoned: absent means "not summoned, or
+          // too old to say", and is never defaulted.
+          ...(this.#summon === undefined ? {} : { summon: this.#summon }),
           config: this.config,
           control: this.control,
         });

@@ -1746,6 +1746,31 @@ export interface WorkerTargetInfoDto {
   file?: string;
 }
 
+/**
+ * Where a summoned worker came from, as its record describes it
+ * (`WorkerDto.summon`): what a Workers-page badge shows.
+ */
+export interface WorkerSummonProvenanceDto {
+  /** The summon attempt's id, when the platform could pass it. */
+  id?: string;
+  /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what the badge names. */
+  kind?: string;
+  /**
+   * The platform's own name for the unit (a Cloud Run execution, a Fly
+   * machine id). Infrastructure detail: omitted unless the server enables
+   * `serialize.exposeHosts`.
+   */
+  handle?: string;
+  /**
+   * How it runs: `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`.
+   * Show a mode this client does not know as the raw string: a later server
+   * may add one.
+   */
+  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /** When it will stop at the latest, epoch ms. Absent when it has no deadline. */
+  deadlineAt?: number;
+}
+
 /** What a worker says about being controlled from outside its process. */
 export interface WorkerControlDto {
   /** Whether this worker listens for control at all: its `control` option, and a backend that can store the desired state. */
@@ -1896,6 +1921,15 @@ export interface WorkerDto {
    * queue name.
    */
   target?: WorkerTargetInfoDto;
+  /**
+   * Where it was summoned from: the attempt, the summoner's kind, the mode
+   * and the deadline (and the platform's handle with `serialize.exposeHosts`).
+   *
+   * **Absent means one of two things, and a client cannot tell which:** the
+   * worker was not summoned, or it is too old to say. So absence means "no
+   * summon badge", never a claim about how the worker was started.
+   */
+  summon?: WorkerSummonProvenanceDto;
   /** Its settings. Absent on an older worker, and when the backend keeps no config. */
   config?: WorkerConfigDto;
   /** Its control state. Absent on a worker that predates remote control — treat that as not controllable. */

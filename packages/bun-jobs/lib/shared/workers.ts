@@ -262,5 +262,46 @@ export interface WorkerTargetInfo {
   file?: string;
 }
 
+/**
+ * Where a summoned worker came from, as its heartbeat record carries it
+ * (`WorkerInfo.summon`) and as `BunQueueWorkerOptions.summon` takes it.
+ * Usually built by `summonedFromEnv()` from the `BUN_JOBS_SUMMON_*`
+ * variables a summon passes.
+ *
+ * A worker writes only these five fields, whatever else the object it was
+ * given carries: `summonedFromEnv()`'s `namespace`, `queue`, `maxLifetimeMs`
+ * and `graceMs` configure the worker and never reach the record.
+ */
+export interface WorkerSummonProvenance {
+  /**
+   * The summon attempt's id, when the platform could pass it. The controller
+   * releases the attempt whose id a live record carries.
+   */
+  id?: string;
+  /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what a UI badge names. */
+  kind?: string;
+  /**
+   * The platform's own name for this unit (a Cloud Run execution, a Fly
+   * machine id), read from the platform's environment where it sets one.
+   * Infrastructure detail: the management API withholds it unless
+   * `serialize.exposeHosts` is on.
+   */
+  handle?: string;
+  /**
+   * How the summoned worker runs: `"exit-on-idle"` (exits once the queue has
+   * been idle long enough), `"until-stopped"` (never exits on idle, for a
+   * platform that restarts an exited service) or `"in-invocation"` (lives
+   * inside one serverless invocation). A reader meeting a mode it does not
+   * know shows the raw string: a later version may add one.
+   */
+  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /**
+   * When the worker will stop at the latest, epoch ms, computed by the worker
+   * from its own clock at start (a summon passes a duration, never a
+   * timestamp). Absent when it has no deadline.
+   */
+  deadlineAt?: number;
+}
+
 /** How a worker hears about a control change. */
 export type WorkerControlMode = "subscribe" | "poll";

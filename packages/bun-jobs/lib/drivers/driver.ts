@@ -11,6 +11,7 @@ import type {
   WorkerControlMode,
   WorkerState,
   WorkerStopPersistence,
+  WorkerSummonProvenance,
   WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobCursorKey } from "./jobCursor";
@@ -1577,6 +1578,21 @@ export interface WorkerInfo {
    * means "too old to say": show it as unknown, never as a default.
    */
   target?: WorkerTargetInfo;
+  /**
+   * Where this worker was summoned from: the attempt id, the summoner's kind,
+   * the platform's handle, the mode and the deadline.
+   *
+   * Written on every report from the value the worker was built with (its
+   * `summon` option, checked and copied field by field in the constructor),
+   * the way {@link WorkerInfo.target} is written from the resolved target.
+   *
+   * **Absent means one of two things, and a reader cannot tell which:** the
+   * worker was not summoned (it was not given `summon`), or it is older than
+   * this field and too old to say. Never defaulted and never `null`: a worker
+   * without the option writes nothing. So show absence as "no summon badge",
+   * never as a claim that the worker was started some other way.
+   */
+  summon?: WorkerSummonProvenance;
   /**
    * Its settings: what it runs with, what its own code asked for, and which of
    * them an override replaces. Absent on a worker from before remote

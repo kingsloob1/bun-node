@@ -19,7 +19,10 @@ import type {
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { RunProgress } from "../shared/progress";
-import type { WorkerStopPersistence } from "../shared/workers";
+import type {
+  WorkerStopPersistence,
+  WorkerSummonProvenance,
+} from "../shared/workers";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -1127,6 +1130,26 @@ export interface BunQueueWorkerOptions {
    * Not remotely configurable: changing where code runs is a rebuild.
    */
   target?: WorkerTarget;
+  /**
+   * Where this worker was summoned from, written on its heartbeat record as
+   * `summon` so a summon controller can release the attempt and the Workers
+   * page can show a badge. Pass `summonedFromEnv()`, which is `undefined` in a
+   * process nobody summoned, so the same line works in every deployment.
+   *
+   * Absent (the default) for an ordinary worker, which then writes no
+   * `summon` at all. Checked in the constructor: `mode` must be one of
+   * `"exit-on-idle"`, `"until-stopped"`, `"in-invocation"`; `id`, `kind` and
+   * `handle` non-empty strings; `deadlineAt` a whole epoch-ms number.
+   * Only those five fields are written, so the extra fields
+   * `summonedFromEnv()` returns never reach the record.
+   *
+   * With `reportInterval: 0` it is a `ConfigError`: a worker that never
+   * reports can never release its attempt. Not remotely configurable.
+   *
+   * `| undefined` is spelled out so `summon: summonedFromEnv()` compiles
+   * under `exactOptionalPropertyTypes` too.
+   */
+  summon?: WorkerSummonProvenance | undefined;
   /**
    * Named backoff strategies, for jobs whose `backoff.type` names one.
    *

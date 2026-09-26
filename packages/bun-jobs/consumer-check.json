@@ -24,6 +24,8 @@
         "defineProcessor",
         "defineProcessors",
         "WORKER_TARGET_KINDS",
+        "SUMMON_ENV",
+        "summonedFromEnv",
         "ConfigError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
@@ -43,6 +45,7 @@
         "WorkerTargetCloseOptions",
         "WorkerTargetContext",
         "WorkerTargetInfo",
+        "WorkerSummonProvenance",
         "BunRunnerOptions",
         "JobOptions",
         "JobsDriver",
@@ -52,7 +55,7 @@
         "MetaDto",
         "JobDto"
       ],
-      "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;"
+      "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;\nexport const _summoned: t.BunQueueWorkerOptions = { namespace: \"shop\", driver, summon: m.summonedFromEnv({}, []) };\nexport type _summonMode = Expect<IsAny<t.WorkerSummonProvenance[\"mode\"]>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/api/contract",
@@ -73,7 +76,8 @@
         "QueueListDto",
         "EventName",
         "ProblemDto",
-        "WorkerTargetInfoDto"
+        "WorkerTargetInfoDto",
+        "WorkerSummonProvenanceDto"
       ]
     },
     {

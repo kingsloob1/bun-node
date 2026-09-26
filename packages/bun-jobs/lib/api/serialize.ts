@@ -805,10 +805,10 @@ export function isWorkerStale(
 }
 
 /**
- * Shapes a worker; host and pid only with `exposeHosts`, a processor file's
- * path only with `exposeProcessorFiles` (off when not given), and `stale`
- * computed here because the record carries the heartbeat rather than the
- * verdict.
+ * Shapes a worker; host, pid and a summon's `handle` only with
+ * `exposeHosts`, a processor file's path only with `exposeProcessorFiles`
+ * (off when not given), and `stale` computed here because the record carries
+ * the heartbeat rather than the verdict.
  */
 export function toWorkerDto(
   worker: WorkerInfoLike,
@@ -878,6 +878,23 @@ export function toWorkerDto(
       ...(options.exposeProcessorFiles && worker.target.file !== undefined
         ? { file: worker.target.file }
         : {}),
+    };
+  }
+  // And for `summon`: absent is "not summoned, or too old to say", never a
+  // default. Field by field, so the platform's handle goes out only with
+  // `exposeHosts`, like the host it is the platform's name for.
+  if (worker.summon !== undefined) {
+    const summon = worker.summon;
+    dto.summon = {
+      ...(summon.id === undefined ? {} : { id: summon.id }),
+      ...(summon.kind === undefined ? {} : { kind: summon.kind }),
+      ...(options.exposeHosts && summon.handle !== undefined
+        ? { handle: summon.handle }
+        : {}),
+      mode: summon.mode,
+      ...(summon.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: summon.deadlineAt }),
     };
   }
   if (worker.config !== undefined) {

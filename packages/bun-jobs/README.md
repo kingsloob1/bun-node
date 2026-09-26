@@ -2009,6 +2009,32 @@ management API serves only with `serialize.exposeProcessorFiles`. Optional like
 the rest, and **absent is not `"in-process"`**: a record from before the field
 means the worker is too old to say.
 
+**`summon` says where a summoned worker came from**: the summon attempt's
+`id`, the summoner's `kind` (`"ecs"`, `"fly"`), the platform's `handle`, the
+`mode` (`"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`) and the
+`deadlineAt` it will stop by. It is written from the worker's `summon` option,
+which is what `summonedFromEnv()` builds from the `BUN_JOBS_SUMMON_*`
+variables (`SUMMON_ENV`) or the matching `--bun-jobs-summon-*=` arguments:
+
+```ts
+import { BunJobs, summonedFromEnv } from "@kingsleyweb/bun-jobs";
+
+const summon = summonedFromEnv(); // undefined unless this process was summoned
+const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver });
+const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
+await worker.run();
+```
+
+`summonedFromEnv()` reads nothing but `BUN_JOBS_SUMMON_*` keys, and answers
+`undefined` inside a runner child (`BUN_JOBS_CHILD=1`), which inherits its
+parent's environment and must not claim the parent's attempt. A malformed
+value throws a `ConfigError`, and so does `summon` with `reportInterval: 0`,
+since a worker that never reports can never release its attempt. The
+management API serves `handle` only with `serialize.exposeHosts`, like `host`.
+**Absent means one of two things**: the worker was not summoned, or it is too
+old to say. Nothing tells them apart, so a reader shows no badge rather than
+claiming either.
+
 Examples:
 
 - [`10-options/read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)

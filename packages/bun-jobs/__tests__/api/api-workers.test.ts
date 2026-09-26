@@ -1151,6 +1151,7 @@ describe("the documents", () => {
       "WorkerControlResult",
       "WorkerState",
       "WorkerStopPersistence",
+      "WorkerSummonProvenance",
       "WorkerTargetInfo",
     ]);
 
@@ -1252,5 +1253,56 @@ describe("a worker's target", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).not.toHaveProperty("target");
+  });
+});
+
+describe("a worker's summon", () => {
+  const summon = {
+    id: "attempt-1",
+    kind: "ecs",
+    handle: "arn:aws:ecs:eu-west-1:1:task/c/abc",
+    mode: "exit-on-idle" as const,
+    deadlineAt: 1_900_000_000_000,
+  };
+
+  it("serves summon, with the platform handle, under the default exposeHosts", async () => {
+    const jobs = jobsContext("api-workers-summon");
+    const h = harness({ jobs });
+    await putWorker(jobs, { summon });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+    const list = await h.call("GET", "/workers");
+
+    expect(one.status).toBe(200);
+    expect(one.body.summon).toEqual(summon);
+    expect(list.body.items[0].summon).toEqual(summon);
+  });
+
+  it("withholds the handle with exposeHosts off, and keeps the rest", async () => {
+    const jobs = jobsContext("api-workers-summon-hidden");
+    const h = harness({ jobs, serialize: { exposeHosts: false } });
+    await putWorker(jobs, { summon });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(one.status).toBe(200);
+    expect(one.body.summon).toEqual({
+      id: "attempt-1",
+      kind: "ecs",
+      mode: "exit-on-idle",
+      deadlineAt: 1_900_000_000_000,
+    });
+    expect(one.text).not.toContain("arn:aws:ecs");
+  });
+
+  it("leaves summon off a record without one: absent, never defaulted", async () => {
+    const jobs = jobsContext("api-workers-summon-none");
+    const h = harness({ jobs });
+    await putWorker(jobs);
+
+    const res = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("summon");
   });
 });

@@ -725,6 +725,13 @@ describe("serializers", () => {
         processor: "file" as const,
         file: "/srv/app/jobs/resize.ts",
       },
+      summon: {
+        id: "attempt-1",
+        kind: "fly",
+        handle: "e7843d0f",
+        mode: "until-stopped" as const,
+        deadlineAt: 1_900_000_000_000,
+      },
     };
     // A round trip needs the processor file's path let through: it is the one
     // field of `target` the default serializer withholds.
@@ -738,5 +745,12 @@ describe("serializers", () => {
     expect(toWorkerDto(worker, { exposeHosts: false })).not.toHaveProperty(
       "host",
     );
+    // `summon.handle` is infrastructure too: it goes wherever `host` goes.
+    expect(toWorkerDto(worker, { exposeHosts: false }).summon).toEqual({
+      id: "attempt-1",
+      kind: "fly",
+      mode: "until-stopped",
+      deadlineAt: 1_900_000_000_000,
+    });
   });
 });
