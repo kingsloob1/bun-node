@@ -55,6 +55,22 @@ describe what was built, every citation points into the implementation (or is
 pinned to `688d376` where it describes the code before), and the Phase 1
 section of §11 records the gate as measured.
 
+**Updated again 2026-09-25: multiple transports.** At the user's request,
+Phase 2 carries remote attempts over HTTP request/response, HTTP with a
+streamed response, SSE, WebSocket (forward and reversed), TCP (with TLS and
+Unix sockets), UDP and HTTP/2, with health checks, progress and heartbeats on
+every one, and lets a provider plugin add gRPC, QUIC or a message broker. The
+design is [`remote-transports.md`](remote-transports.md), resting on the
+evidence in [`evidence/remote-transports/`](evidence/remote-transports/README.md).
+It separates one message protocol from the bindings that carry it; §5 here is
+now the HTTP binding plus what every binding shares. §4.2.8, §4.6, §5, §6,
+§7, §8.1, §10 and §11 were updated to match. Two decisions by the user, the
+same day: **Phase 2 is all of sub-phases 2a–2f, committed, in that order**
+(~77.5 d; `remote-transports.md` Q-T1), and **a target `timeout` is no longer
+bounded by `lockDuration`**, because the lease is renewed for the whole remote
+call; the draft's `ConfigError` for it is removed (§4.2.8,
+`remote-transports.md` Q-T12).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -1810,20 +1826,35 @@ Also new and unambiguous, so never a choice: `defineProcessors` (§4.4) and
 Kept here because the union above must leave room for it. It joins
 `WorkerTarget` as `{ kind: "endpoint", … }`, and `WORKER_TARGET_KINDS` gains
 `"endpoint"`, which is a contract change the UI must handle. Its shape and
-JSDoc are as the 2026-09-22 draft wrote them. Only `url`, `secret` and the
-`kind` are settled; the rest is Phase 2's to confirm against §5.
+JSDoc are as the 2026-09-22 draft wrote them, **revised 2026-09-25 for
+multiple transports**: `url`'s scheme now picks the binding, a reversed
+binding uses `listen` instead of `url`, and the transport fields (`listen`,
+`binding`, `tls`, `sessions`, `heartbeat`, `health`, `httpVersion`) come from
+`RemoteEndpointTransportOptions`, whose definition and JSDoc are
+[`remote-transports.md`](remote-transports.md) §8.2. Only `url`/`listen`,
+`secret` and the `kind` are settled; the rest is Phase 2's to confirm against
+§5 and `remote-transports.md`. A plugin transport is passed as `provider`
+instead (`compute-provider-plugins.md` §8.2), of which this target is the
+shorthand.
 
 ```ts
-/** A conforming remote executor reached over HTTP. See §5. PHASE 2. */
-export interface RemoteEndpointTarget {
+/**
+ * A conforming remote executor, reached over any first-party binding. See §5
+ * and `remote-transports.md`. PHASE 2.
+ */
+export interface RemoteEndpointTarget extends RemoteEndpointTransportOptions {
   /** Marks the variant. */
   kind: "endpoint";
   /**
-   * Absolute URL of the remote executor's invoke endpoint, e.g.
-   * `https://worker.example.com/bun-jobs`. The gateway POSTs an
-   * `invoke` envelope here and reads the outcome from the response.
+   * Where the remote executor is. Its scheme picks the binding:
+   * `https://worker.example.com/bun-jobs` (streamed where the executor
+   * advertises it, else unary), `wss://…`, `tcp+tls://host:port`,
+   * `tcp://host:port` (frames sealed), `unix:///path`, `udp://host:port`
+   * (frames sealed; experimental). `http:` and `ws:` for loopback only.
+   * Exactly one of `url` and `listen` (a reversed binding, where executors
+   * dial this worker) is given (`remote-transports.md` §8.1).
    */
-  url: string;
+  url?: string;
   /**
    * The shared secret used to sign every request and verify every response,
    * as `WORKER_PROTOCOL_VERSION` §5.6 defines. At least 32 bytes. Read it
@@ -1836,11 +1867,34 @@ export interface RemoteEndpointTarget {
   secret: string | string[];
   /**
    * How long one invoke may take before the worker gives up on the response,
-   * in milliseconds. Defaults to `min(lockDuration, job.opts.timeout || ∞)`
-   * minus one `heartbeatInterval`, so the worker still owns a live lease when
-   * it decides the remote is gone. A value above `lockDuration` is a
-   * `ConfigError`: the lease would lapse mid-call and a second worker would
-   * run the same job.
+   * in milliseconds. Defaults to the endpoint's reconciled `maxDurationMs`:
+   * the smaller of the transport's declared limit and the remote's handshake
+   * (§5.4, `compute-provider-plugins.md` §8.3). For a batch, it applies to
+   * the whole invoke.
+   *
+   * It is independent of `lockDuration`, and may be larger (decided
+   * 2026-09-25, `remote-transports.md` Q-T12): the worker renews
+   * the lease on its own timer for the whole call
+   * (`BunQueueWorker.ts:2228-2232`, `#heartbeat()` at `:3429-3458`; §5.9
+   * option A), so no lease lapses while an invoke is in flight. The job's own
+   * `timeout` still bounds each attempt, because the worker already wraps
+   * the target's `run()` in it (`BunQueueWorker.ts:2269-2274`), and a job
+   * whose `timeout` exceeds `maxDurationMs` is refused at claim time (§5.9).
+   * So the effective bound is `min(job timeout, this)`.
+   *
+   * On `http` (unary) this is the only thing that detects a remote that
+   * hangs; on the streaming and session bindings heartbeat loss detects it
+   * sooner (`remote-transports.md` §5.6).
+   *
+   * **Implementer to confirm** (proposed 2026-09-25): the default. The
+   * draft's `min(lockDuration, job.opts.timeout || ∞) − heartbeatInterval`
+   * rested on the lease lapsing mid-call, which it does not. The alternative
+   * considered was a fixed ceiling (15 min, say): rejected as a default
+   * because it is wrong for both a 30 s Lambda and a 60 min Cloud Run
+   * request, while `maxDurationMs` is already the platform's own figure.
+   * Where `maxDurationMs` is large and the binding is unary, set this
+   * explicitly: a hung remote holds a slot, bounded by `maxInFlight`, until
+   * it passes (§10.4).
    */
   timeout?: number;
   /**
@@ -1850,8 +1904,8 @@ export interface RemoteEndpointTarget {
    */
   maxInFlight?: number;
   /**
-   * How many attempts to send in one request. `1` (the default) is one job
-   * per HTTP call. Above that, the gateway fills a batch for up to
+   * How many attempts to send in one invoke. `1` (the default) is one job
+   * per invoke (per HTTP call, on the HTTP bindings). Above that, the gateway fills a batch for up to
    * `batchWindow` ms and the remote answers one outcome per job — which is
    * what makes a per-invocation-billed target affordable (§9).
    * Capped by the remote's advertised `maxBatch` (§5.4).
@@ -1868,11 +1922,12 @@ export interface RemoteEndpointTarget {
   names?: string[];
   /** How long an introspection answer is trusted, in ms. Defaults to `60_000`. */
   introspectTtl?: number;
-  /** Extra headers on every request — a platform's own auth, a trace header. */
+  /** Extra headers on every request of the HTTP bindings, and on a WebSocket upgrade — a platform's own auth, a trace header. Ignored by `tcp`, `unix` and `udp`. */
   headers?: Record<string, string>;
   /**
    * How a failed *transport* is retried before the attempt is failed:
-   * a connect error, a 5xx, a 429 with `Retry-After`. Defaults to three
+   * a connect error, a 5xx, a 429 with `Retry-After`, an invoke never
+   * `accepted` on a streaming or session binding. Defaults to three
    * tries with jittered backoff, bounded by `timeout`. A transport retry is
    * **not** a job attempt: `attemptsMade` does not move, and the idempotency
    * key is unchanged, so a remote that already ran it answers from its cache
@@ -1887,7 +1942,8 @@ export interface RemoteEndpointTarget {
 }
 ```
 
-Phase 2 also adds `endpoint` (the origin only) and `remote` to
+Phase 2 also adds `endpoint` (the origin only) and `remote` (with the
+binding and the endpoint's health, `remote-transports.md` §12) to
 `WorkerTargetInfo` (§8.1). The endpoint's `processor` question does not arise:
 a Phase 2 endpoint worker is built by `jobs.remoteWorker(queue, endpoint)`,
 which needs no processor argument.
@@ -2112,52 +2168,79 @@ They were verified against the tree before the change, and hold after it
 ### 4.6 Provider plugins: the `execute` facet
 
 Summary of [`compute-provider-plugins.md`](compute-provider-plugins.md) §8 as
-it bears on remote execution. That document is the design.
+it bears on remote execution. That document is the design. **Revised
+2026-09-25** for multiple transports ([`remote-transports.md`](remote-transports.md)):
+the facet is now transport-agnostic.
 
-- **Three layers, one of them pluggable.** The gateway (`RemoteTarget`: claim,
-  lease, envelope, signing, verification, settle) stays bun-jobs' and is the
-  same for everyone. The **transport**, how signed bytes reach the platform,
+- **Four layers, one of them pluggable.** The gateway (`RemoteTarget`: claim,
+  lease, envelope, settle) and the **protocol core** (messages, per-frame
+  signing and sealing, the reliability layer, health) stay bun-jobs' and are
+  the same for everyone. The **transport**, how the bytes reach the platform,
   is the `execute` facet of a provider plugin. The **remote executor** on the
-  platform is written with the runtime-adapter kit.
-- **The `execute` facet, host side**: `send(request, ctx) → Response`, an
-  optional `locate()` that turns a named endpoint (a function name) into a URL,
-  and declared limits: `maxDurationMs`, `maxRequestBytes`,
-  `maxResponseBytes`, `streaming`, `maxConcurrency`, `callback` (always
-  `false` while the contract is sync-only). A platform failure is a
-  `ProviderError` of one of six kinds; a status the *remote* answered comes
-  back as a `Response`, so §5.5's rules still apply to it.
-- **The facet never sees the signing secret.** bun-jobs signs the request and
-  verifies the response (§5.6), so a transport can fail to deliver an outcome
-  but cannot forge one. `RemoteEndpointTarget.secret` stays on the target, not
-  in the provider's config.
+  platform is written with the runtime-adapter kit or the per-transport
+  servers (`remote-transports.md` §3).
+- **Two shapes.** An **exchange** facet implements `send(request, ctx) →
+  Response`, unchanged: one signed HTTP-shaped request, one response, which
+  may stream (`http`, `http-stream`, a Lambda `Invoke`). A **session** facet
+  implements `open(ctx)` (forward or brokered) or `listen(ctx)` (reversed,
+  where executors dial in), each yielding a `DuplexSession` of opaque frames:
+  `send(frame)`, which rejects rather than drops, a `frames` stream,
+  `closed`, `close()`, `bufferedBytes()` and an optional `reconnect()`
+  (WebSocket, TCP, UDP, a message broker). An optional `locate()` turns a
+  named endpoint into an address; an optional `probe()` reads the executor's
+  `/healthz` for the Workers page.
+- **Declared capabilities.** `TransportCapabilities`: the binding, shape and
+  direction; whether it streams, is duplex, ordered, reliable,
+  flow-controlled or confidential; frame and message size limits; the
+  encoding; resumability; `maxDurationMs`, `maxConcurrency` and the shortest
+  idle timeout on its path. The core reads them instead of knowing
+  transports by name: it retransmits for an unreliable one, seals frames for
+  one that is not confidential, fragments above its frame size. A platform
+  failure is a `ProviderError` of one of six kinds; a status the *remote*
+  answered comes back as a `Response` (exchange) or a message (session), so
+  §5.5's rules still apply to it.
+- **The facet never sees the signing secret.** bun-jobs signs the request or
+  each frame, seals frames where the transport is not confidential, and
+  verifies everything that comes back (§5.6), so a transport can fail to
+  deliver an outcome but cannot forge one. `RemoteEndpointTarget.secret`
+  stays on the target, not in the provider's config.
 - **Limits are reconciled**: the gateway uses the smaller of the facet's
   declaration and the remote's handshake (§5.4), and warns when they differ.
-- **`{ kind: "endpoint", url, secret }`** is shorthand for the built-in
-  `httpsExecute({ url })` provider, which is itself written on the API.
-  `jobs.remoteWorker(queue, { provider, secret, … })` takes any provider with
-  an `execute` facet. `RemoteRunner` uses the same facet with
-  `ctx.kind = "run"`.
-- **The platform side is not a facet.** A runtime adapter is made with
-  `defineRuntimeAdapter()` from the browser-safe `./remote` entry. It maps the
+- **`{ kind: "endpoint", url, secret }`** is shorthand for a built-in
+  provider chosen by the URL's scheme: `httpsExecute` (`https:`),
+  `wsExecute` (`wss:`), `tcpExecute` (`tcp+tls:`, `tcp:`, `unix:`),
+  `udpExecute` (`udp:`), or `wsListen`/`tcpListen` for a `listen` address.
+  Each is written on the API. `jobs.remoteWorker(queue, { provider, secret,
+  … })` takes any provider with an `execute` facet. `RemoteRunner` uses the
+  same facet with `kind = "run"`.
+- **The platform side is not a facet.** A FaaS runtime adapter is made with
+  `defineRuntimeAdapter()` from the browser-safe `./remote` entry; it maps the
   platform's invocation to a `Request` (raw body bytes intact) and the core's
-  `Response` back. The first-party Cloudflare, Lambda and Azure wrappers of
-  §6.4 are built with it. A third-party plugin package ships its runtime
-  adapter as a second, browser-safe entry (`./runtime`) beside its host entry.
+  `Response` back. A long-running executor uses a per-transport server from
+  the Bun-only `./remote/serve` entry (`serveHttp`, `serveWebSocket`,
+  `serveTcp`, `serveUdp`, `dialWebSocket`, `dialTcp`), each built on
+  `RemoteExecutor.acceptSession()`, which a third-party runtime transport
+  calls too. A plugin package ships its runtime half as a second entry
+  (`./runtime`) beside its host entry.
 - **Versioning**: the `execute` facet has its own `apiVersion`, independent of
   `summon`'s, so it can change during Phase 2 without breaking summon plugins
   shipped in Phase 1.5. The runtime-adapter helper has `RUNTIME_ADAPTER_API`;
   the wire protocol keeps `WORKER_PROTOCOL_VERSION` and its per-feature
   strings.
-- **Conformance**: `runExecuteConformance` for the host side,
+- **Conformance**: `runExecuteConformance` for the host side (including the
+  session shape's capability checks against fault-injecting fakes),
   `runRuntimeAdapterConformance` for the event mapping, and §7's
-  `conformRemoteExecutor` unchanged for the platform side.
-- **`WorkerTargetFactory` stays** as the low-level hook for a transport that is
-  not request/response at all. Since the Phase 1 design check it returns a
-  `WorkerTargetExecutor`, not the runner's `Executor` (§4.2.6), and the
-  gateway, `RemoteTarget`, implements the same interface.
+  `conformRemoteExecutor`, now run over every binding, for the platform side.
+- **`WorkerTargetFactory` stays** as the low-level hook for a target that
+  should not use the protocol at all. gRPC streams and message buses, which
+  this bullet used to send here, are now session-shape facets and get the
+  core's signing, reliability, health and breaker. Since the Phase 1 design
+  check it returns a `WorkerTargetExecutor`, not the runner's `Executor`
+  (§4.2.6), and the gateway, `RemoteTarget`, implements the same interface.
 - **Stability**: `execute` is `experimental` (`0.x`) until the Cloudflare,
   Lambda and generic HTTP adapters, `httpsExecute`, `lambdaExecute` and one
-  outside provider pass both kits (Phase 4's gate).
+  outside provider pass both kits, **and** one session-shape transport written
+  outside the bun-jobs session does too (Phase 4's gate).
 ## 5. The remote-worker contract
 
 This is the centrepiece: a versioned wire specification precise enough to
@@ -2175,6 +2258,19 @@ directions, one endpoint whose status codes are the result, and one task
 representation carried over both transports. Read §3.8.1 before implementing:
 four of its specifics are better than what follows, and are marked below where
 they land.
+
+**Revised 2026-09-25: more than one transport.** At the user's request, Phase
+2 carries the contract over HTTP request/response, HTTP with a streamed
+response, SSE, WebSocket (forward and reversed), TCP (with TLS and Unix
+sockets), UDP and HTTP/2, and lets a provider plugin add others (gRPC, QUIC,
+message brokers). The design is [`remote-transports.md`](remote-transports.md).
+It separates the **message protocol** from the **binding** that carries it:
+what follows in §5 is the HTTP binding plus the parts every binding shares,
+and `remote-transports.md` §4.13 lists every place it changes §5. Where the
+two disagree about transports, `remote-transports.md` is newer. §4.6 now
+summarises the `execute` facet's two shapes: *exchange* (`send(request) →
+Response`, what this section describes) and *session*
+(`compute-provider-plugins.md` §8.2).
 
 ### 5.1 Why this is a separate surface from `createJobsApi`
 
@@ -2208,6 +2304,15 @@ in the package looks the same, `api/body.ts`'s bounded JSON reading, and
 
 ### 5.2 Transport
 
+**HTTP is the default binding and the only one every platform supports**
+(`remote-transports.md` §1.4, from
+[`evidence/remote-transports/platform-transports.md`](evidence/remote-transports/platform-transports.md)
+§1.1). The bullets below are the HTTP binding (`http` and `http-stream`). The
+other bindings carry the same messages in frames of their own
+(`remote-transports.md` §4.3, §7), and the URL's scheme picks one: `https:`,
+`wss:`, `tcp+tls:`, `tcp:`, `unix:`, `udp:`, or `listen:` for a reversed
+binding (`remote-transports.md` §8.1).
+
 - **HTTP/1.1 or HTTP/2, `application/json`, UTF-8.** One URL; the method
   selects the operation. No path structure to agree on — a remote may mount it
   at `/bun-jobs`, at `/api/jobs`, or at `/`.
@@ -2216,15 +2321,25 @@ in the package looks the same, `api/body.ts`'s bounded JSON reading, and
 - **Long-lived response.** The gateway holds the connection for the whole
   attempt; that is what lets it own the lease. Keep-alive is required in
   practice and the gateway must reuse connections (§9).
-- **WebSocket is a later phase, for one specific problem**: a remote with no
-  public URL. The remote dials the gateway and the gateway pushes invokes down
-  the socket. The message bodies are the same envelopes; only the framing
-  changes. The management API's WS unit (`api/ws/`) is the model for session
-  handling, but **not** the same socket — see §5.1.
-- **SSE / chunked NDJSON is how progress comes back** (§5.10), on the *same*
-  response as the invoke. That is deliberate: it means the remote never needs
-  to call bun-jobs, so bun-jobs never has to expose an inbound write surface
-  to the internet (§10.6).
+- **WebSocket is now two bindings of Phase 2** (sub-phases 2b and 2d,
+  §11): forward (`ws`, the gateway dials) and reversed (`ws-reverse`, the
+  remote dials the gateway, for a remote with no public URL; not on FaaS, and
+  it makes the gateway a server; `remote-transports.md` §7.5–§7.6). The
+  message bodies are the same; only the framing changes. The management
+  API's WS unit (`api/ws/`) is the model for session handling, but **not**
+  the same socket — see §5.1.
+- **A streamed response is how progress comes back over HTTP** (§5.10), on
+  the *same* response as the invoke, **SSE-framed by default** (a Cloudflare
+  Tunnel buffers any other content type [V cf-tunnel, in the evidence file]).
+  That is deliberate: it means the remote never needs to call bun-jobs, so
+  bun-jobs never has to expose an inbound write surface to the internet
+  (§10.6).
+- **Heartbeats are application data**, every 10 s by default, on every
+  binding, and every liveness deadline is an application timer: Bun's own
+  network timers fire in 4-second ticks
+  ([`bun-transports.md`](evidence/remote-transports/bun-transports.md)
+  cross-cutting 1), and several platforms ignore HTTP/2 PING or TCP
+  keepalive (`remote-transports.md` §2).
 
 ### 5.3 Endpoints
 
@@ -2250,6 +2365,15 @@ Only `GET` and invoke are **MUST**. Cancel and ping are **SHOULD**; a remote
 that does not implement an `op` answers `415`-equivalent
 `{ error: { code: "UNSUPPORTED_OP" } }` with HTTP 400, and the gateway records
 the capability as absent.
+
+**On a session binding** (WebSocket, TCP, UDP, SSE session mode, a broker)
+there are no methods: the same operations are messages — `hello`/`welcome`
+for the handshake, `invoke`, `cancel`, `health`, `status`, `ping` — among the
+twenty of `remote-transports.md` §4.1, and an unknown one is answered with a
+non-fatal `problem` carrying `UNSUPPORTED_OP`. Two HTTP operations are added
+for every binding's sake: `POST { op: "health" }` (readiness, with the
+remote's own checks) and `POST { op: "status" }` (what happened to these
+attempts, for a response that was lost), both SHOULD.
 
 ### 5.4 Handshake
 
@@ -2318,6 +2442,14 @@ version it does not speak answers HTTP 400
 `{ error: { code: "UNSUPPORTED_PROTOCOL", supported: [1] } }` — never a 500,
 so the gateway can fall back rather than trip its breaker.
 
+**On a session binding** the same document arrives in `welcome`, answering
+the gateway's `hello`, with the session's nonces, timings and capacity
+(`remote-transports.md` §4.2). `features` gains `session`, `health`,
+`canary`, `attempt-status`, `stream-resume`, `resume` and `udp-aead`. Every
+remote also serves unauthenticated `GET /healthz` and `/readyz` for its
+platform's own checks, which cannot see a WebSocket or UDP flow
+(`remote-transports.md` §5.5).
+
 ### 5.5 Invoke
 
 `POST` with headers (§5.6) and body:
@@ -2355,7 +2487,7 @@ so the gateway can fall back rather than trip its breaker.
 |---|---|---|
 | `id` | yes | the envelope's own id. Unique per request, including transport retries — the *idempotency key* is per job and does **not** change on a transport retry |
 | `now` | yes | the **gateway's** clock. Authoritative. The driver contract's rule "never read the clock" carries over: a remote uses this, not its own, for anything it records |
-| `deadlineAt` | yes | epoch ms after which the gateway stops caring. Derived from the lease, never above it |
+| `deadlineAt` | yes | epoch ms after which the gateway stops caring: `now` plus the invoke's `timeout` (§4.2.8), capped by the job's own `timeoutMs`. Not derived from the lease, which the gateway renews for the whole call (§5.9) |
 | `worker` | yes | incarnation id and stable key, so a remote's logs can be correlated with the Workers page |
 | `jobs[]` | yes | 1..`maxBatch` entries |
 | `jobs[].data` | yes | arbitrary JSON, as stored |
@@ -2441,6 +2573,16 @@ A failed outcome carries an error:
 `UnrecoverableJobError` round-trips by name — which is how
 `IsolatedProcessor` already rebuilds errors that crossed a process boundary.
 `retryAfterMs` overrides the job's backoff for this attempt only.
+
+**On a streaming or session binding** the outcome is not one response but a
+sequence of messages per job: `accepted` (or `rejected`) at once, then
+`progress`, `log` and `heartbeat` while it runs, then `result` or `fail`,
+whose bodies are exactly the outcome objects above plus `attempt` and
+`fence` (`remote-transports.md` §4.1–§4.2). The invoke body gains `kind:
+"job" | "run"`, which is how `RemoteRunner`'s run envelope (§11 Phase 2) rides
+the same message. An attempt the remote accepted and then stopped reporting
+on fails fast as `RemoteAttemptLostError` (retryable, counts as an attempt);
+one it never accepted is a transport retry (`remote-transports.md` §4.7).
 
 ### 5.6 Authentication and signing
 
@@ -2577,7 +2719,21 @@ it against the job's current lock rather than by issuing a second credential.
 
 **Transport security.** `https` is required; the gateway refuses an `http:`
 URL unless the host is `localhost`/`127.0.0.1` (tests, `wrangler dev`). This
-is a `ConfigError` at construction, not a runtime warning.
+is a `ConfigError` at construction, not a runtime warning. The same rule
+covers `wss:`/`ws:`.
+
+**Per-frame authentication, for bindings with no request boundary**
+(revised 2026-09-25). A WebSocket, TCP or UDP session, or a streamed
+response, has no single body to sign. There, every frame carries its own
+HMAC-SHA256 under the same secret, over the session id (both sides' nonces),
+the direction, the sequence number, the acknowledgement and the message, so
+a frame verifies only in its own session, direction and position
+(`remote-transports.md` §4.4.1). On a transport that is not confidential
+(UDP, which has no DTLS in Bun; plaintext `tcp://`), frames are also
+**sealed** with AES-256-GCM under keys derived by HKDF from the secret and the
+nonces (§4.4.3 there). Measured cost: ~10–12 µs per frame for HMAC and ~12 µs
+per 1,200 bytes for AES-GCM with `crypto.subtle` (Appendix A there). The
+signing and sealing happen in the core; a transport never holds the secret.
 
 ### 5.7 State machine
 
@@ -2617,6 +2773,14 @@ all others: **push mode adds no new job states and no new driver methods.**
 Registration/deregistration in the classic sense (Temporal, Faktory) does not
 exist here, and should not be added: the remote is stateless, the gateway is
 the worker, and `registerWorkerRecord` already covers the inventory.
+
+**For session bindings** the endpoint states above become a session state
+machine (`closed → handshaking → proving → ready ⇄ suspect → resuming |
+lost`, plus `draining`), and each attempt gets its own (`sent → accepted →
+running → settled`, with `rejected`, an accept timeout and a lost path); both
+are in `remote-transports.md` §4.6–§4.7. `proving` is new and applies to
+every binding: a session takes no work until a functional canary has passed
+through it (§5.3 there). Neither adds a job state.
 
 ### 5.8 Idempotency, at-least-once and fencing
 
@@ -2663,6 +2827,19 @@ the worker, and `registerWorkerRecord` already covers the inventory.
 and is handed the same job twice will do the work twice. Idempotency is the
 handler's responsibility. Say it in those words.
 
+**Re-attach before retry** (revised 2026-09-25). Three platforms time out the
+caller but not the work: Azure Functions answers 502 at 230 s while "the
+function will continue running", Cloud Run answers 504 and does not terminate
+the instance, and a Lambda stream keeps running and billing after a
+disconnect ([`platform-transports.md`](evidence/remote-transports/platform-transports.md)
+§1.3 item 3). A lost response is therefore **re-attached** before it is
+retried: a session resumes and replays, a stream re-attaches with
+`Last-Event-ID`, or the same invoke is re-sent with the same idempotency key;
+a remote retains each outcome until the gateway acknowledges it, and answers
+`status` from it (`remote-transports.md` §4.9). That guarantees one
+settlement. It does not stop a store-less remote from running the handler
+again, which is the sentence above.
+
 ### 5.9 Leases under a frozen serverless process — the hard case
 
 The problem, stated precisely: a Lambda may run for 15 minutes; the default
@@ -2676,7 +2853,7 @@ Four options considered:
 | **A. The gateway heartbeats** — it is awake, blocked on the response | `#heartbeat()` already runs on `setInterval(heartbeatInterval)` for every in-flight job and calls `driver.extendJobLock`. In push mode the job is in flight for the whole HTTP call, so this already works with **zero changes** | **Recommended.** It is what the code does today |
 | B. The remote calls back to renew | needs an inbound write endpoint, inbound auth, and a remote that can reach us | rejected — §10.6 |
 | C. Long `lockDuration`, no renewal | a 15-minute lock means a crashed gateway strands a job for 15 minutes | rejected as a default; legitimate as an operator choice |
-| D. The remote streams progress frames, each of which renews | the gateway extends the lease on every frame it reads | **good, additive**: it is option A plus liveness evidence. Phase 4 (§5.10) |
+| D. The remote streams progress frames, each of which renews | the gateway extends the lease on every frame it reads | **Adopted in Phase 2a as liveness evidence only** (revised 2026-09-25): heartbeats and progress prove the remote attempt is alive and let the gateway fail fast when they stop, but the lease is still renewed by option A's timer alone (`remote-transports.md` §5.6) |
 
 So: **the answer is that the frozen-process problem does not arise in push
 mode, because the process that holds the lease is never frozen.** That is the
@@ -2684,9 +2861,13 @@ strongest single argument for push over pull and it should lead the README
 section.
 
 What *does* need care: the gateway's `heartbeatInterval` (default
-`lockDuration / 3`) must be comfortably shorter than the network timeout, and
-the endpoint's `timeout` must be below `lockDuration` (§4.2, enforced as a
-`ConfigError`). And a job whose `timeoutMs` exceeds the remote's
+`lockDuration / 3`) must be comfortably shorter than `lockDuration`, as it
+is for any worker. The endpoint's `timeout` is **not** bounded by
+`lockDuration` (decided 2026-09-25, `remote-transports.md` Q-T12): the
+gateway renews the lease for the whole call (`BunQueueWorker.ts:2228-2232`,
+`:3429-3458`), so a `timeout` above `lockDuration` lets no lease lapse. An
+earlier draft made that a `ConfigError`; the rule is removed. And a job
+whose `timeoutMs` exceeds the remote's
 `maxDurationMs` must be refused **at claim time**, not discovered at minute
 14.
 
@@ -2707,7 +2888,9 @@ construction: the gateway aborts its fetch anyway, and the cancel is a
 courtesy so the remote can stop billing. A remote that implements it
 advertises `cancel`. The gateway does **not** wait for the cancel to be
 acknowledged before failing the attempt — waiting would mean a dead endpoint
-could hold a lease indefinitely.
+could hold a lease indefinitely. On a session binding the cancel is a `cancel`
+frame on the same session, and a lost lock (`#heartbeat()` getting `false`
+from `extendJobLock`) sends one too (`remote-transports.md` §4.11).
 
 **Progress and logs — one mechanism, on the response.** When the remote
 advertises `progress-stream`, it may answer `content-type:
@@ -2724,14 +2907,20 @@ is `unknown` for every job it did not report. The gateway turns `progress`
 into `job.updateProgress()` (which already emits and publishes) and `log` into
 `job.log()` — both of which it can do because it holds the driver.
 
-The signature covers the **whole** streamed body, which cannot be verified
+~~The signature covers the **whole** streamed body, which cannot be verified
 until it ends. So: progress frames are applied optimistically and the final
-`invoke-result` is applied only after verification. A stream whose signature
-fails to verify at the end invalidates nothing already written (progress and
-log lines are not job outcomes) and the attempt is failed as
-`SIGNATURE_INVALID`. Document that trade-off rather than pretending it does
-not exist. A remote that is not comfortable with it does not advertise
-`progress-stream` and gets a single verified response.
+`invoke-result` is applied only after verification.~~ **Superseded
+2026-09-25.** Each streamed frame now carries its own MAC, bound to the
+invoke's id, the direction and a sequence number, and is verified before it
+is applied (`remote-transports.md` §4.4.1, §7.3); the trade-off this
+paragraph documented is gone. The stream is SSE-framed by default, NDJSON
+accepted: one text frame per event or line, with per-job `accepted`,
+`progress`, `log`, `heartbeat`, then `result`/`fail`, then `close` with
+`COMPLETE`. The remote writes its first frame at once, because `Bun.serve`
+sends no complete header block until the first body chunk
+([`bun-transports.md`](evidence/remote-transports/bun-transports.md) §1.4).
+A path that buffers the stream is detected by the canary and downgraded to
+unary, and shown as `degraded` (`remote-transports.md` §5.7).
 
 **Large payloads.** Hard rules, because silent truncation is the worst
 possible behaviour:
@@ -2804,6 +2993,19 @@ checks every one marked MUST.
 - [ ] MUST be reachable over `https` (except `localhost`)
 - [ ] MUST advertise a `maxDurationMs` at or below its platform's real ceiling
 - [ ] SHOULD log the `worker.id` and each `jobs[].id` so its logs join up with the Workers page
+
+**Every binding** (added 2026-09-25; `remote-transports.md` §4, §5, §10)
+- [ ] MUST serve unauthenticated `GET /healthz` and `/readyz` over HTTP, disclosing nothing
+- [ ] MUST verify every frame's MAC (or open every sealed frame) before acting on it, and drop a replayed `seq`/`pn`
+- [ ] MUST send `accepted` or `rejected` for each job within `acceptTimeoutMs` on a streaming or session binding
+- [ ] MUST send `heartbeat` every `heartbeatMs` listing its running attempts, and answer `ping` with `pong`
+- [ ] MUST answer `health` with `health-result`
+- [ ] MUST write its first stream frame immediately, and send `Content-Type: text/event-stream` and `X-Accel-Buffering: no` on an SSE stream
+- [ ] MUST refuse a `hello` outside the replay window or with a repeated nonce (session bindings)
+- [ ] SHOULD run the `bun-jobs:canary` job if it advertises `canary`
+- [ ] SHOULD retain each outcome until acknowledged, and answer `status` from it (`attempt-status`)
+- [ ] SHOULD replay its outbox on a resume (`resume`), and announce a shutdown with `close` and `drain: true`
+- [ ] Binding-specific MUSTs are in each `PROTOCOL.md` appendix (`remote-transports.md` §11.5)
 ## 6. First-party adapter utilities
 
 ### 6.1 The shape: one core, thin wrappers
@@ -2880,6 +3082,19 @@ made with, and what a third party uses for a platform bun-jobs does not
 cover. The first-party adapters may import only `./remote`, and a test fails
 on any other import ([`compute-provider-plugins.md`](compute-provider-plugins.md)
 §5, §8.4).
+
+**Revised 2026-09-25 for more transports.** `createRemoteExecutor()` now
+returns a `RemoteExecutor`: still callable as the fetch handler above, so
+every snippet in §6.4 is unchanged, and also able to run the protocol over a
+session transport (`acceptSession(io)`), report its readiness and drain. A
+new Bun-only entry, `./remote/serve`, has one server per binding —
+`serveHttp`, `serveWebSocket`, `serveTcp`, `serveUdp`, and the reversed
+`dialWebSocket`/`dialTcp` — each handling the Bun behaviour its binding must
+(the header flush, `send()` returning `0`, unbuffered TCP writes, UDP's
+missing flow control) and serving `/healthz` and `/readyz`. The options gain
+`health.check`, `resultRetentionMs`, `resumeBufferBytes`, `maxConcurrency` and
+`heartbeatMs`. The design is `remote-transports.md` §9; a complete worked
+executor for each binding is in its executor guide (§11.3 there).
 
 `RemoteJobHandler` is `(job: RemoteJob, ctx: RemoteContext) => unknown`, where
 `RemoteJob` is a **reduced** `Job` — the readonly fields plus `log()`,
@@ -3001,6 +3216,16 @@ author, not deployed) and the host-side `./providers/*` entries that Phase 1.5
 introduces, which gain `execute` facets here (`httpsExecute`,
 `lambdaExecute`). `./remote`'s values also gain `defineRuntimeAdapter` and
 `RUNTIME_ADAPTER_API`.
+
+**Transport entries** (added 2026-09-25, `remote-transports.md` §8.1, §9):
+`./remote/serve` (Bun only, **not** `"browser": true`, like
+`./remote/testing`), and the first-party host-side transports as providers,
+`./providers/ws`, `./providers/tcp` and `./providers/udp`, beside
+`./providers/https`, which now covers `http`, `http-stream` and SSE. None
+imports anything but Bun and Web APIs: WebSocket, `fetch`, `Bun.listen`,
+`Bun.connect`, `Bun.udpSocket` and `crypto.subtle` cover every first-party
+binding, so the dependency rule holds with no exception. The protocol core
+(`lib/remote/protocol/`) stays inside `./remote` and browser-safe.
 
 `"browser": true` is the load-bearing bit: `CLAUDE.md` records that it checks
 the entry "with no ambient Node/Bun types", which is exactly the property an
@@ -3130,6 +3355,12 @@ const worker = jobs.worker("media", undefined, {
 });
 await worker.run();
 ```
+
+**Other transports** use the same target with another scheme —
+`wss://`, `tcp+tls://`, `unix://`, `udp://`, or `listen:` for executors that
+dial in — plus `tls`, `sessions`, `heartbeat` and `health` options. The
+host-side snippets for each are `remote-transports.md` §8.3, and the matching
+executors are its §9 and executor guide.
 ## 7. Conformance test kit
 
 ### 7.1 For a third-party implementer
@@ -3192,6 +3423,23 @@ The checks, grouped, each with a stable id so a report is diffable:
 third party can paste it into a PR. Precedent in this repo: the driver contract
 suite under `__tests__/` that every driver runs.
 
+**Per binding** (revised 2026-09-25, `remote-transports.md` §10).
+`conformRemoteExecutor` takes an endpoint of any scheme (`https:`, `wss:`,
+`tcp+tls:`, `tcp:`, `unix:`, `udp:`) or a plugin's transport, and runs **one
+protocol suite over every binding**, whose groups extend the table above:
+frame security (a flipped byte, a replayed sequence number, a frame from
+another session or reflected back, a forged acknowledgement), accept and
+reject, progress and logs arriving *during* the attempt, heartbeats, health
+(liveness, readiness, the canary), duplicate delivery, a lost response,
+reconnection and resume, and the platform probe. Each binding then adds its
+own checks against a fault-injecting fake shipped in `./remote/testing`:
+`bufferingHttpProxy` (SSE buffering detection and downgrade),
+`idleCuttingProxy` and paused peers (WebSocket backpressure and liveness),
+`tcpChunker` (framing splits, a paused reader), `lossyUdpProxy` (seeded loss,
+reordering, duplication, MTU, rebinding), and `spawnExecutor` (an executor
+frozen with SIGSTOP must be detected within `attemptSilenceMs`). All of it
+runs on loopback with no cloud.
+
 ### 7.2 How bun-jobs tests its *own* adapters
 
 The rule: **no cloud credentials in `bun test`, ever.** Three tiers.
@@ -3208,7 +3456,12 @@ not an approximation.
 This tier is where 90% of the value is. It is also the one that catches the
 bugs, because it can inject: a signature that arrives 400 s late, a response
 that arrives after the gateway aborted, a duplicate delivery, a batch whose
-third job never appears in the answer.
+third job never appears in the answer. Since 2026-09-25 it runs once per
+binding, each against its local server (`Bun.serve` for HTTP, SSE and
+WebSocket, `Bun.listen` for TCP and Unix sockets, `Bun.udpSocket` for UDP)
+and its fault-injecting fake, and a Python stdlib executor over `tcp+tls`
+proves `PROTOCOL.md` is implementable without this repo, skipped visibly
+when `python3` is absent (`remote-transports.md` §10, §11.3).
 
 **Tier 2 — platform emulators, skipped visibly.** Following the repo's existing
 convention (the Chrome E2E tests skip with a visible message when
@@ -3260,29 +3513,55 @@ So in push mode the **gateway** is the worker, exactly as it is today, and the
 endpoint is an attribute of it. Phase 1 already puts `target` on the record,
 as `WorkerTargetInfo` (§4.2.4: `kind`, `processor`, `name?`, `file?`; absent
 means a worker too old to say, **not** in-process). Phase 2 adds `"endpoint"`
-to `kind` and two fields:
+to `kind` and two fields. **Revised 2026-09-25** for multiple transports: the
+`remote` block also carries the binding, the endpoint's health, and session
+counts ([`remote-transports.md`](remote-transports.md) §5.4, §12). This is the
+one definition; `remote-transports.md` §12 points here.
 
 ```ts
 /** Phase 2's additions to WorkerTargetInfo (§4.2.4). */
 target?: {
   /** Phase 1's closed list, plus `"endpoint"` from Phase 2. */
   kind: "in-process" | "worker-thread" | "child-process" | "custom" | "endpoint";
-  /** For `"endpoint"`: the URL, origin only — never the path or a query. */
+  /**
+   * For `"endpoint"`: where the executor is, with nothing past the authority —
+   * `https://media.example.run.app`, `wss://gpu.internal:8443`,
+   * `tcp+tls://inference.svc:7443`, `udp://10.0.3.7:7000` — or, for a reversed
+   * binding, the listen address. Never a path, a query or credentials; a
+   * `unix:` socket is shown as `unix:` alone. Gated by `exposeEndpoints`.
+   */
   endpoint?: string;
-  /** For `"endpoint"`: what the remote said about itself at the last handshake. */
+  /** For `"endpoint"`: what the remote said about itself, and how it is doing. */
   remote?: {
-    /** The remote's declared name, e.g. `"orders-cf"`. */
+    /** The binding in use: `"http"`, `"http-stream"`, `"sse"`, `"ws"`, `"ws-reverse"`, `"tcp"`, `"udp"`, or a plugin's id such as `"nats"`. */
+    binding: string;
+    /** The remote's declared name, e.g. `"orders-cf"`. For a reversed binding with several executors connected, the names joined, most recent first. */
     name?: string;
     /** Protocol version it negotiated. */
     protocol: number;
-    /** Runtime it reported, e.g. `"workerd"`, `"nodejs22.x"`, `"bun"`. */
+    /** Runtime it reported, e.g. `"workerd"`, `"nodejs22.x"`, `"bun"`, `"python"`. */
     runtime?: string;
     /** Job names it said it can run. */
     names?: string[];
-    /** When the last successful invoke or handshake was, epoch ms. */
+    /** When the last verified message arrived: an invoke's answer, a heartbeat, a pong, a handshake. Epoch ms. */
     lastSeenAt: number;
     /** Consecutive transport failures; `0` while it is answering. */
     failures: number;
+    /** The endpoint's health state and the evidence for it (`remote-transports.md` §5.4). */
+    health: {
+      /** `healthy`, `degraded`, `unhealthy` (the breaker is open) or `unknown` (not probed yet). */
+      state: "healthy" | "degraded" | "unhealthy" | "unknown";
+      /** Why, when not `healthy`: e.g. `"buffering"`, `"no-in-attempt-reporting"`, `"canary-failed"`, `"breaker-open"`, `"not-functionally-probed"`. */
+      reason?: string;
+      /** Round-trip time of the last `pong`, in ms. Absent on `http`, which has no ping. */
+      rttMs?: number;
+      /** The capacity the executor last reported. */
+      capacity?: { inFlight: number; max: number; accepting: boolean };
+      /** The last functional canary: when, whether it passed, how long it took, and a secret-free detail when it failed. */
+      canary?: { at: number; ok: boolean; latencyMs: number; detail?: string };
+    };
+    /** For the session bindings: sessions open now, and how many were resumed or lost since the worker started. */
+    sessions?: { open: number; resumed: number; lost: number };
   };
 };
 ```
@@ -3306,7 +3585,7 @@ running worker in place"):
 |---|---|---|
 | `endpointMaxInFlight` | yes — it is a semaphore bound | add |
 | `endpointBatch` | yes | add |
-| `endpointTimeout` | yes, for the next invoke | add, bounded by `lockDuration` |
+| `endpointTimeout` | yes, for the next invoke | add. Any positive value, not bounded by `lockDuration`, because the lease is renewed for the whole call (`BunQueueWorker.ts:2228-2232`, `:3429-3458`; Q-T12, decided 2026-09-25) |
 | `endpointUrl` | **no** — it changes what code runs | do not add. Changing where jobs execute from a dashboard is a remote-code-execution control panel |
 
 That last row is a security decision, not an ergonomics one. Say so in the
@@ -3321,7 +3600,9 @@ Be explicit about this on the Workers page rather than showing an empty card:
   changed since.
 - **Whether a job is still running there after a transport timeout.** The
   gateway timed out; the remote may be mid-flight. The UI should show
-  `in-flight, response overdue`, not `failed`.
+  `in-flight, response overdue`, not `failed`. On a streaming or session binding the heartbeat narrows this: an
+  attempt the remote still lists in its heartbeats is running, and one it
+  stopped listing is lost (`remote-transports.md` §5.6).
 - **How many instances are behind the endpoint.** One URL may be a thousand
   Lambda containers. The "worker" is the gateway; instance count is the
   platform's console, not ours.
@@ -3331,7 +3612,9 @@ Be explicit about this on the Workers page rather than showing an empty card:
 
 Concretely: `WorkerTable.tsx` gets a target badge; `WorkerScreen.tsx` gets a
 "Target" card showing kind, processor (function or file), a custom target's name, and in Phase 2 the origin, last handshake, negotiated protocol,
-advertised names, consecutive failures; `WorkerConfigCard.tsx` picks up the
+advertised names, consecutive failures, and (since the transports,
+`remote-transports.md` §12) the binding, the health state with its reason,
+the last canary and the session counts; `WorkerConfigCard.tsx` picks up the
 three new keys automatically since it renders `WORKER_CONFIG_KEYS`.
 
 **README parse note:** `packages/bun-jobs-ui/README.md`'s
@@ -3467,7 +3750,7 @@ cases:
 
 | Case | What happens | Mitigation |
 |---|---|---|
-| Endpoint hangs past `timeout` | gateway aborts the fetch, fails the attempt, retries per the job's backoff | `timeout` is forced below `lockDuration` (§4.2), so the lease is still live when the decision is made |
+| Endpoint hangs past `timeout` | gateway aborts the fetch, fails the attempt, retries per the job's backoff | the gateway renews the lease for the whole call (`BunQueueWorker.ts:2228-2232`, `:3429-3458`), so it is still live when the decision is made, whatever `timeout` is. There is no `lockDuration` bound on `timeout`: an earlier draft forced it below `lockDuration`, and that rule was removed on 2026-09-25 (`remote-transports.md` Q-T12). On a streaming or session binding a *silent* remote is detected sooner, by heartbeat loss (`remote-transports.md` §5.6) |
 | Endpoint hangs, gateway *crashes* | lease lapses, stalled sweep re-claims after `lockDuration + stalledInterval`, the remote may still be running | fencing token (§5.8); `maxStalledCount` |
 | Endpoint answers after the gateway gave up | response is discarded; the job already failed | idempotency key + the remote's result cache means the *retry* is answered from cache rather than re-run |
 | Endpoint is dead for everyone | every attempt fails, every job burns attempts, the queue drains into dead-letter | **circuit breaker**: after N consecutive transport failures the gateway pauses claiming rather than failing jobs. This is not optional; without it, one bad deploy buries a day of work in ten minutes |
@@ -3475,6 +3758,15 @@ cases:
 
 The circuit breaker is the single most important operational feature in §5/§6
 and it is easy to forget because it is not part of the wire protocol.
+
+**Health feeds it** (revised 2026-09-25). On every binding the gateway
+checks liveness (`ping`/`pong`, periodic heartbeats), readiness (`health`,
+and the capacity on every heartbeat) and function (a canary job through the
+remote's real dispatch path, at session open, every 5 min, and as the
+half-open probe). A failed canary at open keeps the session out of use; two
+failed periodic canaries open the breaker; a frozen remote is detected in
+25–30 s by default and its attempts fail fast instead of at their timeout
+(`remote-transports.md` §5).
 
 ### 10.3 Double execution
 
@@ -3522,6 +3814,12 @@ HMAC over the body *including the job id and the fencing token*, a replay
 window, a nonce cache, and — the one that is always forgotten — the callback
 must be rejected unless that job is currently `active` under *this* gateway's
 token. Anything less is "anyone who learns a job id can mark it complete".
+
+The reversed bindings of Phase 2 (`ws-reverse`, reverse TCP) do accept
+inbound connections, but not callbacks in this sense: an executor must first
+authenticate its session with the secret, and it can report only on attempts
+pushed to it on that session, with a matching fence
+(`remote-transports.md` §7.6). A job id alone gets an attacker nothing.
 
 ### 10.7 Version skew between the enqueuer and the remote
 
@@ -3572,6 +3870,12 @@ identically. Good. But:
 - **`Bun.serve`'s `idleTimeout`** on the gateway side is irrelevant (it is the
   client here), but a reference adapter served by `Bun.serve` has a default
   idle timeout that will cut a long job. Name it in the adapter docs.
+  *Measured since* (2026-09-25): it fires in 4-second ticks, and a quiet
+  stream survives only with `server.timeout(req, 0)`
+  ([`bun-transports.md`](evidence/remote-transports/bun-transports.md) §1.7,
+  cross-cutting 1). `serveHttp` sets it (`remote-transports.md` §9); for a
+  hand-written server the docs say so. Reverse mode makes it relevant on the
+  gateway too, which is then the server.
 - **The `RemoteWorker` name collision** (§2.2) is resolved by Phase 0, which
   renames the control plane `WorkerController` and frees `RemoteWorker` for
   Phase 2. One related collision remains, `WorkerTarget` (§4.2).
@@ -3624,6 +3928,34 @@ demand actually is.**
    that touches this plan most: whether the shared core (one provider object
    for both facets) earns its keep if no provider ships both facets by the
    execute gate (Q-P1).
+7. **The transports' own questions** are in
+   [`remote-transports.md`](remote-transports.md) §15 (Q-T1–Q-T12). Two are
+   decided (2026-09-25): all of 2a–2f is committed, in order (Q-T1), and a
+   target `timeout` is not bounded by `lockDuration` (Q-T12). The open one
+   that touches this plan most: whether a lost remote attempt counts as an
+   attempt or as a stall (Q-T11).
+
+### 10.12 Multiple transports (added 2026-09-25)
+
+The full list is [`remote-transports.md`](remote-transports.md) §14. The ones
+that change this plan's risk picture:
+
+- **UDP's reliability layer and its sealing are a small transport protocol
+  and a hand-rolled secure channel.** Both are kept minimal, measured only on
+  loopback, and `experimental` until a real-network run and a review.
+- **Everything measured is loopback on a canary Bun** (`1.4.3-canary.1`).
+  Each Phase 2 sub-phase re-runs its binding's spikes on the shipped release
+  first
+  ([`evidence/remote-transports/`](evidence/remote-transports/README.md)).
+- **Reverse mode makes the gateway a server** with a listener, a certificate
+  and an address, which §5.2 chose HTTP push to avoid; and there is no
+  first-party relay for the case where neither side can accept a connection.
+- **A CPU-bound handler blocks its executor's heartbeats** and is declared
+  lost while working. `attemptSilenceMs` is configurable and the docs say so.
+- **Double execution after a lost response** (§5.8's re-attach) prevents a
+  second settlement, not a second run on a store-less remote.
+- **The surface**: seven bindings times one conformance suite. One protocol
+  core is the mitigation; a binding is framing and I/O.
 ## 11. Phased delivery
 
 Each phase is independently shippable, independently testable, and leaves the
@@ -3644,16 +3976,28 @@ first-party summoners); the `execute` facet with Phase 2; the runtime-adapter
 kit and the execute kits with Phase 3; the execute stability gate in Phase 4.
 The first-party summoners and adapters are built on the public API.
 
+**Revised again on 2026-09-25 for multiple transports**
+([`remote-transports.md`](remote-transports.md) §13). Phase 2 now carries
+the contract over HTTP (unary and streamed), SSE, WebSocket in both
+directions, TCP (with TLS and Unix sockets), UDP and HTTP/2, with health
+checks, progress and heartbeats on every one, and it is split into
+sub-phases 2a–2f, **all committed and built in order, 2a to 2f** (the
+user's decision, 2026-09-25, `remote-transports.md` Q-T1). 2a is the first
+milestone: HTTP, streamed HTTP with SSE framing, the health model and the
+session-capable `execute` facet (~38 d). Phase 3 gains the per-binding conformance and its fakes; Phase 4
+loses the streaming work (now in 2a) and gains per-binding benchmarks and the
+real-network script.
+
 | Phase | What | Effort (bun-jobs session) | Other owners |
 |---|---|---|---|
 | **0** | Rename the control planes | ~1.5 d | examples PR; UI copy |
 | **1** | `target` option, local only, replacing `isolation` — **implemented, awaiting merge** | **~7 d** (was ~7.5 d, which included the UI badge) | examples ~1.5 d (stacked PR); UI ~2 d (badge, Target card, playground prose) |
 | **1r** | Runner spellings: `worker-thread`/`child-process` for runners, a reader that accepts the old stored values, the DTO change | ~3 d | examples ~1.5 d, UI ~1 d |
 | **1.5** | Summon-compute, including the provider plugin API (1.5p) and the summon stability gate (1.5s) | **~47 d** (was ~32.5 d; the minimum useful ship, 1.5a + 1.5b, is still ~17.5 d) | UI ~3.5 d, examples ~3 d |
-| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, and the `execute` facet | **~22.5 d** (was ~19 d) | — |
-| **3** | Conformance kits, the runtime-adapter kit, and the first adapters built on it | **~17 d** (was ~11 d) | examples ~1 d |
-| **4** | Benchmarks, remaining adapters, hardening, the execute stability gate | **~10 d** (was ~9 d) | — |
-| | **Total** | **~108 d** (was ~105.5 d before the Phase 1 design check; ~80.5 d in the draft) | **~14.5 d + the rename's PRs** (was ~8.5 d) |
+| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, the `execute` facet, and **the transports** (2a HTTP + streamed HTTP + health; 2b WebSocket; 2c TCP/TLS/Unix; 2d reversed + SSE session; 2e UDP; 2f HTTP/2) | **~77.5 d**, all committed (was ~22.5 d before the transports; 2a, the first milestone, is ~38 d) | examples ~6 d (one example and one failure demo per binding); UI ~2 d (binding, health) |
+| **3** | Conformance kits, the runtime-adapter kit, the first adapters built on it, and **per-binding conformance with its fakes** | **~22.5 d** (was ~17 d) | examples ~1 d |
+| **4** | Benchmarks (now per binding), remaining adapters, hardening, the real-network script, the execute stability gate | **~11 d** (was ~10 d) | — |
+| | **Total** | **~169.5 d** (was ~108 d before the transports; ~105.5 d before the Phase 1 design check; ~80.5 d in the draft) | **~22.5 d + the rename's PRs** (was ~14.5 d) |
 
 ### Phase 0 — rename the control planes
 
@@ -4013,9 +4357,12 @@ isolate; Phase 2 exists for that.
 - `PROTOCOL.md`;
 - `createRemoteExecutor()`: the framework-agnostic `Request → Response`
   reference implementation, which is both the thing adapters wrap and the
-  thing tier-1 tests point at;
-- the **`execute` facet** of the provider plugin API (§4.6), so the transport
-  is pluggable from the first release of `RemoteWorker`.
+  thing tier-1 tests point at, and which since 2026-09-25 also runs the
+  protocol over a session transport (`acceptSession`, §6.1);
+- the **`execute` facet** of the provider plugin API (§4.6), exchange and
+  session shapes, so the transport is pluggable from the first release of
+  `RemoteWorker`;
+- the **transports** of `remote-transports.md`, in sub-phases 2a–2f (below).
 
 The phase now also delivers the user-facing names that Phase 0 freed:
 
@@ -4042,7 +4389,28 @@ The phase now also delivers the user-facing names that Phase 0 freed:
 | `PROTOCOL.md` (RFC 2119, with literal request/response transcripts) + `LIMITATIONS.md` (typed "this transport cannot do that" errors, per Hatchet) + README + OpenAPI emission | 2.5 d |
 | **The `execute` facet, host side** (§4.6): types, `send()` inside `RemoteTarget` (core signs, facet sends, core verifies), `locate()`, limit reconciliation with the handshake, `ProviderError` into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if Q2 is closed (else Phase 3) | 2.5 d |
 | The author guide's execute-host chapter and its reference entries | 1 d |
-| **Total** | **~22.5 d** |
+| **Total, before the transports** | **~22.5 d** |
+
+**The transports, added 2026-09-25** ([`remote-transports.md`](remote-transports.md)
+§13.1 has each line item). The table above becomes the first part of 2a.
+
+| Sub-phase | What | Effort |
+|---|---|---|
+| **2a** | The table above, plus: the message protocol v1 (twenty message types), the text frame codec with per-frame MAC and test vectors; the attempt state machine (accept timeout, re-attach by re-POST); the health model (liveness, readiness, canary, breaker inputs, health on the worker record); the execute facet's session shape; `http-stream` with SSE framing, the first-frame rule and the buffering probe; `serveHttp`; tests with buffering and idle-cutting fakes and a SIGSTOP executor; `PROTOCOL.md` appendices A–B, the transport selection guide, two user guides and three worked executors; re-measuring the HTTP/SSE spikes on the shipped Bun | **~38 d** (22.5 + 15.5) |
+| **2b** | WebSocket forward, and the reliability layer's outbox, resume and `status` | ~9.5 d |
+| **2c** | TCP, TLS and Unix sockets; the binary codec and AEAD sealing; the Python stdlib executor | ~10 d |
+| **2d** | Reversed WebSocket and TCP (the gateway listens, capacity-gated claiming); SSE session mode and `Last-Event-ID` re-attachment | ~8.5 d |
+| **2e** | UDP: retransmission, window and fragmentation in the reliability layer; `connId`, stateless reset; the lossy proxy; `experimental` | ~10 d |
+| **2f** | HTTP/2 as an experimental flag on the HTTP bindings; the informative gRPC `.proto` | ~1.5 d |
+| | **Phase 2 total** | **~77.5 d** |
+
+**The committed schedule** (the user's decision, 2026-09-25,
+`remote-transports.md` Q-T1): **2a, 2b, 2c, 2d, 2e, 2f**, in that order,
+all of them. 2b's reliability layer is what 2c–2e build on; 2f depends only on
+2a but is scheduled last. gRPC, HTTP/3, QUIC and message brokers
+are not first-party: gRPC and brokers are third-party plugins on the session
+shape, HTTP/3 and QUIC are deferred until Bun marks them stable
+(`remote-transports.md` §7.9–§7.12).
 
 There is no longer a decision gate before starting: the user has decided.
 What remains worth watching, as the draft said, is whether anyone builds an
@@ -4070,7 +4438,10 @@ further kits a third party runs on its execute provider (§4.6).
 | `runRuntimeAdapterConformance` (event mapping) | 1.5 d |
 | `runExecuteConformance` (host transport) and its fake | 1.5 d |
 | The runtime-adapter guide, the Acme Functions worked example, the template's execute half | 1.5 d |
-| **Total** | **~17 d** |
+| **Per-binding conformance** (added 2026-09-25): `conformRemoteExecutor` over every scheme and the CLI; the fakes shipped in `./remote/testing` (`bufferingHttpProxy`, `idleCuttingProxy`, `tcpChunker`, `lossyUdpProxy`, `spawnExecutor`) | 3 d |
+| `runExecuteConformance`'s session-shape and capability checks | 1.5 d |
+| The author guide's "Writing a transport" chapter, the Acme Queue transport in the template, the broker mapping guide | 1 d |
+| **Total** | **~22.5 d** (was ~17 d) |
 
 Phase 1.5 will already have added the host-side `./providers/*` subpaths by
 then (they were `./summon/*` in an earlier draft). The two families stay
@@ -4083,17 +4454,20 @@ kits (~1 d, [`compute-provider-plugins.md`](compute-provider-plugins.md) §15.5)
 ### Phase 4 — benchmarks, remaining adapters, hardening
 
 **Scope.** The four bench scenarios in §9.3 and their baselines; Azure and
-Deno adapters if anyone asks; cancellation; streaming progress/logs back;
-large-payload handling; the tier-3 manual e2e script.
+Deno adapters if anyone asks; large-payload handling; the tier-3 manual e2e
+script. Cancellation and streaming progress/logs moved into Phase 2a on
+2026-09-25, because every binding's health and progress depend on them.
 
 | Work | Effort |
 |---|---|
 | Bench scenarios + baselines + `bench/README.md` honesty note | 3 d |
-| Cancellation + progress/log streaming (SSE or chunked) | 3 d |
+| ~~Cancellation + progress/log streaming (SSE or chunked)~~ — moved to 2a | ~~3 d~~ 0 |
+| `push-loopback` per binding (`http`, `http-stream`, `ws`, `tcp`, `udp`) | 2 d |
 | Remaining adapters | 2 d |
 | Tier-3 script | 1 d |
+| The real-network measurements the transports rest on (`remote-transports.md` Appendix B: UDP loss and MTU, keep-alive under partition, proxy buffering, idle cuts) | 2 d |
 | **Execute stability gate**: the first-party adapters, `httpsExecute`, `lambdaExecute` and one outside provider pass both kits; `execute` → `1.0`, and `core` → `1.0` if the summon gate has passed | 1 d |
-| **Total** | **~10 d** |
+| **Total** | **~11 d** (was ~10 d) |
 
 ### Explicitly out of scope
 
@@ -4116,7 +4490,12 @@ vocabulary table is the documented bridge.
 
 Phase 1.5's minimum useful ship (1.5a + 1.5b, ~17.5 d) serves the commonest
 request, "I do not want a worker running 24/7", on every host that can reach
-the driver. Phase 2 then serves the hosts that cannot.
+the driver. Phase 2 then serves the hosts that cannot, with every binding
+the user asked for, committed and built in order, 2a to 2f (~77.5 d). Its
+first milestone, 2a (~38 d), already reaches every platform with an inbound
+HTTP path, with health, live progress and heartbeats; 2b–2f follow in order.
+TCP and UDP reach nothing HTTP and WebSocket do not, and are built for
+polyglot executors and private networks (`remote-transports.md` §1.3).
 
 The one lesson from the draft that still applies to Phase 2 is Hatchet's:
 it shipped a serverless transport in 2024, let it go undocumented, and is
@@ -4164,3 +4543,21 @@ gathered on 2026-09-25 and indexed in
 They use the same provenance tags, and
 [`summon-compute.md`](summon-compute.md) carries those tags into every fact it
 quotes.
+
+**The transports of Phase 2** rest on two further evidence files, gathered on
+2026-09-25 and indexed in
+[`evidence/remote-transports/README.md`](evidence/remote-transports/README.md):
+
+- [`bun-transports.md`](evidence/remote-transports/bun-transports.md): what
+  Bun provides per transport, **measured** by 27 re-runnable spikes (in
+  `spikes/` beside it), on loopback and on a canary build
+  (`1.4.3-canary.1`), so each must be re-run on the shipped release.
+- [`platform-transports.md`](evidence/remote-transports/platform-transports.md):
+  which of ~35 platform shapes accept which transport, their idle and
+  lifetime limits, their health mechanisms, and where intermediaries silently
+  break a protocol. It recommends against specifying TCP and UDP; the design
+  specifies them at the user's request and records why
+  ([`remote-transports.md`](remote-transports.md) §1.3).
+
+[`remote-transports.md`](remote-transports.md) carries both files' tags into
+every fact it quotes, and adds one spike of its own (its Appendix A).

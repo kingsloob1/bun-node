@@ -78,13 +78,19 @@ It also has one or two **facets**. The **`summon` facet** starts compute: it
 declares its capabilities (launch, scale or wake; how it dedupes and with what
 key limits; its boot budget; its shutdown signal and grace; whether it can pass
 the summon id) and implements `summon()`, with optional `release()`,
-`status()` and `cancel()`. The **`execute` facet** carries one remote attempt:
-it declares the platform's limits (the longest call, the largest body, whether
-responses stream) and implements `send()`, which moves an **already-signed**
-request to the platform and returns its response for bun-jobs to verify. The
-code that runs *on* the remote platform is not part of the plugin object. It is
-a **runtime adapter**, built with `defineRuntimeAdapter()` from the browser-safe
-`./remote` entry, and its contract is the wire protocol. Every provider
+`status()` and `cancel()`. The **`execute` facet** carries remote attempts
+over a transport: it declares the transport's capabilities (its shape and
+direction, whether it streams, is ordered, reliable or confidential, its size
+and duration limits) and has one of two shapes. An **exchange** facet
+implements `send()`, which moves an **already-signed** request to the platform
+and returns its response (unary or streamed) for bun-jobs to verify; a
+**session** facet implements `open()` or `listen()`, which yield a duplex
+session of already-authenticated frames over a WebSocket, a TCP or UDP socket
+or a message broker (§8, [`remote-transports.md`](remote-transports.md)). The
+code that runs *on* the remote platform is not part of the plugin object. It
+is a **runtime adapter**, built with `defineRuntimeAdapter()` from the
+browser-safe `./remote` entry, or a transport server from `./remote/serve`,
+and its contract is the wire protocol. Every provider
 reports failures as a `ProviderError` of one of six kinds, because the
 controller's backoff and circuit breaker act on the kind. Plugins are passed in
 by import. Nothing is discovered. bun-jobs' own six summoners and its runtime
@@ -104,10 +110,10 @@ providers pass the kit.
 | 3 | **Capabilities are declared, and the controller reads them.** Nothing is hard-coded per platform. | The three evidence files show the platforms differ on every axis the controller cares about: style, dedupe, boot time, shutdown signal and grace ([V, paas-ssh §3], [V, aws §3], [V, google-azure §3.1, §4.1]). A controller that knows platforms by name cannot serve a platform it has never heard of. §7.1 |
 | 4 | **Config is a Standard Schema.** bun-jobs depends on no schema library. | bun-common already vendors the Standard Schema type (`types/standardSchema.ts`) and `toStandardSchema` wraps a bare function (`BunValidate.ts:345-365`) [S]. zod, valibot, arktype and yup work unchanged (`CLAUDE.md`). §6.3 |
 | 5 | **Six error kinds, mapped by the plugin.** An unmapped throw is treated as `transient` and logged once as a plugin bug. | The controller's gates (`summon-compute.md` §4.4) and the gateway's breaker (`worker-runtimes.md` §5.5) behave differently for "try again", "slow down", "your quota is gone" and "your config is wrong". Only the plugin can tell them apart. §6.5 |
-| 6 | **The execute facet never sees the signing secret.** bun-jobs signs the request and verifies the response. The plugin only moves bytes. | A plugin that could sign could mark jobs complete. With response signing in the core, a buggy or careless transport cannot forge an outcome; it can only fail to deliver one. §8.2 |
+| 6 | **The execute facet never sees the signing secret.** bun-jobs signs the request (exchange) or each frame (session), seals frames where the transport is not confidential, and verifies everything that comes back. The plugin only moves bytes. | A plugin that could sign could mark jobs complete. With response and frame signing in the core, a buggy or careless transport cannot forge an outcome; it can only fail to deliver one. §8.2 |
 | 7 | **Explicit import and pass-in. No name lookup, no discovery from `node_modules`.** | It is what the logger and driver options already do (§2). Discovery is a supply-chain surface for no gain. §9 |
 | 8 | **One `apiVersion` per facet, `"major.minor"`, checked at registration.** Minors are additive. | The execute facet evolves on Phase 2's timeline and must not break summon plugins that shipped in Phase 1.5. Terraform states the same rule for its protocol: "Minor versions of the protocol are additive" [W: developer.hashicorp.com/terraform/plugin/terraform-plugin-protocol, 2026-09-25]. §10 |
-| 9 | **Both facets start `experimental` (`0.x`).** `summon` becomes `1.0` after the six first-party summoners and one provider written outside the bun-jobs session pass the kit. `execute` becomes `1.0` after the Cloudflare, Lambda and generic HTTP adapters and one outside provider do. | An API proven by its authors alone is proven against their assumptions. §10.4 |
+| 9 | **Both facets start `experimental` (`0.x`).** `summon` becomes `1.0` after the six first-party summoners and one provider written outside the bun-jobs session pass the kit. `execute` becomes `1.0` after the Cloudflare, Lambda and generic HTTP adapters and one outside provider do, and one session-shape transport written outside the bun-jobs session (added 2026-09-25). | An API proven by its authors alone is proven against their assumptions. §10.4 |
 | 10 | **The conformance kit ships in the package**, at `./provider/testing` and `./remote/testing`, framework-agnostic, credential-free. | The driver contract suite is the in-repo precedent, and it is *not* shipped: it lives in `__tests__/helpers/driverContract.ts` [S], and `files` is `["dts", "lib"]` (`package.json:78-81`) [S]. A third-party driver author today has no way to run it. §12 |
 | 11 | **The documentation is a deliverable with a drift test.** An author guide with a worked example per facet, an API reference checked against the exports, a user guide, a security page, a starter template, and examples. | Hatchet shipped a serverless transport, left it undocumented, and is rebuilding it (`worker-runtimes.md` §11). §15 |
 | 12 | **Build the plugin API before the first-party summoners** (new sub-phase 1.5p). Build the execute facet with Phase 2 and the runtime-adapter kit with Phase 3. | Then six real providers exercise the API before anybody promises it is stable. §16 |
@@ -286,8 +292,8 @@ share one plugin model, or have two?
 | Credentials | the platform's control-plane API (start a task) | often the same account's data-plane API (invoke a function), or none (a public URL) | none of the platform's: it holds the HMAC secret only |
 | Config | region, cluster, task definition, … | region, function name or URL, … | handlers, `maxBatch`, `maxDurationMs` |
 | Error kinds | throttle, quota, auth, misconfigured, conflict | the same set, plus transport statuses (`worker-runtimes.md` §5.5) | not errors of ours: it answers the protocol |
-| Declared limits | style, dedupe, boot budget, shutdown | max call duration, max body, streaming, concurrency | advertised in the handshake (`worker-runtimes.md` §5.4) |
-| Bundle rules | Bun, server-side | Bun, server-side | **browser-safe**, `"browser": true` in `consumer-check.json` (`worker-runtimes.md` §6.3) |
+| Declared limits | style, dedupe, boot budget, shutdown | `TransportCapabilities`: shape, direction, streaming, ordering, reliability, confidentiality, frame and message size, duration, concurrency (§8.2) | advertised in the handshake (`worker-runtimes.md` §5.4) |
+| Bundle rules | Bun, server-side | Bun, server-side | **browser-safe**, `"browser": true` in `consumer-check.json` (`worker-runtimes.md` §6.3), for a FaaS runtime adapter; a long-running executor's transport server (`./remote/serve`) is Bun-only |
 | Contract | TypeScript interface | TypeScript interface | the wire protocol, `PROTOCOL.md` |
 
 ### 4.2 The options
@@ -866,6 +872,16 @@ kit accepts both, so a user can conformance-test a local `invoke` too [D].
 
 ## 8. The `execute` facet
 
+**Revised 2026-09-25: transport-agnostic.** At the user's request, remote
+execution runs over HTTP, streamed HTTP, SSE, WebSocket in both directions,
+TCP, UDP and HTTP/2, and a plugin can add others (gRPC, QUIC, NATS, MQTT,
+AMQP, Kafka). The design of those transports is
+[`remote-transports.md`](remote-transports.md). This section is where the
+facet's interface lives: it gains a **session shape** beside the original
+**exchange shape** (`send(Request) → Response`), and it declares
+**transport capabilities** in place of the old `ExecuteCapabilities`. §1,
+§4.1, §10.4, §11.1, §12.3, §14 and §17 were updated to match.
+
 ### 8.1 Where it fits
 
 `worker-runtimes.md` gives a remote target three layers:
@@ -893,14 +909,35 @@ and is the same for every provider. Layer 3 is the runtime adapter kit (§8.4).
   caps request and response at 6 MB (`worker-runtimes.md` §6.4 snippet), and
   whether a response can stream depends on the invoke path. The remote's
   handshake cannot know which path the gateway used.
+- **Not every transport is request/response** (added 2026-09-25). A
+  WebSocket, a TCP connection, a UDP flow or a broker subscription is a
+  long-lived duplex channel with no request boundary, and a reversed
+  WebSocket is one the *executor* opens. `remote-transports.md` §3 splits
+  layer 1 further: a **protocol core** (messages, per-frame MAC and AEAD
+  sealing, the reliability layer, health) sits between the gateway and the
+  transport, so the transport only moves opaque frames.
 
 ### 8.2 The host side
 
+A facet has one of two **shapes**, declared in its capabilities and checked
+at registration [D, revised 2026-09-25]:
+
+- **exchange**: one signed HTTP-shaped request, one response, which may
+  stream. This is the original facet, unchanged: `httpsExecute`,
+  `lambdaExecute` and a private-invoke platform like the Acme Functions
+  example implement `send()`.
+- **session**: a long-lived duplex channel of opaque **frames**. Forward and
+  brokered transports implement `open()`; a reversed transport, where the
+  executor dials in, implements `listen()`.
+
+In both, bun-jobs builds, signs, seals, sequences and verifies; the facet
+moves bytes.
+
 ```ts
-/** The execute facet, host side: carries one signed request to the platform. Made by a provider's `execute(config, ctx)`. */
+/** The execute facet, host side: carries remote attempts to the platform. Made by a provider's `execute(config, ctx)`. */
 export interface ExecuteFacet {
-  /** The transport's limits. Reconciled with the remote's handshake (§8.3). */
-  readonly capabilities: ExecuteCapabilities;
+  /** What the transport is and can do. Read by the core instead of knowing transports by name (§8.3). */
+  readonly capabilities: TransportCapabilities;
   /**
    * Finds the endpoint, when the config names one rather than giving a URL:
    * look up a function URL, a service's address. Optional; called once and
@@ -908,56 +945,136 @@ export interface ExecuteFacet {
    */
   locate?: (context: ProviderCallContext) => Promise<ExecuteEndpoint>;
   /**
-   * Sends one request and returns the platform's response. Required.
+   * Exchange shape: sends one request and returns the platform's response.
+   * Required when `capabilities.shape` is `"exchange"`, absent otherwise.
    *
-   * `request` is complete and **already signed** by bun-jobs (`worker-runtimes.md`
-   * §5.6): the body must reach the remote byte for byte, and the listed
-   * `bun-jobs-*` headers unchanged. The facet may add its own headers (a
-   * platform token) and may carry the bytes any way the platform allows (an
-   * `Invoke` API call, a private network). The response it returns is
-   * verified by bun-jobs before anything is settled, so the facet cannot
-   * change an outcome, only fail to deliver one.
+   * `request` is complete and **already signed** by bun-jobs
+   * (`worker-runtimes.md` §5.6): the body must reach the remote byte for
+   * byte, and the listed `bun-jobs-*` headers unchanged. The facet may add
+   * its own headers (a platform token) and may carry the bytes any way the
+   * platform allows (an `Invoke` API call, a private network). The response
+   * it returns, unary or a stream of frames, is verified by bun-jobs before
+   * anything is settled, so the facet cannot change an outcome, only fail to
+   * deliver one.
    *
    * Map platform failures to `ProviderError`; a non-2xx the *remote* answered
    * (401, 404, 429, 5xx) is returned as a `Response`, not thrown, so the
    * gateway applies `worker-runtimes.md` §5.5's rules to it.
    */
-  send: (request: Request, context: ExecuteCallContext) => Promise<Response>;
+  send?: (request: Request, context: ExecuteCallContext) => Promise<Response>;
   /**
-   * The package entry of the matching runtime adapter, e.g.
-   * `"@acme/bun-jobs-provider-acme/runtime"`, for the docs and the UI.
+   * Session shape, `direction` `"forward"` or `"brokered"`: opens one duplex
+   * session to the executor (or to the broker subject its executors serve).
+   * The core calls it once per session it wants (`sessions` on the target)
+   * and again to replace a lost one. Rejects with a `ProviderError`.
+   */
+  open?: (context: ExecuteOpenContext) => Promise<DuplexSession>;
+  /**
+   * Session shape, `direction` `"reverse"`: starts accepting connections that
+   * executors dial in, and yields one session per connection until
+   * `context.signal` aborts. The core authenticates each session's `hello`;
+   * the facet only accepts the connection.
+   */
+  listen?: (context: ExecuteOpenContext) => AsyncIterable<DuplexSession>;
+  /**
+   * An optional platform-level check, such as a `GET /healthz` on the
+   * executor or the platform's own status API, shown on the Workers page.
+   * Never used to route work or to decide liveness, which the protocol's
+   * heartbeat and canary do (`remote-transports.md` §5.5).
+   */
+  probe?: (context: ProviderCallContext) => Promise<PlatformProbe>;
+  /**
+   * The package entry of the matching runtime adapter or transport server,
+   * e.g. `"@acme/bun-jobs-provider-acme/runtime"`, for the docs and the UI.
    * Informative only; the host never imports it.
    */
   readonly runtime?: string;
 }
 
+/**
+ * What a transport declares. Replaces the earlier `ExecuteCapabilities`.
+ * The core's reaction to each field is `remote-transports.md` §3.3.
+ */
+export interface TransportCapabilities {
+  /** The binding it implements: `"http"`, `"http-stream"`, `"sse"`, `"ws"`, `"ws-reverse"`, `"tcp"`, `"udp"`, or a plugin's own id such as `"nats"`. Shown on the Workers page. */
+  readonly binding: string;
+  /** `"exchange"` (implements `send`) or `"session"` (implements `open` or `listen`). */
+  readonly shape: "exchange" | "session";
+  /** Who dials: the gateway (`"forward"`), the executor (`"reverse"`), or both reach a broker (`"brokered"`). */
+  readonly direction: "forward" | "reverse" | "brokered";
+  /** Whether the executor can send frames while an attempt runs. `false` for unary HTTP, which then has no in-attempt liveness. */
+  readonly streaming: boolean;
+  /** Whether the gateway can send frames mid-attempt on the same channel (cancel, ping) without a new exchange. */
+  readonly duplex: boolean;
+  /** Whether frames arrive in the order sent. `false`: the core reorders. */
+  readonly ordered: boolean;
+  /** Whether every frame arrives exactly once or the session fails. `false`: the core acknowledges, retransmits and windows. */
+  readonly reliable: boolean;
+  /** Whether the transport has flow control of its own. `false`: the core enforces its send window. */
+  readonly flowControl: boolean;
+  /** The largest frame it carries, in bytes. The core fragments above it (binary encoding only). */
+  readonly maxFrameBytes: number;
+  /** The largest message the core may send after reassembly, in bytes. Larger is refused before sending. */
+  readonly maxMessageBytes: number;
+  /** `"text"` (one UTF-8 line per frame: HTTP streams, SSE, WebSocket) or `"binary"` (TCP, UDP, most brokers). */
+  readonly encoding: "text" | "binary";
+  /**
+   * Whether the transport gives the executor confidentiality and integrity
+   * itself (TLS end to end, or a loopback or Unix socket). `false`: the core
+   * seals every frame with AES-256-GCM. Declare `false` when in doubt.
+   */
+  readonly confidential: boolean;
+  /** Whether `reconnect()` can reach the same executor, so a dropped session can resume rather than restart. */
+  readonly resumable: boolean;
+  /** The longest one attempt may take on this path, in ms. Reconciled with the handshake (§8.3). */
+  readonly maxDurationMs: number;
+  /** The most attempts in flight the platform allows, when known: a reserved-concurrency cap. */
+  readonly maxConcurrency?: number;
+  /** The shortest idle timeout the transport knows is on its path, in ms. The core keeps its keepalive below it. */
+  readonly idleTimeoutMs?: number;
+}
+
+/** One live channel to one executor, for the session shape. Frames are opaque: the facet never parses, alters or re-encodes them. */
+export interface DuplexSession {
+  /** A secret-free label for logs and the UI: a peer address, a connection id, a broker subject. */
+  readonly label: string;
+  /**
+   * Hands one frame to the transport. Resolves once the transport has taken
+   * it into its bounded buffer. Rejects with `ProviderError` `"transient"`
+   * when the session is gone and `"throttled"` when the buffer is full.
+   * **Never drops a frame silently**: Bun's own sends do (a WebSocket server
+   * `send()` returning `0`, a TCP `write()` returning a short count), and the
+   * facet must turn that into a rejection or a queued remainder.
+   */
+  send: (frame: Uint8Array) => Promise<void>;
+  /** Every frame the peer sends, each exactly as received, in arrival order. Ends when the session ends. */
+  readonly frames: AsyncIterable<Uint8Array>;
+  /** Settles once, when the session has ended, with why. */
+  readonly closed: Promise<TransportClose>;
+  /** Ends the session; with `graceful`, after flushing what is queued, bounded by the context's signal. */
+  close: (options?: { graceful?: boolean; code?: number; reason?: string }) => Promise<void>;
+  /** Bytes accepted by `send` and not yet handed to the network. The core stops sending above its high-water mark. */
+  bufferedBytes: () => number;
+  /** Opens a new connection to the same executor for a resume. Present when `capabilities.resumable`. */
+  reconnect?: () => Promise<DuplexSession>;
+}
+
+/** Why a session ended. */
+export interface TransportClose {
+  /** Whether both sides closed deliberately, as opposed to a reset, a timeout or a lost peer. */
+  clean: boolean;
+  /** The transport's own code, when it has one: a WebSocket close code, an errno. */
+  code?: number | string;
+  /** A short, secret-free reason. */
+  reason?: string;
+}
+
 /** Where to send, as `locate()` found it. */
 export interface ExecuteEndpoint {
-  /** The URL the signed request is addressed to. `https:` unless the host is `localhost`. */
+  /** The URL to reach, any scheme the transport understands (`https:`, `wss:`, `tcp+tls:`, `udp:`, a broker URL). `https:`/`wss:` unless the host is loopback. */
   url: string;
   /** A secret-free label for the UI, e.g. `"lambda:reports@eu-west-1"`. */
   label?: string;
-}
-
-/** What a transport declares. */
-export interface ExecuteCapabilities {
-  /** The longest one call may take on this transport, in ms. */
-  maxDurationMs: number;
-  /** The largest request body it carries, in bytes. */
-  maxRequestBytes: number;
-  /** The largest response body it carries, in bytes. */
-  maxResponseBytes: number;
-  /** Whether a response can arrive as a stream (`worker-runtimes.md` §5.10's NDJSON progress). */
-  streaming: boolean;
-  /** The most calls in flight the platform allows, when known: a reserved-concurrency cap. */
-  maxConcurrency?: number;
-  /**
-   * Whether the remote can reach back to the gateway (a callback, a
-   * heartbeat). Always `false` in phases 2–4, which are sync-only
-   * (`worker-runtimes.md` §10.11 item 2); declared now so a later async mode
-   * need not change the shape.
-   */
-  callback: boolean;
 }
 
 /** What `send` receives beyond the common context. */
@@ -966,15 +1083,60 @@ export interface ExecuteCallContext extends ProviderCallContext {
   readonly kind: "job" | "run";
   /** The endpoint from `locate()` or config. */
   readonly endpoint: ExecuteEndpoint;
-  /** The envelope's `op`: `"handshake"`, `"invoke"`, `"cancel"`, `"ping"`. For logs and routing only. */
+  /** The operation: `"handshake"`, `"invoke"`, `"cancel"`, `"health"`, `"status"`, `"ping"`. For logs and routing only. */
   readonly op: string;
+}
+
+/** What `open` and `listen` receive beyond the common context. */
+export interface ExecuteOpenContext extends ProviderCallContext {
+  /** Whether sessions carry job attempts or runs. */
+  readonly kind: "job" | "run";
+  /** The endpoint to dial, or for `listen` the address to listen on. */
+  readonly endpoint: ExecuteEndpoint;
+  /** TLS from the target's options (`remote-transports.md` §8.2): what to trust when dialling, or the certificate to serve when listening. Never the signing secret. */
+  readonly tls?: RemoteTlsOptions | NonNullable<RemoteListenOptions["tls"]>;
+}
+
+/** What `probe()` reports. */
+export interface PlatformProbe {
+  /** Whether the platform considers the executor healthy. */
+  ok: boolean;
+  /** The HTTP status or platform state it read, for display. */
+  detail?: string;
+  /** How long the probe took, in ms. */
+  latencyMs?: number;
 }
 ```
 
+`RemoteTlsOptions` and `RemoteListenOptions` are the target's types
+(`remote-transports.md` §8.2); `./provider` re-exports them, so a plugin's
+declarations need nothing else (the rule of §11.1).
+
+**Registration check** [D]: `shape: "exchange"` requires `send` and forbids
+`open`/`listen`; `shape: "session"` requires `open` for `forward` and
+`brokered`, and `listen` for `reverse`. Anything else is a `ConfigError`
+naming the member. The conformance kit checks the capabilities themselves
+against fault-injecting fakes (§12.3).
+
+**A helper for exchange-shaped platforms** [D]: `./provider` also exports
+`exchangeTransport({ send, capabilities })`, which fills the common fields,
+so an author of a request/response platform writes `send()` and the limits,
+exactly as before this revision.
+
+**First-party transports are written on this API**, under §5's rule:
+`httpsExecute` (exchange: `http`, `http-stream`, and SSE re-attachment),
+`wsExecute` and `wsListen`, `tcpExecute` and `tcpListen`, `udpExecute`
+(session). They import only `./provider` and Bun or Web APIs — `fetch`,
+`WebSocket`, `Bun.connect`, `Bun.listen`, `Bun.serve`, `Bun.udpSocket`,
+`Bun.dns.lookup` — so the first-party import test covers them and no npm
+transport library enters the package.
+
 **The secret stays in the core** [D]. `RemoteEndpointTarget.secret`
 (`worker-runtimes.md` §4.2) moves to the remote target's options, beside the
-provider, not into the provider's config. The facet is handed a signed
-`Request` and never the key. §13 says what this does and does not protect.
+provider, not into the provider's config. An exchange facet is handed a
+signed `Request`, a session facet already-authenticated (and, where it
+declared `confidential: false`, sealed) frames; neither is ever handed the
+key. §13 says what this does and does not protect.
 
 **How a user writes it** [D]:
 
@@ -989,8 +1151,21 @@ const worker = jobs.remoteWorker("reports", {
 ```
 
 A plain `{ kind: "endpoint", url, secret }` target (`worker-runtimes.md`
-§4.2) is shorthand for the built-in `httpsExecute({ url })` provider, which is
-itself written against this API [D].
+§4.2) is shorthand for a built-in provider chosen by the URL's scheme:
+`httpsExecute` for `https:`, `wsExecute` for `wss:`, `tcpExecute` for
+`tcp+tls:`, `tcp:` and `unix:`, `udpExecute` for `udp:`, and `wsListen` or
+`tcpListen` for a `listen:` address (`remote-transports.md` §8.1). Each is
+itself written against this API [D]. A session transport from a plugin:
+
+```ts
+import { natsExecute } from "@acme/bun-jobs-provider-nats";
+
+const worker = jobs.remoteWorker("etl", {
+  provider: natsExecute({ servers: ["nats://nats.internal:4222"] }),
+  secret: process.env.BUN_JOBS_SECRET!,
+  heartbeat: { keepaliveMs: 10_000 },
+});
+```
 
 ### 8.3 Capability reconciliation
 
@@ -1002,8 +1177,19 @@ while the transport declares Function URL limits. That is a runtime check of
 capability truthfulness, cheap and continuous, beside the kit's one-off
 check (§12).
 
-`streaming: false` on the transport means the gateway does not send
-`accept: application/x-ndjson`, whatever the remote advertises [D].
+`streaming: false` on the transport means the gateway does not ask for a
+streamed response (`accept: text/event-stream` or `application/x-ndjson`),
+whatever the remote advertises, and the endpoint has no in-attempt liveness:
+the Workers page shows it `degraded` with that reason [D].
+
+The session capabilities are reconciled the same way (revised 2026-09-25):
+`maxMessageBytes` against the remote's `welcome.maxMessageBytes`, the smaller
+wins; the keepalive is clamped below `idleTimeoutMs`; and a transport that
+declared `reliable: true` but delivers a gap in the sequence numbers, or
+`ordered: true` but reorders, has its session closed and the discrepancy
+logged once per endpoint as a provider bug, the way an unmapped throw is
+(§6.5) [D]. The canary's buffering probe (`remote-transports.md` §5.7) is the
+continuous check of `streaming` on a path whose proxies may buffer.
 
 ### 8.4 The platform side: the runtime adapter kit
 
@@ -1068,17 +1254,60 @@ that a user builds with `Bun.build --target browser` [I].
 anything that sees the gateway's driver, lease or config. Its whole contract
 is the wire protocol plus this helper type.
 
+**Per-transport servers and the executor session** (added 2026-09-25,
+`remote-transports.md` §9). `defineRuntimeAdapter` serves the exchange shape
+on FaaS. For the session bindings the kit adds two things [D]:
+
+- **`createRemoteExecutor()` returns a `RemoteExecutor`**, still callable as
+  the fetch handler, which also runs the protocol over any session transport
+  through `acceptSession(io)`. It stays in `./remote` and browser-safe. A
+  third-party runtime transport (a broker client in a plugin's `./runtime`)
+  provides the `io`:
+
+  ```ts
+  /** The executor side of a session transport: what a runtime transport hands `RemoteExecutor.acceptSession`. */
+  export interface ExecutorSessionIO {
+    /** The transport's declaration: the executor-side subset of `TransportCapabilities`. */
+    readonly capabilities: Pick<TransportCapabilities,
+      "binding" | "encoding" | "ordered" | "reliable" | "flowControl" | "maxFrameBytes" | "maxMessageBytes" | "confidential">;
+    /** A secret-free label for the executor's logs: the peer, the subject. */
+    readonly label: string;
+    /** Sends one frame. Rejects rather than dropping when the channel is gone or its buffer is full. */
+    send: (frame: Uint8Array) => Promise<void>;
+    /** Frames from the gateway, exactly as received. Ends when the channel ends. */
+    readonly frames: AsyncIterable<Uint8Array>;
+    /** Ends the channel. */
+    close: (options?: { code?: number; reason?: string }) => Promise<void>;
+  }
+  ```
+
+- **A Bun-only entry, `./remote/serve`**, with one server per first-party
+  binding: `serveHttp`, `serveWebSocket`, `serveTcp`, `serveUdp`, and the
+  reversed `dialWebSocket` and `dialTcp`. Each handles the Bun behaviour its
+  binding must (the header flush, `send()` returning `0`, unbuffered TCP
+  writes, UDP's missing flow control and `undefined` ICMP errors;
+  [`bun-transports.md`](evidence/remote-transports/bun-transports.md)) and
+  serves `GET /healthz` and `/readyz` for the platform's probes. They are
+  built on `acceptSession` exactly as a third party's would be, so the
+  first-party import test (§5) extends to `lib/remote/serve/`, allowing
+  `../index.ts` and Bun built-ins. Not browser-safe, so not `"browser":
+  true` in `consumer-check.json`.
+
 ### 8.5 `RemoteWorker`, `RemoteRunner` and the escape hatch
 
 - **`RemoteWorker`** (`worker-runtimes.md` §11, Phase 2): `jobs.remoteWorker(queue,
   { provider, secret, … })`. `provider` is a configured provider with an
-  execute facet; a bare `url` is shorthand for `httpsExecute` [D].
-- **`RemoteRunner`**: the same, with `ExecuteCallContext.kind = "run"` and
-  the `run` envelope Phase 2 must specify first [D there].
-- **`WorkerTargetFactory`** (§4.2 there) stays the low-level hook for a
-  transport that is not request/response at all (gRPC streams, a message
-  bus). It returns an executor and gets none of the gateway's signing,
-  batching or breaker. It needs the executor-type change of §2.5 [S/D].
+  execute facet; a bare `url` or `listen` is shorthand for the first-party
+  provider its scheme names (§8.2) [D].
+- **`RemoteRunner`**: the same, with `kind = "run"` in the call or open
+  context and the `run` envelope Phase 2 must specify first [D there].
+- **`WorkerTargetFactory`** (§4.2 there) stays the low-level hook, now for
+  a transport that should not use the protocol at all. **Revised 2026-09-25:**
+  gRPC streams and message buses, which this bullet used to send here, are
+  now session-shape execute facets (§8.2), and so get the core's signing,
+  sealing, reliability layer, health and breaker instead of none of them
+  (`remote-transports.md` §7.10, §7.12). It returns a `WorkerTargetExecutor`
+  (`lib/queue/workerTarget.ts:209-235` at `e11cc8c`) [S].
 
 ---
 
@@ -1181,7 +1410,7 @@ From 1.0 of a facet [D]:
 |---|---|---|
 | core | both facet gates below; plus Q2 (SigV4 path encoding) and Q15 (the token helper against real endpoints) from `summon-compute.md` §12 closed, because `./provider/auth` joins the core | `1.0` |
 | summon | **all six first-party summoners** (ECS + Lambda, Fly, Cloud Run jobs and pools, ACA, Render, SSH) **and one provider written outside the bun-jobs session** pass the kit, covering all three styles (`launch`, `scale`: Cloud Run pools, `wake`: Fly) and all three `passes` values (`env`: ECS, `argv`: Render, `none`: Fly and ACA) | `1.0` |
-| execute | the Cloudflare, Lambda and generic HTTP runtime adapters, `httpsExecute` and `lambdaExecute`, **and one outside provider** pass both kits | `1.0` |
+| execute | the Cloudflare, Lambda and generic HTTP runtime adapters, `httpsExecute` and `lambdaExecute`, **and one outside provider** pass both kits; since 2026-09-25 also the first-party session transports that have shipped, and **one session-shape transport written outside the bun-jobs session** (§16.3) | `1.0` |
 
 "Written outside the bun-jobs session" means the examples session's custom
 provider (§15.5) at minimum, and preferably a real third party [D]. The point
@@ -1209,10 +1438,11 @@ runtime package it expects, so the UI can show both [D].
 | `./provider` | `lib/provider/index.ts` | `defineComputeProvider`, `ProviderError`, `COMPUTE_PROVIDER_API`, every type in §6–§8, plus re-exports (below) | no |
 | `./provider/auth` | `lib/provider/auth/index.ts` | §6.4's helpers | no |
 | `./provider/testing` | `lib/provider/testing/index.ts` | `runProviderConformance`, `runExecuteConformance`, fake-platform helpers (§12) | no |
-| `./providers/aws`, `/google`, `/azure`, `/fly`, `/render`, `/ssh`, `/https` | `lib/providers/<name>.ts` | first-party providers | no |
+| `./providers/aws`, `/google`, `/azure`, `/fly`, `/render`, `/ssh`, `/https`, `/ws`, `/tcp`, `/udp` | `lib/providers/<name>.ts` | first-party providers; `/https`, `/ws`, `/tcp` and `/udp` are the first-party transports (`httpsExecute`, `wsExecute`/`wsListen`, `tcpExecute`/`tcpListen`, `udpExecute`; `remote-transports.md` §8.1) | no |
 | `./summon` | `lib/summon/index.ts` | `SummonController`, `drainAndExit`, `defineSummoner`, … (`summon-compute.md` §8.4) | no |
-| `./remote` | `lib/remote/index.ts` | protocol, `createRemoteExecutor`, `defineRuntimeAdapter`, `RUNTIME_ADAPTER_API` | **yes** |
-| `./remote/testing` | `lib/remote/testing/index.ts` | `conformRemoteExecutor`, `runRuntimeAdapterConformance` | no |
+| `./remote` | `lib/remote/index.ts` | protocol core (messages, frame codecs, signing and sealing, the reliability layer, health), `createRemoteExecutor`, `defineRuntimeAdapter`, `RUNTIME_ADAPTER_API` | **yes** |
+| `./remote/serve` | `lib/remote/serve/index.ts` | per-transport executor servers: `serveHttp`, `serveWebSocket`, `serveTcp`, `serveUdp`, `dialWebSocket`, `dialTcp` (§8.4) | no (Bun only) |
+| `./remote/testing` | `lib/remote/testing/index.ts` | `conformRemoteExecutor` (every binding), `runRuntimeAdapterConformance`, and the fakes `bufferingHttpProxy`, `idleCuttingProxy`, `tcpChunker`, `lossyUdpProxy`, `lossySession`, `spawnExecutor` | no |
 | `./adapters/cloudflare`, `/lambda`, `/azure`, `/http` | `lib/remote/adapters/<name>.ts` | first-party runtime adapters | **yes** |
 
 **A change to `summon-compute.md` §8.4.** Its `./summon/{aws,google,…}`
@@ -1222,7 +1452,7 @@ to carry attempts), so the subpath names the provider, not the feature. The
 packages are unpublished, so the rename is free.
 
 **Directory keys.** `lib/provider/`, `lib/provider/auth/`,
-`lib/provider/testing/` and `lib/remote/testing/` each have an `index.ts`, so
+`lib/provider/testing/`, `lib/remote/testing/` and `lib/remote/serve/` each have an `index.ts`, so
 each needs its `./lib/…` key too; the packaging test demands one for every
 directory with an index (`__tests__/packaging.test.ts:46-56`) [S]. Providers
 and adapters are files, so their `./lib/*` spellings are covered by the
@@ -1250,11 +1480,15 @@ declarations, so the kit returns reports and never imports `bun:test` (§12.1).
 { "spelling": "@kingsleyweb/bun-jobs/provider",
   "values": ["defineComputeProvider", "ProviderError", "COMPUTE_PROVIDER_API"],
   "types": ["ComputeProvider", "ComputeProviderDefinition", "ConfiguredProvider", "SummonFacet",
-            "SummonCapabilities", "ExecuteFacet", "ExecuteCapabilities", "ProviderCallContext", "StandardSchemaV1"],
+            "SummonCapabilities", "ExecuteFacet", "TransportCapabilities", "DuplexSession", "ExecuteOpenContext", "ProviderCallContext", "StandardSchemaV1"],
   "snippet": "const p = m.defineComputeProvider({ name: \"x\", version: \"1.0.0\", kind: \"x\", apiVersion: { core: \"0.1\", summon: \"0.1\" }, summon: () => ({ capabilities: { style: \"launch\", dedupe: { kind: \"none\" }, passes: \"env\", bootBudgetMs: 1, shutdown: { signal: \"SIGTERM\", graceMs: 1 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async () => ({ status: \"started\", handles: [] }) }) });\nexport type _p = Expect<IsAny<typeof p>>;" },
 { "spelling": "@kingsleyweb/bun-jobs/provider/auth",    "values": ["signAwsRequest", "resolveAwsCredentials", "getGoogleToken", "getAzureToken"] },
 { "spelling": "@kingsleyweb/bun-jobs/provider/testing", "values": ["runProviderConformance", "runExecuteConformance", "fakePlatform"] },
-{ "spelling": "@kingsleyweb/bun-jobs/remote/testing",   "values": ["conformRemoteExecutor", "runRuntimeAdapterConformance"] }
+{ "spelling": "@kingsleyweb/bun-jobs/remote/testing",   "values": ["conformRemoteExecutor", "runRuntimeAdapterConformance", "lossyUdpProxy", "lossySession"] },
+{ "spelling": "@kingsleyweb/bun-jobs/remote/serve",     "values": ["serveHttp", "serveWebSocket", "serveTcp", "serveUdp", "dialWebSocket", "dialTcp"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/ws",     "values": ["wsExecute", "wsListen"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/tcp",    "values": ["tcpExecute", "tcpListen"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/udp",    "values": ["udpExecute"] }
 ```
 
 The snippet is the existing `snippet` mechanism of `consumer-check.json` [S],
@@ -1451,11 +1685,19 @@ handler.
 | bytes | the body and the `bun-jobs-*` headers reach the remote unchanged: the remote's signature check passes for bodies with non-ASCII, `\r\n` and a 1-byte-under-limit size |
 | response | the response bytes reach the gateway unchanged: its verification passes; a tampered response (the fake flips a byte) fails verification and is not settled |
 | statuses | the remote's 401, 404, 429 and 503 come back as `Response`s, not throws; platform failures (the fake's own 403, throttle, missing function) come back as `ProviderError`s of the right kind |
-| limits | a request above `maxRequestBytes` is refused by the gateway before `send`; a call past `maxDurationMs` is aborted and the facet honours the signal |
-| streaming | with `streaming: true`, NDJSON frames arrive before the response ends (the fake writes a frame, waits, writes the terminal frame) |
+| limits | a message above `maxMessageBytes` is refused by the gateway before `send`; a call past `maxDurationMs` is aborted and the facet honours the signal |
+| streaming | with `streaming: true`, streamed frames (SSE-framed by default, NDJSON accepted) arrive before the response ends (the fake writes a frame, waits, writes the terminal frame) |
 | concurrency | `maxConcurrency` in-flight calls succeed; the gateway never exceeds it |
 | locate | when present, the URL it returns is the one used, and a `misconfigured` error triggers one re-locate |
 | truthfulness | the declared limits are at or below the fake's configured real limits (the fake is told the platform's limits; §12.5 says why that is weak) |
+| shape | (added 2026-09-25) the member matching `shape` and `direction` is present and no other; `exchangeTransport` fills the rest |
+| frames (session) | frames reach the peer byte for byte, including a frame at exactly `maxFrameBytes`; `frames` yields them exactly as sent |
+| never drops (session) | with the peer paused, `send()` either resolves (queued within the bound) or rejects; the fake counts every frame, and none is missing once the peer resumes. This is the check that catches a WebSocket server `send()` returning `0` or a short TCP `write()` being ignored (`bun-transports.md` §3.6, §4.3) |
+| declared reliability (session) | through the fault-injecting fakes of `remote-transports.md` §10.2: a transport declaring `reliable: true` surfaces a mid-frame reset as a closed session and never delivers a truncated frame; one declaring `ordered: true` does not reorder under the chunker; one declaring `reliable: false` is exercised under seeded loss and the core's reliability layer completes every job exactly once |
+| confidentiality claim | a transport declaring `confidential: true` is TLS end to end or loopback/Unix; otherwise the kit reports a `must` failure, because the core would then skip sealing |
+| backpressure | `bufferedBytes()` rises while the peer is paused and falls after `drain`; above the core's high-water mark the core stops sending |
+| resume (session) | with `resumable: true`, `reconnect()` reaches the same executor and the core's resume replays with no gap and no duplicate |
+| listen (reverse) | executors dialling in yield sessions; a `hello` under the wrong key is closed before any invoke; abort stops the listener |
 
 **Platform side**: two runners.
 
@@ -1472,6 +1714,31 @@ handler.
   platform. It then runs `conformRemoteExecutor` against the adapter served
   by the kit's `Bun.serve` on port 0, by wrapping the platform arguments the
   way the samples do.
+
+**Per binding** (added 2026-09-25, `remote-transports.md` §10). Every
+binding passes **the same protocol conformance**: handshake, frame security,
+invoke, accept and reject, progress and logs during the attempt, heartbeat,
+health (liveness, readiness, the canary), cancel, duplicate delivery, a lost
+response, reconnection and resume, fencing, limits, and the platform probe.
+`conformRemoteExecutor` runs it over any scheme, so a plugin's executor, a
+first-party server and a polyglot executor are held to one suite. Each binding
+then adds its own checks against a fake that ships in `./remote/testing`:
+
+| Binding | Binding-specific checks | Fake |
+|---|---|---|
+| `http-stream`, `sse` | the first frame arrives at once; events split across writes parse; a buffering path is detected and downgraded; `Last-Event-ID` re-attaches | `bufferingHttpProxy` |
+| `ws`, `ws-reverse` | a paused peer is detected by application liveness; server `send()` returning `0` is a dead session, not a silent loss; oversize messages are refused before sending; idle cuts are resumed | `idleCuttingProxy` |
+| `tcp` | frames split to single bytes, coalesced, and split inside the length prefix; a paused reader loses nothing; half-close; ALPN bytes; sealed `tcp://` | `tcpChunker` |
+| `udp` | seeded loss, reordering, duplication, a 1,200-byte MTU and port rebinding: every job completes exactly once; stateless reset; amplification bound | `lossyUdpProxy` |
+| any | an executor frozen with SIGSTOP mid-attempt is detected within `attemptSilenceMs` | `spawnExecutor` |
+
+All of it runs on loopback, in `bun test`, with no credentials. A plugin
+transport (a broker) supplies its own fake broker and runs the same protocol
+suite over it. For the loss tests it does not need a network-level proxy:
+`lossySession(session, { loss, reorder, duplicate, seed })`, also in
+`./remote/testing`, wraps any `DuplexSession` and injects the same faults at
+the frame level, so a broker transport that declares `reliable: false` gets
+the tests UDP gets from `lossyUdpProxy` [D].
 
 ### 12.4 Fake platforms
 
@@ -1621,7 +1888,8 @@ The user guide (§15.4) carries this list, plainly [D]:
 | Data | Where | From |
 |---|---|---|
 | provider identity (`name`, `version`, `kind`, `displayName`, `homepage`, `apiVersion`), capabilities, `describe()` facts, whether `validate` exists | `SummonStatusDto.summoner` gains `provider` and `capabilities` (`summon-compute.md` §9.3) | the configured provider |
-| the same, for an execute provider, plus the reconciled limits (§8.3) and the runtime entry it expects | `WorkerDto.target` (`worker-runtimes.md` §4.3's `target` on the heartbeat record) | the gateway |
+| the same, for an execute provider, plus the reconciled limits (§8.3), the runtime entry it expects, the binding, and the endpoint's health (state and reason, last `pong` RTT, capacity, last canary) and session counts | `WorkerDto.target` (`worker-runtimes.md` §8.1's `target.remote`, the one definition) | the gateway |
+| a platform-level probe of the executor, when the facet has `probe()` | `WorkerDto.target.remote.health.reason` when it disagrees with the protocol's view; never used to route | `ExecuteFacet.probe()` (§8.2) |
 | the providers configured in *this* process, and the host's `COMPUTE_PROVIDER_API` | `GET /providers` (action `providers.read`, new) and `/meta`'s `features.providers` | the per-process registry of §9.3 |
 | a preflight result | `POST /providers/:id/validate` (action **`providers.validate`**, new, opt-in like `queues.summon`) | `ConfiguredProvider.validate()` |
 | a lost attempt's reason | `marker.last.detail`, the `summon` event | `status()` (§7.3) |
@@ -1647,7 +1915,9 @@ handles [D].
   major).
 - **Workers page**: a summoned worker's badge already names the `kind`
   (`summon-compute.md` §9.2); a remote worker's badge names the execute
-  provider and the runtime entry.
+  provider, its binding (`ws`, `tcp`, …) and the runtime entry, and its
+  Target card shows the endpoint's health state with its reason, the last
+  canary and the session counts (`remote-transports.md` §12).
 - **A "Providers" section** in the settings or meta screen, from `GET
   /providers`.
 
@@ -1656,8 +1926,8 @@ handles [D].
 | Work | Owner |
 |---|---|
 | DTO fields, `GET /providers`, `POST /providers/:id/validate`, `/schema`, the two actions in `JOBS_API_ACTIONS`, OpenAPI | the bun-jobs session |
-| the provider card, badges, the Providers section, the config form (when a schema is available) | the UI session |
-| new rows in `packages/bun-jobs-ui/README.md`'s `### What each element needs` for "Test connection" and the Providers section. The table is parsed by `examples/bun-jobs-ui/04-screens/permissions.ts` (`CLAUDE.md`) | the UI session writes the rows; **the examples session must be told before merge** |
+| the provider card, badges, the Providers section, the config form (when a schema is available); the binding and health on the Target card (`remote-transports.md` §12, ~2 d) | the UI session |
+| new rows in `packages/bun-jobs-ui/README.md`'s `### What each element needs` for "Test connection", the Providers section, and the Target card's health elements. The table is parsed by `examples/bun-jobs-ui/04-screens/permissions.ts` (`CLAUDE.md`) | the UI session writes the rows; **the examples session must be told before merge** |
 | examples (§15.5) | the examples session |
 
 ---
@@ -1685,7 +1955,11 @@ the same reason.
 | `docs/providers/user-guide.md` | application developers installing a plugin | its snippets typechecked; the security section reviewed at each facet gate |
 | `docs/providers/security.md` | both | §13, verbatim; reviewed at each facet gate |
 | `docs/providers/runtime-adapters.md` | authors of the platform side | code blocks typechecked; its example is the template's `runtime.ts` |
-| `docs/remote/PROTOCOL.md` | anyone implementing the wire protocol, in any language | `worker-runtimes.md` §5, §7 |
+| `docs/remote/PROTOCOL.md` | anyone implementing the wire protocol, in any language | `worker-runtimes.md` §5, §7; since 2026-09-25 with **per-binding appendices** (HTTP, streamed HTTP and SSE, WebSocket, TCP, UDP, HTTP/2, an informative gRPC `.proto`, brokers) and **test vectors** generated and checked by a test (`remote-transports.md` §11.5) |
+| `docs/remote/transports.md` | application developers | **The transport selection guide**: which binding for which host, with each platform's trap, from `evidence/remote-transports/platform-transports.md` (`remote-transports.md` §11.2) |
+| `docs/remote/transports/<binding>.md` | application developers | **One user guide per binding**: configuring it, its health and progress behaviour, its failure modes, platform notes, security (`remote-transports.md` §11.4). Snippets typechecked |
+| `docs/remote/executor-guide.md` | executor authors | **A complete worked executor per binding**, and a stdlib-only Python executor over `tcp+tls` run against the conformance suite when `python3` is present (`remote-transports.md` §11.3). The worked executors are the examples' executors |
+| `docs/remote/health.md` | operators | The health model and the Workers page's health states (`remote-transports.md` §5, §12) |
 
 All of it is Markdown and so linted by the package's `bunx eslint .`
 (`CLAUDE.md`: "Lint the whole package"). Long table cells can hang Prettier
@@ -1716,8 +1990,18 @@ Step by step, each step a heading, each with the code of one worked example
    `summonedFromEnv()` reads it; what release-by-start-time costs
    (`summon-compute.md` Q34).
 9. **Optional hooks**: `release`, `status`, `cancel`, `validate`.
-10. **Execute: the transport**: `send()`, not touching the bytes, adding
-    platform auth, `locate()`, declaring limits.
+10. **Execute: the transport**: the two shapes; for the exchange shape,
+    `send()`, not touching the bytes, adding platform auth, `locate()`, and
+    `exchangeTransport()`; declaring capabilities truthfully.
+    - **Writing a session transport** (added 2026-09-25): `open()` or
+      `listen()`, opaque frames, never dropping a frame silently, bounded
+      buffers and `bufferedBytes()`, `reconnect()` for resumption, what the
+      core does for you (security, sequencing, retransmission, health), the
+      broker routing convention, and the runtime half with
+      `RemoteExecutor.acceptSession()`. Worked example: the **Acme Queue**
+      transport (below). An outline of a gRPC bidirectional-stream transport
+      follows it, because gRPC is left to plugins (`remote-transports.md`
+      §7.10).
 11. **Execute: the runtime adapter**: `defineRuntimeAdapter`, raw bodies,
     `waitUntil`, the platform's real ceilings.
 12. **Write the fake**: `fakePlatform()` routes and faithful error bodies.
@@ -1741,6 +2025,14 @@ Step by step, each step a heading, each with the code of one worked example
   the platform's `{ body, isBase64, headers }` event to a `Request`. It is
   the template's execute facet and `src/runtime.ts`.
 
+- **Transport: "Acme Queue"** (added 2026-09-25), a fictional at-most-once
+  message broker: a session-shape facet with `direction: "brokered"`,
+  `reliable: false`, `confidential: false`, the routing convention of
+  `remote-transports.md` §7.12, and its runtime half over
+  `acceptSession()`. It passes `runExecuteConformance` and the protocol
+  suite through a fake broker and `lossySession()`. It is the template's
+  third facet file, `src/transport.ts`.
+
 A fictional platform, not a real one, so the example cannot go stale when a
 real API changes, and so no reader mistakes it for a supported provider [I].
 
@@ -1757,9 +2049,11 @@ real API changes, and so no reader mistakes it for a supported provider [I].
 The drift test, `__tests__/provider/reference.test.ts` [D]:
 
 - **Values**: `Object.keys(await import(entry))` for `./provider`,
-  `./provider/auth`, `./provider/testing`, `./summon`, `./remote` and
-  `./remote/testing` must equal the set of `### \`name\`` headings under that
-  entry's section of `reference.md`.
+  `./provider/auth`, `./provider/testing`, `./summon`, `./remote`,
+  `./remote/testing` and, since 2026-09-25, `./remote/serve` and the
+  first-party transport providers (`./providers/https`, `/ws`, `/tcp`,
+  `/udp`) must equal the set of `### \`name\`` headings under that entry's
+  section of `reference.md`.
 - **Types**: the TypeScript compiler API (`typescript` is already a
   devDependency and an optional peer [S, `package.json:96`]) lists each
   entry's exported types and each interface's members; every exported type
@@ -1804,6 +2098,21 @@ each passing its kit, each run by `run-all.ts`:
 - **`NN-providers/custom-execute-provider.ts`**: defines an execute provider
   and a runtime adapter, serves the adapter on port 0, runs both execute kits,
   then sends three jobs through `jobs.remoteWorker` and shows them complete.
+- **`NN-transports/`** (added 2026-09-25): **one example per binding**
+  (`http.ts`, `http-stream.ts`, `sse.ts`, `websocket.ts`,
+  `websocket-reverse.ts`, `tcp.ts`, `unix-socket.ts`, `udp.ts`), each against
+  a local executor (`Bun.serve`, `Bun.listen`, `Bun.udpSocket`) and each
+  demonstrating health checks and live progress; a `health-checks.ts`
+  covering liveness, readiness, the canary and the breaker; and **a failure
+  demo per binding**, in which the executor, a child process, is frozen with
+  SIGSTOP mid-attempt and the heartbeat loss must be detected (killed with
+  SIGKILL, too, for `ws`, `tcp` and `udp`). The table with what each
+  asserts is `remote-transports.md` §11.6. The failure demos and `udp.ts`
+  assert on durations, so they go in `RUN_ALONE`. Also
+  `NN-providers/custom-session-transport.ts`: a session-shape execute
+  provider over an in-memory fake broker, passing the kits through
+  `lossySession()`, which is the outside transport the execute gate needs.
+  ~6 d for the examples session, landing with each binding's sub-phase.
 
 Per the examples protocol, the bun-jobs session sends a change report at
 1.5p and at Phase 3, the examples session writes and runs these, and the
@@ -1820,6 +2129,11 @@ for the examples session to decide [I].
 - the template is in the gate (§11.3), and the guide's examples *are* the
   template's files, so they cannot disagree;
 - the examples run in `run-all.ts`;
+- `PROTOCOL.md`'s test vectors are generated from the code and checked by a
+  test, and the Python executor passes the protocol suite whenever `python3`
+  is present (added 2026-09-25);
+- the executor guide's worked executors are the transport examples'
+  executors, so they cannot disagree;
 - `security.md` and the user guide's security section are reviewed at each
   facet gate (§10.4), recorded in the gate's checklist.
 
@@ -1875,7 +2189,7 @@ custom summon provider example; on top of ~2 d).
 
 | Phase | Addition | Effort added | Phase total |
 |---|---|---|---|
-| **2** | The execute facet, host side: types, `send()` integration in `RemoteTarget` (core signs, facet sends, core verifies), `locate`, capability reconciliation with the handshake, `ProviderError` mapping into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if the SigV4 path is closed (else Phase 3) — 2.5 d; author guide's execute-host chapter and reference entries — 1 d | +3.5 d | ~19 → **~22.5 d** |
+| **2** | The execute facet, host side (exchange shape; the session shape is 2a in the transports table below): types, `send()` integration in `RemoteTarget` (core signs, facet sends, core verifies), `locate`, capability reconciliation with the handshake, `ProviderError` mapping into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if the SigV4 path is closed (else Phase 3) — 2.5 d; author guide's execute-host chapter and reference entries — 1 d | +3.5 d | ~19 → **~22.5 d** |
 | **3** | `defineRuntimeAdapter` + `RUNTIME_ADAPTER_API` — 1 d; `runRuntimeAdapterConformance` — 1.5 d; `runExecuteConformance` and the host-side fake — 1.5 d; the first-party Cloudflare, Lambda and HTTP adapters rebuilt on `defineRuntimeAdapter` under §5's rule (the import test extended to `lib/remote/adapters/`) — 0.5 d; runtime-adapter guide, the Acme Functions example, the template's execute half — 1.5 d | +6 d | ~11 → **~17 d** |
 | **4** | **Execute stability gate**: the outside provider has passed, API review, `execute` → `1.0`, and `core` → `1.0` if the summon gate has passed | +1 d | ~9 → **~10 d** |
 
@@ -1883,18 +2197,48 @@ custom summon provider example; on top of ~2 d).
 execute provider example); the UI session's execute-provider badge is inside
 Phase 1's existing Target card work, so no addition [I].
 
+**Revised again 2026-09-25: the transports** ([`remote-transports.md`](remote-transports.md)
+§13). The execute facet becomes transport-agnostic (§8), and Phase 2 carries
+the contract over every binding the user asked for, split into sub-phases
+2a–2f, **all committed and built in that order** (the user's decision,
+2026-09-25, `remote-transports.md` Q-T1).
+
+| Phase | Addition | Effort added | Phase total |
+|---|---|---|---|
+| **2a** | The message protocol v1, text frames with per-frame MAC and test vectors; the attempt state machine; the health model (liveness, readiness, canary, breaker); **the facet's session shape, `TransportCapabilities`, the registration check and `exchangeTransport()`** (net +1 d over the 2.5 d above); `http-stream` with SSE framing and the buffering probe; `serveHttp` and `RemoteExecutor.acceptSession`; tests; `PROTOCOL.md` appendices A–B, the selection guide, user guides, worked executors | +15.5 d | **~38 d** |
+| **2b** | WebSocket forward (`wsExecute`, `serveWebSocket`) and the reliability layer's outbox, resume and `status` | +9.5 d | |
+| **2c** | TCP, TLS and Unix sockets (`tcpExecute`, `serveTcp`), the binary codec and AEAD sealing, the Python executor | +10 d | |
+| **2d** | Reversed WebSocket and TCP (`wsListen`, `tcpListen`, `listen()`; `dialWebSocket`, `dialTcp`), SSE session mode | +8.5 d | |
+| **2e** | UDP (`udpExecute`, `serveUdp`), retransmission, window and fragmentation, `lossyUdpProxy`; `experimental` | +10 d | |
+| **2f** | HTTP/2 flag; the informative gRPC `.proto` | +1.5 d | **Phase 2: ~77.5 d** |
+| **3** | Per-binding conformance and the shipped fakes (`bufferingHttpProxy`, `idleCuttingProxy`, `tcpChunker`, `lossyUdpProxy`, `lossySession`, `spawnExecutor`) — 3 d; `runExecuteConformance`'s session-shape checks (§12.3) — 1.5 d; the "Writing a transport" chapter and the Acme Queue transport in the template — 1 d | +5.5 d | **~22.5 d** |
+| **4** | Streaming and cancellation move to 2a (−3 d); per-binding `push-loopback` benchmarks (+2 d); the real-network measurements the transports rest on (+2 d) | +1 d | **~11 d** |
+
+The execute stability gate (§10.4) is unchanged in kind but covers more: a
+transport-agnostic facet is proven only when at least one **session-shape**
+transport written outside the bun-jobs session passes the kits too. The
+template's Acme Queue does not count (the bun-jobs session writes it); the
+examples session's `custom-session-transport.ts` qualifies at minimum [D].
+
+**Other owners, transports**: the examples session +6 d (one example and one
+failure demo per binding, §15.5); the UI session +2 d (binding, health state,
+canary, session counts on the Target card).
+
 ### 16.4 Totals
 
-| Phase | Before | After |
-|---|---|---|
-| 0 | ~1.5 d | ~1.5 d |
-| 1 | ~7.5 d | ~7.5 d (its 1 d "Executor-based custom target" must now include §2.5's type change) |
-| 1.5 | ~32.5 d | **~47 d** |
-| 2 | ~19 d | **~22.5 d** |
-| 3 | ~11 d | **~17 d** |
-| 4 | ~9 d | **~10 d** |
-| **Total, bun-jobs session** | **~80.5 d** | **~105.5 d** |
-| Other owners | UI ~3 d, examples ~2 d | UI ~3.5 d, examples ~4 d |
+| Phase | Before | After the plugin system | After the transports (2026-09-25) |
+|---|---|---|---|
+| 0 | ~1.5 d | ~1.5 d | ~1.5 d |
+| 1 | ~7.5 d | ~7.5 d (its 1 d "Executor-based custom target" must now include §2.5's type change) | ~7.5 d |
+| 1.5 | ~32.5 d | **~47 d** | ~47 d |
+| 2 | ~19 d | **~22.5 d** | **~77.5 d**, all of 2a–2f committed, in order (2a, the first milestone, ~38 d) |
+| 3 | ~11 d | **~17 d** | **~22.5 d** |
+| 4 | ~9 d | **~10 d** | **~11 d** |
+| **Total, bun-jobs session** | **~80.5 d** | **~105.5 d** | **~167 d** |
+| Other owners | UI ~3 d, examples ~2 d | UI ~3.5 d, examples ~4 d | UI ~5.5 d, examples ~10 d |
+
+This table omits Phase 1r (~3 d), which `worker-runtimes.md` §11 includes;
+its total is therefore ~169.5 d, with Phase 1 at ~7 d as built.
 
 The ~25 d added is the plugin system: ~12.5 d of API, kit, docs and template
 for summon (1.5p), ~3.5 d and ~6 d for execute (Phases 2 and 3), ~1 d of
@@ -1926,8 +2270,16 @@ first-party rework onto fakes and the kit (1.5d, 1.5e; 1.5c nets to zero), and
 - **The conformance kit becoming a false guarantee.** §12.5. The report's
   header always says "against a fake"; the user guide says a pass is not a
   review.
-- **The docs rotting.** §15.6's five mechanisms. The weakest is prose that is
-  not code: `security.md`, reviewed only at gates.
+- **The docs rotting.** §15.6's seven mechanisms. The weakest is prose that
+  is not code: `security.md`, the transport selection guide's platform rows,
+  and the user guides' failure-mode tables, reviewed only at gates; the
+  selection guide's [U] rows are re-read at each facet gate
+  (`remote-transports.md` §11.7).
+- **The transports** (added 2026-09-25). A session-shape facet is a larger
+  API to freeze at `execute` 1.0 than `send()` was, and the first-party UDP
+  transport rests on a reliability layer and a sealing scheme that are
+  `experimental` and loopback-measured. The full list is
+  `remote-transports.md` §14; its open questions are §15 there.
 - **Scope growth delaying summoning.** 1.5p sits before 1.5c. If it slips, the
   first-party summoners slip. Mitigation: 1.5a + 1.5b remain the minimum
   useful ship and do not depend on 1.5p.
