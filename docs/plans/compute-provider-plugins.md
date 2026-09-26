@@ -24,6 +24,15 @@ here (`summon-compute.md` §14, `worker-runtimes.md` §4.6). This document is
 the one place the design lives. Where the two plans and this one disagree, this
 one is newer.
 
+**Updated 2026-09-25 by the Phase 1.5 design check**, at `origin/develop`
+`0a8e580` (Phases 0 and 1 merged). Only what Phase 1 or that reconciliation
+changes about the summon facet is edited here: §2.5 (Phase 1 built the
+target-level executor type), §7.1 (attempt ids and the marker's `epoch`),
+§12.2 (the handoff check's sequencing), §14.1 (what `WorkerDto.target` is
+now), §16 (effort) and Q-P10 (settled). **For 1.5a and 1.5b,
+`summon-compute.md` §4.0, §6.4 and §13 are now newer than this document**:
+they were reconciled against the code, and they slice the work into PRs.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -254,6 +263,18 @@ open `mode` and an optional `file`, or a wrapper. That is Phase 1's work, and
 `worker-runtimes.md` §4.2 now says so. It is also why the execute facet (§8)
 does **not** ask a plugin to implement `Executor`: the plugin supplies a
 transport, and bun-jobs' own `RemoteTarget` is the executor.
+
+**Resolved by Phase 1 (#164, merged at `0a8e580`)** [S]: the target-level type
+is `WorkerTargetExecutor { readonly name; run(attempt); close?() }`
+(`queue/workerTarget.ts:209-235`), made by a `WorkerTargetFactory(context)`
+(`:159`, its context `:172`) and given one `WorkerTargetAttempt` per job
+(`:238`). It has an open `name` (1–64 characters, validated when the factory
+returns) instead of a `mode`, and no `file`; `Executor` and `ExecutionMode`
+are untouched. A custom target is reported on the heartbeat record as
+`target: { kind: "custom", processor, name }`, and its `close()` is called on
+`worker.close()` bounded by 5 s (`BunQueueWorker.ts:1708-1733`). The execute
+facet's `RemoteTarget` (§8) is therefore a `WorkerTargetExecutor`, and the
+summon facet is unaffected: a summoned worker may use any target.
 
 ---
 
@@ -779,10 +800,10 @@ export type SummonDedupe =
 | Capability | Controller behaviour | Replaces in `summon-compute.md` |
 |---|---|---|
 | `style` | `"scale"` enables the scale-down path and requires `release`; `"wake"` clamps `maxWorkers` to `poolSize`; `"launch"` is the default path | §4.7 table; Fly's "launch over a pool, which behaves like set-N" (§7.1 row 2) is now `wake` |
-| `dedupe` | `request.dedupeKey` = `request.id` clipped to `maxLength` of `charset`, computed by the controller, so the provider never builds a key | §4.6's fixed 64-character rule, and "that adapter shortens further" for Cloud Run |
+| `dedupe` | `request.dedupeKey` = `request.id` clipped to `maxLength` of `charset`, computed by the controller, so the provider never builds a key. **`request.id` never repeats**: it hashes the marker's random `epoch` with the version the claim writes, because a queue-state entry's version restarts at `1` after a delete or a purge, and a platform that remembers tokens (ECS, 24 h) would answer a repeated id `deduped` and start nothing (`summon-compute.md` §4.0 R6). A provider may rely on this | §4.6's fixed 64-character rule, and "that adapter shortens further" for Cloud Run |
 | `passes` | `"none"` → release by start time (§4.3 step 2) | §4.3, §7.3, §7.5 |
 | `bootBudgetMs` | default `until` for a pending attempt | §7.1 column |
-| `shutdown` | sets `BUN_JOBS_SUMMON_GRACE_MS`; `warn` when `graceMs` is below `drainAndExit`'s `shutdownBuffer` | §5.2 ("the first-party adapters pass their platform's default") |
+| `shutdown` | sets `BUN_JOBS_SUMMON_GRACE_MS`; `warn` when `graceMs` is below `runSummoned`'s `shutdownBuffer` | §5.2 ("the first-party adapters pass their platform's default") |
 | `maxLifetimeMs`, `enforcesLifetime` | `ConfigError` for a `maxLifetime` above the cap; the status route says whether the cap is enforced | §4.5's list of platform caps |
 | `maxCountPerCall` | clamps `count` | — |
 
@@ -1439,7 +1460,7 @@ runtime package it expects, so the UI can show both [D].
 | `./provider/auth` | `lib/provider/auth/index.ts` | §6.4's helpers | no |
 | `./provider/testing` | `lib/provider/testing/index.ts` | `runProviderConformance`, `runExecuteConformance`, fake-platform helpers (§12) | no |
 | `./providers/aws`, `/google`, `/azure`, `/fly`, `/render`, `/ssh`, `/https`, `/ws`, `/tcp`, `/udp` | `lib/providers/<name>.ts` | first-party providers; `/https`, `/ws`, `/tcp` and `/udp` are the first-party transports (`httpsExecute`, `wsExecute`/`wsListen`, `tcpExecute`/`tcpListen`, `udpExecute`; `remote-transports.md` §8.1) | no |
-| `./summon` | `lib/summon/index.ts` | `SummonController`, `drainAndExit`, `defineSummoner`, … (`summon-compute.md` §8.4) | no |
+| `./summon` | `lib/summon/index.ts` | `SummonController`, `runSummoned`, `defineSummoner`, … (`summon-compute.md` §8.4) | no |
 | `./remote` | `lib/remote/index.ts` | protocol core (messages, frame codecs, signing and sealing, the reliability layer, health), `createRemoteExecutor`, `defineRuntimeAdapter`, `RUNTIME_ADAPTER_API` | **yes** |
 | `./remote/serve` | `lib/remote/serve/index.ts` | per-transport executor servers: `serveHttp`, `serveWebSocket`, `serveTcp`, `serveUdp`, `dialWebSocket`, `dialTcp` (§8.4) | no (Bun only) |
 | `./remote/testing` | `lib/remote/testing/index.ts` | `conformRemoteExecutor` (every binding), `runRuntimeAdapterConformance`, and the fakes `bufferingHttpProxy`, `idleCuttingProxy`, `tcpChunker`, `lossyUdpProxy`, `lossySession`, `spawnExecutor` | no |
@@ -1662,7 +1683,7 @@ The checks, grouped [D]:
 | concurrency | 16 concurrent `summon`s with distinct ids: 16 units, no crash, no shared mutable state corrupted; 8 concurrent with one id on a `token` platform: one unit, the rest `deduped` | must |
 | errors | for each fault the fake can inject — `transient`, `throttled` (with a retry-after), `quota`, `auth`, `misconfigured`, `conflict`, `capacity-200` — the provider throws `ProviderError` of the right kind, or returns `unavailable` for `capacity-200`; `throttled` carries `retryAfterMs`; no raw `Error` escapes | must |
 | timeouts | the fake delays past the call's timeout: the provider rejects within 1 s of `ctx.signal` aborting and leaves no timer behind | must |
-| handoff | **end to end**: the kit runs a real `SummonController` on a shared SQLite or file driver; the fake "starts" a unit by calling the kit's `startUnit({ env, argv })`, which spawns the kit's fixture worker under `drainAndExit`; the marker releases the attempt by id (`passes: "env"`/`"argv"`) or by start time (`"none"`) | must |
+| handoff | **end to end**: the kit runs a real `SummonController` on a shared SQLite or file driver; the fake "starts" a unit by calling the kit's `startUnit({ env, argv })`, which spawns the kit's fixture worker under `runSummoned`; the marker releases the attempt by id (`passes: "env"`/`"argv"`) or by start time (`"none"`) | must |
 | the CAS | two controllers in two processes race on one backlog: one `summon` call reaches the fake | must |
 | scale | `summon` with `target` twice leaves one count; `release({ target: 0 })` sets zero | must for `scale` |
 | status / cancel | when present: handles from `summon` are known to `status`; `cancel` moves a pending unit to `exited`/`unknown` | must when present |
@@ -1672,7 +1693,13 @@ The checks, grouped [D]:
 
 The handoff and CAS checks reuse `summon-compute.md` §11.1's tier-1 fake
 platform and fixture worker, moved from `__tests__/helpers/summon.ts` into
-`lib/provider/testing/` so they ship [D].
+`lib/provider/testing/` so they ship [D]. **Sequencing, from the 2026-09-25
+reconciliation:** that harness is built by PR-3 and finished by PR-4
+(`summon-compute.md` §13.4–§13.5), and PR-4 waits for issue #166 (a
+`"child-process"` attempt orphaned by `close()`), so the kit's handoff check
+cannot be written before both. Its fixture worker should not use a file
+target until #166 is merged, or a failed handoff check can leave an orphaned
+child on the author's machine.
 
 ### 12.3 The execute kits
 
@@ -1890,6 +1917,7 @@ The user guide (§15.4) carries this list, plainly [D]:
 | provider identity (`name`, `version`, `kind`, `displayName`, `homepage`, `apiVersion`), capabilities, `describe()` facts, whether `validate` exists | `SummonStatusDto.summoner` gains `provider` and `capabilities` (`summon-compute.md` §9.3) | the configured provider |
 | the same, for an execute provider, plus the reconciled limits (§8.3), the runtime entry it expects, the binding, and the endpoint's health (state and reason, last `pong` RTT, capacity, last canary) and session counts | `WorkerDto.target` (`worker-runtimes.md` §8.1's `target.remote`, the one definition) | the gateway |
 | a platform-level probe of the executor, when the facet has `probe()` | `WorkerDto.target.remote.health.reason` when it disagrees with the protocol's view; never used to route | `ExecuteFacet.probe()` (§8.2) |
+| a summoned worker's provenance (attempt id, provider `kind`, mode, deadline; the platform handle only with `exposeHosts`) | `WorkerDto.summon` (`summon-compute.md` §5.4, PR-2) | the worker's own record |
 | the providers configured in *this* process, and the host's `COMPUTE_PROVIDER_API` | `GET /providers` (action `providers.read`, new) and `/meta`'s `features.providers` | the per-process registry of §9.3 |
 | a preflight result | `POST /providers/:id/validate` (action **`providers.validate`**, new, opt-in like `queues.summon`) | `ConfiguredProvider.validate()` |
 | a lost attempt's reason | `marker.last.detail`, the `summon` event | `status()` (§7.3) |
@@ -2159,15 +2187,14 @@ through `defineSummoner({ invoke })` and the depth endpoint.
 
 | Sub-phase | What | Effort | Change |
 |---|---|---|---|
-| 1.5a | Core: `countDemand`, controller, marker, `drainAndExit`; `defineSummoner` built as an anonymous provider over the 1.5p types, or over an internal stand-in if 1.5p has not landed | ~13 d | unchanged |
-| 1.5b | Depth endpoint and summon routes | ~4.5 d | unchanged |
+| 1.5a + 1.5b | Core: `countDemand`, controller, marker, `runSummoned`; `defineSummoner` built as an anonymous provider over the 1.5p types, or over an internal stand-in if 1.5p has not landed. Depth endpoint and summon routes. **Sliced into PR-1 to PR-7** (`summon-compute.md` §13.1) | ~19.75 d | was ~13 d + ~4.5 d; +2.25 d from the reconciliation (`summon-compute.md` §13.1) |
 | **1.5p** | **Provider API, `experimental`**: see the table below | **~12.5 d** | new |
 | 1.5c | SigV4 + credentials (now in `./provider/auth`); ECS, Lambda, Fly on the API, each with a `fakePlatform()` fake and a kit run | ~6.5 d | the fakes add ~0.5 d; 1.5p already did the packaging wiring (−0.5 d) |
 | 1.5d | Token helper; Cloud Run jobs and pools; ACA, on the API, with fakes and kit runs | ~4.5 d | +0.5 d |
 | 1.5e | Render; SSH, on the API, with fakes and kit runs | ~3.5 d | +0.5 d |
 | 1.5g | Live verification | ~1.5 d | unchanged |
 | **1.5s** | **Summon stability gate**: the external provider has passed; API review; the core's [U]s (Q2, Q15) closed by 1.5g; `summon` → `1.0` (and `core` → `1.0` if the execute gate also allows — otherwise core stays `0.x`, §10.4) | **~1 d** | new |
-| | **Total (bun-jobs session)** | **~47 d** | was ~32.5 d |
+| | **Total (bun-jobs session)** | **~49.25 d** | was ~47 d, and ~32.5 d before the plugin API |
 
 **1.5p in detail:**
 
@@ -2226,19 +2253,22 @@ canary, session counts on the Target card).
 
 ### 16.4 Totals
 
-| Phase | Before | After the plugin system | After the transports (2026-09-25) |
-|---|---|---|---|
-| 0 | ~1.5 d | ~1.5 d | ~1.5 d |
-| 1 | ~7.5 d | ~7.5 d (its 1 d "Executor-based custom target" must now include §2.5's type change) | ~7.5 d |
-| 1.5 | ~32.5 d | **~47 d** | ~47 d |
-| 2 | ~19 d | **~22.5 d** | **~77.5 d**, all of 2a–2f committed, in order (2a, the first milestone, ~38 d) |
-| 3 | ~11 d | **~17 d** | **~22.5 d** |
-| 4 | ~9 d | **~10 d** | **~11 d** |
-| **Total, bun-jobs session** | **~80.5 d** | **~105.5 d** | **~167 d** |
-| Other owners | UI ~3 d, examples ~2 d | UI ~3.5 d, examples ~4 d | UI ~5.5 d, examples ~10 d |
+| Phase | Before | After the plugin system | After the transports (2026-09-25) | After the 1.5a/1.5b reconciliation (2026-09-26) |
+|---|---|---|---|---|
+| 0 | ~1.5 d | ~1.5 d | ~1.5 d | ~1.5 d |
+| 1 | ~7.5 d | ~7.5 d (its 1 d "Executor-based custom target" must now include §2.5's type change) | ~7.5 d | ~7.5 d |
+| 1.5 | ~32.5 d | **~47 d** | ~47 d | **~49.25 d** (1.5a/1.5b re-sliced into seven PRs, `summon-compute.md` §13) |
+| 2 | ~19 d | **~22.5 d** | **~77.5 d**, all of 2a–2f committed, in order (2a, the first milestone, ~38 d) | ~77.5 d |
+| 3 | ~11 d | **~17 d** | **~22.5 d** | ~22.5 d |
+| 4 | ~9 d | **~10 d** | **~11 d** | ~11 d |
+| **Total, bun-jobs session** | **~80.5 d** | **~105.5 d** | **~167 d** | **~169.25 d** |
+| Other owners | UI ~3 d, examples ~2 d | UI ~3.5 d, examples ~4 d | UI ~5.5 d, examples ~10 d | UI ~5.5 d, examples ~10 d |
 
 This table omits Phase 1r (~3 d), which `worker-runtimes.md` §11 includes;
-its total is therefore ~169.5 d, with Phase 1 at ~7 d as built.
+its total is therefore ~171.75 d (~169.25 d + ~3 d, less the ~0.5 d by which Phase 1 came in under estimate). (Of the
+seven Phase 1.5 PRs, PR-1 is the bun-jobs session's and PR-2 to PR-7 the
+features session's; the "bun-jobs session" row above counts the phase's work
+wherever it is done.)
 
 The ~25 d added is the plugin system: ~12.5 d of API, kit, docs and template
 for summon (1.5p), ~3.5 d and ~6 d for execute (Phases 2 and 3), ~1 d of
@@ -2315,8 +2345,12 @@ first-party rework onto fakes and the kit (1.5d, 1.5e; 1.5c nets to zero), and
   construction for spawned children (§2.1)? It is the same problem, and the
   driver contract suite already exists. Out of scope here; worth its own
   plan.
-- **Q-P10** The `WorkerTarget` name (`worker-runtimes.md` §4.2) is settled by
+- **Q-P10** ~~The `WorkerTarget` name (`worker-runtimes.md` §4.2) is settled by
   the rename as `WorkerSelector` for the old type. Should the new target type
   be named for the provider era, e.g. `RemoteTargetOptions { provider, secret
   }`, now that `{ kind: "endpoint", url }` is shorthand for a provider? Decide
-  with Phase 1.
+  with Phase 1.~~ **Closed by Phase 1**: the user approved `WorkerTarget`
+  and its family on 2026-09-25 (`worker-runtimes.md` §4.2.7, N1–N9), and it
+  shipped at `0a8e580`. `{ endpoint }` is Phase 2's, as a new member of the
+  union with its own `kind`; how a provider plugs into it is Phase 2's
+  decision, not a rename.

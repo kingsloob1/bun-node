@@ -20,6 +20,61 @@ written against one public, versioned plugin API. That design lives in
 the `execute` facet of Phases 2–4. §14 below summarises what it changes here.
 Sections 4.1, 4.10, 7, 8, 9.3, 11.1 and 13 have been updated to match.
 
+**Updated 2026-09-25: the Phase 1.5 design check**, against `origin/develop`
+at `0a8e580`, after Phase 0 and Phase 1 (the worker `target` option, #164)
+merged. **Status: design reconciled; 1.5a/1.5b sliced into seven PRs;
+names approved the same day (§13.9).** What changed:
+
+- **Every code claim §1–§6 rests on was re-read at `0a8e580`.** Lines that
+  moved are updated in place; where the reading changed the design, §4.0 lists
+  the correction, its source and what it changes. Every `file:line` in this
+  document is now at `0a8e580` and relative to `packages/bun-jobs/lib/` unless
+  it says otherwise; read `BunQueueWorker.ts:2162` as
+  `0a8e580:packages/bun-jobs/lib/queue/BunQueueWorker.ts:2162`. Citations of
+  lines a slice will change are written in that pinned form, so they cannot
+  drift once the slice lands.
+- **§6.4 is now the `countDemand` spec** the bun-jobs session asked for before
+  any code: exactly which states count, why due work is counted directly
+  rather than through promotion, what the cap returns, and an index plan per
+  driver, **marked unmeasured**, whose measurement is that slice's first task.
+- **§13 slices 1.5a and 1.5b into seven PRs** (PR-1 to PR-7), with order,
+  parallelism, owners, gates, hot-path exposure and revised effort (~19.75 d,
+  was ~17.5 d).
+- **§13.9 records every public name 1.5a/1.5b introduces, as approved by the
+  user on 2026-09-25** (S1–S18): every recommendation was accepted, and the
+  plan uses the approved names throughout. §13.1 records who implements and
+  who reviews each PR.
+
+**Updated 2026-09-26: the bun-jobs session's review of §6.4** (the
+`countDemand` spec): three corrections, each checked against the code and
+recorded in §6.4's [review corrections](#review-corrections-2026-09-26).
+
+**Updated 2026-09-26: the shutdown budget, per #166 (pending its merge).**
+The bun-jobs session's #166 fix measures a target's close (≤ 4,500 ms
+graceful; `force` in milliseconds) and adds `close({ force })` for targets.
+§5.3 now derives the target's share of the budget from those constants and
+specifies **the close rule** (graceful while the budget covers it, `force`
+otherwise, with Fly and Railway worked through); Q38 is narrowed; PR-4 depends
+on #166's `force` option specifically.
+
+**Updated 2026-09-26: Railway VMs, researched 2026-09-26 (user-prompted).**
+A fourth evidence file, [`railway-vms-2026-09.md`](evidence/summon-compute/railway-vms-2026-09.md),
+covers Railway's VM products, which `paas-ssh.md` did not examine. Its tags are
+carried unchanged as **[V/V-src/I/U, railway-vms §n]**; none is upgraded. What
+changed:
+
+- **Railway is no longer blocked.** Its status is **candidate — via Railway
+  Sandboxes; the service path is still conditional on Q25** (§7.1): a
+  documented recipe now, and a first-party summoner candidate once start
+  latency, the signal and grace on destroy or idle teardown, and the maximum
+  lifetime under an exec are measured (Q40).
+- **Q25 no longer blocks a Railway recipe**; Q40 (Sandboxes) and Q41 (cloud
+  agents, low priority) are new (§12.1).
+- **Cloud agents** are at most a recipe, labelled beta; **the free unclaimed
+  VM** is a human-run "try it" docs path, never automated (§7.1).
+- **The SSH recipe** assumes no `systemd-run --user` on Railway VMs (§7.7).
+- **The cost table** gains Railway VM pricing (§10.1).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -39,18 +94,20 @@ Sections 4.1, 4.10, 7, 8, 9.3, 11.1 and 13 have been updated to match.
 
 ### How to read the markings
 
-This plan rests on three evidence files, indexed in
+This plan rests on four evidence files, indexed in
 [`evidence/summon-compute/README.md`](evidence/summon-compute/README.md):
-`aws.md`, `google-azure.md` and `paas-ssh.md`. Their tags are copied here
-unchanged, with the file they came from, for example **[V, aws §4.1]**. No tag
-has been promoted: an [I] or a [U] in the evidence is still an [I] or a [U]
-here.
+`aws.md`, `google-azure.md` and `paas-ssh.md` (2026-09-25), and
+`railway-vms-2026-09.md` (2026-09-26, cited as `railway-vms`). Their tags are
+copied here unchanged, with the file they came from, for example **[V, aws
+§4.1]**. No tag has been promoted: an [I] or a [U] in the evidence is still an
+[I] or a [U] here.
 
 | Tag | Meaning in this plan |
 |---|---|
 | **[S]** | I read it from this repository's source today (2026-09-25). The file and line are given. |
 | **[V, file §n]** / **[V~, …]** / **[V-plan, …]** / **[P, …]** | Verified by the evidence file named, as that file defines the tag. `V~` means it was read through a summarising fetch. `V-plan` and `P` mean it was verified on 2026-09-22 by `worker-runtimes.md` and not re-read. |
 | **[M, file §n]** | Measured by the evidence file named. |
+| **[V-src, railway-vms §n]** | Read by that evidence file from Railway's own open-source code (`railwayapp/cli`, `railwayapp/railway-ts-sdk`). Primary, but a code comment is not a documented contract. |
 | **[R, paas-ssh]** / **[S, google-azure]** | Read from source by the evidence file named. Where I re-read the same line myself, the tag is **[S]**. |
 | **[W]** | I re-read it today from a primary source with WebFetch. The URL is given. Both reads this plan relies on went through the summarising fetch model, so treat them like `V~`. |
 | **[I]** | Inference: reasoning from the facts above. It is not a finding. |
@@ -76,7 +133,7 @@ driver method, `countDemand`. When demand exists and no worker is serving it,
 it **claims a summon slot by compare-and-set** on a reserved queue-state entry.
 Only then does it call a **`Summoner`**. A summoner is a small object that
 makes one HTTP call, or runs one `ssh`. The summoned process runs an ordinary
-`BunQueueWorker` under **`drainAndExit()`**, which owns the idle threshold,
+`BunQueueWorker` under **`runSummoned()`**, which owns the idle threshold,
 the deadline, the signal handlers and the exit code. When that worker's first
 heartbeat record appears carrying the summon's id, the slot is released.
 
@@ -95,11 +152,11 @@ provider.
 | # | Decision | Why |
 |---|---|---|
 | 1 | **Build summon-compute, and later real remote execution too.** | The user's decision. `worker-runtimes.md` §11 used to advise choosing one or the other. That advice is overridden, and §11 there now plans both. |
-| 2 | **The trigger is `demand > 0`, and demand is not "waiting > 0".** | With no worker, due delayed jobs and due retries never reach `waiting`. `promoteDelayed` has exactly one caller, `BunQueueWorker.ts:2119` [S]. Stalled recovery is a worker sweep too (`#armMaintenance`, `BunQueueWorker.ts:4326-4356`) [S]. So demand = waiting + due + stalled, zero while paused, and "active jobs with no live worker" also calls for a worker. §4.2 |
-| 3 | **An in-flight marker in queue state guards every summon.** Platform dedupe is only a second line. | A worker writes its heartbeat record only after `connect()` (`:1303`), `ensureQueue()` (`:1304`) and a report that is not awaited (`:1322` → `registerWorkerRecord` at `:4139`) [S]. Throughout a platform's cold start, "work and no live worker" stays true. Several platforms have no dedupe at all: Cloud Run `jobs.run` [V~, google-azure §3.2], ACA `jobs/start` [V, google-azure §4.2], Render jobs [V, paas-ssh §4.2], Lambda async [V, aws §4.4]. §4.3 |
+| 2 | **The trigger is `demand > 0`, and demand is not "waiting > 0".** | With no worker, due delayed jobs and due retries never reach `waiting`: every claim path requires `state = 'waiting'` (SQL `claimWindowFilter`, `drivers/sql/dialect.ts:866-879`; memory `#firstClaimable`) [S], and `promoteDelayed` has exactly one caller, `queue/BunQueueWorker.ts:2162` (was `:2119` at `d54d1fe`; `git grep 'promoteDelayed('` over `lib/`, `examples/`, `playground/`, `bun-jobs-ui/lib` and `bun-nest/lib` finds no other) [S]. Stalled recovery is a worker sweep too (`#armMaintenance`, `BunQueueWorker.ts:4368-4424`) [S]. So demand = waiting + due + stalled, zero while paused, and "active jobs with no live worker" also calls for a worker. §4.2 |
+| 3 | **An in-flight marker in queue state guards every summon.** Platform dedupe is only a second line. | A worker writes its heartbeat record only after `connect()` (`BunQueueWorker.ts:1310`), `ensureQueue()` (`:1311`) and a report that is not awaited (`:1329`), whose **first** write is preceded by a duplicate-id read (`#detectDuplicateId`, `:4161-4164`, a `listWorkerRecords`) before `registerWorkerRecord` (`:4177`) [S]. Throughout a platform's cold start, "work and no live worker" stays true. Several platforms have no dedupe at all: Cloud Run `jobs.run` [V~, google-azure §3.2], ACA `jobs/start` [V, google-azure §4.2], Render jobs [V, paas-ssh §4.2], Lambda async [V, aws §4.4]. §4.3 |
 | 4 | **Prefer "set a count" to "launch one".** | A scale-a-service call is idempotent. A launch-a-task call doubles up on a race. So the marker is written *before* the call, and every launch request is a pure function of its dedupe key (ECS `clientToken` only dedupes identical requests: [V, aws §4.1]). §4.6 |
-| 5 | **The summoned worker installs the signal handlers. The package does not install them globally.** | Nothing in `lib/queue/` handles SIGTERM or SIGINT [R, paas-ssh §2; re-checked: no `process.on` in `BunQueueWorker.ts`] [S]. Shutdown budgets differ by about 60×. `drainAndExit()` takes the budget as an input. §5 |
-| 6 | **`countDemand` is an optional driver method, bounded by a cap.** | `countJobs` on SQL is a `GROUP BY state` over the queue's whole retained history (`sql-driver.ts:4302-4313`) [S]. Polling that every 30 s is the wrong cost. §6.4 |
+| 5 | **The summoned worker installs the signal handlers. The package does not install them globally.** | Nothing in `lib/` handles SIGTERM, SIGINT or SIGTSTP: `git grep 'process\.on(\|process\.once(\|SIGTERM\|SIGINT\|SIGTSTP'` over `packages/bun-jobs/lib` finds only the runner child's IPC listener (`runner/bootstrap/spawn-entry.ts:19`) and the executors *sending* `SIGTERM` to their children (`runner/executors/spawn.ts:182`) [S; re-checked at `0a8e580`]. Shutdown budgets differ by about 60×. `runSummoned()` takes the budget as an input. §5 |
+| 6 | **`countDemand` is an optional driver method, bounded by a cap.** | `countJobs` on SQL is a `GROUP BY state` over the queue's whole retained history, plus, since #159, a `UNION ALL` branch per guarded state (`drivers/sql/sql-driver.ts:4320-4340`; the guard is `#countNotNull`, `:4570-4580`) [S]. Polling that every 30 s is the wrong cost. §6.4 |
 | 7 | **The depth endpoint returns `demand` and `outstanding`, and does not reuse `/counts`.** | Reading `waiting` has the blind spot in decision 2. On an app-style scaler, a `waiting`-only metric also SIGTERMs a busy worker after cooldown [I, google-azure §6.3]. §6 |
 | 8 | **No cloud SDK. Providers ship as subpaths with no dependencies.** | `CLAUDE.md`'s dependency policy. A SigV4 signer reproduced AWS's published signatures for 5 vectors and differed on 2 [M, aws §5.2]. The Google and Azure token helper is 65 lines [M, google-azure §2.3], and was never run against either cloud [U]. §8 |
 | 9 | **Six first-party summoners, in this order: ECS `RunTask`, Fly Machines, Cloud Run (jobs and worker pools), ACA manual jobs, Render one-off jobs, SSH via `systemd-run`.** Lambda ships beside ECS because it costs little once the signer exists. Everything else is a recipe on `invoke()` or a third-party plugin. | Drawn from the three evidence rankings. §7 |
@@ -128,7 +185,7 @@ starts the compute, and what must be awake.
 |---|---|---|---|
 | Who notices depth | a `SummonController` in a bun-jobs process | the platform's scaler polling a depth signal | a cloud scheduler waking a small check |
 | Who starts compute | bun-jobs, through a `Summoner` | the platform (KEDA ScaledJob/ScaledObject, ACA event job, GKE HPA, CREMA) | the check, through a `Summoner` (it is model (a) run once) |
-| What bun-jobs ships | controller, summoners, `drainAndExit` | the depth endpoint (§6), `drainAndExit`, recipes | `SummonController.check()` as a one-shot, `drainAndExit` |
+| What bun-jobs ships | controller, summoners, `runSummoned` | the depth endpoint (§6), `runSummoned`, recipes | `SummonController.check()` as a one-shot, `runSummoned` |
 | Where "something must be awake to notice" is solved | in bun-jobs processes that are already awake: producers at the moment of `add()`, and any long-lived process by poll | in the platform's always-on scaler. But the **metric source** must also be awake: the endpoint needs a live process [I, google-azure §6.5] | in someone else's always-on scheduler |
 | Latency, add → summon call | debounce (250 ms default [D]) on the adding process. Up to one poll (30 s default [D]) for due, stalled or remote adds | up to one `pollingInterval`, 30 s by default [V, google-azure §6.1; W: keda.sh scaledobject-spec, 2026-09-25] | up to one schedule period. EventBridge Scheduler has a 1-minute floor and 60-second precision [V-plan, aws §8] |
 | Standing cost | none beyond processes that already run | KEDA or CREMA and the endpoint's server. CREMA is an always-on Cloud Run service [V~, google-azure §3.3]. ACA event jobs have none [I, google-azure §7] | one small check per period (§10) |
@@ -147,14 +204,29 @@ under a second" [V, paas-ssh §5.1], and Cloudflare Containers take 1–3 s
 The controller lives in a process that already exists. Its three triggers
 cover different gaps:
 
-- **`add()` in this process**: immediate. `BunQueue` already emits a local
-  `waiting` or `delayed` event for every job added (`BunQueue.ts:646-657`)
-  [S]. Listening costs one callback per add and no driver call while a worker
-  is known to be live (§4.8).
-- **Driver events from other processes**: `BunQueue` also publishes `added`,
-  `waiting` and `delayed` through the driver (`BunQueue.ts:647`, `:653`,
-  `:656`) [S]. A controller in the management API's process can therefore
-  hear another producer's adds, on drivers whose events cross processes.
+- **`add()` in this process**: immediate. The hook listens to the local
+  **`added`** event, not `waiting`/`delayed`: `addBulk` emits only a local
+  `added` (or `duplicate`) per job and publishes nothing
+  (`queue/BunQueue.ts:715-726`), and a repeatable's first add emits only
+  `added` locally (`:2872-2873`), so a `waiting`/`delayed` listener would miss
+  both [S; corrected 2026-09-25 — the plan said `waiting`/`delayed`,
+  `BunQueue.ts:646-657`, which only `#addSimple` emits, `:645-656`]. The
+  `Job` view `added` carries has `state` and `runAt`, which is all the §4.8
+  fast path reads. Listening costs one callback per add and no driver call
+  while a worker is known to be live (§4.8).
+- **Driver events from other processes**: `BunQueue` publishes `added`,
+  `waiting` and `delayed` from `#addSimple` (`BunQueue.ts:647`, `:653`,
+  `:656`) and from flows (`:1426-1437`), and also `promoted` (`:1687`),
+  `resumed` (`:2099`), `retried` (`:2647`, `:2671`) and `repeatScheduled`
+  (`:2867`) — every one of which can create demand, so the events trigger
+  listens to all seven [S; the plan listed three]. **Two limits, both read
+  from source:** a producer publishes only when asked, since `publishEvents`
+  defaults to `false` (`BunJobs.ts:92-99`, resolved at `:377`) and a queue's
+  own `publish` defaults to its `subscribe` (`queue/types.ts:850-863`); and
+  `addBulk` publishes nothing at all. So the events trigger hears another
+  process's adds only from producers that publish, and never a bulk add. The
+  poll is what makes the placement correct; events only make it faster. The
+  README must say so.
 - **Poll**: the only trigger that sees a delayed job come due, or a dead
   worker's lock lapse. No `add()` happens at that moment, so without a poll
   nothing notices. This is where a controller needs a **long-lived** process.
@@ -232,7 +304,11 @@ coverage.
 that builds its `BunJobs` in a shared module would otherwise summon from inside
 the worker it summoned. When `summonedFromEnv()` (§5.3) finds a summon id,
 `BunJobs` creates controllers disabled unless `summon.fromSummoned: true`
-[D].
+[D]. **Children inherit the variables** — a runner child or a
+`"child-process"`/`"worker-thread"` target is started with `...process.env`
+(`runner/executors/spawn.ts:106-114`, `runner/executors/worker.ts:72-80`)
+[S] — so `summonedFromEnv()` also answers `undefined` inside a runner child
+(`BUN_JOBS_CHILD === "1"`, `isRunnerChild()`, `runner/protocol.ts:213`) [D].
 
 ### 3.3 The one-shot form
 
@@ -256,6 +332,36 @@ console.log(result);          // { action: "summoned" | "none" | "skipped", … 
 
 ## 4. Core design
 
+### 4.0 Reconciliation with the code at `0a8e580` (2026-09-25)
+
+The plan was written at `d54d1fe`/`ca3ed21`. Phases 0 and 1 have landed since.
+Every code claim below was re-read at `0a8e580`; each row is what the source
+says, and the last column is what it changes here. **Inference is marked [I];
+everything else was read.**
+
+| # | The plan said | The source says (at `0a8e580`) | What changes |
+|---|---|---|---|
+| R1 | `promoteDelayed`'s one caller is `BunQueueWorker.ts:2119` | Still exactly one caller, now `queue/BunQueueWorker.ts:2162` (`#promote`), run on the 1 Hz promotion timer (`#armPromotion`, `:4542-4567`) and before an empty pass. Checked by `git grep 'promoteDelayed('` over every package's `lib/`, `examples/` and `playground/`: the only hit outside the drivers' own definitions is that line | Citation only. The claim stands |
+| R2 | Registration: `connect` `:1303`, `ensureQueue` `:1304`, unawaited report `:1322` → `registerWorkerRecord` `:4139`; "released about one driver round trip after connect" | `run()` (`:1301-1350`): `connect` `:1310`, `ensureQueue` `:1311`, `#armMaintenance` `:1322`, `#startedAt` `:1323`, `void this.#report()` `:1329`. The **first** report calls `#detectDuplicateId` (`:4161-4164`), a `listWorkerRecords`, before `registerWorkerRecord` (`:4177`) | **Two** round trips after `ensureQueue`, not one (§5.4). Cheap, but the release latency and `bootBudget` arithmetic say so now |
+| R3 | (not considered) | `#report` returns without writing when `reportInterval === 0` or the driver has no worker records (`supportsWorkers`, `:4141-4146`; `drivers/readApis.ts:574-581`) | A summoned worker with `reportInterval: 0` never registers, so every attempt ends `lost` and the circuit opens. **`summon` on a worker with `reportInterval: 0` is a `ConfigError`**, and so is a controller on a driver without worker records (§4.9) [D] |
+| R4 | No signal handling in `lib/queue/` | None anywhere in `lib/` (grep in decision 5) | Stands |
+| R5 | `setReservedState` at `windows.ts:79`; the token check at `driver.ts:2618-2637` | `setReservedState` `queue/windows.ts:79-92`; `assertWritableStateName` `:58-71`; the `options.internal` parameter `drivers/driver.ts:2640-2660`. **All five drivers** implement `getQueueState`/`setQueueState`/`listQueueState` and call `assertWritableStateName` first: memory `drivers/memory-driver.ts:2452-2476`, file `drivers/file-driver.ts:3708-3753` (one lock file per entry, `O_EXCL`), SQL `drivers/sql/sql-driver.ts:6654-6721` (conditional `INSERT`/`UPDATE`/`DELETE` on the version), Redis `drivers/redis/redis-driver.ts:3118-3142` (one script), Mongo `drivers/mongo/mongo-driver.ts:5408-5465` (`insertOne` on a unique `_id`, `updateOne`/`deleteOne` filtered by version). The shared contract suite asserts the CAS (`__tests__/helpers/driverContract.ts:4100-4345`) | The marker's CAS exists with the semantics §4.3 needs, on every driver. No driver work for the marker |
+| R6 | The request id is SHA-256 over `(namespace, queue, marker version at claim)` | "A deleted then re-created entry starts again from `1`", and "purging the namespace removes every entry" (`drivers/driver.ts:2634-2638`) | **A real bug in the design** [I from S]: after a purge, or anything that deletes the marker, versions restart and a new claim reissues an old id. ECS remembers a `clientToken` for up to 24 h [V, aws §4.1], so the new attempt comes back `deduped` with the *old* task's handles, starts nothing, and is `lost` a `bootBudget` later. **Fix:** the marker gains `epoch`, a random string written when the entry is created, and the id hashes `(namespace, queue, epoch, version)` (§4.3, §4.6) [D] |
+| R7 | The windows sweep cannot touch `__win:summon` | `sweepWindows` removes only `__win:debounce:` and `__win:throttle:` names and passes over everything else (`queue/windows.ts:200-206`). Reserved names in use: `fheal`, `msweep` (`BunQueueWorker.ts:140`, `:147`), `jdef` (`queue/jobDefaults.ts:60`), `repeat-disabled:` (`queue/repeatControl.ts:38`), `wcfg:`, `wctl:`, `wstop:` (`queue/workerControl.ts:48-54`), `debounce:`, `throttle:` | `__win:summon` is unused and no sweep deletes it. Stands |
+| R8 | `countJobs` on SQL `sql-driver.ts:4302-4313`; Mongo `mongo-driver.ts:4277-4287` | SQL `:4320-4340`, now the grouped count **plus a `UNION ALL` branch per guarded state** (#159). Mongo `:4277-4287`, a `$group` over the queue, unchanged | Citations; the cost claim stands and is stronger on SQLite, where #159 measured `countJobs` +62% |
+| R9 | Mongo's due index is `ns_1_queue_1_state_1_runAt_1` (`mongo-driver.ts:204-205`, via google-azure §1.1); whether a `lockExpiresAt` index exists: check (Q33) | **That index is retired** (`RETIRED_INDEXES`, `drivers/mongo/mongo-driver.ts:245-256`, with the `lockExpiresAt` one). Current: `PROMOTION_INDEX` `{ ns, queue, state, runAt, _id }` (`:1127-1133`), `LOCK_INDEX` `{ ns, queue, state, lockExpiresAt, _id }` (`:1136-1142`), `CLAIM_INDEX` (`:1117-1124`), created on connect (`:5982-5997`) | §6.4's Mongo row names the current indexes. **Q33 is closed**: the stalled count has an index, no `syncSchema` change is needed |
+| R10 | `nextDelayedAt` covers delayed and failed on Redis and SQL | On all five: memory (`memory-driver.ts:2531-2542`, over `SCHEDULED_STATES = ["delayed", "failed"]`, `:438`), file (`file-driver.ts:3852-3873`, `:234`), SQL (`sql-driver.ts:6818-6850`, per-state `MIN`, `SCHEDULED` `:292`), Redis (`redis-driver.ts:3258-3279`), Mongo (`mongo-driver.ts:5569-5580`, `SCHEDULED` `:328`). `failed` is "another attempt is due at `runAt`", distinct from `dead` (`drivers/driver.ts:788-805`) | Stands, now for five drivers rather than two |
+| R11 | `listWorkerRecords` at `readApis.ts:657` | `drivers/readApis.ts:667-709`; native `listWorkers` on all five drivers (memory `:1587`, file `:2834`, SQL `:4848`, Redis `:2405`, Mongo `:4520`) | Citation only |
+| R12 | The sweep lease: "90 s at the defaults" (`BunQueueWorker.ts:2869-2877`, `SWEEP_LEASE_LIFETIMES` `:167`) | `#holdsSweepLease` `:2932-2981`, its doc `:2900-2931`; `SWEEP_LEASE_LIFETIMES = 2` `:174`; takeover factor `:209`. `#every` runs each sweep once at `t = 0` and then every cadence (`:4656-4677`). A graceful `close()` or `stop()` releases the leases at once (`:1602`, `:1415`) | Stands. **Two consequences for summoned workers** [I]: a summoned worker sweeps immediately on start, so one that inherits a *released* lease recovers stalled jobs at once; one that follows a worker killed without grace waits out up to two of the dead holder's cadences (60 s at the default `stalledInterval` of 30 s, `shared/constants.ts:138`). A summoned worker given a `stalledInterval` under half the holder's takes the lease at once (`SWEEP_LEASE_TAKEOVER_FACTOR`) — a documented lever for the orphan case, not a default |
+| R13 | `drained` fires after `drainDelay`, default `0` (`BunQueueWorker.ts:1926-1953`, `types.ts:1049-1050`) | `#announceDrained` `:1968-1997`; with `drainDelay <= 0` it fires **on every empty pass** (its own doc, `:1971-1974`); default `0` at `:974`, option `queue/types.ts:1054-1055` | Stands, and is a stronger reason not to exit on `drained` (§5.1) |
+| R14 | `close()` holds the process (`:1554-1574`) and hands the sweep leases over (`:1592-1595`) | `close()` `:1568-1579`; `#releaseSweepLeases` `:1602`. **`close({ timeout })` bounds only the wait for jobs in flight** (`:1652-1671`). After it: `#closeTarget` (Phase 1, `:1708-1733`, bounded by `DEFAULT_CLOSE_TIMEOUT` = 5,000 ms, `shared/constants.ts:28`), then `#unregister`, the throughput flush, metrics, dead letters, the limiter and `driver.close()`, none of them bounded (`:1683-1697`) | **`runSummoned`'s `timeout: grace − 1_000` can overrun the platform's grace**: a custom target whose `close()` hangs costs 5 s, which is Fly's whole default grace. §5.3 now arms a hard exit backstop. **Issue #166** (a `"child-process"` attempt orphaned by `close()`) will give `FileTargetExecutor` a `close()` too, so every file target will pay that bound: `runSummoned` is sequenced after #166 (§13.5, PR-4). **Per #166, pending its merge:** a graceful target close is ≤ 4,500 ms (SIGKILL at 4,000 ms + ≤ 500 ms reaping), and `close({ force: true })` kills the children at once; §5.3's close rule budgets on those |
+| R15 | `GET /queues/:queue/counts` at `api/routes/queues.ts:609-624` | Unchanged (`:609-624`, action `queues.read`) | Stands |
+| R16 | `readOnly`/`actions` at `api/config.ts:520`, `:562` | `:527`, `:569`. There is also `JOBS_API_OPT_IN_ACTIONS` (`api/contract/constants.ts:136-144`), the default-off list, and `JOBS_API_MUTATIONS` (`:84-117`), removed by `readOnly` | `queues.summon` joins **both** sets (§6.2) |
+| R17 | A paused worker writes `paused` and `state` (`BunQueueWorker.ts:4148-4149`) | `:4186-4187`; `WorkerInfo.state` is optional ("absent on a record written before this existed", `drivers/driver.ts:1466-1470`); states `running`, `paused`, `stopping`, `stopped`, `restarting` (`shared/workers.ts:25-31`) | "Serving" is `state` in `running` or `restarting` (a transient of milliseconds, `shared/workers.ts:22-23`), or, on a record with no `state`, `paused === false` (§4.2) [D] |
+| R18 | The bench's `enqueue` scenario runs "with a live worker" once a controller is attached (§4.8) | `enqueue` and `enqueue-bulk` are "producer only … no consumer running" (`bench/queue.ts:48-49`) | The guard as written measured the wrong path. §4.8 and PR-3's gate now attach a controller to **all six** scenarios: the producer-only two measure the no-worker path (debounced checks), `throughput`/`roundtrip`/`payload`/`contention` the `servedUntil` fast path |
+| R19 | `summonedFromEnv()` reads `BUN_JOBS_NAMESPACE` and `BUN_JOBS_QUEUE` | `BUN_JOBS_NAMESPACE` is already `CHILD_ENV.namespace` (`runner/protocol.ts:25-38`), exported from the root (`lib/index.ts:702`), and set on every runner and file-target child | A name collision; every key is under `BUN_JOBS_SUMMON_*` (§13.9 S8, approved) |
+| R20 | `WorkerTarget` is taken (Q35) | Phase 0 renamed the addressee type to `WorkerSelector` (`queue/WorkerController.ts:41`); Phase 1 shipped `WorkerTarget` meaning "where attempts run" | Q35 closed |
+
 ### 4.1 Components and where they live [D]
 
 | Piece | File | Exported from |
@@ -263,16 +369,17 @@ console.log(result);          // { action: "summoned" | "none" | "skipped", … 
 | `SummonController`, `SummonPolicy`, `defineSummoner` | `lib/summon/controller.ts`, `lib/summon/types.ts` | `lib/summon/index.ts`, and the package root |
 | the provider core and the `summon` facet types (`defineComputeProvider`, `ProviderError`, `SummonFacet`, `SummonCapabilities`, …) | `lib/provider/` | `./provider` ([`compute-provider-plugins.md`](compute-provider-plugins.md) §6–§7, §11) |
 | the conformance kit and `fakePlatform()` | `lib/provider/testing/` | `./provider/testing` (plugins §12) |
-| demand reading (`readDemand`, the fallback formula) | `lib/drivers/readApis.ts` beside `listWorkerRecords` (`:657`) [S] | `./lib/drivers` |
+| demand reading (`readDemand`, the fallback formula) | `lib/drivers/readApis.ts` beside `listWorkerRecords` (`:667`) [S] | `./lib/drivers`; the public read is `queue.getDemand()` (S10) |
 | `countDemand` driver method | each driver, contract in `lib/drivers/driver.ts` | — |
-| the marker (reserved entry `__win:summon`) | `lib/summon/marker.ts`, written with `setReservedState` (`queue/windows.ts:79`) [S] | not exported |
-| `drainAndExit`, `summonedFromEnv`, `SUMMON_ENV` | `lib/summon/worker.ts` | root |
+| the marker (reserved entry `__win:summon`, S14) | `lib/summon/marker.ts`, written with `setReservedState` (`queue/windows.ts:79-92`) [S] | not exported |
+| `runSummoned` (S4), `summonedFromEnv`, `SUMMON_ENV` (S8) | `lib/summon/worker.ts`, `lib/summon/env.ts` | root |
 | first-party providers | `lib/providers/{aws,google,azure,fly,render,ssh}.ts`, importing only the public entries (plugins §5) | `./providers/*` subpaths (§8.4) |
 | signing helpers | `lib/provider/auth/{sigv4,aws-credentials,google-token,azure-token,jwt}.ts` | `./provider/auth`, public (plugins §6.4) |
 
 `setReservedState` writes with the package's internal token. Nothing outside
-the package can forge a write to a `__win:` name (`driver.ts:2618-2637`,
-`windows.ts:79-92`) [S]. So a user's own `setQueueState` cannot corrupt the
+the package can forge a write to a `__win:` name (`drivers/driver.ts:2640-2660`,
+`queue/windows.ts:58-92`; every driver calls `assertWritableStateName` first,
+§4.0 R5) [S]. So a user's own `setQueueState` cannot corrupt the
 marker by accident.
 
 ### 4.2 The trigger predicate
@@ -288,17 +395,25 @@ active      = jobs in `active`
 workers     = live records from listWorkerRecords(q, now)
 
 demand      = paused ? 0 : waiting + dueNow + stalled
-outstanding = paused ? 0 : demand + active
+outstanding = paused ? 0 : demand + (active − stalled)                (a stalled job is in both; the draft counted it twice, §6.4 D1)
 orphaned    = !paused && active > 0 && workers == 0                    (lock not lapsed yet, holder gone)
 
 needs a worker ⇔ (demand > 0 || orphaned) && served < wanted
 ```
 
 - `nextDelayedAt` really does look at both the delayed and the failed
-  (retry-pending) sets. Redis walks `[keys.delayed, keys.failed]`
-  (`redis-driver.ts:3258-3276`). SQL takes a `MIN(run_at)` per state
-  (`sql-driver.ts:6662-6690`) [S]. So `nextDelayedAt(q) ≤ now` is a correct
-  *boolean* for "something is due", on every driver, today.
+  (retry-pending) sets, on all five drivers (§4.0 R10): Redis walks
+  `[keys.delayed, keys.failed]` (`drivers/redis/redis-driver.ts:3258-3279`),
+  SQL takes a `MIN(run_at)` per state (`drivers/sql/sql-driver.ts:6818-6850`),
+  and memory, file and Mongo read `["delayed", "failed"]` [S]. So
+  `nextDelayedAt(q) ≤ now` is a correct *boolean* for "something is due", on
+  every driver, today.
+- `workers` in `orphaned` counts **every** live record, parked and paused
+  included: the question there is whether anything alive may still hold the
+  active jobs' locks. `served` below counts only *serving* records. A queue
+  whose only live workers are parked (`stopped`: not claiming *and no
+  maintenance*, `shared/workers.ts:20-21`) with lapsed locks therefore has
+  `stalled > 0` and `served = 0`, and summons, which is right [I].
 - `orphaned` covers the window between a worker dying and its lock lapsing.
   That window is up to `lockDuration`, `DEFAULT_LOCK_DURATION = 30_000`
   (`shared/constants.ts:135`) [S]. Summoning then is not wasted: the job will
@@ -308,27 +423,49 @@ needs a worker ⇔ (demand > 0 || orphaned) && served < wanted
 - `served` and `wanted`:
   ```
   wanted = min(maxWorkers, max(1, ceil(outstanding / jobsPerWorker)))
-  served = (satisfiedBy == "any-worker" ? workers : summonedWorkers) + pending.length
+  served = (servedBy == "any-worker" ? serving : servingSummoned) + Σ pending[i].count
   ```
+  (`pending.length` in the draft; an attempt may ask for several workers, so
+  it is the sum of their `count`s.)
   `jobsPerWorker` defaults to `Infinity`, which means one worker. `pending` is
   the marker's unregistered attempts (§4.3).
 
-**`satisfiedBy: "any-worker"`** is the default: a queue with any live worker
-is served. The honest caveat is that a live worker may be paused by a
-`WorkerController` (the Phase 0 name). A paused worker writes `paused: true`
-and `state` on its record (`BunQueueWorker.ts:4148-4149`; states in `shared/workers.ts:25-31`) [S], so only records
-in state `running` count as serving [D].
+**`servedBy: "any-worker"`** is the default: a queue with any live worker
+is served. The honest caveat is that a live worker may be paused or parked by
+a `WorkerController` (the Phase 0 name). A worker writes `paused` and `state`
+on its record (`BunQueueWorker.ts:4186-4187`; states in
+`shared/workers.ts:25-31`) [S], so a record is **serving** when its `state`
+is `running` or `restarting` (a transient of milliseconds while a
+configuration change applies, `shared/workers.ts:22-23`), or, on a record too
+old to carry `state` (`drivers/driver.ts:1466-1470`), when `paused` is
+`false` [D]. The option is `servedBy` (§13.9 S18).
+
+**A known gap, accepted** [I from S]: a flow parent left in
+`waiting-children` by a crash or a failed write is repaired only by a
+worker's `#healFlows` (`BunQueueWorker.ts:2873`, run from the stalled sweep),
+and demand does not count it. It waits for the next worker that other demand
+brings, as it would today with no worker running.
 
 ### 4.3 The in-flight marker
 
-One reserved queue-state entry per queue, `__win:summon`, written by
-compare-and-set with `setReservedState`. Its value:
+One reserved queue-state entry per queue, `__win:summon` (§13.9
+S14), written by compare-and-set with `setReservedState`. Every
+driver has the CAS this needs (§4.0 R5). Its value:
 
 ```ts
 /** What `__win:summon` holds: the summon state of one queue, shared by every controller. */
 interface SummonMarker {
   /** Shape version, so a later release can migrate it. Always `1` here. */
   v: 1;
+  /**
+   * A random string written when the entry is created and never changed
+   * after. Hashed into every attempt id (§4.6), because the entry's version
+   * restarts at `1` whenever the entry is deleted or the namespace purged
+   * (`drivers/driver.ts:2634-2638`), and an id built from the version alone
+   * would then repeat — which a platform that remembers tokens (ECS, 24 h)
+   * answers as `deduped`, starting nothing (§4.0 R6).
+   */
+  epoch: string;
   /**
    * Attempts started and not yet matched to a live worker record, oldest
    * first. Each counts as a worker on its way until its `until` passes.
@@ -385,8 +522,10 @@ interface PendingSummon {
 
 **The check, step by step** [D]:
 
-1. Read demand (§4.2), live workers, and the marker entry with its version.
-   That is three reads, and all of them are needed anyway.
+1. Read demand (§4.2: `countDemand` and `isQueuePaused`), live workers
+   (`listWorkerRecords`), and the marker entry with its version: four reads,
+   all needed anyway. A marker that does not exist yet is created in step 6
+   with `expected = null` and a fresh `epoch`.
 2. **Release.** For each pending attempt:
    - It is **registered** if a live record carries `summon.id === attempt.id`
      (§5.4). Drop it and reset `failures`.
@@ -408,7 +547,8 @@ interface PendingSummon {
    `lastAttemptAt`, budget, `maxPending`. Any hit returns `skipped` with that
    reason.
 6. **Claim.** Append `PendingSummon { id, at: now, until: now + bootBudget,
-   count: want }` and write with `expected = version`. If the CAS fails,
+   count: want }`, where `id` hashes `(namespace, queue, epoch, version + 1)`
+   (§4.6), and write with `expected = version`. If the CAS fails,
    another controller moved first: return `skipped: contended`. **Nothing has
    been called yet, so a lost race costs nothing.**
 7. **Call** the summon facet, `summoner.summon.summon(request, context)`,
@@ -421,8 +561,9 @@ interface PendingSummon {
    increments `failures` and sets `backoffUntil`.
 
 **The marker's TTL is `bootBudget`**, per attempt. It must cover platform
-cold start, plus Bun boot, plus driver connect, plus one report round trip
-[I, paas-ssh §7.6]. It also belongs with the summoner, because it differs by
+cold start, plus Bun boot, plus driver connect and `ensureQueue`, plus the
+first report's **two** round trips — a duplicate-id read, then the write
+(§4.0 R2) [S for the round trips; I, paas-ssh §7.6 for the rest]. It also belongs with the summoner, because it differs by
 about two orders of magnitude between a Fly start and a Kubernetes image pull
 [I, paas-ssh §9]. So each first-party summoner declares a default (§7), and
 `SummonPolicy.bootBudget` overrides it. **Every default is an [I]**: no cold
@@ -466,7 +607,7 @@ and it is not meant to. The CAS catches those.
 | attempts per hour, per queue | `budget.perHour` | `30` |
 | attempts per day, per queue | `budget.perDay` | `300` |
 | summoned workers at once, per queue | `maxWorkers` | `1` |
-| lifetime of one summoned worker | `maxLifetime` → the worker's `drainAndExit` deadline, and the platform's own cap where the adapter can set one (Cloud Run task timeout, Heroku `time_to_live`, `RuntimeMaxSec`, `activeDeadlineSeconds`, `maximumDurationInSeconds`) | `3_600_000` (1 h) |
+| lifetime of one summoned worker | `maxLifetime` → the worker's `runSummoned` deadline, and the platform's own cap where the adapter can set one (Cloud Run task timeout, Heroku `time_to_live`, `RuntimeMaxSec`, `activeDeadlineSeconds`, `maximumDurationInSeconds`) | `3_600_000` (1 h) |
 
 A budget hit returns `skipped: budget`, emits `summon` with outcome
 `budget-exhausted` once per window, and shows on the status route. **It never
@@ -486,13 +627,20 @@ behaviour is the same (`IdempotentParameterMismatch`) [V, aws §4.8]. So
 attempt id** [I, aws §1 item 5]. Concretely:
 
 - `request.id` is `sm_` + base32 of SHA-256 over
-  `(namespace, queue, marker version at claim)`, truncated [D]. It is
-  deterministic for one claim, so a retried call is byte-identical.
+  `(namespace, queue, marker epoch, the version the claim writes)`, truncated
+  [D]. It is deterministic for one claim, so a retried call is
+  byte-identical, and unique across claims even after the marker is deleted
+  or the namespace purged, which the `epoch` is for (§4.0 R6; the draft hashed
+  the version alone).
 - `request.env` carries only `BUN_JOBS_SUMMON_ID`, `BUN_JOBS_SUMMON_KIND`,
-  `BUN_JOBS_NAMESPACE`, `BUN_JOBS_QUEUE`, `BUN_JOBS_SUMMON_MODE` and
+  the namespace, the queue, `BUN_JOBS_SUMMON_MODE` and
   `BUN_JOBS_SUMMON_MAX_LIFETIME_MS` (a *duration*), plus the policy's static
-  `env`. **No `summonedAt`.** The worker reads its start time from its own
-  clock, and the controller knows `at` from the marker.
+  `env`. The draft named the namespace and queue keys `BUN_JOBS_NAMESPACE`
+  and `BUN_JOBS_QUEUE`; the first is already the runner's `CHILD_ENV.namespace`
+  (§4.0 R19), so every key is under `BUN_JOBS_SUMMON_*` (§13.9 S8):
+  `BUN_JOBS_SUMMON_NAMESPACE` and `BUN_JOBS_SUMMON_QUEUE`. **No
+  `summonedAt`.** The worker reads its start time from its own clock, and
+  the controller knows `at` from the marker.
 - `request.dedupeKey` is `request.id` clipped to the summoner's declared
   `dedupe.maxLength` and `dedupe.charset`, and to 64 characters of
   `[A-Za-z0-9-]` when it declares none. The controller computes it, so no
@@ -513,7 +661,7 @@ clamped to the declared `poolSize` ([`compute-provider-plugins.md`](compute-prov
 |---|---|---|
 | Call | start N units: `RunTask`, `jobs:run`, `POST /jobs`, `systemd-run` | set the count to `target`: worker pool `manualInstanceCount`, ECS `desiredCount`, ASG `SetDesiredCapacity` |
 | Duplicate on a race | yes | no, idempotent by construction [I, aws §4.3; google-azure §3.3] |
-| Worker mode | `launch`: exits on idle | `service`: never exits on idle, because the platform would restart it [I, google-azure §5] |
+| Worker mode | `"exit-on-idle"` | `"until-stopped"`: never exits on idle, because the platform would restart it [I, google-azure §5] |
 | Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once `outstanding == 0` has held for `scaleDown.after` (default `300_000` ms) [D] |
 
 A scale-style release uses `outstanding`, never `demand`. So it never sets a
@@ -532,18 +680,32 @@ google-azure §8].
 against a baseline. The hook must not move them. Design [D]:
 
 - The controller keeps `servedUntil`: the earliest `expiresAt` among the
-  running live records it last read. While `now < servedUntil`, a local
-  `waiting` or `delayed` event does **nothing**: no timer and no driver call.
+  serving live records it last read. While `now < servedUntil`, a local
+  `added` event does **nothing**: no timer and no driver call.
   With a worker up, this is the steady state.
 - Otherwise the event arms one debounce timer per controller, not per job. A
   bulk add of 5,000 jobs is one check.
-- A local `delayed` event with a `runAt` inside the poll interval arms a
-  one-shot timer at `runAt`, so a long-lived producer does not wait a whole
-  poll for its own delayed job [D].
+- A local `added` event for a job in `delayed` with a `runAt` inside the
+  poll interval arms a one-shot timer at `runAt`, so a long-lived producer
+  does not wait a whole poll for its own delayed job [D].
 
-Phase 1.5a runs `bun queue.ts --compare` with a controller attached to the
-`enqueue` scenario's queue and a live worker. The existing baselines must come
-back unchanged. If they move, that is the finding.
+**Corrected 2026-09-25** (§4.0 R18): the draft ran `bun queue.ts --compare`
+"with a controller attached to the `enqueue` scenario's queue and a live
+worker", but `enqueue` and `enqueue-bulk` run no consumer at all
+(`bench/queue.ts:48-49`), so the fast path was never what they would have
+measured. PR-3 (§13) adds a harness switch that attaches a controller with a
+no-op summoner to the bun-jobs contender (`bench/contenders/queue/bun-jobs.ts`)
+in **every** scenario, and runs `--compare` against the existing baselines:
+
+- `enqueue`, `enqueue-bulk`: **the no-worker path**. The listener arms one
+  debounce timer per burst, and each fire costs four reads (§4.3 step 1) and,
+  once, a claim. Against a producer adding thousands of jobs a second that
+  should not register [I]; the run is what says so.
+- `throughput`, `roundtrip`, `payload`, `contention`: **the fast path**, a
+  live worker and `now < servedUntil`, so the listener returns at once.
+
+The baselines are not re-recorded. If a figure moves beyond the guard's
+tolerance, or a rival overtakes, that is the finding.
 
 ### 4.9 Driver requirements
 
@@ -551,14 +713,27 @@ Summoning needs a driver that **another host** can reach, and queue state for
 the marker. The rules at construction [D]:
 
 - `capabilities.multiProcess === false`: `ConfigError`. The memory driver
-  cannot be shared with a summoned process.
+  cannot be shared with a summoned process (`drivers/memory-driver.ts:461-463`).
+  Controller tests therefore run on SQLite or the file driver.
 - `multiHost === false` with any summoner except SSH to `localhost`: a
   `warn`. The file driver and SQLite work only on one host
   (`driver.ts:63-65`) [S].
 - `getQueueState` or `setQueueState` missing: `ConfigError`. No marker, no
-  stampede guard, and decision 3 says that is not optional.
+  stampede guard, and decision 3 says that is not optional. All five
+  first-party drivers have both (§4.0 R5).
+- **No worker records** (`supportsWorkers(driver)` false,
+  `drivers/readApis.ts:574-581`): `ConfigError`. Without records no attempt
+  is ever released, so every one would end `lost` (§4.0 R3). All five
+  first-party drivers have native records. On the worker side,
+  `BunQueueWorkerOptions.summon` with `reportInterval: 0` is a `ConfigError`
+  for the same reason [D].
 
 ### 4.10 Full signatures
+
+Every exported name below was approved on 2026-09-25; §13.9 records each
+choice and its reason: `SummonController` (S1), `SummonPolicy` (S2),
+`defineSummoner`/`Summoner` (S3), `QueueDemand` and its fields (S12), the
+`BunJobs` members (S16).
 
 ```ts
 /** Why a check ran. */
@@ -596,7 +771,7 @@ export interface QueueDemand {
   nextDueAt: number | null;
   /** `paused ? 0 : waiting + dueNow + stalled`: work a worker could claim now. For a ScaledJob. */
   demand: number;
-  /** `paused ? 0 : demand + active`: everything not finished. For a ScaledObject. */
+  /** `paused ? 0 : demand + (active − stalled)`: everything not finished, each job once (§6.4 D1). For a ScaledObject. */
   outstanding: number;
   /**
    * `true` when a count reached the driver's cap (`countDemand`'s `cap`), so
@@ -765,9 +940,12 @@ export interface SummonPolicy {
      */
     onAdd?: boolean;
     /**
-     * Check after an `added`/`waiting`/`delayed` event another process
-     * published through the driver. Defaults to `true` where the driver's
-     * events cross processes (`capabilities.events !== "local"`).
+     * Check after an `added`, `waiting`, `delayed`, `promoted`, `resumed`,
+     * `retried` or `repeatScheduled` event another process published through
+     * the driver. Defaults to `true` where the driver's events cross
+     * processes (`capabilities.events !== "local"`). Hears only producers
+     * that publish (`publishEvents` defaults to `false`), and never a bulk
+     * add, which publishes nothing (§2.1); the poll covers both.
      */
     events?: boolean;
     /**
@@ -819,7 +997,7 @@ export interface SummonPolicy {
   };
   /**
    * The longest a summoned worker may live, in ms. It is passed to the worker
-   * (its `drainAndExit` deadline) and to the platform's own cap where the
+   * (its `runSummoned` deadline) and to the platform's own cap where the
    * adapter can set one. Defaults to `3_600_000`.
    */
   maxLifetime?: number;
@@ -828,7 +1006,7 @@ export interface SummonPolicy {
    * (`"any-worker"`, default) or only summoned ones (`"summoned-only"`, for a
    * queue whose always-on workers are deliberately capped).
    */
-  satisfiedBy?: "any-worker" | "summoned-only";
+  servedBy?: "any-worker" | "summoned-only";
   /** Scale-style only: when to set the count back to zero. */
   scaleDown?: {
     /** How long `outstanding` must stay `0` first, in ms. Defaults to `300_000`. */
@@ -958,12 +1136,15 @@ On `BunJobs` [D]:
 summon?: Record<string, SummonPolicy>;
 
 /** On `BunJobs`: the controller for a queue, created on first use from `summon` or from `policy`. */
-summoner(queue: string, policy?: SummonPolicy): SummonController;
+summonController(queue: string, policy?: SummonPolicy): SummonController;
 ```
 
 `BunJobs` hands the controller its driver, namespace and logger, attaches the
-`onAdd` hook to the queue objects it creates, and closes controllers in
-`jobs.close()` [D].
+`onAdd` hook (an `added` listener, §2.1) to the queue objects it creates
+(`#queues`, `BunJobs.ts:322`), and closes controllers in `jobs.close()`
+**first**, before the notifiers, workers and queues it closes today
+(`#close`, `BunJobs.ts:1225-1246`), so no check is in flight when the driver
+goes [D].
 
 ---
 
@@ -973,33 +1154,38 @@ summoner(queue: string, policy?: SummonPolicy): SummonController;
 
 The AWS evidence's worker sketch exits on `worker.on("drained", close)` [I,
 aws §4]. `drained` fires once the queue has been *continuously* empty for
-`drainDelay` (`BunQueueWorker.ts:1926-1953`) [S]. `drainDelay` defaults to
-`0` (`types.ts:1049-1050`) [S], so by default it fires on the first empty
-claim pass. Two cases make that unsafe for a summoned worker [I]:
+`drainDelay` (`#announceDrained`, `BunQueueWorker.ts:1968-1997`) [S].
+`drainDelay` defaults to `0` (`queue/types.ts:1054-1055`, resolved at
+`BunQueueWorker.ts:974`) [S], and at `0` it fires **on every empty pass**,
+"once per poll, forever" by its own account (`:1971-1974`), so by default it
+fires on the first one. Two cases make that unsafe for a summoned worker [I]:
 
 - **Orphaned jobs.** A worker summoned because a dead worker's jobs are
   `active` sees nothing claimable until those locks lapse. They lapse after up
   to `lockDuration` (30 s) [S]. Then the queue's stalled sweep has to run,
   and it runs under a sweep lease. A dead holder "leaves two of its own
   cadences of lease behind, and the next worker's pass takes it over within
-  one more", which is 90 s at the defaults (`BunQueueWorker.ts:2869-2877`,
-  `SWEEP_LEASE_LIFETIMES = 2` at `:167`) [S]. A worker that exits on its first
+  one more", which is 90 s at the defaults (`BunQueueWorker.ts:2906-2915`,
+  `SWEEP_LEASE_LIFETIMES = 2` at `:174`) [S]. A holder that closed
+  gracefully released the lease (`:1602`), and every sweep also runs once at
+  start (`#every`, `:4656-4677`), so after a *graceful* predecessor the wait is
+  only the lock (§4.0 R12). A worker that exits on its first
   empty pass leaves before it can recover them, and the controller summons
   again.
 - **Due work in other forms.** An empty claim pass says nothing about a job
   due in 2 s.
 
-So `drainAndExit()` decides idleness with the same `countDemand` reading the
+So `runSummoned()` decides idleness with the same `countDemand` reading the
 controller uses:
 
 ```
 idle ⇔ ownActive == 0
      ∧ demand.demand == 0
      ∧ ¬(demand.active > 0 ∧ otherLiveWorkers == 0)      // someone else's jobs, and no one alive to finish them
-     ∧ (demand.nextDueAt == null ∨ demand.nextDueAt > now + idleTimeout)
+     ∧ (demand.nextDueAt == null ∨ demand.nextDueAt > now + idleFor)
 ```
 
-It exits after `idle` has held continuously for `idleTimeout`, checked every
+It exits after `idle` has held continuously for `idleFor`, checked every
 `idleCheckInterval`. That costs one `countDemand` plus one `listWorkerRecords`
 per interval per summoned worker. At a 5 s interval it is small next to the
 worker's own claim polling [I].
@@ -1032,7 +1218,14 @@ paas-ssh §4.1]. A 5-second or 0-second grace against a 5-minute job means the
 job is abandoned and recovered as stalled. That is correct, but it is slow and
 it runs the job twice.
 
-### 5.3 `drainAndExit`
+### 5.3 `runSummoned`
+
+The names were approved on 2026-09-25 (§13.9): `runSummoned` (S4, was
+`drainAndExit`), its modes `"exit-on-idle"`, `"until-stopped"` and
+`"in-invocation"` (S5), its options with `idleFor` (S6, was `idleTimeout`),
+`SummonedExit` (S7, was `DrainExit`), `SUMMON_ENV` and `summonedFromEnv` with
+every key under `BUN_JOBS_SUMMON_*` (S8), and `WorkerSummonProvenance`
+(S15).
 
 ```ts
 /** The environment keys a summon passes, and `summonedFromEnv` reads. */
@@ -1041,12 +1234,12 @@ export const SUMMON_ENV = {
   id: "BUN_JOBS_SUMMON_ID",
   /** The summoner's kind. */
   kind: "BUN_JOBS_SUMMON_KIND",
-  /** `"launch"`, `"service"` or `"in-handler"`. */
+  /** `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`. */
   mode: "BUN_JOBS_SUMMON_MODE",
-  /** The namespace to consume. */
-  namespace: "BUN_JOBS_NAMESPACE",
+  /** The namespace to consume. Not `BUN_JOBS_NAMESPACE`, which is the runner's `CHILD_ENV.namespace` (§4.0 R19). */
+  namespace: "BUN_JOBS_SUMMON_NAMESPACE",
   /** The queue to consume. */
-  queue: "BUN_JOBS_QUEUE",
+  queue: "BUN_JOBS_SUMMON_QUEUE",
   /** The longest the worker may live, as a duration in ms (never a timestamp, §4.6). */
   maxLifetimeMs: "BUN_JOBS_SUMMON_MAX_LIFETIME_MS",
   /** The platform's grace after the stop signal, in ms, when the adapter knows it. */
@@ -1066,7 +1259,7 @@ export interface WorkerSummonProvenance {
    */
   handle?: string;
   /** The worker mode. */
-  mode: "launch" | "service" | "in-handler";
+  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
   /** When the worker will stop at the latest, epoch ms, computed by the worker at start. */
   deadlineAt?: number;
 }
@@ -1083,17 +1276,17 @@ export function summonedFromEnv(
 ): (WorkerSummonProvenance & { namespace?: string; queue?: string; maxLifetimeMs?: number; graceMs?: number }) | undefined;
 
 /** How a summoned worker drains and stops. */
-export interface DrainAndExitOptions {
+export interface RunSummonedOptions {
   /**
-   * `"launch"` (default): exit once idle for `idleTimeout`. `"service"`: never
-   * exit on idle, only on a signal or the deadline, because the platform
-   * restarts an exited service. `"in-handler"`: as `"launch"`, but resolve
+   * `"exit-on-idle"` (default): exit once idle for `idleFor`. `"until-stopped"`:
+   * never exit on idle, only on a signal or the deadline, because the platform
+   * restarts an exited service. `"in-invocation"`: as `"exit-on-idle"`, but resolve
    * instead of exiting and install no signal handlers, for a Lambda handler
    * that must return with no lease outliving the invocation [I, aws §2].
    */
-  mode?: "launch" | "service" | "in-handler";
-  /** How long the queue must stay idle (§5.1) before a launch worker exits, in ms. Defaults to `30_000`. */
-  idleTimeout?: number;
+  mode?: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /** How long the queue must stay idle (§5.1) before an `"exit-on-idle"` worker exits, in ms. Defaults to `30_000`. */
+  idleFor?: number;
   /** How often idleness is checked, in ms. Defaults to `5_000`. */
   idleCheckInterval?: number;
   /**
@@ -1110,27 +1303,36 @@ export interface DrainAndExitOptions {
   shutdownBuffer?: number;
   /**
    * How long the platform waits after its stop signal before SIGKILL, in ms.
-   * After a signal the worker closes with `timeout: grace − 1_000`. Defaults to
-   * `BUN_JOBS_SUMMON_GRACE_MS`, else `10_000` (Cloud Run's figure, the
-   * shortest common non-zero one).
+   * After a signal the worker closes gracefully only if the budget covers the
+   * target's close and `tailReserve`, and with `force` otherwise (§5.3, the
+   * close rule). Defaults to `BUN_JOBS_SUMMON_GRACE_MS`, else `10_000` (Cloud
+   * Run's figure, the shortest common non-zero one).
    */
   grace?: number;
   /**
+   * How much of the budget to keep for what `close()` does **after the
+   * target has closed** (deregistering, flushing, metrics, dead letters, the
+   * limiter, the driver), in ms. The target's own close is not part of it: that
+   * bound is derived from #166's constants (§5.3, the close rule). Defaults to
+   * `1_000` [I], unmeasured (Q38). A hard exit at `grace − 250` backs it up.
+   */
+  tailReserve?: number;
+  /**
    * Signals that start a graceful stop. Defaults to `["SIGTERM", "SIGINT"]`:
    * SIGINT because Fly sends it by default [V, paas-ssh §5.1]. `false`
-   * installs none. Ignored in `"in-handler"` mode.
+   * installs none. Ignored in `"in-invocation"` mode.
    */
   signals?: readonly NodeJS.Signals[] | false;
   /**
    * Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run
    * jobs over an hour [V, google-azure §3.2]. Defaults to `true` outside
-   * `"in-handler"`. Whether catching SIGTSTP delays the platform's pause is
+   * `"in-invocation"`. Whether catching SIGTSTP delays the platform's pause is
    * unverified [U].
    */
   pauseSignals?: boolean;
   /**
    * Call `process.exit(code)` once closed. Defaults to `true`, except in
-   * `"in-handler"` mode. `0` after an idle drain, a deadline or a signal;
+   * `"in-invocation"` mode. `0` after an idle drain, a deadline or a signal;
    * `1` only when `run()` itself failed. Exit 0 matters: ACI may restart a
    * non-zero exit even under `Never` [V, google-azure §4.4], Fly's default
    * policy restarts on non-zero [V, paas-ssh §5.1], and Railway's does too
@@ -1142,9 +1344,9 @@ export interface DrainAndExitOptions {
 }
 
 /** Why and how a summoned worker stopped. */
-export interface DrainExit {
+export interface SummonedExit {
   /** What ended it. */
-  reason: "idle" | "signal" | "deadline" | "error";
+  reason: "idle" | "parked" | "signal" | "deadline" | "error";
   /** The signal, when `reason` is `"signal"`. */
   signal?: string;
   /** How long it ran, in ms. */
@@ -1153,7 +1355,7 @@ export interface DrainExit {
   completed: number;
   /** Attempts it failed. */
   failed: number;
-  /** The exit code it used, or would have used in `"in-handler"` mode. */
+  /** The exit code it used, or would have used in `"in-invocation"` mode. */
   code: 0 | 1;
 }
 
@@ -1162,33 +1364,148 @@ export interface DrainExit {
  * `worker.run()`, installs the signal handlers, watches idleness and the
  * deadline, and calls `worker.close({ timeout })` exactly once.
  */
-export function drainAndExit(
+export function runSummoned(
   worker: BunQueueWorker<any, any>,
-  options?: DrainAndExitOptions,
-): Promise<DrainExit>;
+  options?: RunSummonedOptions,
+): Promise<SummonedExit>;
 ```
 
 The signal path relies on something the worker already does right.
 `close()` holds the process open for as long as closing takes, "whatever
 `waitToExit` says", precisely so that a caller awaiting it in a signal handler
-is not cut off halfway (`BunQueueWorker.ts:1554-1574`) [S]. `close()` also
-hands the sweep leases over at once (`:1592-1595`) [S], so the next summoned
+is not cut off halfway (`BunQueueWorker.ts:1568-1579`) [S]. `close()` also
+hands the sweep leases over at once (`:1602`) [S], so the next summoned
 worker does not wait out a lease.
+
+**Reconciled 2026-09-25: what `close({ timeout })` bounds, and what it does
+not** (§4.0 R14). `timeout` bounds only the wait for jobs in flight
+(`BunQueueWorker.ts:1652-1671`). What follows it is not bounded by it:
+`#closeTarget` (`:1708-1733`, capped at `DEFAULT_CLOSE_TIMEOUT` = 5,000 ms,
+`shared/constants.ts:28`), `#unregister`, the throughput flush, metrics, dead
+letters, the limiter and `driver.close()` (`:1683-1697`). The draft's `close
+with timeout: grace − 1_000` therefore overruns whenever that tail exceeds a
+second: a custom target whose `close()` hangs costs 5 s, which is **all** of
+Fly's default grace [I from S]. So, as the design now stands [D]:
+
+- `runSummoned` closes by **the close rule** below: gracefully, with the jobs'
+  `timeout` what is left once the target's close and `tailReserve` are
+  reserved, or with `force` when that leaves nothing;
+- and it arms a **hard backstop** at `grace − 250` ms after the signal that
+  calls `process.exit(code)` if `close()` has not returned. Exiting there
+  leaves the heartbeat record to lapse (three report intervals) and any
+  abandoned job's lock to lapse and be recovered as stalled: the
+  at-least-once contract, unchanged (§12.3). Without the backstop the
+  platform's SIGKILL does the same thing with no log line;
+- `mode: "in-invocation"` arms no backstop, since it must return, not exit; it
+  logs at `warn` when `close()` outlives the deadline instead.
+
+**Issue #166 sequences this.** A `"child-process"` attempt that is still being
+killed when `close()` returns is orphaned today (#166, reproduced on
+`8bc0d1e` and on #164). The fix in progress gives `FileTargetExecutor` a
+`close()` that waits for those kills, bounded by the same `#closeTarget` cap.
+A summoned worker on a file target that exits via `runSummoned` is exactly
+#166's reproduction, so `runSummoned` lands **after** #166, its tests include
+a `"child-process"` target whose attempt ignores its signal (no orphan may
+survive the exit), and its close rule budgets for #166's measured close times
+(below; §13.5, PR-4).
+
+**Per #166, pending its merge: the target's close, measured, and `force`.**
+The bun-jobs session's #166 fix (final design, not merged when this was
+written) gives these, all to be re-checked against the merged code [per #166,
+pending its merge]:
+
+- **`WorkerTargetExecutor.close?()` gains an optional `options?: { force?:
+  boolean }`**, additive: a custom target that ignores it keeps working.
+  `worker.close({ force: true })` kills a built-in target's children
+  **immediately**; an expired `timeout` gives them a grace period first — IPC
+  `close`, then `SIGKILL` at **4,000 ms**. `#closeTarget` passes `force`
+  through.
+- **Measured close times:** after a timeout expires with a runaway child,
+  about 4,000 ms plus up to 500 ms of reaping, so **always ≤ 4,500 ms**,
+  inside `#closeTarget`'s 5,000 ms bound; a well-behaved child takes about its
+  own cleanup time (**510 ms** measured, for 300 ms of cleanup after a 200 ms
+  `timeout`); `force` takes **~12 ms** measured, and **at most 500 ms** — the
+  only wait after the synchronous `SIGKILL` is the reap, capped at
+  `TARGET_CLOSE_REAP` on a ref'd timer (#166's test asserts `< 1,000 ms`). All
+  three constants derive from `DEFAULT_CLOSE_TIMEOUT` (5,000 ms,
+  `shared/constants.ts:28`) and are asserted in #166's unit test.
+- `close({ force: true })` already abandons jobs in flight without waiting:
+  their locks lapse and the stalled sweep returns them
+  (`BunQueueWorker.ts:1624-1647`) [S]. What #166 adds is that the target's
+  children die at once too, instead of after the graceful 4,000 ms.
+
+**The close rule** [D, from the figures above]. When `runSummoned` starts
+closing (a signal, the deadline, or idleness), let **`A`** be the time left
+until the hard backstop: `grace − 250` after a signal, `deadline − 250 − now`
+at the deadline. The target's close is bounded by **`targetClose`**, derived
+rather than chosen:
+
+| Target | `targetClose`, graceful | `targetClose`, `force` |
+|---|---|---|
+| built-in, with children (`"child-process"`; per #166, its other built-in targets with children) | **4,500 ms** = #166's 4,000 ms SIGKILL + ≤ 500 ms reaping, both from `DEFAULT_CLOSE_TIMEOUT` | **≤ 500 ms** (~12 ms measured), #166's reap cap |
+| `"in-process"` (no children) | ≈ 0 | ≈ 0 |
+| custom (`WorkerTargetFactory`) | 5,000 ms, `#closeTarget`'s cap (`DEFAULT_CLOSE_TIMEOUT`) | 5,000 ms: it may ignore `force` |
+
+Then:
+
+- **graceful** while `A ≥ targetClose(graceful) + tailReserve`: `close({
+  timeout: A − targetClose(graceful) − tailReserve })`, so the jobs get
+  everything the tail does not need;
+- **`force`** otherwise: `close({ force: true })`. The jobs get no wait and are
+  recovered as stalled, which is what SIGKILL would have done anyway, but the
+  record is unregistered, the leases handed over and the children killed
+  first, with a log line;
+- **the hard backstop at `grace − 250` stays** in both, for a tail that
+  overruns its reserve (a custom target that hangs).
+
+The arithmetic, with `tailReserve` at its 1,000 ms default [I] and `A` at the
+moment of the signal:
+
+| Platform (grace) | `A` | Child-process target: needs 4,500 + 1,000 | In-process target: needs 0 + 1,000 |
+|---|---|---|---|
+| **Railway** (0 s default) | −250 ms | **`force` from the start: the only option**, and SIGKILL may land before it completes; the recipe raises `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` (§5.2) | `force` from the start, the same |
+| **Fly** (5 s default, sent on SIGINT) | 4,750 ms | 5,500 > 4,750: **`force`**. A graceful close could take 4,500 ms in the target alone, leaving about 0.25 s for everything else before the backstop | graceful; jobs get 3,750 ms |
+| Cloud Run (10 s) | 9,750 ms | graceful; jobs get 4,250 ms | graceful; jobs get 8,750 ms |
+| ECS, Heroku, Kubernetes (30 s) | 29,750 ms | graceful; jobs get 24,250 ms | graceful; jobs get 28,750 ms |
+| Fly with `kill_timeout = 300` | 299,750 ms | graceful; jobs get 294,250 ms | graceful; jobs get 298,750 ms |
+
+A custom target on Fly's default grace needs 5,000 + 1,000 even when forced,
+so the backstop at 4,750 ms may fire; that is what the backstop is for. The
+rule is evaluated once, when closing starts: the budget only shrinks, so a
+graceful choice never needs revisiting except by the backstop.
+
+**Four more rules the reconciliation adds** [D]:
+
+- **Install the signal handlers before `run()` connects.** A platform may stop
+  a unit during boot; a signal before `run()` resolves still closes and exits
+  0.
+- **A second SIGINT exits at once**, with code 130, so a developer's Ctrl-C
+  is not held hostage by a drain.
+- **SIGCONT resumes only a pause SIGTSTP made.** `resume()` clears the local
+  pause unconditionally (`BunQueueWorker.ts:1367-1373`), so without a flag a
+  SIGCONT would undo an operator's pause.
+- **A parked summoned worker exits.** A worker an operator parked
+  (`state: "stopped"`) serves nothing and costs money; it exits with reason
+  `"parked"` after `idleFor`, whatever demand says [D].
 
 ### 5.4 Registration, so the guard releases
 
-On `BunQueueWorkerOptions` [D]:
+On `BunQueueWorkerOptions` (`queue/types.ts:910`) [D] — the option is
+`summon`, the record's name (§13.9 S15):
 
 ```ts
 /**
  * Where this worker was summoned from, written on its heartbeat record as
  * `summon` so the controller can release the attempt and the Workers page can
  * show a badge. Pass `summonedFromEnv()`. Absent for an ordinary worker.
+ * With `reportInterval: 0` it is a `ConfigError`: a worker that never reports
+ * can never release its attempt (§4.0 R3).
  */
-summoned?: WorkerSummonProvenance;
+summon?: WorkerSummonProvenance;
 ```
 
-On `WorkerInfo` (`drivers/driver.ts:1426`) [D]:
+On `WorkerInfo` (`drivers/driver.ts:1427-1591`, beside Phase 1's `target`,
+`:1565-1579`) [D]:
 
 ```ts
 /**
@@ -1199,24 +1516,42 @@ On `WorkerInfo` (`drivers/driver.ts:1426`) [D]:
 summon?: WorkerSummonProvenance;
 ```
 
-The first record is written right after `ensureQueue` (`:1304`), by a report
-that is not awaited (`:1322`) [S]. So an attempt is released about one driver
-round trip after the summoned worker connects [I, paas-ssh §2].
+The first record is written after `ensureQueue` (`BunQueueWorker.ts:1311`),
+by a report that is not awaited (`:1329`), whose first write reads the live
+records once for a duplicate id (`:4161-4164`) before it writes (`:4177`) [S].
+So an attempt is released about **two** driver round trips after the summoned
+worker's `ensureQueue`, plus one check interval of the controller's [I; the
+draft said one round trip].
+
+**Where it is written, and the precedent.** `#report()` writes `summon`
+beside `sweeps` and Phase 1's `target` (`BunQueueWorker.ts:4202-4206`),
+always from the value the worker was built with. The type lives in
+`shared/workers.ts` beside `WorkerTargetInfo` (`:230-263`), so the change
+inside `lib/drivers/**` is additive, exactly as Phase 1's was
+(`worker-runtimes.md` §4.2.4). The DTO follows the same six places Phase 1
+touched for `target`: `WorkerDto` (`api/contract/types.ts:1789-1898`),
+`WorkerSchema` (`api/schemas/workers.ts:185-258`), `toWorkerDto`
+(`api/serialize.ts`, which copies each optional field explicitly), the
+`DeepEqual` drift assertion in `__tests__/api/api-contract.type-test.ts`, the
+round trip in `__tests__/api/api-sources.test.ts`, and the OpenAPI component
+list pinned in `__tests__/api/api-workers.test.ts`. `summon.handle` is
+infrastructure (a task ARN), so the serializer withholds it unless
+`exposeHosts` is on, as §9.2 says [D].
 
 The recipe:
 
 ```ts
 // worker.ts: the one file every summoned platform runs
-import { BunJobs, drainAndExit, summonedFromEnv } from "@kingsleyweb/bun-jobs";
+import { BunJobs, runSummoned, summonedFromEnv } from "@kingsleyweb/bun-jobs";
 import { handlers } from "./jobs";
 
 const summon = summonedFromEnv();
 const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver: { url: process.env.JOBS_URL! } });
 const worker = jobs.worker(summon?.queue ?? "emails", handlers, {
-  summoned: summon,          // provenance on the record → the controller releases the attempt
+  summon,                    // provenance on the record → the controller releases the attempt
   concurrency: 8,
 });
-await drainAndExit(worker, { idleTimeout: 30_000 });   // exits the process
+await runSummoned(worker, { idleFor: 30_000 });   // exits the process
 ```
 
 And for default Lambda, where the worker must live **inside** one invocation
@@ -1224,9 +1559,9 @@ And for default Lambda, where the worker must live **inside** one invocation
 
 ```ts
 export const handler = async (_event: unknown, context: { getRemainingTimeInMillis(): number }) => {
-  const worker = jobs.worker("emails", handlers, { summoned: summonedFromEnv() });
-  return await drainAndExit(worker, {
-    mode: "in-handler",
+  const worker = jobs.worker("emails", handlers, { summon: summonedFromEnv() });
+  return await runSummoned(worker, {
+    mode: "in-invocation",
     deadline: () => Date.now() + context.getRemainingTimeInMillis(),
   });
 };
@@ -1255,14 +1590,18 @@ plan sides with `google-azure.md`**, for three reasons:
 2. `counts` returns a record by state, so a paused queue still reports
    `waiting`, and KEDA reads exactly one number [V~, google-azure §1.3].
 3. On SQL and Mongo, `count()` is a `GROUP BY` over retained history
-   (`sql-driver.ts:4302-4313`; `mongo-driver.ts:4277-4287` per [S,
-   google-azure]). KEDA polls every 30 s per scaler.
+   (`drivers/sql/sql-driver.ts:4320-4340`, plus #159's `UNION ALL` branches;
+   `drivers/mongo/mongo-driver.ts:4277-4287`) [S, re-read at `0a8e580`]. KEDA
+   polls every 30 s per scaler.
 
 `paas-ssh.md` also raises one point the route must answer. KEDA counts running
 *Jobs*, not bun-jobs workers, so a worker started elsewhere does not reduce
 KEDA's count [I, paas-ssh §6.2]. That is open question Q12.
 
 ### 6.2 Routes [D]
+
+The paths (S11) and the response fields (S12) are approved as below; the
+action is `queues.summon` (S17).
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
@@ -1279,7 +1618,7 @@ browser-safe `api/contract/types.ts`, beside `JobCountsDto`.
 [W: keda.sh metrics-api, 2026-09-25]. `createJobsApi` refuses to start
 without `authorize` unless `allowUnauthenticated: true` [S, google-azure
 §1.3]. It has static `readOnly` and `actions` restrictions
-(`api/config.ts:520`, `:562`) [S]. The recipe mounts a
+(`api/config.ts:527`, `:569`) [S, re-read at `0a8e580`]. The recipe mounts a
 **second** `createJobsApi` for the scaler:
 
 ```ts
@@ -1290,8 +1629,15 @@ const scalerApi = createJobsApi({
 ```
 
 It can read demand and nothing else. `queues.summon` is a write that spends
-money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS` as a
-separate action that an operator grants on purpose [D].
+money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS`
+(`api/contract/constants.ts:19-68`), **`JOBS_API_MUTATIONS`** (`:84-117`, so
+`readOnly: true` removes it) and **`JOBS_API_OPT_IN_ACTIONS`** (`:136-144`,
+so it is off unless `actions` names it, like `workers.configure`) [D; the
+draft named only the first, and the other two sets are what "granted on
+purpose" means in this code]. The demand routes need no driver feature
+(`countDemand` is optional, with a fallback), so they carry no `requires`;
+`/meta` gains `features.demand` from `DRIVER_FEATURES` (`api/routes/meta.ts:62`)
+saying whether the figures are exact [D].
 
 ### 6.3 Prometheus exposition: worth it
 
@@ -1306,57 +1652,85 @@ It serves three consumers the JSON cannot:
 It is about 40 lines of text rendering [I]:
 
 ```
-# TYPE bun_jobs_queue_demand gauge
-bun_jobs_queue_demand{ns="shop",queue="emails"} 15
-bun_jobs_queue_outstanding{ns="shop",queue="emails"} 16
-bun_jobs_queue_waiting{ns="shop",queue="emails"} 12
-bun_jobs_queue_due{ns="shop",queue="emails"} 3
-bun_jobs_queue_stalled{ns="shop",queue="emails"} 0
-bun_jobs_queue_active{ns="shop",queue="emails"} 1
-bun_jobs_queue_workers{ns="shop",queue="emails"} 0
-bun_jobs_queue_paused{ns="shop",queue="emails"} 0
+# TYPE bunjobs_queue_demand gauge
+bunjobs_queue_demand{ns="shop",queue="emails"} 15
+bunjobs_queue_outstanding{ns="shop",queue="emails"} 16
+bunjobs_queue_waiting{ns="shop",queue="emails"} 12
+bunjobs_queue_due{ns="shop",queue="emails"} 3
+bunjobs_queue_stalled{ns="shop",queue="emails"} 0
+bunjobs_queue_active{ns="shop",queue="emails"} 1
+bunjobs_queue_workers{ns="shop",queue="emails"} 0
+bunjobs_queue_paused{ns="shop",queue="emails"} 0
 ```
 
 How KEDA's `valueLocation` addresses a Prometheus sample was not confirmed by
 the re-read (Q13). This is a metric *source*, not a general metrics exporter.
-`opentelemetry.md` owns the latter, and the names here should be checked
-against it before 1.5b lands.
+`opentelemetry.md` owns the latter. **Checked 2026-09-25:** its catalogue
+(§5) names every instrument under `bunjobs.` (`bunjobs.queue.jobs`,
+`bunjobs.worker.count`, …) with the queue as `messaging.destination.name`,
+which an OpenTelemetry Prometheus exporter renders as `bunjobs_…`. The
+draft's `bun_jobs_…` names would have sat beside those under a different
+prefix, so the metrics are `bunjobs_queue_*` (§13.9 S12, approved). A `capped` sample
+(`bunjobs_queue_demand_capped`, 0 or 1) says when the figures are lower
+bounds (§6.4).
 
-### 6.4 `countDemand`: the driver method
+### 6.4 `countDemand`: the driver method, specified before code
+
+**Rewritten 2026-09-25 as the spec for PR-1** (§13.2). The bun-jobs session,
+which implements it, asked for four things settled here before any code,
+because they are where count work went wrong this month (#159): exactly which
+states count; whether due work is read through promotion or counted directly;
+what the cap returns; and a measured index plan per driver. The first three
+are decided below [D]. The fourth is a plan per driver **marked unmeasured**:
+measuring it is PR-1's first task, and nothing in the table is a finding until
+then. The name is `countDemand`, its answer `DemandCounts` (§13.9 S9).
+
+**Corrected 2026-09-26 by the bun-jobs session's review** (it implements
+PR-1), each checked against the code: D1 now requires an explicit null guard
+on the JavaScript drivers; D2's "counted twice at worst, never missed" is
+narrowed to what holds for a claim; and the lockless-row contract case runs on
+every driver and asserts agreement with `countJobs`, not a fixed answer. The
+[review corrections](#review-corrections-2026-09-26) at the end of this
+section give each one's evidence.
 
 ```ts
-/** On `QueueDriver`. */
+/** On `QueueDriver` (drivers/driver.ts), beside `countJobs` (:2242). */
 /**
  * How much work a worker could claim at `now`, for summoning and the depth
- * endpoint: one bounded read, never a scan of retained history.
+ * endpoint: a few bounded reads, never a scan of retained history.
  *
  * Optional. Without it `readDemand` falls back to `countJobs`,
- * `nextDelayedAt`, `isQueuePaused` and `listWorkers`, which is correct as a
- * trigger but scans history on some backends. A driver must never count
- * `completed`, `dead` or `failed`-and-exhausted jobs here.
+ * `nextDelayedAt`, `isQueuePaused` and `listWorkerRecords`, which is correct
+ * as a trigger but scans history on some backends. Never counts `completed`,
+ * `dead` or `waiting-children`, and never writes: it promotes nothing,
+ * recovers nothing and publishes nothing.
  */
 countDemand?: (
   q: QueueRef,
   now: number,
   options: {
-    /** Stop counting each figure at this many; the answer then reports `capped`. */
+    /** Count each figure up to this many; past it the figure is `cap` and `capped` is `true`. A positive integer. */
     cap: number;
   },
 ) => Promise<DemandCounts>;
 
-/** What `countDemand` answers. */
+/** What `countDemand` answers. Each figure is at most `cap`. */
 export interface DemandCounts {
-  /** Jobs in `waiting`, up to `cap`. */
+  /** Jobs in `waiting`, whatever their `runAt` (see D1). */
   waiting: number;
-  /** Jobs in `delayed` or `failed` (retry pending) with `runAt <= now`, up to `cap`. */
+  /** Jobs in `delayed` or `failed` (retry pending) whose `runAt <= now`: due, not yet promoted. */
   dueNow: number;
-  /** Jobs in `active` with `lockExpiresAt <= now`, up to `cap`. */
+  /**
+   * Jobs in `active` whose lock has lapsed: `lockExpiresAt !== null && lockExpiresAt <= now`.
+   * A job with no lock is never stalled — and on a JavaScript driver the null
+   * test must be explicit, since `null <= now` is `true` there (D1).
+   */
   stalled: number;
-  /** Jobs in `active`, up to `cap`. */
+  /** Jobs in `active`, lapsed or not — the same figure `countJobs(q).active` reports on this driver. */
   active: number;
-  /** The earliest `runAt > now` among delayed and retry-pending jobs, or `null`. */
+  /** The earliest `runAt > now` among `delayed` and `failed` jobs, or `null` for none. Never capped. */
   nextDueAt: number | null;
-  /** Whether any figure reached `cap`. */
+  /** `true` when at least one figure's true value is above `cap`, so the figures are lower bounds. */
   capped: boolean;
 }
 ```
@@ -1364,16 +1738,133 @@ export interface DemandCounts {
 `paused` and `workers` are not part of it. `readDemand` adds them from
 `isQueuePaused` and `listWorkerRecords`, which every driver has.
 
-| Driver | Implementation | Cost per call |
-|---|---|---|
-| **Redis** | One script: `ZCARD wait`; `ZCOUNT delayed -inf now` + `ZCOUNT failed -inf now`; `ZCOUNT active -inf now` (active is scored by `lockExpiresAt` [S, google-azure §1.1]); `ZCARD active`; the first member ≥ now of `delayed` and `failed` for `nextDueAt` | O(log n) per figure, one round trip [I, google-azure §6.4]. No cap needed, but it is honoured for a uniform contract |
-| **SQL** (Postgres, MySQL, MariaDB, SQLite) | Four counts, each a range on an existing index prefix: `waiting` on `ix_claim (ns, queue, state, …)`; due on `ix_due (ns, queue, state, run_at)` for `delayed` and `failed`; stalled on `ix_lock (ns, queue, state, lock_expires_at)` [S, google-azure §1.1]. Each is written as `SELECT COUNT(*) FROM (SELECT 1 … LIMIT cap)` | **O(min(matching rows, cap))**, not O(log n). A B-tree range count still walks the range. That is still bounded by the *backlog*, not the retained history, and the cap bounds it absolutely [I]. The plan is [U] until `EXPLAIN`ed (Q10) |
-| **Mongo** | `countDocuments` with `limit: cap` on `ns_1_queue_1_state_1_runAt_1` [S, google-azure §1.1] for waiting and due. Stalled and active need a `lockExpiresAt` index. Whether one exists: check in 1.5a | O(min(n, cap)) where indexed [I] |
-| **Memory** | Walk the queue's in-heap sets | in-process; irrelevant, since summoning refuses it (§4.9) |
-| **File** | The same over its index | one host only |
+#### D1. Which states count as demand, exactly
 
-`cap` defaults to `10_000` in `readDemand` [D]. A scaler targeting "one pod
-per 500 jobs" needs no more resolution than that.
+| State, as stored | Counted in | Why |
+|---|---|---|
+| `waiting` | `waiting` | Claimable now, or within clock skew. **No `runAt` predicate**, although every claim path adds `runAt <= now` (SQL `claimWindowFilter`, `drivers/sql/dialect.ts:867-879`; memory `#firstClaimable`) [S]: a waiting job with a future `runAt` exists only when the process that promoted or added it has a clock ahead of the reader's, it needs a worker all the same, and leaving the predicate off keeps the figure equal to `countJobs(q).waiting` — #159's rule that a count must agree with the count beside it |
+| `delayed`, `runAt <= now` | `dueNow` | Due, and waiting only for a worker's promotion (D2) |
+| `failed`, `runAt <= now` | `dueNow` | `failed` is "this attempt failed and another is due at `runAt`" (`drivers/driver.ts:788-796`) [S]: a due retry, the same case |
+| `delayed` or `failed`, `runAt > now` | nowhere; the earliest is `nextDueAt` | Not yet work; `runSummoned` and the controller's one-shot timer read `nextDueAt` |
+| `active`, lock lapsed (`lockExpiresAt` not null and `<= now`) | `stalled` **and** `active` | Its worker died holding it; only a worker's stalled sweep returns it (§4.0 R12). **A row with no lock is never `stalled`, and every driver must say so explicitly.** In SQL a `NULL` never matches `<=`; in Mongo `$lte` does not match `null`. **In JavaScript it does**: `lockExpiresAt` is `number \| null` (`drivers/driver.ts:1119`), `null` coerces to `0`, and `null <= Date.now()` is `true` (while `undefined <= Date.now()` is `false`). So the memory and file drivers must guard as the memory driver's `recoverStalled` does, `job.lockExpiresAt === null \|\| job.lockExpiresAt > now` → skip (`memory-driver.ts:2334-2336`). Without the guard every lockless `active` row reads as stalled, which no sweep ever returns (`recoverStalled` skips it), so the controller would summon for it forever. Whether a lockless row is in `active` is the next row's question |
+| `active`, no lock (`lockExpiresAt` null) | `active` **exactly when `countJobs(q).active` counts it on that driver**; never `stalled` | #159 added `LOCK_NOT_NULL` (`drivers/sql/schema.ts:596`) to the `active` count only where it buys a partial index — **Postgres and SQLite** (`#listNotNull`, `sql-driver.ts:4502-4506`; `hasPartialIndexes`, `schema.ts:615`). **MySQL, MariaDB, memory, file and Mongo** count the row. `active` follows `countJobs` on each, which is D1's rule of agreeing with the count beside it |
+| `active`, lock live | `active` only | Somebody holds it. Whether that somebody is alive is `readDemand`'s `orphaned`, from the worker records, not the driver's business |
+| `completed`, `dead` | never | Finished |
+| `waiting-children` | never | Not runnable until its children settle (`drivers/driver.ts:804`). The crash-repair case is §4.2's accepted gap |
+| any state, **queue paused** | the driver counts as usual | `countDemand` ignores pause. `readDemand` sets `demand = outstanding = 0` when `isQueuePaused`, keeps the raw figures, and reports `paused: true`, so the depth endpoint shows a paused backlog as a backlog that demands nothing |
+
+So `demand = paused ? 0 : waiting + dueNow + stalled` and
+`outstanding = paused ? 0 : demand + (active − stalled)`. **The draft's
+`outstanding = demand + active` counted a stalled job twice** (it is in both
+`stalled` and `active`); the subtraction is the correction [D].
+
+#### D2. Due work is counted directly, never read through promotion
+
+`countDemand` counts `delayed`/`failed` rows with `runAt <= now` where they
+stand. It does not call `promoteDelayed`, and does not require promotion to
+have run. Why [D]:
+
+- **The controller must not write.** `promoteDelayed` moves jobs (a write per
+  batch) and is a worker's liveness duty (`BunQueueWorker.ts:2162`, on a 1 Hz
+  timer). A controller in a producer or the API process that promoted would be
+  a partial worker: it would move jobs with nobody to claim them, publish
+  nothing (`#promote` emits no `promoted`), and add a write to every poll.
+- **With no worker, promotion never runs**, so the figures would be wrong in
+  exactly the case summoning exists for (decision 2).
+- **With a worker, the two paths disagree only transiently**, and the
+  controller does not care which side a job is on: `dueNow + waiting` is the
+  same total before and after a promotion.
+
+**The one hazard is a read that straddles a promotion**, and it is handled by
+order, not by locking. Where the driver's reads are separate statements
+(Mongo, file), a job promoted between a `waiting` read and a `dueNow` read is
+counted in neither. So **`countDemand` reads the source states before the
+destination state**: `stalled` and `active` first (recovery moves `active` →
+`waiting`), then `dueNow` (promotion moves `delayed`/`failed` → `waiting`),
+then `waiting`. A job that **recovery or promotion** moves mid-call is then
+counted twice at worst, never missed; an over-count by the jobs that moved
+during one call is harmless to a trigger and to a scaler [I].
+
+**A claim moves the other way** (`waiting` → `active`), so the order cannot
+cover it: a job claimed between the `active` read and the `waiting` read is in
+neither (corrected 2026-09-26). Precisely [D]:
+
+- **`demand` is never under-counted.** A claimed job is not demand, so missing
+  it is correct, and `runSummoned`'s `demand == 0` exit stays sound.
+- **`outstanding` can under-count on the separate-read drivers (Mongo, file)**
+  by the jobs claimed during one call: transient and small, and harmless to a
+  scaler, which reads again next poll. A contract case built on "never
+  missed" for `outstanding` would be wrong in general and flaky under load, so
+  there is none.
+- **The single-snapshot drivers are unaffected.** Where one statement or one
+  script serves all figures (Redis's script, SQL's single `SELECT`), the read
+  is one snapshot, so neither a promotion nor a claim can straddle it and
+  order does not matter — one reason they are the stronger implementations.
+  See the per-driver rows. The contract suite asserts
+the order where it matters, with a driver whose reads are interleaved with a
+promotion (negative control: reversing the order must lose the job).
+
+#### D3. The cap
+
+- **Each figure is counted up to `cap + 1` and reported as `min(count,
+  cap)`.** `capped` is `true` iff at least one figure's count reached `cap +
+  1`, which distinguishes "exactly `cap`" from "more than `cap`". A driver
+  whose count is O(log n) regardless (Redis) applies the same `min` so the
+  contract is uniform.
+- **`nextDueAt` is never capped**: it is one probe.
+- **`readDemand`'s default `cap` is `10_000`**, raised to
+  `maxWorkers × jobsPerWorker` when that is finite and larger, so a capped
+  `outstanding` can never under-state `wanted` [D]. `demand` and `outstanding`
+  are sums of capped figures, so they can exceed `cap` (up to 3× and 4×); when
+  `capped` they are lower bounds.
+- **What the controller does with it:** nothing different. It reads
+  `demand > 0` and `ceil(outstanding / jobsPerWorker)` clamped to
+  `maxWorkers`, and a lower bound serves both, by the rule above.
+  `runSummoned` reads only `demand == 0`, which a cap cannot hide.
+- **What the depth endpoint does with it:** returns `capped` in the JSON, and
+  `bunjobs_queue_demand_capped` in the exposition (§6.3). The endpoint takes
+  no `cap` from the caller [D]: a scaler targeting one pod per 500 jobs needs
+  no more than 10,000.
+
+#### D4. The index plan per driver — **unmeasured**; measuring it is PR-1's first task
+
+#159 measured that a *grouped* count cannot absorb a per-state predicate the
+way a listing can (`countJobs`: Postgres 10.8 ms → 141.8 ms, SQLite 3.1 ms →
+37.7 ms), while a **per-state** count with a predicate cost nothing (1.52 ms
+against 1.49 ms) (`drivers/sql/sql-driver.ts:4519-4556`, and #159's commit)
+[S]. So every figure below is a **per-state** count, never a `GROUP BY`. That
+is the design reason to expect it to be cheap; it is not a measurement of it.
+No index is assumed to serve a figure until its plan is shown.
+
+| Driver | Reads, in order (D2) | Index each should use | Expected cost, **[U] until measured** |
+|---|---|---|---|
+| **Memory** | synchronous, one pass: `waiting` from the waiting index; `dueNow`/`nextDueAt` from `scheduled` (`memory-driver.ts:213-220`); `active`/`stalled` over the queue's jobs | in-heap sets; whether an `active` index exists is to be read in PR-1 | irrelevant to summoning (§4.9 refuses the driver); must be correct for the endpoint and tests |
+| **File** | `readdir` of `index/active` (markers prefixed by lock expiry, `file-driver.ts:3507-3516`), then `index/delayed` and `index/failed` (prefixed by due time, `:3852-3873`), then `index/waiting` | sorted marker names; `stalled`/`dueNow` stop at the first prefix `> now` | O(entries in those directories) per call: one host only |
+| **SQL**, one `SELECT` of scalar subqueries, each `SELECT COUNT(*) FROM (SELECT 1 FROM jobs WHERE ns = ? AND queue = ? AND … LIMIT cap + 1) t` | `stalled`: `state = 'active' AND lock_expires_at <= now`; `active`: `state = 'active'` plus exactly `#listNotNull(["active"])` (so it equals `countJobs().active`, `sql-driver.ts:4502-4517`); `dueNow`: one subquery per state for `delayed` and `failed`, `run_at <= now`; `waiting`: `state = 'waiting'`; `nextDueAt`: per-state `MIN(run_at) … AND run_at > now`, as `nextDelayedAt` does (`:6818-6850`) | `ix_<t>_lock (ns, queue, state, lock_expires_at)`, partial on `LOCK_NOT_NULL` where the engine has partial indexes (`schema.ts:935-941`); `ix_<t>_due (ns, queue, state, run_at)` (`:927-931`); `ix_<t>_claim (ns, queue, state, priority, created_at[, id])` (`:913-925`) or `ix_due` for `waiting` | O(min(matching rows, cap + 1)) per figure: a bounded range walk, never the retained history. One statement is one snapshot on all four engines [I: statement-level consistent read], so D2's order is moot here |
+| ↳ Postgres | as above | partial `ix_lock` | [U] `EXPLAIN (ANALYZE, BUFFERS)` |
+| ↳ SQLite | as above; whether the per-state `MIN` or the `IN` form wins, as `nextDelayedAt` found (`:6824-6831`) | partial `ix_lock` | [U] `EXPLAIN QUERY PLAN` plus timing |
+| ↳ MySQL | as above; `LIMIT` inside a derived table is allowed (inside an `IN` subquery it is not) | plain `ix_lock` (no partial indexes, `hasPartialIndexes`, `schema.ts:615-617`) | [U] `EXPLAIN ANALYZE` |
+| ↳ MariaDB | as MySQL | plain `ix_lock` | [U] `ANALYZE FORMAT=JSON` |
+| **Redis**, one Lua script | `ZCOUNT active -inf now` (active is scored by `lockExpiresAt`), `ZCARD active`, `ZCOUNT delayed -inf now` + `ZCOUNT failed -inf now` (scored by `runAt`), `ZCARD wait`, and `ZRANGEBYSCORE <set> (now +inf LIMIT 0 1` on `delayed` and on `failed` for `nextDueAt`. Scores per set: `scripts.ts:1652-1658` | sorted-set scores; every key of a queue is in one slot (`keys.ts:250`) | O(log n) per figure, one round trip, atomic [I]; [U] timing |
+| **Mongo**, one `countDocuments(filter, { limit: cap + 1 })` per figure, in D2's order, plus one `find().sort({ runAt: 1 }).limit(1)` per scheduled state | `stalled`: `{ ns, queue, state: "active", lockExpiresAt: { $lte: now } }`; `active`: `{ ns, queue, state: "active" }` (as `countJobs`, which has no predicate, `mongo-driver.ts:4277-4287`); `dueNow`: per state `{ state, runAt: { $lte: now } }`; `waiting`: `{ state: "waiting" }` | `LOCK_INDEX` (`mongo-driver.ts:1136-1142`); `PROMOTION_INDEX` (`:1127-1133`); `CLAIM_INDEX` (`:1117-1124`). **Not** `ns_1_queue_1_state_1_runAt_1`, which the draft named and which is retired (§4.0 R9) | O(min(n, cap + 1)) per figure if the plan is a covered `IXSCAN`; seven round trips, not atomic, hence D2's order; [U] `explain("executionStats")` |
+
+**The measurement (PR-1's first task, before any implementation is
+reviewed):**
+
+- **Fixture:** #159's live mix, 8 queues × 49,064 rows (64 `active`, 5,000
+  `waiting`, 2,000 `delayed`, 40,000 `completed`, 1,000 `failed`, 500 `dead`,
+  500 `waiting-children`) (`sql-driver.ts:4540-4544`), plus a variant with
+  10× the `completed` history.
+- **Per driver and dialect:** the plan (`EXPLAIN` and its equivalents), and
+  medians through the driver, `countDemand` against `countJobs` as the control.
+- **The claim to prove:** `countDemand`'s time does not move with retained
+  history (the 10× variant), while `countJobs`' does. **Negative control:**
+  the same statement with its index dropped (or hinted away) must show the
+  scan, so a flat line is shown to come from the index and not from a small
+  table.
+- **Where it lands:** the numbers go into a comment beside each
+  implementation, the way `#countNotNull`'s do (`sql-driver.ts:4519-4569`),
+  and into this table, replacing each [U]. Q10 closes with it.
 
 **The fallback**, for a third-party driver without `countDemand`
 [I, google-azure §6.4]:
@@ -1385,6 +1876,33 @@ demand = waiting + (nextDelayedAt ≤ now ? 1 : 0) + (active > 0 && workers == 0
 It is correct as a boolean trigger. It under-counts `dueNow`, and its `countJobs`
 may scan history. `QueueDemand.exact = false` says so, and the controller's
 poll logs one `warn` naming the driver.
+
+**Contract-suite cases** (`__tests__/helpers/driverContract.ts`, run by all
+six driver test files): exact figures on a seeded queue; `capped` exactly when
+a figure exceeds `cap` (at `cap` and at `cap + 1`); a paused queue's figures
+unchanged; `completed`, `dead`, `waiting-children` never counted; a due
+`failed` counted in `dueNow`; a lockless `active` row, **on every driver**,
+never in `stalled` and in `active` exactly when `countJobs(q).active` counts
+it on that engine (so the assertion compares the two, never a fixed answer:
+it is excluded on Postgres and SQLite, counted on MySQL, MariaDB, memory, file
+and Mongo); `countDemand` writes nothing (the queue's state and event log are
+byte-identical after); and D2's order for promotion and recovery (not for a
+claim, D2). **Planting the lockless row** is an `UPDATE` on SQL and an
+`updateOne` on Mongo, but on memory and file there is no SQL: it needs a
+driver-level write (the driver's own job store or index files, through a test
+seam), which the helper must provide per driver.
+
+#### Review corrections (2026-09-26)
+
+The bun-jobs session, which implements PR-1, reviewed this section before any
+code and corrected three points. Each was checked against the code; the
+first was also confirmed independently by the features session.
+
+| # | Where | What the draft said | Correction | Evidence |
+|---|---|---|---|---|
+| 1 | D1, the lapsed-lock row | "A row with no lock never matches `<=`" | True in SQL, **false in JavaScript**: `null <= now` is `true`. The memory and file drivers need an explicit `lockExpiresAt === null` guard, modelled on `recoverStalled` | `lockExpiresAt: number \| null` (`drivers/driver.ts:1119`); `null <= Date.now()` → `true`, `undefined <= Date.now()` → `false`; `memory-driver.ts:2334-2336`. Without the guard, `stalled` reports rows no sweep returns, and the controller summons for them forever |
+| 2 | D4, the contract case | a lockless row "(SQL only, planted) in neither `stalled` nor `active`, matching `countJobs`" | On **all** drivers: never in `stalled`; in `active` exactly when `countJobs(q).active` counts it there. A fixed answer is unsatisfiable on four engines. Memory and file plant the row with a driver-level write | `countJobs().active` excludes a lockless row only on Postgres and SQLite (`#listNotNull`, `sql-driver.ts:4502-4506`; `LOCK_NOT_NULL`, `schema.ts:596`; `hasPartialIndexes`, `schema.ts:615`); MySQL, MariaDB, memory and file count it |
+| 3 | D2, the read order | "counted twice at worst, never missed" | Holds for recovery and promotion, not for a claim (`waiting` → `active`). `demand` is never under-counted; `outstanding` can under-count by the jobs claimed during one call on Mongo and file; SQL and Redis read one snapshot and are unaffected. D2's negative control (reversing the order must lose a promoted job) stands | the order is source-before-destination for recovery and promotion; a claim's source (`waiting`) is read last |
 
 ---
 
@@ -1402,7 +1920,7 @@ with the published conformance kit against a `fakePlatform()` fake (§11.1).
 | # | Summoner | Style | Dedupe | Default `bootBudget` [I] | Why here |
 |---|---|---|---|---|---|
 | 1 | **ECS `RunTask`**, `./providers/aws` | launch | `clientToken`, per cluster, ≤ 24 h [V, aws §4.1] | 180 s | One adapter covers Fargate, Fargate Spot, ECS Managed Instances and ECS-on-EC2, which differ only in `launchType`/`capacityProviderStrategy` [V, aws §1]. It has the best dedupe of any launch API here. It exercises the SigV4 signer, the largest shared piece |
-| 1b | **Lambda `Invoke` (Event)**, same subpath | launch, in-handler worker | **none**; async may deliver twice [V, aws §4.4] | 60 s | About 20 lines once the signer exists [I, aws §1]. Short jobs only (900 s [V]). The in-handler mode is exactly what Temporal shipped [V-plan] |
+| 1b | **Lambda `Invoke` (Event)**, same subpath | launch, `"in-invocation"` worker | **none**; async may deliver twice [V, aws §4.4] | 60 s | About 20 lines once the signer exists [I, aws §1]. Short jobs only (900 s [V]). The `"in-invocation"` mode is exactly what Temporal shipped [V-plan] |
 | 2 | **Fly Machines**, `./providers/fly` | **wake**: start one of a pool of pre-created Machines | Machine id; Machines lease [V, paas-ssh §5.1] | 60 s | Every row verified and favourable: REST start, a vendor-stated sub-second wake, stops on exit, per-second billing [V, paas-ssh §9]. The smallest adapter. It exercises the SIGINT and 5-second grace path |
 | 3 | **Cloud Run jobs** and **worker pools**, `./providers/google` | jobs: launch. Pools: **scale** | jobs: **none** [V~]. Pools: idempotent count [I] | 180 s: Direct VPC may add "a minute or more" [V, google-azure §3.2] | Google documents both for this workload [P]. Pools are the first-party scale-style path. Exercises the token helper |
 | 4 | **ACA manual jobs**, `./providers/azure` | launch | **none**; the name is platform-generated [V, google-azure §4.2] | 180 s | For immediacy on Azure. **The recommended Azure path is ACA event jobs on the depth endpoint (§2.2)**, which needs no summoner |
@@ -1439,8 +1957,63 @@ summon facet's stability gate needs ([`compute-provider-plugins.md`](compute-pro
 - ACI [V, google-azure §4.4].
 - Lambda MicroVMs, once their endpoint is known [U, aws §4.7].
 
-**Railway** waits until someone confirms that `deploymentRestart` works on a
-Completed deployment [U, paas-ssh §4.1].
+**Railway: candidate — via Railway Sandboxes; the service path is still
+conditional on Q25.** Researched 2026-09-26 (user-prompted) in
+[`railway-vms-2026-09.md`](evidence/summon-compute/railway-vms-2026-09.md); the
+service path is unchanged from `paas-ssh.md` §4.1.
+
+- **Sandboxes give a launch-style, scale-to-zero summon.** They have a
+  documented GraphQL API: `sandboxCreate` (booting "from a copy of the
+  checkpointed disk"), a detached exec that "runs on the sandbox independently
+  of the client that started it", and `sandboxDestroy` [V, railway-vms §3.2];
+  the detached form runs over a WebSocket, `/ws/exec` [V-src, railway-vms
+  §3.2]. The idle timeout goes down to 1 minute on Hobby/Pro (1–5 on
+  Trial/Free), and idle teardown is deferred while an exec runs [V,
+  railway-vms §3.2]. So: create from a checkpoint with Bun installed →
+  detached exec of the worker → it drains and exits → idle teardown destroys
+  the sandbox, with `sandboxDestroy` as the backstop [I from V, railway-vms
+  §3.2].
+- **Classification [D]: a documented recipe now** (behind `defineSummoner({
+  invoke })`), **and a first-party summoner candidate once three things are
+  measured**: start latency from a checkpoint to the first heartbeat [U], the
+  signal and grace on `sandboxDestroy` and on idle teardown [U], and the
+  maximum lifetime of a sandbox held open by a running exec [U] (all Q40;
+  railway-vms §4.2, §7.1).
+- **No dedupe.** `SandboxCreateInput` has no name or idempotency field
+  [V-src, railway-vms §3.2], so **the in-flight marker (§4.3) carries dedupe
+  alone**; the `sandboxes` listing can reconcile, not lock [I, railway-vms
+  §7.1].
+- **`fetch` + GraphQL, not the `railway` npm SDK**, which declares
+  `engines.node >=22` [V-src, railway-vms §7.1] (§8.3's rule).
+  **`/ws/exec` is the one real porting job**: its wire format is in the SDK's
+  `src/core/exec-ws-client.ts`, authorised by a shell-scoped JWT [V-src,
+  railway-vms §3.2, §7.1; I that it is the only non-trivial piece].
+- **Region**: a fresh sandbox runs in `us-west2` "regardless of your
+  account's preferred region", and a checkpoint pins its region [V,
+  railway-vms §3.2], so the recipe passes `region` when it builds the
+  checkpoint. **Cost**: VM rates, about 3.3× Railway containers [I
+  arithmetic, railway-vms §4.1], so bursty summoning only (§10.1).
+- **The service path** (restart a `Completed` deployment) still waits on Q25
+  [U, paas-ssh §4.1].
+
+**Railway cloud agents: a recipe at most, labelled beta.** They are Priority
+Boarding beta ("Breaking changes may occur"), limited to 25 creations per user
+per day, and framed as a development environment ("Deploy a Railway service
+for production traffic") [V, railway-vms §1, §3.1]. They are wake-style in
+mechanism (`cloudAgentWake`/`cloudAgentSleep`) [V], but **the summon is two
+steps**: waking "re-runs its entrypoint" [V-src, railway-vms §3.1], which is
+Railway's, not ours, so the recipe wakes the agent and then starts the worker
+over SSH (§7.7) [I, railway-vms §3.1]. Which token `cloudAgentWake` accepts is
+[U] (Q41).
+
+**Railway's free, unclaimed VM (`ssh railway.new`): never automated.** A
+human-run "try it" docs path only [D, following railway-vms §6.2, §7.4]. Its
+limits (3 per IP per day, regional caps, 60 minutes to build, deletion at 24
+hours, a preview URL only the creating IP can open) [V, railway-vms §6.1] make
+it unfit, and Railway's Acceptable Use Policy forbids "reselling compute
+resources, evading usage or billing limits" and says "If you are unsure
+whether your use case is allowed, ask us before deploying" [V, railway-vms
+§6.1, §7.4]. No bun-jobs code or example may create a box by itself.
 
 **Unsuitable, and the README says so:**
 
@@ -1483,7 +2056,7 @@ export function ecsRunTask(options: {
   region: string;
   /** The cluster name or ARN. Idempotency tokens are scoped to it. */
   cluster: string;
-  /** The task definition (`family:revision` or ARN) whose container runs `drainAndExit`. */
+  /** The task definition (`family:revision` or ARN) whose container runs `runSummoned`. */
   taskDefinition: string;
   /** The container in it that receives the env overrides. */
   container: string;
@@ -1559,7 +2132,7 @@ with `overrides.containerOverrides[].env` and `taskCount` [V~].
 `scaling.manualInstanceCount = target`, and `0` disables the pool
 [V/V~, google-azure §3.3]. The `updateMask` path string is [U] (Q17).
 `summon()` sets the count to `target`, and `release()` sets it to 0 after
-`scaleDown.after` (§4.7). The worker runs `drainAndExit({ mode: "service" })`.
+`scaleDown.after` (§4.7). The worker runs `runSummoned(worker, { mode: "until-stopped" })`.
 
 ### 7.5 ACA manual jobs
 
@@ -1614,6 +2187,14 @@ and throws a `ConfigError` if it is missing [I, paas-ssh §7.1].
   §7.3].
 - **Queue names cross a remote shell.** The adapter validates them against
   `^[a-z0-9._-]{1,64}$` [I, paas-ssh §7.5].
+- **On Railway VMs, assume `systemd-run --user` is unavailable** [I,
+  railway-vms §5.3]: no systemd is documented for either VM [U], and they run
+  Railway's own `vm-init`, with sessions as root [V-src, railway-vms §5.3]. So
+  the unit-name dedupe does not carry over. On a **cloud agent**, start the
+  worker with `setsid nohup … &` and a pidfile or `flock` as the dedupe [I,
+  railway-vms §5.3]. On a **sandbox**, do not use SSH at all: use the
+  detached exec, because "a background process outside an active session
+  doesn't keep the sandbox alive on its own" [V, railway-vms §3.2, §5.3].
 
 ---
 
@@ -1705,8 +2286,8 @@ reasons for one per provider:
 
 Providers are **files**, not directories: `lib/providers/<provider>.ts`. That
 matters because the packaging test requires an explicit `./lib/<dir>` key for
-**every directory with an `index.ts`** (`__tests__/packaging.test.ts:46-56`,
-`:92`) [S]. Files need only their short key. The existing `./lib/*.ts`,
+**every directory with an `index.ts`** (`directoryEntries`,
+`__tests__/packaging.test.ts:47-57`, asserted at `:92-96`) [S, re-read at `0a8e580`]. Files need only their short key. The existing `./lib/*.ts`,
 `./lib/*.js` and `./lib/*` patterns already cover the long spellings. The new
 directories with an index are `lib/summon/` here, and `lib/provider/`,
 `lib/provider/auth/` and `lib/provider/testing/` from the plugin API (plugins
@@ -1776,8 +2357,8 @@ packed tarball, are in plugins §11.1:
 
 ```jsonc
 { "spelling": "@kingsleyweb/bun-jobs/summon",
-  "values": ["SummonController", "defineSummoner", "drainAndExit", "summonedFromEnv", "SUMMON_ENV"],
-  "types": ["SummonPolicy", "Summoner", "SummonRequest", "SummonResult", "QueueDemand", "DrainAndExitOptions"] },
+  "values": ["SummonController", "defineSummoner", "runSummoned", "summonedFromEnv", "SUMMON_ENV"],
+  "types": ["SummonPolicy", "Summoner", "SummonRequest", "SummonResult", "QueueDemand", "RunSummonedOptions", "SummonedExit"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/aws",    "values": ["ecsRunTask", "lambdaInvoke"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/google", "values": ["cloudRunJob", "cloudRunWorkerPool"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/azure",  "values": ["acaJob"] },
@@ -1789,7 +2370,7 @@ packed tarball, are in plugins §11.1:
 `signAwsRequest`, `getGoogleToken` and `getAzureToken` moved to the
 `./provider/auth` entry (§8.1, §8.2).
 
-The root spelling's `values` gain `SummonController` and `drainAndExit`. Each
+The root spelling's `values` gain `SummonController` and `runSummoned`. Each
 new cell set joins bun-jobs' existing 96/96 [per `CLAUDE.md`].
 
 ---
@@ -1801,14 +2382,23 @@ new cell set joins bun-jobs' existing 96/96 [per `CLAUDE.md`].
 **One new queue event type, `summon`** [D], with a payload of
 `{ id, outcome: SummonOutcomeKind, kind, count?, handles?, reason?, detail? }`.
 It is published through the driver like the others (`BunQueue.#publish`,
-`BunQueue.ts:2879`) [S] and emitted locally on the controller.
+`queue/BunQueue.ts:2884`) [S] and emitted locally on the controller. The name
+is `summon` (§13.9 S13). **It is published whatever `publishEvents`
+says** [D]: at most one per attempt state change, bounded by the budget (30 an
+hour by default), and it is the only audit trail a lost attempt leaves.
 
 - Why a queue event and not a worker event: an attempt has no worker yet.
   `worker-runtimes.md` §8.4's rule (no remote-specific worker event types)
   still holds.
-- It adds one member to `QUEUE_EVENT_TYPES` (`api/contract/constants.ts:230`)
-  [S]. That changes the AsyncAPI document and the UI's event filters, which is
-  the UI session's side of 1.5f.
+- It adds one member to `QUEUE_EVENT_TYPES` (`api/contract/constants.ts:230-252`)
+  [S], and its payload to both payload maps, `QueueEventPayloads`
+  (`shared/events.ts:42`) and the browser-safe `QueueEventPayloadsWire`
+  (`api/contract/ws.ts:52`), plus a wire schema, which the type of the
+  schema map in `api/ws/events.ts:156` demands for every queue event name;
+  and to `BunQueue`'s re-emit of remote events, which builds each type's
+  local arguments by hand (the `switch` at `queue/BunQueue.ts:2964`). That changes the AsyncAPI
+  document and the UI's event filters, which is the UI session's side of
+  1.5f.
 
 The controller also logs every outcome, at these levels:
 
@@ -1837,12 +2427,12 @@ analytics, limits and events are unchanged.
 
 | Need | API | Owner |
 |---|---|---|
-| demand on the queue screen | `GET /queues/:queue/demand` (§6.2) | the bun-jobs session |
-| summon status: pending attempts, failures, backoff, circuit, budget, last outcome, summoner facts | `GET /queues/:queue/summon` → `SummonStatusDto` | the bun-jobs session |
+| demand on the queue screen | `GET /queues/:queue/demand` (§6.2) | the features session (PR-5; the bun-jobs session reviews) |
+| summon status: pending attempts, failures, backoff, circuit, budget, last outcome, summoner facts | `GET /queues/:queue/summon` → `SummonStatusDto` | the features session (PR-6; the bun-jobs session reviews) |
 | the provider behind the summoner: name, version, `apiVersion`, declared capabilities, an experimental badge, "Test connection" | `SummonStatusDto.summoner.provider` and `.capabilities`; `GET /providers`; `POST /providers/:id/validate` (action `providers.validate`) ([`compute-provider-plugins.md`](compute-provider-plugins.md) §14) | the bun-jobs session (routes, DTO); the UI session (card, badge, button) |
-| a "Summon now" button, and "Reset" when the circuit is open | `POST …/summon`, `POST …/summon/reset`, gated on `queues.summon` | the bun-jobs session (routes); the UI session (buttons) |
-| the badge and handle on the Workers page and worker screen | `WorkerDto.summon` | the bun-jobs session (DTO); the UI session (render) |
-| the `summon` events in the event feed and filters | `QUEUE_EVENT_TYPES` + AsyncAPI | the bun-jobs session (contract); the UI session (filters) |
+| a "Summon now" button, and "Reset" when the circuit is open | `POST …/summon`, `POST …/summon/reset`, gated on `queues.summon` | the features session (routes, PR-6); the UI session (buttons) |
+| the badge and handle on the Workers page and worker screen | `WorkerDto.summon` | the features session (DTO, PR-2); the UI session (render) |
+| the `summon` events in the event feed and filters | `QUEUE_EVENT_TYPES` + AsyncAPI | the features session (contract, PR-6); the UI session (filters) |
 | the element-rules table | `packages/bun-jobs-ui/README.md` `### What each element needs`, parsed by `examples/bun-jobs-ui/04-screens/permissions.ts` (`CLAUDE.md`) | the UI session writes the rows; **the examples session must be told before merge** |
 | an example per first-party summoner, run against a fake platform (§11) | `examples/bun-jobs/` | the examples session |
 
@@ -1889,13 +2479,20 @@ Arithmetic from the evidence files. Every figure is [I] on [V] list prices read
 | Render job | Starter · Standard | $0.0008 · $0.0029 | per second | paas-ssh §8 |
 | Heroku one-off | Basic · Standard-1X | $0.0008 · $0.0029 | per second | paas-ssh §8 |
 | Railway | 0.5 vCPU + 0.5 GB average use | $0.0017 | per minute | paas-ssh §8 |
+| Railway VM (sandbox, cloud agent) | 0.5 vCPU + 0.5 GB in use | ≈ $0.0058 [I arithmetic] | per second [V] | railway-vms §4.1 |
 | Cloudflare Containers `basic` | ¼ vCPU / 1 GiB | ≤ $0.0023 | per 10 ms | paas-ssh §8 |
 | SSH to your own host | — | $0 | — | paas-ssh §8 |
+
+**Railway VMs cost $50/GB-month of RAM and $50/vCPU-month, metered per
+second** [V, railway-vms §4.1]: 5× a Railway container's RAM rate and 2.5× its
+CPU rate, **about 3.3× Railway containers** for a typical 0.5 vCPU + 0.5 GB
+mix [I arithmetic, railway-vms §4.1]. So a sandbox reads as **bursty-only**: a
+worker that stays up belongs on a Railway service.
 
 **Every summoned drain costs about a cent or less on every platform**
 [I, all three files]. Two things decide the bill instead:
 
-- **How fast the worker exits once drained.** `idleTimeout` is the dominant
+- **How fast the worker exits once drained.** `idleFor` is the dominant
   knob [I, paas-ssh §8]. At Fargate x86 rates, a 30 s idle tail adds ≈ $0.0004
   per summon.
 - **The standing costs below.**
@@ -1933,7 +2530,7 @@ say which choice incurs which line.
   `fakePlatform({ coldStartMs, fail?, neverRegister?, crashAfterMs?, passes,
   style })`, a real `Summoner`. On `summon()`, after `coldStartMs`, it
   `Bun.spawn`s `bun __tests__/fixtures/summoned-worker.ts` with
-  `request.env`. That fixture runs `drainAndExit` against a **shared** driver.
+  `request.env`. That fixture runs `runSummoned` against a **shared** driver.
   - Which driver: SQLite or file on one host, and Redis or Postgres when their
     URLs are set, skipping visibly under the repo's existing rule.
   - Failure injection: throws, `unavailable`, a start that never registers, a
@@ -1956,12 +2553,12 @@ say which choice incurs which line.
     `scaleDown.after`;
   - a controller in a summoned process is inert;
   - requests are byte-identical for one attempt id (§4.6).
-- **`drainAndExit` tests**, in a child process so that signals are real:
+- **`runSummoned` tests**, in a child process so that signals are real:
   - exits 0 on idle;
   - on SIGTERM, closes within `grace` and exits 0;
   - on **SIGINT**, the same (Fly);
   - stops claiming at `deadline − shutdownBuffer`;
-  - `in-handler` resolves and leaves no timer or lease behind;
+  - `"in-invocation"` resolves and leaves no timer or lease behind;
   - SIGTSTP pauses claiming and SIGCONT resumes it;
   - a `run()` that fails to connect exits 1.
 - **`countDemand` in the driver contract suite**, on every driver: exact
@@ -2029,10 +2626,13 @@ It costs cents per platform (§10.1). The checks that are worth this money:
 
 ### 11.2 The benchmark guard
 
-`bench/queue.ts --compare` runs with a controller attached (§4.8), and the
-existing six scenarios must not move. No new scenario is proposed. The
-controller is off the claim, settle and limit paths entirely, and its only
-hot-path presence is one listener on `add()`.
+`bench/queue.ts --compare` runs with a controller attached to the bun-jobs
+contender in all six scenarios (§4.8, corrected: the two producer-only
+scenarios measure the no-worker path, the other four the fast path), and the
+existing baselines must not move. No new scenario and no re-recorded
+baseline. The controller is off the claim, settle and limit paths entirely
+(`#loop`, `BunQueueWorker.ts:1798`; `#process`, `:2188`), and its only
+hot-path presence is one `added` listener on the add path (PR-3, §13).
 
 ---
 
@@ -2073,7 +2673,8 @@ plan unless it says so.
 **From `google-azure.md`** (§10 and [U] rows):
 
 10. **Q10** `EXPLAIN` the §6.2 SQL demand query, and this plan's
-    `countDemand` SQL, on a large table.
+    `countDemand` SQL, on a large table. **Scheduled:** it is PR-1's first
+    task, for every driver and all four SQL dialects (§6.4 D4).
 11. **Q11** Whether KEDA's MongoDB scaler passes `$expr`/`$$NOW` through.
 12. **Q12** A KEDA ScaledJob counts running Jobs, not bun-jobs workers
     (raised by `paas-ssh.md` §6.2). Should the demand route offer a
@@ -2106,9 +2707,10 @@ plan unless it says so.
 
 24. **Q24** Render: the signal and grace on job cancel, job start latency,
     List-jobs filters, and whether `numInstances: 0` is accepted.
-25. **Q25** Railway: whether `deploymentRestart` restarts a `Completed`
-    deployment, the status name it reports, and whether `numReplicas: 0`
-    works. **This blocks a Railway recipe.**
+25. **Q25** Railway services: whether `deploymentRestart` restarts a
+    `Completed` deployment, the status name it reports, and whether
+    `numReplicas: 0` works. Only the service path depends on it; Sandboxes
+    do not ([`railway-vms-2026-09.md`](evidence/summon-compute/railway-vms-2026-09.md) §3.2).
 26. **Q26** Time from API call to process start on Heroku, Render and Railway.
 27. **Q27** Fly: the response to `start` on an already-started Machine,
     per-start env overrides, and the `FLY_MACHINE_ID` variable name.
@@ -2117,6 +2719,18 @@ plan unless it says so.
 29. **Q29** Kubernetes: the 409 status on a duplicate Job name, and Bun
     `fetch` with a custom CA against an API server.
 30. **Q30** Cloudflare Containers' maximum lifetime.
+
+**From `railway-vms-2026-09.md`** (§7.2, added 2026-09-26):
+
+40. **Q40** Railway Sandboxes, before a first-party summoner: start latency
+    from a checkpoint to `RUNNING` to the first heartbeat (joins Q26); the
+    signal and grace on `sandboxDestroy` and on idle teardown; the maximum
+    lifetime of a sandbox held open by a running exec, per plan; whether
+    `sandboxCreate` accepts a project token (the SDK implies yes [V-src]);
+    and how the `/ws/exec` JWT is minted (`shell.graphql` in the SDK) [U].
+41. **Q41** Railway cloud agents, **low priority**: which token type
+    `cloudAgentWake` accepts; whether a wake starts anything we control; and
+    whether systemd is available [U].
 
 ### 12.2 Raised by this plan
 
@@ -2129,9 +2743,11 @@ plan unless it says so.
     that is 20 reads/s against the backend. It is probably fine, but it should
     be measured in 1.5a, and the interval should widen with the number of live
     summoned workers if it is not.
-33. **Q33** **`countDemand` on Mongo needs a `lockExpiresAt` index** for the
-    stalled count. It may need one added (and a `syncSchema` retired-index
-    note), or it may already exist. Check in 1.5a.
+33. **Q33** ~~**`countDemand` on Mongo needs a `lockExpiresAt` index**~~
+    **Closed 2026-09-25:** it exists, as `LOCK_INDEX` `{ ns, queue, state,
+    lockExpiresAt, _id }` (`drivers/mongo/mongo-driver.ts:1136-1142`, created
+    on connect at `:5994-5997`). The draft's `runAt` index is the retired one
+    (§4.0 R9).
 34. **Q34** **Release by start time** (for `passes: "none"`) can mis-attribute
     an ordinary worker that happens to start during a pending summon. The
     effect is benign: the attempt is released one worker early, and the next
@@ -2142,13 +2758,33 @@ plan unless it says so.
     that name (§3.1). `worker-runtimes.md` §4.2 proposes a *new* exported
     `WorkerTarget` meaning "where attempts run". One of them must be renamed,
     in Phase 0 or Phase 1. This does not touch summoning, but it is recorded
-    here because it was found while reading for it. (The rename's decided
-    names settle it: the existing type becomes `WorkerSelector`.)
+    here because it was found while reading for it. **Closed:** Phase 0
+    renamed the addressee type to `WorkerSelector`
+    (`queue/WorkerController.ts:41`), and Phase 1 shipped `WorkerTarget` as
+    "where attempts run" (§4.0 R20).
 36. **Q36** **The plugin API's own questions** are in
     [`compute-provider-plugins.md`](compute-provider-plugins.md) §17.2
     (Q-P1–Q-P10). The two that touch summoning directly: whether
     `./provider/auth` is public before Q2 and Q15 close (Q-P2), and whether
     capacity and quota need separate error kinds (Q-P6).
+37. **Q37** **Producers publish nothing by default** (`publishEvents:
+    false`, `BunJobs.ts:92-99`), and bulk adds never publish (§2.1). So the
+    events trigger is silent in a default deployment. Options: leave it and
+    document it (recommended: the poll is the correctness mechanism); or have
+    `BunJobs` publish the demand-creating events whenever a controller exists
+    anywhere, which it cannot know. Raised by the reconciliation.
+38. **Q38** **Narrowed 2026-09-26, per #166 (pending its merge).** The
+    target's share of the close is now measured and derived (≤ 4,500 ms
+    graceful, from `DEFAULT_CLOSE_TIMEOUT`; §5.3, the close rule), so it no
+    longer rides on `tailReserve`. #166's `force` figure is now measured:
+    **~12 ms, at most 500 ms** (the reap cap). What stays open: measure the
+    post-target remainder (`#unregister` … `driver.close()`) that
+    `tailReserve`'s 1,000 ms default [I] still guesses; PR-4 measures it.
+39. **Q39** **Does a summoned worker want a shorter `stalledInterval`** to take
+    the sweep lease over from a crashed predecessor at once (§4.0 R12)? The
+    lever exists; making it a `runSummoned` default would change the
+    queue's sweep cadence for every worker on it. Recommended: document, do
+    not default.
 
 ### 12.3 Risks
 
@@ -2193,7 +2829,7 @@ growth is not padding, and each of these adds real work:
 
 - the zero-worker blind spot means a driver method on five drivers;
 - the late registration means the marker and its CAS;
-- the missing signal handling means `drainAndExit`;
+- the missing signal handling means `runSummoned`;
 - the `countJobs` cost means a bounded read;
 - the providers each need an adapter and credentials;
 - **the provider plugin system** (added 2026-09-25 at the user's request):
@@ -2201,34 +2837,260 @@ growth is not padding, and each of these adds real work:
   before the first-party providers so that they are written on it
   ([`compute-provider-plugins.md`](compute-provider-plugins.md) §16).
 
-### 1.5a — Core: controller, marker, demand, `drainAndExit` (**the minimum useful ship**)
+### 13.1 1.5a and 1.5b as seven PRs (**sliced 2026-09-25**)
 
-It works on every platform through `defineSummoner({ invoke })`. If 1.5p has
-not landed yet, `defineSummoner` builds its summoner on an internal stand-in
-for the provider types, and 1.5p replaces the stand-in with the public ones.
+1.5a and 1.5b are still **the minimum useful ship**: after them every
+platform is reachable, through `defineSummoner({ invoke })` or the depth
+endpoint. They were two work tables; they are now seven PRs, each of which
+ships on its own, passes the full gate on its own, and leaves the package
+coherent if the next never lands. If 1.5p has not landed, `defineSummoner`
+builds its summoner on an internal stand-in for the provider types, and 1.5p
+replaces the stand-in with the public ones (unchanged from the draft).
 
-| Work | Effort |
-|---|---|
-| `countDemand` on Redis, SQL (4 engines), Mongo, memory and file, plus the contract-suite cases and the fallback | 3 d |
-| `SummonController`: predicate, marker and CAS, release, backoff, circuit, budget, three triggers, `servedUntil` fast path, `BunJobs.summon`/`summoner()` | 3.5 d |
-| `drainAndExit`, `summonedFromEnv`, `SUMMON_ENV`, `WorkerInfo.summon` and `BunQueueWorkerOptions.summoned` | 2 d |
-| the `summon` queue event, logging, the `ConfigError`s of §4.9 | 0.5 d |
-| tier-1 tests: the fake platform and the controller, `drainAndExit` and driver suites | 3 d |
-| README section, the benchmark `--compare` run, the change report to the examples session | 1 d |
-| **Total** | **~13 d** |
+| PR | Sub-phase | What it ships to users | Depends on | Implements | Effort | Hot path? |
+|---|---|---|---|---|---|---|
+| **PR-1** `countDemand` | 1.5a | `queue.getDemand()` [S10]: an exact, bounded demand reading on all five drivers, and the optional driver method for third-party drivers | **#166 merged** (sequencing, not code) | **the bun-jobs session**; the features session reviews | ~4.5 d | no |
+| **PR-2** provenance | 1.5a | a worker can record where it was summoned from; `WorkerDto.summon`; `summonedFromEnv()` | nothing | **the features session**; the bun-jobs session reviews | ~1.5 d | no |
+| **PR-3** controller | 1.5a | `SummonController`, `defineSummoner({ invoke })`, `BunJobs.summon`: summoning end to end on any platform | PR-1, PR-2 | **the features session**; the bun-jobs session reviews | ~6 d | **yes** |
+| **PR-4** `runSummoned` | 1.5a | the worker half: one file runs a summoned worker, handles signals, exits 0 | **#166 merged, including its `close({ force })` pass-through**, PR-1, PR-2 | **the features session**; the bun-jobs session reviews (it owns the close path #166 changes) | ~2.5 d | no |
+| **PR-5** depth endpoint | 1.5b | `GET /queues/:queue/demand`, `GET /demand`, Prometheus: KEDA, ACA event jobs, CREMA and GKE can scale on bun-jobs | PR-1 | **the features session**; the bun-jobs session reviews | ~2 d | no |
+| **PR-6** summon routes | 1.5b | summon status, "summon now", reset; `queues.summon`; the `summon` event across processes | PR-3, PR-5 | **the features session**; the bun-jobs session reviews | ~1.75 d | no |
+| **PR-7** recipes | 1.5b | README: placement, worker recipe, shutdown budgets, KEDA/ACA/CREMA/GKE recipes with the measured SQL plans | PR-5, PR-1's measurement | **the features session**; the bun-jobs session reviews | ~1.5 d | no |
+| | | | | | **~19.75 d** | |
 
-### 1.5b — The depth endpoint and summon routes
+**Effort: ~19.75 d, was ~17.5 d.** The +2.25 d is work the draft did not
+see: PR-1's measure-first task (+0.75 d), the `WorkerDto`/schema/drift
+plumbing for `summon` that Phase 1 showed `target` needed (+0.5 d), a bench
+harness switch the guard needs because the scenarios it named run no worker
+(+0.5 d, §4.0 R18), and `runSummoned`'s hard backstop and #166 tests
+(+0.5 d, §5.3). Nothing was removed.
 
-| Work | Effort |
-|---|---|
-| `/queues/:queue/demand`, `/demand`, the DTO and schema, Prometheus rendering | 1.5 d |
-| `/queues/:queue/summon` (status, manual, reset), `queues.summon` action | 1 d |
-| Recipes: KEDA ScaledJob and ScaledObject, ACA event job, CREMA, GKE HPA, and the SQL query with its `EXPLAIN` (Q10) | 1.5 d |
-| Tests: route, auth, OpenAPI | 0.5 d |
-| **Total** | **~4.5 d** |
+**Ownership (decided 2026-09-25).** **PR-1 (`countDemand`): the bun-jobs
+session implements, the features session reviews. PR-2 to PR-7: the features
+session implements, the bun-jobs session reviews.** The bun-jobs session keeps
+the close path #166 changes; PR-2 and PR-4 are scoped away from it (§13.3,
+§13.5), so the split puts no two sessions on the same lines.
 
-After 1.5a and 1.5b (**~17.5 d**), every platform in the evidence is reachable:
-Kubernetes and ACA by the endpoint, everything else by `invoke()`.
+**Order and parallelism.**
+
+```
+now ──► PR-2 ─────────────────────────┐
+#166 ─► PR-1 ──┬──► PR-3 ──────────────┼──► PR-6
+               │    (needs PR-2)       │
+               ├──► PR-4 (needs PR-2, #166)
+               └──► PR-5 ──┬───────────┘
+                           └──► PR-7
+```
+
+- **PR-2 can start now.** It needs nothing, and it stays out of the lines
+  #166 is changing (§13.3).
+- **PR-1 starts once #166 lands** (the bun-jobs session's sequencing), and
+  its first task is the measurement (§6.4 D4).
+- **After PR-1: PR-3, PR-4 and PR-5 run in parallel.** PR-3 can be written
+  against the §6.4 fallback while PR-1 is in review, and switched when it
+  merges.
+- **PR-6 waits for PR-3 and PR-5** (it needs the controller, and it edits the
+  same route and contract files as PR-5). **PR-7 waits for PR-5.**
+- **The critical path** is #166 → PR-1 → PR-3 → PR-6: about 12.25 d of the
+  19.75 d, the rest overlapping it.
+
+**Files more than one PR touches** (conflict risk; the later one rebases):
+
+| File | PRs | Risk |
+|---|---|---|
+| `drivers/driver.ts` | PR-1 (`QueueDriver`, beside `countJobs` `:2242`), PR-2 (`WorkerInfo`, `:1427-1591`) | low: separate regions |
+| `queue/BunQueueWorker.ts` | PR-2 (constructor validation near `resolveWorkerTarget` `:917-920`; `#report` `:4177-4210`); **#166** (the close path, `:1568-1735`, and possibly `#closeTarget`) | low: PR-2 is scoped away from the close path. **PR-4 edits nothing in this file** |
+| `queue/BunQueue.ts` | PR-1 (`getDemand()`), PR-6 (the remote re-emit `switch`, `:2964`) | low |
+| `lib/index.ts`, `package.json` `exports`, `consumer-check.json` | PR-1, PR-2, PR-3 (adds `lib/summon/index.ts`, hence the `./summon` and `./lib/summon` keys the packaging test demands), PR-4 | low: list merges |
+| `lib/summon/index.ts` | PR-3, PR-4 | low: export lists |
+| `api/contract/types.ts` | PR-2, PR-5, PR-6 | medium: all three add DTOs; land PR-5 before PR-6 |
+| `api/routes/queues.ts`, OpenAPI pinned lists in `__tests__/api/` | PR-5, PR-6 | medium: hence PR-6 after PR-5 |
+| `packages/bun-jobs/README.md` | every PR (its own section), PR-7 most | low |
+
+**The hot path, and the benchmark guard.** Only **PR-3** touches it: an
+`added` listener on the add path (`BunQueue.#addSimple` `:645-656`, `addBulk`
+`:715-726`) and `BunJobs` wiring. PR-3's gate therefore includes `cd
+packages/bun-jobs/bench && bun queue.ts --compare` with a controller attached
+to all six scenarios (§4.8, §11.2), on every backend in
+`baselines/queue.json`, and `bun runner.ts --compare` unchanged. The claim
+loop and `#process` (`BunQueueWorker.ts:1798`, `:2188`) are touched by
+**no** PR. PR-1 adds one Redis script and no claim script; it needs no
+`--compare`, and runs one on Redis only if it touches `scripts.ts`'s shared
+prelude.
+
+**The gate every PR passes** (`CLAUDE.md`): `bun scripts/typecheck.ts`;
+`CI=1 bunx eslint .` in `packages/bun-jobs` (README linted alone first if a
+table is touched); `bun test` and `bun test --randomize` with two seeds,
+**with the five server URLs exported** so the driver suites run rather than
+skip (and the report quotes what ran, not what was green); `bun
+scripts/consumer-check.ts packages/bun-jobs` for any PR that changes an
+export; the affected examples on memory plus one server, and the full sweep
+once per merge window, not per PR. PRs 2, 5 and 6 change the management API's
+contract, so they also run `bun test` in `packages/bun-jobs-ui` and `bun
+run-all.ts` in `examples/bun-jobs-ui`.
+
+### 13.2 PR-1 — `countDemand` on the five drivers
+
+- **Owners.** Implemented by **the bun-jobs session** (its user's decision),
+  reviewed by the features session. **Sequenced after the bun-jobs session's
+  #166 fix lands.**
+- **Spec.** §6.4, settled before code: the states (D1), direct counting rather
+  than promotion (D2), the cap (D3), and the per-driver index plan (D4),
+  unmeasured.
+- **Task 1, before implementation is reviewed: the measurement** (§6.4 D4):
+  plans and medians per driver and per SQL dialect on #159's fixture and its
+  10× history variant, with `countJobs` as the control and a dropped index as
+  the negative control. Script: `packages/bun-jobs/bench/demand.ts`, in the
+  unpublished bench package, against its own databases (`bun_jobs_bench`,
+  Redis db 14), never the suites' [D].
+- **Scope.** `drivers/driver.ts` (the optional member and `DemandCounts`);
+  `drivers/memory-driver.ts`; `drivers/file-driver.ts`;
+  `drivers/sql/sql-driver.ts` (and `sql/dialect.ts` if a dialect needs its own
+  form); `drivers/redis/redis-driver.ts` and `redis/scripts.ts` (one new
+  script); `drivers/mongo/mongo-driver.ts`; `drivers/readApis.ts`
+  (`readDemand`, the fallback, `QueueDemand`); `queue/BunQueue.ts`
+  (`getDemand()` [S10]); `lib/index.ts`; `__tests__/helpers/driverContract.ts`.
+- **Ships.** `queue.getDemand()`, useful alone (a health check, a home-made
+  scaler), and the driver method a third-party driver may implement.
+- **Tests.** The contract cases listed at the end of §6.4, on all six driver
+  test files, plus the fallback on a driver without the method.
+- **Risk: medium.** Four SQL dialects; the #159 class of bug (a count that
+  disagrees with the count beside it), which §6.4 D1's "`active` equals
+  `countJobs().active`" rule and its contract case exist to prevent; Mongo's
+  non-atomic reads, which D2's order handles.
+
+### 13.3 PR-2 — Summon provenance on the worker record
+
+- **Scope.** `shared/workers.ts` (`WorkerSummonProvenance` [S15], beside
+  `WorkerTargetInfo`); `drivers/driver.ts` (`WorkerInfo.summon`, additive);
+  `queue/types.ts` (the option); `queue/BunQueueWorker.ts` — constructor
+  validation only (the `reportInterval: 0` `ConfigError`, beside
+  `resolveWorkerTarget`, `:917-920`) and `#report` (`:4177-4210`), **not** the
+  close path; `lib/summon/env.ts` (`SUMMON_ENV`, `summonedFromEnv` [S8],
+  exported from the root; no `lib/summon/index.ts` yet, so no new `exports`
+  key); the API: `WorkerDto.summon` (`api/contract/types.ts`), `WorkerSchema`
+  (`api/schemas/workers.ts`), `toWorkerDto` (`api/serialize.ts`, `handle`
+  withheld without `exposeHosts`).
+- **Ships.** A worker says it was summoned, by what and until when; the
+  Workers API shows it; `summonedFromEnv()` for any recipe, including a
+  KEDA-launched worker.
+- **Tests.** The record carries `summon` on the first report; `reportInterval:
+  0` with `summon` throws; `summonedFromEnv()` reads env and argv, and answers
+  `undefined` in a runner child; the drift assertions and round trip Phase 1
+  extended for `target` (§5.4), extended again; `handle` withheld and shown.
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session; the UI session is told (a new `WorkerDto` field;
+  rendering is 1.5f).
+- **Risk: low.**
+
+### 13.4 PR-3 — The marker, `SummonController`, `defineSummoner`, `BunJobs.summon`
+
+- **Scope.** New `lib/summon/types.ts`, `marker.ts`, `controller.ts`,
+  `define.ts`, `index.ts`; `lib/index.ts`; `BunJobs.ts` (the `summon` option,
+  `summonController()` [S16], closing controllers first); `package.json`
+  (`./summon`, `./lib/summon`) and `consumer-check.json`; the bench harness
+  switch (`bench/contenders/queue/bun-jobs.ts`, `bench/lib/queue-scenarios.ts`).
+  The `summon` event is emitted **locally** here; putting it on the wire is
+  PR-6's, because that changes the contract.
+- **Ships.** Summoning end to end, for any platform, through `defineSummoner`
+  or a bare function; the worker entry passes `summon: summonedFromEnv()` and
+  exits however it likes until PR-4.
+- **Tests.** `__tests__/helpers/summon.ts`'s fake platform spawning
+  `__tests__/fixtures/summoned-worker.ts` on SQLite and the file driver (Redis
+  and Postgres when their URLs are set), and §11.1's controller cases except
+  the `runSummoned` ones; the two-process CAS race; the id stays unique across
+  a purge (§4.0 R6, with a negative control hashing the version alone); a
+  5,000-job `addBulk` makes one check (the `added` listener, §2.1).
+- **Gate addition.** The benchmark guard (§13.1).
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session; a change report to the examples session.
+- **Risk: medium-high.** Concurrency (the claim, release and record CASes, and
+  three triggers' timers), and the only hot-path change.
+
+### 13.5 PR-4 — `runSummoned` and signal handling
+
+- **Sequencing: after #166.** #166 gives `FileTargetExecutor` a `close()` and
+  may touch `#closeTarget`/`#close`. `runSummoned` is scoped to **avoid
+  those lines entirely**: it lives in `lib/summon/worker.ts` and uses only the
+  worker's public surface — `run()` (`BunQueueWorker.ts:1301`), `close()`
+  (`:1568`), `pause()`/`resume()` (`:1354`, `:1367`), `activeCount`
+  (`:1206`), `state` (`:1219`) and its events. It still waits for #166,
+  because what it must budget for is #166's close behaviour (§5.3, Q38),
+  because its no-orphan test is #166's reproduction, and **because the close
+  rule needs #166's `force` option specifically**: `close({ force: true })`
+  passed through `#closeTarget` to `WorkerTargetExecutor.close({ force })`
+  (per #166, pending its merge). Without it a forced close still waits up to
+  4,500 ms on a child-process target, which Fly's 5 s grace cannot afford.
+- **Scope.** `lib/summon/worker.ts`; `lib/summon/index.ts`; `lib/index.ts`;
+  the fixture worker switched to `runSummoned` for the full handoff.
+- **Ships.** The worker half, finished: a platform's worker entry is one file.
+- **Tests,** in child processes so the signals are real: exit 0 on idle;
+  SIGTERM and SIGINT close within grace; a second SIGINT exits 130;
+  SIGTSTP/SIGCONT, and SIGCONT leaving an operator's pause alone; the deadline
+  minus `shutdownBuffer`; `"in-invocation"` resolves with no timer or lease left; a
+  `run()` that cannot connect exits 1; the backstop fires when a custom
+  target's `close()` hangs (negative control: without it the process outlives
+  the grace); a `"child-process"` attempt that ignores its signal leaves **no
+  orphan** after the exit (detected by the child's real command line,
+  `…/runner/bootstrap/spawn-entry.ts`, as #166 warns); a parked worker exits
+  `"parked"`; the close rule: on a 5 s grace with a `"child-process"` target
+  the close is forced and finishes inside the grace (negative control: a
+  graceful close there overruns into the backstop), and on a 30 s grace it is
+  graceful with the jobs' `timeout` the rule computes; the end-to-end
+  handoff.
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session, which owns the close path this PR budgets for and must
+  not edit.
+- **Risk: medium.** Signal delivery under Bun, `process.exit` during a close.
+
+### 13.6 PR-5 — The depth endpoint and Prometheus
+
+- **Scope.** `api/routes/queues.ts` (`GET /queues/:queue/demand`) and the
+  namespace route `GET /demand` [S11]; `QueueDemandDto`
+  (`api/contract/types.ts`, beside `JobCountsDto` `:783`); its schema; a small
+  Prometheus renderer (`api/prometheus.ts`, new) [S12]; `DRIVER_FEATURES` and
+  `/meta` `features.demand` (`api/routes/meta.ts:62`); the OpenAPI lists.
+- **Ships.** Model (b), §2.2, for every platform that polls a metric.
+- **Tests.** Route and auth (`queues.read`; `listQueues: "authorized"`
+  filtering `/demand`); JSON and `?format=prometheus`/`Accept: text/plain`;
+  the contract drift assertions; the pinned OpenAPI lists; the fallback's
+  `exact: false`.
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session; the UI session is told (the demand card is 1.5f).
+- **Risk: low.**
+
+### 13.7 PR-6 — Summon routes, `queues.summon`, the `summon` event on the wire
+
+- **Scope.** `api/routes/queues.ts` (`GET`/`POST /queues/:queue/summon`,
+  `POST …/summon/reset`); `api/contract/constants.ts` (`queues.summon` [S17]
+  in `JOBS_API_ACTIONS`, `JOBS_API_MUTATIONS` and `JOBS_API_OPT_IN_ACTIONS`;
+  `summon` [S13] in `QUEUE_EVENT_TYPES`); `shared/events.ts`,
+  `api/contract/ws.ts`, `api/ws/events.ts`, `BunQueue`'s re-emit (§9.1);
+  `SummonStatusDto`; AsyncAPI; the controller publishing `summon`.
+- **Ships.** Operators see and drive summoning through the API; the UI can
+  build its card.
+- **Tests.** The routes, `409 SUMMON_NOT_CONFIGURED`, the action's gating
+  (`readOnly` removes it; the default leaves it off), the pinned AsyncAPI and
+  OpenAPI lists, the event across two processes.
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session. **The UI session and
+  the examples session are told before merge**: a new action and event type
+  change the AsyncAPI document and the event filters, and the UI's
+  `### What each element needs` rows for them (1.5f) are parsed by
+  `examples/bun-jobs-ui/04-screens/permissions.ts`.
+- **Risk: low-medium** (contract surface).
+
+### 13.8 PR-7 — Recipes
+
+- **Scope.** `packages/bun-jobs/README.md`: placement (§3.2); the worker
+  recipe; the shutdown-budget table (§5.2); the depth endpoint with KEDA
+  ScaledJob and ScaledObject, ACA event jobs, CREMA and GKE HPA; the scaler's
+  second `createJobsApi`; PR-1's measured plans. Each code PR already carries
+  its own README section and change report; this one is the recipes.
+- **Owners.** Implemented by **the features session**, reviewed by the
+  bun-jobs session; the examples session writes the examples (1.5f).
+- **Risk: low.** Lint the README alone first: a long table cell can hang
+  Prettier.
 
 ### 1.5p — The provider plugin API, `experimental` (new)
 
@@ -2298,14 +3160,54 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 
 ### Totals
 
-| Scope | bun-jobs session | Other owners |
+| Scope | bun-jobs and features sessions | Other owners |
 |---|---|---|
-| 1.5a + 1.5b (minimum useful) | ~17.5 d | UI ~1 d for the demand card |
-| All of 1.5 | **~47 d** (was ~32.5 d; +12.5 d for 1.5p, +1 d for fakes and kit runs in 1.5d–e, +1 d for 1.5s) | UI ~3.5 d, examples ~3 d |
+| 1.5a + 1.5b (minimum useful), PR-1 to PR-7 | **~19.75 d** (was ~17.5 d; §13.1): PR-1 ~4.5 d the bun-jobs session, PR-2 to PR-7 ~15.25 d the features session | UI ~1 d for the demand card |
+| All of 1.5 | **~49.25 d** (was ~47 d: +2.25 d from the 1.5a/1.5b reconciliation; before that ~32.5 d, +12.5 d for 1.5p, +1 d for fakes and kit runs in 1.5d–e, +1 d for 1.5s) | UI ~3.5 d, examples ~3 d |
 
 The order is 1.5a → (1.5b ∥ 1.5p) → 1.5c → 1.5d → 1.5e → 1.5g → 1.5s, with
 1.5f following each bun-jobs sub-phase it depends on and 1.5g before the
-release that ships an adapter. 1.5b is independent of 1.5p and 1.5c.
+release that ships an adapter. 1.5b is independent of 1.5p and 1.5c. Within
+1.5a and 1.5b the PR order is §13.1's: PR-2 now; PR-1 after #166; then PR-3,
+PR-4 and PR-5 in parallel; then PR-6 and PR-7. 1.5p can start once PR-3 has
+fixed the controller's shape, since its summon facet replaces PR-3's
+internal stand-in.
+
+### 13.9 Names approved (2026-09-25)
+
+Every public name 1.5a and 1.5b introduce. **The user approved them on
+2026-09-25, accepting every recommendation** the draft of this section made;
+the plan above uses these names throughout, and the markers that stood in
+for them are gone. "Was" gives the draft's name where the decision changed
+it.
+
+**How the collision check was run** (2026-09-25, at `0a8e580`): `git grep -w
+-c <name> -- packages examples playground benchmarks scripts`, summed, for
+identifiers; `git grep -F -c` for paths, keys and env prefixes; "unused"
+below means that count was **0**. Negative controls, run the same way:
+`WorkerController` 46, `queues.drain` 18. Case-insensitive `summon` over the
+same tree: 0.
+
+| # | What | Approved name | Was | Reason | Collision check |
+|---|---|---|---|---|---|
+| S1 | the controller class | `SummonController` | (kept) | Since Phase 0 a `…Controller` in bun-jobs acts on a queue's workers from elsewhere (`WorkerController` pauses and stops them, `queue/WorkerController.ts:203`); this one starts them, so the suffix fits | unused |
+| S2 | its options type | `SummonPolicy` | (kept) | It is also the value of `BunJobsOptions.summon`'s map, where "options" would read as the controller's constructor argument | unused; no `*Policy` type in `packages/bun-jobs/lib` (only the `Content-Security-Policy`/`Referrer-Policy` headers, `api/docs/html.ts:65-67`) |
+| S3 | the escape hatch, and the summoner type | `defineSummoner({ invoke })`, `Summoner` | (kept) | They follow the package's `define*` factories (`defineHandler`, `defineProcessor`, `defineProcessors`); 1.5p's `defineComputeProvider` is the provider-shaped one | unused |
+| S4 | the worker-side runner | `runSummoned(worker, options)` | `drainAndExit` | In bun-jobs "drain" means **delete pending jobs** (`jobs.drain()`, `BunJobs.ts:1016-1021`; `queue.drain()`, `queue/BunQueue.ts:2108-2109`; `drainQueue`, `drivers/driver.ts:2615`; the action `queues.drain`), so `drainAndExit` read as "delete the backlog and quit". `runUntilIdle` misdescribed `"until-stopped"`; `runUntilDone` is a test helper (`__tests__/fix-attempt-write-ordering.test.ts:242`). Its options type follows: `RunSummonedOptions` (was `DrainAndExitOptions`) | `runSummoned` unused |
+| S5 | its modes | `"exit-on-idle" \| "until-stopped" \| "in-invocation"` | `"launch" \| "service" \| "in-handler"` | The modes say what the worker does; `"launch"` is already a value of `SummonCapabilities.style`, a different axis (a launch-style Lambda runs the in-invocation mode). `WorkerSummonProvenance.mode` and `BUN_JOBS_SUMMON_MODE` carry the same three values | unused; `"launch"` in use as a style (plugins §7.1) |
+| S6 | its options | `idleFor`, `idleCheckInterval`, `deadline`, `shutdownBuffer`, `grace`, `tailReserve`, `signals`, `pauseSignals`, `exit`, `logger` | `idleTimeout` | `idleTimeout` is Bun.serve's HTTP idle timeout **in seconds** throughout bun-common and bun-nest (`BunHttpAdapter.ts`, `BunWebSocket.ts`, 6 hits); this one is milliseconds and means something else. The rest are kept | `idleFor`, `idleCheckInterval`, `shutdownBuffer`, `tailReserve`, `pauseSignals` unused; `grace` only in prose |
+| S7 | its result | `SummonedExit` | `DrainExit` | Follows S4 | unused |
+| S8 | env helpers and keys | `summonedFromEnv()`, `SUMMON_ENV`; keys `BUN_JOBS_SUMMON_ID`, `…_KIND`, `…_MODE`, `…_NAMESPACE`, `…_QUEUE`, `…_MAX_LIFETIME_MS`, `…_GRACE_MS` | keys `BUN_JOBS_NAMESPACE`, `BUN_JOBS_QUEUE` | Every key under one prefix: `BUN_JOBS_NAMESPACE` is already `CHILD_ENV.namespace` (`runner/protocol.ts:31`), exported from the root (`lib/index.ts:702`) and set on every runner and file-target child (§4.0 R19). `summonedFromEnv()` reads only `BUN_JOBS_SUMMON_*`, and answers `undefined` inside a runner child, which inherits its parent's env | `BUN_JOBS_SUMMON` prefix unused; `summonedFromEnv`, `SUMMON_ENV` unused |
+| S9 | the driver method and its answer | `countDemand`, `DemandCounts` | (kept) | `readDemand` is the helper above it; "claimable" is wrong for `stalled`, which needs a sweep first | unused |
+| S10 | the public demand read | `queue.getDemand()` (added); `QueueDemand`, `readDemand` internal | no public method | Matches `getLimits()`/`getJob()`, so PR-1 ships something usable on its own | `getDemand` unused |
+| S11 | the routes | `GET /queues/:queue/demand`, `GET /demand` | (kept) | "Demand" is the figure's name everywhere else | `/demand` unused |
+| S12 | the response fields and the metric names | fields `demand`, `outstanding`, `dueNow`, `stalled`, `capped`, `exact`, `nextDueAt`; metrics `bunjobs_queue_*` | metrics `bun_jobs_queue_*` | Fields kept. Metrics take the prefix `opentelemetry.md` §5 uses (`bunjobs.queue.jobs` → `bunjobs_queue_jobs` under an OTel Prometheus exporter). Not `pending` for `outstanding`: "pending" means waiting + delayed in `drain`'s vocabulary | `bun_jobs_queue` unused; `bunjobs_` 3 hits, all the Postgres `LISTEN` channel (`drivers/sql/arrivals.ts:80`), a different namespace |
+| S13 | the queue event | `summon` | (kept) | Existing names are past participles of what happened to a job (`api/contract/constants.ts:230-252`); a summon event carries its verb in `outcome`, so `summoned` would be false for most of them | unused |
+| S14 | the reserved state key | `__win:summon` | (kept) | Readable, and no existing reserved name begins `summon` (§4.0 R7) | unused |
+| S15 | the worker's provenance | option `BunQueueWorkerOptions.summon`, record `WorkerInfo.summon`, DTO `WorkerDto.summon`; type `WorkerSummonProvenance` | option `summoned` | One name everywhere, so `summon: summonedFromEnv()` writes `summon` on the record, as `target` does in Phase 1. The type is kept. A generic `origin` would pre-empt a Phase 2 decision nobody has made | unused |
+| S16 | on `BunJobs` | `BunJobsOptions.summon`; `jobs.summonController(queue, policy?)` | `jobs.summoner()` | `summoner()` returning a `SummonController`, not a `Summoner` (S3), was a pun on the package's own type | unused |
+| S17 | the API action | `queues.summon` | (kept) | In all three action sets (§6.2) | unused |
+| S18 | who counts as serving | `SummonPolicy.servedBy: "any-worker" \| "summoned-only"` | `satisfiedBy` | `satisfiedBy` is already a field of the worker routes' instruction table with another meaning (worker states that satisfy an instruction, `api/routes/workers.ts:192`) | `servedBy` unused |
 
 ---
 
