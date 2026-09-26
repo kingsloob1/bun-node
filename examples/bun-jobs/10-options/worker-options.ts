@@ -1041,6 +1041,10 @@ const wasRecovered = await waitAtMost(
     (await fragile.refresh())?.returnValue === "the recovered attempt",
 );
 const fragileDone = await fragile.refresh();
+// The value it ended with is compared too, not only whether the wait saw the
+// recovered one: "completed" with any other value would mean the abandoned
+// attempt's result was taken although its lock had lapsed, and a failure
+// should say so rather than leave it to be guessed.
 checkEqual(
   "…and a job whose lock lapsed under it is recovered by its own sweep",
   [
@@ -1048,8 +1052,9 @@ checkEqual(
     optOutRecovered.includes(fragile.id),
     fragileDone?.state,
     fragileDone?.stalledCount,
+    fragileDone?.returnValue,
   ],
-  [true, true, "completed", 1],
+  [true, true, "completed", 1, "the recovered attempt"],
 );
 
 // Housekeeping, which is exactly what the option turns off: `removeOnComplete`
