@@ -458,6 +458,29 @@ export interface MemoryDriverOptions {
 /** States holding a job that is due later. */
 const SCHEDULED_STATES: JobState[] = ["delayed", "failed"];
 
+/**
+ * Whether the stalled sweep takes `job` at `now`: `active`, and either its
+ * lock has lapsed (`lockExpiresAt <= now`) or it holds **no lock at all**.
+ * {@link MemoryDriver.recoverStalled} recovers by it and
+ * {@link MemoryDriver.countDemand} counts `stalled` by it, so the two agree by
+ * construction.
+ *
+ * A lockless `active` job has no holder, so nothing will ever settle it: it
+ * counts as stalled now, as the Redis and file drivers always treated it
+ * (issue #185). No API leaves one — every claim sets the lock in the same
+ * synchronous step as the state, and every settle clears the two together —
+ * but `addJob` places a record in the state it names, so a restored or
+ * migrated `active` record without a lock arrives as one. The sweep used to
+ * skip it (`null <= now` is `true` in JavaScript, so the old guard tested for
+ * `null` first, and skipped), which left it `active` for good.
+ */
+function isStalled(job: JobRecord, now: number): boolean {
+  return (
+    job.state === "active" &&
+    (job.lockExpiresAt === null || job.lockExpiresAt <= now)
+  );
+}
+
 /** How long a claimed-out prefix may grow before the waiting list is copied. */
 const COMPACT_AFTER = 1_000;
 
@@ -1630,8 +1653,9 @@ export class MemoryDriver implements JobsDriver {
    * → 8.99 ms; `countJobs` 0.58 ms → 13.1 ms).
    *
    * **`stalled` is exactly what {@link MemoryDriver.recoverStalled} takes:**
-   * `active` with a lock, lapsed at `now`. That sweep skips a job with no lock
-   * (`null <= now` is `true` in JavaScript, so both test for `null` first).
+   * `active` with a lock lapsed at `now`, or with no lock at all — both read
+   * {@link isStalled}. Every job it counts is in the active set, so `stalled`
+   * never exceeds `active`.
    *
    * An unknown queue is read as empty and **not** created: a read that
    * brought a queue into being would make it appear in `listQueues`.
@@ -1664,7 +1688,7 @@ export class MemoryDriver implements JobsDriver {
 
       const job = queue.jobs.get(id);
 
-      if (job && job.lockExpiresAt !== null && job.lockExpiresAt <= now) {
+      if (job && isStalled(job, now)) {
         stalled++;
       }
     }
@@ -2431,11 +2455,7 @@ export class MemoryDriver implements JobsDriver {
         break;
       }
 
-      if (
-        job.state !== "active" ||
-        job.lockExpiresAt === null ||
-        job.lockExpiresAt > now
-      ) {
+      if (!isStalled(job, now)) {
         continue;
       }
 
