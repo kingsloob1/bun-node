@@ -119,7 +119,12 @@ export interface SummonedExit {
   ranForMs: number;
   /** Jobs it completed. */
   completed: number;
-  /** Attempts it failed. */
+  /**
+   * Attempts it failed, as the worker reported them. After a forced close an
+   * abandoned attempt's failure may not land before the driver closes: it
+   * then counts on a driver that writes in memory, not on Postgres, Redis or
+   * MongoDB, and the job is recovered as stalled either way.
+   */
   failed: number;
   /** The exit code it used, or would have used in `"in-invocation"` mode. */
   code: 0 | 1;
@@ -147,6 +152,7 @@ type SummonedWorkerEvent =
   | "failed"
   | "paused"
   | "resumed"
+  | "closing"
   | "closed";
 
 /** The modes {@link RunSummonedOptions.mode} accepts. */
@@ -177,6 +183,12 @@ export const RUN_SUMMONED_DEFAULTS = {
    * `TARGET_CLOSE_REAP` (500 ms) for the target plus 500 ms for those round
    * trips: forced closes measured 11 to 35 ms locally, 94 ms at worst on a
    * loaded machine. Past it the platform's own kill is the backstop.
+   *
+   * It applies to every limit, not only a signal's. At the deadline the
+   * backstop fires at the later of `deadline − 250` and a second after the
+   * close began, so a close that starts with under 1,250 ms to the deadline
+   * (a small `shutdownBuffer`, or a deadline already near at the start) can
+   * run past `deadline − 250` by up to the floor itself.
    */
   forcedCloseFloor: 1_000,
 } as const;
@@ -519,6 +531,8 @@ class SummonedRun {
   #closing: SummonedStop | undefined;
   /** Whether it has finished. */
   #done = false;
+  /** Whether the close in progress is the owner's, not one of ours. */
+  #ownerClose = false;
   /** Since when the queue has been idle, epoch ms. */
   #idleSince: number | undefined;
   /** Since when the worker has been parked, epoch ms. */
@@ -585,10 +599,12 @@ class SummonedRun {
         // `run()` resolves once the claim loop stops, which a close in
         // progress already accounts for, and so does a close of ours that
         // ended the startup: the worker then resolves `run()` without
-        // `ready`. A close by anyone else is seen through the `closed`
-        // event. What is left is a worker that was closed before it was
-        // handed over: its `run()` does nothing and resolves at once, with no
-        // `ready` and no `closed`, and nothing else would ever end this.
+        // `ready`, before that close has finished. An owner's close is seen
+        // through `closing` first and waited out through `closed`, so it
+        // lands here with `#closing` set. What is left is a worker that was
+        // closed before it was handed over: its `run()` does nothing and
+        // resolves at once, with no `ready`, `closing` or `closed`, and
+        // nothing else would ever end this.
         if (!this.#ready && this.#closing === undefined && !this.#done) {
           this.#closing = { reason: "closed" };
           this.#logger.info("Summoned worker was already closed", {
@@ -630,14 +646,32 @@ class SummonedRun {
     }
   };
 
-  /** Closed by something else: the caller's own code, say. */
-  readonly #onClosed = (): void => {
+  /**
+   * A close that is not ours began: the caller's own code, say. It is waited
+   * out rather than finished here — during startup the worker resolves
+   * `run()` as soon as startup stops, well before that close has unregistered
+   * the worker and closed its driver, and exiting then would cut it short.
+   */
+  readonly #onClosing = (): void => {
     if (this.#closing === undefined && !this.#done) {
       this.#closing = { reason: "closed" };
-      this.#logger.info("Summoned worker was closed by its owner", {
+      this.#ownerClose = true;
+      this.#closeStartedAt = Date.now();
+      this.#logger.info("Summoned worker is being closed by its owner", {
         reason: "closed",
       });
-      this.#finish(this.#closing);
+    }
+  };
+
+  /**
+   * The owner's close finished. The result is settled on the next turn, so
+   * the owner's own `await worker.close()` resumes first — before the process
+   * exits, with `exit`.
+   */
+  readonly #onClosed = (): void => {
+    if (this.#ownerClose && !this.#done) {
+      const stop = this.#closing ?? { reason: "closed" as const };
+      setTimeout(() => this.#finish(stop), 0);
     }
   };
 
@@ -720,6 +754,7 @@ class SummonedRun {
     this.#events.on("failed", this.#onFailed);
     this.#events.on("paused", this.#onPausedOrResumed);
     this.#events.on("resumed", this.#onPausedOrResumed);
+    this.#events.on("closing", this.#onClosing);
     this.#events.on("closed", this.#onClosed);
     this.#events.once("ready", this.#onReady);
 
@@ -741,6 +776,7 @@ class SummonedRun {
     this.#events.off("failed", this.#onFailed);
     this.#events.off("paused", this.#onPausedOrResumed);
     this.#events.off("resumed", this.#onPausedOrResumed);
+    this.#events.off("closing", this.#onClosing);
     this.#events.off("closed", this.#onClosed);
     this.#events.off("ready", this.#onReady);
     for (const [signal, handler] of this.#signalHandlers) {
