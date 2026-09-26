@@ -2,12 +2,14 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   ChildOutcome,
   ChildRecordResult,
+  FailOutcome,
   JobRecord,
   JobRef,
   JobsDriver,
   PromotionRead,
   QueueRef,
   RepeatRecord,
+  Retention,
   StoredJobOptions,
   WorkerConfigInfo,
   WorkerControlInfo,
@@ -3420,6 +3422,29 @@ export class BunQueueWorker<
       : false;
 
     const now = Date.now();
+    /**
+     * Whether a try of the failure write threw, so it may have landed with
+     * only its reply lost. Until one has, a refusal is the whole truth: every
+     * driver checks the lock and writes in one atomic step, so a refused try
+     * wrote nothing, and nothing before it of this attempt's could have.
+     */
+    let uncertain = false;
+    const failJob = async (outcome: FailOutcome): Promise<boolean> => {
+      try {
+        return await this.driver.failJob(
+          this.ref,
+          record.id,
+          heldLock(record),
+          serialized,
+          outcome,
+          now,
+          record.opts.keepStacktraces,
+        );
+      } catch (error) {
+        uncertain = true;
+        throw error;
+      }
+    };
 
     // Retried like a completion, for the same reason: see `#persist`. The
     // write checks the lock token and the job's state itself, so a repeat of
@@ -3428,23 +3453,17 @@ export class BunQueueWorker<
       if (delay !== false) {
         const runAt = now + delay;
         const written = await this.#persist(
-          async () =>
-            await this.driver.failJob(
-              this.ref,
-              record.id,
-              heldLock(record),
-              serialized,
-              { retry: true, runAt },
-              now,
-              record.opts.keepStacktraces,
-            ),
+          async () => await failJob({ retry: true, runAt }),
         );
 
         // The retry is scheduled now, possibly before whatever this worker
         // last heard was due next: its empty passes must promote again.
         noteScheduled(this.driver, this.ref);
 
-        if (!written && !(await this.#failureLanded(record, serialized))) {
+        if (
+          !written &&
+          !(uncertain && (await this.#failureLanded(record, serialized, false)))
+        ) {
           this.safeEmit("lockLost", job);
           return;
         }
@@ -3461,28 +3480,24 @@ export class BunQueueWorker<
         return;
       }
 
+      const retention = record.flow?.parent ? false : record.opts.removeOnFail;
       const written = await this.#persist(
-        async () =>
-          await this.driver.failJob(
-            this.ref,
-            record.id,
-            heldLock(record),
-            serialized,
-            {
-              retry: false,
-              retention: record.flow?.parent ? false : record.opts.removeOnFail,
-            },
-            now,
-            record.opts.keepStacktraces,
-          ),
+        async () => await failJob({ retry: false, retention }),
       );
 
       // Refused, and not because an earlier try of this very write landed:
       // the job is someone else's now — most often buried from outside by
-      // `Job.fail()`, which announced `failed` and `dead` itself. Saying so
-      // again would deliver both twice; nor is its letter or its parent this
-      // worker's to see to.
-      if (!written && !(await this.#failureLanded(record, serialized))) {
+      // `Job.fail()`, which announced `failed` and `dead` itself, or completed
+      // by the attempt that recovered it. Saying so again would deliver both
+      // twice, or announce a failure that never happened; nor is its letter or
+      // its parent this worker's to see to.
+      if (
+        !written &&
+        !(
+          uncertain &&
+          (await this.#failureLanded(record, serialized, retention))
+        )
+      ) {
         this.safeEmit("lockLost", job);
         return;
       }
@@ -3522,25 +3537,38 @@ export class BunQueueWorker<
   /**
    * Whether a failure write this worker saw refused had in fact landed: an
    * earlier try whose reply was lost wrote it, and the retry that followed
-   * found the lock already released. Told apart from a job someone else
-   * settled — buried from outside, recovered as stalled — by reading the job
-   * back: ours is `failed` or `dead` with exactly the failure this worker
+   * found the lock already released. Asked only once a try has thrown — a
+   * refusal with none before it wrote nothing. Told apart from a job someone
+   * else settled — buried from outside, recovered as stalled — by reading the
+   * job back: ours is `failed` or `dead` with exactly the failure this worker
    * wrote.
    *
-   * A job that is gone reads as ours: retention may have removed it the
-   * moment our write landed, and reporting a failure that happened beats
-   * losing it.
+   * A job that is gone reads as ours only when `retention` — what our write
+   * asked for, `false` for a retry — could have removed it the moment the
+   * write landed. Otherwise something else removed it: most often the attempt
+   * that recovered the job completing it, under completion retention, and
+   * reporting that as our failure would announce one that never happened and
+   * file its dead letter. When our retention could have removed it, the two
+   * cannot be told apart — no driver leaves a trace of a removed job — and
+   * reporting a failure that happened beats losing it.
    */
   async #failureLanded(
     record: JobRecord,
     written: SerializedError,
+    retention: Retention,
   ): Promise<boolean> {
     const now = await this.driver
       .getJob(this.ref, record.id)
       .catch(() => undefined);
 
-    if (now === undefined || now === null) {
+    // Unreadable: no evidence either way, and a lost failure is the worse
+    // mistake, as before.
+    if (now === undefined) {
       return true;
+    }
+
+    if (now === null) {
+      return retention !== false;
     }
 
     return (
