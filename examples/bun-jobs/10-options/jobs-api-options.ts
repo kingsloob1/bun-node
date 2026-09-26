@@ -237,6 +237,18 @@ const JOB_METHOD_ROUTES = [
 ];
 
 /**
+ * The two routes that read a queue's demand, what a scaler asks: one queue's
+ * (`queues.read`) and every queue's (`queues.list`). Reads, in the jobs half,
+ * on every backend, so they are in every count below but runner mode's.
+ */
+const DEMAND_ROUTES = ["getQueueDemand", "listQueueDemand"];
+/** Which of {@link DEMAND_ROUTES} an API registered, sorted. */
+const demandRoutes = (api: { routes: readonly { operationId: string }[] }) =>
+  idsOf(api)
+    .filter((id) => DEMAND_ROUTES.includes(id))
+    .sort();
+
+/**
  * Which of {@link JOB_METHOD_ROUTES} an API registered, in the same one-line
  * shape, with each marked `mutation` or not so a check names what is wrong.
  */
@@ -404,13 +416,20 @@ checkEqual(
 );
 // Two routes read how many jobs were added per state — `getAddedByState` and
 // `getQueueAddedByState` — and a backend that keeps no such counts (the file
-// and Redis drivers) prunes both. Every count below is two lower there.
+// and Redis drivers) prunes both. Every count below is two lower there. The
+// two demand routes ({@link DEMAND_ROUTES}) are in every count on every
+// backend, runner mode's aside.
 const bothFeatures = (await both.call("GET", "/meta")).body.features;
 const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  70 + addedByState,
+  72 + addedByState,
+);
+checkEqual(
+  "the two demand routes are among them, and /meta says they are served",
+  [demandRoutes(both.api), bothFeatures.demand],
+  [[...DEMAND_ROUTES].sort(), true],
 );
 checkEqual(
   "fail, disable and enable are among them, each a mutation",
@@ -472,13 +491,23 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 54 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 56 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
   [[...JOB_METHOD_ROUTES].sort(), []],
 );
 checkEqual("mode: runner", runnerOnly.api.routes.length, 20);
+checkEqual(
+  "the demand routes belong to the jobs half: absent in mode runner, and /meta's features.demand follows",
+  [
+    demandRoutes(jobsOnly.api),
+    demandRoutes(runnerOnly.api),
+    (await jobsOnly.call("GET", "/meta")).body.features.demand,
+    (await runnerOnly.call("GET", "/meta")).body.features.demand,
+  ],
+  [[...DEMAND_ROUTES].sort(), [], true, false],
+);
 checkEqual(
   "the two halves plus the shared routes are the whole API",
   jobsOnly.api.routes.length + runnerOnly.api.routes.length - 4,
@@ -504,7 +533,12 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 33 + addedByState);
+checkEqual("what is left", readOnly.api.routes.length, 35 + addedByState);
+checkEqual(
+  "the demand routes among them: reads, so readOnly keeps both",
+  demandRoutes(readOnly.api),
+  [...DEMAND_ROUTES].sort(),
+);
 const paused = await readOnly.call("POST", "/queues/mail/pause");
 checkEqual("a mutation answers 404, not 403", paused.status, 404);
 checkEqual("with the API's own code", paused.body.code, "ROUTE_NOT_FOUND");
@@ -526,7 +560,7 @@ const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  61 + addedByState,
+  63 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",

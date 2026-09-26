@@ -1984,6 +1984,8 @@ export const summary = { outstanding, capped };
   `cap`). On a driver of your own without `countDemand`, a fallback over
   `countJobs` answers with `exact: false`.
 
+Example: [`02-queues/demand.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/demand.ts).
+
 **From the management API: the depth endpoint.** A scaler polls demand over
 HTTP. `GET /queues/:queue/demand` (`queues.read`) answers one queue's
 `getDemand()` with its `queue` name added, a `QueueDemandDto`; `GET /demand`
@@ -2016,6 +2018,8 @@ scalers read an absent series as 0, which would scale to zero over a backlog.
 `exact` in each answer is the only signal of approximate figures (`false` on a
 driver without `countDemand`); `/meta`'s `features.demand` says only that the
 routes are served.
+
+Example: [`11-management-api/demand-for-a-scaler.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/demand-for-a-scaler.ts).
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
