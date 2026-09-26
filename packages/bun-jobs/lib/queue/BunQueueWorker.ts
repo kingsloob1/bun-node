@@ -465,8 +465,9 @@ export function deriveWorkerKey(parts: {
  * processes* and nothing more, so two workers built here under one key (two
  * replicas of a shard in one process, or simply two plain
  * `new BunQueueWorker("mail", ...)`) collided on it. They would then share a
- * heartbeat record, a lock token and a limiter lease, which is the very
- * corruption the derived id exists to make impossible.
+ * heartbeat record and a limiter lease, which is the very corruption the
+ * derived id exists to make impossible. (Not a lock token: each claim draws
+ * its own — see `newClaimToken`.)
  */
 let workerSerial = 0;
 
@@ -475,9 +476,9 @@ let workerSerial = 0;
  * process.
  *
  * Derived rather than random so it can be computed in the constructor, which
- * is what keeps `readonly id` possible: the lock token and the limiter's lease
- * holder are fixed there, and deferring them to `run()` would be a far larger
- * change.
+ * is what keeps `readonly id` possible: the heartbeat record's key and the
+ * limiter's lease holder are fixed there, and deferring them to `run()` would
+ * be a far larger change.
  */
 export function incarnationTag(
   host: string,
@@ -2659,9 +2660,9 @@ export class BunQueueWorker<
    * second time. Most such failures are the database saying "busy, try again"
    * (a deadlock victim, a lock wait timeout), which a short wait cures.
    *
-   * Every write retried here is conditional on this worker's lock token, so a
-   * repeat of one that did land, its reply lost, changes nothing and answers
-   * `false`. The retries stop at a quarter of the lock duration, so they can
+   * Every write retried here is conditional on the lock token of the claim
+   * that took the job, so a repeat of one that did land, its reply lost,
+   * changes nothing and answers `false`. The retries stop at a quarter of the lock duration, so they can
    * never outlive the lock they depend on.
    */
   async #persist<T>(write: () => Promise<T>): Promise<T> {
@@ -4497,8 +4498,9 @@ export class BunQueueWorker<
    * Looks, once, for another live worker registered under this worker's id.
    *
    * Sharing an id is already a latent corruption — the id names the heartbeat
-   * record, the lock token and the limiter's lease holder — and the derived
-   * id makes it impossible by accident. It is still possible on purpose, by
+   * record and the limiter's lease holder — and the derived id makes it
+   * impossible by accident. (Lock tokens are not at stake: each claim draws
+   * its own, and the id is only their trailing, diagnostic part.) It is still possible on purpose, by
    * passing the same explicit `id` twice, so the first report says so rather
    * than letting two workers quietly overwrite each other's records.
    *

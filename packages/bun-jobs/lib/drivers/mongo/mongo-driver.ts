@@ -845,7 +845,7 @@ interface JobDocument {
    * from elsewhere) round-trips as it was written.
    */
   processedBy?: JobWorkerRef;
-  /** That worker's lock token. Absent while unclaimed. */
+  /** The holding claim's lock token. Absent while unclaimed. */
   lockToken?: string | null;
   /** When the lock expires. Absent while unclaimed. */
   lockExpiresAt?: number | null;

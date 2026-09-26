@@ -1578,8 +1578,9 @@ export const handler = async (_event: unknown, context: { getRemainingTimeInMill
 
 Construct the worker in the handler, never at module scope. A worker built
 during Init would outlive the invocation into a freeze [V/I, aws §2]. Under
-Lambda MicroVMs it would also share its id and lock token across every
-restored VM [V, aws §4.7].
+Lambda MicroVMs it would also share its id — and so its heartbeat record and
+limiter lease — across every restored VM [V, aws §4.7]. Its lock tokens are
+drawn per claim, at claim time (#187), so those are not shared.
 
 
 ### 5.5 The identity channel: arguments only (revised 2026-09-26)
