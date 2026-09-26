@@ -95,6 +95,7 @@ import {
   workerConfigCrossFieldIssue,
   workerConfigIssue,
 } from "../shared/workers";
+import { claimSummonAttempt, holdsSummonClaim } from "../summon/claim";
 import { resolveSummonProvenance } from "../summon/provenance";
 import { AttemptWrites } from "./attemptWrites";
 import { BackoffStrategies, nextBackoff } from "./backoff";
@@ -658,6 +659,14 @@ export class BunQueueWorker<
    * summoned, which then writes no `summon` at all.
    */
   readonly #summon: Readonly<WorkerSummonProvenance> | undefined;
+  /**
+   * Claim-once for {@link #summon}: `"won"` while this worker holds the
+   * attempt id, `"lost"` when a live process claimed it first or took it
+   * over later (this worker then runs as an ordinary one, for good),
+   * `undefined` until the first report decides, and for a worker nobody
+   * summoned.
+   */
+  #summonClaim: "won" | "lost" | undefined;
   /** Options with defaults applied. */
   readonly #options: Required<
     Pick<
@@ -1052,6 +1061,8 @@ export class BunQueueWorker<
       options.summon,
       reportInterval,
       supportsWorkers(driver),
+      typeof driver.getQueueState === "function" &&
+        typeof driver.setQueueState === "function",
     );
 
     this.#derivedConfig =
@@ -4414,6 +4425,53 @@ export class BunQueueWorker<
   }
 
   /**
+   * The provenance this worker writes on its record: its `summon` option once
+   * it has claimed the attempt id (claim-once). `undefined` for a worker
+   * nobody summoned, until its first report has claimed the id, and for good
+   * when a live process claimed that id first or took the place over later
+   * (after this worker's record had lapsed) — this worker then runs as an
+   * ordinary one.
+   */
+  get summon(): Readonly<WorkerSummonProvenance> | undefined {
+    return this.#summonClaim === "won" ? this.#summon : undefined;
+  }
+
+  /**
+   * Claims {@link #summon}'s attempt id for this worker, or, once claimed,
+   * checks the place is still its own: a process that restarted with the
+   * same arguments may take over the place of a holder whose record lapsed,
+   * and a holder that was only slow must not then report as summoned too. A
+   * failed read or write leaves things as they were — undecided stays
+   * undecided (the record unsummoned), won stays won — for the next report.
+   */
+  async #claimSummon(now: number): Promise<void> {
+    const summon = this.#summon!;
+    try {
+      const held =
+        this.#summonClaim === undefined
+          ? await claimSummonAttempt(this.driver, this.ref, summon.id, {
+              worker: this.id,
+              host: HOST,
+              pid: process.pid,
+              at: now,
+              until: now + this.#reportInterval * REPORT_LIFETIMES,
+            })
+          : await holdsSummonClaim(this.driver, this.ref, summon.id, this.id);
+      if (!held) {
+        this.#logger.warn(
+          this.#summonClaim === undefined
+            ? "summon attempt already claimed by a live process; running as an ordinary worker"
+            : "summon attempt taken over by another process; running as an ordinary worker from now on",
+          { summonId: summon.id },
+        );
+      }
+      this.#summonClaim = held ? "won" : "lost";
+    } catch (error) {
+      this.#emitError(error, "report");
+    }
+  }
+
+  /**
    * Writes this worker's heartbeat record: who it is, how busy, and until when
    * the record stands. Never throws — a failed write is reported as an error
    * and the next interval writes again.
@@ -4445,6 +4503,12 @@ export class BunQueueWorker<
       if (!this.#checkedDuplicateId) {
         this.#checkedDuplicateId = true;
         await this.#detectDuplicateId(now);
+      }
+
+      // Claim-once, before any record says this worker was summoned; and on
+      // every later report, that nobody has taken the place over since.
+      if (this.#summon !== undefined && this.#summonClaim !== "lost") {
+        await this.#claimSummon(now);
       }
 
       const active = this.#active.size;
@@ -4490,7 +4554,9 @@ export class BunQueueWorker<
           target: this.#targetInfo,
           // Only when the worker was summoned: absent means "not summoned, or
           // too old to say", and is never defaulted.
-          ...(this.#summon === undefined ? {} : { summon: this.#summon }),
+          // And only once it holds the attempt id (claim-once): a second
+          // process started with the same id runs, and reports, unsummoned.
+          ...(this.summon === undefined ? {} : { summon: this.summon }),
           config: this.config,
           control: this.control,
         });

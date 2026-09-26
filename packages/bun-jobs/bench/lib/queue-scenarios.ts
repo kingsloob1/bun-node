@@ -37,6 +37,8 @@ export interface ScenarioConfig {
   name: string;
   /** Connection string for the contender's backend. */
   url: string;
+  /** Attach a summon controller to our contender's queue (`--summon`). */
+  summon: boolean;
 }
 
 /** Tracks arrivals by sequence number so loss and duplication are both visible. */
@@ -210,6 +212,7 @@ export async function runQueueScenario(
       onReceive: (payload) => onArrive(payload),
       onCompleted: (payload) => onCompleted(payload),
       onError: (error) => errors.push(error),
+      summon: config.summon,
     });
 
   /** Arms both counters for a drain of `config.jobs` jobs. */
