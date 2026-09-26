@@ -90,6 +90,9 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       // Served on every built-in backend (false only in `runner` mode).
       jobDefaults: true,
       jobDefaultsApply: true,
+      // The demand routes: served on every backend, the figures exact or not
+      // per answer (`QueueDemandDto.exact`); false only in `runner` mode.
+      demand: true,
       throughput: true,
     },
     // A backend recording everything, with the shipped defaults: per-second

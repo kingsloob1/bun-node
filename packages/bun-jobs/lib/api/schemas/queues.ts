@@ -7,6 +7,7 @@ import {
   JOB_DEFAULTS_BOUNDS,
   MAX_ADDED_BY_STATE_SPAN_MS,
   MAX_DATE_MS,
+  MAX_NAME_LENGTH,
   MIN_ANALYTICS_SPAN_MS,
 } from "../contract/constants";
 import { s } from "../schema/builder";
@@ -330,6 +331,108 @@ export function queueListQuerySchema(maxQueues: number) {
 export const QueueListQuerySchema = queueListQuerySchema(
   DEFAULT_JOBS_API_LIMITS.maxQueues,
 );
+
+/** A queue's demand at one instant. Mirrors `QueueDemandDto`. */
+export const QueueDemandSchema = s.named(
+  "QueueDemand",
+  s.object({
+    queue: s.string({ description: "The queue's name." }),
+    at: s.integer({ description: "The instant it describes, epoch ms." }),
+    paused: s.boolean({
+      description:
+        "Whether claiming is paused. A paused queue demands nothing.",
+    }),
+    waiting: s.integer({ minimum: 0, description: "Jobs in `waiting`." }),
+    dueNow: s.integer({
+      minimum: 0,
+      description:
+        "Jobs in `delayed` or `failed` (retry pending) whose `runAt` has passed, not yet promoted.",
+    }),
+    stalled: s.integer({
+      minimum: 0,
+      description:
+        "Jobs in `active` whose worker died holding them: what the backend's stalled sweep would recover now.",
+    }),
+    active: s.integer({
+      minimum: 0,
+      description: "Jobs in `active`, stalled ones included.",
+    }),
+    workers: s.integer({
+      minimum: 0,
+      description:
+        "Live workers on the queue, from their heartbeat records, parked and paused ones included. `0` on a backend that keeps no worker records.",
+    }),
+    nextDueAt: s.nullable(
+      s.integer({
+        description:
+          "The earliest `runAt` still in the future among delayed and failed jobs, epoch ms, or `null` for none.",
+      }),
+    ),
+    demand: s.integer({
+      minimum: 0,
+      description:
+        "`paused ? 0 : waiting + dueNow + stalled`: work a worker could claim now. What a launch-style scaler (a KEDA `ScaledJob`, an ACA event job) reads.",
+    }),
+    outstanding: s.integer({
+      minimum: 0,
+      description:
+        "`paused ? 0 : demand + (active − stalled)`: every unfinished job, each once. What a scale-style scaler (a KEDA `ScaledObject`, CREMA) reads, since it stays above zero while a worker is busy.",
+    }),
+    capped: s.boolean({
+      description:
+        "`true` when a figure reached the count cap (10 000, fixed), so the figures are lower bounds. `demand` and `outstanding` are sums of capped figures and can exceed it.",
+    }),
+    exact: s.boolean({
+      description:
+        "`false` when the backend has no `countDemand` and the figures come from a fallback: `dueNow` is 1 or 0, `stalled` is `active` when no worker is live. Right as a trigger, approximate as a count. The only signal of approximate figures: `features.demand` says only that the routes are served.",
+    }),
+  }),
+);
+
+/** `GET /demand`. Mirrors `QueueDemandListDto`. */
+export const QueueDemandListSchema = s.named(
+  "QueueDemandList",
+  s.object({
+    queues: s.array(QueueDemandSchema),
+    truncated: s.boolean({
+      description:
+        "Whether more queues are visible than `limits.maxQueues`, so some were not read. Only when `queues` was not sent.",
+    }),
+  }),
+);
+
+/**
+ * The query both demand routes share: the representation. There is no `cap`:
+ * the routes count to the package default, 10 000, whatever the caller asks.
+ */
+const demandQueryProperties = () => ({
+  format: s.optional(
+    s.enum(["json", "prometheus"], {
+      description:
+        "`json` for the JSON body, `prometheus` for the Prometheus text exposition (`text/plain; version=0.0.4`). Overrides `Accept`; without it, an `Accept` preferring `text/plain` over JSON selects the exposition.",
+    }),
+  ),
+});
+
+/** `GET /queues/:queue/demand` query. */
+export const QueueDemandQuerySchema = s.query(
+  s.object(demandQueryProperties()),
+);
+
+/** `GET /demand` query: the shared one, and which queues, at most `maxQueues` of them. */
+export function queueDemandListQuerySchema(maxQueues: number) {
+  return s.query(
+    s.object({
+      queues: s.optional(
+        s.array(s.string({ minLength: 1, maxLength: MAX_NAME_LENGTH }), {
+          maxItems: maxQueues,
+          description: `The queues to read, repeated or comma-separated, in the order given; every visible queue when absent. A name the caller cannot see (unknown, outside the allowlist, or refused \`queues.read\` under \`listQueues: "authorized"\`) is left out, never an error. At most ${maxQueues} (\`limits.maxQueues\`).`,
+        }),
+      ),
+      ...demandQueryProperties(),
+    }),
+  );
+}
 
 /** Whether a queue is paused, after pausing or resuming it. */
 export const PausedSchema = s.object({ paused: s.boolean() });

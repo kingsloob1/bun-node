@@ -978,6 +978,109 @@ export interface OverviewDto {
 }
 
 /* ------------------------------------------------------------------ *
+ * Demand: the depth endpoint
+ * ------------------------------------------------------------------ */
+
+/**
+ * A queue's demand at one instant: `GET /queues/{queue}/demand` (operation
+ * `getQueueDemand`, action `queues.read`) and each item of
+ * `GET /demand`. The figure a scaler polls — KEDA's `metrics-api` scaler, ACA
+ * event jobs, CREMA, GKE's HPA through Prometheus — to decide how many
+ * workers to run.
+ *
+ * `queue.getDemand()`'s answer (`QueueDemand`) with the queue's name added.
+ * Unlike the per-state counts it includes due delayed jobs, due retries and
+ * stalled jobs, and a paused queue reports `demand` and `outstanding` as `0`
+ * over its unchanged backlog, so one number is the answer.
+ *
+ * Point a launch-style scaler (a KEDA `ScaledJob`, an ACA event job) at
+ * `demand`, and a scale-style one (a `ScaledObject`, CREMA) at `outstanding`,
+ * which stays above zero while a worker is busy on a long job.
+ */
+export interface QueueDemandDto {
+  /** The queue's name. */
+  queue: string;
+  /** The instant it describes, epoch ms. */
+  at: number;
+  /** Whether claiming is paused. A paused queue demands nothing. */
+  paused: boolean;
+  /** Jobs in `waiting`. */
+  waiting: number;
+  /** Jobs in `delayed` or `failed` (retry pending) whose `runAt` has passed, not yet promoted. */
+  dueNow: number;
+  /** Jobs in `active` whose worker died holding them: what the backend's stalled sweep would recover now. */
+  stalled: number;
+  /** Jobs in `active`, stalled ones included. */
+  active: number;
+  /**
+   * Live workers on the queue, from their heartbeat records, parked and paused
+   * ones included. `0` on a backend that keeps no worker records.
+   */
+  workers: number;
+  /** The earliest `runAt` still in the future among delayed and failed jobs, epoch ms, or `null` for none. */
+  nextDueAt: number | null;
+  /** `paused ? 0 : waiting + dueNow + stalled`: work a worker could claim now. */
+  demand: number;
+  /** `paused ? 0 : demand + (active − stalled)`: every unfinished job, each once. */
+  outstanding: number;
+  /**
+   * `true` when a figure reached the count cap (10 000, fixed: the routes take
+   * no cap from the caller), so the figures are lower bounds. `demand` and
+   * `outstanding` are sums of capped figures, so they can exceed the cap.
+   */
+  capped: boolean;
+  /**
+   * `false` when the backend cannot count demand directly (a custom driver
+   * without `countDemand`) and the figures come from a fallback: `dueNow` is
+   * `1` or `0`, `stalled` is `active` when no worker is live, and `nextDueAt`
+   * is known only while nothing is due. Right as a trigger, approximate as a
+   * count. This is the only signal of approximate figures: `/meta` has none,
+   * since `MetaDto.features.demand` says only that the routes are served.
+   */
+  exact: boolean;
+}
+
+/**
+ * `GET /queues/{queue}/demand` query. Without `format`, `Accept` decides: a
+ * `text/plain` preferred over JSON (as a Prometheus server's scrape sends)
+ * selects the exposition, anything else JSON.
+ */
+export interface QueueDemandQuery {
+  /**
+   * `json` for {@link QueueDemandDto}, `prometheus` for the text exposition
+   * (`text/plain; version=0.0.4`). Overrides `Accept`.
+   */
+  format?: "json" | "prometheus";
+}
+
+/** `GET /demand` query: {@link QueueDemandQuery}, and which queues. */
+export interface QueueDemandListQuery extends QueueDemandQuery {
+  /**
+   * The queues to read, repeated or comma-separated, in the order given;
+   * every visible queue, by name, when absent. A name the caller cannot see —
+   * unknown, outside the `queues` allowlist, or refused `queues.read` under
+   * `listQueues: "authorized"` — is left out, never an error. At most
+   * `limits.maxQueues`.
+   */
+  queues?: string[];
+}
+
+/**
+ * `GET /demand` (operation `listQueueDemand`, action `queues.list`): the demand
+ * of several queues in one request, and with `format=prometheus` one scrape
+ * for the namespace.
+ */
+export interface QueueDemandListDto {
+  /** Each queue's demand, in name order or in the order `queues` asked. */
+  queues: QueueDemandDto[];
+  /**
+   * Whether more queues are visible than `limits.maxQueues`, so some were not
+   * read. Only when `queues` was not sent.
+   */
+  truncated: boolean;
+}
+
+/* ------------------------------------------------------------------ *
  * Jobs added over a range, by current state
  * ------------------------------------------------------------------ */
 
@@ -3134,6 +3237,14 @@ export interface MetaDto {
      * rewrite, so `POST /queues/{queue}/job-defaults/apply` exists.
      */
     jobDefaultsApply: boolean;
+    /**
+     * The demand routes, `GET /queues/{queue}/demand` and `GET /demand`, are
+     * served. They need no driver method, so this is `true` on every backend
+     * and `false` only in `runner` mode, where they are not routed. Whether an
+     * answer's figures are exact is that answer's `QueueDemandDto.exact`
+     * (`false` on a custom driver without `countDemand`), not this flag.
+     */
+    demand: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

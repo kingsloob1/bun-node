@@ -1976,6 +1976,33 @@ export const summary = { outstanding, capped };
   `cap`). On a driver of your own without `countDemand`, a fallback over
   `countJobs` answers with `exact: false`.
 
+**From the management API: the depth endpoint.** A scaler polls demand over
+HTTP. `GET /queues/:queue/demand` (`queues.read`) answers one queue's
+`getDemand()` with its `queue` name added, a `QueueDemandDto`; `GET /demand`
+(`queues.list`) answers `{ queues: QueueDemandDto[], truncated }` for
+`?queues=a,b`, or for every queue the caller may see (at most
+`limits.maxQueues`), and under `listQueues: "authorized"` only the queues
+`authorize` allows `queues.read` on. A name in `queues` the caller cannot see
+is left out, never an error. Neither takes a `cap`: each figure is counted
+to the default 10,000, and `capped` says when one went past.
+
+With `?format=prometheus`, or an `Accept` preferring `text/plain` (as a
+Prometheus server's scrape does), either answers the Prometheus text
+exposition, `text/plain; version=0.0.4; charset=utf-8`: one gauge family per
+figure, each sample labelled with the namespace and the queue.
+
+```text
+# HELP bunjobs_queue_demand Jobs a worker could claim now: waiting + due + stalled. 0 while the queue is paused.
+# TYPE bunjobs_queue_demand gauge
+bunjobs_queue_demand{ns="shop",queue="emails"} 15
+```
+
+The families are `bunjobs_queue_demand`, `_outstanding`, `_waiting`, `_due`,
+`_stalled`, `_active`, `_workers`, `_paused` (0 or 1) and `_demand_capped` (1
+when the figures are lower bounds). `exact` in each answer is the only signal
+of approximate figures (`false` on a driver without `countDemand`);
+`/meta`'s `features.demand` says only that the routes are served.
+
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
 paused, started, last heartbeat, `sweeps`, `target`, `rssBytes` and
@@ -4014,9 +4041,11 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/overview` | `metrics.read` | no |
 | GET | `/overview/added` | `metrics.read` | no |
 | GET | `/queues` | `queues.list` | no |
+| GET | `/demand` | `queues.list` | no |
 | GET | `/queues/:queue` | `queues.read` | no |
 | GET | `/queues/:queue/counts` | `queues.read` | no |
 | GET | `/queues/:queue/counts/added` | `queues.read` | no |
+| GET | `/queues/:queue/demand` | `queues.read` | no |
 | POST | `/queues/:queue/pause` | `queues.pause` | yes |
 | POST | `/queues/:queue/resume` | `queues.resume` | yes |
 | POST | `/queues/:queue/drain` | `queues.drain` | yes |
@@ -4876,6 +4905,7 @@ cannot" from "you may not":
 | `addedByState` | `/overview/added`, `/queues/:queue/counts/added`, and `?sort=createdAt` on `/queues/:queue/jobs` | `countAddedJobs` (memory, SQL and MongoDB; not Redis or file) |
 | `jobDefaults` | `GET`, `PUT` and `DELETE /queues/:queue/job-defaults` | queue state (`getQueueState`, `setQueueState`); every built-in driver |
 | `jobDefaultsApply` | `POST /queues/:queue/job-defaults/apply` | queue state and `rewritePendingOptions`; every built-in driver |
+| `demand` | `/queues/:queue/demand`, `/demand` | nothing: a driver without `countDemand` is served from a fallback, and says so with `exact: false` in each answer |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under
