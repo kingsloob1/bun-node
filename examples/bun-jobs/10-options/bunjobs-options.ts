@@ -656,7 +656,7 @@ step("jobsFromContext()");
     namespace,
     driver: crossConfig,
     logger: noopLogger,
-    runnerDefaults: { executionMode: "spawn" },
+    runnerDefaults: { executionMode: "child-process" },
   });
   const spawned = crossJobs.runner<FromContextArgs, FromContextReport>({
     id: "from-context-spawn",
@@ -675,12 +675,12 @@ step("jobsFromContext()");
   await spawned.trigger({ args: { queue: "from-context" } });
   const remote = await spawnedReport;
   checkEqual(
-    "spawn: built from driverConfig",
+    "child-process: built from driverConfig",
     [remote.usedDriverInstance, remote.driverConfig],
     [false, crossConfig],
   );
   check(
-    "spawn: the child's job is in the shared backend",
+    "child-process: the child's job is in the shared backend",
     (await crossJobs.queue("from-context").getJob(remote.jobId)) !== null,
   );
   await crossJobs.purge();
@@ -698,7 +698,7 @@ step("jobsFromContext()");
   const stranded = jobs.runner<FromContextArgs, FromContextReport>({
     id: "from-context-stranded",
     file,
-    executionMode: "spawn",
+    executionMode: "child-process",
     publish: false,
   });
   await stranded.start();

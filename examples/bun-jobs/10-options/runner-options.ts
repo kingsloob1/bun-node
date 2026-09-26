@@ -266,7 +266,7 @@ step("Defaults, and what is rejected at construction");
       spawn: options.spawn,
     },
     {
-      executionMode: "spawn",
+      executionMode: "child-process",
       runMode: "single",
       queueRuns: false,
       maxQueuedRuns: 100,
@@ -520,7 +520,11 @@ step("executionMode, RunContext, spawn and worker options, messages");
 {
   const childConfig = config;
 
-  for (const mode of ["in-process", "worker", "spawn"] as const) {
+  for (const mode of [
+    "in-process",
+    "worker-thread",
+    "child-process",
+  ] as const) {
     const { runner, t } = makeRunner<ContextArgs, ContextReport>({
       id: `context-${mode}`,
       name: `Context (${mode})`,
@@ -597,6 +601,15 @@ step("executionMode, RunContext, spawn and worker options, messages");
         mode,
       },
     );
+    // One word for where a run executes, wherever it is read: the executor
+    // that starts a child or a Worker sets `BUN_JOBS_MODE` from its own mode,
+    // so the environment, `ctx.mode` and the run record cannot disagree. An
+    // in-process run has no executor of its own to set it.
+    checkEqual(
+      `${mode}: BUN_JOBS_MODE, ctx.mode and the run record agree`,
+      [report.bunJobsMode, report.mode, record.mode],
+      [mode === "in-process" ? null : mode, mode, mode],
+    );
     checkEqual(
       `${mode}: ctx.startedAt is the record's`,
       report.startedAt,
@@ -668,9 +681,9 @@ step("executionMode, RunContext, spawn and worker options, messages");
         t.logs.length,
         0,
       );
-    } else if (mode === "worker") {
+    } else if (mode === "worker-thread") {
       checkEqual(
-        "worker: same pid, off the main thread, a child",
+        "worker-thread: same pid, off the main thread, a child",
         [report.pid, report.isMainThread, report.isChild],
         [process.pid, false, true],
       );
@@ -697,11 +710,15 @@ step("executionMode, RunContext, spawn and worker options, messages");
       );
     } else {
       check(
-        "spawn: its own process",
+        "child-process: its own process",
         report.pid !== process.pid && report.isChild,
         report.pid,
       );
-      checkEqual("spawn: record.pid is the child's", record.pid, report.pid);
+      checkEqual(
+        "child-process: record.pid is the child's",
+        record.pid,
+        report.pid,
+      );
       checkEqual("spawn.cwd is the child's cwd", report.cwd, handlersDir);
       checkEqual("spawn.env reached the child", report.env, "spawn-env");
       check(
@@ -741,7 +758,7 @@ step("executionMode, RunContext, spawn and worker options, messages");
   const { runner, t } = makeRunner<ContextArgs, ContextReport>({
     id: "context-spawn-unforwarded",
     file: handler("runner-context"),
-    executionMode: "spawn",
+    executionMode: "child-process",
     spawn: { stdout: "pipe", stderr: "ignore" },
   });
   await runner.start();
@@ -768,7 +785,7 @@ step("spawn.execPath and spawn.startTimeout: a child that never says ready");
 
   const { runner, t } = makeRunner({
     id: "start-timeout",
-    executionMode: "spawn",
+    executionMode: "child-process",
     spawn: { execPath: neverReady, startTimeout: 300 },
   });
   await runner.start();
@@ -1165,7 +1182,7 @@ async function escalate(
   const { runner, t } = makeRunner<WorkArgs | BlockingArgs, unknown>({
     id,
     file,
-    executionMode: "spawn",
+    executionMode: "child-process",
     ...timeouts,
   });
   await runner.start();
@@ -1311,7 +1328,7 @@ step("stop({ timeout }), stop({ force }), and a stopped runner");
   const { runner, t } = makeRunner<BlockingArgs, string>({
     id: "stop-force",
     file: handler("runner-blocking"),
-    executionMode: "spawn",
+    executionMode: "child-process",
     closeTimeout: 20_000,
     killTimeout: 20_000,
   });

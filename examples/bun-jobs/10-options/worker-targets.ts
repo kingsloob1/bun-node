@@ -15,10 +15,10 @@
  *   `worker`, `"child-process"` `closeTimeout`, `killTimeout` and `spawn`.
  *   Tuning for the wrong kind is a type error, and a `ConfigError` from plain
  *   JavaScript (step 8).
- * - Runners and workers name the same two mechanisms differently: a runner's
- *   `executionMode` is `"worker"` / `"spawn"`, a worker's `target` is
- *   `"worker-thread"` / `"child-process"`, and the attempt's own process still
- *   sees `BUN_JOBS_MODE=worker` / `spawn`. Step 1 asserts that last part.
+ * - Runners and workers name the two mechanisms in the same words: a
+ *   runner's `executionMode` and a worker's `target` are both
+ *   `"worker-thread"` or `"child-process"`, and the attempt's own process
+ *   sees that same word in `BUN_JOBS_MODE`. Step 1 asserts that last part.
  * - The file default-exports the same `(job, ctx)` function a function
  *   processor is; `defineProcessor` types it. It may be named by an absolute
  *   path, a path relative to a `"child-process"` target's `spawn.cwd` (else
@@ -50,7 +50,6 @@ import type {
   JobsDriver,
   LocalWorkerTarget,
   LoggerLike,
-  WorkerTargetMode,
 } from "@kingsleyweb/bun-jobs";
 import type { FailData } from "./processors/isolation-fail";
 import type { HangData } from "./processors/isolation-hang";
@@ -135,20 +134,6 @@ function isAlive(pid: number): boolean {
 
 /* ------------------------------------------------------------------ */
 step("1. Each target runs the file, and the job channel reaches the worker");
-
-/**
- * What an attempt's own process sees in `BUN_JOBS_MODE` on each target, in
- * the *runner's* spelling, not the target's. Runners and workers name the
- * same two mechanisms differently: a runner's `executionMode` is `"worker"` /
- * `"spawn"`, a worker's `target` is `"worker-thread"` / `"child-process"`, and
- * the attempt's own process still sees `BUN_JOBS_MODE=worker` / `spawn`.
- * In-process nothing sets it.
- */
-const BUN_JOBS_MODE_ON: Record<WorkerTargetMode, string | null> = {
-  "in-process": null,
-  "worker-thread": "worker",
-  "child-process": "spawn",
-};
 
 /** How one target is set up. */
 interface TargetCase {
@@ -262,11 +247,12 @@ for (const { target, processor } of cases) {
     report.isMainThread,
     mode !== "worker-thread",
   );
-  // The runner's spelling, not the target's: `worker` / `spawn`.
+  // The target's own word: the executor that starts a child or a Worker sets
+  // `BUN_JOBS_MODE` from its mode, and in-process nothing sets it.
   checkEqual(
     `${mode}: BUN_JOBS_CHILD / BUN_JOBS_MODE`,
     [report.child, report.mode],
-    [mode === "in-process" ? null : "1", BUN_JOBS_MODE_ON[mode]],
+    [mode === "in-process" ? null : "1", mode === "in-process" ? null : mode],
   );
 
   if (mode === "worker-thread") {
@@ -1132,20 +1118,20 @@ await checkRejects(
       /target must be "in-process", "worker-thread" or "child-process", not "thread"/,
   },
 );
-// A runner's spelling is the likeliest wrong value, so it gets its own hint.
+// The spelling runners used before they took these words is the likeliest
+// wrong value, so it gets its own hint.
 await checkRejects(
-  'a runner\'s executionMode, "spawn", as a target',
+  'the old runner spelling, "spawn", as a target',
   () =>
     new BunQueueWorker("config", reportFile, {
       namespace,
       driver,
-      // @ts-expect-error -- a runner's spelling: a worker's is "child-process"
+      // @ts-expect-error -- the old spelling of "child-process"
       target: "spawn",
     }),
   {
     name: "ConfigError",
-    message:
-      /"spawn" is a runner's executionMode; a worker's is "child-process"/,
+    message: /"spawn" is the old spelling of "child-process"/,
   },
 );
 // Each kind takes only its own tuning: `spawn` belongs to "child-process".
@@ -1219,17 +1205,16 @@ const spawnReport = (await spawnQueue.getJob(spawned.id))
   ?.returnValue as Report;
 const workerReport = (await workerQueue.getJob(threaded.id))
   ?.returnValue as Report;
-// `mode` is `BUN_JOBS_MODE`, in the runner's spelling: `spawn` for a
-// "child-process" target, `worker` for a "worker-thread" one.
+// `mode` is `BUN_JOBS_MODE`, the target's own word.
 check(
   "a file:// string ran in a child process",
-  spawnReport.pid !== process.pid && spawnReport.mode === "spawn",
+  spawnReport.pid !== process.pid && spawnReport.mode === "child-process",
   spawnReport,
 );
 checkEqual(
   "a path ran in a Worker",
   [workerReport.mode, workerReport.isMainThread],
-  ["worker", false],
+  ["worker-thread", false],
 );
 checkEqual(
   "the job channel works through BunJobs too",

@@ -238,7 +238,7 @@ checkEqual(
     runnerDefaults.name,
     runnerDefaults.schedule,
   ],
-  ["spawn", "single", true, false, "abort", "defaults", null],
+  ["child-process", "single", true, false, "abort", "defaults", null],
 );
 checkEqual(
   "heartbeatInterval defaults to a third of lockTtl",

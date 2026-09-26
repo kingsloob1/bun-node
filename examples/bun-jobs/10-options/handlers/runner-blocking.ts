@@ -1,6 +1,6 @@
 /**
- * An uncooperative handler, for `spawn` mode only: it blocks its own event
- * loop, so it never sees the `close` message, its abort signal or the
+ * An uncooperative handler, for `child-process` mode only: it blocks its own
+ * event loop, so it never sees the `close` message, its abort signal or the
  * child's own exit timer.
  *
  * With `ignoreSigterm` it also installs a `SIGTERM` listener, which removes

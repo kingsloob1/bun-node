@@ -5,7 +5,7 @@
  * bun 07-runner/messages-progress-kill.ts
  * ```
  *
- * The handler runs in a child process (`spawn`), so everything here crosses a
+ * The handler runs in a child process (`child-process`), so everything here crosses a
  * process boundary: `ctx.progress()` → `progress` event, `ctx.send()` →
  * `message` event, `ctx.logger` → `log` event (with `forwardLogs`), and
  * `runner.send()` → `ctx.onMessage`.
@@ -25,7 +25,7 @@ const runner = new BunRunner<LongTaskArgs, string>({
   id: "reindex",
   namespace: exampleNamespace("search"),
   file: new URL("./handlers/long-task.ts", import.meta.url),
-  executionMode: "spawn",
+  executionMode: "child-process",
   runMode: "parallel",
   forwardLogs: true,
   closeTimeout: 1_000, // grace after the signal, before SIGTERM
@@ -94,7 +94,7 @@ const timed = new BunRunner<LongTaskArgs, string>({
   id: "reindex-with-timeout",
   namespace: exampleNamespace("search"),
   file: new URL("./handlers/long-task.ts", import.meta.url),
-  executionMode: "spawn",
+  executionMode: "child-process",
   timeout: 300,
 });
 const timedOut = new Promise<void>((resolve) => {

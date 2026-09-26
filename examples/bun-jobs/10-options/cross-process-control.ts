@@ -32,15 +32,24 @@
  * - **A runner's own `updateConfig()` is announced** with a `control` event,
  *   so its other owners adopt it within the driver's event latency rather
  *   than at their next `syncInterval`.
+ * - **A store written before the rename is read, not migrated.** Runners
+ *   once called two modes `"spawn"` and `"worker"`; a store an older owner
+ *   wrote still says so, and nothing rewrites it. `RunnerController` and the
+ *   API translate as they read, so they only ever return `"child-process"`
+ *   and `"worker-thread"`, and an owner adopts an old `"worker"` override as
+ *   a Worker thread. The driver, called directly, returns what it stored.
  */
 import type {
   BunQueueWorker,
   BunRunnerOptions,
   ConfigError,
+  RunRecord,
   WorkerEventPayloads,
   WorkerStateConflictError,
 } from "@kingsleyweb/bun-jobs";
+import type { ContextArgs, ContextReport } from "./handlers/runner-context";
 import type { WorkArgs, WorkResult } from "./handlers/runner-work";
+import process from "node:process";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
@@ -711,7 +720,7 @@ step("A runner's configuration, changed by one owner, adopted by the other");
 checkEqual(
   "EXECUTION_MODES",
   [...EXECUTION_MODES],
-  ["spawn", "worker", "in-process"],
+  ["child-process", "worker-thread", "in-process"],
 );
 checkEqual(
   "RUNNER_CONFIG_KEYS",
@@ -730,7 +739,7 @@ const reportOptions: Omit<
   id: "report",
   file: new URL("./handlers/runner-work.ts", import.meta.url),
   executionMode: "in-process",
-  allowedOverrides: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
   // "auto", the default, subscribes on Redis and memory only; true subscribes
   // everywhere, so the other owner hears the change on every backend.
   control: true,
@@ -764,7 +773,7 @@ const unsubscribeRunner = await driver.subscribe(
 );
 
 const writtenAt = Date.now();
-const updated = await ownerA.updateConfig({ executionMode: "worker" });
+const updated = await ownerA.updateConfig({ executionMode: "worker-thread" });
 checkEqual(
   "updateConfig() adopts it here at once",
   [
@@ -772,7 +781,7 @@ checkEqual(
     updated.code?.executionMode,
     updated.overridden,
   ],
-  ["worker", "in-process", ["executionMode"]],
+  ["worker-thread", "in-process", ["executionMode"]],
 );
 await waitFor(
   "the control event",
@@ -786,14 +795,14 @@ check(
 );
 await waitFor(
   "the other owner to adopt it",
-  () => configuredOnB.some((event) => event.mode === "worker"),
+  () => configuredOnB.some((event) => event.mode === "worker-thread"),
   WAIT,
 );
 const lag =
-  configuredOnB.find((event) => event.mode === "worker")!.at - writtenAt;
+  configuredOnB.find((event) => event.mode === "worker-thread")!.at - writtenAt;
 check(
   `the other owner adopted it in ${lag}ms, not at its next sync (30000ms)`,
-  lag < 15_000 && ownerB.config.effective.executionMode === "worker",
+  lag < 15_000 && ownerB.config.effective.executionMode === "worker-thread",
   { lag, config: ownerB.config },
 );
 
@@ -806,14 +815,14 @@ await waitFor(
 checkEqual(
   "it applies from the next run",
   [ran.outcome, (await ownerA.history(1))[0]?.mode],
-  ["started", "worker"],
+  ["started", "worker-thread"],
 );
 
 for (const [label, patch, reason] of [
   ["an empty patch", {}, "empty"],
   [
     "a mode allowedOverrides forbids",
-    { executionMode: "spawn" },
+    { executionMode: "child-process" },
     "not-allowed",
   ],
   [
@@ -876,9 +885,9 @@ checkEqual(
     remoteView?.allowed?.slice().sort(),
   ],
   [
-    { executionMode: "worker", runMode: "parallel", maxConcurrency: 3 },
+    { executionMode: "worker-thread", runMode: "parallel", maxConcurrency: 3 },
     ["executionMode", "maxConcurrency", "runMode"],
-    ["in-process", "worker"],
+    ["in-process", "worker-thread"],
   ],
 );
 
@@ -905,7 +914,7 @@ checkEqual(
 );
 
 const apiRunner = await call("PUT", "/runners/report/config", {
-  executionMode: "spawn",
+  executionMode: "child-process",
 });
 checkEqual(
   "over the API, a forbidden mode is 409 CONFIG_NOT_ALLOWED",
@@ -951,8 +960,8 @@ checkEqual(
   ["in-process"],
 );
 const bareRefusal = (await checkRejects(
-  "so updateConfig({ executionMode: 'worker' }) is refused up front",
-  () => bareRunner.updateConfig({ executionMode: "worker" }),
+  "so updateConfig({ executionMode: 'worker-thread' }) is refused up front",
+  () => bareRunner.updateConfig({ executionMode: "worker-thread" }),
   { name: "ConfigError" },
 )) as ConfigError | undefined;
 checkEqual(
@@ -970,10 +979,10 @@ step("A refusal names the settings it refused: config.error.keys");
 // from a whole one without parsing `message`. Every overridden key not listed
 // was adopted.
 //
-// This owner's code permits `worker`, but it was built from a driver instance
+// This owner's code permits `worker-thread`, but it was built from a driver instance
 // with no `childDriver`, so it cannot move its handler out of the process.
 // It publishes only `in-process`, so `updateConfig()`, `RunnerController` and the
-// API all refuse `worker` up front; the override below is written straight to
+// API all refuse `worker-thread` up front; the override below is written straight to
 // the store, as an owner that had a `childDriver` — or an older controller —
 // would have stored it before this one started.
 const keysRunner = bare.runner<WorkArgs, WorkResult>({
@@ -989,7 +998,7 @@ await keysRunner.start();
 const keysKey = runnerKey("keys-report");
 
 await writeRunnerConfig(driver, namespace, keysKey, {
-  [RUNNER_CONFIG_STATE.executionMode]: "worker",
+  [RUNNER_CONFIG_STATE.executionMode]: "worker-thread",
   [RUNNER_CONFIG_STATE.runMode]: "single",
 });
 await waitFor(
@@ -1056,7 +1065,7 @@ checkEqual(
 // Every setting overridden, and every one refused: an unusable mode, an
 // overlap policy that does not exist, a cap out of `RUNNER_CONFIG_BOUNDS`.
 await writeRunnerConfig(driver, namespace, keysKey, {
-  [RUNNER_CONFIG_STATE.executionMode]: "worker",
+  [RUNNER_CONFIG_STATE.executionMode]: "worker-thread",
   [RUNNER_CONFIG_STATE.runMode]: "sometimes",
   [RUNNER_CONFIG_STATE.maxConcurrency]: "9000",
 });
@@ -1089,7 +1098,9 @@ checkEqual(
 );
 
 // An error an owner stored before `keys` existed reads as `keys: []`: known
-// to be a refusal, of settings nobody recorded.
+// to be a refusal, of settings nobody recorded. Its message is from before the
+// rename too, so it says `"worker"`: a stored message is prose, returned as
+// it was written, and the owner's next refusal rewrites it.
 const keysState = await driver.getState(namespace, keysKey);
 checkEqual(
   "an error stored before keys existed reads keys: []",
@@ -1109,6 +1120,222 @@ checkEqual(
 
 await keysRunner.resetConfig();
 checkEqual("once reset, no error at all", keysRunner.config.error, undefined);
+
+/* ------------------------------------------------------------------ */
+step("A store written before the rename: read, and adopted, in today's words");
+
+// Runners called two execution modes `"spawn"` and `"worker"` before they
+// took the words a worker's `target` uses. A store an owner of that version
+// wrote keeps them — in each run record's `mode`, in the owner's plain
+// `executionMode`, `config:code` and `config:allowed`, and in a
+// `config:executionMode` override — and nothing rewrites them in place. So
+// this builds that store for real: an owner starts, which registers the
+// runner and writes every one of those fields; it stops; and then each field
+// is put back the way the older owner wrote it, beside two run records in the
+// old spelling.
+/** The legacy runner's options: code in a child process, all three permitted. */
+const legacyOptions: Omit<
+  BunRunnerOptions<ContextArgs>,
+  "namespace" | "driver"
+> = {
+  id: "legacy-report",
+  file: new URL("./handlers/runner-context.ts", import.meta.url),
+  executionMode: "child-process",
+  allowedOverrides: {
+    executionModes: ["child-process", "worker-thread", "in-process"],
+  },
+  control: false,
+  // Polls the store every 100ms rather than every 30 s, so the tour is quick.
+  syncInterval: 100,
+};
+/** Where the legacy runner keeps its state, as the store helpers want it. */
+const legacyKey = runnerKey("legacy-report");
+const firstOwner = context().runner<ContextArgs, ContextReport>(legacyOptions);
+await firstOwner.start();
+await firstOwner.stop();
+
+/** Today's words, as the older version spelled them. */
+const oldSpelling = (text: string) =>
+  text
+    .replaceAll("child-process", "spawn")
+    .replaceAll("worker-thread", "worker");
+const written = await driver.getState(namespace, legacyKey);
+await driver.setState(namespace, legacyKey, {
+  executionMode: oldSpelling(written.executionMode!),
+  [RUNNER_CONFIG_STATE.code]: oldSpelling(written[RUNNER_CONFIG_STATE.code]!),
+  [RUNNER_CONFIG_STATE.allowed]: oldSpelling(
+    written[RUNNER_CONFIG_STATE.allowed]!,
+  ),
+  // An override a controller of that version stored, and no owner adopted
+  // yet: the one field an owner's next start does not rewrite.
+  [RUNNER_CONFIG_STATE.executionMode]: "worker",
+});
+// `RunRecord.mode` knows only today's spellings, which is the point: these
+// are records a process of the older version wrote, so they get past the
+// type with a cast, the way they got into the store without one.
+const legacyAt = Date.now() - 60_000;
+for (const [index, mode] of ["spawn", "worker"].entries()) {
+  await driver.appendHistory(
+    namespace,
+    legacyKey,
+    {
+      runId: `legacy-run-${mode}`,
+      runnerId: "legacy-report",
+      attempt: 1,
+      source: "manual",
+      mode,
+      host: "an-older-host",
+      startedAt: legacyAt + index * 1000,
+      finishedAt: legacyAt + index * 1000 + 5,
+      durationMs: 5,
+      status: "success",
+    } as unknown as RunRecord,
+    20,
+  );
+}
+
+const rawState = await driver.getState(namespace, legacyKey);
+checkEqual(
+  "the store holds the older spellings, as that version wrote them (driver, called directly)",
+  [
+    (await driver.listHistory(namespace, legacyKey)).map((run) => run.mode),
+    rawState.executionMode,
+    JSON.parse(rawState[RUNNER_CONFIG_STATE.code]!).executionMode,
+    JSON.parse(rawState[RUNNER_CONFIG_STATE.allowed]!),
+    rawState[RUNNER_CONFIG_STATE.executionMode],
+  ],
+  [
+    ["worker", "spawn"],
+    "spawn",
+    "spawn",
+    ["spawn", "worker", "in-process"],
+    "worker",
+  ],
+);
+
+// Read before any owner starts again: a starting owner rewrites its own
+// fields, so a read after one would pass whether or not anything translates.
+const legacyController = await admin.runners.controller("legacy-report");
+const legacyInfo = await legacyController.info();
+const legacyConfig = await legacyController.config();
+checkEqual(
+  "RunnerController reads every one in today's words: history, info, config",
+  [
+    (await legacyController.history()).map((run) => run.mode),
+    (
+      await legacyController.historyPage({ offset: 0, limit: 10, order: "asc" })
+    ).records.map((run) => run.mode),
+    legacyInfo?.executionMode,
+    legacyInfo?.lastRun?.mode,
+    legacyConfig?.effective.executionMode,
+    legacyConfig?.code?.executionMode,
+    legacyConfig?.allowed,
+  ],
+  [
+    ["worker-thread", "child-process"],
+    ["child-process", "worker-thread"],
+    "child-process",
+    "worker-thread",
+    "child-process",
+    "child-process",
+    ["child-process", "worker-thread", "in-process"],
+  ],
+);
+// The API finds a runner another context owns through its cached discovery,
+// which re-reads the backend for an id it has never heard of at most once per
+// window (`limits.queueCacheMs`, 2 s) — and `keys-report` spent this window's
+// re-read a moment ago. So wait for the API to find the runner at all; what
+// it says about the runner is asserted once, after, so a wrong spelling still
+// fails rather than being waited out.
+let legacyOverApi = await call("GET", "/runners/legacy-report");
+await waitFor(
+  "the API to discover the runner",
+  async () => {
+    legacyOverApi = await call("GET", "/runners/legacy-report");
+    return legacyOverApi.status !== 404;
+  },
+  WAIT,
+);
+const legacyHistoryOverApi = await call(
+  "GET",
+  "/runners/legacy-report/history",
+);
+checkEqual(
+  "and so does the API: GET /runners/{id} and its history",
+  [
+    legacyOverApi.status,
+    legacyOverApi.body?.executionMode,
+    legacyOverApi.body?.lastRun?.mode,
+    legacyOverApi.body?.config?.effective?.executionMode,
+    legacyOverApi.body?.config?.code?.executionMode,
+    legacyOverApi.body?.config?.allowed,
+    legacyHistoryOverApi.status,
+    legacyHistoryOverApi.body?.items?.map((run: RunRecord) => run.mode),
+  ],
+  [
+    200,
+    "child-process",
+    "worker-thread",
+    "child-process",
+    "child-process",
+    ["child-process", "worker-thread", "in-process"],
+    200,
+    ["worker-thread", "child-process"],
+  ],
+);
+
+// The override is the one that matters most: an owner's start rewrites the
+// other fields, never it. So an owner of this version must *adopt* the stored
+// `"worker"` as a Worker thread — not merely report it that way.
+const legacyOwner = context().runner<ContextArgs, ContextReport>(legacyOptions);
+await legacyOwner.start();
+await waitFor(
+  "the owner to adopt the stored override",
+  () => legacyOwner.config.overridden.includes("executionMode"),
+  WAIT,
+);
+checkEqual(
+  'a new owner adopts the older "worker" override as worker-thread, refusing nothing',
+  [
+    legacyOwner.config.effective.executionMode,
+    legacyOwner.config.code?.executionMode,
+    legacyOwner.config.error,
+  ],
+  ["worker-thread", "child-process", undefined],
+);
+const legacyRun = new Promise<ContextReport>((resolve, reject) => {
+  legacyOwner.once("finished", (_run, result) => resolve(result));
+  legacyOwner.once("failed", (_run, error) => reject(error));
+});
+await legacyOwner.trigger({ args: { tag: "after-upgrade" } });
+const legacyReport = await legacyRun;
+checkEqual(
+  "and runs in a Worker thread: this process, not its main thread; ctx.mode and the record agree",
+  [
+    legacyReport.pid === process.pid,
+    legacyReport.isMainThread,
+    legacyReport.mode,
+    (await legacyOwner.history(1))[0]?.mode,
+  ],
+  [true, false, "worker-thread", "worker-thread"],
+);
+const healedState = await driver.getState(namespace, legacyKey);
+checkEqual(
+  "the owner rewrote its own fields in today's words; the override stays as it was stored",
+  [
+    healedState.executionMode,
+    JSON.parse(healedState[RUNNER_CONFIG_STATE.code]!).executionMode,
+    JSON.parse(healedState[RUNNER_CONFIG_STATE.allowed]!),
+    healedState[RUNNER_CONFIG_STATE.executionMode],
+  ],
+  [
+    "worker-thread",
+    "child-process",
+    ["child-process", "worker-thread", "in-process"],
+    "worker",
+  ],
+);
+await legacyOwner.stop();
 
 /* ------------------------------------------------------------------ */
 step("A buried flow completes whichever order it is retried in");

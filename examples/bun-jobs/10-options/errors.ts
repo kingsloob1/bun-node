@@ -67,7 +67,7 @@ title("Option tour: errors");
 
 const namespace = exampleNamespace("tour-errors");
 // One shared instance for everything here, closed at the end. The runners in
-// `spawn` mode use it too: their children never touch the backend, so there
+// `child-process` mode use it too: their children never touch the backend, so there
 // is nothing a second process needs to share.
 const driver = createDriver(exampleDriver());
 
@@ -725,7 +725,7 @@ async function startRun(runner: BunRunner<any, any>): Promise<string> {
 /* ------------------------------------------------------------------ */
 step("InvalidHandlerError: a runner file with no usable default export");
 
-for (const mode of ["in-process", "worker", "spawn"] as const) {
+for (const mode of ["in-process", "worker-thread", "child-process"] as const) {
   for (const [file, detail] of [
     ["errors-no-default.ts", /there is no default export/],
     ["errors-bad-default.ts", /the default export is number/],
@@ -782,7 +782,7 @@ const exiting = new BunRunner({
   namespace,
   driver,
   file: helper("errors-exit.ts"),
-  executionMode: "spawn",
+  executionMode: "child-process",
 });
 const exitEndings = recordFailures(exiting);
 await exiting.start();
@@ -825,7 +825,7 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("RunKilledError: kill() with a reason, in every execution mode");
 
-for (const mode of ["spawn", "worker", "in-process"] as const) {
+for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
   const runner = new BunRunner({
     id: `killed-${mode}`,
     namespace,
