@@ -16,6 +16,7 @@ import {
   useCanControlWorkers,
   workerActionGates,
 } from "./actions/gating";
+import { targetBadgeLabel, targetHint } from "./target";
 
 /**
  * The one worker table, shared by the Workers screen (grouped by server) and
@@ -123,7 +124,22 @@ function heartbeatHint(worker: WorkerDto): string | undefined {
   return `Last write took ${rttFormat.format(rtt)} ms (the previous report's round trip to the driver, not a network ping).`;
 }
 
-/** A worker's state, plus a note when its record has lapsed. */
+/**
+ * A worker's state, plus a note when its record has lapsed, and where its
+ * attempts run.
+ *
+ * The target is a badge here rather than a column of its own because of what
+ * it must do when it is **absent**: a worker too old to report it has said
+ * nothing, and this table says nothing either — no badge, never "In process"
+ * (the default, which would mislabel every worker not yet upgraded). A column
+ * would have to put something in that row's cell: this table's columns show
+ * an absent field as a "—" explained as predating it (Completed, Memory),
+ * which for the target belongs on the worker page's Target card, or an
+ * unexplained blank. The State cell's other badges already follow the
+ * present-or-nothing rule, and a badge costs a queue's narrow Workers panel no
+ * column. It sits after them, in the neutral tone, and its tooltip says it is
+ * how the worker was built, so it does not read as a condition.
+ */
 function StateCell({ worker }: { worker: WorkerDto }) {
   const badge = STATE_BADGE[workerState(worker)];
   return (
@@ -148,6 +164,15 @@ function StateCell({ worker }: { worker: WorkerDto }) {
           title="This worker stopped reporting. Its record lapses unless it reports again."
         >
           Not reporting
+        </Badge>
+      )}{" "}
+      {worker.target !== undefined && (
+        <Badge
+          className="worker-target"
+          title={targetHint(worker.target)}
+        >
+          <span className="visually-hidden">Runs in: </span>
+          {targetBadgeLabel(worker.target)}
         </Badge>
       )}
     </>
@@ -215,8 +240,9 @@ function MemoryCell({
 }
 
 /**
- * Live workers: id, queue, state, load, what this incarnation completed and
- * failed, its process's memory, the times it reported, and its actions.
+ * Live workers: id, queue, state (with where its attempts run, when it says),
+ * load, what this incarnation completed and failed, its process's memory, the
+ * times it reported, and its actions.
  */
 export function WorkerTable({
   workers,
