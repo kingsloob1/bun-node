@@ -9,7 +9,7 @@ const server = Bun.serve({
   },
 });
 let buf = ""; let at300 = "";
-const sock = await Bun.connect({ hostname: "127.0.0.1", port: server.port, socket: { data(_s, d) { buf += d.toString(); } } });
+const sock = await Bun.connect({ hostname: "127.0.0.1", port: server.port!, socket: { data(_s, d) { buf += d.toString(); } } });
 sock.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
 await sleep(300); at300 = buf;
 await sleep(400);

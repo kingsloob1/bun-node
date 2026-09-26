@@ -76,3 +76,18 @@ cannot. The user asked for them, so the design specifies both in full, and
 records their value as polyglot executors and private networks rather than
 reach (`remote-transports.md` §1.3). The recommendation is kept here as
 written; it is evidence, and the design answers it rather than editing it.
+
+## Typechecking the spikes
+
+`spikes/tsconfig.json` makes an editor resolve the spikes against Bun's types
+instead of an inferred project with none, which would show them full of
+spurious errors. Under it they compile clean (verified 2026-09-26). They are
+deliberately **not** in `scripts/typecheck.ts`: a spike records what one Bun
+version did, and is evidence rather than maintained code — the library moving
+must not turn it red, and re-running it is how a claim is re-checked.
+
+Two small edits made them compile, neither changing what they measure:
+`server.port!` in the three `http-header-flush*.ts` (bun-types declares
+`port` as `number | undefined`, for a Unix-socket server; here it is always a
+number), and a `// @ts-nocheck` on `quic.ts`, because bun-types declares no
+types for the experimental `node:quic` at all.

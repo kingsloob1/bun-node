@@ -1,3 +1,5 @@
+// @ts-nocheck -- `node:quic` is experimental in Bun 1.4.x and bun-types declares no types for it,
+// so nothing here can be typed. This spike records runtime behaviour only.
 // node:quic spike under Bun: raw QUIC (custom ALPN) bidi stream + datagrams, no HTTP/3.
 // API per Node's doc/api/quic.md (main, read 2026-09-25). Run: bun quic.ts
 import { createPrivateKey } from "node:crypto";

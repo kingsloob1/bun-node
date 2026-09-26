@@ -16,7 +16,7 @@ const server = Bun.serve({
   let first = -1;
   const done = Promise.withResolvers<void>();
   const sock = await Bun.connect({
-    hostname: "127.0.0.1", port: server.port,
+    hostname: "127.0.0.1", port: server.port!,
     socket: {
       data(_s, d) { if (first < 0) { first = performance.now() - s; console.log(`RESULT raw-TCP client: first bytes from Bun.serve after ${Math.round(first)}ms:`, JSON.stringify(d.toString().split("\r\n")[0])); done.resolve(); } },
     },
