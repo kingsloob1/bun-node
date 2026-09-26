@@ -2281,7 +2281,10 @@ export async function handler(_event: unknown, context: { getRemainingTimeInMill
 ```
 
 It resolves with nothing left behind: no timer, no sweep lease, no signal
-handler.
+handler. The one exception is a stop before the worker was ready: it resolves
+at once, while the driver's connect is still in flight, and the worker closes
+that connection only when it completes — which on Lambda can be after the
+invocation has returned, into the freeze.
 
 Example: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts).
 

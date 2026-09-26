@@ -37,6 +37,8 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  *   `slow-fail:<ms>` (memory, whose `connect()` fails after that long).
  * - `NO_RECORDS=1`: the driver can store no worker records. `SLOW_CONNECT_MS`:
  *   its `connect()` takes that much longer, on any driver.
+ * - `OWNER_CLOSE_AT_MS`: the fixture calls `worker.close()` itself that long
+ *   after start, as an owner would, and reports when it resolves.
  * - `NAMESPACE`: the namespace, so a test can purge it from a shared server
  *   afterwards. Defaults to one named after the pid.
  * - `TARGET`: `in-process` (default), `child-process`, or `custom-hang` (a
@@ -277,6 +279,15 @@ worker.on("ready", () => {
 worker.on("active", (job) => report("active", { id: job.id }));
 worker.on("completed", (job) => report("completed", { id: job.id }));
 worker.on("paused", () => report("paused", { paused: worker.isPaused() }));
+worker.on("closed", () => report("closed-event"));
+
+// The owner closing the worker itself, `OWNER_CLOSE_AT_MS` after start.
+if (env.OWNER_CLOSE_AT_MS !== undefined) {
+  setTimeout(() => {
+    report("owner-close");
+    void worker.close().then(() => report("owner-close-resolved"));
+  }, Number(env.OWNER_CLOSE_AT_MS));
+}
 worker.on("resumed", () => report("resumed", { paused: worker.isPaused() }));
 
 process.on("SIGUSR1", () => {

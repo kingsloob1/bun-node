@@ -795,6 +795,33 @@ describe("runSummoned at the budget's edges", () => {
     });
   }, 30_000);
 
+  it("waits out an owner's close that lands during startup before it exits", async () => {
+    // Connecting takes 500 ms; the owner closes the worker at 100 ms. The
+    // worker resolves `run()` once startup stops, before that close has
+    // unregistered it and closed its driver.
+    const fixture = start({
+      DRIVER: "slow-connect:500",
+      OWNER_CLOSE_AT_MS: "100",
+    });
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    const events = fixture.lines.map((line) => line.event);
+    const stoppedAt = fixture.lines.findIndex(logged(STOPPED));
+    // The owner's close finished, and its caller heard so, before the exit.
+    expect(events).toContain("closed-event");
+    expect(events).toContain("owner-close-resolved");
+    expect(stoppedAt).toBeGreaterThan(events.indexOf("closed-event"));
+    expect(stoppedAt).toBeGreaterThan(events.indexOf("owner-close-resolved"));
+    expect(fixture.lines[stoppedAt]?.fields).toMatchObject({
+      reason: "closed",
+      code: 0,
+    });
+    expect(
+      fixture.lines.some(logged("Summoned worker was already closed")),
+    ).toBe(false);
+  }, 30_000);
+
   it("negative control: the same failed start with no signal exits 1", async () => {
     const fixture = start({ DRIVER: "slow-fail:500" });
     const { code } = await exitOf(fixture);
