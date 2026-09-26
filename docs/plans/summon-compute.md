@@ -1505,7 +1505,28 @@ graceful choice never needs revisiting except by the backstop.
   from `--bun-jobs-summon-mode=`, `deadline` from
   `--bun-jobs-summon-max-lifetime-ms=`, `grace` from
   `--bun-jobs-summon-grace-ms=`.
-- **A failed `run()` closes with `force`** and exits 1, without the rule.
+- **A failed `run()` closes with `force`** and exits 1, without the rule —
+  unless a signal arrived while it was starting: then it exits 0 with reason
+  `"signal"`, since the platform was stopping it anyway (#195 review).
+- **The backstop has a floor** (#195 review): it never fires sooner than
+  `forcedCloseFloor` (1,000 ms = `TARGET_CLOSE_REAP` + 500 ms of round trips)
+  after the close started, so a budget at or below zero (Railway's 0 s) still
+  lets the forced close kill a child-process target's children. Without it,
+  on Postgres, the backstop fired 2 ms into the forced close and orphaned the
+  child. A stop still waiting for `ready` has claimed nothing and exits at
+  once.
+- **A deadline stop before `ready` arms its bound at once** (#195 review):
+  the backstop, or in `"in-invocation"` the warning, at `deadline − 250`, as a
+  signal's does.
+- **`pauseSignals` defaults to `false`** (#195 review): handling SIGTSTP stops
+  Ctrl-Z suspending the process, so a platform that sends it opts in.
+- **Known gap: a signal during a graceful close cannot shorten it.**
+  `runSummoned` calls `close({ force: true })` then, but on develop a
+  re-entrant close only awaits the one running, so the backstop bounds what is
+  left and can cut a child-process target's grace short, orphaning its child
+  (reproduced: a deadline close with timeout 1,249, then SIGTERM on a 3 s
+  grace). The bun-jobs session's close escalation (`fix/close-escalation`:
+  `close({ force: true })` mid-close escalates) closes it with no change here.
 - **A worker that is already running is a `ConfigError`**: `runSummoned`
   starts it.
 - **Measured** (Q38): a graceful child-process close is 4,006 ms in the

@@ -2157,7 +2157,9 @@ await runSummoned(worker, { idleFor: 30_000 }); // runs, then exits the process
 ```
 
 It starts `worker.run()` itself, so construct the worker without `autorun`
-(an already running worker is a `ConfigError`). It is also exported from
+(an already running worker is a `ConfigError`). The workers `BunJobs.start()`
+returns have already been run, so they are refused the same way: build the
+summoned one with `jobs.worker(...)`. It is also exported from
 `@kingsleyweb/bun-jobs/summon`.
 
 **Idle means nothing left for it**: no job in flight here, no demand
@@ -2165,7 +2167,8 @@ It starts `worker.run()` itself, so construct the worker without `autorun`
 counts them), no other worker's active jobs left with nobody alive to finish
 them, and nothing coming due within `idleFor`. It must hold continuously for
 `idleFor`, checked every `idleCheckInterval`, at the cost of one demand count
-and one worker listing per check. The worker's own `drained` event is not used:
+and one worker listing per check — two listings until the worker's own record
+has been found. The worker's own `drained` event is not used:
 it fires on the first empty pass, before a dead worker's locks have lapsed.
 
 | Option | Type | Default | Meaning |
@@ -2178,7 +2181,7 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 | `grace` | `number` | the summoner's `--bun-jobs-summon-grace-ms=`, else `10000` | How long the platform waits after its stop signal before `SIGKILL`, in ms. The worker cannot learn it from the platform. |
 | `tailReserve` | `number` | `1000` | What to keep for `close()`'s work after the target has closed (deregistering, flushing, the driver), in ms. Measured at 5–15 ms against local servers; the rest is headroom for a remote one. |
 | `signals` | `NodeJS.Signals[] \| false` | `["SIGTERM", "SIGINT"]` | Signals that start a stop. SIGINT because Fly sends it by default. `false` installs none. |
-| `pauseSignals` | `boolean` | `true` | Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run jobs over an hour. |
+| `pauseSignals` | `boolean` | `false` | Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run jobs over an hour. Off by default: handling SIGTSTP means Ctrl-Z no longer suspends the process, so a platform that sends it opts in. |
 | `exit` | `boolean` | `true`; `false` in `"in-invocation"` | Call `process.exit(code)` once closed, and arm the hard backstop. |
 | `logger` | `LoggerLike` | the worker's | Where it logs each decision. |
 
@@ -2194,25 +2197,32 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 
 **Exit 0 is deliberate.** Several platforms restart a non-zero exit (Fly and
 Railway by default, ACI even under `Never`), so only a `run()` that failed —
-a driver it could not connect to — exits `1`. On an unreachable Redis,
-`run()` currently takes about 31 s to fail, because the Redis client
-auto-reconnects with Bun's defaults; allow for it in a boot budget.
+a driver it could not connect to — exits `1`. On an unreachable Redis the
+first connect fails fast: about 1 s by default, tuned by `firstConnectTimeout`
+in the Redis driver's options.
 
 **Signals.**
 
 - The handlers are installed before `run()` connects, so a stop during boot
-  still exits 0. A stop that arrives before the worker is ready is held until
-  it is, then closes it before its first claim.
+  still exits 0, even when `run()` then fails. A stop that arrives before the
+  worker is ready is held until it is, then closes it before its first claim;
+  the backstop is armed at once, so a slow start is still out by the
+  platform's kill or the deadline.
 - A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
   held hostage by a drain. A first SIGINT arriving during an idle or deadline
   close is the platform's stop, not a second Ctrl-C.
-- SIGTSTP pauses claiming and SIGCONT resumes it — but only a pause SIGTSTP
-  made. An operator's pause, taken before or after, survives the SIGCONT.
+- With `pauseSignals`, SIGTSTP pauses claiming and SIGCONT resumes it — but
+  only a pause SIGTSTP made. An operator's pause, taken before or after,
+  survives the SIGCONT.
+- A signal during a **graceful** close cannot shorten it yet: the jobs keep
+  the `timeout` the close started with, and the backstop, not the signal,
+  bounds what is left — which can cut a child-process target's own grace
+  short. Forcing a close already under way needs the worker to support it.
 - A worker an operator parked (`state: "stopped"`) serves nothing and costs
   money, so after `idleFor` it exits with `"parked"`, whatever demand says —
   except under `"until-stopped"`, whose platform would only restart it.
 
-**The close rule.** `close()` is called exactly once. When closing starts,
+**The close rule.** When closing starts,
 the budget is the time left before the platform's kill: `grace − 250` ms after
 a signal, `deadline − 250` ms at the deadline, none for an idle stop with no
 deadline. The target's own close is reserved from the package's close
@@ -2230,15 +2240,22 @@ runs. Then:
 
 | Grace | Child-process target | In-process target |
 |---|---|---|
-| 0 s (Railway's default) | `force` | `force` |
-| 5 s (Fly's default) | `force` | graceful, jobs get 3,750 ms |
+| 0 s (Railway's default) | `force`; the backstop still waits 1 s for it | `force` |
+| 5 s (Fly's default) | `force` | graceful, jobs get 3,750 ms, once the target is known; `force` before |
 | 10 s (Cloud Run) | graceful, jobs get 4,250 ms | graceful, jobs get 8,750 ms |
 | 30 s (ECS, Heroku, Kubernetes) | graceful, jobs get 24,250 ms | graceful, jobs get 28,750 ms |
+
+The target is known once the worker's first heartbeat record has been read,
+normally within a second of starting; until then it is budgeted as a custom
+target, which on Fly's default grace means `force`.
 
 A **hard backstop** exits the process at the end of the budget if `close()`
 has not returned — a custom target whose `close()` hangs, say — with an error
 log line rather than a silent `SIGKILL`; abandoned jobs are recovered as
-stalled, as ever. `"in-invocation"` (and `exit: false`) arms none: it must
+stalled, as ever. It never fires sooner than 1 s after the close started, so
+even a budget at or below zero lets a forced close kill a child-process
+target's children first (forced closes measure 11–94 ms); past that, the
+platform's own kill is the backstop. `"in-invocation"` (and `exit: false`) arms none: it must
 return, so it logs a warning when the close outlives its deadline instead.
 Raise the platform's grace where it can be raised (Fly's `kill_timeout`,
 Railway's `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`): a short grace against a long

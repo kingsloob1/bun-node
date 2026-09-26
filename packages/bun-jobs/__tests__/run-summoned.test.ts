@@ -2,8 +2,10 @@ import type { Subprocess } from "bun";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "bun:test";
+import { createDriver } from "../lib/index";
 import { SpawnExecutor } from "../lib/runner/executors/spawn";
 import { makeTmpDir } from "./helpers";
+import { reachError, reportUnreachable } from "./helpers/backends";
 
 /**
  * `runSummoned` in real processes, so the signals are real: a platform's
@@ -28,6 +30,9 @@ const FIXTURE = join(
 
 /** How far past a bound a loaded machine may run. */
 const SLACK = 2_000;
+
+/** SIGTSTP/SIGCONT are handled only when asked for. */
+const PAUSE_SIGNALS = { OPTIONS: JSON.stringify({ pauseSignals: true }) };
 /** How early a timer may appear to fire, read across two processes' clocks. */
 const EARLY = 100;
 
@@ -314,7 +319,7 @@ describe("runSummoned, in a real process", () => {
   }, 30_000);
 
   it("SIGTSTP stops claiming and SIGCONT resumes it", async () => {
-    const fixture = start({});
+    const fixture = start(PAUSE_SIGNALS);
     await fixture.waitFor((line) => line.event === "ready");
 
     fixture.signal("SIGTSTP");
@@ -337,7 +342,7 @@ describe("runSummoned, in a real process", () => {
   }, 30_000);
 
   it("SIGCONT leaves an operator's pause alone, taken before SIGTSTP", async () => {
-    const fixture = start({});
+    const fixture = start(PAUSE_SIGNALS);
     await fixture.waitFor((line) => line.event === "ready");
 
     fixture.signal("SIGUSR2");
@@ -358,7 +363,7 @@ describe("runSummoned, in a real process", () => {
   }, 30_000);
 
   it("SIGCONT leaves an operator's pause alone, taken after SIGTSTP", async () => {
-    const fixture = start({});
+    const fixture = start(PAUSE_SIGNALS);
     await fixture.waitFor((line) => line.event === "ready");
 
     fixture.signal("SIGTSTP");
@@ -380,6 +385,32 @@ describe("runSummoned, in a real process", () => {
     expect(fixture.lines.some((line) => line.event === "resumed")).toBe(false);
     expect(fixture.lines.some((line) => line.event === "active")).toBe(false);
 
+    fixture.signal("SIGTERM");
+    expect((await exitOf(fixture)).code).toBe(0);
+  }, 30_000);
+
+  it("by default leaves SIGTSTP alone, so Ctrl-Z still suspends the process", async () => {
+    const fixture = start({});
+    await fixture.waitFor((line) => line.event === "ready");
+    fixture.signal("SIGTSTP");
+    let stat = "";
+    const until = Date.now() + 5_000;
+    while (!stat.startsWith("T") && Date.now() < until) {
+      await Bun.sleep(50);
+      const ps = Bun.spawnSync([
+        "ps",
+        "-o",
+        "stat=",
+        "-p",
+        String(fixture.proc.pid),
+      ]);
+      stat = ps.stdout.toString().trim();
+    }
+    // Stopped by the kernel, not paused by the worker.
+    expect(stat.startsWith("T")).toBe(true);
+    expect(fixture.lines.some((line) => line.event === "paused")).toBe(false);
+
+    fixture.signal("SIGCONT");
     fixture.signal("SIGTERM");
     expect((await exitOf(fixture)).code).toBe(0);
   }, 30_000);
@@ -676,3 +707,187 @@ describe("the close rule, with a child-process target", () => {
     }
   }, 40_000);
 });
+
+/**
+ * The review's edge cases (#195): budgets at or below zero, stops that
+ * arrive before the worker is ready, and a start that fails after a signal.
+ */
+describe("runSummoned at the budget's edges", () => {
+  it("a deadline reached while run() is still connecting is bounded by the backstop", async () => {
+    // Connecting takes 8 s; the deadline is 3 s away, so the stop is due at
+    // once and the backstop at 2.75 s.
+    const fixture = start({
+      DRIVER: "slow-connect:8000",
+      DEADLINE_IN_MS: "3000",
+    });
+    const booting = await fixture.waitFor((line) => line.event === "booting");
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.some(logged("Summoned worker asked to stop"))).toBe(
+      true,
+    );
+    expect(fixture.lines.find(logged(BACKSTOP))?.fields?.reason).toBe(
+      "deadline",
+    );
+    expect(fixture.lines.some((line) => line.event === "ready")).toBe(false);
+    // Gone by the deadline, not held until the 8 s connect ends.
+    expect(at - booting.at).toBeLessThan(3_000 + SLACK);
+  }, 30_000);
+
+  it('"in-invocation" warns at the deadline while run() is still connecting', async () => {
+    const fixture = start({
+      DRIVER: "slow-connect:8000",
+      DEADLINE_IN_MS: "3000",
+      OPTIONS: JSON.stringify({ mode: "in-invocation" }),
+    });
+    const booting = await fixture.waitFor((line) => line.event === "booting");
+    const warning = await fixture.waitFor(
+      logged("Summoned worker's close outlived its deadline"),
+    );
+    const result = await fixture.waitFor((line) => line.event === "result");
+    expect((await exitOf(fixture)).code).toBe(0);
+
+    // Warned at the deadline, well before the connect ended and it resolved.
+    expect(warning.at - booting.at).toBeLessThan(3_000 + SLACK);
+    expect(warning.at).toBeLessThan(result.at);
+    expect(result).toMatchObject({ reason: "deadline", code: 0 });
+  }, 30_000);
+
+  it("a signal held while run() is connecting still exits 0 when run() then fails", async () => {
+    const fixture = start({ DRIVER: "slow-fail:1500" });
+    await fixture.waitFor((line) => line.event === "booting");
+    fixture.signal("SIGTERM");
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.some(logged("Summoned worker could not start"))).toBe(
+      true,
+    );
+    expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
+      reason: "signal",
+      signal: "SIGTERM",
+      code: 0,
+    });
+  }, 30_000);
+
+  it("negative control: the same failed start with no signal exits 1", async () => {
+    const fixture = start({ DRIVER: "slow-fail:500" });
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(1);
+    expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
+      reason: "error",
+      code: 1,
+    });
+  }, 30_000);
+});
+
+/** A backend the zero-grace case runs on, with its server when it has one. */
+interface EdgeBackend {
+  /** The fixture's `DRIVER`. */
+  name: "memory" | "postgres" | "redis";
+  /** The variable naming its server, for the server-backed ones. */
+  variable?: string;
+}
+
+const EDGE_BACKENDS: EdgeBackend[] = [
+  { name: "memory" },
+  { name: "postgres", variable: "BUN_JOBS_TEST_POSTGRES_URL" },
+  { name: "redis", variable: "BUN_JOBS_TEST_REDIS_URL" },
+];
+
+for (const backend of EDGE_BACKENDS) {
+  const url = backend.variable ? process.env[backend.variable] : undefined;
+  if (backend.variable && !url) {
+    describe.skip(`zero grace on ${backend.name}: not configured`, () => {
+      it(`runs when ${backend.variable} is set`, () => {});
+    });
+    continue;
+  }
+  const config =
+    backend.name === "postgres"
+      ? ({ type: "sql", adapter: "postgres", url: url! } as const)
+      : backend.name === "redis"
+        ? ({ type: "redis", url: url! } as const)
+        : undefined;
+  const unreachable = config ? await reachError(config) : undefined;
+  if (backend.variable && unreachable) {
+    reportUnreachable(backend.name, backend.variable, unreachable);
+    continue;
+  }
+
+  describe(`zero grace on ${backend.name}`, () => {
+    /** Runs a child-process spin target, SIGTERMs it with no grace, and reports. */
+    async function zeroGrace(probe?: "no-floor"): Promise<{
+      fixture: Fixture;
+      code: number;
+      pid: number;
+      aliveAfter: boolean;
+    }> {
+      const namespace = `run-summoned-edge-${process.pid}-${Date.now()}`;
+      if (config) {
+        cleanups.push(async () => {
+          const driver = createDriver(config);
+          await driver.connect();
+          await driver.purge(namespace);
+          await driver.close();
+        });
+      }
+      const file = await pidFile();
+      const fixture = start(
+        {
+          DRIVER: backend.name,
+          NAMESPACE: namespace,
+          JOBS: "1",
+          TARGET: "child-process",
+          PROCESSOR: "spin",
+          PID_FILE: file,
+          ...(probe ? { PROBE: probe } : {}),
+        },
+        ["--bun-jobs-summon-id=zero", "--bun-jobs-summon-grace-ms=0"],
+      );
+      const pid = await childPid(file);
+      try {
+        expect(inspect(pid).args).toContain(SpawnExecutor.entry);
+        await Bun.sleep(300);
+        fixture.signal("SIGTERM");
+        const { code } = await exitOf(fixture);
+        // Give a kill sent on the way out a moment to land, then look.
+        const until = Date.now() + 3_000;
+        while (inspect(pid).alive && Date.now() < until) {
+          await Bun.sleep(50);
+        }
+        return { fixture, code, pid, aliveAfter: inspect(pid).alive };
+      } finally {
+        killIfOurs(pid);
+      }
+    }
+
+    it("forces the close, which kills the child before the backstop can fire", async () => {
+      const { fixture, code, aliveAfter } = await zeroGrace();
+
+      expect(code).toBe(0);
+      expect(fixture.lines.find(logged(CLOSING))?.fields).toMatchObject({
+        reason: "signal",
+        force: true,
+      });
+      expect(fixture.lines.some(logged(STOPPED))).toBe(true);
+      expect(fixture.lines.some(logged(BACKSTOP))).toBe(false);
+      expect(aliveAfter).toBe(false);
+    }, 40_000);
+
+    // Memory's forced close takes no I/O before the kill, so a timer armed for
+    // "now" cannot beat it there; the round trip is what the servers add.
+    if (backend.name !== "memory") {
+      it("negative control: with no floor the backstop fires first, and orphans the child", async () => {
+        const { fixture, code, aliveAfter } = await zeroGrace("no-floor");
+
+        expect(code).toBe(0);
+        expect(fixture.lines.some(logged(BACKSTOP))).toBe(true);
+        expect(fixture.lines.some(logged(STOPPED))).toBe(false);
+        expect(aliveAfter).toBe(true);
+      }, 40_000);
+    }
+  });
+}

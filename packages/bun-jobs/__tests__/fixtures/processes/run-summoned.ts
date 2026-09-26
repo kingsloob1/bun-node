@@ -28,9 +28,13 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  * Configured by the environment (test parameters, never summon identity) and
  * by `--bun-jobs-summon-*=` arguments, which `runSummoned` reads itself:
  *
- * - `DRIVER`: `memory` (default), `sqlite:<path>`, `unreachable` (a Postgres
- *   URL nothing listens on), or `slow-connect:<ms>` (memory, whose `connect()`
- *   takes that long).
+ * - `DRIVER`: `memory` (default), `sqlite:<path>`, `postgres` or `redis`
+ *   (the server `BUN_JOBS_TEST_POSTGRES_URL` / `BUN_JOBS_TEST_REDIS_URL`
+ *   names), `unreachable` (a Postgres URL nothing listens on),
+ *   `slow-connect:<ms>` (memory, whose `connect()` takes that long), or
+ *   `slow-fail:<ms>` (memory, whose `connect()` fails after that long).
+ * - `NAMESPACE`: the namespace, so a test can purge it from a shared server
+ *   afterwards. Defaults to one named after the pid.
  * - `TARGET`: `in-process` (default), `child-process`, or `custom-hang` (a
  *   custom target whose `close()` never returns).
  * - `PROCESSOR`: `quick` (in-process, returns after `JOB_MS`), `hang`
@@ -43,6 +47,8 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  *   `deadline` to that long after start.
  * - `PROBE=draft`: replaces the close rule with the draft's
  *   `close({ timeout: budget − 1000 })`, for the negative control.
+ *   `PROBE=no-floor`: arms the backstop with no floor, as before the fix,
+ *   for the negative control of the forced-close floor.
  * - `PID_FILE`: where a file processor writes its pid.
  * - `LEAK_TIMER=1`: leaves a ref'd timer behind after the result, the
  *   negative control for "no timer left".
@@ -67,7 +73,7 @@ const processorKind = env.PROCESSOR ?? "quick";
 const targetKind = env.TARGET ?? "in-process";
 const jobMs = Number(env.JOB_MS ?? 50);
 const pidFile = env.PID_FILE ?? "";
-const namespace = `run-summoned-${process.pid}`;
+const namespace = env.NAMESPACE ?? `run-summoned-${process.pid}`;
 const queueName = "summoned";
 
 /** A memory driver whose `connect()` is slow: a worker still booting. */
@@ -86,6 +92,22 @@ class SlowConnectDriver extends MemoryDriver {
   }
 }
 
+/** A memory driver whose `connect()` fails, late: a start that cannot connect. */
+class SlowFailDriver extends MemoryDriver {
+  /** How long `connect()` takes to fail, in ms. */
+  readonly delay: number;
+
+  constructor(delay: number) {
+    super();
+    this.delay = delay;
+  }
+
+  override async connect(): Promise<void> {
+    await Bun.sleep(this.delay);
+    throw new Error("connect refused (slow-fail)");
+  }
+}
+
 function makeDriver(): JobsDriver | DriverConfig {
   const spec = env.DRIVER ?? "memory";
   if (spec === "memory") {
@@ -100,6 +122,19 @@ function makeDriver(): JobsDriver | DriverConfig {
   }
   if (spec.startsWith("sqlite:")) {
     return { type: "sql", url: `sqlite://${spec.slice("sqlite:".length)}` };
+  }
+  if (spec === "postgres") {
+    return {
+      type: "sql",
+      adapter: "postgres",
+      url: env.BUN_JOBS_TEST_POSTGRES_URL!,
+    };
+  }
+  if (spec === "redis") {
+    return { type: "redis", url: env.BUN_JOBS_TEST_REDIS_URL! };
+  }
+  if (spec.startsWith("slow-fail:")) {
+    return new SlowFailDriver(Number(spec.slice("slow-fail:".length)));
   }
   if (spec.startsWith("slow-connect:")) {
     return new SlowConnectDriver(Number(spec.slice("slow-connect:".length)));
@@ -157,6 +192,11 @@ if (env.PROBE === "draft") {
   (options as { [RUN_SUMMONED_PROBE]?: RunSummonedProbe })[RUN_SUMMONED_PROBE] =
     probe;
 }
+if (env.PROBE === "no-floor") {
+  const probe: RunSummonedProbe = { forcedCloseFloor: 0 };
+  (options as { [RUN_SUMMONED_PROBE]?: RunSummonedProbe })[RUN_SUMMONED_PROBE] =
+    probe;
+}
 
 const processor =
   processorKind === "hang"
@@ -179,7 +219,7 @@ const worker = new BunQueueWorker(queueName, processor, {
 // The queue the jobs are added through: the worker's own driver instance,
 // or its own connection to the same store when the driver is a config.
 const queue =
-  env.DRIVER === "unreachable"
+  env.DRIVER === "unreachable" || env.DRIVER?.startsWith("slow-fail:")
     ? undefined
     : new BunQueue(queueName, { namespace, driver, logger: noopLogger });
 

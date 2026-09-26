@@ -47,8 +47,8 @@ export interface RunSummonedOptions {
   idleFor?: number;
   /**
    * How often idleness, parking and the deadline are checked, in ms. Each
-   * idle check costs one `countDemand` and one worker listing. Defaults to
-   * `5_000`.
+   * idle check costs one `countDemand` and one worker listing, two until the
+   * worker's own record has been found. Defaults to `5_000`.
    */
   idleCheckInterval?: number;
   /**
@@ -91,8 +91,10 @@ export interface RunSummonedOptions {
   /**
    * Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run
    * jobs over an hour. SIGCONT resumes only a pause SIGTSTP made, never an
-   * operator's. Defaults to `true`; ignored in `"in-invocation"` mode.
-   * Whether catching SIGTSTP delays the platform's own pause is unverified.
+   * operator's. Defaults to `false`: handling SIGTSTP means Ctrl-Z no longer
+   * suspends the process, so a platform that sends it opts in. Ignored in
+   * `"in-invocation"` mode. Whether catching SIGTSTP delays the platform's
+   * own pause is unverified.
    */
   pauseSignals?: boolean;
   /**
@@ -171,6 +173,16 @@ export const RUN_SUMMONED_DEFAULTS = {
    * fires at `grace − 250` after a signal and at `deadline − 250`.
    */
   backstopMargin: 250,
+  /**
+   * The least time the hard backstop leaves a close that has started, in ms,
+   * however little budget there was: a forced close kills a child-process
+   * target's children only after its first round trips (handing over the
+   * sweep leases), so a backstop firing sooner orphans them. `1_000` is
+   * `TARGET_CLOSE_REAP` (500 ms) for the target plus 500 ms for those round
+   * trips: forced closes measured 11 to 35 ms locally, 94 ms at worst on a
+   * loaded machine. Past it the platform's own kill is the backstop.
+   */
+  forcedCloseFloor: 1_000,
 } as const;
 
 /**
@@ -267,6 +279,11 @@ export function summonCloseRule(input: {
 export interface RunSummonedProbe {
   /** Decides the close in place of {@link summonCloseRule}. */
   closeRule?: typeof summonCloseRule;
+  /**
+   * Replaces {@link RUN_SUMMONED_DEFAULTS.forcedCloseFloor}; `0` restores
+   * the backstop that could fire before a forced close had done anything.
+   */
+  forcedCloseFloor?: number;
 }
 
 /** The property a {@link RunSummonedProbe} is set under on the options. */
@@ -459,7 +476,7 @@ function resolveOptions(
       inInvocation || options.signals === false
         ? []
         : (options.signals ?? ["SIGTERM", "SIGINT"]),
-    pauseSignals: !inInvocation && (options.pauseSignals ?? true),
+    pauseSignals: !inInvocation && (options.pauseSignals ?? false),
     exit,
     backstop: exit && !inInvocation,
     logger:
@@ -539,6 +556,12 @@ class SummonedRun {
    * backstop's margin, epoch ms; `undefined` before any signal.
    */
   #killAt: number | undefined;
+  /** When closing started, epoch ms: the backstop leaves it the floor. */
+  #closeStartedAt: number | undefined;
+  /** Whether the close in progress is forced. */
+  #closingForced = false;
+  /** Whether `run()` failed, so the close is forced whatever the reason. */
+  #startFailed = false;
   /** The warning for a close that outlives its budget, without a backstop. */
   #overrunWarning: ReturnType<typeof setTimeout> | undefined;
   /** The quick retries reading the worker's own record after `ready`. */
@@ -568,13 +591,32 @@ class SummonedRun {
       () => {
         // `run()` resolves once the claim loop stops, which a close in
         // progress already accounts for; one nobody here started is seen
-        // through the `closed` event.
+        // through the `closed` event. A `run()` that resolves without ever
+        // having been ready ended in a close during startup (a worker may
+        // resolve rather than reject then): a stop held for `ready` would
+        // otherwise wait for good, so it is carried out now. Its `close()`
+        // joins the one already done.
+        if (!this.#ready) {
+          this.#ready = true;
+          const pending = this.#pendingStop;
+          this.#pendingStop = undefined;
+          if (pending !== undefined) {
+            this.#beginClose(pending);
+          }
+        }
       },
       (error: unknown) => {
         this.#logger.error("Summoned worker could not start", { error });
         this.#ready = true;
+        this.#startFailed = true;
+        // A signal that arrived while it was starting still decides the
+        // outcome: the platform is stopping it, and a stop exits 0. Anything
+        // else is a failed start, and exits 1.
+        const pending = this.#pendingStop;
         this.#pendingStop = undefined;
-        this.#beginClose({ reason: "error" });
+        this.#beginClose(
+          pending?.reason === "signal" ? pending : { reason: "error" },
+        );
       },
     );
 
@@ -648,6 +690,7 @@ class SummonedRun {
       // The platform's clock started with this signal, whatever began the
       // close: its kill lands `grace` from now.
       this.#noteSignal();
+      this.#escalate();
       return;
     }
     this.#requestStop({ reason: "signal", signal });
@@ -749,7 +792,50 @@ class SummonedRun {
     const at =
       Date.now() + this.#options.grace - RUN_SUMMONED_DEFAULTS.backstopMargin;
     this.#killAt = Math.min(this.#killAt ?? at, at);
-    this.#armBackstop(this.#killAt);
+    this.#armLimit(this.#killAt, "signal");
+  }
+
+  /**
+   * A signal during a graceful close asks the worker to force it.
+   * `close({ force: true })` issued mid-close escalates a close where the
+   * worker supports it; where it does not, it only waits for the close
+   * already running. Either way the backstop still bounds it.
+   */
+  #escalate(): void {
+    if (this.#closing === undefined || this.#closingForced) {
+      return;
+    }
+    this.#closingForced = true;
+    void this.#worker.close({ force: true }).catch((error: unknown) => {
+      this.#logger.warn("Summoned worker could not force its close", {
+        error,
+      });
+    });
+  }
+
+  /**
+   * Arms what bounds a stop that must be over by `at`: the hard backstop, or
+   * without one (`"in-invocation"`, `exit: false`) a warning when it is
+   * still running then.
+   */
+  #armLimit(at: number, reason: SummonedExit["reason"]): void {
+    if (this.#options.backstop) {
+      this.#armBackstop(at);
+      return;
+    }
+    if (this.#overrunWarning !== undefined || this.#done) {
+      return;
+    }
+    this.#overrunWarning = setTimeout(
+      () => {
+        this.#overrunWarning = undefined;
+        this.#logger.warn("Summoned worker's close outlived its deadline", {
+          reason,
+        });
+      },
+      Math.max(0, at - Date.now()),
+    );
+    this.#overrunWarning.unref();
   }
 
   /** (Re)arms the stop at `deadline − shutdownBuffer`. */
@@ -786,18 +872,37 @@ class SummonedRun {
     clearTimeout(this.#backstop);
     this.#backstopAt = at;
     this.#backstop = setTimeout(
-      () => {
-        const reason =
-          this.#closing?.reason ?? this.#pendingStop?.reason ?? "signal";
-        const code = codeFor(reason);
-        this.#logger.error(
-          "Summoned worker did not finish closing within its budget: exiting now. Jobs still held are recovered as stalled.",
-          { reason, code, ranForMs: Date.now() - this.#startedAt },
-        );
-        process.exit(code);
-      },
+      () => this.#fireBackstop(),
       Math.max(0, at - Date.now()),
     );
+  }
+
+  /**
+   * The backstop's timer. A close that has started gets at least the floor
+   * first, so a budget at or below zero still lets a forced close kill a
+   * child-process target's children before the process goes. A stop still
+   * waiting for `ready` has claimed nothing, and exits at once.
+   */
+  #fireBackstop(): void {
+    const floor =
+      this.#options.probe?.forcedCloseFloor ??
+      RUN_SUMMONED_DEFAULTS.forcedCloseFloor;
+    if (this.#closeStartedAt !== undefined) {
+      const earliest = this.#closeStartedAt + floor;
+      const wait = earliest - Date.now();
+      if (wait > 0) {
+        this.#backstop = setTimeout(() => this.#fireBackstop(), wait);
+        return;
+      }
+    }
+    const reason =
+      this.#closing?.reason ?? this.#pendingStop?.reason ?? "signal";
+    const code = codeFor(reason);
+    this.#logger.error(
+      "Summoned worker did not finish closing within its budget: exiting now. Jobs still held are recovered as stalled.",
+      { reason, code, ranForMs: Date.now() - this.#startedAt },
+    );
+    process.exit(code);
   }
 
   /* --- idleness, parking, the deadline, the target --------------------- */
@@ -946,6 +1051,14 @@ class SummonedRun {
     if (stop.reason === "signal") {
       this.#noteSignal();
     }
+    if (stop.reason === "deadline" && this.#deadlineAt !== undefined) {
+      // Bounded now, not once the worker is ready: a start that outlasts the
+      // deadline must not carry the process past it.
+      this.#armLimit(
+        this.#deadlineAt - RUN_SUMMONED_DEFAULTS.backstopMargin,
+        "deadline",
+      );
+    }
     if (!this.#ready) {
       this.#pendingStop = stop;
       this.#logger.info(
@@ -962,6 +1075,7 @@ class SummonedRun {
       return;
     }
     this.#closing = stop;
+    this.#closeStartedAt = Date.now();
     const { reason } = stop;
     const { tailReserve, mode } = this.#options;
     const now = Date.now();
@@ -977,38 +1091,25 @@ class SummonedRun {
     }
     const until = limits.length === 0 ? undefined : Math.min(...limits);
     const budget = until === undefined ? Number.POSITIVE_INFINITY : until - now;
-    const decision: SummonCloseDecision =
-      reason === "error"
-        ? {
-            force: true,
-            budget,
-            targetClose: summonTargetClose(this.#targetKind, true),
-          }
-        : (this.#options.probe?.closeRule ?? summonCloseRule)({
-            budget,
-            kind: this.#targetKind,
-            tailReserve,
-          });
+    const decision: SummonCloseDecision = this.#startFailed
+      ? {
+          force: true,
+          budget,
+          targetClose: summonTargetClose(this.#targetKind, true),
+        }
+      : (this.#options.probe?.closeRule ?? summonCloseRule)({
+          budget,
+          kind: this.#targetKind,
+          tailReserve,
+        });
 
     if (until !== undefined) {
-      this.#armBackstop(until);
-      if (!this.#options.backstop) {
-        this.#overrunWarning = setTimeout(
-          () => {
-            this.#overrunWarning = undefined;
-            this.#logger.warn("Summoned worker's close outlived its deadline", {
-              reason,
-              budget,
-            });
-          },
-          Math.max(0, until - now),
-        );
-        this.#overrunWarning.unref();
-      }
+      this.#armLimit(until, reason);
     }
+    this.#closingForced = decision.force;
 
     this.#logger.info(
-      reason === "error"
+      this.#startFailed
         ? "Summoned worker closing with force after a failed start"
         : decision.force
           ? "Summoned worker closing with force: the budget does not cover a graceful close"
@@ -1078,7 +1179,7 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
 /**
  * Runs a worker until it is no longer needed, then stops it cleanly. Starts
  * `worker.run()`, installs the signal handlers, watches idleness and the
- * deadline, and calls `worker.close()` exactly once, by the close rule.
+ * deadline, and closes the worker by the close rule.
  *
  * ```ts
  * const summon = summonedFromArgs();
@@ -1088,9 +1189,11 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  *
  * - **Signals first.** The handlers are installed synchronously, before
  *   `run()` connects and before this returns its promise, so a platform
- *   stopping the unit during boot still gets a clean exit 0. A stop asked for
- *   before the worker is ready is held until it is, then closes before the
- *   first claim.
+ *   stopping the unit during boot still gets a clean exit 0 — also when
+ *   `run()` then fails. A stop asked for before the worker is ready is held
+ *   until it is, then closes before the first claim; the backstop (or the
+ *   in-invocation warning) is armed at once, so a slow start cannot carry
+ *   the process past the platform's kill or the deadline.
  * - **The close rule.** Once closing starts, the budget `A` is the time left
  *   until the hard backstop: `grace − 250` after a signal, `deadline − 250`
  *   otherwise, none for an idle stop with no deadline. The close is graceful,
@@ -1099,15 +1202,21 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  *   recovered as stalled: the at-least-once contract, unchanged.
  * - **The hard backstop.** Outside `"in-invocation"` mode, with `exit`, the
  *   process exits at `A` if `close()` has not returned, with a log line,
- *   rather than leaving SIGKILL to do it silently.
+ *   rather than leaving SIGKILL to do it silently — but never sooner than
+ *   `forcedCloseFloor` (1 s) after the close started, so a budget at or
+ *   below zero still lets a forced close kill a target's children.
+ * - **A signal during a graceful close** asks for `close({ force: true })`,
+ *   which forces it where the worker supports escalation and otherwise
+ *   waits for it; the backstop still bounds it.
  * - **A second SIGINT exits at once**, with code 130, whatever `exit` says.
- * - **SIGTSTP / SIGCONT** pause and resume claiming; SIGCONT resumes only a
- *   pause SIGTSTP made.
+ * - **SIGTSTP / SIGCONT**, with `pauseSignals`, pause and resume claiming;
+ *   SIGCONT resumes only a pause SIGTSTP made.
  * - **A parked worker exits** (`"parked"`) after `idleFor`, unless the mode
  *   is `"until-stopped"`, whose platform would restart it.
  *
  * The worker must not be running yet: `runSummoned` starts it. Construct it
- * without `autorun`.
+ * without `autorun`; a worker from `BunJobs.start()` has already been run,
+ * so it is refused.
  *
  * @throws {ConfigError} (as a rejection) on an invalid option, a malformed
  *   summon argument, or a worker that is already running.

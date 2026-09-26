@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
@@ -262,5 +263,64 @@ describe("runSummoned in-process, exit: false", () => {
     });
     expect(exit.reason).toBe("closed");
     expect(exit.code).toBe(0);
+  });
+});
+
+describe("runSummoned with a run() that resolves before ready", () => {
+  /**
+   * A stand-in worker whose `run()` resolves without ever emitting `ready`,
+   * as a worker does when a close ends its startup. Only the surface
+   * `runSummoned` uses is here.
+   */
+  function startupClosedWorker(): {
+    worker: BunQueueWorker<unknown, string>;
+    closes: () => number;
+  } {
+    const events = new EventEmitter();
+    let closes = 0;
+    const stub = {
+      id: "stub",
+      ref: { ns: "stub", queue: "stub" },
+      driver: new MemoryDriver(),
+      logger: noopLogger,
+      state: "running",
+      activeCount: 0,
+      isRunning: false,
+      isPaused: () => false,
+      run: async () => {
+        await Bun.sleep(50);
+      },
+      close: async () => {
+        closes += 1;
+      },
+      pause: async () => {},
+      resume: () => {},
+      on: (event: string, listener: () => void) => events.on(event, listener),
+      once: (event: string, listener: () => void) =>
+        events.once(event, listener),
+      off: (event: string, listener: () => void) => events.off(event, listener),
+    };
+    return {
+      worker: stub as unknown as BunQueueWorker<unknown, string>,
+      closes: () => closes,
+    };
+  }
+
+  it("carries out a stop held for ready instead of waiting for good", async () => {
+    const { worker, closes } = startupClosedWorker();
+    // A deadline already past: the stop is due at once, before `ready`.
+    const exit = await Promise.race([
+      runSummoned(worker, {
+        exit: false,
+        signals: false,
+        deadline: Date.now() - 1,
+        shutdownBuffer: 0,
+        logger: noopLogger,
+      }),
+      Bun.sleep(3_000).then(() => "hung" as const),
+    ]);
+    expect(exit).not.toBe("hung");
+    expect(exit).toMatchObject({ reason: "deadline", code: 0 });
+    expect(closes()).toBe(1);
   });
 });
