@@ -5143,7 +5143,7 @@ export const drivers: DriverConfig[] = [
 | `memory` | | In-process only. Jobs live in the instance, so share one instance. |
 | `file` | `root` | A directory the driver owns, created on demand. |
 | `sql` | `url`, `connection`, `adapter`, `tablePrefix`, `tables`, `notify`, `syncSchema` | See below. |
-| `redis` | `url`, `connection`, `cluster`, `keyPrefix` | See below. |
+| `redis` | `url`, `connection`, `cluster`, `keyPrefix`, `maxBlockSeconds`, `firstConnectTimeout`, `connectionTimeout`, `maxRetries`, `autoReconnect` | See below. |
 | `mongodb` | `url`, `connection`, `database`, `collectionPrefix`, `collections`, `syncSchema` | See below. |
 | every type | `metrics` | What the driver records for analytics, and how long it keeps per-second buckets. See [The `metrics` option](#the-metrics-option). |
 
@@ -5191,6 +5191,23 @@ The `redis` fields:
 
 - The host defaults to `127.0.0.1:6379`; `rediss` is used with TLS.
 - `keyPrefix` defaults to `bun-jobs`.
+- **A Redis that is not there is reported in about a second.** The first
+  connect is bounded by `firstConnectTimeout` (ms, default `1000`) and fails
+  with a `DriverError`, `"redis driver failed during connect"`, whose cause
+  names the server. That covers `connect()`, the first operation, and so
+  `BunQueueWorker.run()` and `BunQueue.add()`. Bun's own client retries a
+  refused first connect for its whole budget, 31 seconds, which is what this
+  replaces. Bun still retries a refusal inside the bound, so a server a moment
+  late is reached. `0` removes the bound.
+- **Once connected, a drop is retried, not failed fast.** `connectionTimeout`,
+  `maxRetries` and `autoReconnect` are passed to Bun's `RedisClient` for that,
+  and default to Bun's: a 10 s attempt timeout, and 20 retries backing off from
+  50 ms to 2 s (about 31 s). An operation issued during a drop waits for the
+  reconnect. When Bun gives up, the next operation starts a fresh round, so a
+  worker picks up again once Redis is back however long it was gone. Pub/sub
+  subscriptions are restored on reconnect, which Bun does not do by itself.
+  Bun never retries an attempt that *timed out*, whatever `maxRetries` says, so
+  a short `connectionTimeout` gives up on a slow server after one attempt.
 - `cluster: true` hash-tags keys per queue and per runner.
 - Each driver opens up to two extra connections, only once used: one blocking
   connection serving every queue it waits on (one per queue name with
@@ -5222,7 +5239,7 @@ options that cannot be JSON or are rarely needed:
 | Option | Driver | Default | Meaning |
 |---|---|---|---|
 | `sql` | SQL | | An already-open `Bun.SQL` to share. |
-| `client` | Redis | | An already-connected `RedisClient` for commands. `url` is still required, for the blocking and pub/sub connections. |
+| `client` | Redis | | An already-connected `RedisClient` for commands. `url` is still required, for the blocking and pub/sub connections. The driver leaves it alone: `firstConnectTimeout`, `connectionTimeout`, `maxRetries` and `autoReconnect` are not applied to it, and it is never closed or reconnected by the driver. The blocking and pub/sub connections are `duplicate()`s of it, so they share its options, but their first connect is bounded. |
 | `client`, `clientOptions` | MongoDB | | A shared `MongoClient`, or options for the client the driver creates. Every collection is read from the primary, whatever the client's `readPreference`: the reads that decide a write (a failure checking the lock, a flow delivery) must not see a lagging secondary. On a standalone server this changes nothing. |
 | `maxBlockSeconds` | Redis | `5` | Longest blocking wait: it bounds each wait, and the shared blocking pop. |
 | `pollInterval` | SQL, MongoDB / file | `50` / `25` ms | How often a wait re-checks. On SQL and MongoDB it also paces event subscriptions, and every subscription a driver holds in one namespace shares one poll: one query per interval, however many channels it follows. |
