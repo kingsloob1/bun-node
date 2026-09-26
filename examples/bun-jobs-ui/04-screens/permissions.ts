@@ -1774,6 +1774,31 @@ const GATES = [
     sameAs: "worker page: instances",
     reads: ["workers.list"],
   },
+  {
+    // The target badge's neighbour, last in the State cell, and decided the
+    // same way: by the row's own worker, in every worker table. **Absent is not
+    // "not summoned"**: a worker too old to report `summon` sends none either,
+    // so a worker reporting none gets no badge at all.
+    name: "worker table: summon badge",
+    row: "Workers table summon badge (the Workers page, a queue's Workers panel and a worker page's Instances table)",
+    map: "worker",
+    when: ({ worker }) => worker?.summon !== undefined,
+  },
+  {
+    // Beside the Target card, from the same one listing, so it has the
+    // Instances' needs on the queue's answer — restated here and held equal to
+    // them by the sameAs check. Unlike the Target card it has a `when`: it is
+    // absent until an instance reports `summon`.
+    name: "worker page: Summoned card",
+    row: "Worker page Summoned card",
+    map: "queue",
+    on: "worker page: route",
+    sameAs: "worker page: instances",
+    reads: ["workers.list"],
+    when: ({ workerPage }) =>
+      workerPage?.instances.some((worker) => worker.summon !== undefined) ===
+      true,
+  },
   // The three worker tables page at their own sizes, and each pager belongs to
   // the table it pages, not to the screen around it.
   {
@@ -3810,6 +3835,8 @@ checkEqual(
     "worker page: Edit settings…": false,
     "worker page: Reset to code values…": false,
     "worker page: Change pending": false,
+    // No instance here reports `summon`; asked below with one that does.
+    "worker page: Summoned card": false,
     // The browser-side pagers, which need a list longer than one page: asked
     // below with row counts either side of each table's size.
     "panel=repeatables, pager": false,
@@ -4978,6 +5005,37 @@ checkEqual(
     [false, false, false, false],
   ],
 );
+// The summon badge, decided the same way. Nothing here summons a worker, so
+// the summoned one is the real DTO with a `summon` added, the way the target
+// case takes one out; `06-browser/workers.ts` shows the badge on a worker
+// really started with one.
+checkEqual(
+  "neither real worker reports summon: nothing here summoned them",
+  [mailer, auditor].map((worker) => worker.summon),
+  [undefined, undefined],
+);
+/** `worker` as a summoner started it: an attempt id and the summoner's kind. */
+function withSummon(worker: WorkerDto): WorkerDto {
+  return { ...worker, summon: { id: "summon-1", kind: "ecs" } };
+}
+/** The summon badge's gate on each worker table, as {@link targetBadge} reads it. */
+function summonBadge(make: (worker: WorkerDto) => WorkerDto): boolean[] {
+  const [mail, audit] = [make(mailer), make(auditor)];
+  return [
+    workerRow(mail, boot, [mail, audit], { workerTableMemory: true }),
+    workerRow(mail, maps.mail!, [mail], { workerTableQueuePanel: true }),
+    workerRow(audit, maps.audit!, [audit], { workerTableQueuePanel: true }),
+    workerRow(mail, maps.mail!, [mail], { workerTableMemory: true }),
+  ].map((set) => set["worker table: summon badge"]);
+}
+checkEqual(
+  'the summon badge: on all three worker tables for a worker reporting summon, read-only audit\'s panel included; on none of them for one reporting none (absent is not "not summoned")',
+  [summonBadge(withSummon), summonBadge((worker) => worker)],
+  [
+    [true, true, true, true],
+    [false, false, false, false],
+  ],
+);
 // The housekeeping note, on a queue's Workers panel. Both workers here take
 // part in housekeeping (`maintenance` defaults to on), so the panel is quiet;
 // the cases that matter are derived from their real DTOs, the way the Memory
@@ -5219,6 +5277,44 @@ async function instancesAndTarget(
   });
   return [set["worker page: instances"], set["worker page: Target card"]];
 }
+/**
+ * A worker page's Instances card and its Summoned card, in that order, with
+ * the page's instances as `make` makes them.
+ */
+async function instancesAndSummoned(
+  queue: string,
+  key: string,
+  make: (worker: WorkerDto) => WorkerDto,
+): Promise<boolean[]> {
+  const page = await workerPageOf(queue, key);
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    queue: maps[queue]!,
+    ...(page
+      ? { workerPage: { ...page, instances: page.instances.map(make) } }
+      : {}),
+  });
+  return [set["worker page: instances"], set["worker page: Summoned card"]];
+}
+checkEqual(
+  "the Summoned card: only where the Instances card is and an instance reports summon; none on a key with no live instance, and hidden with the Instances on payroll",
+  [
+    await instancesAndSummoned("mail", "mailer", withSummon),
+    await instancesAndSummoned("mail", "mailer", (worker) => worker),
+    await instancesAndSummoned("audit", "auditor", withSummon),
+    await instancesAndSummoned("payroll", "anyone", withSummon),
+    await instancesAndSummoned("mail", "nobody-runs-this", withSummon),
+  ],
+  [
+    [true, true],
+    [true, false],
+    [true, true],
+    [false, false],
+    [true, false],
+  ],
+);
 checkEqual(
   "the Target card: wherever the Instances card is, a key with no live instance included (it says the target is known once one reports), and hidden with it on payroll",
   [

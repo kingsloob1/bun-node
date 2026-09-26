@@ -47,10 +47,12 @@
  *   `jobs-processed-by-key`, `job-processed-by-key`, and the Target card's
  *   `worker-target`, `worker-target-kind`, `worker-target-processor`,
  *   `worker-target-predates`, `worker-target-differs` and
- *   `worker-target-group`. A worker's buttons are in
- *   `[role="group"][aria-label="Actions for worker <id>"]`; in the State
- *   cell, its state badge is `data-testid="worker-state"` and its target
- *   badge `.badge.worker-target`.
+ *   `worker-target-group`, and the Summoned card's `worker-summon`,
+ *   `worker-summon-row-<id>` and `worker-summon-others`. A worker's buttons
+ *   are in `[role="group"][aria-label="Actions for worker <id>"]`; in the
+ *   State cell, its state badge is `data-testid="worker-state"`, its target
+ *   badge `.badge.worker-target` and its summon badge
+ *   `data-testid="worker-summon-badge"`.
  * - **The refusal needs a view older than the worker.** The row offers only
  *   what the worker's state takes, so a 409 happens to a real user only when
  *   somebody else changed the worker after the page last read it. This host
@@ -105,6 +107,14 @@
  *   line saying so for an instance too old to report. This API does not set
  *   `serialize.exposeProcessorFiles`, and these workers run no file, so no
  *   File row appears.
+ * - **A summoned worker says so; the others say nothing.** The mailer is
+ *   started with a `summon`, as a summoner would start it, so its row has a
+ *   "Summoned by ecs" badge last in the State cell, and its worker page a
+ *   Summoned card listing it; its replica, started by hand, reports no
+ *   `summon`, gets no badge, and is only counted on the card. What the
+ *   summoner requested (a mode, a deadline) is shown as a request. The
+ *   handle is given and never shown, since this API does not set
+ *   `serialize.exposeSummonHandles`.
  * - **The housekeeping note needs a worker that said no, not one that said
  *   nothing.** A queue's Workers panel says nobody runs the queue's
  *   housekeeping sweeps only where a live worker reports `sweeps: false` and
@@ -589,10 +599,25 @@ await run(apiJobs, "emails", "welcome", "dead-1", { fail: true });
 await apiEmails.pause();
 
 // Now the mailer's two instances take over the queue.
+/**
+ * Where the mailer came from, as a summoner started it: an attempt id, the
+ * summoner's kind, and the mode and deadline it requested. The handle is
+ * given too, and never shown: this API does not set
+ * `serialize.exposeSummonHandles`. Its replica is started by hand, so it
+ * reports no `summon`.
+ */
+const MAILER_SUMMON = {
+  id: "attempt-7",
+  kind: "ecs",
+  mode: "exit-on-idle",
+  deadlineAt: Date.UTC(2030, 0, 1),
+  handle: "arn:aws:ecs:eu-west-1:000000000000:task/mailer-7",
+} as const;
 const mailerEmails = mailerJobs.worker<JobData, string>("emails", handle, {
   ...WORKER_OPTIONS,
   name: "send",
   concurrency: 1,
+  summon: MAILER_SUMMON,
 });
 void mailerEmails.run();
 replica = Bun.spawn({
@@ -775,7 +800,7 @@ function cellTitle(id: string, header: string): string {
 interface StateCell {
   /** The state badge's text: "Running", "Paused", "Stopping", …. */
   state: string | null;
-  /** The cell's other badges, bar the target: "Change pending", "Not reporting". */
+  /** The cell's other badges, bar the target and the summon: "Change pending", "Not reporting". */
   conditions: string[];
   /**
    * The target badge's whole text, its visually hidden "Runs in: " prefix
@@ -784,6 +809,12 @@ interface StateCell {
   target: string | null;
   /** The target badge's tooltip, or `null` without a badge. */
   targetTitle: string | null;
+  /** The summon badge's text, or `null` when the row shows none. */
+  summon: string | null;
+  /** The summon badge's tooltip, or `null` without a badge. */
+  summonTitle: string | null;
+  /** Whether the summon badge, when there is one, is the cell's last badge. */
+  summonLast: boolean | null;
 }
 
 /**
@@ -802,13 +833,18 @@ const STATE_CELLS = `[...document.querySelectorAll('tr[data-testid^="worker-row-
   const headers = [...row.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim());
   const cell = row.children[headers.indexOf("State")];
   const states = cell ? cell.querySelectorAll('[data-testid="worker-state"]') : [];
-  const conditions = cell ? [...cell.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"])')].map((badge) => badge.textContent.trim()) : [];
+  const conditions = cell ? [...cell.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"]):not([data-testid="worker-summon-badge"])')].map((badge) => badge.textContent.trim()) : [];
   const target = cell ? cell.querySelector(".badge.worker-target") : null;
+  const summon = cell ? cell.querySelector('[data-testid="worker-summon-badge"]') : null;
+  const badges = cell ? [...cell.querySelectorAll(".badge")] : [];
   return [row.dataset.testid.slice("worker-row-".length), {
     state: states.length === 1 ? states[0].textContent.trim() : null,
     conditions,
     target: target ? target.textContent : null,
     targetTitle: target ? target.getAttribute("title") : null,
+    summon: summon ? summon.textContent.trim() : null,
+    summonTitle: summon ? summon.getAttribute("title") : null,
+    summonLast: summon ? badges.at(-1) === summon : null,
   }];
 })`;
 
@@ -1025,6 +1061,37 @@ try {
       ),
     ],
     [true, false],
+  );
+  // Where a summoned worker came from: a badge after the target, on the one
+  // worker started with a `summon`, and on no other, its own replica
+  // included. Absent is not "not summoned": a worker reporting none has none.
+  checkEqual(
+    'the summoned mailer: a badge, "Summoned by ecs", last in its State cell; no other row has one, its replica included',
+    Object.values(ids).map((id) => [
+      stateCells[id]?.summon ?? null,
+      stateCells[id]?.summonLast ?? null,
+    ]),
+    Object.values(ids).map((id) =>
+      id === ids.mailer ? ["Summoned by ecs", true] : [null, null],
+    ),
+  );
+  checkEqual(
+    "its tooltip: the attempt, what the summoner requested, called a request, and not a setting",
+    stateCells[ids.mailer]?.summonTitle,
+    `Started by a summoner, attempt ${MAILER_SUMMON.id}. The summoner's requested mode: Exit when idle; requested deadline: ${new Date(MAILER_SUMMON.deadlineAt).toISOString()}. How it was started, not a setting.`,
+  );
+  checkEqual(
+    "the API reports the mailer's summon, bar the handle (serialize.exposeSummonHandles is off); its replica reports none",
+    [(await record(ids.mailer))?.summon, (await record(ids.replica))?.summon],
+    [
+      {
+        id: MAILER_SUMMON.id,
+        kind: MAILER_SUMMON.kind,
+        mode: MAILER_SUMMON.mode,
+        deadlineAt: MAILER_SUMMON.deadlineAt,
+      },
+      undefined,
+    ],
   );
   checkEqual(
     "each row links its key to the worker page; both mailer instances to the same one",
@@ -1498,6 +1565,48 @@ try {
       groups: [],
     },
   );
+  checkEqual(
+    "the Instances table carries the summon badge on the summoned instance alone",
+    [ids.mailer, ids.replica].map((id) => instanceCells[id]?.summon ?? null),
+    ["Summoned by ecs", null],
+  );
+  // The Summoned card: one row per instance reporting `summon`, each column
+  // only when a row has a value, and no Handle column, since this API does not
+  // send handles. The replica reports none, so it is counted, not listed.
+  checkEqual(
+    "the Summoned card: headers, the mailer's row (attempt, summoner, requested mode), none for the replica, and the replica counted",
+    await view.evaluate<unknown>(
+      poll(`(() => {
+        const card = document.querySelector('[data-testid="worker-summon"]');
+        if (!card) return null;
+        const cells = (id) => {
+          const row = card.querySelector(\`[data-testid="worker-summon-row-\${id}"]\`);
+          return row ? [...row.children].map((cell) => cell.textContent.trim()) : null;
+        };
+        const mailer = cells(${JSON.stringify(ids.mailer)});
+        return {
+          headers: [...card.querySelectorAll("thead th")].map((th) => th.textContent.trim()),
+          mailer: mailer ? mailer.slice(0, 4) : null,
+          deadlineShown: mailer ? mailer[4] !== "" : null,
+          replica: cells(${JSON.stringify(ids.replica)}),
+          others: card.querySelector('[data-testid="worker-summon-others"]')?.textContent.trim() ?? null,
+        };
+      })()`),
+    ),
+    {
+      headers: [
+        "Instance",
+        "Summon",
+        "Summoner",
+        "Requested mode",
+        "Requested deadline",
+      ],
+      mailer: [ids.mailer, MAILER_SUMMON.id, "ecs", "Exit when idle"],
+      deadlineShown: true,
+      replica: null,
+      others: "1 other instance of this key reports no summon.",
+    },
+  );
 
   /** Page-side: a setting's row as `[running with, code asks for, source]`. */
   const setting = (name: string) =>
@@ -1636,6 +1745,13 @@ try {
       (id) => panelCells[id]?.target,
     ),
     ["Runs in: In process", "Runs in: In process", "Runs in: In process"],
+  );
+  checkEqual(
+    "and the summon badge, on the summoned mailer alone",
+    [ids.apiEmails, ids.mailer, ids.replica].map(
+      (id) => panelCells[id]?.summon ?? null,
+    ),
+    [null, "Summoned by ecs", null],
   );
   check(
     "clicking api.emails.send's link opens its worker page",
@@ -2962,7 +3078,7 @@ try {
         const row = document.querySelector('[data-testid="worker-row-${ids.exports}"]');
         const state = row ? row.querySelectorAll('[data-testid="worker-state"]') : [];
         if (state.length !== 1 || state[0].textContent.trim() !== "Stopping") return null;
-        const others = [...row.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"])')].map((badge) => badge.textContent.trim());
+        const others = [...row.querySelectorAll('.badge:not(.worker-target):not([data-testid="worker-state"]):not([data-testid="worker-summon-badge"])')].map((badge) => badge.textContent.trim());
         return [state[0].textContent.trim(), ...others];
       })()`),
     ),
