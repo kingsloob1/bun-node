@@ -16,6 +16,7 @@ import { useQueueWorkersLive, useWorkerRefetchInterval } from "./live";
 import { WorkerAnalyticsCard } from "./WorkerAnalyticsCard";
 import { WorkerConfigCard } from "./WorkerConfigCard";
 import { WorkerJobsCard } from "./WorkerJobsCard";
+import { WorkerSummonCard } from "./WorkerSummonCard";
 import { WorkerTable } from "./WorkerTable";
 import { WorkerTargetCard } from "./WorkerTargetCard";
 import "./workers.css";
@@ -197,6 +198,10 @@ export function WorkerScreen() {
             </div>
           </Card>
           <WorkerTargetCard
+            workerKey={key}
+            instances={instances}
+          />
+          <WorkerSummonCard
             workerKey={key}
             instances={instances}
           />
