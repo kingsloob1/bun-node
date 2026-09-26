@@ -1142,6 +1142,13 @@ queue, not all of them — returns jobs with expired locks to the queue and emit
 `stalled` with their ids. A job that has stalled more than `maxStalledCount`
 times is buried in `dead` instead.
 
+An `active` job that holds **no** lock at all is recovered the same way, on the
+first sweep, by every driver: nothing holds it, so nothing else would ever move
+it. No API leaves one — every claim takes the lock in the same write as the
+state — but a driver-level `addJob` of an `active` record without a lock (a
+restore or migration) or a write outside the driver can. Memory, SQL and
+MongoDB used to skip such a job and leave it `active` for good.
+
 The holder is the worker with the shortest `stalledInterval` on the queue: a
 worker sweeping more than twice as often as the holder takes the lease over on
 its first pass, so the cadence an operator asked for is the cadence the queue
@@ -1964,10 +1971,11 @@ export const summary = { outstanding, capped };
   are counted all the same. The count promotes, recovers and publishes
   nothing; counting `workers` removes expired worker records on the drivers
   whose worker listing prunes (memory, SQL, MongoDB), as `listWorkers()` does.
-- `stalled` is exactly what this driver's stalled sweep would recover now: a
-  lapsed lock everywhere, and an `active` job with no lock on Redis and file,
-  whose sweeps recover one (memory, SQL and MongoDB skip it). `active` equals
-  `count("active")`.
+- `stalled` is exactly what this driver's stalled sweep would recover now: an
+  `active` job whose lock has lapsed, or that holds no lock at all, on every
+  driver. `active` is every `active` job, so it always holds what `stalled`
+  counts; it equals `count("active")` except on Postgres and SQLite while an
+  `active` job with no lock exists, which their `count` leaves out.
 - A paused queue reports its backlog with `demand` and `outstanding` at `0`.
 - Each figure is counted up to `cap` (10,000 by default); past it the figure
   reads `cap` and `capped` is `true`. `nextDueAt`, the next scheduled job's

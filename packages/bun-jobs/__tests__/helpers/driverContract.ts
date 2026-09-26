@@ -40,6 +40,7 @@ import {
   SECOND_BUCKET_MS,
 } from "../../lib/api/contract/constants";
 import {
+  claimJobBatch,
   countAdded,
   countAddedByScan,
   emptyAddedCounts,
@@ -166,6 +167,68 @@ export function driverContract(
       await driver.close();
       await cleanup?.();
     });
+
+    /**
+     * Puts job `id` in `active` through a real claim at `claimedAt`, holding
+     * a lock of `lockMs` from then. The queue must have nothing else waiting,
+     * so seed active jobs before any waiting ones. Shared by the stalled
+     * recovery cases and `countDemand`'s.
+     */
+    async function activate(
+      q: QueueRef,
+      id: string,
+      claimedAt: number,
+      lockMs: number,
+    ): Promise<void> {
+      await driver.addJob(
+        q,
+        makeJob({ id, runAt: claimedAt - 1, createdAt: claimedAt - 1 }),
+      );
+      const claimed = await driver.claimJob(q, {
+        workerId: "demand-worker",
+        token: newToken(),
+        lockMs,
+        now: claimedAt,
+      });
+      expect(claimed?.id).toBe(id);
+    }
+
+    /**
+     * Plants an `active` job with no lock. No API leaves one, so it takes a
+     * write under the API: the factory's raw `unlockActive` on a real claim
+     * (SQL, MongoDB, Redis), or a driver-level add of an `active` record with
+     * `lockExpiresAt: null` (memory, file). Checked to have landed.
+     */
+    async function plantLockless(
+      q: QueueRef,
+      id: string,
+      now: number,
+    ): Promise<void> {
+      if (unlockActive) {
+        await activate(q, id, now - 120_000, 1_000);
+        await unlockActive(q, id);
+      } else {
+        await driver.addJob(
+          q,
+          makeJob({
+            id,
+            state: "active",
+            createdAt: now - 120_000,
+            runAt: now - 120_000,
+            processedOn: now - 120_000,
+            attemptsMade: 1,
+            lockToken: newToken(),
+            lockExpiresAt: null,
+            workerId: "demand-worker",
+          }),
+        );
+      }
+
+      expect(await driver.getJob(q, id)).toMatchObject({
+        state: "active",
+        lockExpiresAt: null,
+      });
+    }
 
     /* --- lifecycle -------------------------------------------------- */
 
@@ -3099,6 +3162,203 @@ export function driverContract(
         await driver.removeJob(q, "stalls");
       });
 
+      /*
+       * An `active` job with no lock (#185). No API leaves one, but a
+       * driver-level `addJob` of such a record or a write outside the driver
+       * can, and it has no holder to settle it. Every engine counts it as
+       * stalled now — memory, SQL and MongoDB used to skip it and leave it
+       * `active` for good — and recovers it by the rules any stalled job
+       * follows.
+       */
+      describe("an active job that holds no lock", () => {
+        it("is recovered now, its lock cleared and stalledCount raised, and runs again", async () => {
+          const q = scope("lockless-requeue");
+          const now = Date.now();
+          await plantLockless(q, "lockless", now);
+          expect((await driver.getJob(q, "lockless"))?.stalledCount).toBe(0);
+
+          const swept = await driver.recoverStalled(q, now, 1, 10);
+          expect(swept).toEqual({ requeued: ["lockless"], dead: [] });
+          expect(await driver.getJob(q, "lockless")).toMatchObject({
+            state: "waiting",
+            stalledCount: 1,
+            runAt: now,
+            lockToken: null,
+            lockExpiresAt: null,
+            workerId: null,
+          });
+
+          // Once, not on every sweep.
+          expect(await driver.recoverStalled(q, now, 1, 10)).toEqual({
+            requeued: [],
+            dead: [],
+          });
+
+          // And it runs: a claim takes it, and it settles like any job.
+          const token = newToken();
+          const claimed = await driver.claimJob(q, {
+            workerId: "after-recovery",
+            token,
+            lockMs: 60_000,
+            now: now + 1,
+          });
+          expect(claimed?.id).toBe("lockless");
+          expect(claimed?.lockExpiresAt).toBe(now + 60_001);
+          expect(
+            await driver.completeJob(
+              q,
+              "lockless",
+              token,
+              "ran",
+              false,
+              now + 2,
+            ),
+          ).toBe(true);
+          expect((await driver.getJob(q, "lockless"))?.state).toBe("completed");
+        });
+
+        it("is buried once it has stalled more than maxStalledCount times", async () => {
+          const q = scope("lockless-bury");
+          const now = Date.now();
+          await plantLockless(q, "lockless", now);
+
+          const swept = await driver.recoverStalled(q, now, 0, 10);
+          expect(swept).toEqual({ requeued: [], dead: ["lockless"] });
+          expect(await driver.getJob(q, "lockless")).toMatchObject({
+            state: "dead",
+            stalledCount: 1,
+            finishedOn: now,
+            lockToken: null,
+            lockExpiresAt: null,
+            workerId: null,
+          });
+        });
+
+        it("counts toward the sweep's limit, beside a lapsed lock, each taken once", async () => {
+          const q = scope("lockless-limit");
+          const now = Date.now();
+          await activate(q, "lapsed", now - 60_000, 1_000);
+          await plantLockless(q, "lockless", now);
+          await activate(q, "live", now - 1_000, 60_000);
+
+          const first = await driver.recoverStalled(q, now, 5, 1);
+          const second = await driver.recoverStalled(q, now, 5, 1);
+          const third = await driver.recoverStalled(q, now, 5, 1);
+          const taken = [first, second].map((swept) => [
+            ...swept.requeued,
+            ...swept.dead,
+          ]);
+
+          // One per sweep, as the limit says, and between them both stalled
+          // jobs; which goes first is the engine's order, not the contract's.
+          expect(taken.map((ids) => ids.length)).toEqual([1, 1]);
+          expect(taken.flat().sort()).toEqual(["lapsed", "lockless"]);
+          expect(third).toEqual({ requeued: [], dead: [] });
+          expect((await driver.getJob(q, "live"))?.state).toBe("active");
+        });
+      });
+
+      it("shuts a stalled claim out once the job is claimed again under a new token", async () => {
+        // A worker draws a fresh token for every claim (#187). What makes that
+        // enough is this: once a job is claimed again under another token,
+        // nothing written under the first — extend, complete, fail, bury —
+        // matches it any more. Two jobs, so a batch claim's shared token is
+        // covered too, on the plural path where the driver has one.
+        const q = scope("reclaimed-token");
+        const now = Date.now();
+        const first = newToken();
+        const second = newToken();
+        await driver.addJob(q, makeJob({ id: "r1", runAt: now }));
+        await driver.addJob(q, makeJob({ id: "r2", runAt: now }));
+
+        const taken = await claimJobBatch(
+          driver,
+          q,
+          { workerId: "w", token: first, lockMs: 10, now },
+          2,
+        );
+        expect(taken.map((job) => [job.id, job.lockToken]).sort()).toEqual([
+          ["r1", first],
+          ["r2", first],
+        ]);
+
+        const swept = await driver.recoverStalled(q, now + 1000, 5, 10);
+        expect(swept.requeued.sort()).toEqual(["r1", "r2"]);
+
+        const retaken = await claimJobBatch(
+          driver,
+          q,
+          { workerId: "w", token: second, lockMs: 60_000, now: now + 1000 },
+          2,
+        );
+        expect(retaken.map((job) => [job.id, job.lockToken]).sort()).toEqual([
+          ["r1", second],
+          ["r2", second],
+        ]);
+
+        const later = now + 1001;
+        expect(await driver.extendJobLock(q, "r1", first, 60_000, later)).toBe(
+          false,
+        );
+        expect(
+          await driver.completeJob(q, "r1", first, "stale", false, later),
+        ).toBe(false);
+        expect(
+          await driver.failJob(
+            q,
+            "r1",
+            first,
+            serializeError(new Error("stale")),
+            { retry: false, retention: false },
+            later,
+            5,
+          ),
+        ).toBe(false);
+        if (driver.completeJobs) {
+          expect(
+            await driver.completeJobs(
+              q,
+              first,
+              [{ id: "r2", result: "stale", retention: false }],
+              later,
+            ),
+          ).toEqual([]);
+        }
+        if (driver.buryJob) {
+          expect(
+            await driver.buryJob(
+              q,
+              "r2",
+              serializeError(new Error("stale")),
+              { retention: false, keepStacktraces: 5, token: first },
+              later,
+            ),
+          ).toBeNull();
+        }
+
+        for (const id of ["r1", "r2"]) {
+          expect(await driver.getJob(q, id)).toMatchObject({
+            state: "active",
+            lockToken: second,
+            returnValue: null,
+          });
+        }
+
+        expect(
+          await driver.completeJob(q, "r1", second, "fresh", false, later),
+        ).toBe(true);
+        expect(
+          await driver.completeJob(q, "r2", second, "fresh", false, later),
+        ).toBe(true);
+        for (const id of ["r1", "r2"]) {
+          expect(await driver.getJob(q, id)).toMatchObject({
+            state: "completed",
+            returnValue: "fresh",
+          });
+          await driver.removeJob(q, id);
+        }
+      });
+
       it("refuses to remove an active job", async () => {
         const q = scope("remove-active");
         const now = Date.now();
@@ -5607,6 +5867,13 @@ export function driverContract(
         return { ns, queue: `demand-${name}` };
       }
 
+      /**
+       * The engines whose `countJobs().active` follows the `active` listing's
+       * `LOCK_NOT_NULL` and so leaves a lockless row out (#147). `countDemand`
+       * counts it on every engine.
+       */
+      const LISTING_HIDES_LOCKLESS = ["postgres", "sqlite"];
+
       /** Every figure zero, as an empty queue answers. */
       const EMPTY = {
         waiting: 0,
@@ -5625,67 +5892,6 @@ export function driverContract(
       ): Promise<DemandCounts> {
         expect(typeof driver.countDemand).toBe("function");
         return await driver.countDemand!(q, now, { cap });
-      }
-
-      /**
-       * Puts job `id` in `active` through a real claim at `claimedAt`, holding
-       * a lock of `lockMs` from then. The queue must have nothing else waiting,
-       * so seed active jobs before any waiting ones.
-       */
-      async function activate(
-        q: QueueRef,
-        id: string,
-        claimedAt: number,
-        lockMs: number,
-      ): Promise<void> {
-        await driver.addJob(
-          q,
-          makeJob({ id, runAt: claimedAt - 1, createdAt: claimedAt - 1 }),
-        );
-        const claimed = await driver.claimJob(q, {
-          workerId: "demand-worker",
-          token: newToken(),
-          lockMs,
-          now: claimedAt,
-        });
-        expect(claimed?.id).toBe(id);
-      }
-
-      /**
-       * Plants an `active` job with no lock. No API leaves one, so it takes a
-       * write under the API: the factory's raw `unlockActive` on a real claim
-       * (SQL, MongoDB, Redis), or a driver-level add of an `active` record with
-       * `lockExpiresAt: null` (memory, file). Checked to have landed.
-       */
-      async function plantLockless(
-        q: QueueRef,
-        id: string,
-        now: number,
-      ): Promise<void> {
-        if (unlockActive) {
-          await activate(q, id, now - 120_000, 1_000);
-          await unlockActive(q, id);
-        } else {
-          await driver.addJob(
-            q,
-            makeJob({
-              id,
-              state: "active",
-              createdAt: now - 120_000,
-              runAt: now - 120_000,
-              processedOn: now - 120_000,
-              attemptsMade: 1,
-              lockToken: newToken(),
-              lockExpiresAt: null,
-              workerId: "demand-worker",
-            }),
-          );
-        }
-
-        expect(await driver.getJob(q, id)).toMatchObject({
-          state: "active",
-          lockExpiresAt: null,
-        });
       }
 
       /**
@@ -6006,27 +6212,69 @@ export function driverContract(
         await plantLockless(q, "lockless", now);
         await activate(q, "live", now - 1_000, 60_000);
 
+        // Taken before the sweep moves anything. `active` is every active job,
+        // the lockless one included, so it holds everything `stalled` counts.
         const before = await demand(q, now);
-        // Taken before the sweep moves anything.
-        expect(before.active).toBe((await driver.countJobs(q)).active);
+        expect(before).toMatchObject({ stalled: 4, active: 5 });
+        // `countJobs` agrees except where the `active` listing leaves a
+        // lockless row out, Postgres and SQLite (#147's `LOCK_NOT_NULL`), and
+        // there it is short by exactly that row.
+        expect((await driver.countJobs(q)).active).toBe(
+          LISTING_HIDES_LOCKLESS.includes(name) ? 4 : 5,
+        );
 
         // A limit above the count, so the sweep is not what stops it.
         const swept = await driver.recoverStalled(q, now, 5, 1_000);
         const recovered = [...swept.requeued, ...swept.dead];
 
-        // Agreement, on every engine, whichever way it treats the lockless job.
+        // Agreement, and the same set on every engine (#185): the lapsed jobs,
+        // the one lapsing exactly now, and the lockless one; the live one
+        // nowhere. Each once.
         expect(before.stalled).toBe(recovered.length);
-        // Not vacuous: the lapsed jobs, and the one lapsing exactly now, are
-        // recovered everywhere, the live one nowhere.
-        expect(recovered).toEqual(
-          expect.arrayContaining(["lapsed-1", "lapsed-2", "at-now"]),
-        );
-        expect(recovered).not.toContain("live");
+        expect(recovered.sort()).toEqual([
+          "at-now",
+          "lapsed-1",
+          "lapsed-2",
+          "lockless",
+        ]);
 
         // And afterwards nothing left is stalled, by either account.
-        expect((await demand(q, now)).stalled).toBe(0);
+        expect(await demand(q, now)).toMatchObject({
+          stalled: 0,
+          active: 1,
+          waiting: 4,
+        });
         const again = await driver.recoverStalled(q, now, 5, 1_000);
         expect([...again.requeued, ...again.dead]).toEqual([]);
+      });
+
+      it("counts a lockless active job once, as stalled and active, and never past active", async () => {
+        const q = scope("stalled-lockless-only");
+        const now = Date.now();
+        // The only active job, so a figure that left it out of `active` while
+        // counting it as stalled would read `stalled > active` here.
+        await plantLockless(q, "lockless", now);
+
+        expect(await demand(q, now)).toEqual({
+          ...EMPTY,
+          stalled: 1,
+          active: 1,
+        });
+
+        // Demand and outstanding take it once, and `active − stalled` is 0,
+        // never negative.
+        const read = await readDemand(driver, q, { now, cap: 100 });
+        expect(read).toMatchObject({
+          stalled: 1,
+          active: 1,
+          demand: 1,
+          outstanding: 1,
+        });
+
+        expect((await driver.recoverStalled(q, now, 5, 10)).requeued).toEqual([
+          "lockless",
+        ]);
+        expect(await demand(q, now)).toEqual({ ...EMPTY, waiting: 1 });
       });
 
       /**
