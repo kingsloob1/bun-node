@@ -68,6 +68,10 @@ import type {
   minutesQuerySchema,
   OverviewSchema,
   PausedSchema,
+  queueDemandListQuerySchema,
+  QueueDemandListSchema,
+  QueueDemandQuerySchema,
+  QueueDemandSchema,
   QueueDetailSchema,
   QueueLimitsInputSchema,
   queueListQuerySchema,
@@ -418,6 +422,56 @@ export type QueueListQueryOk = Expect<
     Infer<ReturnType<typeof queueListQuerySchema>>
   >
 >;
+// The depth endpoint: the body, the namespace list and both queries compare
+// whole against the schemas their routes validate with.
+export type QueueDemandOk = Expect<
+  DeepEqual<Contract.QueueDemandDto, Infer<typeof QueueDemandSchema>>
+>;
+export type QueueDemandListOk = Expect<
+  DeepEqual<Contract.QueueDemandListDto, Infer<typeof QueueDemandListSchema>>
+>;
+export type QueueDemandQueryOk = Expect<
+  DeepEqual<Contract.QueueDemandQuery, Infer<typeof QueueDemandQuerySchema>>
+>;
+export type QueueDemandListQueryOk = Expect<
+  DeepEqual<
+    Contract.QueueDemandListQuery,
+    Infer<ReturnType<typeof queueDemandListQuerySchema>>
+  >
+>;
+// And the wire body is exactly `queue.getDemand()`'s answer with the queue's
+// name: a field added to `QueueDemand` and not to the contract fails here, so
+// the two cannot drift even though the browser-safe contract restates it.
+export type QueueDemandIsRootOk = Expect<
+  Equal<Omit<Contract.QueueDemandDto, "queue">, Root.QueueDemand>
+>;
+// The depth endpoint's wire types are root exports too, like their siblings
+// (`QueueSummaryDto`, `WorkerDto`, `MetaDto`): each is the contract's own, so a
+// removed export fails here (`Root` has no such member).
+export type RootQueueDemandDtoOk = Expect<
+  Equal<Root.QueueDemandDto, Contract.QueueDemandDto>
+>;
+export type RootQueueDemandListDtoOk = Expect<
+  Equal<Root.QueueDemandListDto, Contract.QueueDemandListDto>
+>;
+export type RootQueueDemandQueryOk = Expect<
+  Equal<Root.QueueDemandQuery, Contract.QueueDemandQuery>
+>;
+export type RootQueueDemandListQueryOk = Expect<
+  Equal<Root.QueueDemandListQuery, Contract.QueueDemandListQuery>
+>;
+type QueueDemandWithoutExact = Equal<
+  Omit<Contract.QueueDemandDto, "queue" | "exact">,
+  Root.QueueDemand
+>;
+// @ts-expect-error — negative control: dropping a field is caught.
+export type QueueDemandWithoutExactCaught = Expect<QueueDemandWithoutExact>;
+type DemandSchemaSansCapped = DeepEqual<
+  Omit<Contract.QueueDemandDto, "capped">,
+  Infer<typeof QueueDemandSchema>
+>;
+// @ts-expect-error — negative control: the schema carries `capped` too.
+export type DemandSchemaSansCappedCaught = Expect<DemandSchemaSansCapped>;
 export type QueueLimitsOk = Expect<
   DeepEqual<Contract.QueueLimitsDto, Infer<typeof StoredLimitsSchema>>
 >;
@@ -1360,6 +1414,7 @@ export type MetaFeatureKeysOk = Expect<
     | "addedByState"
     | "jobDefaults"
     | "jobDefaultsApply"
+    | "demand"
   >
 >;
 export type MetaFeatureValuesOk = Expect<
@@ -1396,6 +1451,13 @@ type JobDefaultsFlagsOptional = Equal<
 // @ts-expect-error — both always reported: a UI hides the defaults panel and
 // the apply button on `false`, and must not have to guess.
 export type JobDefaultsFlagsOptionalCaught = Expect<JobDefaultsFlagsOptional>;
+type DemandFlagOptional = Equal<
+  Pick<Contract.MetaDto["features"], "demand">,
+  { demand?: boolean }
+>;
+// @ts-expect-error — always reported: `false` means the demand routes are not
+// served here (runner mode), and a UI hides the demand card rather than guess.
+export type DemandFlagOptionalCaught = Expect<DemandFlagOptional>;
 export type MetaCsrfOk = Expect<
   DeepEqual<Contract.MetaCsrfDto, Infer<typeof MetaCsrfSchema>>
 >;

@@ -138,6 +138,24 @@ export interface RouteDef<P, Q, B, R extends RouteResponses> {
   /** Declared responses by status. */
   responses: R;
   /**
+   * Representations other than JSON the route's default 2xx status can answer
+   * with, by media type (e.g. `"text/plain; version=0.0.4"`). The handler
+   * writes such a response itself, through `res`, so it is never checked
+   * against the JSON schema. The OpenAPI document lists each beside the JSON
+   * body, as a string. Unset, the route answers JSON only.
+   */
+  alternateContent?: Readonly<
+    Record<
+      string,
+      {
+        /** What the representation is and when it is chosen. */
+        description: string;
+        /** A sample body, for the docs. */
+        example?: string;
+      }
+    >
+  >;
+  /**
    * Problem codes the route answers with, beyond the ones every route gets
    * (401/403, validation, CSRF and JSON errors where they apply).
    */

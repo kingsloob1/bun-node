@@ -1,4 +1,4 @@
-import type { BunRequest } from "@kingsleyweb/bun-common";
+import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import type {
   BucketRange,
   MetricsSupport,
@@ -14,6 +14,7 @@ import type {
   JobDefaultsDto,
   OverviewDto,
   PageInfoDto,
+  QueueDemandDto,
   QueueThroughputDto,
   ThroughputBucketDto,
 } from "../contract/types";
@@ -22,6 +23,7 @@ import type { RangeQueryInput } from "./analytics";
 import type { AnyRouteDef, RouteServices } from "./define";
 import {
   countAdded,
+  DEFAULT_DEMAND_CAP,
   emptyAddedCounts,
   supportsWorkers,
   THROUGHPUT_BUCKET_MS,
@@ -36,6 +38,13 @@ import {
   MAX_ADDED_BY_STATE_SPAN_MS,
 } from "../contract/constants";
 import { ApiError, mapCallSiteError } from "../errors";
+import {
+  DEMAND_METRICS,
+  DEMAND_TRUNCATED_METRIC,
+  PROMETHEUS_CONTENT_TYPE,
+  PROMETHEUS_MEDIA_TYPE,
+  renderDemandExposition,
+} from "../prometheus";
 import { s } from "../schema/builder";
 import { JOB_STATES } from "../schemas/common";
 import {
@@ -53,6 +62,10 @@ import {
   minutesQuerySchema,
   OverviewSchema,
   PausedSchema,
+  queueDemandListQuerySchema,
+  QueueDemandListSchema,
+  QueueDemandQuerySchema,
+  QueueDemandSchema,
   QueueDetailSchema,
   QueueLimitsInputSchema,
   queueListQuerySchema,
@@ -479,6 +492,93 @@ function checkJobDefaultsBody(update: JobDefaultsUpdate): void {
   }
 }
 
+/**
+ * Whether a demand request asked for the Prometheus exposition: `format` when
+ * sent, else `Accept` — the exposition only when `text/plain` (with the
+ * format's version, or none) is preferred over JSON, which a Prometheus
+ * server's scrape header is. No `Accept`, the any-type wildcard, a browser's
+ * header, or a media type neither serves all answer JSON, never 406.
+ */
+function wantsExposition(
+  req: BunRequest,
+  format: "json" | "prometheus" | undefined,
+): boolean {
+  if (format !== undefined) {
+    return format === "prometheus";
+  }
+  return (
+    req.accepts(["application/json", PROMETHEUS_MEDIA_TYPE]) ===
+    PROMETHEUS_MEDIA_TYPE
+  );
+}
+
+/**
+ * A queue's demand as the wire carries it: `getDemand()` with the name, at the
+ * default cap. The routes take no cap from the caller (plan §6.4 D3).
+ */
+async function demandOf(
+  queue: BunQueue<any, any, any>,
+): Promise<QueueDemandDto> {
+  const demand = await queue.getDemand();
+  return { queue: queue.name, ...demand };
+}
+
+/**
+ * Answers a demand route with the text exposition, writing the response
+ * itself. Varies by `Accept`, which chose it when `format` did not.
+ */
+function sendExposition(
+  res: BunResponse,
+  ns: string,
+  demands: readonly QueueDemandDto[],
+  truncated = false,
+): Record<string, never> {
+  res.setHeader("Content-Type", PROMETHEUS_CONTENT_TYPE);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Vary", "Accept");
+  res.status(200);
+  res.send(renderDemandExposition(ns, demands, { truncated }));
+  return {};
+}
+
+/**
+ * A sample of the exposition, for the docs: the renderer's own output for one
+ * queue, so the example cannot drift from what is served.
+ */
+const DEMAND_EXPOSITION_EXAMPLE = renderDemandExposition("shop", [
+  {
+    queue: "emails",
+    at: 0,
+    paused: false,
+    waiting: 12,
+    dueNow: 3,
+    stalled: 0,
+    active: 1,
+    workers: 0,
+    nextDueAt: null,
+    demand: 15,
+    outstanding: 16,
+    capped: false,
+    exact: true,
+  },
+]);
+
+/** The families of every demand scrape, named once for the docs. */
+const DEMAND_FAMILIES = [...DEMAND_METRICS, DEMAND_TRUNCATED_METRIC]
+  .map((metric) => `\`${metric.name}\``)
+  .join(", ");
+
+/** The other representation both demand routes serve. */
+const DEMAND_ALTERNATES = {
+  [PROMETHEUS_MEDIA_TYPE]: {
+    description: `The Prometheus text exposition: ${DEMAND_METRICS.length + 1} gauge families (${DEMAND_FAMILIES}). Each per-queue sample is labelled \`ns\` and \`queue\`; \`${DEMAND_TRUNCATED_METRIC.name}\` is one sample labelled \`ns\`, 1 when \`GET /demand\` left visible queues out (always 0 on the per-queue route), since an absent series reads as 0 to many scalers. \`bunjobs_queue_demand_exact\` is 0 where the figures come from the approximate fallback. Served as \`text/plain; version=0.0.4; charset=utf-8\` for \`?format=prometheus\`, or an \`Accept\` preferring \`text/plain\`.`,
+    example: DEMAND_EXPOSITION_EXAMPLE,
+  },
+} as const;
+
+/** What both demand routes say about their figures, once. */
+const DEMAND_NOTE = `A few bounded reads per queue on every built-in driver, never a scan of retained history; each figure is counted up to ${DEFAULT_DEMAND_CAP.toLocaleString("en-US")} (\`DEFAULT_DEMAND_CAP\`, fixed: the routes take no \`cap\`), and \`capped\` says when one went past. Unlike \`/counts\`, due delayed jobs, due retries and stalled jobs are counted, and a paused queue answers \`demand\` and \`outstanding\` as \`0\` over its unchanged backlog, so one number is the answer. Point a launch-style scaler (a KEDA \`ScaledJob\`, an ACA event job) at \`demand\`, a scale-style one (a KEDA \`ScaledObject\`, CREMA) at \`outstanding\`. \`exact\` is \`false\` only on a custom driver without \`countDemand\`, whose fallback is right as a trigger and approximate as a count; it is the only signal of approximate figures (\`features.demand\` says only that these routes are served).\n\n\`?format=prometheus\` (or an \`Accept\` preferring \`text/plain\`) answers the Prometheus text exposition instead of JSON; errors are \`application/problem+json\` either way. Listing the live workers removes lapsed worker records where the backend prunes them, as \`GET /workers\` does; no job is touched.`;
+
 /** Errors every route naming a queue can answer with. */
 const QUEUE_ERRORS = ["INVALID_NAME", "QUEUE_NOT_FOUND"] as const;
 
@@ -586,6 +686,67 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
     }),
     defineRoute({
       method: "GET",
+      path: "/demand",
+      operationId: "listQueueDemand",
+      action: "queues.list",
+      mode: "jobs",
+      summary: "Demand of several queues, or the namespace as one scrape",
+      description: `Each queue's \`GET /queues/{queue}/demand\` answer, read 16 at a time: the queues \`queues\` names, in that order, or every visible queue by name, at most \`limits.maxQueues\` (\`truncated\` says when there were more). A name the caller cannot see — unknown, outside the \`queues\` allowlist, or, with \`listQueues: "authorized"\`, refused \`queues.read\` (asked as \`GET /queues/{queue}\` would ask, one call per queue) — is left out, never an error; a scaler that must fail on a missing queue reads \`GET /queues/{queue}/demand\`, which is 404.\n\n${DEMAND_NOTE}`,
+      tags: ["Queues"],
+      query: queueDemandListQuerySchema(limits.maxQueues),
+      responses: { 200: QueueDemandListSchema },
+      alternateContent: DEMAND_ALTERNATES,
+      handler: async ({ req, res, query, services }) => {
+        let names: string[];
+        let truncated = false;
+        if (query.queues !== undefined) {
+          // Asked for by name: kept in the order asked, once each, and only
+          // where reachable. A miss is checked against the backend as
+          // `GET /queues/{queue}` checks it, at most once per cache window.
+          const asked = [...new Set(query.queues)];
+          // The bound is on distinct names, so it is checked here rather
+          // than by the schema, which would count a repeat.
+          if (asked.length > limits.maxQueues) {
+            const message = `At most ${limits.maxQueues} distinct queues may be named (\`limits.maxQueues\`), got ${asked.length}`;
+            throw new ApiError("VALIDATION", 400, message, {
+              issues: [{ target: "query", path: "queues", message }],
+            });
+          }
+          const reachable = await mapBounded(
+            asked,
+            async (name) => await services.queues.has(name),
+          );
+          names = await visibleQueueNames(
+            services,
+            req,
+            asked.filter((_, index) => reachable[index]),
+          );
+        } else {
+          names = await visibleQueueNames(
+            services,
+            req,
+            await services.queues.names(),
+          );
+          truncated = names.length > limits.maxQueues;
+          names = names.slice(0, limits.maxQueues);
+        }
+        const queues = await mapBounded(
+          names,
+          async (name) => await demandOf(await services.queues.get(name)),
+        );
+        if (wantsExposition(req, query.format)) {
+          return sendExposition(
+            res,
+            services.config.namespace,
+            queues,
+            truncated,
+          );
+        }
+        return { body: { queues, truncated }, headers: { Vary: "Accept" } };
+      },
+    }),
+    defineRoute({
+      method: "GET",
       path: "/queues/:queue",
       operationId: "getQueue",
       action: "queues.read",
@@ -644,6 +805,31 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         const at = Date.now();
         const counts = await queue.countAdded(range);
         return { body: addedBody(range, at, [counts], 1) };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/queues/:queue/demand",
+      operationId: "getQueueDemand",
+      action: "queues.read",
+      mode: "jobs",
+      summary:
+        "How much work one queue has for a worker: the depth a scaler polls",
+      description: DEMAND_NOTE,
+      tags: ["Queues"],
+      params: QueueParams,
+      query: QueueDemandQuerySchema,
+      responses: { 200: QueueDemandSchema },
+      alternateContent: DEMAND_ALTERNATES,
+      errors: QUEUE_ERRORS,
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ req, res, params, query, services }) => {
+        const queue = await services.queues.get(params.queue);
+        const demand = await demandOf(queue);
+        if (wantsExposition(req, query.format)) {
+          return sendExposition(res, services.config.namespace, [demand]);
+        }
+        return { body: demand, headers: { Vary: "Accept" } };
       },
     }),
     defineRoute({

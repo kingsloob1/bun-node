@@ -1684,14 +1684,23 @@ action is `queues.summon` (S17).
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| `GET` | `/queues/:queue/demand` | `queues.read` | `QueueDemandDto` as JSON. With `?format=prometheus` or `Accept: text/plain`, the exposition below |
-| `GET` | `/demand` | `queues.list`, then per queue `queues.read` when `listQueues: "authorized"` | `{ queues: QueueDemandDto[] }`, for `?queues=a,b` or every queue. `?format=prometheus` gives one scrape for the namespace |
+| `GET` | `/queues/:queue/demand` | `queues.read` | `QueueDemandDto` as JSON. With `?format=prometheus` or `Accept: text/plain`, the exposition below. Operation `getQueueDemand`; an unknown queue is 404 `QUEUE_NOT_FOUND` |
+| `GET` | `/demand` | `queues.list`, then per queue `queues.read` when `listQueues: "authorized"` | `{ queues: QueueDemandDto[], truncated }`, for `?queues=a,b` or every queue, at most `limits.maxQueues`. `?format=prometheus` gives one scrape for the namespace. Operation `listQueueDemand` |
 | `GET` | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto` (§9.3) |
 | `POST` | `/queues/:queue/summon` | **`queues.summon`** (new) | runs `check({ reason: "manual", force: true })`. `409 SUMMON_NOT_CONFIGURED` when no controller runs in the API's process |
 | `POST` | `/queues/:queue/summon/reset` | `queues.summon` | `reset()`. It works from any process, since the marker lives in the driver |
 
 `QueueDemandDto` is `QueueDemand` (§4.10) with `queue` added. It lives in the
 browser-safe `api/contract/types.ts`, beside `JobCountsDto`.
+
+**As shipped (PR-5, 2026-09-26)** [S]: without `?queues=`, `/demand` reads the
+visible queues by name and sets `truncated` when there were more than
+`limits.maxQueues`; a `?queues=` longer than that is 400. A name in
+`?queues=` that the caller cannot see (unknown, outside the `queues`
+allowlist, or refused `queues.read`) is left out, never an error. A scaler
+that must fail on a missing queue reads the per-queue route, which answers
+404. Neither route takes a `cap` (§6.4 D3), and `?cap=` is ignored like any
+unknown query parameter.
 
 **Auth.** The scaler sends a bearer, an API key, basic auth or mTLS
 [W: keda.sh metrics-api, 2026-09-25]. `createJobsApi` refuses to start
@@ -1703,11 +1712,15 @@ without `authorize` unless `allowUnauthenticated: true` [S, google-azure
 ```ts
 const scalerApi = createJobsApi({
   jobs, basePath: "/scaler", readOnly: true, actions: ["queues.read"],
-  authorize: ({ req }) => req.headers.get("authorization") === `Bearer ${process.env.SCALER_TOKEN}`,
+  authorize: (req) => req.getHeader("authorization") === `Bearer ${process.env.SCALER_TOKEN}`,
 });
 ```
 
-It can read demand and nothing else. `queues.summon` is a write that spends
+`authorize` is `(req, context)`, and a `BunRequest` reads a header with
+`getHeader(name)`; the draft's `({ req }) => req.headers.get(…)` failed with a
+500 [S, corrected 2026-09-26 by PR-5's test of this recipe]. It can read
+demand and nothing else: `/demand` is `queues.list`, which this API does not
+allow. `queues.summon` is a write that spends
 money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS`
 (`api/contract/constants.ts:19-68`), **`JOBS_API_MUTATIONS`** (`:84-117`, so
 `readOnly: true` removes it) and **`JOBS_API_OPT_IN_ACTIONS`** (`:136-144`,
@@ -1715,8 +1728,12 @@ so it is off unless `actions` names it, like `workers.configure`) [D; the
 draft named only the first, and the other two sets are what "granted on
 purpose" means in this code]. The demand routes need no driver feature
 (`countDemand` is optional, with a fallback), so they carry no `requires`;
-`/meta` gains `features.demand` from `DRIVER_FEATURES` (`api/routes/meta.ts:62`)
-saying whether the figures are exact [D].
+`/meta` gains `features.demand`, which says, like every other flag, that the
+routes are served: `DRIVER_FEATURES.demand` is empty, so it is `false` only in
+`runner` mode. Whether an answer's figures are exact is that answer's
+`exact`, the only signal of approximate figures [D; the draft had the flag
+say whether figures are exact, which merged "no routes" with "approximate
+figures"].
 
 ### 6.3 Prometheus exposition: worth it
 
@@ -1731,6 +1748,7 @@ It serves three consumers the JSON cannot:
 It is about 40 lines of text rendering [I]:
 
 ```
+# HELP bunjobs_queue_demand Jobs a worker could claim now: waiting + due + stalled. 0 while the queue is paused.
 # TYPE bunjobs_queue_demand gauge
 bunjobs_queue_demand{ns="shop",queue="emails"} 15
 bunjobs_queue_outstanding{ns="shop",queue="emails"} 16
@@ -1752,6 +1770,25 @@ draft's `bun_jobs_…` names would have sat beside those under a different
 prefix, so the metrics are `bunjobs_queue_*` (§13.9 S12, approved). A `capped` sample
 (`bunjobs_queue_demand_capped`, 0 or 1) says when the figures are lower
 bounds (§6.4).
+
+**As shipped (PR-5, 2026-09-26)** [S]: each family is one group with its own
+`# HELP` and `# TYPE … gauge` lines (the sample above shows one family's; the
+format requires them per family), label values escape `\`, `"` and line
+feed, and the body ends with a line feed. There are **11 families**: the eight
+above, `bunjobs_queue_demand_capped`, `bunjobs_queue_demand_exact` (0 when the
+figures come from the fallback, so a scaler can see what JSON's `exact`
+says), and the namespace-level `bunjobs_demand_truncated{ns}` (1 when
+`GET /demand` left visible queues out past `limits.maxQueues`, always 0 on the
+per-queue route) — added after #193's review: many scalers read an absent
+series as 0, so a silently cut scrape would scale to zero over a backlog. `Content-Type` is `text/plain;
+version=0.0.4; charset=utf-8`. Content negotiation offers `text/plain;
+version=0.0.4`, so `Accept: text/plain`, `text/plain;version=0.0.4` and a
+Prometheus server's scrape header select the exposition; no `Accept`, `*/*`, a
+browser's header, and an `Accept` naming only `text/plain;version=1.0.0` get
+JSON, never 406. `?format=` overrides `Accept` both ways. KEDA is expected to
+work through `?format=prometheus`, since its docs name no `Accept` header it
+sends, with `valueLocation: bunjobs_queue_demand` on the per-queue route, which
+holds one sample per family [U: not verified against KEDA; Q13 stands].
 
 ### 6.4 `countDemand`: the driver method, specified before code
 
@@ -3310,7 +3347,8 @@ run-all.ts` in `examples/bun-jobs-ui`.
   namespace route `GET /demand` [S11]; `QueueDemandDto`
   (`api/contract/types.ts`, beside `JobCountsDto` `:783`); its schema; a small
   Prometheus renderer (`api/prometheus.ts`, new) [S12]; `DRIVER_FEATURES` and
-  `/meta` `features.demand` (`api/routes/meta.ts:62`); the OpenAPI lists.
+  `/meta` `features.demand` (`api/routes/meta.ts:62`; the routes are served,
+  `false` only in `runner` mode, §6.2); the OpenAPI lists.
 - **Ships.** Model (b), §2.2, for every platform that polls a metric.
 - **Tests.** Route and auth (`queues.read`; `listQueues: "authorized"`
   filtering `/demand`); JSON and `?format=prometheus`/`Accept: text/plain`;
