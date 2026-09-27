@@ -39,8 +39,13 @@ import type {
   RunnerStatus,
   TriggerOutcome,
 } from "./types";
-import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
+import {
+  deserializeError,
+  serializeError,
+  withTimeout,
+} from "@kingsleyweb/bun-common";
 import { readHistoryPage } from "../drivers/runHistory";
+import { collationKeysForRuns } from "../drivers/sql/sql-driver";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, RunnerStoppedError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
@@ -74,6 +79,15 @@ import { RunLogCapture } from "./runLogCapture";
 
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
+
+/**
+ * How long a spawned or worker run waits, at most, for the runner's check of
+ * its SQL tables' collation (`collationKeysForRuns`) before starting without
+ * it — in which case the run's own driver checks, as it would unaided. The
+ * check is one catalog query, started by `start()`, so a run normally finds
+ * it long finished; the bound is for a server the parent cannot reach.
+ */
+const COLLATION_CHECK_WAIT = 2_000;
 
 /**
  * How many times a paused drain peeks again after losing a forced head to
@@ -255,11 +269,18 @@ export class BunRunner<
   #drainingQueued: Promise<void> | undefined;
   /** Ends the `control` subscription, while `control` holds one. */
   #unsubscribeControl: (() => Promise<void>) | undefined;
+  /**
+   * The SQL tables whose collation this runner has checked, as guard keys,
+   * once asked for: handed to spawned and worker runs so their drivers do not
+   * repeat the warning. See {@link collationKeysForRuns}.
+   */
+  #collationKeys: Promise<string[]> | undefined;
 
   constructor(options: BunRunnerOptions<TArgs>) {
     super();
 
-    const { resolved, driver, ownsDriver } = resolveRunnerOptions(options);
+    const { resolved, driver, ownsDriver, logger } =
+      resolveRunnerOptions(options);
 
     this.options = resolved;
     this.id = resolved.id;
@@ -272,11 +293,7 @@ export class BunRunner<
     this.#paused = resolved.startPaused;
     this.#schedule = resolved.schedule;
     this.#publishGate = options.publishGate;
-    this.#logger = createJobsLogger(
-      options.logger,
-      { namespace: resolved.namespace, runnerId: resolved.id },
-      resolved.name,
-    );
+    this.#logger = logger;
 
     this.#executionMode = resolved.executionMode;
     this.#runMode = resolved.runMode;
@@ -397,6 +414,10 @@ export class BunRunner<
     }
 
     await this.driver.connect();
+    // Checks `childDriver`'s tables now, if they are not the driver's own, so
+    // a drifted collation is warned about here, once, rather than by every
+    // spawned run. Not awaited: it never throws, and a run waits for it.
+    void this.#collationKeysForRuns();
 
     const state = await this.#readState();
     // A paused flag or an updated schedule set elsewhere wins over the
@@ -1594,8 +1615,33 @@ export class BunRunner<
     }
   }
 
+  /**
+   * The guard keys a spawned or worker run's driver can skip the collation
+   * warning for, checked once per runner.
+   */
+  async #collationKeysForRuns(): Promise<string[]> {
+    this.#collationKeys ??= collationKeysForRuns(
+      this.driver,
+      this.options.childDriver,
+      this.#logger,
+    );
+    return await this.#collationKeys;
+  }
+
   /** Starts a run and tracks it until it settles. */
   async #startRun(args: TArgs | undefined, source: RunSource): Promise<string> {
+    // Before anything is recorded, so the wait cannot come between the
+    // record's mode and the executor that runs it. Only an isolated run
+    // builds a driver of its own; an in-process one shares this process's
+    // warning guard. Past the wait, the run's driver checks for itself.
+    const collationChecked =
+      this.#executionMode === "in-process"
+        ? undefined
+        : await withTimeout(
+            this.#collationKeysForRuns(),
+            COLLATION_CHECK_WAIT,
+          ).catch(() => undefined);
+
     const runId = newId();
     const startedAt = Date.now();
 
@@ -1643,6 +1689,7 @@ export class BunRunner<
       killTimeout: this.options.killTimeout,
       waitToExit: this.options.waitToExit,
       forwardLogs: this.options.forwardLogs,
+      ...(collationChecked?.length ? { collationChecked } : {}),
       // A run sharing a console — in-process, or a worker's realm — has no
       // pipes, so its console calls are captured by async context instead
       // (`consoleCapture.ts`). A spawned run's console is in its pipes.

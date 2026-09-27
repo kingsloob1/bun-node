@@ -287,6 +287,21 @@ async function execute(
   transport.send({ t: "started", runId: ctx.runId });
 
   const invoke = async (): Promise<unknown> => {
+    // Tables the runner already checked for collation drift: a driver the
+    // handler builds over them (`jobsFromContext(ctx)`) stays silent instead
+    // of repeating the runner's warning into this run's log. Recorded before
+    // the handler is imported; advice, so it can never fail the run. Imported
+    // on demand, like capture below: only a run over SQL tables carries keys,
+    // and it loads the SQL driver anyway, while every other spawn keeps its
+    // module graph (`fix-runner-child.test.ts`).
+    if (ctx.collationChecked?.length) {
+      await import("../../drivers/sql/collation-guard")
+        .then(({ noteCollationChecked }) => {
+          noteCollationChecked(ctx.collationChecked ?? []);
+        })
+        .catch(() => undefined);
+    }
+
     const module: unknown = await import(ctx.file);
     return ctx.kind === "job" && ctx.job
       ? await toHandler(

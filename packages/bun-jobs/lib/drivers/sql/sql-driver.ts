@@ -19,6 +19,7 @@ import type {
   ClearJobLogsResult,
   DemandCounts,
   DriverCapabilities,
+  DriverConfig,
   DriverEvent,
   EditableJobOptionKey,
   EventKind,
@@ -180,6 +181,7 @@ import { pageRunHistory } from "../runHistory";
 import { emptyRunLog, runLogBytes } from "../runLogs";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
+import { claimCollationWarning } from "./collation-guard";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import {
   BUSYNESS_COLUMNS,
@@ -1149,17 +1151,23 @@ export interface SqlDriverOptions extends ConnectionInput {
    * to bun-common's console logger at `info`. Records carry `driver: "sql"`
    * and `adapter` as bindings.
    *
-   * Its one record today is a `warn` on connect, once per connect, when an
-   * identifier column of an existing table (an id, a queue or state name, a
-   * key, a namespace) compares in a collation other than the one this driver
-   * declares — a MySQL or MariaDB table created by a version from before
-   * identifiers were declared binary. Such a table treats `Report` and
+   * Its one record today is a `warn` on connect when an identifier column of
+   * an existing table (an id, a queue or state name, a key, a namespace)
+   * compares in a collation other than the one this driver declares — a
+   * MySQL or MariaDB table created by a version from before identifiers were
+   * declared binary. Such a table treats `Report` and
    * `report` as one key, and its prefix listings can come back empty. The
    * warning names each table and column, the collation found and expected,
    * and the fix, `syncSchema({ alterColumns: true })`, which rewrites the
    * table under a lock. It is still given with `syncSchema: true` when
    * `alterColumns` is not set, since that sync leaves those columns as they
    * are. Type differences never trigger it; they cost speed, not answers.
+   *
+   * Given once per process for a set of tables — the server's host and port,
+   * the database and the table names, never the credentials — however many
+   * drivers connect to them; a different database or prefix warns once of its
+   * own. A runner's spawned and worker runs inherit what their runner checked,
+   * so they do not repeat it either.
    *
    * Pass bun-common's `noopLogger`, or a logger whose level is `error`, to
    * silence it — for a deployment that knows and has scheduled the rewrite.
@@ -1197,6 +1205,132 @@ const DEFAULT_PORTS: Record<SqlAdapter, number> = {
   mariadb: 3306,
   sqlite: 0,
 };
+
+/** A driver's guard key; assigned in {@link SqlDriver}'s static block. */
+let guardKeyOf: (driver: SqlDriver) => string;
+/** Runs a driver's read-only collation check; assigned in its static block. */
+let inspectCollation: (driver: SqlDriver) => Promise<void>;
+
+/** Instance numbers for clients whose target cannot be read. */
+const anonymousClients = new WeakMap<SQL, number>();
+/** The last instance number handed out in `anonymousClients`. */
+let anonymousClientCount = 0;
+
+/**
+ * The guard key for a driver's tables (see `collation-guard.ts`): the engine,
+ * host, port and database the client reports, then every resolved table name.
+ *
+ * Read from the client rather than the options so a URL, connection fields
+ * and a shared `sql` client all name a server the same way, with its default
+ * port filled in. Never the user, password or parameters. A client that
+ * reports no target keys by instance, so it can only ever match itself.
+ */
+function collationGuardKey(
+  adapter: SqlAdapter,
+  sql: SQL,
+  tables: Record<SqlTable, string>,
+): string {
+  const client = (
+    sql as {
+      /** What Bun's client was configured with. */
+      options?: {
+        /** The server's host, as configured. */
+        hostname?: string;
+        /** The server's port, defaulted by the client. */
+        port?: number | string;
+        /** The database. */
+        database?: string;
+        /** SQLite's file. */
+        filename?: string;
+      };
+    }
+  ).options;
+
+  let target: string;
+  if (client?.filename !== undefined) {
+    target = String(client.filename);
+  } else if (client?.hostname !== undefined) {
+    target = `${client.hostname.toLowerCase()}:${String(client.port ?? "")}/${String(client.database ?? "")}`;
+  } else {
+    let id = anonymousClients.get(sql);
+    if (id === undefined) {
+      id = ++anonymousClientCount;
+      anonymousClients.set(sql, id);
+    }
+    target = `client-${id}`;
+  }
+
+  return `${adapter}://${target}#${SQL_TABLES.map((table) => tables[table]).join(",")}`;
+}
+
+/**
+ * The guard keys a runner hands its spawned and worker runs, so the driver a
+ * run builds from `ctx.driverConfig` does not repeat a collation warning its
+ * runner already gave — once into every run's log.
+ *
+ * - The runner's own driver, when it is a SQL driver: connecting it checked.
+ * - The `childDriver` config's tables, when they are MySQL or MariaDB ones:
+ *   the same key needs nothing more; a different one — another database,
+ *   prefix or server — is checked here, once, read-only (no table is created
+ *   or changed), with the warning going to `logger`.
+ *
+ * A config whose connect would repair the drift itself (`syncSchema` with
+ * `alterColumns`, not `dryRun`) is not checked, and neither is one this
+ * process cannot reach: the run's driver then checks for itself, as it would
+ * with no runner in between. Never throws.
+ *
+ * Used by `BunRunner`; not part of the public API.
+ *
+ * @internal
+ */
+export async function collationKeysForRuns(
+  driver: JobsDriver,
+  childDriver: DriverConfig | undefined,
+  logger: LoggerLike,
+): Promise<string[]> {
+  const keys = new Set<string>();
+  const own = driver instanceof SqlDriver ? guardKeyOf(driver) : undefined;
+  if (own !== undefined) {
+    keys.add(own);
+  }
+
+  if (childDriver?.type !== "sql") {
+    return [...keys];
+  }
+
+  let probe: SqlDriver | undefined;
+  try {
+    const adapter = childDriver.adapter ?? detectAdapter(childDriver.url);
+    const sync = childDriver.syncSchema;
+    if (
+      (adapter !== "mysql" && adapter !== "mariadb") ||
+      (typeof sync === "object" && sync.alterColumns && !sync.dryRun)
+    ) {
+      return [...keys];
+    }
+
+    probe = new SqlDriver({
+      url: childDriver.url,
+      connection: childDriver.connection,
+      adapter,
+      tablePrefix: childDriver.tablePrefix,
+      tables: childDriver.tables,
+      notify: false,
+      logger,
+    });
+    const key = guardKeyOf(probe);
+    if (key !== own) {
+      await inspectCollation(probe);
+    }
+    keys.add(key);
+  } catch {
+    // Unreachable or misconfigured from here: the run's driver checks itself.
+  } finally {
+    await probe?.close().catch(() => undefined);
+  }
+
+  return [...keys];
+}
 
 export class SqlDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
@@ -1246,6 +1380,11 @@ export class SqlDriver implements JobsDriver {
   readonly #syncOnConnect: boolean | SchemaSyncOptions;
   /** Where connect's schema warnings go: see {@link SqlDriverOptions.logger}. */
   readonly #logger: Logger;
+  /**
+   * Names this driver's server, database and tables for the process-wide
+   * once-only collation warning — see `collation-guard.ts`. No credentials.
+   */
+  readonly #guardKey: string;
   /** Arrival notifications, where the engine can push them. */
   readonly #arrivals: Arrivals;
   /** Rows written since the planner's statistics were last refreshed. */
@@ -1472,6 +1611,7 @@ export class SqlDriver implements JobsDriver {
     this.#ownsConnection = !options.sql;
 
     this.#sql = options.sql ?? this.#openClient(options);
+    this.#guardKey = collationGuardKey(this.adapter, this.#sql, this.#tables);
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
     this.#syncOnConnect = options.syncSchema ?? false;
@@ -7433,7 +7573,10 @@ export class SqlDriver implements JobsDriver {
    * connection.
    */
   #warnCollationDrift(drift: readonly CollationDrift[]): void {
-    if (drift.length === 0) {
+    // Once per process per set of tables: every later connect over the same
+    // ones — another driver, a reconnect, a run whose runner already checked —
+    // would only repeat it.
+    if (drift.length === 0 || !claimCollationWarning(this.#guardKey)) {
       return;
     }
 
@@ -7443,6 +7586,24 @@ export class SqlDriver implements JobsDriver {
     } catch {
       // The warning is advice; the connect it rides on has succeeded.
     }
+  }
+
+  /**
+   * The collation half of connecting, alone: reads the existing tables'
+   * columns and warns as connecting would, creating and changing nothing.
+   * For a runner checking the tables its runs will use, from the parent.
+   */
+  async #inspectCollation(): Promise<void> {
+    const definition = schemaDefinition(this.#tables, this.dialect);
+    const columns = await this.#existingColumns(definition.tables);
+    this.#warnCollationDrift(
+      collationDrift(this.dialect, definition.tables, columns),
+    );
+  }
+
+  static {
+    guardKeyOf = (driver) => driver.#guardKey;
+    inspectCollation = async (driver) => await driver.#inspectCollation();
   }
 
   /** Creates the schema and applies any connection pragmas. */
@@ -7495,8 +7656,9 @@ export class SqlDriver implements JobsDriver {
       // against what is there and has nothing to say about what is not.
       //
       // Identifier columns in the wrong collation return wrong answers, so
-      // they are warned about on every connect until repaired. Without a sync,
-      // from the columns already read; tables created just now are correct by
+      // every connect checks until repaired (and warns the first time in the
+      // process: `#warnCollationDrift`). Without a sync, from the columns
+      // already read; tables created just now are correct by
       // construction, and had no columns to read. With one, from what the sync
       // left undone — which is all of it unless `alterColumns` was set, since
       // the repair is the blocking rewrite a plain sync declines.

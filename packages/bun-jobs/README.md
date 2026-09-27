@@ -5634,9 +5634,10 @@ gives wrong answers: `Report` and `report` are one job id or one key, and
 because that collation sorts `;` before `:`.
 
 So when the driver connects it compares its identifier columns with what it
-would create. If any differ it logs **one `warn` per connect**, however many
-tables are affected. The warning names each table and column, the collation
-found and the one expected, and the fix:
+would create. If any differ it logs **one `warn`**, however many tables are
+affected, and only the first time in the process for those tables. The
+warning names each table and column, the collation found and the one
+expected, and the fix:
 
 ```ts
 await driver.syncSchema({ dryRun: true }); // see the statements first
@@ -5654,6 +5655,19 @@ await driver.syncSchema({ alterColumns: true }); // rewrites each table under a 
 - With `syncSchema: true` the warning still fires, because a plain sync
   declines the blocking rewrite. It stops once the rewrite has run, whether
   through `syncSchema: { alterColumns: true }` on connect or a call.
+- It fires once per process per set of tables, not once per connect. The
+  tables are keyed by the server's host and port, the database and the table
+  names (the prefix, plus any `tables` overrides), never the credentials. A
+  second driver over the same tables, or a reconnect, stays silent. A
+  different database or prefix gets its own warning. Hosts compare as written,
+  so `localhost` and `127.0.0.1` count as two.
+- A runner's `child-process` and `worker-thread` runs do not repeat it. The
+  runner checks its own driver's tables on connect and, when `childDriver`
+  names other tables, checks those once at `start()`, read-only. Each run is
+  told which tables were checked, so the driver that `jobsFromContext(ctx)`
+  builds stays silent and the warning never lands in a run's log. If the
+  runner cannot reach the `childDriver` tables, a run's driver checks them
+  itself. An `in-process` run uses the runner's own driver.
 - It never fires on Postgres or SQLite. The driver has never declared a
   column collation there. Postgres equality is exact under any deterministic
   collation, and every ordering and range the driver runs names `COLLATE "C"`
