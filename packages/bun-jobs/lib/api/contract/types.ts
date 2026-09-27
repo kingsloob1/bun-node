@@ -12,6 +12,9 @@ import type {
   RunLogLevel,
   RunLogStream,
   RunnerConfigKey,
+  SummonOutcomeKind,
+  SummonReason,
+  SummonSkipReason,
   WorkerConfigKey,
   WorkerControlAction,
   WorkerControlMode,
@@ -1081,6 +1084,269 @@ export interface QueueDemandListDto {
 }
 
 /* ------------------------------------------------------------------ *
+ * Summoning: a queue's summon status, "summon now" and reset
+ * ------------------------------------------------------------------ */
+
+/** Who the provider behind a summoner is. Mirrors `ProviderIdentity`. */
+export interface SummonProviderDto {
+  /**
+   * The provider's unique name: its npm package name, optionally with a
+   * `:variant`. `"custom:" + kind` for one made by `defineSummoner`. Never
+   * parse it.
+   */
+  name: string;
+  /** The provider's own version, semver. `"0.0.0"` for a `defineSummoner` one. */
+  version: string;
+  /** A short label for badges and events, e.g. `"ecs"`, `"fly"`. */
+  kind: string;
+  /** A human name for the UI; show `kind` when absent. */
+  displayName?: string;
+  /** Where its documentation lives. */
+  homepage?: string;
+  /** The plugin API versions it was written against. */
+  apiVersion: {
+    /** The core version, `"major.minor"`. */
+    core: string;
+    /** The summon facet version, when it has one. */
+    summon?: string;
+  };
+}
+
+/** How a summoner's platform dedupes a retried call. Mirrors `SummonDedupe`. */
+export type SummonDedupeDto =
+  | {
+      /** A request token the platform remembers (ECS `clientToken`). */
+      kind: "token";
+      /** The longest key it accepts. */
+      maxLength: number;
+      /** The characters it accepts, as a character-class body. */
+      charset: string;
+      /** What the token is unique within, e.g. `"cluster"`. */
+      scope: string;
+      /** How long the platform remembers it, in ms, when documented. */
+      ttlMs?: number;
+      /** Whether a same-token request with different parameters is an error. */
+      strict: boolean;
+    }
+  | {
+      /** A name the platform will not create twice (a systemd unit). */
+      kind: "name";
+      /** The longest name it accepts. */
+      maxLength: number;
+      /** The characters it accepts, as a character-class body. */
+      charset: string;
+    }
+  | {
+      /** No platform dedupe: the marker's compare-and-set is the whole guard. */
+      kind: "none";
+    };
+
+/** What a summoner declares it can do. Mirrors `SummonCapabilities`. */
+export interface SummonCapabilitiesDto {
+  /**
+   * How it starts compute: `"launch"` starts new units, `"scale"` sets a
+   * count, `"wake"` starts one of a fixed pool.
+   */
+  style: "launch" | "scale" | "wake";
+  /** How the platform dedupes a retried call. */
+  dedupe: SummonDedupeDto;
+  /** How per-attempt values reach the process: `"argv"`, or `"none"`. */
+  passes: "argv" | "none";
+  /** The default time an attempt counts as a worker on its way, in ms. */
+  bootBudgetMs: number;
+  /** What the platform sends to stop a unit, and how long it waits. */
+  shutdown: {
+    /** The stop signal; `"none"` for an in-invocation platform. */
+    signal: "SIGTERM" | "SIGINT" | "none";
+    /** The grace after the signal, in ms. */
+    graceMs: number;
+    /** The most the platform allows the grace to be raised to, when known. */
+    graceMaxMs?: number;
+  };
+  /** The platform's own cap on one unit's life, in ms, or `null` for none known. */
+  maxLifetimeMs: number | null;
+  /** Whether the summoner maps the requested lifetime onto the platform's cap. */
+  enforcesLifetime: boolean;
+  /** The most units one call may start, when the platform limits it. */
+  maxCountPerCall?: number;
+  /** `"wake"` only: how many units the pool has. */
+  poolSize?: number;
+}
+
+/** One summon attempt in flight. Mirrors `PendingSummon`. */
+export interface PendingSummonDto {
+  /** The attempt's id: what the summoned worker's `summon.id` will say. */
+  id: string;
+  /** When it was claimed, epoch ms. */
+  at: number;
+  /**
+   * When it stops counting as a worker on its way, epoch ms: past it, with no
+   * worker registered, the attempt is `lost`.
+   */
+  until: number;
+  /** How many workers it asked for. */
+  count: number;
+  /** The summoner's kind. */
+  kind: string;
+  /**
+   * The platform's identifiers for what it started (task ARNs, a machine
+   * id). Infrastructure detail, so omitted unless the server enables
+   * `serialize.exposeSummonHandles` (default `false`).
+   */
+  handles?: string[];
+}
+
+/** The most recent outcome on a queue's summon state. Mirrors `SummonLastOutcome`. */
+export interface SummonLastOutcomeDto {
+  /** The attempt it concerns; `""` for an outcome no attempt owns (`budget-exhausted`, `released`). */
+  id: string;
+  /** What happened. Show an outcome you do not know as the raw string. */
+  outcome: SummonOutcomeKind;
+  /** When, epoch ms. */
+  at: number;
+  /** A short, secret-free explanation: an error name, a platform reason. */
+  detail?: string;
+}
+
+/**
+ * A queue's summon status: `GET /queues/{queue}/summon` (operation
+ * `getQueueSummon`, action `queues.read`), and what `POST
+ * /queues/{queue}/summon/reset` answers after the reset. Mirrors
+ * `SummonStatus`: the queue's shared summon state (read from the backend,
+ * so the same from every process) plus the local controller's policy.
+ *
+ * Answered only where a summon controller for the queue runs in the API's
+ * process (`BunJobsOptions.summon` or `jobs.summonController()` on the
+ * `jobs` the API was given); elsewhere 409 `SUMMON_NOT_CONFIGURED`.
+ */
+export interface SummonStatusDto {
+  /** The queue. */
+  queue: string;
+  /**
+   * Whether the controller runs in the API's process. **Always `true`
+   * today**: status and reset both need a controller in the API's process,
+   * and answer 409 `SUMMON_NOT_CONFIGURED` without one. A read of a queue
+   * whose controller runs elsewhere (`false`, from the shared state alone) is
+   * a recorded follow-up (plan §13.7, "As built").
+   */
+  local: boolean;
+  /**
+   * Whether that controller is inert: it summons nothing, and "summon now"
+   * answers `{ action: "skipped", reason: "inert" }`.
+   */
+  inert: boolean;
+  /**
+   * Why it is inert: `"summoned-process"` (the API's process was itself
+   * summoned, or is a runner child, and the policy has no `fromSummoned`) or
+   * `"newer-marker"` (a newer bun-jobs wrote the queue's summon state).
+   */
+  inertReason?: "summoned-process" | "newer-marker";
+  /** The summoner: who provides it, what it declares, and its facts. */
+  summoner?: {
+    /** Who the provider is. */
+    provider: SummonProviderDto;
+    /** What it declares it can do. */
+    capabilities: SummonCapabilitiesDto;
+    /**
+     * Secret-free facts from the summoner's `describe()`: a cluster, a
+     * region, an image. Dropped whatever the summoner says, failing safe: a
+     * fact whose key has, or ends with, a credential word (`token`, `secret`,
+     * `key`, `password`, `passwd`, `pwd`, `credential`, `auth`,
+     * `authorization`, `bearer`, `private`, `cookie`, `session`): `apiKey`,
+     * `apikey`, `sessiontoken` and `secretArn` go, `keyspace` and
+     * `tokenizerModel` stay. Also one whose value holds a URL with userinfo
+     * (`://user:pass@`), and a `host` or
+     * `hostname` fact unless the server enables `serialize.exposeHosts`.
+     */
+    facts: Record<string, string>;
+  };
+  /** Attempts in flight, oldest first. */
+  pending: PendingSummonDto[];
+  /** Consecutive failed or lost attempts; reset by a registration or a reset. */
+  failures: number;
+  /** When the backoff after a failure ends, epoch ms, while one runs. */
+  backoffUntil?: number;
+  /** When the open circuit closes, epoch ms, while it is open. */
+  circuitOpenUntil?: number;
+  /** Attempts used against the budget, this UTC hour and today, with the limits. */
+  budget?: {
+    /** Attempts this hour. */
+    hour: number;
+    /** The hourly limit. */
+    perHour: number;
+    /** Attempts today. */
+    day: number;
+    /** The daily limit. */
+    perDay: number;
+  };
+  /** The most recent outcome. */
+  last?: SummonLastOutcomeDto;
+}
+
+/** `POST /queues/{queue}/summon` body. Optional: `{}` or none is "summon now". */
+export interface SummonNowBody {
+  /**
+   * Skip the cooldown. Defaults to `true`, since "summon now" means now. It
+   * never skips the circuit, the budget, the attempts already on their way
+   * or the compare-and-set that keeps two controllers from summoning twice.
+   */
+  force?: boolean;
+}
+
+/**
+ * What one summon check did: `POST /queues/{queue}/summon` (operation
+ * `summonQueue`, action `queues.summon`). Mirrors `SummonCheckResult`, as one
+ * object:
+ *
+ * - `none`: nothing needs a worker (no demand, or the queue is paused);
+ * - `skipped`: a guard held the attempt back, named by `reason`;
+ * - `summoned`: an attempt was claimed and the summoner called, `id` and
+ *   `outcome` say which and how it answered;
+ * - `released`: a scale-style summoner was set back to zero.
+ *
+ * `demand` is the reading the check decided on, absent only when it read
+ * nothing (`skipped` for `closed` or `inert`).
+ */
+export interface SummonCheckDto {
+  /** What the check did. */
+  action: "none" | "skipped" | "summoned" | "released";
+  /** For `skipped`: which guard held it back. */
+  reason?: SummonSkipReason;
+  /** For `summoned`: the attempt's id. */
+  id?: string;
+  /** For `summoned`: what the summoner answered, or `failed`. */
+  outcome?: SummonOutcomeKind;
+  /** The demand reading it decided on. */
+  demand?: QueueDemandDto;
+}
+
+/**
+ * A `summon` queue event's payload: one summon attempt changed state. What
+ * the controller emits locally, published whatever `publishEvents` says, at
+ * most once per attempt state change and bounded by the summon budget.
+ * Mirrors `SummonEventPayload`.
+ */
+export interface SummonEventDto {
+  /** The attempt's id; `""` for an outcome no attempt owns (`budget-exhausted`, `released`). */
+  id: string;
+  /** What happened to it. Show an outcome you do not know as the raw string. */
+  outcome: SummonOutcomeKind;
+  /** The summoner's kind. */
+  kind: string;
+  /** How many workers it asked for, when known. */
+  count?: number;
+  /**
+   * The platform's identifiers, when the summoner returned some. Omitted
+   * unless the server enables `serialize.exposeSummonHandles`.
+   */
+  handles?: string[];
+  /** Why the check that started it ran. */
+  reason?: SummonReason;
+  /** A short, secret-free explanation. */
+  detail?: string;
+}
+
+/* ------------------------------------------------------------------ *
  * Jobs added over a range, by current state
  * ------------------------------------------------------------------ */
 
@@ -1877,6 +2143,14 @@ export interface WorkerSummonProvenanceDto {
    * Absent when none was requested; never defaulted.
    */
   deadlineAt?: number;
+  /**
+   * The mode the worker **actually runs in**, as `runSummoned` resolved it:
+   * its own option, else the requested `mode`, else `"exit-on-idle"`. So it
+   * may be present with no `mode`. Absent on a worker not run by
+   * `runSummoned`, or too old to say. Show a mode you do not know as the raw
+   * string.
+   */
+  resolvedMode?: "exit-on-idle" | "until-stopped" | "in-invocation";
 }
 
 /** What a worker says about being controlled from outside its process. */

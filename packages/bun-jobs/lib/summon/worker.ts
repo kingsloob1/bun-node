@@ -5,6 +5,7 @@ import type { Logger, LoggerLike } from "../shared/logger";
 import type { WorkerTargetKind } from "../shared/workers";
 import process from "node:process";
 import { readDemand, supportsWorkers } from "../drivers/readApis";
+import { SET_SUMMONED_MODE } from "../queue/BunQueueWorker";
 import { TARGET_CLOSE_GRACE, TARGET_CLOSE_REAP } from "../queue/workerTarget";
 import { DEFAULT_CLOSE_TIMEOUT } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
@@ -1299,6 +1300,11 @@ export async function runSummoned<
       { worker: worker.id },
     );
   }
+
+  // The mode it runs in, on the record beside the mode the summoner asked
+  // for: once, before `run()`, and only on a worker given `summon` (the
+  // worker ignores it otherwise).
+  worker[SET_SUMMONED_MODE](resolved.mode);
 
   return await new SummonedRun(
     worker,

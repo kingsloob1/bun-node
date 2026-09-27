@@ -692,15 +692,17 @@ describe("the generated AsyncAPI document", () => {
     expect(messagesOf(both)).toEqual(
       expect.arrayContaining([
         "queue.repeatScheduled",
+        "queue.summon",
         "runner.killed",
         "runner.logs",
         "subscribe",
       ]),
     );
-    // 21 queue events, 9 runner events (`logs`, the run-log hint, is the
-    // ninth) and 3 worker events.
+    // 22 queue events (`summon`, a summon attempt's state, is the 22nd), 9
+    // runner events (`logs`, the run-log hint, is the ninth) and 3 worker
+    // events.
     expect(messagesOf(both).filter((name) => name.includes("."))).toHaveLength(
-      21 + 9 + 3,
+      22 + 9 + 3,
     );
 
     const jobs = asyncDocumentFor({ mode: "jobs" })!;

@@ -20,8 +20,19 @@ import type {
   SharedRunnerInfo,
 } from "../runner/types";
 import type { RunProgress } from "../shared/progress";
+import type {
+  SummonCapabilities,
+  SummonCheckResult,
+  SummonStatus,
+} from "../summon/types";
 import type { ResolvedJobsApiSerializers } from "./config";
 import type { JobDefaultKey, JobInclude } from "./contract/constants";
+import type {
+  QueueDemandDto,
+  SummonCapabilitiesDto,
+  SummonCheckDto,
+  SummonStatusDto,
+} from "./contract/types";
 import type { EventWire } from "./ws/events";
 import { explicitKeys } from "../queue/jobDefaults";
 import { normalizeExecutionMode } from "../runner/config";
@@ -798,10 +809,22 @@ export function toEventDto(
   options: ResolvedJobsApiSerializers,
 ): EventDto | null {
   const payload = event.payload as Record<string, unknown>;
-  const shaped =
+  let shaped =
     "error" in payload && isSerializedError(payload.error)
       ? { ...payload, error: toErrorDto(payload.error, options) }
       : payload;
+  // A summon's platform handles go out only with `exposeSummonHandles`, as
+  // on the worker record and the status route: a task ARN carries the AWS
+  // account id.
+  if (
+    event.kind === "queue" &&
+    event.type === "summon" &&
+    "handles" in shaped &&
+    !options.exposeSummonHandles
+  ) {
+    const { handles: _handles, ...rest } = shaped;
+    shaped = rest;
+  }
   const dto = {
     v: event.v,
     kind: event.kind,
@@ -812,6 +835,239 @@ export function toEventDto(
     payload: shaped,
   } as EventDto;
   return options.event ? options.event(dto, event, req) : dto;
+}
+
+/**
+ * The words that make a fact's key look like a credential, singular or
+ * plural. A backstop must fail safe, so a key is dropped when any of its
+ * words is one of these (see {@link factKeyWords}) **or** when the whole key,
+ * lower case with its separators removed, ends with one: `apiKey`, `api_key`,
+ * `apikey`, `sessiontoken`, `clientsecret` and `dbPassword` are all dropped,
+ * while `keyspace` and `tokenizerModel` are served. `monkey` is dropped too,
+ * which errs the safe way.
+ */
+const CREDENTIAL_WORDS = [
+  "token",
+  "secret",
+  "key",
+  "password",
+  "passwd",
+  "pwd",
+  "credential",
+  "auth",
+  "authorization",
+  "bearer",
+  "private",
+  "cookie",
+  "session",
+] as const;
+
+/** One of {@link CREDENTIAL_WORDS}, as a whole word, optionally plural. */
+const CREDENTIAL_WORD = new RegExp(`^(?:${CREDENTIAL_WORDS.join("|")})s?$`);
+
+/** A key, joined, that ends with one of {@link CREDENTIAL_WORDS}. */
+const CREDENTIAL_SUFFIX = new RegExp(`(?:${CREDENTIAL_WORDS.join("|")})s?$`);
+
+/**
+ * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@` — in a
+ * fact's value: a connection string with its password in it.
+ */
+const URL_USERINFO = /:\/\/[^/\s]*@/;
+
+/** Fact keys that name a machine, served only with `exposeHosts`. */
+const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
+
+/**
+ * A fact key's words, lower case: split at camelCase humps and at `_`, `-`,
+ * `.` and spaces (`secretArn` → `secret`, `arn`; `API_KEY` → `api`, `key`).
+ */
+function factKeyWords(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * Whether a summoner's `describe()` fact may be served. The contract says
+ * `describe()` is secret-free; this drops what would leak if one were not
+ * (plan §9.3): a key with a credential word in it, a value holding a URL
+ * with userinfo, whatever its key, and a `host` or `hostname` fact unless
+ * `exposeHosts` is on, as a worker's `host` is.
+ */
+export function isServableFact(
+  /** The fact's key. */
+  key: string,
+  /** The fact's value; anything but a string is dropped. */
+  value: unknown,
+  /** Whether hosts are served (`serialize.exposeHosts`). */
+  exposeHosts: boolean,
+): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const words = factKeyWords(key);
+  if (
+    words.some((word) => CREDENTIAL_WORD.test(word)) ||
+    CREDENTIAL_SUFFIX.test(words.join(""))
+  ) {
+    return false;
+  }
+  if (URL_USERINFO.test(value)) {
+    return false;
+  }
+  return exposeHosts || !HOST_FACT_KEYS.has(key.toLowerCase());
+}
+
+/** A summoner's declared capabilities, copied field by field. */
+function toSummonCapabilitiesDto(
+  capabilities: SummonCapabilities,
+): SummonCapabilitiesDto {
+  const { dedupe, shutdown } = capabilities;
+  return {
+    style: capabilities.style,
+    dedupe:
+      dedupe.kind === "token"
+        ? {
+            kind: "token",
+            maxLength: dedupe.maxLength,
+            charset: dedupe.charset,
+            scope: dedupe.scope,
+            ...(dedupe.ttlMs === undefined ? {} : { ttlMs: dedupe.ttlMs }),
+            strict: dedupe.strict,
+          }
+        : dedupe.kind === "name"
+          ? {
+              kind: "name",
+              maxLength: dedupe.maxLength,
+              charset: dedupe.charset,
+            }
+          : { kind: "none" },
+    passes: capabilities.passes,
+    bootBudgetMs: capabilities.bootBudgetMs,
+    shutdown: {
+      signal: shutdown.signal,
+      graceMs: shutdown.graceMs,
+      ...(shutdown.graceMaxMs === undefined
+        ? {}
+        : { graceMaxMs: shutdown.graceMaxMs }),
+    },
+    maxLifetimeMs: capabilities.maxLifetimeMs,
+    enforcesLifetime: capabilities.enforcesLifetime,
+    ...(capabilities.maxCountPerCall === undefined
+      ? {}
+      : { maxCountPerCall: capabilities.maxCountPerCall }),
+    ...(capabilities.poolSize === undefined
+      ? {}
+      : { poolSize: capabilities.poolSize }),
+  };
+}
+
+/**
+ * Shapes a queue's summon status, field by field: a pending attempt's
+ * platform `handles` only with `exposeSummonHandles` (a task ARN carries the
+ * AWS account id), and the summoner's facts without any that could carry a
+ * secret or a machine's name ({@link isServableFact}).
+ */
+export function toSummonStatusDto(
+  status: SummonStatus,
+  options: Pick<
+    ResolvedJobsApiSerializers,
+    "exposeSummonHandles" | "exposeHosts"
+  >,
+): SummonStatusDto {
+  const summoner = status.summoner;
+  const provider = summoner?.provider;
+  return {
+    queue: status.queue,
+    local: status.local,
+    inert: status.inert,
+    ...(status.inertReason === undefined
+      ? {}
+      : { inertReason: status.inertReason }),
+    ...(summoner === undefined || provider === undefined
+      ? {}
+      : {
+          summoner: {
+            provider: {
+              name: provider.name,
+              version: provider.version,
+              kind: provider.kind,
+              ...(provider.displayName === undefined
+                ? {}
+                : { displayName: provider.displayName }),
+              ...(provider.homepage === undefined
+                ? {}
+                : { homepage: provider.homepage }),
+              apiVersion: {
+                core: provider.apiVersion.core,
+                ...(provider.apiVersion.summon === undefined
+                  ? {}
+                  : { summon: provider.apiVersion.summon }),
+              },
+            },
+            capabilities: toSummonCapabilitiesDto(summoner.capabilities),
+            facts: Object.fromEntries(
+              Object.entries(summoner.facts).filter(([key, value]) =>
+                isServableFact(key, value, options.exposeHosts),
+              ),
+            ),
+          },
+        }),
+    pending: status.pending.map((attempt) => ({
+      id: attempt.id,
+      at: attempt.at,
+      until: attempt.until,
+      count: attempt.count,
+      kind: attempt.kind,
+      ...(options.exposeSummonHandles && attempt.handles !== undefined
+        ? { handles: [...attempt.handles] }
+        : {}),
+    })),
+    failures: status.failures,
+    ...(status.backoffUntil === undefined
+      ? {}
+      : { backoffUntil: status.backoffUntil }),
+    ...(status.circuitOpenUntil === undefined
+      ? {}
+      : { circuitOpenUntil: status.circuitOpenUntil }),
+    ...(status.budget === undefined ? {} : { budget: { ...status.budget } }),
+    ...(status.last === undefined
+      ? {}
+      : {
+          last: {
+            id: status.last.id,
+            outcome: status.last.outcome,
+            at: status.last.at,
+            ...(status.last.detail === undefined
+              ? {}
+              : { detail: status.last.detail }),
+          },
+        }),
+  };
+}
+
+/**
+ * Shapes what one summon check did as one object: the variant's fields, and
+ * the demand it decided on with the queue's name, as the demand route
+ * answers it.
+ */
+export function toSummonCheckDto(
+  result: SummonCheckResult,
+  queue: string,
+): SummonCheckDto {
+  const demand: QueueDemandDto | undefined =
+    result.demand === undefined ? undefined : { queue, ...result.demand };
+  return {
+    action: result.action,
+    ...(result.action === "skipped" ? { reason: result.reason } : {}),
+    ...(result.action === "summoned"
+      ? { id: result.id, outcome: result.outcome }
+      : {}),
+    ...(demand === undefined ? {} : { demand }),
+  };
 }
 
 /**
@@ -937,6 +1193,11 @@ export function toWorkerDto(
       ...(summon.deadlineAt === undefined
         ? {}
         : { deadlineAt: summon.deadlineAt }),
+      // What the worker resolved, beside what was asked for: only a mode
+      // string, so it hides nothing and needs no switch.
+      ...(summon.resolvedMode === undefined
+        ? {}
+        : { resolvedMode: summon.resolvedMode }),
     };
   }
   if (worker.config !== undefined) {

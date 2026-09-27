@@ -11,7 +11,7 @@ import type {
   WorkerControlMode,
   WorkerState,
   WorkerStopPersistence,
-  WorkerSummonProvenance,
+  WorkerSummonInfo,
   WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobCursorKey } from "./jobCursor";
@@ -1674,8 +1674,11 @@ export interface WorkerInfo {
    * this field and too old to say. Never defaulted and never `null`: a worker
    * without the option writes nothing. So show absence as "no summon badge",
    * never as a claim that the worker was started some other way.
+   *
+   * `resolvedMode`, when present, is what the worker itself resolved
+   * (`runSummoned`'s mode), beside what the summoner requested (`mode`).
    */
-  summon?: WorkerSummonProvenance;
+  summon?: WorkerSummonInfo;
   /**
    * Its settings: what it runs with, what its own code asked for, and which of
    * them an override replaces. Absent on a worker from before remote

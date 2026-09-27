@@ -3099,6 +3099,12 @@ export class BunQueue<
           event.payload.nextRunAt,
         );
         return;
+
+      // About compute, not a job: the payload is the whole event, and its
+      // `id` is a summon attempt's, so nothing is fetched.
+      case "summon":
+        this.safeEmit("summon", event.payload);
+        return;
     }
 
     // Everything left is about one job, and hands the listener the job itself.

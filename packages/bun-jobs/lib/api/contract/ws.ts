@@ -9,7 +9,7 @@ import type {
   WorkerEventName,
   WorkerState,
 } from "./constants";
-import type { RunProgress } from "./types";
+import type { RunProgress, SummonEventDto } from "./types";
 
 /**
  * The live-events socket's wire protocol as named types: every frame a client
@@ -92,6 +92,11 @@ export interface QueueEventPayloadsWire {
   throttled: { id: string };
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: { key: string; nextRunAt: number };
+  /**
+   * A summon attempt for the queue changed state. About compute, not a job:
+   * its `id` is the attempt's, the envelope has none, and it changes no count.
+   */
+  summon: SummonEventDto;
 }
 
 /** What each runner event carries, by name. */

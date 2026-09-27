@@ -8,6 +8,7 @@ import {
   MemoryDriver,
   runSummoned,
 } from "../lib/index";
+import { SET_SUMMONED_MODE } from "../lib/queue/BunQueueWorker";
 import {
   TARGET_CLOSE_GRACE,
   TARGET_CLOSE_REAP,
@@ -314,6 +315,9 @@ describe("runSummoned with a run() that resolves before ready", () => {
       once: (event: string, listener: () => void) =>
         events.once(event, listener),
       off: (event: string, listener: () => void) => events.off(event, listener),
+      // Where `runSummoned` records the mode it resolved; a stub was given
+      // no `summon`, so, like a real unsummoned worker, it takes nothing.
+      [SET_SUMMONED_MODE]: () => false,
     };
     return {
       worker: stub as unknown as BunQueueWorker<unknown, string>,

@@ -38,6 +38,8 @@ import { setReservedState } from "../queue/windows";
 import { CHILD_ENV } from "../runner/protocol";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, JobsError } from "../shared/errors";
+import { queueEvent } from "../shared/events";
+import { newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
@@ -122,6 +124,18 @@ const DEMAND_EVENTS: ReadonlySet<string> = new Set([
  */
 export const ATTACH_QUEUE: unique symbol = Symbol(
   "bun-jobs: attach a queue to a summon controller",
+);
+
+/**
+ * Internal: the key of the lookup the management API finds a queue's summon
+ * controller with. It answers a controller this context already has — from
+ * the `summon` option or `summonController()` — or `undefined`, and never
+ * builds one (`summonController(queue)` would, from the option). A symbol,
+ * so it adds nothing to the public surface; exported from this module alone
+ * (`BunJobs` answers it), never from the package root.
+ */
+export const FIND_SUMMON_CONTROLLER: unique symbol = Symbol(
+  "bun-jobs: find summon controller",
 );
 
 /**
@@ -333,8 +347,11 @@ export function wireRequest(
  * and a poll (`triggers.poll`), which is the only one that sees a delayed job
  * come due or a dead worker's lock lapse. `check()` runs one on demand.
  *
- * Emits `summon` locally for every attempt that changes state. Built by
- * `jobs.summonController(queue)` or from `BunJobsOptions.summon`, or directly.
+ * Emits `summon` locally for every attempt that changes state, and publishes
+ * it through the driver (whatever `publishEvents` says), where every queue
+ * that subscribes re-emits it and the management API's socket forwards it.
+ * Built by `jobs.summonController(queue)` or from `BunJobsOptions.summon`, or
+ * directly.
  *
  * @throws {ConfigError} at construction on a driver that is not
  *   multi-process, has no queue state or cannot store worker records, and on
@@ -415,6 +432,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #budgetNoted: string | undefined;
   /** When claim-once entries were last swept, epoch ms. */
   #claimsSweptAt = 0;
+  /**
+   * This controller's token on the events it publishes, so every queue
+   * that subscribes — in this process or another — re-emits them, and none
+   * mistakes them for its own.
+   */
+  readonly #origin = newToken();
+  /**
+   * The `summon` events being published, chained so they reach the backend
+   * in the order they happened; `close()` waits for them.
+   */
+  #publishing: Promise<void> = Promise.resolve();
 
   constructor(options: SummonControllerOptions) {
     super();
@@ -1216,11 +1244,15 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           day: marker.budget.day,
           perDay,
         });
-        this.safeEmit("summon", {
+        const exhausted: SummonEventPayload = {
           id: "",
           outcome: "budget-exhausted",
           kind: this.#summoner.provider.kind,
-        });
+        };
+        this.safeEmit("summon", exhausted);
+        // Published like every other outcome: an operator watching another
+        // process is the one who needs to know the jobs are waiting.
+        this.#publish(exhausted);
       }
       return "budget";
     }
@@ -1348,7 +1380,38 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           this.#logger.info(`summon attempt ${event.outcome}`, fields);
       }
       this.safeEmit("summon", event);
+      this.#publish(event);
     }
+  }
+
+  /**
+   * Publishes a `summon` event through the driver, so another process's
+   * queue and the management API's socket hear it (§9.1). Whatever
+   * `publishEvents` says: at most one per attempt state change, bounded by
+   * the budget, and the only audit trail a lost attempt leaves. Never
+   * rejects: a failure is logged.
+   */
+  #publish(event: SummonEventPayload): void {
+    const envelope = queueEvent(
+      {
+        ns: this.namespace,
+        target: this.queue,
+        type: "summon",
+        origin: this.#origin,
+      },
+      event,
+    );
+    this.#publishing = this.#publishing.then(async () => {
+      try {
+        await this.#driver.publish(envelope);
+      } catch (error) {
+        this.#logger.warn("could not publish a summon event", {
+          error,
+          id: event.id,
+          outcome: event.outcome,
+        });
+      }
+    });
   }
 
   /**
@@ -1854,8 +1917,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
   /**
    * Stops the triggers and waits for a check in flight, including its
-   * summoner call (bounded by `summonTimeout`). Leaves the marker as it is.
-   * Idempotent.
+   * summoner call (bounded by `summonTimeout`), and for the `summon` events
+   * it published (for at most `summonTimeout` more; one `warn` if they are
+   * still in flight). Leaves the marker as it is. Idempotent.
    */
   async close(): Promise<void> {
     this.#closed = true;
@@ -1885,5 +1949,25 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#logger.warn("summon events unsubscribe failed", { error });
     });
     await this.#chain;
+    // The last check's events, before whoever closes the driver does — but
+    // bounded, like the summoner call, by `summonTimeout`: a publish that
+    // never settles (a Redis client queueing commands while it reconnects)
+    // must not hold `close()`.
+    const waitMs = this.#policy.summonTimeout;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const published = await Promise.race([
+      this.#publishing.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(resolve, waitMs, false);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!published) {
+      this.#logger.warn(
+        "summon events still publishing at close; not waiting for them",
+        { waitedMs: waitMs },
+      );
+    }
   }
 }

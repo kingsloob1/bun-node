@@ -72,8 +72,12 @@ import {
   QueueListSchema,
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
+  SummonCheckSchema,
+  SummonNowBodySchema,
+  SummonStatusSchema,
   ThroughputSchema,
 } from "../schemas/queues";
+import { toSummonCheckDto, toSummonStatusDto } from "../serialize";
 import { overviewAnalytics, requestedRange, resolveRange } from "./analytics";
 import { defineRoute } from "./define";
 import { DRIVER_FEATURES, driverImplements } from "./meta";
@@ -582,6 +586,21 @@ const DEMAND_NOTE = `A few bounded reads per queue on every built-in driver, nev
 /** Errors every route naming a queue can answer with. */
 const QUEUE_ERRORS = ["INVALID_NAME", "QUEUE_NOT_FOUND"] as const;
 
+/**
+ * Errors every summon route can answer with. `DRIVER_ERROR` (503) is the
+ * backend refusing a read — the membership check, or the controller's
+ * marker read — as after `jobs.close()` closed the driver.
+ */
+const SUMMON_ERRORS = [
+  ...QUEUE_ERRORS,
+  "SUMMON_NOT_CONFIGURED",
+  "DRIVER_ERROR",
+] as const;
+
+/** What every summon route says about where its controller comes from, once. */
+const SUMMON_NOTE =
+  "Served for a queue whose summon controller runs in the API's process: one the `jobs` context the API was given has, from `BunJobsOptions.summon` or `jobs.summonController()`. Elsewhere 409 `SUMMON_NOT_CONFIGURED`; the API never builds one. The summon state itself (attempts in flight, failures, backoff, circuit, budget) lives in the backend, shared by every controller on the queue in any process.";
+
 /** The queue routes: overview, list, detail, counts and queue-wide operations. */
 export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
   const { limits } = config;
@@ -830,6 +849,78 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           return sendExposition(res, services.config.namespace, [demand]);
         }
         return { body: demand, headers: { Vary: "Accept" } };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/queues/:queue/summon",
+      operationId: "getQueueSummon",
+      action: "queues.read",
+      mode: "jobs",
+      summary:
+        "A queue's summon status: attempts in flight, failures, circuit, budget",
+      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, and the summoner — its provider, declared capabilities and secret-free facts. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\n${SUMMON_NOTE}`,
+      tags: ["Queues"],
+      params: QueueParams,
+      responses: { 200: SummonStatusSchema },
+      errors: SUMMON_ERRORS,
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, services }) => {
+        const controller = await services.queues.summonController(params.queue);
+        return {
+          body: toSummonStatusDto(
+            await controller.status(),
+            services.config.serialize,
+          ),
+        };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/queues/:queue/summon",
+      operationId: "summonQueue",
+      action: "queues.summon",
+      mode: "jobs",
+      summary: "Summon now: run one summon check at once",
+      description: `Runs one check of the queue's summon controller now, as \`controller.check({ reason: "manual", force })\`, and answers what it did. \`force\` (default \`true\`) skips the cooldown only: the circuit, the budget, attempts already on their way and live workers still hold an attempt back, answered as \`skipped\` with the guard's \`reason\` — so this never starts compute a queue does not need. A check that summons calls the platform and waits for its answer, up to the policy's \`summonTimeout\`.\n\n\`queues.summon\` is opt-in (off unless \`actions\` names it) and a mutation (\`readOnly\` removes it): it can spend money.\n\n${SUMMON_NOTE}`,
+      tags: ["Queues"],
+      params: QueueParams,
+      body: SummonNowBodySchema,
+      bodyOptional: true,
+      responses: { 200: SummonCheckSchema },
+      errors: SUMMON_ERRORS,
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, body, services }) => {
+        const controller = await services.queues.summonController(params.queue);
+        const result = await controller.check({
+          reason: "manual",
+          force: body.force,
+        });
+        return { body: toSummonCheckDto(result, controller.queue) };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/queues/:queue/summon/reset",
+      operationId: "resetQueueSummon",
+      action: "queues.summon",
+      mode: "jobs",
+      summary: "Clear a queue's summon failures, backoff and open circuit",
+      description: `Resets the queue's shared summon state as \`controller.reset()\` does: consecutive failures to 0, the backoff and an open circuit cleared, attempts in flight kept. Answers the status after it. 409 \`SUMMON_MARKER_CONTENDED\` when other controllers won every write it tried; try again.\n\n\`queues.summon\`, like "summon now": opt-in, and removed by \`readOnly\`.\n\n${SUMMON_NOTE}`,
+      tags: ["Queues"],
+      params: QueueParams,
+      responses: { 200: SummonStatusSchema },
+      errors: [...SUMMON_ERRORS, "SUMMON_MARKER_CONTENDED"],
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, services }) => {
+        const controller = await services.queues.summonController(params.queue);
+        await controller.reset();
+        return {
+          body: toSummonStatusDto(
+            await controller.status(),
+            services.config.serialize,
+          ),
+        };
       },
     }),
     defineRoute({

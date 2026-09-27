@@ -16,6 +16,7 @@ import type {
   SUMMON_ARGS,
   SummonedArgs,
   WorkerInfo,
+  WorkerSummonInfo,
   WorkerSummonProvenance,
 } from "../lib/index";
 import { summonedFromArgs } from "../lib/index";
@@ -45,7 +46,27 @@ assertTrue<Equals<WorkerSummonProvenance["id"], string>>();
 assertTrue<
   Equals<BunQueueWorkerOptions["summon"], WorkerSummonProvenance | undefined>
 >();
-assertTrue<Equals<WorkerInfo["summon"], WorkerSummonProvenance | undefined>>();
+// The record's is the option's plus what the worker resolved itself, which
+// is never an option.
+assertTrue<Equals<WorkerInfo["summon"], WorkerSummonInfo | undefined>>();
+assertTrue<
+  Equals<
+    WorkerSummonInfo["resolvedMode"],
+    "exit-on-idle" | "until-stopped" | "in-invocation" | undefined
+  >
+>();
+assertTrue<
+  Equals<Omit<WorkerSummonInfo, "resolvedMode">, WorkerSummonProvenance>
+>();
+export const noResolvedModeOption: BunQueueWorkerOptions = {
+  ...base,
+  // @ts-expect-error -- resolvedMode is the worker's to report, never an option
+  summon: { id: "a1", resolvedMode: "exit-on-idle" },
+};
+export const recordWithoutMode: WorkerSummonInfo = {
+  id: "a1",
+  resolvedMode: "exit-on-idle",
+};
 assertTrue<
   Equals<ReturnType<typeof summonedFromArgs>, SummonedArgs | undefined>
 >();

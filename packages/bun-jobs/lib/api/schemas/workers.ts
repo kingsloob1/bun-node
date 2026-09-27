@@ -210,6 +210,12 @@ export const WorkerSummonProvenanceSchema = s.named(
             "The latest it should stop, epoch ms, as requested by the summoner. Absent when none was requested, never defaulted.",
         }),
       ),
+      resolvedMode: s.optional(
+        s.enum(["exit-on-idle", "until-stopped", "in-invocation"] as const, {
+          description:
+            'The mode the worker actually runs in, as `runSummoned` resolved it: its own option, else the requested `mode`, else `"exit-on-idle"` — so it may be present with no `mode`. Absent on a worker not run by `runSummoned`, or too old to say. Show a mode you do not know as the raw string.',
+        }),
+      ),
     },
     {
       description:

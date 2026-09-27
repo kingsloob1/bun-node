@@ -3664,6 +3664,78 @@ run-all.ts` in `examples/bun-jobs-ui`.
   `### What each element needs` rows for them (1.5f) are parsed by
   `examples/bun-jobs-ui/04-screens/permissions.ts`.
 - **Risk: low-medium** (contract surface).
+- **As built (PR-6, 2026-09-27)** [S], where the code differs from or adds to
+  the above:
+  - **How the API finds a controller.** Through the `jobs` it was given, by
+    an internal symbol-keyed lookup (`FIND_SUMMON_CONTROLLER`, exported from
+    `lib/summon/controller.ts` only) that answers a controller the context
+    already has and never builds one; `jobs.summonController(queue)` would
+    build one from the `summon` option. An API without `jobs` has none.
+  - **All three routes answer 409 `SUMMON_NOT_CONFIGURED`** without a
+    controller in the API's process, the reset included (the brief's rule;
+    §6.2 said a reset "works from any process"). `SummonStatusDto.local` is
+    therefore always `true` today; a marker-only read for a queue whose
+    controller runs elsewhere is a follow-up. A queue with a controller is
+    reachable (with `queues: "all"`) before its first job; an unknown one is
+    404 as elsewhere.
+  - **"Summon now" is `check({ reason: "manual", force })`**, `force` from an
+    optional body defaulting to `true` (§6.2's `reason`; `SummonReason` has no
+    `"api"`). It skips the cooldown only.
+  - **Reset answers the status after it**; a reset outwritten every time is
+    409 `SUMMON_MARKER_CONTENDED` (a second new code).
+  - **`GET …/summon` is `queues.read`** (§6.2): it spends nothing, and it is
+    secret-free — a fact is dropped when its key has a credential word as a
+    whole word (split at camelCase and `_`/`-`/`.`) or, joined lower case,
+    ends with one, so the backstop fails safe: `apikey` and `sessiontoken` go
+    as well as `apiKey`, while `keyspace` and `tokenizerModel` stay (the list:
+    `token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`,
+    `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`; a
+    whole-word-only match served joined keys, #218 review round 2), when its
+    value holds a URL with userinfo
+    (`://user:pass@`), and, for a `host`/`hostname` fact, unless
+    `exposeHosts` is on (#218 review) — and a pending attempt's `handles`
+    go out only with `serialize.exposeSummonHandles`, as
+    `WorkerDto.summon.handle` does.
+  - **The `summon` event has no envelope `id`**: its payload `id` is an
+    attempt's, and `queueEvent` would otherwise have copied it, sending the
+    event to a job channel (`NOT_JOB_ID_EVENTS` in `shared/events.ts`;
+    `reachesJobChannel` excludes it in AsyncAPI). The controller publishes
+    each event — `budget-exhausted` too, which the gate emits outside the
+    marker write — with its own origin token, in order, and `close()` waits
+    for them, for at most `summonTimeout` (then one `warn`: a publish that
+    never settles, as on a Redis client queueing while it reconnects, must
+    not hold `close()`; #218 review); the socket strips `handles` unless
+    `exposeSummonHandles`.
+  - **The contract restates the vocabulary** it may not import:
+    `SUMMON_OUTCOMES`, `SUMMON_REASONS`, `SUMMON_SKIP_REASONS`, held equal to
+    the runtime unions by `api-contract.type-test.ts`. Root exports
+    `SummonStatusDto`, `SummonCheckDto`, `SummonNowBody`, `SummonEventDto`.
+  - **The resolved mode is `WorkerInfo.summon.resolvedMode`**, a field of its
+    own beside `mode` (the bun-jobs session's condition: `mode` stays "as
+    requested"), typed by a new record type `WorkerSummonInfo` (the option
+    type `WorkerSummonProvenance` is unchanged, so it cannot be passed).
+    `runSummoned` sets it through an internal symbol-keyed setter,
+    `SET_SUMMONED_MODE` (exported from `lib/queue/BunQueueWorker.ts` only),
+    once and before `run()`; a later set, a second one, or one on an
+    unsummoned worker is **ignored** (answers `false`). The setter swaps in a
+    frozen copy of the provenance, so `#report` is untouched: no read or
+    allocation on the report path. `WorkerDto.summon.resolvedMode` passes it
+    through whatever `exposeSummonHandles` says.
+  - **Follow-up (recorded, not built; #218 review): handles are published
+    raw.** The controller publishes each `summon` event with its `handles`
+    into the backend, and only the management API's socket strips them
+    (`toEventDto`, without `serialize.exposeSummonHandles`). Everything else
+    that reads the backend sees them: an API server from before PR-6 (which
+    forwards unknown events as they are), a `JobsNotifier` listener, a
+    subscribing `BunQueue`, and a host's own `serialize.event` hook, which is
+    handed the raw event. Stripping at the source would need a controller
+    option (e.g. whether to publish handles), a public name the user must
+    approve first; until then the handle's secrecy holds at the API's edge
+    only, and the README says where.
+  - **No `/meta` feature flag.** A `features.summon` was tried and dropped: it
+    broke the UI package's typecheck (its `MetaDto` fixtures), and nothing
+    here needs it; the route answers 404 in `runner` mode and on older
+    servers, 409 per queue without a controller.
 
 ### 13.8 PR-7 — Recipes
 

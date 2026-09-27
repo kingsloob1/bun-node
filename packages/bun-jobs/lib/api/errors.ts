@@ -71,6 +71,8 @@ export const API_ERROR_STATUS = {
   LOGS_NOT_RETAINED: 409,
   OPERATION_IN_PROGRESS: 409,
   DEFAULTS_CHANGED: 409,
+  SUMMON_NOT_CONFIGURED: 409,
+  SUMMON_MARKER_CONTENDED: 409,
   BULK_LIMIT: 400,
   RANGE_NOT_RETAINED: 400,
   ARGS_NOT_ALLOWED: 400,
@@ -130,6 +132,8 @@ const TITLES: Record<string, string> = {
   LOGS_NOT_RETAINED: "Run logs are not retained",
   OPERATION_IN_PROGRESS: "Operation already in progress",
   DEFAULTS_CHANGED: "Job defaults changed since they were confirmed",
+  SUMMON_NOT_CONFIGURED: "No summon controller for this queue here",
+  SUMMON_MARKER_CONTENDED: "Summon state kept changing concurrently",
   BULK_LIMIT: "Too many ids",
   RANGE_NOT_RETAINED: "Range is older than the backend keeps",
   ARGS_NOT_ALLOWED: "Arguments are not allowed",
@@ -460,6 +464,16 @@ function classify(error: unknown): Classified {
       code: "DEFAULTS_CHANGED",
       detail: error.message,
       context: error.context,
+    };
+  }
+  if (error instanceof JobsError && error.code === "SUMMON_MARKER_CONTENDED") {
+    // `SummonController.reset()` lost every write it tried to other
+    // controllers: contention, not configuration, so try again. Its message
+    // names only the queue, which the caller named.
+    return {
+      status: 409,
+      code: "SUMMON_MARKER_CONTENDED",
+      detail: error.message,
     };
   }
   if (error instanceof QueueClosedError) {

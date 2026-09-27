@@ -420,7 +420,11 @@ export interface SummonPolicy {
      */
     after?: number;
   };
-  /** How long one `summon()` or `release()` call may take, in ms. Defaults to `30_000`. */
+  /**
+   * How long one `summon()` or `release()` call may take, in ms, and how long
+   * `close()` waits for `summon` events still being published. Defaults to
+   * `30_000`.
+   */
   summonTimeout?: number;
   /**
    * Static environment added to every request's `env`. It must not vary per

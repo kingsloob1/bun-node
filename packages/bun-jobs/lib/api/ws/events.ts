@@ -15,6 +15,7 @@ import {
   WORKER_CONTROL_ACTIONS,
   WORKER_STATES,
 } from "../../shared/workers";
+import { SUMMON_OUTCOMES, SUMMON_REASONS } from "../contract/constants";
 import { s } from "../schema/builder";
 import { ErrorDtoSchema, JOB_STATES } from "../schemas/common";
 
@@ -151,6 +152,39 @@ export const QUEUE_EVENT_PAYLOADS = {
   repeatScheduled: s.object({
     key: s.string({ description: "The repeat series' key." }),
     nextRunAt: EpochMs("When the next occurrence runs, epoch ms."),
+  }),
+  // About compute, not a job: `id` is a summon attempt's, and the envelope
+  // carries none, so no job channel receives it.
+  summon: s.object({
+    id: s.string({
+      description:
+        "The summon attempt's id: what a summoned worker's `summon.id` says. Empty for an outcome no attempt owns (`budget-exhausted`, `released`). Never a job id.",
+    }),
+    outcome: s.enum(SUMMON_OUTCOMES, {
+      description:
+        "What happened to the attempt. Show an outcome you do not know as the raw string.",
+    }),
+    kind: s.string({ description: "The summoner's kind, e.g. `ecs`." }),
+    count: s.optional(
+      s.integer({
+        minimum: 1,
+        description: "How many workers it asked for, when known.",
+      }),
+    ),
+    handles: s.optional(
+      s.array(s.string(), {
+        description:
+          "The platform's identifiers for what it started, when the summoner returned some. Omitted unless the server enables `serialize.exposeSummonHandles`: a task ARN carries the AWS account id.",
+      }),
+    ),
+    reason: s.optional(
+      s.enum(SUMMON_REASONS, {
+        description: "Why the check that started it ran.",
+      }),
+    ),
+    detail: s.optional(
+      s.string({ description: "A short, secret-free explanation." }),
+    ),
   }),
 } satisfies {
   [K in QueueEventName]: Schema<WirePayload<QueueEventPayloads[K]>, any>;
@@ -321,6 +355,8 @@ const QUEUE_EVENT_SUMMARIES: Record<QueueEventName, string> = {
   debounced: "An add replaced a pending debounced job's data.",
   throttled: "An add fell inside a throttle window, so nothing was added.",
   repeatScheduled: "A repeat series scheduled its next occurrence.",
+  summon:
+    "A summon attempt for the queue changed state: started, registered, lost, failed, … Published whatever `publishEvents` says, at most once per attempt state change. About compute, not a job: it moves no job and changes no count.",
 };
 
 /** One line per runner event, for the documents. */

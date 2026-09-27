@@ -57,7 +57,11 @@ import { ConfigError, NotSupportedError } from "./shared/errors";
 import { assertDateParser, parseDuration } from "./shared/humanTime";
 import { assertNamespace, assertSegment } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
-import { ATTACH_QUEUE, SummonController } from "./summon/controller";
+import {
+  ATTACH_QUEUE,
+  FIND_SUMMON_CONTROLLER,
+  SummonController,
+} from "./summon/controller";
 
 /** Options for a {@link BunJobs} context. */
 export interface BunJobsOptions {
@@ -616,6 +620,18 @@ export class BunJobs<
       controller[ATTACH_QUEUE](existingQueue);
     }
     return controller;
+  }
+
+  /**
+   * Internal ({@link FIND_SUMMON_CONTROLLER}): the summon controller this
+   * context has for `queue`, or `undefined`. Never builds one; after
+   * `close()`, none.
+   */
+  [FIND_SUMMON_CONTROLLER](
+    /** The queue's name. */
+    queue: string,
+  ): SummonController | undefined {
+    return this.#summonControllers.get(queue);
   }
 
   /**
