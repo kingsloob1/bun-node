@@ -87,6 +87,10 @@ export function summonHint(summon: WorkerSummonProvenanceDto): string {
   ].filter((part): part is string => part !== false);
   return [
     `Started by a summoner, attempt ${displayText(summon.id)}.`,
+    // What it actually does, unlike the requests after it.
+    summon.resolvedMode === undefined
+      ? ""
+      : `Runs as: ${summonModeLabel(summon.resolvedMode)}.`,
     requested.length > 0 ? `The summoner's ${requested.join("; ")}.` : "",
     "How it was started, not a setting.",
   ]

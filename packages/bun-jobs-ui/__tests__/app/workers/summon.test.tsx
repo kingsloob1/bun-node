@@ -135,6 +135,19 @@ describe("the summon badge in a worker table", () => {
     expect(badgeOf(list, "w-summoned")!.textContent).toBe("Summoned by fly");
   });
 
+  it("says the mode the worker actually runs as, apart from what was requested", async () => {
+    const list = await openList([
+      workerFixture({
+        id: "w-resolved",
+        summon: summon({ resolvedMode: "until-stopped", mode: "exit-on-idle" }),
+      }),
+    ]);
+    await within(list).findByTestId("worker-row-w-resolved");
+    const hint = badgeOf(list, "w-resolved")!.title;
+    expect(hint).toContain("Runs as: Run until stopped.");
+    expect(hint).toContain("requested mode: Exit when idle");
+  });
+
   it("gives a mode this build does not know as its raw string", async () => {
     const list = await openList([
       workerFixture({ id: "w-future", summon: summon({ mode: FUTURE_MODE }) }),
@@ -259,6 +272,20 @@ describe("the worker page's Summoned card", () => {
     expect(within(card).getByTestId("worker-summon-others").textContent).toBe(
       "1 other instance of this key reports no summon.",
     );
+  });
+
+  it("shows the mode each instance actually runs as, in a column of its own", async () => {
+    const card = (await openWorkerPage([
+      workerFixture({
+        id: "api.emails.a1",
+        // Runs until stopped although the summoner asked for none: its own option.
+        summon: summon({ resolvedMode: "until-stopped" }),
+      }),
+    ]))!;
+    expect(headers(card)).toEqual(["Instance", "Summon", "Runs as"]);
+    const row = within(card).getByTestId("worker-summon-row-api.emails.a1");
+    expect(row.children[2]!.textContent).toBe("Run until stopped");
+    expect((row.children[2] as HTMLElement).title).toContain("actually runs");
   });
 
   it("shows a mode this build does not know as its raw string", async () => {

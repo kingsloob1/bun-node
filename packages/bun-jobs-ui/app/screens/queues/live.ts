@@ -25,6 +25,8 @@ export const QUEUE_REFRESH = {
   workers: POLL_INTERVAL_MS * 2,
   /** Demand: due-now and stalled move with the clock, not with an event. */
   demand: POLL_INTERVAL_MS * 2,
+  /** Summon status: attempts time out and backoffs end with the clock. */
+  summon: POLL_INTERVAL_MS,
   /** Throughput buckets are a minute wide. */
   throughput: 30_000,
   /** Repeatables' next runs. */
@@ -41,6 +43,7 @@ export type QueueRefreshKind = keyof typeof QUEUE_REFRESH;
 const POLLED_ONLY: ReadonlySet<QueueRefreshKind> = new Set<QueueRefreshKind>([
   "workers",
   "demand",
+  "summon",
   "throughput",
 ]);
 

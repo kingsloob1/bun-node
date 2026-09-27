@@ -50,6 +50,11 @@ export function WorkerSummonCard({
   }
   const others = instances.length - summoned.length;
   const showKind = summoned.some(({ summon }) => summon.kind !== undefined);
+  // The mode it actually runs in, beside the one requested: absent on a
+  // worker not run by `runSummoned`, or too old to say.
+  const showResolved = summoned.some(
+    ({ summon }) => summon.resolvedMode !== undefined,
+  );
   const showMode = summoned.some(({ summon }) => summon.mode !== undefined);
   const showDeadline = summoned.some(
     ({ summon }) => summon.deadlineAt !== undefined,
@@ -67,6 +72,7 @@ export function WorkerSummonCard({
               <th scope="col">Instance</th>
               <th scope="col">Summon</th>
               {showKind && <th scope="col">Summoner</th>}
+              {showResolved && <th scope="col">Runs as</th>}
               {showMode && <th scope="col">Requested mode</th>}
               {showDeadline && <th scope="col">Requested deadline</th>}
               {showHandle && <th scope="col">Handle</th>}
@@ -87,6 +93,18 @@ export function WorkerSummonCard({
                 {showKind && (
                   <td>
                     {summon.kind !== undefined && displayText(summon.kind)}
+                  </td>
+                )}
+                {showResolved && (
+                  <td
+                    title={
+                      summon.resolvedMode === undefined
+                        ? undefined
+                        : "The mode it actually runs in: its own option, else the requested mode, else exit when idle."
+                    }
+                  >
+                    {summon.resolvedMode !== undefined &&
+                      summonModeLabel(summon.resolvedMode)}
                   </td>
                 )}
                 {showMode && (
