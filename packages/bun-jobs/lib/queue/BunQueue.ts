@@ -199,7 +199,7 @@ const DEFAULT_APPLY_LIMIT = 1_000;
  * `removeAllListeners("added")` would detach it; and a user listener that
  * throws would stop it hearing the add. A hook is called synchronously,
  * nothing is awaited, and with none set the add path does one property read.
- * A hook must not throw.
+ * A hook that throws is logged and does not fail the add.
  */
 export const LOCAL_ADD_HOOKS: unique symbol = Symbol(
   "bun-jobs: local add hooks",
@@ -407,12 +407,12 @@ export class BunQueue<
 
   /** Logger bound to this queue. */
   readonly #logger: Logger;
-  /** Whether to re-emit other processes' events. */
   /**
    * Local-add hooks ({@link LOCAL_ADD_HOOKS}), or `undefined` when none is
    * set — the usual case, which costs the add path one property read.
    */
   [LOCAL_ADD_HOOKS]: ((job: LocalAddedJob) => void)[] | undefined;
+  /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
   /** Whether this queue announces its events to other processes. */
   readonly #publishes: boolean;
@@ -677,11 +677,8 @@ export class BunQueue<
     }
 
     this.safeEmitScoped("added", job.name, view);
-    const hooks = this[LOCAL_ADD_HOOKS];
-    if (hooks !== undefined) {
-      for (const hook of hooks) {
-        hook(view);
-      }
+    if (this[LOCAL_ADD_HOOKS] !== undefined) {
+      this.#runAddHooks(view);
     }
     await this.#publish("added", { id: job.id });
 
@@ -758,17 +755,32 @@ export class BunQueue<
       }
     }
 
-    const hooks = this[LOCAL_ADD_HOOKS];
+    const hooked = this[LOCAL_ADD_HOOKS] !== undefined;
     return results.map(({ job, added }) => {
       const view = this.#view(job, added);
       this.safeEmit(added ? "added" : "duplicate", view);
-      if (added && hooks !== undefined) {
-        for (const hook of hooks) {
-          hook(view);
-        }
+      if (added && hooked) {
+        this.#runAddHooks(view);
       }
       return view;
     });
+  }
+
+  /**
+   * Tells every {@link LOCAL_ADD_HOOKS} hook about a job added here. The add
+   * has already been written and announced, so a hook that throws cannot be
+   * allowed to fail it: the error is logged, and the other hooks still run.
+   */
+  #runAddHooks(job: LocalAddedJob): void {
+    for (const hook of this[LOCAL_ADD_HOOKS] ?? []) {
+      try {
+        hook(job);
+      } catch (error) {
+        this.#logger.warn("A local add hook threw; the add stands", {
+          error,
+        });
+      }
+    }
   }
 
   /* --- reading -------------------------------------------------------- */
