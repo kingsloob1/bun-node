@@ -188,6 +188,30 @@ function recorder(): {
 }
 
 /**
+ * A summoner whose answer the test switches: `unavailable` (a failure that
+ * counts) or `started`.
+ */
+function switchable(): {
+  calls: SummonRequest[];
+  summoner: SummonPolicy["summoner"];
+  answer: { mode: "unavailable" | "started" };
+} {
+  const calls: SummonRequest[] = [];
+  const answer: { mode: "unavailable" | "started" } = { mode: "unavailable" };
+  const summoner = defineSummoner({
+    kind: "rec",
+    bootBudget: 20_000,
+    invoke: async (request) => {
+      calls.push(request);
+      return answer.mode === "unavailable"
+        ? { status: "unavailable", reason: "no capacity" }
+        : undefined;
+    },
+  });
+  return { calls, summoner, answer };
+}
+
+/**
  * A claimant as a summoned worker's first report writes it. `gone` puts its
  * grace a minute in the past: a holder that claimed long enough ago that a
  * missing record means it is gone, without the test waiting that long.
@@ -243,9 +267,10 @@ async function unmark(
 }
 
 /**
- * Moves every pending and watched attempt's `until` (and start) a minute into
- * the past, and its claim holders' with it, as if its boot budget and grace
- * had run out: what a check would find after waiting that long.
+ * Moves every pending and watched attempt's `until` (and start, and a watch's
+ * extension) a minute into the past, and its claim holders' with it, as if
+ * its boot budget and grace had run out: what a check would find after
+ * waiting that long. Worker records are left as they are.
  */
 async function ageMarker(driver: JobsDriver, ref: QueueRef): Promise<void> {
   const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
@@ -283,6 +308,7 @@ async function ageMarker(driver: JobsDriver, ref: QueueRef): Promise<void> {
             ...one,
             at: past,
             until: past,
+            ...(one.extendedUntil === undefined ? {} : { extendedUntil: past }),
           })),
         }),
   };
@@ -300,6 +326,12 @@ async function watchedIds(
   return ((entry?.value as SummonMarker | undefined)?.watching ?? []).map(
     (one) => one.id,
   );
+}
+
+/** The marker's loss streak, read straight from the store (absent is 0). */
+async function streakOf(driver: JobsDriver, ref: QueueRef): Promise<number> {
+  const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
+  return (entry?.value as SummonMarker | undefined)?.lossStreak ?? 0;
 }
 
 /** A live heartbeat record for `worker`, carrying `summonId` when given. */
@@ -1090,10 +1122,9 @@ for (const backend of BACKENDS) {
               expect(outcomes(events).at(-1)).toBe("registered");
               expect(await watchedIds(driver, ref)).toEqual([id]);
               expect((await summon.status()).pending).toHaveLength(0);
-              // Registration alone resets nothing while it is watched.
-              expect((await summon.status()).failures).toBe(
-                exit === "crash" ? round : 0,
-              );
+              // A registration resets the count, as it always has; a watched
+              // one keeps what it reset, to restore if the attempt is lost.
+              expect((await summon.status()).failures).toBe(0);
               if (exit === "clean") {
                 expect(
                   await markSummonClaimExit(
@@ -1154,6 +1185,114 @@ for (const backend of BACKENDS) {
         );
       }
 
+      it("unit: counts a watched attempt whose holder gets a code-1 mark (hand-written, or a future writer's) as exited-with-error at once, once", async () => {
+        const { driver, ref, queue, controller, events } = await setup();
+        const { calls, summoner } = recorder();
+        const summon = controller({
+          summoner,
+          backoff: { initial: 60_000, max: 60_000 },
+        });
+        await queue.add("a", {});
+        await summon.check();
+        const id = calls[0]!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        await summon.check();
+        expect(outcomes(events)).toEqual(["started", "registered"]);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        expect((await summon.status()).failures).toBe(0);
+
+        // A code-1 mark written directly: runSummoned writes one only when
+        // run() rejects, which is before the first report, so no claim exists
+        // then. This covers the branch for a mark written by other means.
+        // No grace is needed to read it.
+        expect(
+          await markSummonClaimExit(driver, ref, id, "w", FAILED, true),
+        ).toBe("written");
+        await summon.check();
+        const lost = () =>
+          events.filter((event) => event.id === id && event.outcome === "lost");
+        expect(lost()).toHaveLength(1);
+        expect(lost()[0]!.detail).toBe("exited-with-error");
+        const status = await summon.status();
+        expect(status.failures).toBe(1);
+        expect(status.last).toMatchObject({
+          id,
+          outcome: "lost",
+          detail: "exited-with-error",
+        });
+        expect(await watchedIds(driver, ref)).toEqual([]);
+        await summon.check();
+        expect(lost()).toHaveLength(1);
+      });
+
+      it("settles one failed watched attempt once when two controllers check it at the same moment", async () => {
+        const { driver, ref, queue, controller, events } = await setup();
+        const { calls, summoner } = recorder();
+        // Holds every marker read until both controllers have made one, so
+        // both settle the same version and one of their writes must lose.
+        const barrier = {
+          armed: false,
+          arrived: 0,
+          open: Promise.withResolvers<void>(),
+        };
+        const gated = new Proxy(driver, {
+          get(target, property) {
+            if (property === "getQueueState") {
+              return async (q: QueueRef, name: string) => {
+                const value = await target.getQueueState!(q, name);
+                if (name === SUMMON_MARKER && barrier.armed) {
+                  barrier.arrived++;
+                  if (barrier.arrived >= 2) {
+                    barrier.open.resolve();
+                  }
+                  await barrier.open.promise;
+                }
+                return value;
+              };
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const policy = {
+          summoner,
+          backoff: { initial: 60_000, max: 60_000 },
+        };
+        const one = controller(policy, gated);
+        const two = controller(policy, gated);
+        await queue.add("a", {});
+        await one.check();
+        const id = calls[0]!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        await one.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        expect(
+          await markSummonClaimExit(driver, ref, id, "w", FAILED, true),
+        ).toBe("written");
+
+        barrier.armed = true;
+        await Promise.all([one.check(), two.check()]);
+        barrier.armed = false;
+        expect(barrier.arrived).toBeGreaterThanOrEqual(2);
+        // The loser's next check finds the entry already gone.
+        await one.check();
+        await two.check();
+
+        expect(
+          events.filter((event) => event.id === id && event.outcome === "lost"),
+        ).toHaveLength(1);
+        const marker = (await driver.getQueueState!(ref, SUMMON_MARKER))!
+          .value as SummonMarker;
+        expect(marker.failures).toBe(1);
+        expect(marker.watching).toBeUndefined();
+      });
+
       it("does not count a watched attempt as capacity: a second job is summoned for while the first worker runs past until", async () => {
         const { driver, namespace, ref, queue, controller, events } =
           await setup();
@@ -1200,6 +1339,11 @@ for (const backend of BACKENDS) {
           events.filter((event) => event.id === id && event.outcome === "lost"),
         ).toHaveLength(0);
         expect(await watchedIds(driver, ref)).toEqual([id]);
+        // Due to end with its record listed and no mark: extended once, to
+        // that record's expiry; still listed then, it ends clean.
+        await ageMarker(driver, ref);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
         await ageMarker(driver, ref);
         await summon.check();
         expect(await watchedIds(driver, ref)).toEqual([]);
@@ -1209,7 +1353,11 @@ for (const backend of BACKENDS) {
         expect(
           events.filter((event) => event.id === id && event.outcome === "lost"),
         ).toHaveLength(0);
-        expect((await summon.status()).failures).toBe(0);
+        // Only the other attempt, started while it ran and never claimed, is
+        // counted: this one added nothing.
+        expect((await summon.status()).failures).toBe(
+          events.filter((event) => event.outcome === "lost").length,
+        );
       });
 
       it("negative control: the same first attempt kept pending instead, the second job is not summoned for", async () => {
@@ -1289,16 +1437,307 @@ for (const backend of BACKENDS) {
           events.filter((event) => event.id === id && event.outcome === "lost"),
         ).toHaveLength(0);
         expect(await watchedIds(driver, ref)).toEqual([id]);
-        // It reports again; past the grace it is dropped as having run.
+        // It reports again; past the grace and one extension it is dropped
+        // as having run.
         await liveRecord(driver, ref, "w", id);
+        await ageMarker(driver, ref);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
         await ageMarker(driver, ref);
         await summon.check();
         expect(await watchedIds(driver, ref)).toEqual([]);
         expect(
           events.filter((event) => event.id === id && event.outcome === "lost"),
         ).toHaveLength(0);
-        expect((await summon.status()).failures).toBe(0);
+        // Only the other attempt, started while it ran and never claimed, is
+        // counted: this one added nothing.
+        expect((await summon.status()).failures).toBe(
+          events.filter((event) => event.outcome === "lost").length,
+        );
       });
+
+      for (const healthy of [false, true]) {
+        it(
+          healthy
+            ? "negative control: the same extended watch, its record refreshed, ends clean"
+            : "A2r: a watch due while a dead worker's record is still listed is extended to that record's expiry, then counts the crash",
+          async () => {
+            const { driver, ref, queue, controller, events } = await setup();
+            const { calls, summoner } = recorder();
+            const summon = controller({ summoner });
+            await queue.add("a", {});
+            await summon.check();
+            const id = calls[0]!.id;
+            expect(
+              await claimSummonAttempt(driver, ref, id, claimant("w")),
+            ).toBe(true);
+            // A long record lifetime: it outlives the watch.
+            await liveRecord(driver, ref, "w", id, 60_000);
+            await summon.check();
+            expect(await watchedIds(driver, ref)).toEqual([id]);
+
+            // Due to end, the record still listed and no mark: extended.
+            await ageMarker(driver, ref);
+            await summon.check();
+            expect(await watchedIds(driver, ref)).toEqual([id]);
+            const marker = (await driver.getQueueState!(ref, SUMMON_MARKER))!
+              .value as SummonMarker;
+            expect(marker.watching![0]!.extendedUntil).toBeGreaterThan(
+              Date.now() + 50_000,
+            );
+            const lost = () =>
+              events.filter(
+                (event) => event.id === id && event.outcome === "lost",
+              );
+            expect(lost()).toHaveLength(0);
+
+            // At the extension: refreshed (alive), or expired (it had died).
+            if (healthy) {
+              await liveRecord(driver, ref, "w", id, 60_000);
+            } else {
+              await removeWorkerRecord(driver, ref, "w");
+            }
+            await ageMarker(driver, ref);
+            await summon.check();
+            expect(await watchedIds(driver, ref)).toEqual([]);
+            if (healthy) {
+              expect(lost()).toHaveLength(0);
+              expect((await summon.status()).failures).toBe(0);
+            } else {
+              expect(lost()).toHaveLength(1);
+              expect(lost()[0]!.detail).toBe("died");
+              expect((await summon.status()).failures).toBe(1);
+            }
+          },
+        );
+      }
+
+      it("does not let failures pile up during a watch: a registration resets them, as before", async () => {
+        const { driver, ref, queue, controller, events } = await setup();
+        const { calls, summoner, answer } = switchable();
+        const summon = controller({
+          summoner,
+          maxWorkers: 2,
+          jobsPerWorker: 1,
+          backoff: { initial: 1, max: 1 },
+          circuit: { failures: 3, resetAfter: 600_000 },
+        });
+        await queue.add("a", {});
+        for (let failure = 0; failure < 2; failure++) {
+          expect(await summon.check()).toMatchObject({
+            outcome: "unavailable",
+          });
+          await Bun.sleep(5);
+        }
+        expect((await summon.status()).failures).toBe(2);
+        expect(await streakOf(driver, ref)).toBe(2);
+        answer.mode = "started";
+        expect(await summon.check()).toMatchObject({ action: "summoned" });
+        const id = calls.at(-1)!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        // The registration resets `failures`; seen only by a live record, it
+        // proves nothing, so the streak stays.
+        expect((await summon.status()).failures).toBe(0);
+        expect(await streakOf(driver, ref)).toBe(2);
+
+        // One more failure, unrelated, during the watch: a second worker is
+        // wanted, and the platform has no capacity.
+        await queue.add("b", {});
+        answer.mode = "unavailable";
+        await Bun.sleep(5);
+        expect(await summon.check()).toMatchObject({ outcome: "unavailable" });
+        const status = await summon.status();
+        expect(status.failures).toBe(1);
+        expect(status.circuitOpenUntil).toBeUndefined();
+        // The streak counts it on top: 3 since the last proven success.
+        expect(await streakOf(driver, ref)).toBe(3);
+        expect(outcomes(events)).not.toContain("lost");
+      });
+
+      /** Two `unavailable` failures, then a registration seen live and watched. */
+      async function streakThenWatched(
+        policy: Partial<SummonPolicy> = {},
+      ): Promise<{
+        driver: JobsDriver;
+        ref: QueueRef;
+        queue: BunQueue<unknown>;
+        summon: SummonController;
+        events: SummonEventPayload[];
+        id: string;
+        answer: { mode: "unavailable" | "started" };
+        calls: SummonRequest[];
+      }> {
+        const { driver, ref, queue, controller, events } = await setup();
+        const { calls, summoner, answer } = switchable();
+        const summon = controller({
+          summoner,
+          backoff: { initial: 1, max: 1 },
+          ...policy,
+        });
+        await queue.add("a", {});
+        for (let failure = 0; failure < 2; failure++) {
+          await summon.check();
+          await Bun.sleep(5);
+        }
+        answer.mode = "started";
+        await summon.check();
+        const id = calls.at(-1)!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        expect((await summon.status()).failures).toBe(0);
+        expect(await streakOf(driver, ref)).toBe(2);
+        return { driver, ref, queue, summon, events, id, answer, calls };
+      }
+
+      for (const reset of [true, false]) {
+        it(
+          reset
+            ? "restores no failure a reset() cleared: a watched loss after it counts one, and the streak one"
+            : "negative control, and the order: without the reset, failures 0 and lossStreak 2 become 3 and 3 (the streak first, then the max)",
+          async () => {
+            const { driver, ref, summon } = await streakThenWatched();
+            if (reset) {
+              await summon.reset();
+              expect(await streakOf(driver, ref)).toBe(0);
+            }
+            // It dies unmarked.
+            await removeWorkerRecord(driver, ref, "w");
+            await ageMarker(driver, ref);
+            await summon.check();
+            expect((await summon.status()).failures).toBe(reset ? 1 : 3);
+            expect(await streakOf(driver, ref)).toBe(reset ? 1 : 3);
+          },
+        );
+      }
+
+      it("resets the loss streak only on proven success: a clean watch end, or a registration whose every worker left a clean mark", async () => {
+        const { driver, ref, queue, summon, id, answer, calls } =
+          await streakThenWatched({ maxWorkers: 2, jobsPerWorker: 1 });
+        // Unproven: registered and watched, the streak stands (checked above).
+        // A clean watch end proves it.
+        expect(
+          await markSummonClaimExit(driver, ref, id, "w", CLEAN, true),
+        ).toBe("written");
+        await removeWorkerRecord(driver, ref, "w");
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([]);
+        expect(await streakOf(driver, ref)).toBe(0);
+
+        // Two more failures, then an attempt whose one worker claimed and
+        // left a clean mark before any check saw it: proven at once.
+        answer.mode = "unavailable";
+        await queue.add("b", {});
+        await queue.add("c", {});
+        for (let failure = 0; failure < 2; failure++) {
+          await Bun.sleep(5);
+          await summon.check();
+        }
+        expect(await streakOf(driver, ref)).toBe(2);
+        answer.mode = "started";
+        await Bun.sleep(5);
+        expect(await summon.check()).toMatchObject({ action: "summoned" });
+        const second = calls.at(-1)!.id;
+        expect(
+          await claimSummonAttempt(driver, ref, second, claimant("w2")),
+        ).toBe(true);
+        expect(
+          await markSummonClaimExit(driver, ref, second, "w2", CLEAN, true),
+        ).toBe("written");
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([]);
+        expect(await streakOf(driver, ref)).toBe(0);
+      });
+
+      for (const provenBetween of [false, true]) {
+        it(
+          provenBetween
+            ? "negative control: a clean watch end after the circuit closes, then a watched loss, leaves it closed"
+            : "half-open: once the circuit's reset time passes, the first watched loss reopens it (no success proven since)",
+          async () => {
+            const { driver, ref, queue, controller, events } = await setup();
+            const { calls, summoner, answer } = switchable();
+            const summon = controller({
+              summoner,
+              maxWorkers: 2,
+              jobsPerWorker: 1,
+              backoff: { initial: 1, max: 1 },
+              circuit: { failures: 3, resetAfter: 200 },
+            });
+            await queue.add("a", {});
+            for (let failure = 0; failure < 3; failure++) {
+              await summon.check();
+              await Bun.sleep(5);
+            }
+            expect((await summon.status()).circuitOpenUntil).toBeDefined();
+            await Bun.sleep(250);
+            expect((await summon.status()).circuitOpenUntil).toBeUndefined();
+
+            // It closed with failures 3 and a streak of 3 kept.
+            answer.mode = "started";
+            /** Summons, registers the attempt live, and answers its id. */
+            const registered = async (worker: string): Promise<string> => {
+              expect(await summon.check()).toMatchObject({
+                action: "summoned",
+              });
+              const id = calls.at(-1)!.id;
+              expect(
+                await claimSummonAttempt(driver, ref, id, claimant(worker)),
+              ).toBe(true);
+              await liveRecord(driver, ref, worker, id);
+              await summon.check();
+              expect(await watchedIds(driver, ref)).toContain(id);
+              return id;
+            };
+            const first = await registered("w1");
+            if (provenBetween) {
+              expect(
+                await markSummonClaimExit(
+                  driver,
+                  ref,
+                  first,
+                  "w1",
+                  CLEAN,
+                  true,
+                ),
+              ).toBe("written");
+              await removeWorkerRecord(driver, ref, "w1");
+              await summon.check();
+              expect(await streakOf(driver, ref)).toBe(0);
+              await queue.add("b", {});
+              await Bun.sleep(5);
+              await registered("w2");
+              await removeWorkerRecord(driver, ref, "w2");
+            } else {
+              await removeWorkerRecord(driver, ref, "w1");
+            }
+            // The watched worker dies unmarked.
+            await ageMarker(driver, ref);
+            await summon.check();
+            const status = await summon.status();
+            if (provenBetween) {
+              // Only the losses since the proven end count: the watched one,
+              // and an attempt started meanwhile that nothing claimed.
+              expect(status.failures).toBe(
+                events.filter((event) => event.outcome === "lost").length,
+              );
+              expect(status.failures).toBeLessThan(3);
+              expect(status.circuitOpenUntil).toBeUndefined();
+            } else {
+              expect(status.failures).toBe(4);
+              expect(status.circuitOpenUntil).toBeDefined();
+            }
+          },
+        );
+      }
 
       it("writes no marker while checks find a quiet watch list", async () => {
         const { driver, ref, queue, controller } = await setup();
@@ -1582,7 +2021,11 @@ for (const backend of BACKENDS.filter((one) =>
           {
             backoff: { initial: 1, max: 1 },
             circuit: { failures: 2, resetAfter: 60_000 },
-            cooldown: 300,
+            // Longer than a loss takes to land (bootBudget + 5 s), with one
+            // worker: each release and its loss alternate, so the circuit
+            // opens only if a loss restores the count its release reset.
+            cooldown: 8_000,
+            maxWorkers: 1,
           },
         );
         await queue.add("a", {});
@@ -1606,6 +2049,124 @@ for (const backend of BACKENDS.filter((one) =>
           ).toBe(true);
         }
         expect((await controller.status()).failures).toBeGreaterThanOrEqual(2);
+      });
+
+      it("A2 dense: a crash loop with several attempts in flight opens the circuit within about as many losses as its threshold", async () => {
+        const { queue, controller, events } = await setup(
+          { SUMMON_TEST_CRASH_AFTER_MS: "400" },
+          false,
+          {
+            // No cooldown and checks every 100 ms: a new attempt goes out as
+            // soon as the last worker's record lapses, so several are
+            // watched at once and each registration resets `failures`.
+            cooldown: 0,
+            maxWorkers: 1,
+            backoff: { initial: 50, max: 50 },
+            circuit: { failures: 3, resetAfter: 600_000 },
+          },
+        );
+        for (let job = 0; job < 50; job++) {
+          await queue.add("a", {});
+        }
+        let lossesAtOpen = -1;
+        await waitFor(
+          async () => {
+            const result = await controller.check();
+            if (
+              result.action === "skipped" &&
+              result.reason === "circuit-open"
+            ) {
+              lossesAtOpen = events.filter(
+                (event) => event.outcome === "lost",
+              ).length;
+              return true;
+            }
+            return false;
+          },
+          { timeout: 45_000, interval: 100 },
+        );
+        // Several attempts' losses can land in one check, so a little over.
+        expect(lossesAtOpen).toBeGreaterThanOrEqual(3);
+        expect(lossesAtOpen).toBeLessThanOrEqual(5);
+        expect((await controller.status()).failures).toBeGreaterThanOrEqual(3);
+      });
+
+      it("two controllers on one dense crash loop count each loss once, and open the circuit", async () => {
+        const { driver, ref, queue, controller, platform, events } =
+          await setup({ SUMMON_TEST_CRASH_AFTER_MS: "400" }, false, {
+            cooldown: 0,
+            maxWorkers: 1,
+            backoff: { initial: 50, max: 50 },
+            circuit: { failures: 3, resetAfter: 600_000 },
+          });
+        const second = createDriver(backend.config);
+        await second.connect();
+        const other = new SummonController({
+          ...QUIET,
+          driver: second,
+          namespace: ref.ns,
+          queue: "work",
+          summoner: platform.summoner,
+          bootBudget: 1_500,
+          cooldown: 0,
+          maxWorkers: 1,
+          backoff: { initial: 50, max: 50 },
+          circuit: { failures: 3, resetAfter: 600_000 },
+        });
+        other.on("summon", (event) => events.push(event));
+        perTest.unshift(async () => {
+          await other.close();
+          await second.close();
+        });
+        for (let job = 0; job < 50; job++) {
+          await queue.add("a", {});
+        }
+        await waitFor(
+          async () => {
+            const [one, two] = await Promise.all([
+              controller.check(),
+              other.check(),
+            ]);
+            return [one, two].some(
+              (result) =>
+                result.action === "skipped" && result.reason === "circuit-open",
+            );
+          },
+          { timeout: 45_000, interval: 80 },
+        );
+        const lost = events
+          .filter((event) => event.outcome === "lost")
+          .map((event) => event.id);
+        // Each loss counted once, by whichever controller settled it.
+        expect(lost.length).toBe(new Set(lost).size);
+        const marker = (await driver.getQueueState!(ref, SUMMON_MARKER))!
+          .value as SummonMarker;
+        expect(marker.failures).toBeGreaterThanOrEqual(3);
+        expect(marker.lossStreak ?? 0).toBe(lost.length);
+      });
+
+      it("A2r: a worker whose record outlives the watch, crashing after its first report, is still counted", async () => {
+        const { queue, controller, events } = await setup({
+          SUMMON_TEST_CRASH_AFTER_MS: "400",
+          // A record lives 9 s: past the watch's end at bootBudget + 5 s.
+          SUMMON_TEST_REPORT_MS: "3000",
+        });
+        await queue.add("a", {});
+        await waitFor(
+          async () => {
+            await controller.check();
+            return events.some((event) => event.outcome === "lost");
+          },
+          { timeout: 30_000, interval: 100 },
+        );
+        const lost = events.find((event) => event.outcome === "lost")!;
+        expect(lost.detail).toBe("died");
+        expect(
+          events.some(
+            (event) => event.id === lost.id && event.outcome === "registered",
+          ),
+        ).toBe(true);
+        expect((await controller.status()).failures).toBeGreaterThanOrEqual(1);
       });
 
       it("reads a worker killed with SIGKILL, never closed, as died", async () => {

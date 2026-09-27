@@ -2910,33 +2910,77 @@ the attempt succeeded:
   reason (`idle`, `deadline`, `signal`, …), and any `worker.close()`,
   graceful or forced, with `closed` where no mark is there yet — so a
   summoned worker that closes counts, whether or not it ran through
-  `runSummoned`.
-- **Running**: registered as soon as a check sees its record, so it stops
-  counting as a worker on its way at once, but **watched** until the
-  attempt's `bootBudget` has passed: if it then leaves without a mark, the
-  attempt is still counted as a failure (`lost`, detail `died`, with the
-  attempt's id — an event after its `registered` one). Only a watch that ends
-  clean resets the failure count.
-- **`runSummoned` ended in `error`** (its `run()` failed): `lost`, detail
-  `exited-with-error`.
-- **Claimed, then gone without closing** — a crash, an OOM kill, `SIGKILL`:
-  `lost`, detail `died`. Never before the attempt's `until` (plus its claim's
-  record lifetime and 5 s for the clocks): a worker busy on a CPU-bound job
-  can let its record lapse and still be alive.
-- **Never claimed**: `lost` when its `bootBudget` passes.
+  `runSummoned`. A `close()` that rejects part-way keeps the original
+  reason, and the process exits 0 with the error logged: the worker did run,
+  and a failed close is not a crash loop.
+- **Running**: registered as soon as a check sees its record, and the
+  failure count is reset, as a registration always has; it stops counting as
+  a worker on its way at once, but is **watched** until the attempt's
+  `until` plus 5 s — longer while one of its workers is gone but still
+  inside its grace, up to the later of that worker's claim `until` and the
+  attempt's, plus 5 s. If a worker is still listed with no mark when the
+  watch would end, the watch is extended once, to that record's expiry:
+  refreshed by then, the worker is alive; gone with no mark, it died. If the
+  attempt turns out lost, the failure count is raised to at least the loss
+  streak (below), so a crash loop still adds up.
+- **Claimed, then gone without closing** — a crash, an OOM kill, `SIGKILL`,
+  or `process.exit` without a close: `lost`, detail `died`, with the
+  attempt's id (after its `registered` event, when a check saw it running).
+  Never before the grace has passed: a worker busy on a CPU-bound job can
+  let its record lapse and still be alive.
+- **Never claimed** — a crash before the first report: `lost` when its
+  `bootBudget` passes, with no detail.
+- **`exited-with-error`** comes only from an exit mark with code `1`.
+  `runSummoned` writes one only when `run()` rejects, which happens before
+  the first report, so no claim exists yet; after startup `run()` never
+  rejects (the worker logs errors and carries on). So in practice a late loss
+  is `died`, and `exited-with-error` is what a code-1 mark written by other
+  means produces — kept, defensively, for such a writer.
 
-Every `lost` counts toward the backoff and the circuit, once per attempt
-however many of its workers failed, so a worker that dies on every start
-stops being summoned instead of being retried after every cooldown. That
-covers a crash **before the claim** (never claimed), **after the first
-report** (claimed, seen running or not, then gone unmarked) and an **error
-exit** (`exited-with-error`); a failure is counted a `bootBudget` after its
-attempt started, so until then attempts go on at the cooldown's pace. A
-worker still running when the watch ends has run: a later crash is left to
-the orphan rule. A summoner with `passes: "none"` gives the worker no id to
-claim, and its attempts register by a worker's start time alone.
+Every `lost` counts toward the backoff and the circuit, so a worker that
+dies on every start stops being summoned instead of being retried after
+every cooldown. A `died` is counted only once the grace has passed — about
+a `bootBudget` plus 5 s after the attempt started, more when the watch was
+extended — so until then attempts go on at the cooldown's pace; a code-1
+mark is read at the next check. A worker still running when the watch ends
+has run: a later crash is left to the orphan rule. A summoner with
+`passes: "none"` gives the worker no id to claim, and its attempts register
+by a worker's start time alone.
 
-Two consequences to know:
+**Two counts: `failures` and the loss streak.** `failures` is what the
+backoff and the circuit read. It is reset by any registration, as it always
+has been, so failures unrelated to a worker that is merely running count from
+zero, and one more of them adds one. The **loss streak** (the marker's
+`lossStreak`) counts every failure since the last **proven** success: an
+attempt whose every worker left a clean exit mark, or a watch that ends
+clean. A registration seen only by a live record proves nothing yet and
+leaves it alone. When a watched attempt is lost, the streak goes up by one
+first, then `failures` becomes the larger of `failures + 1` and the streak.
+
+The streak is what a dense crash loop needs. With several attempts in flight,
+each registration resets `failures`, so without it every late loss would
+count only 1 (measured: 15 losses to open a 3-failure circuit); with it the
+circuit opens at the threshold (measured: 3 losses for 3). The trade-off:
+while a healthy worker's watch is still open, a crash of another attempt
+counts together with the failures from before that registration, since
+nothing is proven healthy yet; the healthy watch's clean end then resets the
+streak.
+
+**The circuit is half-open after `resetAfter`.** It closes once
+`circuit.resetAfter` has passed, but `failures` and the streak are kept (they
+do not decay with time), so the first failure afterwards, immediate or late,
+reopens it at once: nothing has been proven to work since. A proven success
+before that failure resets the streak, and then it takes the threshold again.
+
+**One failure per attempt, even when some of its workers ran.** An attempt
+for several workers in which any one died or exited with an error counts one
+failure, however many others ran cleanly. So a job that crashes its worker
+counts a failure for every attempt that picks it up, and repeated retries of
+it can open the circuit for the queue. That is deliberate: a job that keeps
+killing workers is runaway cost, which is what the circuit exists to stop,
+and the job's own `attempts` dead-letter it in the end.
+
+Consequences to know:
 
 - **A summoned worker must exit through `runSummoned` or `worker.close()`
   to count as clean.** One that drains and calls `process.exit(0)` itself
@@ -2944,6 +2988,13 @@ Two consequences to know:
 - **The mark is written to the backend.** If both writes fail — the one
   `runSummoned` makes before closing and the one `close()` makes — because
   the backend is unreachable across the exit, a clean exit reads as `died`.
+- **A stall longer than a record lifetime cannot be told from a death.** A
+  live worker whose event loop is blocked for longer than one record
+  lifetime (three report intervals: 30 s at the defaults), across the end of
+  its (extended) watch, reads as `died`.
+- **`controller.reset()`** clears the failure count and the loss streak,
+  but keeps the watched attempts: one lost after the reset still counts one
+  failure, never the ones the reset cleared.
 
 The watch list is bounded at `maxPending × ⌈bootBudget / cooldown⌉` attempts
 (at least 8, at most 256, and 256 with no cooldown); past it the oldest are
@@ -3003,7 +3054,7 @@ Example: [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-no
 | `maxPending` | `maxWorkers` | The most unregistered attempts at once. |
 | `cooldown` | `10_000` | The least time between two attempts. |
 | `backoff` | `30_000` to `900_000` | The wait after a failed or lost attempt, doubling. |
-| `circuit` | `5` failures, `900_000` | When to stop, and for how long. |
+| `circuit` | `5` failures, `900_000` | When to stop, and for how long; half-open once it closes (see above). |
 | `budget` | `30`/hour, `300`/day | Attempts per queue. A hit never fails a job. |
 | `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
 | `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |

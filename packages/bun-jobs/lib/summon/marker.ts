@@ -244,6 +244,15 @@ export function readMarker(
   } else {
     delete marker.watching;
   }
+  // The same for `lossStreak`: absent, or not a count, is `0`.
+  const streak: unknown = marker.lossStreak;
+  if (
+    typeof streak !== "number" ||
+    !Number.isSafeInteger(streak) ||
+    streak <= 0
+  ) {
+    delete marker.lossStreak;
+  }
   return { marker, version: entry.version, unreadable: false };
 }
 
@@ -262,7 +271,8 @@ function watchedEntries(value: unknown): WatchedSummon[] {
       isNumber(watched.at) &&
       isNumber(watched.until) &&
       isNumber(watched.count) &&
-      typeof watched.kind === "string"
+      typeof watched.kind === "string" &&
+      isOptionalNumber(watched.extendedUntil)
     );
   });
 }

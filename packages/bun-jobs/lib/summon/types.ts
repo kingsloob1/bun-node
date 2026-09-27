@@ -558,6 +558,14 @@ export interface WatchedSummon {
   count: number;
   /** The summoner's `kind`. */
   kind: string;
+  /**
+   * When the watch was extended to, epoch ms: set once, when the watch would
+   * have ended while a worker was still listed with no mark, to that
+   * worker's record expiry. A record still listed then was refreshed (the
+   * worker is alive: a clean end); one gone with no mark is a death. Absent
+   * until then.
+   */
+  extendedUntil?: number;
 }
 
 /** The most recent outcome on a marker. */
@@ -586,8 +594,10 @@ export interface SummonMarker {
   /** Attempts started and not yet matched to a live worker record, oldest first. */
   pending: PendingSummon[];
   /**
-   * Attempts released on a live record and watched until their `until`, so
-   * a worker that dies after its first report still counts as a failure.
+   * Attempts released on a live record and watched until their `until` plus
+   * the clock allowance (longer while a worker is gone but inside its grace,
+   * and once extended to a still-listed record's expiry), so a worker that
+   * dies after its first report still counts as a failure.
    * Never capacity. Optional, with `v` unchanged: a marker written before it
    * existed reads as none watched, and a controller that predates it keeps
    * the field as it found it.
@@ -595,8 +605,26 @@ export interface SummonMarker {
   watching?: WatchedSummon[];
   /** When the last attempt was started, epoch ms; the cooldown counts from here. */
   lastAttemptAt?: number;
-  /** Consecutive failed or never-registered attempts; reset by a registration. */
+  /**
+   * Consecutive failed attempts — failed calls, attempts never registered,
+   * and watched attempts whose worker then died or exited with an error, one
+   * per attempt however many of its workers failed — which backoff and the
+   * circuit read. Reset by any registration, watched or not, as it always
+   * has been; a watched attempt lost later sets it to at least
+   * {@link SummonMarker.lossStreak}.
+   */
   failures: number;
+  /**
+   * Counted failures since the last **proven** success: every failure that
+   * counts adds one, and only an attempt known to have run cleanly resets it
+   * — one settled with every worker's clean exit mark, or a watch that ends
+   * clean. A registration seen only by a live record proves nothing yet and
+   * leaves it alone. A watched attempt's late loss raises `failures` to it,
+   * so a crash loop whose registrations keep resetting `failures` still
+   * opens the circuit. Absent means `0`; optional, with `v` unchanged, like
+   * `watching`.
+   */
+  lossStreak?: number;
   /** No attempt before this epoch ms: the backoff after a failure. */
   backoffUntil?: number;
   /** While set and in the future, the circuit is open and nothing is summoned. */
@@ -641,7 +669,11 @@ export interface SummonStatus {
   };
   /** Attempts in flight. */
   pending: readonly PendingSummon[];
-  /** Consecutive failures. */
+  /**
+   * Consecutive failed attempts, as the marker counts them: reset by any
+   * registration, and raised to the failures since the last proven success
+   * when a watched registration turns out lost.
+   */
   failures: number;
   /** When the backoff ends, epoch ms, if one is running. */
   backoffUntil?: number;
