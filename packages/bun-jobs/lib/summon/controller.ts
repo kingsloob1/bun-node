@@ -6,6 +6,7 @@ import type {
 } from "../drivers/index";
 import type { LocalAddedJob } from "../queue/BunQueue";
 import type { Logger } from "../shared/logger";
+import type { SummonClaim } from "./claim";
 import type { MarkerRead } from "./marker";
 import type {
   PendingSummon,
@@ -22,6 +23,7 @@ import type {
   SummonResult,
   SummonSkipReason,
   SummonStatus,
+  WatchedSummon,
 } from "./types";
 import process from "node:process";
 import {
@@ -41,8 +43,10 @@ import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
 import {
   openSummonClaim,
+  readSummonClaims,
   SUMMON_CLAIM_RETENTION_MS,
   sweepSummonClaims,
+  tallySummonClaim,
 } from "./claim";
 import { toSummoner } from "./define";
 import {
@@ -90,6 +94,10 @@ const DEFAULT_SUMMON_TIMEOUT = 30_000;
 const START_TIME_SLACK = 5_000;
 /** How many times a result is written back against a fresh read before giving up. */
 const RECORD_ATTEMPTS = 3;
+/** The fewest attempts the watch list holds, whatever the policy. */
+const WATCH_FLOOR = 8;
+/** The most attempts the watch list holds, whatever the policy. */
+const WATCH_CAP = 256;
 /** How often old claim-once entries are swept, at most, in ms. */
 const CLAIM_SWEEP_EVERY = 3_600_000;
 
@@ -158,6 +166,11 @@ function isServing(worker: WorkerInfo): boolean {
     return worker.state === "running" || worker.state === "restarting";
   }
   return !worker.paused;
+}
+
+/** How many live records carry an attempt's id: its workers still running. */
+function liveWithId(workers: readonly WorkerInfo[], id: string): number {
+  return workers.filter((worker) => worker.summon?.id === id).length;
 }
 
 /** A positive whole number, or a `ConfigError` naming the option. */
@@ -881,14 +894,38 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         .map((worker) => worker.id),
     );
     const keep: PendingSummon[] = [];
-    // Workers already registered per attempt still pending (count > 1):
-    // they are live records, counted as such, so only the rest are on their
-    // way. Worked out afresh each check, never written back.
+    // Places per attempt still pending (count > 1) that are no longer on
+    // their way — registered, or started and gone — so only the rest are.
+    // Worked out afresh each check, never written back.
     const partly = new Map<string, number>();
+    const claims = await this.#readClaims([
+      ...marker.pending,
+      ...(marker.watching ?? []),
+    ]);
+    const liveIds = new Set(workers.map((worker) => worker.id));
+    const expiries = new Map(
+      workers.map((worker) => [worker.id, worker.expiresAt]),
+    );
+    // Attempts released this check on a live record alone: watched below.
+    const released: WatchedSummon[] = [];
     for (const attempt of marker.pending) {
-      let registered = workers.filter(
-        (worker) => worker.summon?.id === attempt.id,
-      ).length;
+      // The claim-once entry, where there is one: a worker that claimed,
+      // drained and closed between two checks has no record left, but its
+      // place in the claim says how it left (see `tallySummonClaim`). Every
+      // live record carrying the id is one of its holders (a worker writes
+      // the id only once it holds a place), so the claim decides alone —
+      // including a holder still listed that has marked a failing exit.
+      // Without one, live records carrying the id, as before.
+      const claim = claims.get(attempt.id);
+      const tally = tallySummonClaim(
+        claim,
+        liveIds,
+        now,
+        START_TIME_SLACK,
+        attempt.until,
+      );
+      let registered =
+        claim === undefined ? liveWithId(workers, attempt.id) : tally.succeeded;
       if (registered === 0 && capabilities.passes === "none") {
         const match = workers.find(
           (worker) =>
@@ -900,11 +937,48 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           registered = 1;
         }
       }
-      if (
+      const failed = tally.exitedWithError + tally.died;
+      const decided = registered + failed;
+      // Settled once every place is decided, or at `until` — unless nothing
+      // succeeded yet and a holder is still inside its grace.
+      const settled =
         registered >= attempt.count ||
-        (registered > 0 && attempt.until <= now)
-      ) {
-        changed = true;
+        decided >= attempt.count ||
+        (attempt.until <= now && (registered > 0 || tally.starting === 0));
+      if (!settled) {
+        if (decided > 0) {
+          partly.set(attempt.id, decided);
+        }
+        keep.push(attempt);
+        continue;
+      }
+      changed = true;
+      // A worker that ran releases the attempt: it leaves `pending`, so it is
+      // never counted as capacity twice (on its way and live). Where the
+      // claim cannot yet say every holder left cleanly — one is only listed,
+      // still starting, or already failed — the attempt is also watched until
+      // its `until`, so a worker that crashes after its first report still
+      // counts (see `#watch`).
+      if (registered > 0) {
+        if (
+          claim !== undefined &&
+          tally.unmarked + tally.starting + failed > 0
+        ) {
+          released.push({
+            id: attempt.id,
+            at: now,
+            until: attempt.until,
+            count: attempt.count,
+            kind: attempt.kind,
+          });
+        } else if (claim !== undefined) {
+          // Every worker of it left a clean mark: proven, so the streak ends.
+          delete marker.lossStreak;
+        }
+        // A registration resets `failures`, watched or not, as it always has:
+        // failures unrelated to this worker count from zero. `lossStreak` is
+        // left alone unless the attempt is proven above — a live record
+        // proves nothing yet (see `#failLate`).
         marker.failures = 0;
         marker.last = { id: attempt.id, outcome: "registered", at: now };
         events.push({
@@ -915,28 +989,34 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         });
         continue;
       }
-      if (attempt.until <= now) {
-        changed = true;
-        lost.push(attempt);
-        this.#fail(marker, now);
-        marker.last = { id: attempt.id, outcome: "lost", at: now };
-        events.push({
-          id: attempt.id,
-          outcome: "lost",
-          kind: attempt.kind,
-          count: attempt.count,
-          ...(attempt.handles === undefined
-            ? {}
-            : { handles: attempt.handles }),
-        });
-        continue;
-      }
-      if (registered > 0) {
-        partly.set(attempt.id, registered);
-      }
-      keep.push(attempt);
+      // Started and failed, rather than never seen: say how.
+      const detail =
+        tally.exitedWithError > 0
+          ? "exited-with-error"
+          : tally.died > 0
+            ? "died"
+            : undefined;
+      lost.push(attempt);
+      this.#fail(marker, now);
+      marker.last = {
+        id: attempt.id,
+        outcome: "lost",
+        at: now,
+        ...(detail === undefined ? {} : { detail }),
+      };
+      events.push({
+        id: attempt.id,
+        outcome: "lost",
+        kind: attempt.kind,
+        count: attempt.count,
+        ...(attempt.handles === undefined ? {} : { handles: attempt.handles }),
+        ...(detail === undefined ? {} : { detail }),
+      });
     }
     marker.pending = keep;
+    if (this.#watch(marker, claims, expiries, released, now, events)) {
+      changed = true;
+    }
     rollBudget(marker, now);
 
     // Step 3: nothing needs a worker.
@@ -1150,7 +1230,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return undefined;
   }
 
-  /** Counts one failure: the backoff, and the circuit once enough have run. */
+  /**
+   * Counts one failure as it happens (a failed call, an attempt lost at
+   * `until` or failed before it registered): one more for `failures` and for
+   * `lossStreak`, then the backoff, and the circuit once enough have run.
+   */
   #fail(
     marker: SummonMarker,
     now: number,
@@ -1159,7 +1243,43 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   ): void {
     if (countsTowardCircuit) {
       marker.failures++;
+      marker.lossStreak = (marker.lossStreak ?? 0) + 1;
     }
+    this.#penalize(marker, now, retryAfterMs, countsTowardCircuit);
+  }
+
+  /**
+   * Counts a watched attempt's late loss. Its registration reset `failures`,
+   * as every registration does, and a crash loop's registrations would keep
+   * resetting it — with several attempts in flight, a loss would then only
+   * ever count 1 (measured: a dense loop needed 15 losses to open a
+   * 3-failure circuit). So the loss raises `failures` to `lossStreak`, the
+   * failures since the last proven success, which no unproven registration
+   * resets.
+   *
+   * The trade-off: while a healthy worker's watch is still open, a crash of
+   * another attempt counts together with the failures from before that
+   * registration, because nothing is proven healthy yet; the healthy watch's
+   * clean end then resets the streak. And after the circuit's `resetAfter`
+   * it closes with both counts kept (no decay), so the first late loss
+   * reopens it at once: half-open, since no success has been proven since.
+   */
+  #failLate(marker: SummonMarker, now: number): void {
+    // The streak first, then the max: raising `failures` to the streak as it
+    // was before this loss would count this loss once for `failures + 1` and
+    // not at all against the streak — one short of it, every time.
+    marker.lossStreak = (marker.lossStreak ?? 0) + 1;
+    marker.failures = Math.max(marker.failures + 1, marker.lossStreak);
+    this.#penalize(marker, now, undefined, true);
+  }
+
+  /** The backoff after a failure, and the circuit once enough have run. */
+  #penalize(
+    marker: SummonMarker,
+    now: number,
+    retryAfterMs: number | undefined,
+    countsTowardCircuit: boolean,
+  ): void {
     const wait = Math.max(
       backoffFor(Math.max(1, marker.failures), this.#policy.backoff),
       retryAfterMs ?? 0,
@@ -1437,6 +1557,181 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     ]);
   }
 
+  /**
+   * Step 2's watch: settles the attempts released on a live record, and adds
+   * this check's (`released`). Answers whether the marker changed — only
+   * when an entry was added, dropped or evicted — so a check over a quiet
+   * watch list writes nothing.
+   *
+   * Per watched attempt, from its claim:
+   * - a holder marked code `1`: `lost`, detail `exited-with-error`;
+   * - a holder gone with no mark past its grace (the later of the attempt's
+   *   and its claim's `until`, plus the clock allowance): `lost`, `died`;
+   * - either way one failure for the attempt, however many holders failed
+   *   ({@link #failLate}: at least the loss streak), with the event and
+   *   `last` saying so;
+   * - every holder marked clean: it ran, proven — dropped, no event, the
+   *   loss streak reset;
+   * - past the grace with a holder still listed and unmarked: extended, once,
+   *   to that holder's record expiry; then still listed (refreshed) or
+   *   marked clean is a clean end, and gone unmarked is `died`;
+   * - no claim any more (purged): dropped, nothing counted;
+   * - otherwise kept.
+   *
+   * Bounded by {@link #watchLimit}: past it the oldest are evicted, with one
+   * warn naming them — a summon is never refused for want of room.
+   *
+   * Limits, by design: a worker whose event loop is blocked for longer than
+   * a record lifetime across the (extended) end of its watch cannot be told
+   * from a dead one, and reads as `died`; a worker still alive when its
+   * watch ends has run, and a crash after that is the orphan rule's. A late
+   * `lost` carries no `handles`, and the summoner is not asked why.
+   */
+  #watch(
+    /** The marker being settled. */
+    marker: SummonMarker,
+    /** The claims this check read, by attempt id. */
+    claims: ReadonlyMap<string, SummonClaim | undefined>,
+    /** The live worker records' expiries, epoch ms, by worker id. */
+    live: ReadonlyMap<string, number>,
+    /** Attempts released this check, to watch from now. */
+    released: readonly WatchedSummon[],
+    /** Now, epoch ms. */
+    now: number,
+    /** Where this check's events are collected. */
+    events: SummonEventPayload[],
+  ): boolean {
+    const before = marker.watching ?? [];
+    let changed = released.length > 0;
+    const kept: WatchedSummon[] = [];
+    for (const watched of [...before, ...released]) {
+      const claim = claims.get(watched.id);
+      if (claim === undefined) {
+        changed = true;
+        continue;
+      }
+      const tally = tallySummonClaim(
+        claim,
+        new Set(live.keys()),
+        now,
+        START_TIME_SLACK,
+        watched.until,
+      );
+      const detail =
+        tally.exitedWithError > 0
+          ? "exited-with-error"
+          : tally.died > 0
+            ? "died"
+            : undefined;
+      if (detail !== undefined) {
+        changed = true;
+        this.#failLate(marker, now);
+        marker.last = { id: watched.id, outcome: "lost", at: now, detail };
+        events.push({
+          id: watched.id,
+          outcome: "lost",
+          kind: watched.kind,
+          count: watched.count,
+          detail,
+        });
+        continue;
+      }
+      // Every worker has a clean mark: it ran, proven. The streak ends.
+      if (tally.starting === 0 && tally.unmarked === 0) {
+        changed = true;
+        delete marker.lossStreak;
+        continue;
+      }
+      if (tally.starting > 0 || now < watched.until + START_TIME_SLACK) {
+        kept.push(watched);
+        continue;
+      }
+      // Due to end, with a worker still listed and no mark. Its record may
+      // outlive a crash by up to a record lifetime, so, once, the watch is
+      // extended to that record's expiry: still listed then, it was
+      // refreshed and the worker is alive; gone with no mark, it died.
+      if (watched.extendedUntil === undefined) {
+        const expiry = Math.max(
+          ...claim.holders
+            .filter((holder) => holder.exit === undefined)
+            .map((holder) => live.get(holder.worker) ?? 0),
+        );
+        if (expiry > now) {
+          changed = true;
+          kept.push({ ...watched, extendedUntil: expiry });
+          continue;
+        }
+      } else if (now < watched.extendedUntil) {
+        kept.push(watched);
+        continue;
+      }
+      // Ended clean: every worker still listed after its extension, or
+      // marked clean. Proven: the streak ends.
+      changed = true;
+      delete marker.lossStreak;
+    }
+    const limit = this.#watchLimit();
+    if (kept.length > limit) {
+      const evicted = kept.splice(0, kept.length - limit);
+      changed = true;
+      this.#logger.warn(
+        "summon watch list full: evicted the oldest watched attempts, whose late failures will not be counted",
+        { ids: evicted.map((watched) => watched.id), limit },
+      );
+    }
+    if (!changed) {
+      return false;
+    }
+    if (kept.length > 0) {
+      marker.watching = kept;
+    } else {
+      delete marker.watching;
+    }
+    return true;
+  }
+
+  /**
+   * How many attempts may be watched at once: as many as can be released
+   * within one boot budget, `maxPending × ⌈bootBudget / cooldown⌉`, at least
+   * {@link WATCH_FLOOR} and at most {@link WATCH_CAP}. With no cooldown
+   * nothing bounds how often attempts start, so it is the cap.
+   */
+  #watchLimit(): number {
+    const { maxPending, bootBudget, cooldown } = this.#policy;
+    if (cooldown <= 0) {
+      return WATCH_CAP;
+    }
+    return Math.min(
+      WATCH_CAP,
+      Math.max(WATCH_FLOOR, maxPending * Math.ceil(bootBudget / cooldown)),
+    );
+  }
+
+  /**
+   * Step 2's second source: the claim of each pending attempt. One
+   * queue-state read per attempt (bounded by `maxPending`), and none at all
+   * when the platform passes no identity — nothing could have claimed an id
+   * it never received, so those attempts release by start time alone. Read
+   * even when live records already cover an attempt: a holder still listed
+   * may have marked a failing exit.
+   */
+  async #readClaims(
+    /** The marker's pending and watched attempts. */
+    pending: readonly { id: string }[],
+  ): Promise<Map<string, SummonClaim | undefined>> {
+    if (
+      pending.length === 0 ||
+      this.#summoner.summon.capabilities.passes === "none"
+    ) {
+      return new Map();
+    }
+    return await readSummonClaims(
+      this.#driver,
+      this.#ref,
+      pending.map((attempt) => attempt.id),
+    );
+  }
+
   /** Sweeps old claim-once entries, at most once an hour, on a poll. Best effort. */
   async #sweepClaims(now: number): Promise<void> {
     if (now - this.#claimsSweptAt < CLAIM_SWEEP_EVERY) {
@@ -1507,7 +1802,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }
 
   /**
-   * Clears failures, backoff and an open circuit. Pending attempts are kept.
+   * Clears failures, the loss streak, backoff and an open circuit. Pending
+   * and watched attempts are kept, so a crash from before the reset still
+   * counts one failure after it — but not the failures the reset cleared.
    *
    * @throws {JobsError} code `SUMMON_MARKER_CONTENDED` when other controllers
    *   won every write it tried; try again.
@@ -1531,6 +1828,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       marker.failures = 0;
       delete marker.backoffUntil;
       delete marker.circuitOpenUntil;
+      // The streak too: a watched attempt lost after the reset counts one,
+      // never the failures the operator just cleared.
+      delete marker.lossStreak;
       if (
         (await setReservedState(
           this.#driver,

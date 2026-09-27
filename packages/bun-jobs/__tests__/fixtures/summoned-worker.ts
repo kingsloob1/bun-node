@@ -1,7 +1,7 @@
 import type { DriverConfig } from "../../lib/index";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
-import { BunJobs, summonedFromArgs } from "../../lib/index";
+import { BunJobs, runSummoned, summonedFromArgs } from "../../lib/index";
 
 /**
  * The worker a fake platform summons (`helpers/summon.ts`): the recipe every
@@ -21,6 +21,15 @@ import { BunJobs, summonedFromArgs } from "../../lib/index";
  *   start, holding it.
  * - `SUMMON_TEST_STALLED_MS`: the worker's `stalledInterval`.
  * - `SUMMON_TEST_LOCK_MS`: the worker's `lockDuration`.
+ * - `SUMMON_TEST_RUN_SUMMONED_IDLE_MS`: hand the worker to the real
+ *   `runSummoned` instead, with this `idleFor`, and exit when it does —
+ *   without waiting to see its own record, so a short `idleFor` gives a
+ *   worker that claims, drains and is gone inside one controller poll gap.
+ * - `SUMMON_TEST_REPORT_MS`: the worker's `reportInterval` (default 200), so
+ *   a record can outlive the controller's watch.
+ * - `SUMMON_TEST_BLOCK_MS` / `SUMMON_TEST_BLOCK_DELAY_MS`: each job blocks
+ *   the event loop this long, after this delay — a stalled but live worker
+ *   whose heartbeat stops.
  *
  * Prints one JSON line per fact: `ready`, `record` (its own heartbeat record's
  * `summon`, once listed), `processed`, `exit`.
@@ -38,12 +47,22 @@ const idleMs = Number(process.env.SUMMON_TEST_IDLE_MS ?? 400);
 const crashAfter = process.env.SUMMON_TEST_CRASH_AFTER_MS;
 const stalled = process.env.SUMMON_TEST_STALLED_MS;
 const lock = process.env.SUMMON_TEST_LOCK_MS;
+const runSummonedIdle = process.env.SUMMON_TEST_RUN_SUMMONED_IDLE_MS;
 
 const jobs = new BunJobs({ namespace, driver, logger: noopLogger });
 const worker = jobs.worker(
   queueName,
   async (job) => {
     say({ event: "processed", id: job.id, pid: process.pid });
+    if (process.env.SUMMON_TEST_BLOCK_MS !== undefined) {
+      await Bun.sleep(Number(process.env.SUMMON_TEST_BLOCK_DELAY_MS ?? 0));
+      say({ event: "blocking", pid: process.pid });
+      const end = Date.now() + Number(process.env.SUMMON_TEST_BLOCK_MS);
+      while (Date.now() < end) {
+        // block the event loop: no heartbeat while the job runs
+      }
+      say({ event: "unblocked", pid: process.pid });
+    }
     if (crashAfter !== undefined) {
       // Hold the job: the process dies with it active and locked.
       await new Promise(() => {});
@@ -53,11 +72,27 @@ const worker = jobs.worker(
     summon,
     concurrency: 4,
     pollInterval: 20,
-    reportInterval: 200,
+    reportInterval: Number(process.env.SUMMON_TEST_REPORT_MS ?? 200),
     ...(stalled === undefined ? {} : { stalledInterval: Number(stalled) }),
     ...(lock === undefined ? {} : { lockDuration: Number(lock) }),
   },
 );
+if (runSummonedIdle !== undefined) {
+  say({ event: "ready", pid: process.pid, id: worker.id });
+  const result = await runSummoned(worker, {
+    idleFor: Number(runSummonedIdle),
+    idleCheckInterval: 50,
+    exit: false,
+  });
+  await jobs.close();
+  say({
+    event: "exit",
+    pid: process.pid,
+    reason: result.reason,
+    completed: result.completed,
+  });
+  process.exit(0);
+}
 void worker.run();
 say({ event: "ready", pid: process.pid, id: worker.id });
 

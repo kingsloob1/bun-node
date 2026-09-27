@@ -10,6 +10,7 @@ import { DEFAULT_CLOSE_TIMEOUT } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
 import { resolveLogger } from "../shared/logger";
 import { summonedFromArgs } from "./args";
+import { markSummonClaimExit } from "./claim";
 
 /**
  * The worker half of summoning: {@link runSummoned} runs a worker until it is
@@ -17,8 +18,10 @@ import { summonedFromArgs } from "./args";
  * platform's grace.
  *
  * It uses only the worker's public surface (`run()`, `close()`, `pause()`,
- * `resume()`, `activeCount`, `state`, its events and its driver), so nothing
- * here touches the worker's close path.
+ * `resume()`, `activeCount`, `state`, `summon`, its events and its driver),
+ * so nothing here touches the worker's close path. The one write of its own
+ * is the exit mark on the worker's summon claim, before it closes the worker
+ * (`#markExit`).
  */
 
 /** How a summoned worker drains and stops. */
@@ -192,6 +195,14 @@ export const RUN_SUMMONED_DEFAULTS = {
    */
   forcedCloseFloor: 1_000,
 } as const;
+
+/**
+ * The longest a close waits for its exit mark to be written first, in ms —
+ * never more than a quarter of the close's budget, and not at all with none
+ * left. One compare-and-set on a reachable backend is a few ms; the bound is
+ * for one that is not, and the write carries on behind the close.
+ */
+const EXIT_MARK_WAIT = 1_000;
 
 /**
  * How long a target's `close()` can take, graceful and forced, derived from
@@ -376,6 +387,7 @@ type SummonedWorker = Pick<
   | "id"
   | "ref"
   | "driver"
+  | "summon"
   | "logger"
   | "target"
   | "config"
@@ -1052,7 +1064,17 @@ class SummonedRun {
       limits.push(this.#deadlineAt - RUN_SUMMONED_DEFAULTS.backstopMargin);
     }
     const until = limits.length === 0 ? undefined : Math.min(...limits);
-    const budget = until === undefined ? Number.POSITIVE_INFINITY : until - now;
+    const total = until === undefined ? Number.POSITIVE_INFINITY : until - now;
+    // The exit mark is written before the close starts, out of this same
+    // budget (`#markExit`), so the close rule is given what is left after
+    // the most that write may wait: sized against the whole budget, a close
+    // could plan a graceful drain that a slow mark write then pushes past
+    // its limit, escalating it to a forced one.
+    const markWait =
+      this.#worker.summon === undefined
+        ? 0
+        : Math.min(EXIT_MARK_WAIT, Math.max(0, total / 4));
+    const budget = total - markWait;
     // Before `ready` nothing has been claimed, and a graceful close would
     // first wait out the connect it interrupts: a forced one ends the
     // startup at once, and the worker resolves `run()` for it.
@@ -1097,14 +1119,17 @@ class SummonedRun {
       },
     );
 
-    void this.#worker
-      .close(
+    const close = async (): Promise<void> => {
+      await this.#markExit(stop, markWait);
+      await this.#worker.close(
         decision.force
           ? { force: true }
           : decision.timeout === undefined
             ? undefined
             : { timeout: decision.timeout },
-      )
+      );
+    };
+    void close()
       .catch((error: unknown) => {
         this.#logger.error("Summoned worker failed to close cleanly", {
           reason,
@@ -1112,6 +1137,71 @@ class SummonedRun {
         });
       })
       .then(() => this.#finish(stop));
+  }
+
+  /**
+   * Writes the real reason and code onto the summon claim this worker won,
+   * **before** the close starts: the worker's own `close()` then finds a
+   * mark and leaves it, so the controller reads `idle`, `deadline`, `signal`
+   * or `error` rather than a bare `closed` — and it is there before the
+   * record goes, so a check never sees neither. A code `1` mark is never
+   * replaced by a clean one.
+   *
+   * Waits at most `wait` — {@link EXIT_MARK_WAIT}, or a quarter of the
+   * budget if less, already taken out of the budget the close rule sized the
+   * close against — then lets the close begin while the write carries on. A failed write is
+   * logged, never thrown: the exit goes ahead either way, and the worker's
+   * own close still fills in its `closed` mark.
+   */
+  async #markExit(
+    /** The stop under way. */
+    stop: SummonedStop,
+    /** The most to wait for the write before the close begins, in ms. */
+    wait: number,
+  ): Promise<void> {
+    const summon = this.#worker.summon;
+    if (summon === undefined) {
+      return;
+    }
+    const write = markSummonClaimExit(
+      this.#worker.driver,
+      this.#worker.ref,
+      summon.id,
+      this.#worker.id,
+      {
+        exitedAt: Date.now(),
+        reason: stop.reason,
+        code: codeFor(stop.reason),
+        ...(this.#closingForced ? { forced: true } : {}),
+      },
+      true,
+    ).then(
+      (result) => {
+        if (result === "contended") {
+          this.#logger.warn(
+            "Summoned worker could not mark its exit on its summon claim: the entry kept changing",
+            { summonId: summon.id },
+          );
+        }
+      },
+      (error: unknown) => {
+        this.#logger.warn(
+          "Summoned worker could not mark its exit on its summon claim",
+          { summonId: summon.id, error },
+        );
+      },
+    );
+    if (wait <= 0) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      write,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, wait);
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   #finish(stop: SummonedStop): void {
