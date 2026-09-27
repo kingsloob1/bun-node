@@ -5618,7 +5618,51 @@ It is **safe by default**, SQLite's index builds aside:
 - A type change is reported with `blocking: true` and `applied: false` unless
   `alterColumns` asks for it.
 - Every `SchemaChange` comes back either way, with fields `kind`, `table`,
-  `target`, `statement`, `reason`, `blocking` and `applied`.
+  `target`, `statement`, `reason`, `blocking` and `applied`. An
+  `alter-column` change whose column is in the wrong collation also carries
+  `collation: { found, expected }`. The next section explains why that one
+  matters more than a type change.
+
+**Connect warns about identifier collations.** On MySQL and MariaDB the
+driver declares every identifier column binary: ids, queue and state names,
+keys, namespaces (`utf8mb4_0900_bin` on MySQL, `utf8mb4_nopad_bin` on
+MariaDB). A table created by an older version kept the server's default,
+which is case- and accent-insensitive (`utf8mb4_uca1400_ai_ci` on MariaDB 11).
+`IF NOT EXISTS` never changes it. That is not a performance difference. It
+gives wrong answers: `Report` and `report` are one job id or one key, and
+`listQueueState` with a prefix of `""` or one ending in `:` comes back empty,
+because that collation sorts `;` before `:`.
+
+So when the driver connects it compares its identifier columns with what it
+would create. If any differ it logs **one `warn` per connect**, however many
+tables are affected. The warning names each table and column, the collation
+found and the one expected, and the fix:
+
+```ts
+await driver.syncSchema({ dryRun: true }); // see the statements first
+await driver.syncSchema({ alterColumns: true }); // rewrites each table under a lock
+```
+
+- It costs no extra query. Connect already reads every table's columns to
+  decide what to create, and now does it in one catalog query instead of one
+  per table. Measured over existing tables, connect got faster: 7.4 ms to
+  3.7 ms on MariaDB 11.8, 20.7 to 18.9 ms on MySQL 8.4 and 37 to 24 ms on
+  Postgres. The comparison itself takes about 0.1 ms.
+- Only collations are warned about. A column whose type differs (`jsonb` for
+  `json`, say) costs speed or space, not answers, so it never triggers the
+  warning. `syncSchema({ dryRun: true })` still reports it.
+- With `syncSchema: true` the warning still fires, because a plain sync
+  declines the blocking rewrite. It stops once the rewrite has run, whether
+  through `syncSchema: { alterColumns: true }` on connect or a call.
+- It never fires on Postgres or SQLite. The driver has never declared a
+  column collation there. Postgres equality is exact under any deterministic
+  collation, and every ordering and range the driver runs names `COLLATE "C"`
+  itself. SQLite's default `BINARY` is exact.
+- The warning goes to the driver's `logger` option: bun-common's console
+  logger by default, or whatever `BunJobs`, `BunQueue`, `BunQueueWorker` or
+  `BunRunner` was given when it builds the driver from a config. To silence
+  it while a rewrite waits for its window, pass that driver `noopLogger`, or a
+  logger whose level is `error`.
 
 **Connect creates tables, and indexes only with them.** On SQL, connect runs
 `CREATE TABLE IF NOT EXISTS` for every table and builds a table's indexes only
@@ -5727,6 +5771,12 @@ be any of these:
 
 Each queue, worker and runner binds its identity (`namespace`, `queue`,
 `workerId`, `runnerId`). A processor's `ctx.logger` is also bound to the job.
+
+The SQL driver takes a `logger` too, bound with `driver: "sql"` and
+`adapter`. Its one record is the connect-time
+[collation warning](#schema-sync). A `BunJobs`, queue, worker or runner that
+builds its driver from a config passes its own `logger` to it. A driver
+instance you construct keeps the logger you gave it.
 
 A child's `ctx.logger` is forwarded to the parent's `log` event when
 `forwardLogs` is on (and always for a worker's processor on a worker-thread or

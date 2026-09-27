@@ -1040,7 +1040,11 @@ export class BunQueueWorker<
     this.#origin = newToken(this.id);
     this.#workerRef = { key: this.key, host: HOST, pid: process.pid };
 
-    const { driver, owned } = resolveDriver(options.driver, options.metrics);
+    const { driver, owned } = resolveDriver(
+      options.driver,
+      options.metrics,
+      options.logger,
+    );
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#completions = new CompletionBatcher(driver, this.ref);

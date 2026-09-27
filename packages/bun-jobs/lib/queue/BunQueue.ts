@@ -432,7 +432,11 @@ export class BunQueue<
     this.name = assertSegment(name, "queue name");
     this.namespace = assertNamespace(options.namespace);
 
-    const { driver, owned } = resolveDriver(options.driver);
+    const { driver, owned } = resolveDriver(
+      options.driver,
+      undefined,
+      options.logger,
+    );
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#defaults = options.defaultJobOptions;

@@ -384,7 +384,11 @@ export class BunJobs<
   constructor(options: BunJobsConfig<NoInfer<TJobs>, NoInfer<TRegistryQueue>>) {
     this.namespace = assertNamespace(options.namespace);
 
-    const { driver, owned } = resolveDriver(options.driver, options.metrics);
+    const { driver, owned } = resolveDriver(
+      options.driver,
+      options.metrics,
+      options.logger,
+    );
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#loggerOption = options.logger;

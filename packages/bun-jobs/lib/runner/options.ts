@@ -189,7 +189,11 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
   const id = assertSegment(options.id, "runner id");
   const namespace = assertNamespace(options.namespace);
 
-  const { driver, owned } = resolveDriver(options.driver, options.metrics);
+  const { driver, owned } = resolveDriver(
+    options.driver,
+    options.metrics,
+    options.logger,
+  );
 
   // A child cannot receive a driver instance, only a description of one, so
   // an explicit `childDriver` wins and a config-shaped `driver` stands in.

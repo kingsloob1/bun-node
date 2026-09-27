@@ -50,7 +50,8 @@ const runner = new BunRunner<
       }
     : {}),
   syncInterval: Number(process.env.SYNC_INTERVAL ?? 0),
-  driver: createDriver(driverConfig),
+  // Silent like the runner: see `runner-instance.ts`.
+  driver: createDriver(driverConfig, { logger: noopLogger }),
   // A description of the same backend, so an override moving runs into a
   // child process is honoured rather than refused for want of one.
   childDriver: driverConfig,
