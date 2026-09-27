@@ -14,6 +14,13 @@
  * describing what it found in a line that never needs the element printed.
  * Assertions that something **is** there (`.not.toBeNull()`) are unaffected:
  * when they fail, the value is `null`, which prints.
+ *
+ * This is Bun's bug, https://github.com/oven-sh/bun/issues/37310: past the
+ * longest string the engine allows, the failure message for a value in a
+ * large DOM tree cannot be built, and the assertion returns without
+ * throwing. The fix is https://github.com/oven-sh/bun/pull/37311. Once a Bun
+ * with it is the floor, these helpers can become plain matchers again, and
+ * the guard in `assert.test.ts` can go with them.
  */
 
 /** A short, safe description of a value an absence check found. */
