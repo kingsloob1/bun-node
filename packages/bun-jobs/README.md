@@ -2920,6 +2920,8 @@ Each attempt that changes state emits `summon` on the controller
 and is logged. `controller.status()` reads the shared state, and
 `controller.reset()` clears failures, backoff and an open circuit.
 
+Example: [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-controller.ts).
+
 ### Summon policy
 
 | Option | Default | Meaning |
