@@ -2349,6 +2349,8 @@ at once, while the driver's connect is still in flight, and the worker closes
 that connection only when it completes — which on Lambda can be after the
 invocation has returned, into the freeze.
 
+Example: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts).
+
 ## Who ran a job: worker attribution
 
 Every job records the worker that claimed its current or last attempt as
