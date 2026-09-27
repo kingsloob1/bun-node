@@ -61,14 +61,16 @@ export function useRefreshInterval(kind: QueueRefreshKind): number | false {
 
 /**
  * Queue events that do not change what a list or count shows: progress
- * (the jobs page shows none), and adds that added nothing or only replaced
- * data. Everything else moves a job between states, or adds or removes one.
+ * (the jobs page shows none), adds that added nothing or only replaced
+ * data, and a summon attempt (it starts or releases a worker, and moves no
+ * job). Everything else moves a job between states, or adds or removes one.
  */
 const NOT_COUNTED: ReadonlySet<QueueEventName> = new Set<QueueEventName>([
   "progress",
   "duplicate",
   "throttled",
   "debounced",
+  "summon",
 ]);
 
 /** The queue events that change counts, the jobs pages and the queue lists. */

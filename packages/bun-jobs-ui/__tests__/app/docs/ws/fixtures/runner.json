@@ -1029,6 +1029,7 @@
                 "debounced",
                 "throttled",
                 "repeatScheduled",
+                "summon",
                 "control",
                 "started",
                 "succeeded",
