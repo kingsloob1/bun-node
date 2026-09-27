@@ -101,6 +101,25 @@ For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts
 | [`job-defaults-panel.ts`](./06-browser/job-defaults-panel.ts) | the queue's Job defaults panel (`?panel=job-defaults`) in headless Chrome, against a real API: a save reaches new jobs only, while explicit options and older jobs keep theirs; Reset sends `DELETE ?expectedSeq=`; a stale save or reset is refused with 409 `CONTROL_CONTENDED`, and the other write survives; Apply to N pending jobs…: dry-run preview, batched with a cursor (`maxApplyDefaults` 5), Cancel and Continue, "Include jobs added before this version", counts adding up to `examined`, `skippedExplicit` and the exhausted warning; 409 `DEFAULTS_CHANGED` after a preview or mid-walk; and the gates: read-only without the opt-ins (writes answer 404 `ROUTE_NOT_FOUND`), no panel in runner mode, no Apply without `jobDefaultsApply`. Waits on conditions, never on time; skips like `pause-and-retry.ts` |
 | [`jobs-paging.ts`](./06-browser/jobs-paging.ts) | paging the queue's jobs table in headless Chrome, every claim asserted on the screen **and** on the request that produced it, read off the host ahead of the API with the cursor masked and compared whole, so a parameter that should not be there fails the comparison too: two queues seeded alike, each read to its first page and then drained by exactly the five jobs that page showed, where the arm turned with the **Page** control steps over the next five, named by id, with no repeated row, no error and nothing in the answer to notice, while the arm turned with **Next** shows exactly those five; `?offset=10` read by offset and minting a cursor all the same, so the Next after it carries a `cursor` and no `offset` at all, while an `offset` sent beside a cursor by hand answers what the cursor alone does with the number nowhere in the reply; two pages walked leaving the URL still saying `offset=10`, so a reload re-samples from where the walk began rather than resuming a trail a link cannot carry; a resize re-sending the cursor, so ten rows start at the row five started at instead of at a multiple of ten; the names filter, the order, the state tab and "Count total" each restarting paging in the same render, the walked request they replaced shown beside the restarted one, plus a hand-sent cursor that is a page in its own walk and a 400 "this cursor belongs to another walk" with the order turned round; a walk over eight jobs in pages of four ending on a **full** page with `next: null`, `hasMore: false` and Next spent, since `page.next` is the only end signal a walk has; and, on a second host that always runs the **file** driver whatever `EXAMPLE_DRIVER` says, one driver answering both ways in one run: an unfiltered walked page carrying its position, so the range numbers the rows as "5–8" under a "Page 2", and a `name=alpha` one omitting the key, `Object.hasOwn(page, "offset")` false and never `null`, so the range counts "4 rows" and no page is named. Each rendering is asserted against the answer that page really got, never against the driver's name. The Active tab is asserted against what its host reports: it walks wherever `features.addedByState` serves `sort=createdAt` and keeps its offset pager where that sort is refused, and `state=active` with a `cursor` and no `sort` is the 400 naming `lockExpiresAt` and lock renewal; the note at the foot of the file says which README sentence that contradicts. The page's own poll is held by the host for the draining step alone, so a refresh cannot show the rows an offset turn is about to skip. Waits on conditions, never on time; skips like `pause-and-retry.ts` |
 
+**Chrome profiles: open a view with `openView`, never `new Bun.WebView`.**
+`Bun.WebView`'s Chrome backend starts **one Chrome per process**, and the
+first view's profile directory (`dataStore.directory`) is the one it keeps;
+every later view in the process reuses that Chrome. Given no `dataStore`,
+Bun makes a profile of its own, `/tmp/.<hash>-00000000.bun-chrome`, which
+**outlives `view.close()`**. Every run of a browser example left one behind,
+a few hundred files and about 5 MB each, and 670 of them had piled up before
+anyone noticed, most of what used up `/tmp`'s inodes. So
+[`shared/browser.ts`](./shared/browser.ts)'s `openView` gives the process a
+profile it owns, `bun-jobs-ui-example-chrome-p<pid>-<random>`, made once,
+removed when the process exits. Removing it cannot be the whole answer: a
+run killed before it exits never gets to remove its profile, and a
+departing Chrome writes a few last files (about 8 KB) after its owner has
+removed it. So the first view of each run also sweeps the profiles whose
+owning process has exited, which is what collects both, and it never takes
+one whose owner is still running. The name follows the package's e2e
+profiles (`bun-jobs-ui-<label>-p<pid>-…`), so each sweep collects the
+other's leftovers and neither touches a live one.
+
 ### 10 — Option tour
 
 The tour **asserts** every option. It sets each option, checks what changes
