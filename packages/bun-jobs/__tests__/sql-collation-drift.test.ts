@@ -5,7 +5,15 @@ import { join } from "node:path";
 import process from "node:process";
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { SQL } from "bun";
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test";
+import { resetCollationWarnings } from "../lib/drivers/sql/collation-guard";
 import { createSchema, schemaDefinition } from "../lib/drivers/sql/schema";
 import {
   collationDrift,
@@ -45,6 +53,14 @@ function warnings(events: LogEvent[]): LogEvent[] {
 
 /** Drivers to close when the test that made them ends. */
 const drivers: SqlDriver[] = [];
+
+// The warning is given once per process for a set of tables, and `bun test`
+// runs every file in one process. Each case uses tables of its own, so no key
+// repeats, but a case asserting "exactly one" must not depend on what ran
+// before it, in this file or another: it starts from an empty guard.
+beforeEach(() => {
+  resetCollationWarnings();
+});
 
 afterEach(async () => {
   await Promise.allSettled(
@@ -467,6 +483,9 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
       const applied = await first.driver.syncSchema({ alterColumns: true });
       expect(applied.filter((c) => c.collation && c.applied)).toHaveLength(2);
 
+      // The first connect used up the process's warning for these tables, so
+      // without a reset the silence below would prove nothing about the repair.
+      resetCollationWarnings();
       const second = driverFor(prefix);
       await second.driver.connect();
       expect(warnings(second.events)).toEqual([]);

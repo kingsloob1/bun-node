@@ -65,6 +65,13 @@ export interface SerializableContext<TArgs = unknown> {
   args: TArgs;
   /** How the handler can build a driver for the runner's backend. */
   driverConfig?: DriverConfig;
+  /**
+   * Guard keys (server, database and table names; no credentials) whose SQL
+   * collation the runner has already checked, recorded in the child before
+   * the handler runs so a driver built for those tables does not warn again.
+   * Internal; never on the handler's context. See `collation-guard.ts`.
+   */
+  collationChecked?: string[];
   /** The handler file to import. */
   file: string;
   /** How long the child has to unwind after `close` before it exits itself. */

@@ -18,7 +18,8 @@ import { reachError, reportUnreachable } from "./helpers/backends";
  * which side of the platform's grace a close lands, which is seconds, not
  * milliseconds. **Duration-asserting cases:** the second SIGINT, the
  * deadline, the backstop and its control, the 5 s close rule and its
- * control, and "in-invocation" leaving nothing to hold the process.
+ * control, "in-invocation" leaving nothing to hold the process, and a signal
+ * escalating a graceful close and its control.
  */
 
 const FIXTURE = join(
@@ -970,6 +971,187 @@ for (const backend of EDGE_BACKENDS) {
         expect(code).toBe(0);
         expect(fixture.lines.some(logged(BACKSTOP))).toBe(true);
         expect(fixture.lines.some(logged(STOPPED))).toBe(false);
+        expect(aliveAfter).toBe(true);
+      }, 40_000);
+    }
+  });
+}
+
+/**
+ * A signal during a graceful close escalates it (#207): `runSummoned` calls
+ * `close({ force: true })`, which aborts the attempts in flight and
+ * force-closes the target, so a child-process attempt that ignores SIGTERM is
+ * killed at once rather than at the end of the target's 4 s grace.
+ *
+ * The scenario is the one that used to orphan the child: a deadline close
+ * (the default `shutdownBuffer` of 7 s leaves a budget of 6,750 ms, so the
+ * jobs get a `timeout` of about 1,250), then a platform's SIGTERM on a 3 s
+ * grace, whose backstop lands 2,750 ms later — before the graceful close
+ * could have killed the child. The signal lands either while the close waits
+ * on the attempt or once the target's own graceful close has begun.
+ *
+ * The child is found by the pid it wrote itself and confirmed to be this
+ * worktree's spawn entry, as in `worker-close-escalation-orphans.test.ts`; an
+ * orphan is killed by that pid, whatever the assertions say.
+ */
+const ESCALATION_BACKENDS: EdgeBackend[] = [
+  { name: "memory" },
+  { name: "postgres", variable: "BUN_JOBS_TEST_POSTGRES_URL" },
+];
+
+/** The grace the SIGTERM carries: its backstop is 2,750 ms after it. */
+const ESCALATION_GRACE = 3_000;
+
+/**
+ * How long, from the signal, the escalated close and the exit may take: the
+ * kill and its reaping (`TARGET_CLOSE_REAP`, 500 ms) plus slack for a loaded
+ * machine, and still well before the backstop.
+ */
+const ESCALATION_PROMPT = 1_500;
+
+for (const backend of ESCALATION_BACKENDS) {
+  const url = backend.variable ? process.env[backend.variable] : undefined;
+  if (backend.variable && !url) {
+    describe.skip(`a signal escalates a graceful close on ${backend.name}: not configured`, () => {
+      it(`runs when ${backend.variable} is set`, () => {});
+    });
+    continue;
+  }
+  const config =
+    backend.name === "postgres"
+      ? ({ type: "sql", adapter: "postgres", url: url! } as const)
+      : undefined;
+  const unreachable = config ? await reachError(config) : undefined;
+  if (backend.variable && unreachable) {
+    reportUnreachable(backend.name, backend.variable, unreachable);
+    continue;
+  }
+
+  describe(`a signal escalates a graceful close on ${backend.name}`, () => {
+    /**
+     * Starts a deadline close on a child-process spin target, SIGTERMs it on
+     * a 3 s grace `after` ms into the close, and reports what happened and
+     * whether the child outlived the process.
+     */
+    async function signalMidClose(
+      /** Where the close is when the signal lands. */
+      phase: "drain" | "target-close",
+      /** `"no-escalate"` for the negative control. */
+      probe?: "no-escalate",
+    ): Promise<{
+      fixture: Fixture;
+      code: number;
+      sent: number;
+      exitAt: number;
+      aliveBefore: boolean;
+      aliveAfter: boolean;
+    }> {
+      const namespace = `run-summoned-esc-${process.pid}-${Date.now()}`;
+      if (config) {
+        cleanups.push(async () => {
+          const driver = createDriver(config);
+          await driver.connect();
+          await driver.purge(namespace);
+          await driver.close();
+        });
+      }
+      const file = await pidFile();
+      // The deadline close starts 3 s in, once the attempt's child is up.
+      const fixture = start(
+        {
+          DRIVER: backend.name,
+          NAMESPACE: namespace,
+          JOBS: "1",
+          TARGET: "child-process",
+          PROCESSOR: "spin",
+          PID_FILE: file,
+          DEADLINE_IN_MS: "10000",
+          OPTIONS: JSON.stringify({ idleFor: 60_000 }),
+          ...(probe ? { PROBE: probe } : {}),
+        },
+        [
+          "--bun-jobs-summon-id=escalate",
+          `--bun-jobs-summon-grace-ms=${ESCALATION_GRACE}`,
+        ],
+      );
+      const pid = await childPid(file);
+      try {
+        // The right process: this worktree's spawn entry.
+        expect(inspect(pid).args).toContain(SpawnExecutor.entry);
+        const closing = await fixture.waitFor(logged(CLOSING));
+        const timeout = closing.fields?.timeout as number;
+        // In the drain, or past the jobs' timeout into the target's close,
+        // which SIGTERMs the child and would wait 4 s before killing it.
+        const into = phase === "drain" ? 300 : timeout + 500;
+        await Bun.sleep(Math.max(0, closing.at + into - Date.now()));
+        const aliveBefore = inspect(pid).alive;
+        const sent = fixture.signal("SIGTERM");
+        const { code, at } = await exitOf(fixture);
+        // Past the reaping a kill needs, and no further: the claim is
+        // "promptly", as in worker-close-escalation-orphans.test.ts.
+        const until = Date.now() + 1_000;
+        while (inspect(pid).alive && Date.now() < until) {
+          await Bun.sleep(25);
+        }
+        return {
+          fixture,
+          code,
+          sent,
+          exitAt: at,
+          aliveBefore,
+          aliveAfter: inspect(pid).alive,
+        };
+      } finally {
+        killIfOurs(pid);
+      }
+    }
+
+    for (const phase of ["drain", "target-close"] as const) {
+      const where =
+        phase === "drain"
+          ? "while the close waits on the attempt"
+          : "during the target's graceful close";
+
+      it(`SIGTERM ${where} forces the close, exits promptly and kills the child`, async () => {
+        const { fixture, code, sent, exitAt, aliveBefore, aliveAfter } =
+          await signalMidClose(phase);
+
+        expect(code).toBe(0);
+        // A graceful deadline close, with about 1,250 ms for the jobs.
+        const fields = fixture.lines.find(logged(CLOSING))?.fields ?? {};
+        expect(fields).toMatchObject({
+          reason: "deadline",
+          target: "child-process",
+          force: false,
+        });
+        expect(fields.timeout as number).toBeLessThanOrEqual(1_250);
+        expect(fields.timeout as number).toBeGreaterThan(1_250 - 500);
+        // The child ignored everything but a kill until the signal.
+        expect(aliveBefore).toBe(true);
+        expect(
+          fixture.lines.some(logged("Summoned worker already stopping")),
+        ).toBe(true);
+        expect(fixture.lines.some(logged(BACKSTOP))).toBe(false);
+        expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
+          reason: "deadline",
+          code: 0,
+        });
+        expect(exitAt - sent).toBeLessThan(ESCALATION_PROMPT);
+        expect(aliveAfter).toBe(false);
+      }, 40_000);
+
+      it(`negative control: without the escalation, SIGTERM ${where} leaves the backstop to exit, and orphans the child`, async () => {
+        const { fixture, code, sent, exitAt, aliveBefore, aliveAfter } =
+          await signalMidClose(phase, "no-escalate");
+
+        expect(code).toBe(0);
+        expect(aliveBefore).toBe(true);
+        expect(fixture.lines.some(logged(BACKSTOP))).toBe(true);
+        expect(fixture.lines.some(logged(STOPPED))).toBe(false);
+        expect(exitAt - sent).toBeGreaterThanOrEqual(
+          ESCALATION_GRACE - 250 - EARLY,
+        );
+        // The backstop cut the target's close short: the child survived.
         expect(aliveAfter).toBe(true);
       }, 40_000);
     }

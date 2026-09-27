@@ -1,4 +1,5 @@
 import type { DriverConfig, ExecutionMode, JobsDriver } from "../drivers/index";
+import type { Logger } from "../shared/logger";
 import type {
   BunRunnerOptions,
   ResolvedRunLogCaptureOptions,
@@ -25,6 +26,7 @@ import {
 } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
 import { assertNamespace, assertSegment } from "../shared/keys";
+import { createJobsLogger } from "../shared/logger";
 import { normalizeSchedule } from "../shared/schedule";
 import { isExecutionMode, legacyExecutionModeHint } from "./config";
 import { createRedactor } from "./redact";
@@ -182,17 +184,33 @@ function resolveCaptureLogs(
 
 /** Applies every default and validates what cannot be defaulted. */
 export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
+  /** Every option, defaulted and validated. */
   resolved: ResolvedRunnerOptions<TArgs>;
+  /** The driver: the one given, or one built from a config. */
   driver: JobsDriver;
+  /** Whether `driver` was built here, and so is the runner's to close. */
   ownsDriver: boolean;
+  /**
+   * The runner's logger, carrying its namespace, id and name. A driver built
+   * here from a config logs through it too.
+   */
+  logger: Logger;
 } {
   const id = assertSegment(options.id, "runner id");
   const namespace = assertNamespace(options.namespace);
 
+  // Resolved before the driver so a driver built here logs with the runner's
+  // bindings — its connect-time collation warning names the runner.
+  const logger = createJobsLogger(
+    options.logger,
+    { namespace, runnerId: id },
+    options.name ?? id,
+  );
+
   const { driver, owned } = resolveDriver(
     options.driver,
     options.metrics,
-    options.logger,
+    logger,
   );
 
   // A child cannot receive a driver instance, only a description of one, so
@@ -264,5 +282,5 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
     inProcess: { ...options.inProcess },
   };
 
-  return { resolved, driver, ownsDriver: owned };
+  return { resolved, driver, ownsDriver: owned, logger };
 }

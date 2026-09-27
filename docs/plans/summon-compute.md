@@ -1548,13 +1548,19 @@ graceful choice never needs revisiting except by the backstop.
   child.
 - **`pauseSignals` defaults to `false`** (#195 review): handling SIGTSTP stops
   Ctrl-Z suspending the process, so a platform that sends it opts in.
-- **Known gap: a signal during a graceful close cannot shorten it.**
-  `runSummoned` calls `close({ force: true })` then, but on develop a
-  re-entrant close only awaits the one running, so the backstop bounds what is
-  left and can cut a child-process target's grace short, orphaning its child
-  (reproduced: a deadline close with timeout 1,249, then SIGTERM on a 3 s
-  grace). The bun-jobs session's close escalation (`fix/close-escalation`:
-  `close({ force: true })` mid-close escalates) closes it with no change here.
+- **A signal during a graceful close escalates it.** `runSummoned` calls
+  `close({ force: true })` then, and since #207 that escalates the close
+  already running: the attempts in flight are aborted and the target
+  force-closed, so the close finishes promptly and a child-process attempt is
+  killed, not orphaned. Before #207 a re-entrant close only awaited the one
+  running, so the backstop cut a child-process target's grace short and
+  orphaned its child (reproduced: a deadline close with timeout 1,249, then
+  SIGTERM on a 3 s grace). `run-summoned.test.ts` now plays that scenario, on
+  memory and Postgres, with the signal landing in the drain and in the
+  target's graceful close: the process exits within 1.5 s of the signal, no
+  backstop, and the child is gone. Its negative control (probe
+  `escalate: false`) reproduces the old gap: the backstop exits at +2,750 ms
+  and the child survives.
 - **A worker that is already running is a `ConfigError`**: `runSummoned`
   starts it.
 - **Measured** (Q38): a graceful child-process close is 4,006 ms in the
@@ -1824,8 +1830,12 @@ const scalerApi = createJobsApi({
 `authorize` is `(req, context)`, and a `BunRequest` reads a header with
 `getHeader(name)`; the draft's `({ req }) => req.headers.get(…)` failed with a
 500 [S, corrected 2026-09-26 by PR-5's test of this recipe]. It can read
-demand and nothing else: `/demand` is `queues.list`, which this API does not
-allow. `queues.summon` is a write that spends
+queue-level figures and nothing more: `queues.read` serves the per-queue
+demand route and also `/queues/:queue`, its counts, `/counts/added`,
+`/limits` and `/job-defaults` — reads only, with no job, payload, worker or
+runner data [S, corrected 2026-09-27 by PR-7's check of this recipe; the
+draft said "demand and nothing else"]. `/demand` is `queues.list`, which this
+API does not allow. `queues.summon` is a write that spends
 money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS`
 (`api/contract/constants.ts:19-68`), **`JOBS_API_MUTATIONS`** (`:84-117`, so
 `readOnly: true` removes it) and **`JOBS_API_OPT_IN_ACTIONS`** (`:136-144`,
