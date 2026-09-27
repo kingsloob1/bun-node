@@ -3520,10 +3520,14 @@ run-all.ts` in `examples/bun-jobs-ui`.
   - **Reset answers the status after it**; a reset outwritten every time is
     409 `SUMMON_MARKER_CONTENDED` (a second new code).
   - **`GET …/summon` is `queues.read`** (§6.2): it spends nothing, and it is
-    secret-free — a fact is dropped when its key has a credential word in it
-    (`token`, `secret`, `key`, `password`, matched as whole words split at
-    camelCase and `_`/`-`/`.`, so `keyspace` stays; the draft's substring
-    regex also dropped it), when its value holds a URL with userinfo
+    secret-free — a fact is dropped when its key has a credential word as a
+    whole word (split at camelCase and `_`/`-`/`.`) or, joined lower case,
+    ends with one, so the backstop fails safe: `apikey` and `sessiontoken` go
+    as well as `apiKey`, while `keyspace` and `tokenizerModel` stay (the list:
+    `token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`,
+    `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`; a
+    whole-word-only match served joined keys, #218 review round 2), when its
+    value holds a URL with userinfo
     (`://user:pass@`), and, for a `host`/`hostname` fact, unless
     `exposeHosts` is on (#218 review) — and a pending attempt's `handles`
     go out only with `serialize.exposeSummonHandles`, as

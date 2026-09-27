@@ -2980,8 +2980,10 @@ answers 415 `UNSUPPORTED_MEDIA_TYPE`: the CSRF rule in the
 and removed by `readOnly`, since it spends money. Reading the status is
 `queues.read`: it spends nothing, and it is secret-free — `summoner.facts`
 come only from `describe()`, and three kinds are dropped anyway: a fact whose
-key has a credential word in it (`token`, `secret`, `key`, `password`, as a
-whole word: `apiKey` and `secretArn` go, `keyspace` stays), one whose value
+key has, or ends with, a credential word (`token`, `secret`, `key`,
+`password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`,
+`private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and
+`secretArn` go, `keyspace` stays — the filter fails safe), one whose value
 holds a URL with userinfo (`postgres://user:pass@…`), and a `host` or
 `hostname` fact unless `serialize.exposeHosts` is on; a pending attempt's
 platform `handles`, like the `summon` event's, go out only with

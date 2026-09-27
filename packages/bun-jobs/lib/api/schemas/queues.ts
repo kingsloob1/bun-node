@@ -572,7 +572,7 @@ export const SummonStatusSchema = s.named(
           capabilities: SummonCapabilitiesSchema,
           facts: s.record(s.string(), {
             description:
-              "Secret-free facts from the summoner's `describe()`. Dropped whatever the summoner says: a fact whose key has a credential word in it (`token`, `secret`, `key`, `password`, as whole words: `apiKey` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.",
+              "Secret-free facts from the summoner's `describe()`. Dropped whatever the summoner says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.",
           }),
         }),
       ),

@@ -229,7 +229,7 @@ describe("GET /queues/{queue}/summon", () => {
 });
 
 describe("summoner facts", () => {
-  it("drops a key with a credential word in it, as a whole word, and keeps the rest", () => {
+  it("drops a key that has or ends with a credential word, failing safe, and keeps the rest", () => {
     for (const key of [
       "apiKey",
       "api_key",
@@ -243,15 +243,33 @@ describe("summoner facts", () => {
       "token",
       "tokens",
       "sessionToken",
+      // Joined lower case: one word each, caught by the ending. A whole-word
+      // match alone served every one of these.
+      "apikey",
+      "APIKEY",
+      "secretkey",
+      "accesskey",
+      "authtoken",
+      "privatekey",
+      "clientsecret",
+      "sessiontoken",
+      // The wider list.
+      "passwd",
+      "pwd",
+      "credentials",
+      "authorization",
+      "bearer",
+      // A credential word ending another word: dropped, the safe way.
+      "monkey",
     ]) {
       expect({ key, served: isServableFact(key, "x", true) }).toEqual({
         key,
         served: false,
       });
     }
-    // Negative controls: a credential word inside another word is not one.
-    // The substring regex this replaced dropped all but `cluster`.
-    for (const key of ["keyspace", "monkey", "cluster", "tokenizerModel"]) {
+    // Negative controls: a credential word at the START of another word is
+    // not one. The substring regex this replaced dropped both of the first two.
+    for (const key of ["keyspace", "tokenizerModel", "cluster", "authors"]) {
       expect({ key, served: isServableFact(key, "x", true) }).toEqual({
         key,
         served: true,

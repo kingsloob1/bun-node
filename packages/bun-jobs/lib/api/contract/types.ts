@@ -1249,10 +1249,13 @@ export interface SummonStatusDto {
     capabilities: SummonCapabilitiesDto;
     /**
      * Secret-free facts from the summoner's `describe()`: a cluster, a
-     * region, an image. Dropped whatever the summoner says: a fact whose key
-     * has a credential word in it (`token`, `secret`, `key`, `password`, as
-     * whole words: `apiKey` and `secretArn` go, `keyspace` stays), one whose
-     * value holds a URL with userinfo (`://user:pass@`), and a `host` or
+     * region, an image. Dropped whatever the summoner says, failing safe: a
+     * fact whose key has, or ends with, a credential word (`token`, `secret`,
+     * `key`, `password`, `passwd`, `pwd`, `credential`, `auth`,
+     * `authorization`, `bearer`, `private`, `cookie`, `session`): `apiKey`,
+     * `apikey`, `sessiontoken` and `secretArn` go, `keyspace` and
+     * `tokenizerModel` stay. Also one whose value holds a URL with userinfo
+     * (`://user:pass@`), and a `host` or
      * `hostname` fact unless the server enables `serialize.exposeHosts`.
      */
     facts: Record<string, string>;

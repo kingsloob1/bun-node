@@ -838,12 +838,35 @@ export function toEventDto(
 }
 
 /**
- * The words that make a fact's key look like a credential, matched against
- * whole words of the key (see {@link factKeyWords}), singular or plural: so
- * `apiKey`, `api_key`, `secretArn` and `password` are dropped, and
- * `keyspace` or `monkey` are not.
+ * The words that make a fact's key look like a credential, singular or
+ * plural. A backstop must fail safe, so a key is dropped when any of its
+ * words is one of these (see {@link factKeyWords}) **or** when the whole key,
+ * lower case with its separators removed, ends with one: `apiKey`, `api_key`,
+ * `apikey`, `sessiontoken`, `clientsecret` and `dbPassword` are all dropped,
+ * while `keyspace` and `tokenizerModel` are served. `monkey` is dropped too,
+ * which errs the safe way.
  */
-const CREDENTIAL_WORD = /^(?:token|secret|key|password)s?$/;
+const CREDENTIAL_WORDS = [
+  "token",
+  "secret",
+  "key",
+  "password",
+  "passwd",
+  "pwd",
+  "credential",
+  "auth",
+  "authorization",
+  "bearer",
+  "private",
+  "cookie",
+  "session",
+] as const;
+
+/** One of {@link CREDENTIAL_WORDS}, as a whole word, optionally plural. */
+const CREDENTIAL_WORD = new RegExp(`^(?:${CREDENTIAL_WORDS.join("|")})s?$`);
+
+/** A key, joined, that ends with one of {@link CREDENTIAL_WORDS}. */
+const CREDENTIAL_SUFFIX = new RegExp(`(?:${CREDENTIAL_WORDS.join("|")})s?$`);
 
 /**
  * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@` — in a
@@ -885,7 +908,11 @@ export function isServableFact(
   if (typeof value !== "string") {
     return false;
   }
-  if (factKeyWords(key).some((word) => CREDENTIAL_WORD.test(word))) {
+  const words = factKeyWords(key);
+  if (
+    words.some((word) => CREDENTIAL_WORD.test(word)) ||
+    CREDENTIAL_SUFFIX.test(words.join(""))
+  ) {
     return false;
   }
   if (URL_USERINFO.test(value)) {
