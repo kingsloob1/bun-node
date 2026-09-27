@@ -66,6 +66,7 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`searching-and-paging.ts`](./02-queues/searching-and-paging.ts) | `list` narrowed by `name` and `search`, `page` with the total a paginated table needs, `getJobs` by id |
 | [`demand.ts`](./02-queues/demand.ts) | `getDemand`: `waiting`, due jobs counted where they stand, `stalled` once a dead worker's lock lapses, `demand` and `outstanding`; paused, `cap` and `capped`; `readDemand`'s fallback (`exact: false`) on a driver without `countDemand` |
 | [`workers-and-throughput.ts`](./02-queues/workers-and-throughput.ts) | `listWorkers` and `reportInterval`, `getThroughput` a minute at a time, `getQueueSummaries`, printed as a dashboard |
+| [`summoned-worker.ts`](./02-queues/summoned-worker.ts) | `runSummoned` as a summoned process's whole entry file ([`helpers/summoned-entry.ts`](./02-queues/helpers/summoned-entry.ts)), started with a summoner's arguments and stopped the ways a platform stops one: idle after its work (its record naming the summon), SIGTERM draining a job in flight, a second SIGINT exiting 130, SIGTSTP and SIGCONT, parked by an operator, a backend it cannot reach exiting 1; and `"in-invocation"` returning its `SummonedExit` |
 | [`isolated-processors.ts`](./02-queues/isolated-processors.ts) | a processor **file** on each `target` — `in-process`, `worker-thread` (a `Worker`) and `child-process`; a runaway processor stopped by its timeout; `defineProcessor` |
 
 ### 03 — The job registry
