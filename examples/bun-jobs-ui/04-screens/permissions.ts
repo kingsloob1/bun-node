@@ -87,6 +87,16 @@
  *   none reports `true`; a worker too old to report the field has said
  *   nothing, so a panel whose live workers all omit it shows no note at all.
  *   It needs no permission of its own beyond the panel's.
+ * - **The Summon tab needs a controller, and `/meta` cannot say so.** The
+ *   queue screen reads `GET /queues/:queue/summon` itself, with `queues.read`,
+ *   and offers the tab only on a status: a queue with no summon controller in
+ *   the API's process answers 409 `SUMMON_NOT_CONFIGURED` (a server without
+ *   the routes, 404) and has no tab. The memory driver refuses a `summon`
+ *   policy, so the host above has no tab anywhere; a second host, on a
+ *   backend another process can reach, has controllers on `mail`, `audit`
+ *   and `payroll` and none on `plain`, and a summoner that starts nothing.
+ *   Summon now… and Reset… need the opt-in `queues.summon` and a status with
+ *   `local` true.
  * - **Seven actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
  *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
  *   `queues.summon`, `workers.configure` and `runners.configure` are not
@@ -125,8 +135,10 @@
 import type {
   JobsApiAction,
   JobsApiAuthorize,
+  JobsApiConfig,
   JobState,
   MetaDto,
+  SummonRequest,
 } from "@kingsleyweb/bun-jobs";
 import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
 import type {
@@ -138,6 +150,8 @@ import type {
   RunnerListDto,
   RunnersAnalyticsDto,
   RunRecordDto,
+  SummonCheckDto,
+  SummonStatusDto,
   WorkerConfigOverrideDto,
   WorkerControlResultDto,
   WorkerDto,
@@ -150,11 +164,13 @@ import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   createJobsApi,
+  defineSummoner,
   JOB_STATES,
   JOBS_API_ACTIONS,
   JOBS_API_MUTATIONS,
   JOBS_API_OPT_IN_ACTIONS,
   MemoryDriver,
+  runSummoned,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
 import {
@@ -162,6 +178,7 @@ import {
   MAX_NAME_LENGTH,
   NAME_PARAM_PATTERN,
 } from "@kingsleyweb/bun-jobs/api/contract";
+import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
@@ -484,6 +501,14 @@ interface ScreenInputs {
    * whether an override is stored, and how many jobs are pending.
    */
   jobDefaults?: Pick<JobDefaultsDto, "overridden" | "pending">;
+  /**
+   * `GET /queues/<q>/summon`, which the queue screen reads with `queues.read`
+   * before it offers the Summon tab: the status, or `null` where it answered
+   * 409 `SUMMON_NOT_CONFIGURED` (no summon controller for the queue in the
+   * API's process) or 404 (a server without the summon routes). Absent when
+   * not read, which closes the tab too.
+   */
+  summon?: SummonStatusDto | null;
   /**
    * How each Overview section's analytics read answered: `jobs` for the Jobs
    * card, `runners` and `workers` for their sections. Absent before a read.
@@ -1351,6 +1376,37 @@ const GATES = [
     map: "queue",
     reads: ["queues.read"],
     features: ["demand"],
+  },
+  {
+    // `/meta` has no flag for summoning: the queue screen reads
+    // `GET /queues/:queue/summon` itself (with `queues.read`, on the queue's
+    // own map) and offers the tab only on a status. A queue with no summon
+    // controller in the API's process answers 409 `SUMMON_NOT_CONFIGURED`,
+    // and a server without the routes 404: both read as `null`, and no tab.
+    name: "panel=summon",
+    row: "Summon panel",
+    map: "queue",
+    reads: ["queues.read"],
+    when: ({ summon }) => summon !== undefined && summon !== null,
+  },
+  {
+    // The opt-in `queues.summon`, off under `readOnly`, and a controller in
+    // the API's own process (`local`): a status read from another process's
+    // controller would be read-only. `local` is always true today.
+    name: "summon: Summon now…",
+    row: "Summon panel Summon now…",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    mutations: ["queues.summon"],
+    when: ({ summon }) => summon?.local === true,
+  },
+  {
+    // One group with Summon now…, shown on the same condition
+    // (`summonActionsOffered`): the README row says "Summon now…'s needs".
+    name: "summon: Reset…",
+    row: "Summon panel Reset…",
+    map: "queue",
+    needsOf: ["summon: Summon now…"],
   },
   {
     name: "panel=throughput",
@@ -2435,7 +2491,9 @@ function needsOfCell(
     .filter((code) => !excluded.has(code));
   // "the Workers nav entry's needs": another row's needs, by the start of
   // its element; one naming no row stays as written, and fails.
-  const refs = [...needs.matchAll(/\bthe ([A-Z][\w ]*)'s needs\b/g)].map(
+  // An element's name may end in "…" ("the Summon panel Summon now…'s
+  // needs"), which `\w` does not match.
+  const refs = [...needs.matchAll(/\bthe ([A-Z][\w …]*)'s needs\b/g)].map(
     (match) =>
       elements.find((other) => other.startsWith(match[1]!)) ?? match[1]!,
   );
@@ -3858,6 +3916,11 @@ checkEqual(
     "worker page: Change pending": false,
     // No instance here reports `summon`; asked below with one that does.
     "worker page: Summoned card": false,
+    // The memory driver runs no summon controller, so the queue screen
+    // reads no status: asked below, on a host with one.
+    "panel=summon": false,
+    "summon: Summon now…": false,
+    "summon: Reset…": false,
     // The browser-side pagers, which need a list longer than one page: asked
     // below with row counts either side of each table's size.
     "panel=repeatables, pager": false,
@@ -6482,6 +6545,386 @@ checkEqual(
   ],
   [true, true, false, true, false, true, false, false],
 );
+
+/* ------------------------------------------------------------------ */
+step("The Summon panel: a summon controller in the API's process, or no tab");
+
+// `/meta` says nothing about summoning, so the queue screen asks the status
+// route itself. The memory host above runs no controller, so every queue
+// there answers 409 and gets no tab — which is why mail's gates above hold
+// the three summon gates closed.
+checkEqual(
+  "the memory host: GET /queues/:queue/summon is 409 SUMMON_NOT_CONFIGURED on mail and audit (no tab), 403 on payroll (not read at all)",
+  await Promise.all(
+    ["mail", "audit", "payroll"].map(async (queue) => {
+      const { status, body } = await get<{ code?: string }>(
+        `/queues/${queue}/summon`,
+      );
+      return `${queue}: ${status} ${body.code}`;
+    }),
+  ),
+  [
+    "mail: 409 SUMMON_NOT_CONFIGURED",
+    "audit: 409 SUMMON_NOT_CONFIGURED",
+    "payroll: 403 FORBIDDEN",
+  ],
+);
+
+// Summoning needs a backend another process can reach — the memory driver
+// refuses a `summon` policy — so this host runs on a temporary SQLite file,
+// or on the backend `EXAMPLE_DRIVER` names. Its summoner starts nothing: it
+// records what it was asked and answers `started`, as a real one answers
+// with a task ARN.
+
+/** Every request the recording summoner was handed, in order. */
+const summonRequests: SummonRequest[] = [];
+/** A summoner that starts nothing. */
+const recordingSummoner = defineSummoner({
+  kind: "example-record",
+  invoke: async (request: SummonRequest) => {
+    summonRequests.push(request);
+    return { status: "started", handles: [`task/${request.id}`] };
+  },
+});
+/** Every trigger off: only "summon now" runs a check. */
+const ONE_SHOT = { onAdd: false, events: false, poll: false } as const;
+const summonJobs = new BunJobs({
+  namespace: exampleNamespace("examples-ui-permissions-summon"),
+  driver: crossProcessDriver(),
+  logger: noopLogger,
+  // The three queues above, each with a controller here; `plain` has none.
+  summon: {
+    mail: { summoner: recordingSummoner, triggers: ONE_SHOT },
+    audit: { summoner: recordingSummoner, triggers: ONE_SHOT },
+    payroll: { summoner: recordingSummoner, triggers: ONE_SHOT },
+  },
+});
+// Work on mail, so "summon now" has demand to summon for; and a job on
+// `plain`, so the queue exists (an unknown queue is 404 QUEUE_NOT_FOUND) and
+// the one thing it lacks is a controller.
+await summonJobs.queue("mail").add("send-email", {}, { jobId: "waiting-1" });
+await summonJobs
+  .queue("plain")
+  .add("send-email", {}, { jobId: "later-1", delay: 3_600_000 });
+
+/** One API over `summonJobs`, with the `authorize` above, and its reads. */
+async function summonHost(config: Partial<JobsApiConfig>) {
+  const summonApi = createJobsApi({
+    jobs: summonJobs,
+    basePath: "/summon-api",
+    mode: "jobs",
+    authorize,
+    logger: noopLogger,
+    ...config,
+  });
+  const summonApp = new BunHttpAdapter();
+  summonApp.use(summonApi.basePath, summonApi.router);
+  /** A request through the real pipeline: status, and the parsed body. */
+  async function call<T>(method: "GET" | "POST", path: string) {
+    const response = await summonApp.fetch(`/summon-api${path}`, {
+      method,
+      ...(method === "POST"
+        ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+        : {}),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as T & { code?: string },
+    };
+  }
+  const hostMeta = (await call<MetaDto>("GET", "/meta")).body;
+  const hostBoot = (await call<PermissionsBody>("GET", "/meta/permissions"))
+    .body;
+  const hostMaps: Record<string, PermissionsBody> = {};
+  /** What the queue screen holds after its read: the status, `null` for no summoner, or unread. */
+  const statuses: Record<string, SummonStatusDto | null | undefined> = {};
+  const answers: Record<string, string> = {};
+  for (const queue of ["mail", "audit", "payroll", "plain"]) {
+    hostMaps[queue] = (
+      await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
+    ).body;
+    const read = await call<SummonStatusDto>("GET", `/queues/${queue}/summon`);
+    answers[queue] =
+      read.status === 200
+        ? `200 local=${read.body.local}`
+        : `${read.status} ${read.body.code}`;
+    // `getSummonStatus`: a 409 SUMMON_NOT_CONFIGURED or a 404 is "no
+    // summoner here"; and without `queues.read` the screen never asks.
+    statuses[queue] = !can(hostMaps[queue]!, "queues.read")
+      ? undefined
+      : read.status === 200
+        ? read.body
+        : (read.status === 409 && read.body.code === "SUMMON_NOT_CONFIGURED") ||
+            read.status === 404
+          ? null
+          : undefined;
+  }
+  /**
+   * The three summon gates on `queue`'s screen, with the status as its read
+   * answered, or as `given` says (`undefined` included: not read).
+   */
+  function summonGatesOf(
+    queue: string,
+    given?: { summon: SummonStatusDto | null | undefined },
+  ): boolean[] {
+    const set = screenGates({
+      meta: hostMeta,
+      sections,
+      boot: hostBoot,
+      queue: hostMaps[queue]!,
+      summon: given === undefined ? statuses[queue] : given.summon,
+    });
+    return [
+      set["panel=summon"],
+      set["summon: Summon now…"],
+      set["summon: Reset…"],
+    ];
+  }
+  return {
+    api: summonApi,
+    call,
+    meta: hostMeta,
+    boot: hostBoot,
+    maps: hostMaps,
+    statuses,
+    answers,
+    summonGatesOf,
+  };
+}
+
+const summonHostAll = await summonHost({ actions: [...JOBS_API_ACTIONS] });
+show("GET /summon-api/queues/:queue/summon", summonHostAll.answers);
+checkEqual(
+  "the summon host: 200 (local) where a controller runs here, 403 where authorize refuses the read, 409 SUMMON_NOT_CONFIGURED where none does",
+  summonHostAll.answers,
+  {
+    mail: "200 local=true",
+    audit: "200 local=true",
+    payroll: "403 FORBIDDEN",
+    plain: "409 SUMMON_NOT_CONFIGURED",
+  },
+);
+checkEqual(
+  "the Summon tab, Summon now… and Reset…: all three on mail; the tab alone on read-only audit; nothing on payroll (no queues.read) or on plain (queues.read, but no controller: the 409 shows no tab)",
+  ["mail", "audit", "payroll", "plain"].map((queue) => [
+    queue,
+    ...summonHostAll.summonGatesOf(queue),
+  ]),
+  [
+    ["mail", true, true, true],
+    ["audit", true, false, false],
+    ["payroll", false, false, false],
+    ["plain", false, false, false],
+  ],
+);
+checkEqual(
+  "with mail's map (queues.read and queues.summon both granted): a 409 or 404 (null) or no read shows no tab and no button, and a status from another process's controller (local: false) the tab without them",
+  [
+    summonHostAll.summonGatesOf("mail", { summon: null }),
+    summonHostAll.summonGatesOf("mail", { summon: undefined }),
+    summonHostAll.summonGatesOf("mail", {
+      summon: { ...summonHostAll.statuses.mail!, local: false },
+    }),
+  ],
+  [
+    [false, false, false],
+    [false, false, false],
+    [true, false, false],
+  ],
+);
+
+// The buttons' own routes: what "summon now" and reset do behind them.
+const summonNow = await summonHostAll.call<SummonCheckDto>(
+  "POST",
+  "/queues/mail/summon",
+);
+show("POST /summon-api/queues/mail/summon", summonNow.body);
+checkEqual(
+  "Summon now… on mail: 200 summoned, started; the summoner was handed one manual request, and started nothing",
+  [
+    summonNow.status,
+    summonNow.body.action,
+    summonNow.body.outcome,
+    summonRequests.map((request) => [
+      request.queue,
+      request.reason,
+      request.count,
+    ]),
+  ],
+  [200, "summoned", "started", [["mail", "manual", 1]]],
+);
+const summonReset = await summonHostAll.call<SummonStatusDto>(
+  "POST",
+  "/queues/mail/summon/reset",
+);
+checkEqual(
+  "Reset… on mail: 200, the status after it: no failures, and the attempt on its way kept",
+  [
+    summonReset.status,
+    summonReset.body.failures,
+    summonReset.body.pending?.map((attempt) => attempt.id),
+  ],
+  [200, 0, [summonNow.body.id]],
+);
+checkEqual(
+  "and the server refuses both where the buttons are absent: 403 on audit, payroll and plain, whatever the controller",
+  await Promise.all(
+    ["audit", "payroll", "plain"].flatMap((queue) =>
+      ["/summon", "/summon/reset"].map(async (suffix) => {
+        const { status, body } = await summonHostAll.call<object>(
+          "POST",
+          `/queues/${queue}${suffix}`,
+        );
+        return `${queue}${suffix}: ${status} ${body.code}`;
+      }),
+    ),
+  ),
+  ["audit", "payroll", "plain"].flatMap((queue) => [
+    `${queue}/summon: 403 FORBIDDEN`,
+    `${queue}/summon/reset: 403 FORBIDDEN`,
+  ]),
+);
+
+const summonReadOnly = await summonHost({
+  actions: [...JOBS_API_ACTIONS],
+  readOnly: true,
+});
+const summonDefault = await summonHost({});
+checkEqual(
+  "readOnly, and a host built with the default actions (queues.summon is opt-in): mail keeps its tab, loses both buttons, and neither POST is routed",
+  await Promise.all(
+    [summonReadOnly, summonDefault].map(async (host) => [
+      "queues.summon" in host.maps.mail!.actions,
+      ...host.summonGatesOf("mail"),
+      (await host.call<object>("POST", "/queues/mail/summon")).status,
+      (await host.call<object>("POST", "/queues/mail/summon/reset")).status,
+    ]),
+  ),
+  [
+    [false, true, false, false, 404, 404],
+    [false, true, false, false, 404, 404],
+  ],
+);
+checkEqual(
+  "and the summoner was handed nothing more: one request in all",
+  summonRequests.length,
+  1,
+);
+
+/* ------------------------------------------------------------------ */
+step("A summoned worker's actual mode: resolvedMode, beside the one requested");
+
+// The two worker rows gained what the worker actually runs as. `runSummoned`
+// resolves it — its own `mode` option, else the summoner's requested mode,
+// else exit when idle — and records it as `summon.resolvedMode`; a worker
+// given `summon` but run some other way reports none. Neither decides whether
+// the badge or the Summoned card shows: `resolvedMode` adds the tooltip's
+// line and the card's "Runs as" column, which `06-browser/workers.ts` reads.
+const PLAIN_SUMMON = {
+  kind: "example-record",
+  mode: "exit-on-idle",
+} as const;
+const runsSummoned = summonJobs.worker("plain", async () => "done", {
+  name: "run",
+  summon: { ...PLAIN_SUMMON, id: "attempt-run" },
+});
+// Its own option wins over the requested `exit-on-idle`; no exit, no signal
+// handlers, since this is an example and not a platform's unit.
+const summonedExit = runSummoned(runsSummoned, {
+  mode: "until-stopped",
+  exit: false,
+  signals: false,
+});
+const runByHand = summonJobs.worker("plain", async () => "done", {
+  name: "run",
+  summon: { ...PLAIN_SUMMON, id: "attempt-hand" },
+});
+void runByHand.run();
+/** `GET /workers?queue=plain` on the summon host. */
+async function plainWorkers(): Promise<WorkerDto[]> {
+  return (
+    await summonHostAll.call<WorkerListDto>("GET", "/workers?queue=plain")
+  ).body.items;
+}
+await waitFor(
+  "both summoned workers on plain to report their summon",
+  async () => {
+    const summoned = (await plainWorkers()).filter(
+      (worker) => worker.summon !== undefined,
+    );
+    return summoned.length === 2;
+  },
+);
+const plainListed = await plainWorkers();
+const plainById = Object.fromEntries(
+  plainListed.map((worker) => [worker.id, worker]),
+);
+checkEqual(
+  "GET /workers: the worker runSummoned runs reports resolvedMode until-stopped beside the requested exit-on-idle; the one run by hand reports the request alone",
+  [runsSummoned.id, runByHand.id].map((id) => [
+    plainById[id]?.summon?.id,
+    plainById[id]?.summon?.mode,
+    plainById[id]?.summon?.resolvedMode ?? null,
+  ]),
+  [
+    ["attempt-run", "exit-on-idle", "until-stopped"],
+    ["attempt-hand", "exit-on-idle", null],
+  ],
+);
+/** The summon badge on each row, and the Summoned card, for `instances`. */
+function summonedViews(instances: readonly WorkerDto[]): boolean[] {
+  const onScreen = {
+    meta: summonHostAll.meta,
+    sections,
+    boot: summonHostAll.boot,
+    queue: summonHostAll.maps.plain!,
+    workerMap: summonHostAll.maps.plain!,
+    workerTable: instances,
+  };
+  return [
+    ...instances.map(
+      (worker) =>
+        screenGates({ ...onScreen, worker })["worker table: summon badge"],
+    ),
+    screenGates({
+      ...onScreen,
+      workerPage: { key: instances[0]!.key!, instances },
+    })["worker page: Summoned card"],
+  ];
+}
+/** `worker` with its `resolvedMode` taken out, as a worker too old to say sends it. */
+function withoutResolvedMode(worker: WorkerDto): WorkerDto {
+  if (worker.summon === undefined) {
+    return worker;
+  }
+  const { resolvedMode: _resolved, ...summon } = worker.summon;
+  return { ...worker, summon };
+}
+checkEqual(
+  "the badge on both rows and the Summoned card: summon decides, resolvedMode does not — the same with it taken out",
+  [
+    summonedViews(plainListed),
+    summonedViews(plainListed.map(withoutResolvedMode)),
+  ],
+  [
+    [true, true, true],
+    [true, true, true],
+  ],
+);
+await runByHand.close({ timeout: 1_000 });
+await runsSummoned.close({ timeout: 1_000 });
+checkEqual(
+  "closed from outside, runSummoned ends with reason closed and exits nothing",
+  [(await summonedExit).reason, (await summonedExit).code],
+  ["closed", 0],
+);
+
+for (const host of [summonHostAll, summonReadOnly, summonDefault]) {
+  await host.api.close();
+}
+// Only this run's namespace: a persistent backend is shared.
+await summonJobs.purge();
+await summonJobs.close();
 
 await mailWorker.close({ timeout: 1_000 });
 await auditWorker.close({ timeout: 1_000 });

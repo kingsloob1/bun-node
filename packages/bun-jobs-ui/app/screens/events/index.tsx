@@ -35,6 +35,7 @@ import { formatNumber, plural } from "../../format";
 import { useLiveStatus, useLiveSubscription } from "../../live";
 import { useCan, useMeta } from "../../meta/hooks";
 import { Link } from "../../router";
+import { isSummonEvent, summonEventSummary } from "../queues/panels/summonText";
 import { useUrlParams } from "../queues/urlState";
 import {
   channelName,
@@ -433,6 +434,18 @@ function EventRow({ row, event }: { row: LogRow; event: EventWire }) {
         <EventId event={event} />
       </td>
       <td className="events-payload">
+        {event.kind === "queue" &&
+          event.type === "summon" &&
+          isSummonEvent(event.payload) && (
+            // A summon attempt in words above its payload: the outcome, how
+            // many workers, the summoner and why the check ran.
+            <p
+              className="events-summary"
+              data-testid="event-summon-summary"
+            >
+              {summonEventSummary(event.payload)}
+            </p>
+          )}
         <JsonView
           value={event.payload}
           label={`Payload of ${event.type} #${row.key}`}
