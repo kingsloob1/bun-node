@@ -5640,9 +5640,10 @@ export const scalerApi = createJobsApi({
 app.use(scalerApi.basePath, scalerApi.router);
 ```
 
-**Checked:** this API registers eight routes, all `GET`: `/queues`, `/demand`,
+**Checked:** this API registers nine routes, all `GET`: `/queues`, `/demand`,
 and per queue `/queues/:queue` with its `counts`, `counts/added`, `demand`,
-`limits` and `job-defaults`. So it reads queue figures and settings, never a
+`limits`, `job-defaults` and `summon`. So it reads queue figures, settings and
+summon status, never a
 job, a payload, a worker or a runner; it has no docs, no socket and no
 mutation (a `POST /queues/emails/pause` is 404), and a missing or wrong token
 is 403. With `actions: ["queues.read"]` alone, `/queues` and `/demand` go too.
