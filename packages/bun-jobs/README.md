@@ -2133,6 +2133,7 @@ const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
 await worker.run();
 ```
 
+<a id="summon-arguments-not-environment"></a>
 **Arguments, not environment variables, by design.** An environment leaks to
 every descendant — `Bun.spawn` with no `env` passes the environment the
 process *started* with, so even deleting a variable after reading it does not
@@ -5450,7 +5451,7 @@ await runSummoned(worker, {
 - **Settings may come from the environment; identity never does.** Grace and
   mode are the same for every process a deployment starts. The attempt id is
   not, and an environment leaks to every descendant
-  ([why](#reading-a-queue-search-totals-workers-and-throughput)).
+  ([why](#summon-arguments-not-environment)).
 - **Which mode.** `"exit-on-idle"`, the default, for a process started per
   burst: a summoner's launch, a KEDA `ScaledJob`, an ACA event job.
   `"until-stopped"` for a replica a platform keeps running: a KEDA
@@ -5473,8 +5474,9 @@ by a summoner as `--bun-jobs-summon-grace-ms=`, or set in the worker file.
 [The close rule](#summoned-workers-runsummoned) turns it into the time jobs in
 flight get: the budget is `grace − 250` ms, of which a `"child-process"` or
 `"worker-thread"` target reserves 4,500 ms and every target `tailReserve`
-(1,000 ms). What remains goes to the jobs; with nothing left, the close is
-forced. Grace defaults from §5.2 (vendor docs, read 2026-09-25):
+(1,000 ms). What remains goes to the jobs, as the close's `timeout` (at
+exactly zero left, a graceful close with `timeout: 0`); only when those
+reserves exceed the budget is the close forced. Grace defaults from §5.2 (vendor docs, read 2026-09-25):
 
 | Platform | Stop signal | Grace | Child-process target | In-process target |
 |---|---|---|---|---|
@@ -5505,8 +5507,15 @@ forced. Grace defaults from §5.2 (vendor docs, read 2026-09-25):
   migration and SIGCONT after. Pass `pauseSignals: true` (off by default) to
   stop claiming meanwhile; whether catching SIGTSTP delays the pause is
   unverified.
-- **At a deadline** the budget is `deadline − 250` ms instead, and claiming
-  stops `shutdownBuffer` (7 s) before it.
+- **At a deadline** (an instant, epoch ms) the close must end by
+  `deadline − 250`. Claiming stops `shutdownBuffer` (7 s) before the
+  deadline, which leaves 6,750 ms: 1,250 ms for a child-process target's
+  jobs, 5,750 ms for an in-process one's. A close that starts under 1,250 ms
+  before the deadline (a small `shutdownBuffer`, or a deadline already near)
+  still gets the backstop's 1 s floor, so the backstop fires 1 s after the
+  close began rather than at `deadline − 250`: at `deadline + 750` for a close
+  that starts at `deadline − 250`, and later for one that starts later still
+  (with `shutdownBuffer: 0`, `deadline + 1,000`).
 
 ### Scaling on the depth endpoint
 
@@ -5688,8 +5697,9 @@ triggers:
       name: bun-jobs-scaler
 ```
 
-KEDA parses `valueLocation` as a PromQL series selector and takes the first
-sample whose labels match, so name the family and the queue. That answers the
+KEDA parses `valueLocation` as a PromQL series selector, equality matchers
+only (it compares every label matcher by equality, whatever its operator), and
+takes the first sample whose labels match, so name the family and the queue. That answers the
 plan's open question Q13 from source, without a cluster to confirm it.
 
 Or KEDA's `prometheus` scaler, through a Prometheus server that scrapes the
@@ -5872,33 +5882,58 @@ spec:
 
 ### What a poll costs
 
-A demand read is three reads at once: the queue's pause flag, its live worker
-records, and the driver's `countDemand`. Every figure is read from an index
-(per-state counts on SQL and MongoDB, sorted sets on Redis, marker listings
-on file), and none reads retained history, so a scaler can poll every
-queue every 30 s. PR-1 measured it (§6.4 D4) on a queue of 49,064 jobs (5,000
-waiting, 2,000 delayed, 1,000 failed, 64 active, 1,000 dead or waiting on
-children, and 40,000 completed), then
-with ten times the completed history:
+A demand read (`getDemand()`, the depth endpoint, `runSummoned`'s idle check)
+is three reads at once: the queue's pause flag, its live worker records, and
+the driver's `countDemand`. The worker listing grows with the queue's workers,
+not its jobs, and prunes lapsed records as it goes. A controller's poll reads
+one thing more, its summon marker in queue state. Every figure is read from an
+index (per-state counts on SQL and MongoDB, sorted sets on Redis, marker
+listings on file), and none reads retained history.
 
-| Driver | What is read | Base → 10× history |
-|---|---|---|
-| memory | in-heap sets, including an active-id `Set` | 0.089 → 0.131 ms |
-| file | marker directory listings; no record opened | 6.75 → 7.50 ms |
-| Postgres 16 | index-only scans of `ix_lock` and `ix_due`, one statement | 1.59 → 1.64 ms |
-| SQLite 3.53 | covering `ix_lock` and `ix_due`, one statement | 0.95 → 1.17 ms |
-| MySQL 8.4 | covering reads of `ix_lock`, `ix_due`, `ix_claim` | 5.97 → 5.05 ms |
-| MariaDB 11.8 | covering reads, `MIN`s optimised away | 7.13 → 6.36 ms |
-| Redis | one Lua script of `ZCOUNT`/`ZCARD`, one round trip | 0.049 → 0.046 ms |
-| MongoDB | covered index scans, no document examined | 6.66 → 6.79 ms |
+PR-1 measured `countDemand` alone (§6.4 D4), on 2026-09-26: medians of
+interleaved rounds, `cap` 10,000, over 8 queues of 49,064 jobs each (about
+392,000 rows: per queue 5,000 waiting, 2,000 delayed, 1,000 failed, 64 active,
+1,000 dead or waiting on children, and 40,000 completed), with the backlog
+under the cap, then with ten times the completed history:
 
-On the same data `countJobs`, which `/counts` serves, grew 5 to 11 times, and
-each engine's negative control (the index dropped or hinted away) grew 4 to 27
-times, so the flat line is the index and not a small table. Two limits: the
-file driver's listings grow with the backlog, not with the cap; and each
-figure is counted up to 10,000, past which `capped` says the figures are lower
-bounds. It needed no new database index; the memory driver gained its
-active-id `Set`, at 1.2% of claim-and-complete throughput.
+| Driver | What is read | Round trips | Base → 10× history |
+|---|---|---|---|
+| memory | in-heap sets, including an active-id `Set` | none | 0.089 → 0.131 ms |
+| file | marker directory listings; no record opened | 5 listings | 6.75 → 7.50 ms |
+| Postgres 16 | `ix_lock` and `ix_due`, index-only except the lockless count | 1 statement | 1.59 → 1.64 ms |
+| SQLite 3.53 | `ix_lock` and `ix_due`, covering except the lockless count | 1 statement | 0.95 → 1.17 ms |
+| MySQL 8.4 | covering reads of `ix_lock`, `ix_due`, `ix_claim` | 1 statement | 5.97 → 5.05 ms |
+| MariaDB 11.8 | covering reads, `MIN`s optimised away | 1 statement | 7.13 → 6.36 ms |
+| Redis | `ZCOUNT`/`ZCARD` in one Lua script | 1 script | 0.049 → 0.046 ms |
+| MongoDB | covered index scans, no document examined | 7, not atomic | 6.66 → 6.79 ms |
+
+The round trips are `countDemand`'s; a poll adds the pause read and the
+worker listing, and a controller its marker read. The SQL figures were
+measured before #185, which moved `active` off `ix_lock` and made the
+lockless half of `stalled` walk the queue's `active` rows on `ix_due`,
+testing the lock per row (so its cost is the running jobs, never history);
+its change was within noise.
+
+**Past the cap the SQL counts cost more**, since each figure reads up to
+`cap + 1` index entries (`LIMIT cap + 1`). The #185 measurement (2026-09-26,
+one queue of 200,065 rows with 40,000 `waiting`, beside a second queue of
+50,000 `completed`, medians of 41) put the whole statement, develop → #185,
+at: Postgres 16 "1.08–1.11 → 1.12–1.14 ms", SQLite 3.53 "0.48–0.50 →
+0.49–0.51 ms (first develop round 0.72, warm-up)", MySQL 8.4 "76–89 → 74–90
+ms (dominated by the 10,001-row capped `waiting` count)" and MariaDB 11.8
+"13.8–15.1 → 14.1–14.5 ms".
+
+On the base data `countJobs`, which `/counts` serves, grew about 5 to 11 times
+with the history on SQL, file and MongoDB, 22 times on memory, and stayed flat
+on Redis, which reads no history either; each engine's negative control (the
+index dropped or hinted away) grew 4 to 27 times, so the flat line is the index
+and not a small table. Two limits: the file driver's listings grow with the
+backlog, not with the cap; and each figure is counted up to a cap, past which
+`capped` says the figures are lower bounds. The routes count to 10,000
+(`DEFAULT_DEMAND_CAP`) and `runSummoned`'s idle check to 1; a controller
+raises it to `max(10,000, maxWorkers × jobsPerWorker)` when `jobsPerWorker` is
+finite. It needed no new database index; the memory driver gained its
+active-id `Set`, at 1.2% of claim-and-complete throughput, within noise.
 
 ## Drivers
 
