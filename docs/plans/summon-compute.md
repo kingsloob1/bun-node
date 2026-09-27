@@ -105,6 +105,14 @@ construction; on Postgres and SQLite that is now one more than
 `countJobs().active` while a lockless row exists. §6.4 implementation
 corrections 6 and 7.
 
+**Updated 2026-09-27: 1.5p sliced into PRs (§13.10), for the user's review.**
+Against `origin/develop` at `54ace84`, with all seven 1.5a/1.5b PRs merged.
+Five PRs (PR-p1 to PR-p5) and one optional (PR-p6, the provider routes),
+~11.75 d (was ~12.5 d); a reconciliation table (P1–P15) of where the plan no
+longer matches the code; the `SummonStatusDto.summoner` DTO field by field
+(unchanged by 1.5p); the breaking changes; the public names, each needing
+approval; and eleven open questions. No code was changed.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -3751,6 +3759,9 @@ run-all.ts` in `examples/bun-jobs-ui`.
 
 ### 1.5p — The provider plugin API, `experimental` (new)
 
+**Sliced into PR-p1 to PR-p6 in [§13.10](#1310-15p-as-prs-sliced-2026-09-27-not-yet-approved)**,
+reconciled against the code at `54ace84`; the table below is the draft's.
+
 The core and the `summon` facet of
 [`compute-provider-plugins.md`](compute-provider-plugins.md), its conformance
 kit, its documentation and its starter template, all at `apiVersion` `0.1`.
@@ -3865,6 +3876,308 @@ same tree: 0.
 | S16 | on `BunJobs` | `BunJobsOptions.summon`; `jobs.summonController(queue, policy?)` | `jobs.summoner()` | `summoner()` returning a `SummonController`, not a `Summoner` (S3), was a pun on the package's own type | unused |
 | S17 | the API action | `queues.summon` | (kept) | In all three action sets (§6.2) | unused |
 | S18 | who counts as serving | `SummonPolicy.servedBy: "any-worker" \| "summoned-only"` | `satisfiedBy` | `satisfiedBy` is already a field of the worker routes' instruction table with another meaning (worker states that satisfy an instruction, `api/routes/workers.ts:192`) | `servedBy` unused |
+
+### 13.10 1.5p as PRs (**sliced 2026-09-27, not yet approved**)
+
+Written against `origin/develop` at `54ace84`, after all seven 1.5a/1.5b PRs
+merged. **No code was changed.** Every `file:line` here is at `54ace84` and
+relative to `packages/bun-jobs/` unless it says otherwise. The design is
+[`compute-provider-plugins.md`](compute-provider-plugins.md) (cited as
+"plugins §n"); this section only slices it, and records where the code has
+moved under it.
+
+#### Reconciliation with the code at `54ace84`
+
+PR-3 built the provider types as stand-ins with the plugins plan's shapes, so
+much of 1.5p is moving types rather than designing them. Where the plan and
+the code disagree, the code wins. **Inference is marked [I]; the rest was
+read** [S].
+
+| # | The plan says | The code says | What changes |
+|---|---|---|---|
+| P1 | 1.5p replaces "an internal stand-in" (§13.1) | The stand-ins are **public**: `ProviderIdentity`, `ProviderApiVersions`, `SummonDedupe`, `SummonCapabilities`, `ProviderCallContext`, `UnitStatus`, `SummonFacet` (`lib/summon/types.ts:51-218`), exported from the root and `./summon` (`lib/summon/index.ts:189-215`). Their shapes equal plugins §6.1/§7.1–§7.2, except that `ProviderApiVersions` has no `execute` (`:55-60`) | They **move** to `lib/provider/`, unchanged, and `lib/summon/types.ts` re-exports them (its header already says so, `:8-14`). No import a user wrote breaks |
+| P2 | `Summoner = ConfiguredProvider & { summon: SummonFacet }` (§4.10, plugins §7.4) | `Summoner` is an interface of three members: `provider`, `summon`, `describe` (`types.ts:225-232`). There is no `config`, `ready`, `validate` or brand. `toSummoner` duck-types (`define.ts:160-175`) | The one real type change for users (see "Breaking changes"). Two tests spread a `Summoner` and replace its facet (`__tests__/summon-controller.test.ts:780-797`, `:973-983`): the brand must survive a spread, or they change (Q-p9) |
+| P3 | The controller reads the declared capabilities (1.5p row 2, ~1.5 d) | **Already built by PR-3**: scale needs `release` (`controller.ts:488-497`), the dedupe key (`:499`, `marker.ts:103`), the wake clamp to `poolSize` (`:557-567`), the lifetime cap (`:578-586`), `bootBudgetMs` (`:615`), `maxCountPerCall` (`:1122`), `passes: "none"` (`:957`, `:1787`), `shutdown.graceMs` into the arguments (`:1186`, `:320`). **Missing**: the `warn` when `graceMs` is below `runSummoned`'s `shutdownBuffer` (7,000 ms, `worker.ts:172`) (plugins §7.1 table) | The facet row shrinks to the warning and the error mapping (PR-p2) |
+| P4 | `status()` explains a lost attempt in `marker.last.detail` and the `summon` event (plugins §7.3) | `status`/`cancel` are called (`#explainLost`, `controller.ts:1423-1459`), but the explanation is **only logged**, never written | PR-p2 writes it |
+| P5 | Six `ProviderError` kinds set the gates (plugins §6.5) | No `ProviderError`. Every throw is `failed` and counts; a returned `unavailable` counts too (`#record`, `:1509-1605`, into `#fail`, `:1270`). `last.detail` is the thrown value's `code`, else its `name` (`errorDetail`, `:211-220`) | PR-p2. Once it lands, a `ProviderError`'s `code` would become the detail by itself; the plan wants `platformCode` first |
+| P6 | `ctx.logger` redacts; `ctx.fetch` is replaceable (plugins §6.2, §13.3) | `#call` builds `{ signal, logger: child, fetch: globalThis.fetch, now: Date.now }` (`:1463-1491`): no redaction, no seam for the kit | PR-p1 (redaction), PR-p3 (the seam, Q-p7) |
+| P7 | `SummonStatusDto.summoner` "gains `provider` and `capabilities`" (plugins §14.1) | **Done by PR-6**: `SummonProviderDto` and `SummonCapabilitiesDto` (`api/contract/types.ts:1090-1174`), their schemas (`api/schemas/queues.ts:462-520`, `:542-578`), copied field by field (`api/serialize.ts:925-1018`), held equal to the runtime types by `__tests__/api/api-contract.type-test.ts:499-512` | No contract work is left in 1.5p (see "The DTO, before and after") |
+| P8 | The kit's handoff harness is "moved from `__tests__/helpers/summon.ts`" (plugins §12.2) | That helper's `fakePlatform(options)` (`helpers/summon.ts:74-150`) is an **in-process `defineSummoner`** that spawns `fixtures/summoned-worker.ts` through `spawnBun`. It is not plugins §12.4's `fakePlatform(routes)`, an HTTP server. One name, two things | The kit takes the spawn-and-fixture half (its handoff `startUnit`). The test helper is renamed (a test-only name) and rebuilt on it; three test files follow |
+| P9 | A packaging row: `exports`, `consumer-check.json` and the packaging test for every entry (1.5p row 4) | The packaging test demands a `./lib/<dir>` key for every `lib/` directory with an `index.ts` (`__tests__/packaging.test.ts:46-57`), and the build refuses an `exports` target that does not exist | Packaging **cannot be its own PR**: each PR that adds an entry adds its keys and rows. `./providers/*` cannot be wired before a provider file exists, so it moves to 1.5c (whose 0.5 d row already has it). `./provider/auth` has nothing to export until the SigV4 signer (Q-p2) |
+| P10 | The first-party import test scans `lib/providers/` (plugins §5) | No `lib/providers/` until 1.5c | It lands in PR-p1 anyway; its negative control is what makes it mean something until then |
+| P11 | The template's config uses "bun-jobs' `toStandardSchema`" (plugins §11.3) | bun-jobs exports neither `toStandardSchema` nor `StandardSchemaV1`; bun-common does (`bun-common/lib/index.ts:329`, `:340`) | `./provider` re-exports both (Q-p10) |
+| P12 | The template's `tsconfig` has no `customConditions` (plugins §11.3) | In-repo projects resolve `@kingsleyweb/*` through the source condition, so `scripts/typecheck.ts` passes with `dts/` absent (`CLAUDE.md`) | The template ships a consumer `tsconfig`; the repo checks it through a second config with the condition, and `scripts/check-types.ts` is the consumer view [I] |
+| P13 | `consumer-check.json`'s `./provider` snippet declares `passes: "env"`, and the entry lists execute types (plugins §11.1) | `"env"` was withdrawn on 2026-09-26 (§5.5); no execute facet exists | The snippet uses `"argv"`; the execute types and `runExecuteConformance` wait for Phase 2 |
+| P14 | The summon gate covers "all three `passes` values" (plugins §10.4; 1.5s) | Two remain: `"argv"` and `"none"` | 1.5s checks two |
+| P15 | Docs ship from `packages/bun-jobs/docs/providers/` (plugins §15.1) | No `docs/` in the package; `files` is `["dts", "lib"]` | PR-p5 adds both |
+
+#### The PRs
+
+| PR | What it ships to users | Depends on | Owner | Effort | Hot path? |
+|---|---|---|---|---|---|
+| **PR-p1** provider core | `./provider`: `defineComputeProvider`, a configured provider usable as `SummonPolicy.summoner`, sync and async config validation (`ready`), the per-facet version check and the name map, redacted call contexts, the facet types moved from `lib/summon/types.ts`; `Summoner` redefined, `defineSummoner` rebuilt on it; the first-party import test | nothing (all of 1.5a/1.5b is merged) | the features session; **the bun-jobs session reviews** (the controller accepts, awaits and calls providers); examples told (new entry, `Summoner` shape); UI told (no contract change) | ~3 d | no |
+| **PR-p2** errors and the rest of the facet | `ProviderError` and its six kinds mapped into the gates (plugins §6.5); the unmapped-throw `warn`; `status()`'s explanation on `last.detail` and the event; the short-grace `warn` | PR-p1 | the features session; **the bun-jobs session reviews** (the controller's gates); **UI and examples told before merge** (detail values and circuit behaviour change) | ~1.25 d | no |
+| **PR-p3** `./provider/testing` | `runProviderConformance`, `assertConformance`, the report, `fakePlatform()` over `Bun.serve` on port 0, the summon checks (plugins §12.2) including the handoff and the two-process CAS; the test helper rebuilt on it | PR-p1; PR-p2 before merge (the `errors` group) | the features session; **the bun-jobs session reviews** (the handoff drives `SummonController`, the claim path and the drivers across processes); examples told (it unblocks 1.5f's custom provider) | ~3.5 d | no |
+| **PR-p4** starter template | `templates/compute-provider/` (summon half): the Acme Compute worked example, its fake, a green conformance test, `scripts/check-types.ts`; in `scripts/typecheck.ts` and the gate | PR-p3 | the features session; no bun-jobs review needed (no worker, driver, claim or gate code); examples told (the model for their example) | ~1.5 d | no |
+| **PR-p5** documentation | `docs/providers/`: README, author guide (summon half), reference with its drift test, user guide, security page; code blocks typechecked; `files` gains `docs`; a README section | PR-p4 (the guide's examples are the template's files) | the features session; the bun-jobs session reviews the security page and the gate descriptions; examples told (links) | ~2.5 d | no |
+| *PR-p6* provider routes (**only if Q-p4 says so**) | `GET /providers`, `POST /providers/:id/validate`, `/schema`, their two actions, `/meta` `features.providers`, a provider id on `SummonStatusDto.summoner` (plugins §14.1) | PR-p1 | the features session; the bun-jobs session reviews; **UI and examples told before merge** (new actions and permission rows) | *~2 d* | no |
+| | | | | **~11.75 d** (+ ~2 d for PR-p6) | |
+
+Each PR passes the full gate alone and leaves the package coherent if the next
+never lands: after PR-p1 a third party can write a provider (every throw still
+counts as `failed`, as on develop); after PR-p2 the controller treats the
+failure the way the provider says; after PR-p3 it can be tested without
+credentials; PR-p4 and PR-p5 teach it.
+
+**Hot path.** No PR touches the add path (`BunQueue`'s `added` listener,
+`ATTACH_QUEUE`, the `BunJobs` wiring), the claim loop or `#process`. PR-p1 and
+PR-p2 change the controller's constructor, `#call` and the result path, which
+run once per attempt. PR-3's rule stands: a diff that touches `ATTACH_QUEUE`,
+`#trigger` or `BunJobs` runs `cd packages/bun-jobs/bench && bun queue.ts
+--compare`.
+
+**What each PR contains, briefly.**
+
+- **PR-p1.** New `lib/provider/{index,define,configure,version,context,redact}.ts`
+  (plugins §6.1–§6.3, §9.3, §10.2, §13.3). The stand-ins of P1, plus
+  `SummonRequest`, `SummonResult`, `SummonReleaseRequest`, `SummonReason` and
+  `QueueDemand`, re-exported from `./provider`, so a plugin's declarations
+  import that entry alone (plugins §11.2). `define.ts` rebuilt on
+  `defineComputeProvider` (anonymous `custom:<kind>`, version `0.0.0`,
+  `apiVersion` `{ core, summon }`, facts still `{ kind, …describe() }`).
+  `toSummoner` checks the brand. The controller awaits `ready` before its
+  first call (a rejection is thrown as a `ConfigError` by that check and
+  every later one; not a new `inertReason`, which would change the DTO). `#call`'s logger is the redacting child. Entries
+  `./provider` and `./lib/provider`; `consumer-check.json` gets the P13-corrected
+  snippet; `__tests__/provider/first-party-imports.test.ts` with its negative
+  control.
+- **PR-p2.** `ProviderError` (`code` `PROVIDER_<KIND>`) on `./provider` and the
+  root. `#record`/`#fail`: `throttled` → `unavailable`, not counted toward the
+  circuit, backoff `max(backoff, retryAfterMs)`; `quota` → `unavailable`,
+  counted; `auth` and `misconfigured` → `failed`, circuit open at once, one
+  `error` naming the provider; `conflict` → `failed`, one `error` ("not a pure
+  function of its key"); anything else → `transient`. `last.detail` is
+  `platformCode`, else the code. `#explainLost` writes its first detail to
+  `last.detail` and emits it. One test per kind, each with a negative control
+  (the same failure as a plain `Error`).
+- **PR-p3.** `lib/provider/testing/`: plugins §12.1, §12.2 and §12.4, summon
+  only. The handoff's fixture worker is shipped under `lib/provider/testing/`
+  and runs under `runSummoned` (#166 is merged, so plugins §12.2's caveat about
+  file targets is met). `__tests__/helpers/summon.ts` keeps its options and
+  loses its name to the kit (renamed, e.g. `spawningSummoner`; test-only).
+  Entries `./provider/testing` and `./lib/provider/testing`.
+- **PR-p4.** Plugins §11.3 without `runtime.ts` and the execute facet. The
+  worked example is plugins §15.2's Acme Compute with `passes: "argv"`, not
+  `"env"`. Its conformance test runs in the gate; a fourth nested
+  `bun install` before `scripts/typecheck.ts`, noted in `CLAUDE.md`.
+- **PR-p5.** Plugins §15.1–§15.4 for the summon facet. The drift test
+  (plugins §15.3) covers `./provider`, `./provider/testing` and `./summon`. The
+  README's summon section links it. **It never edits the Recipes section**
+  (`README.md:5491-`), which `11-management-api/scaler-recipes.ts` parses.
+
+#### Order, parallelism and the critical path
+
+```
+now ──► PR-p1 ──┬──► PR-p2 ──┐
+                │            ▼ (merged before PR-p3)
+                ├──► PR-p3 ──┴──► PR-p4 ──► PR-p5
+                └──► PR-p6 (only if Q-p4 says so)
+```
+
+- **PR-p1 starts now.** Nothing it needs is unmerged.
+- **After PR-p1, PR-p2 and PR-p3 run in parallel.** PR-p3 writes every group
+  but `errors` against PR-p1, adds that group once PR-p2 merges, and merges
+  after it.
+- **PR-p4 waits for PR-p3; PR-p5 for PR-p4.** The user guide and the security
+  page can be drafted from PR-p2 on; the author guide and the drift test need
+  the template and the final exports.
+- **The critical path** is PR-p1 → PR-p3 → PR-p4 → PR-p5: about 10.5 d of the
+  11.75 d.
+
+#### Files more than one PR touches
+
+| File | PRs | Risk, and which lands first |
+|---|---|---|
+| `lib/summon/controller.ts` | PR-p1 (`toSummoner`, `ready`, `#call` `:1463-1491`); PR-p2 (`#record` `:1509-1605`, `#fail` `:1270`, `#penalize` `:1309`, `#explainLost` `:1423-1459`, the constructor's warning) | medium: other methods, one file. PR-p1 first |
+| `lib/summon/define.ts` | PR-p1 (rebuilt; `toSummoner`); PR-p2 (whether the unmapped `warn` applies, Q-p5) | low. PR-p1 first |
+| `lib/summon/types.ts`, `lib/summon/index.ts` | PR-p1 (the stand-ins leave, re-exports stay) | PR-p1 only |
+| `lib/provider/index.ts` | PR-p1 creates it; PR-p2 adds `ProviderError` | low: export lists |
+| `lib/index.ts`, `package.json` (`exports`, `files`), `consumer-check.json` | PR-p1 (`./provider`), PR-p2 (`ProviderError`), PR-p3 (`./provider/testing`), PR-p5 (`files`) | low: list merges |
+| `__tests__/summon-controller.test.ts` | PR-p1 (the spread summoners); PR-p2 (the error kinds) | low |
+| `packages/bun-jobs/README.md` | PR-p1 (the policy row `:3121`), PR-p2 (errors), PR-p5 (the providers section) | low. Lint it alone first; never the Recipes section |
+| `lib/api/**`, `__tests__/api/api-contract.type-test.ts` | none, unless Q-p1 declares the execute slot or PR-p6 lands | — |
+
+#### The DTO, before and after
+
+The UI session asked for this field by field. **Recommendation: 1.5p leaves
+`SummonStatusDto.summoner`, `SummonProviderDto` and `SummonCapabilitiesDto`
+exactly as they are**, mapped from the new types by the serializer as now.
+
+| Field (`api/contract/types.ts`) | Before, at `54ace84` | After 1.5p | UI reads it |
+|---|---|---|---|
+| `SummonStatusDto.summoner` (`:1244-1262`) | optional `{ provider, capabilities, facts }` | unchanged | yes |
+| `provider.name` (`:1091-1096`) | `string`; `"custom:" + kind` from `defineSummoner` | unchanged | yes |
+| `provider.version` | `string`; `"0.0.0"` from `defineSummoner` | unchanged | yes |
+| `provider.kind` | `string` | unchanged (`[a-z0-9-]{1,24}`, now also checked by `defineComputeProvider`) | yes, as the `displayName` fallback |
+| `provider.displayName` | optional | unchanged; plugins usually set it, `defineSummoner` never does | yes |
+| `provider.homepage` | optional | unchanged | no |
+| `provider.apiVersion` | `{ core: string; summon?: string }` | unchanged. Only if Q-p1 declares the execute slot: `execute?: string` added, optional | no |
+| `capabilities.style` (`:1145-1150`) | `"launch" \| "scale" \| "wake"` | unchanged | yes, with the raw-string fallback |
+| `capabilities.dedupe`, `passes`, `shutdown`, `enforcesLifetime`, `maxCountPerCall`, `poolSize` | as `SummonCapabilities` | unchanged | no |
+| `capabilities.bootBudgetMs` | `number`, the declared default (not the policy's override) | unchanged | yes |
+| `capabilities.maxLifetimeMs` | `number \| null` | unchanged | yes |
+| `summoner.facts` | `Record<string, string>`, filtered by `isServableFact` (`serialize.ts:900-922`) | same shape; **possibly fewer entries**: a fact whose value holds a declared secret is dropped before the serializer's filter (Q-p6) | yes |
+
+**None of the fields the UI renders is renamed, removed or made optional.**
+The schema (`api/schemas/queues.ts:462-520`, `:542-578`) is unchanged, and the drift
+assertions (`api-contract.type-test.ts:499-512`) must pass untouched: that
+they do is the proof.
+
+**Why keep the shape.** The provider API does not enrich any of these fields
+in 1.5p: PR-3 built the stand-ins to plugins §6.1 and §7.1, so the types move
+and do not change (P1). What `Summoner` gains (`config`, `ready`, `validate`,
+the brand) is runtime-only and must never reach the wire; the serializer's
+field-by-field copy keeps it off. The `DeepEqual` assertions turn any later
+runtime field into a deliberate DTO decision. Later additions are optional
+and additive, and the UI is told before each: `apiVersion.execute` (Phase 2),
+a provider id for "Test connection" (PR-p6), and a registration-warning
+badge (plugins §14.2).
+
+**What the UI should know although the DTO does not change** (PR-p2): the
+outcome `unavailable` can now come from a throttled call, not only from a lack
+of capacity (the hint in
+`packages/bun-jobs-ui/app/screens/queues/panels/summonText.ts:54-58` says "no
+capacity"); `failed` with detail
+`PROVIDER_AUTH` or `PROVIDER_MISCONFIGURED` opens the circuit at once; and
+`last.detail` becomes the platform's code (`ThrottlingException`) or
+`PROVIDER_<KIND>` where it is now `Error`. A `lost` attempt's detail may carry
+the platform's own reason (`CannotPullContainerError`).
+
+#### Breaking changes to what is on develop
+
+The packages are unpublished, so nothing gets an alias. **For a user of
+1.5a/1.5b:**
+
+- **`Summoner`** becomes `ConfiguredProvider & { summon: SummonFacet }`: it
+  gains `config`, `ready`, `validate` and a brand. A `Summoner` from
+  `defineSummoner` or a bare function is unaffected. **A hand-built object
+  literal no longer type-checks, and the controller refuses it**
+  (`ConfigError`) because it has no brand. Migration: wrap the function in
+  `defineSummoner`, or write the provider with `defineComputeProvider`. A
+  spread of a real `Summoner` with its facet replaced keeps working if the
+  brand is an own enumerable key (Q-p9).
+- **`SummonFacet`, `SummonCapabilities`, `SummonDedupe`, `UnitStatus`,
+  `ProviderIdentity`, `ProviderApiVersions`, `ProviderCallContext`**: same
+  shapes, now defined in `./provider` and still re-exported from the root and
+  `./summon`. `ctx.logger` now redacts; `ctx.fetch` may be the kit's.
+- **The controller's reading of capabilities is unchanged.** It adds: a
+  provider whose `apiVersion` major differs from the host's, or which declares
+  a facet without its version, is a `ConfigError` at construction; an async
+  config is awaited before the first call; one `warn` when `shutdown.graceMs`
+  is under 7,000 ms, so a `defineSummoner({ shutdown: { signal: "SIGINT",
+  graceMs: 5_000 } })` (Fly's default) now warns.
+- **Failure handling (PR-p2):** outcomes keep their names. A `throttled`
+  `ProviderError` no longer counts toward the circuit; `auth` and
+  `misconfigured` open it at once, where on develop every throw takes five (the
+  default `circuit.failures`); a plain `Error` behaves as it does on develop.
+- **Examples.** `02-queues/summon-controller.ts` and
+  `11-management-api/summon-routes.ts` build summoners only with
+  `defineSummoner`, whose identity, capabilities and facts are unchanged, so
+  `summon-routes.ts:245-258` (`custom:example-record`, `launch`, facts less the
+  token) holds. Their failing summoners throw a plain `Error`: still `failed`,
+  still counted, and the "summoner call failed" `error` count holds. They get
+  no new `warn` if Q-p5 is taken as recommended. `02-queues/summoned-worker.ts`
+  uses no summoner. **All three rerun at PR-p1 and PR-p2**, on memory (the file
+  driver for the cross-process parts) plus one server.
+- **The UI's Summon panel**: no contract change (above). Its hints change only
+  if the UI session rewords them after PR-p2.
+- **Tests**: `__tests__/helpers/summon.ts`'s `fakePlatform` is renamed in
+  PR-p3 (test-only), and `summon-platform`, `summon-race` and
+  `summon-register-claim` follow.
+
+#### Public names each PR introduces
+
+§13.9 covers only 1.5a/1.5b, and the plugins plan's names were designed, not
+approved: **every name below needs approval** unless marked. The collision
+check is §13.9's (`git grep -w -c` over `packages examples playground
+benchmarks scripts`, 2026-09-27, at `54ace84`): each is **0** except where
+given.
+
+| PR | Names | Note |
+|---|---|---|
+| PR-p1 | entries `./provider`, `./lib/provider`; values `defineComputeProvider`, `COMPUTE_PROVIDER_API`; types `ComputeProvider`, `ComputeProviderDefinition`, `ConfiguredProvider` (members `provider`, `config`, `ready`, `describe`, `validate`), `ProviderCheck`, `ProviderSetupContext`; brand symbols `COMPUTE_PROVIDER`, `CONFIGURED_PROVIDER` and their `Symbol.for` keys | needs approval |
+| PR-p1 | `ProviderIdentity`, `ProviderApiVersions`, `ProviderCallContext`, `SummonFacet`, `SummonCapabilities`, `SummonDedupe`, `UnitStatus` | **already public on develop** (PR-3's stand-ins); approving them keeps them |
+| PR-p1 | re-exported on `./provider`: `SummonRequest`, `SummonResult`, `SummonReleaseRequest`, `SummonReason`, `QueueDemand` (§13.9), `StandardSchemaV1`, `toStandardSchema` (bun-common's), `Logger`, `LoggerLike`, `LogLevel`, `JobsError`, `ConfigError` | existing names on a new spelling; approve the spelling |
+| PR-p2 | `ProviderError`, `ProviderErrorKind` (`"transient" \| "throttled" \| "quota" \| "auth" \| "misconfigured" \| "conflict"`), codes `PROVIDER_<KIND>` | needs approval; `PROVIDER_` unused in any `lib/` |
+| PR-p3 | entries `./provider/testing`, `./lib/provider/testing`; `runProviderConformance`, `assertConformance`, `fakePlatform`, `ConformanceReport`, `ConformanceCheck`, `FakePlatform`, `FakeFault`, `FakeUnit`, `FakePlatformState` (named by plugins §12.4, never defined: PR-p3 designs it); the check ids (`summon.dedupe.same-key-one-unit`, …), which reports are diffed by | needs approval. `fakePlatform` 7 and `FakePlatform` 2, all in the test helper this PR renames and the two tests that import it |
+| PR-p4 | `templates/compute-provider/`, package `bun-jobs-provider-example`, the naming convention `bun-jobs-provider-<platform>`, keywords `bun-jobs-provider` and `bun-jobs-provider-summon`, the `package.json` `"bun-jobs"` field (plugins §11.2) | conventions third parties copy; needs approval |
+| PR-p5 | the published paths `docs/providers/{README,author-guide,reference,user-guide,security}.md` | needs approval (they ship in the tarball) |
+| PR-p6 | `GET /providers`, `POST /providers/:id/validate`, `GET /providers/:id/schema`, actions `providers.read` and `providers.validate`, `/meta` `features.providers`, a provider id on `SummonStatusDto.summoner`, `SummonPolicy.validateOnStart` | only if Q-p4 says so; needs approval |
+
+#### The gate, per PR
+
+Every PR passes §13.1's gate: `bun scripts/typecheck.ts`; `CI=1 bunx eslint .`
+in `packages/bun-jobs` (the README alone first when it is touched); `bun test`
+and `bun test --randomize` with two seeds, **with the five server URLs
+exported**, quoting what ran, not what was green. In addition:
+
+| PR | Consumer check | Examples (memory plus one server) | Other |
+|---|---|---|---|
+| PR-p1 | yes (`./provider`; the snippet writes a provider against the tarball, no `any`) | `02-queues/summon-controller.ts`, `02-queues/summoned-worker.ts`, `11-management-api/summon-routes.ts` | `bun test` in `packages/bun-jobs-ui` (it imports the root's summon types) |
+| PR-p2 | yes (`ProviderError` on `./provider` and the root) | the same three | `bun test` in `packages/bun-jobs-ui`; the UI session confirms its hints |
+| PR-p3 | yes (`./provider/testing`) | the same three | the handoff and CAS checks on SQLite, the file driver, Redis and Postgres |
+| PR-p4 | no | none | `cd templates/compute-provider && bun install && bun test && bun scripts/check-types.ts`; `bunx eslint .` there; the template in `scripts/typecheck.ts` |
+| PR-p5 | yes (`files` gains `docs`: the tarball changes) | none | the reference drift test and its negative control; the docs' code blocks typechecked; `CI=1 bunx eslint docs README.md` in the package, each file alone if it stalls |
+| PR-p6 | yes | `11-management-api/summon-routes.ts`; the UI permission rows | `bun test` in `packages/bun-jobs-ui`; `bun run-all.ts` in `examples/bun-jobs-ui` |
+
+**What the conformance kit must prove** (PR-p3), with no cloud credentials:
+
+- **A known-good provider passes.** 1.5p has no first-party provider, so the
+  kit's own suite runs (a) a small `defineComputeProvider` provider over a
+  `fakePlatform()` fake with a strict 64-character token, and (b) a
+  `defineSummoner` summoner (plugins §7.4: the kit accepts both); PR-p4 adds
+  the template's Acme Compute. Every `must` group passes, the handoff included:
+  a real `SummonController` on a shared SQLite or file driver, the fixture
+  worker spawned with `argv`, the attempt released by id, and by start time
+  under `passes: "none"`.
+- **A negative control per `must` group**, each a provider broken in exactly
+  that way and failing exactly that check: a secret canary in a log line
+  (secrets); a call through the global `fetch` (routing); a timestamp in the
+  body under a strict token (purity); a token longer than `maxLength`
+  (dedupe); a plain `Error` (errors); a timer left after the abort (timeouts);
+  identity dropped under `passes: "argv"` (handoff); scale with no `release`
+  (capabilities).
+- **The report itself**: `assertConformance` throws on a failed `must` and not
+  on a `should` warning; `toMarkdown()` names every check id; the header says
+  "tested against a fake" (plugins §12.5).
+
+#### Open questions for the user, before code
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q-p1 | Does 1.5p declare the execute slot (`COMPUTE_PROVIDER_API.execute`, `apiVersion.execute`, the definition's `execute`)? No execute facet exists until Phase 2 | **No.** Core and summon only; a definition with an `execute` key is a `ConfigError` ("this bun-jobs has no execute facet") rather than silently ignored. Phase 2 adds it while `core` is `0.x`. The DTO then stays as it is |
+| Q-p2 | Is `./provider/auth` created in 1.5p (plugins Q-P2)? | **No.** It would export nothing; 1.5c creates it with the SigV4 signer, and Q-P2 is decided there |
+| Q-p3 | Are the `./providers/*` keys wired in 1.5p? | **No.** The build refuses a target that does not exist; each lands with its provider (1.5c–e) |
+| Q-p4 | The provider routes (plugins §14.1): nothing in §13 schedules them, yet 1.5f's "Test connection" and Providers section need them. In 1.5p as PR-p6, or later? | **Later**, as one PR after 1.5c's first provider with a real `validate()`: without one, "Test connection" tests nothing. 1.5p ships `validate()` callable from code. 1.5f's two items wait for it |
+| Q-p5 | Do the "experimental facet" `warn` (plugins §10.3) and the "threw a non-`ProviderError`" `warn` (§6.5) apply to `defineSummoner`? | **No**, only to `defineComputeProvider` providers. `defineSummoner` is the user's own code, built by the host at the host's version, and it already logs every failure as an `error`; the two warnings would be noise in every process and in the examples' logs |
+| Q-p6 | A `describe()` fact holding a declared secret's value: replaced by a marker, or dropped? | **Dropped**, like the serializer's rule: no new value the UI must render, and it fails safe |
+| Q-p7 | How does the kit route a real controller's `ctx.fetch` in the handoff check? | An internal symbol-keyed option, like `DEMAND_READ_PROBE` and `RUN_SUMMONED_PROBE`: no public name |
+| Q-p8 | `SummonPolicy.validateOnStart` (plugins §7.3) in 1.5p? | **Later**, with Q-p4 |
+| Q-p9 | The brand: an own enumerable key, so a spread keeps it, or a non-enumerable one? | **Enumerable** (`Symbol.for` keys, own properties): wrapping a facet by spread is legitimate, and two tests do it |
+| Q-p10 | Does `./provider` re-export `toStandardSchema` and `StandardSchemaV1`? | **Yes**, so a plugin depends on bun-jobs alone (plugins §11.1–§11.3) |
+| Q-P6 | A `capacity` kind beside `quota` (plugins Q-P6)? | **Not in `0.1`**: six kinds; ECS's capacity-200 stays the `unavailable` result. A `0.x` minor may add it when a platform needs it |
+
+#### Effort
+
+**~11.75 d, was ~12.5 d**, plus ~2 d for PR-p6 if Q-p4 takes it into 1.5p.
+Measured from the code rather than the draft: the capability reads and the
+`status`/`cancel` calls were built by PR-3 (−0.75 d, P3–P4); the
+`./provider/auth` and `./providers/*` wiring moves to 1.5c, whose 0.5 d row
+already covers it (−0.25 d, P9); re-exporting the request types on
+`./provider`, the tests that spread a `Summoner` and the test helper's rebuild
+add +0.25 d. The Acme Compute example moves from the docs row (3 d → 2.5 d)
+to the template (1 d → 1.5 d), which is neutral. All of 1.5 becomes **~48.5
+d** (was ~49.25 d); the order in "Totals" above is unchanged.
 
 ---
 
