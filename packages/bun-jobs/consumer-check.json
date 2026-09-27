@@ -162,7 +162,12 @@
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/summon",
-      "values": ["runSummoned", "summonedFromArgs", "SummonController", "defineSummoner"],
+      "values": [
+        "runSummoned",
+        "summonedFromArgs",
+        "SummonController",
+        "defineSummoner"
+      ],
       "types": ["RunSummonedOptions", "SummonedExit", "SummonPolicy"]
     },
     {
