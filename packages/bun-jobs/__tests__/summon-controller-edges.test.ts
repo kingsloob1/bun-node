@@ -60,20 +60,6 @@ afterEach(async () => {
 const BACKENDS = await crossProcessBackends({ cleanups });
 const SQLITE = BACKENDS.find((backend) => backend.name === "sqlite")!;
 
-/**
- * `config` on the suite's own SQL tables. The default `bun_jobs_` tables on a
- * long-lived server can predate the current DDL (a MariaDB `bun_jobs_kv` keyed
- * in `utf8mb4_uca1400_ai_ci` lists nothing for a prefix ending in `:`), so these
- * tests use the `bun_jobs_test_` tables every SQL suite shares.
- */
-function suiteConfig(
-  config: (typeof BACKENDS)[number]["config"],
-): (typeof BACKENDS)[number]["config"] {
-  return config.type === "sql"
-    ? { ...config, tablePrefix: "bun_jobs_test_" }
-    : config;
-}
-
 /** Triggers off and no cooldown: every check is one the test asked for. */
 const QUIET: Partial<SummonControllerOptions> = {
   triggers: { onAdd: false, events: false, poll: false },
@@ -87,7 +73,7 @@ async function open(config: (typeof BACKENDS)[number]["config"]): Promise<{
   namespace: string;
   ref: { ns: string; queue: string };
 }> {
-  const driver = createDriver(suiteConfig(config));
+  const driver = createDriver(config);
   await driver.connect();
   const namespace = testNamespace("summon-edges");
   perTest.push(async () => {
@@ -222,7 +208,7 @@ describe("the onAdd hook is private (not the public `added` event)", () => {
         });
         summon[ATTACH_QUEUE](consumer);
 
-        const producerDriver = createDriver(suiteConfig(backend.config));
+        const producerDriver = createDriver(backend.config);
         perTest.push(async () => await producerDriver.close());
         const producer = new BunQueue("work", {
           namespace,
