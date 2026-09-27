@@ -59,6 +59,7 @@ function pager(label: string): HTMLElement | null {
  * in two of these checks until a deliberately broken build was run past them.
  * The same false pass is why every absence check here now goes through
  * `./assert` (`expectAbsent`, `expectNone`), which compares before it prints.
+ * Bun's issue: https://github.com/oven-sh/bun/issues/37310.
  */
 function pagerCount(label: string): number {
   return document.querySelectorAll(`nav[aria-label="${label}"]`).length;
