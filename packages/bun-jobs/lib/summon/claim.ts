@@ -1,4 +1,5 @@
 import type { JobsDriver, QueueRef } from "../drivers/index";
+import type { SummonedExit } from "./worker";
 import { listWorkerRecords } from "../drivers/index";
 import { RESERVED_STATE_PREFIX, setReservedState } from "../queue/windows";
 import { base32 } from "./marker";
@@ -64,6 +65,34 @@ export interface SummonClaimant {
    * proves nothing; after it, a missing record means the holder is gone.
    */
   until: number;
+  /**
+   * How the holder left, once it has: written by the holder itself as it
+   * closes, before its heartbeat record goes (see {@link markSummonClaimExit}).
+   * Absent while it runs — and for good on a holder that died without
+   * closing, which is how the controller tells a clean exit from a crash.
+   */
+  exit?: SummonClaimExit;
+}
+
+/**
+ * A holder's exit mark: how a summoned worker that held a claim left.
+ *
+ * `runSummoned` writes the real reason and code before it closes the worker;
+ * the worker's own `close()` then fills in `"closed"` (code `0`) only where no
+ * mark is there yet, so a worker closed some other way still says it closed.
+ */
+export interface SummonClaimExit {
+  /** When it left, epoch ms, by the holder's clock. */
+  exitedAt: number;
+  /**
+   * Why: `runSummoned`'s {@link SummonedExit} reason, or `"closed"` from a
+   * worker's own `close()`.
+   */
+  reason: SummonedExit["reason"];
+  /** The exit code: `1` only for `"error"` (its `run()` failed), else `0`. */
+  code: 0 | 1;
+  /** `true` when the close was forced (a signal, a deadline, an escalation). Absent otherwise. */
+  forced?: boolean;
 }
 
 /** What a claim entry holds. */
@@ -178,6 +207,13 @@ export async function claimSummonAttempt(
       if (gone === -1) {
         return false;
       }
+      // The gone holder's place, exit mark and all, goes to the claimant.
+      // Losing that mark is harmless: only a restart of the same unit takes
+      // a place (it runs the same command line, so the same attempt id), and
+      // the controller judges an attempt by the process holding each place
+      // now. A restart that runs well is the attempt working; one that dies
+      // or fails is still counted — its own mark, or its missing one, says
+      // so — and an attempt counts one failure at most either way.
       holders = claim.holders.map((holder, index) =>
         index === gone ? claimant : holder,
       );
@@ -212,6 +248,177 @@ export async function holdsSummonClaim(
     isClaim(current.value) &&
     current.value.holders.some((holder) => holder.worker === worker)
   );
+}
+
+/**
+ * Reads the claim entries of several attempts: the controller's registration
+ * evidence that outlives a worker's record. A summoned worker claims its id
+ * in its first report and removes its record when it closes, so one that
+ * starts, drains the backlog and exits between two checks leaves no record
+ * to be seen — but its place in the claim stays, for
+ * {@link SUMMON_CLAIM_RETENTION_MS}, and the sweep never removes a younger
+ * entry.
+ *
+ * One read per id, in parallel. An id with no entry (nothing has claimed it
+ * yet, or a platform that passes no identity) or with a value that is not a
+ * claim maps to `undefined`. A failed read rejects: the check then fails and
+ * runs again, rather than counting a worker that did start as missing.
+ */
+export async function readSummonClaims(
+  driver: JobsDriver,
+  q: QueueRef,
+  /** The attempt ids to look up. */
+  ids: readonly string[],
+): Promise<Map<string, SummonClaim | undefined>> {
+  const claims = await Promise.all(
+    ids.map(async (id) => {
+      const current = await driver.getQueueState!(q, summonClaimName(id));
+      return current !== null && isClaim(current.value)
+        ? current.value
+        : undefined;
+    }),
+  );
+  return new Map(ids.map((id, index) => [id, claims[index]]));
+}
+
+/** What an attempt's claim says about the workers it started. */
+export interface SummonClaimTally {
+  /**
+   * Holders that ran: live (their record is listed) with no failing mark, or
+   * gone with a clean exit mark (code `0`).
+   */
+  succeeded: number;
+  /** Holders that left with a failing exit mark (code `1`). */
+  exitedWithError: number;
+  /**
+   * Holders that are gone with no exit mark, past their grace: started, then
+   * died without closing (a crash, an OOM kill, a SIGKILL).
+   */
+  died: number;
+  /** Holders gone with no mark but still inside their grace: undecided yet. */
+  starting: number;
+  /**
+   * Of `succeeded`, the holders counted only because their record is listed:
+   * no mark yet, so how they will leave is still open.
+   */
+  unmarked: number;
+}
+
+/**
+ * Sorts an attempt's claim holders into how each one fared, as of `now`.
+ *
+ * A holder's mark decides first — code `0` succeeded, code `1` failed, even
+ * while its record is still listed (it is on its way out). With no mark, a
+ * listed record means it is running; no record means it **died** only once
+ * its grace has passed: the later of its own `until` (the claim time plus
+ * one record lifetime, the test claim-once uses to let a restart take a gone
+ * holder's place) and the attempt's `until` (`notBefore`), plus `slack` for
+ * the two processes' clocks, since the holder's `until` is by its clock and
+ * `now` by the caller's. Before that its first record may not have been
+ * written yet, or a worker busy on a CPU-bound job may have let its record
+ * lapse while it is still alive: neither is a death.
+ */
+export function tallySummonClaim(
+  /** The claim, or `undefined` when there is none. */
+  claim: SummonClaim | undefined,
+  /** The ids of the workers whose records are live. */
+  live: ReadonlySet<string>,
+  /** Now, epoch ms, by the caller's clock. */
+  now: number,
+  /** The clock-skew allowance added to each holder's grace, in ms. */
+  slack: number,
+  /** The attempt's `until`, epoch ms: no holder is declared dead before it. */
+  notBefore: number,
+): SummonClaimTally {
+  const tally: SummonClaimTally = {
+    succeeded: 0,
+    exitedWithError: 0,
+    died: 0,
+    starting: 0,
+    unmarked: 0,
+  };
+  for (const holder of claim?.holders ?? []) {
+    if (holder.exit !== undefined) {
+      if (holder.exit.code === 0) {
+        tally.succeeded++;
+      } else {
+        tally.exitedWithError++;
+      }
+    } else if (live.has(holder.worker)) {
+      tally.succeeded++;
+      tally.unmarked++;
+    } else if (
+      Math.max(
+        typeof holder.until === "number" ? holder.until : holder.at,
+        notBefore,
+      ) +
+        slack <=
+      now
+    ) {
+      tally.died++;
+    } else {
+      tally.starting++;
+    }
+  }
+  return tally;
+}
+
+/**
+ * Writes `worker`'s exit mark onto an attempt's claim, by compare-and-set,
+ * in the rounds a claim gets ({@link claimSummonAttempt}). Answers
+ * `"written"`, `"kept"` (a mark was there and stays), `"not-held"` (no entry,
+ * or `worker` holds no place in it) or `"contended"` (the entry kept changing
+ * under it).
+ *
+ * With `replace: false` — a worker's own `close()` — it only fills an empty
+ * mark, so the reason `runSummoned` wrote first survives. With
+ * `replace: true` — `runSummoned` — it writes over a mark already there,
+ * **except** that a failing mark (code `1`) is never replaced by a clean one:
+ * a failure, once said, stays said.
+ */
+export async function markSummonClaimExit(
+  driver: JobsDriver,
+  q: QueueRef,
+  /** The attempt id, `summon.id`. */
+  id: string,
+  /** The holder's worker id. */
+  worker: string,
+  /** The mark. */
+  exit: SummonClaimExit,
+  /** Whether to write over a mark already there (never code `1` with code `0`). */
+  replace: boolean,
+): Promise<"written" | "kept" | "not-held" | "contended"> {
+  const name = summonClaimName(id);
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
+    const current = await driver.getQueueState!(q, name);
+    if (current === null || !isClaim(current.value)) {
+      return "not-held";
+    }
+    const claim = current.value;
+    const index = claim.holders.findIndex((holder) => holder.worker === worker);
+    if (index === -1) {
+      return "not-held";
+    }
+    const existing = claim.holders[index]!.exit;
+    if (
+      existing !== undefined &&
+      (!replace || (existing.code === 1 && exit.code === 0))
+    ) {
+      return "kept";
+    }
+    const next: SummonClaim = {
+      ...claim,
+      holders: claim.holders.map((holder, at) =>
+        at === index ? { ...holder, exit } : holder,
+      ),
+    };
+    if (
+      (await setReservedState(driver, q, name, next, current.version)) !== null
+    ) {
+      return "written";
+    }
+  }
+  return "contended";
 }
 
 /**

@@ -569,7 +569,10 @@ interface PendingSummon {
    with `expected = null` and a fresh `epoch`.
 2. **Release.** For each pending attempt:
    - It is **registered** if a live record carries `summon.id === attempt.id`
-     (§5.4). Drop it and reset `failures`.
+     (§5.4). Drop it and reset `failures`. *(Superseded: see "As built
+     (fix/summon-register-claim)" and the watch list below — registration
+     now also counts claim holders, and resets `failures` only once the
+     attempt is known to have run cleanly.)*
    - When the platform cannot pass the id (Fly start with a fixed config;
      §7), fall back to a live record whose `startedAt ≥ attempt.at − 5 s`
      and which is not already attributed to another attempt.
@@ -579,6 +582,167 @@ interface PendingSummon {
      put the platform's reason in `last.detail`; when it also has `cancel()`
      and the unit is still pending, cancel it so it cannot start late
      ([`compute-provider-plugins.md`](compute-provider-plugins.md) §7.3).
+
+   **As built (fix/summon-register-claim): registration counts claim
+   holders, and only a clean exit counts as success.** A live record alone
+   missed a worker that claimed, drained the backlog and closed between two
+   checks — its close removes the record — so the attempt was declared `lost`
+   and counted, and a short-lived worker looked like a failed summon. The
+   claim-once entry (`lib/summon/claim.ts`) outlives the record, so step 2
+   also reads it, one `getQueueState` per pending or watched attempt
+   (bounded by `maxPending` and the watch list's bound; none with `passes: "none"`, which has no id to claim), and
+   never on the add path. Where the entry exists it decides alone: every
+   live record carrying the id is one of its holders, since a worker writes
+   the id only once it holds a place.
+   Counting a claim alone would have hidden a crash loop — a worker that
+   claims and then dies would register, `#fail` would never run, and the
+   controller would summon it again after every cooldown — so each holder
+   carries an **exit mark**, `{ exitedAt, reason, code, forced? }`, written
+   by compare-and-set before its record is removed: `runSummoned` writes its
+   real reason and code before it closes the worker, and `BunQueueWorker`'s
+   own `close()` (graceful or forced) fills in `closed`, code `0`, only where
+   no mark is there yet. Per holder, a mark decides first: code `0` ran,
+   code `1` failed. With no mark, a live record means it is running; no
+   record means it **died** only past the later of the attempt's `until` and
+   the holder's own `until` (claim time plus one record lifetime), plus 5 s
+   of clock allowance. Before that it may still be starting, or be alive
+   with its reports stalled (a CPU-bound job): deciding `died` at the
+   holder's `until` alone read such a worker as dead (#217 review, item 3).
+   - **Settled by registration**: any holder that ran (or a live record
+     carrying the id, or the `passes: "none"` start-time match). The attempt
+     leaves `pending` at once, so a running worker is never counted twice
+     (on its way and live), and `failures` is reset, as a registration
+     always has. If a holder is counted only by its live record, still
+     starting, or already failed, the attempt moves to `watching` and
+     `lossStreak` is left alone; if every holder left a clean mark, the
+     success is proven and `lossStreak` is reset too (below).
+   - **Lost**: nothing ran and every place is decided failing, or `until`
+     has passed with nothing still starting; counted once, `detail`
+     `exited-with-error`, `died`, or none (never claimed: the old rule).
+
+   **As built (#217 review, item 1): the watch list.** A live record alone
+   let a worker that crashes after its first report register: at the
+   defaults a check almost always lands while its record is still listed,
+   so a crash loop read as a stream of registrations (reproduced on all
+   seven backends: 13–15 crashes, all `registered`, failures 0, circuit
+   never open). Keeping the attempt pending until `until` would have
+   counted a running worker twice and blocked new attempts through
+   `maxPending`, so instead `SummonMarker.watching?: WatchedSummon[]`
+   (`{ id, at, until, count, kind, extendedUntil? }`) holds
+   released attempts, **never as capacity**. Each check reads a watched
+   attempt's claim, as it does a pending one's, and: a code-`1` mark → one
+   failure, `lost`, `exited-with-error`; a holder gone unmarked past the
+   grace above → one failure, `lost`, `died`; every holder marked clean →
+   dropped, no event, `lossStreak` reset; due to end with a holder still
+   listed and unmarked → extended once (below); the claim gone (purged) →
+   dropped. One failure per attempt, however many holders failed, counted
+   by `#failLate` (below) before the backoff and circuit rules. A late failure goes through the normal
+   event path (`#announce`, so #218's publishing carries it) and sets
+   `last`. The marker is written only when the list changed; a quiet watch
+   list costs reads and no write. Bounded at `maxPending × ⌈bootBudget /
+   cooldown⌉`, floor 8, cap 256 (the cap when `cooldown` is 0); past it the
+   oldest are evicted with one `warn` naming them, and no summon is ever
+   refused for room. Cost: a `died` is counted a `bootBudget` (plus grace)
+   after its attempt started, so a crash loop runs at the cooldown's pace
+   until then (the hourly budget still caps it); a watched
+   `exited-with-error` is counted at the next check.
+
+   **One failure per attempt, even when others ran** (the coordinator's
+   decision, replacing develop's "one that ran is enough"). A job that
+   crashes its worker therefore counts a failure for every attempt that
+   picks it up, and repeated retries can open the circuit for the queue.
+   Deliberate: a job that keeps killing workers is runaway cost, which the
+   circuit exists to stop, and the job's own `attempts` dead-letter it in
+   the end.
+
+   **Failures while watched: `failures` and `lossStreak` (#217 re-review,
+   item 1, and round 3b).** 9aa43e5 left `failures` alone at a watched
+   registration and reset it only at the watch's clean end, so unrelated
+   failures piled up during a healthy watch (repro 7/7: two `unavailable`, a
+   registration, one more `unavailable` → 3, circuit open 15 min; develop:
+   1). A first fix saved the count each registration reset on its watched
+   entry and restored it on a loss; that under-counted a dense crash loop,
+   because every release between two losses moved the running count into
+   its own entry (measured: `cooldown: 0`, threshold 3 — 15 losses before
+   the circuit opened). As built there are two counts:
+   - `failures` keeps develop's behaviour: reset by any registration,
+     watched or not, +1 per immediate failure (`#fail`). Backoff and the
+     circuit read it.
+   - `SummonMarker.lossStreak?` (optional, `v` unchanged, a missing or
+     malformed value is 0) counts every counted failure, immediate or late,
+     and is reset **only on proven success**: an attempt settled with every
+     holder's clean mark, or a watch ending clean (at its extended end, if
+     extended). A registration seen only by a live record does not reset it.
+   - A watched late loss (`#failLate`) increments `lossStreak` **first**,
+     then sets `failures = max(failures + 1, lossStreak)`, then applies the
+     backoff and the circuit. The order matters: taking the max against the
+     streak before counting this loss in it would come out one short.
+     Measured with it: the same dense loop opens the 3-failure circuit at 3
+     losses on file, sqlite, postgres and redis.
+   - `reset()` clears `failures` and `lossStreak` both, so a watched loss
+     after an operator's reset counts 1.
+   - Trade-off: while a healthy worker's watch is still open, a crash of
+     another attempt counts together with the failures from before that
+     registration, because nothing is proven healthy yet; the healthy
+     watch's clean end resets the streak.
+   - Half-open: when `circuit.resetAfter` passes the circuit closes, but
+     `failures` and `lossStreak` stay (no time decay, as before), so the
+     first failure afterwards — `max(f + 1, s) ≥ threshold` for a late one —
+     reopens it at once, since no success has been proven since the last N
+     failures. A proven success in between resets the streak.
+
+   **The watch's end (#217 re-review, item 2).** A worker's record outlives
+   it by one record lifetime (`reportInterval × 3`, 30 s at the defaults),
+   so a crash within that long of the watch's end left a record still
+   listed, and the watch ended clean (repro 7/7 with 3 s reports against a
+   1.5 s `bootBudget`: 5 crashes, 0 failures). Now a watch due to end with a
+   holder still listed and unmarked is extended **once**, to the latest such
+   record's `expiresAt` (`extendedUntil`); at that time a record still
+   listed was refreshed (alive: clean end), one gone unmarked is `died`, a
+   clean mark ends clean. A healthy long-running worker ends clean one
+   record lifetime later, and a quiet check still writes nothing.
+
+   **Which crash gives which detail.** A crash before the claim (before the
+   first report) → plain `lost` at `until`, no detail. A crash after the
+   claim with no clean exit → `died` after the grace. `exited-with-error`
+   → only from a code-`1` exit mark: `runSummoned` writes one only when
+   `run()` rejects, which is before the first report (no claim yet), and
+   after startup `BunQueueWorker.run()` never rejects — its loop routes
+   errors to `#emitError` and retries. So in practice a late loss is
+   `died`; `exited-with-error` is what a code-`1` mark written by other
+   means produces, kept defensively. A `close()` that rejects part-way keeps
+   the original exit reason, so the process exits 0 with the error logged:
+   the worker did run, and a failed close is not a crash loop.
+
+   **Loose ends, by design.** A late `lost` carries no `handles`
+   (`WatchedSummon` does not store them) and `#explainLost` is not called
+   for it, so the summoner is never asked why. `reset()` keeps `watching`,
+   so a crash from before a reset still counts one failure after it. A live
+   worker whose event loop is blocked for longer than a record lifetime
+   across the (extended) end of its watch cannot be told from a dead one
+   and reads as `died` (#217 re-review, item 3: needs a > 30 s block
+   spanning the watch end at the defaults).
+
+   **Mixed versions.** `watching` is optional and `v` stays `1`, so the
+   inert-on-newer-`v` rule does not fire. A new controller reads a missing
+   or malformed `watching` as empty, never as a corrupt marker. An older
+   controller validates the marker with an `isSummonMarker` that ignores
+   unknown fields and clones the whole value, so it keeps `watching`
+   untouched through its own writes and never settles it — detection waits
+   for a newer controller — and it can cause no false failure. (Should a
+   version ever rebuild the marker and drop the field, the effect is the
+   same: late failures go uncounted, nothing is counted falsely.)
+
+   **Caveats.** A summoned worker must exit through `runSummoned` or
+   `worker.close()` to count as clean; `process.exit(0)` without either
+   leaves no mark and reads as `died`. And if both mark writes fail (the
+   backend unreachable across the exit), a clean exit reads as `died`
+   (accepted, #217 review item 2).
+
+   A holder whose record lapsed long ago still counts: the attempt did start
+   a worker, and whether it is still alive is demand's question (orphaned
+   jobs), not registration's. A worker still running when its watch ends has
+   run; a crash after that is left to the orphan rule.
 3. If `paused`, or there is no demand and no orphan: if the marker changed,
    write it back. Otherwise return `none`. Scale-style summoners get their
    scale-down check here (§4.7).

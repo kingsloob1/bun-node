@@ -2,6 +2,7 @@ import type { JobsApiAction } from "../../app/api/contract";
 import type { Permissions } from "../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { canPerform, useCan, useFeature } from "../../app/meta/hooks";
+import { expectAbsent } from "./assert";
 import { fireEvent, page, render, setupDom, waitFor } from "./dom";
 import { metaFixture, permissionsFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";
@@ -56,7 +57,7 @@ describe("the bootstrap", () => {
     expect(screen.textContent).toContain("Sign in required");
     expect(screen.textContent).toContain("Your session expired");
     expect(screen.textContent).toContain("UNAUTHORIZED");
-    expect(page().queryByTestId("app-ready")).toBeNull();
+    expectAbsent(page().queryByTestId("app-ready"));
 
     denied = false;
     fireEvent.click(page().getByRole("button", { name: "Retry" }));

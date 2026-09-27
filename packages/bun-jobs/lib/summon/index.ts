@@ -36,6 +36,7 @@ export type {
   SummonSkipReason,
   SummonStatus,
   UnitStatus,
+  WatchedSummon,
 } from "./types";
 export {
   runSummoned,

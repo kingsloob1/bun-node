@@ -962,6 +962,7 @@ export {
   type SummonSkipReason,
   type SummonStatus,
   type UnitStatus,
+  type WatchedSummon,
 } from "./summon/index";
 
 /* ------------------------------------------------------------------ *

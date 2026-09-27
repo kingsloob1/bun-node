@@ -17,6 +17,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent, expectNone } from "../assert";
 
 /**
  * The Overview's analytics against REAL data: a real `createJobsApi` over real
@@ -444,7 +445,7 @@ describe("the Overview over real recorded analytics", () => {
         );
         // 6 + 3 + 4 jobs, one of them failed: what the real workers did.
         expect(jobs.sparklines[0]).toContain("12 completed, 1 failed");
-        expect(jobs.alert).toBeNull();
+        expectAbsent(jobs.alert);
 
         const runners = await overview.section(
           "runners",
@@ -497,7 +498,7 @@ describe("the Overview over real recorded analytics", () => {
         expect(workersView.text).toContain(
           "It is not a list of running workers",
         );
-        expect(workersView.truncated).toBeNull();
+        expectAbsent(workersView.truncated);
       } finally {
         overview.unmount();
       }
@@ -601,7 +602,7 @@ describe("the Overview over real recorded analytics", () => {
             "No numbers are kept for this range",
           );
           expect(view.notRetained).toContain("its oldest figure is from");
-          expect(view.alert).toBeNull();
+          expectAbsent(view.alert);
         }
         const refused = live.exchanges
           .slice(start)
@@ -657,7 +658,7 @@ describe("the Workers section with more keys than a roll-up returns", () => {
         expect(rollup.totalRows).toBe(FLEET_KEYS);
         // Mode `jobs` mounts no runner analytics, whatever the driver counts.
         expect(overview.has("runners")).toBe(false);
-        expect(reads(fleet, "/analytics/runners", start).all).toHaveLength(0);
+        expectNone(reads(fleet, "/analytics/runners", start).all);
       } finally {
         overview.unmount();
       }

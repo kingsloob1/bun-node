@@ -14,6 +14,7 @@ import {
   parseJsonText,
 } from "../../../app/components/jsonParse";
 import { JsonView } from "../../../app/components/JsonView";
+import { expectAbsent, expectUndefined } from "../assert";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 
 setupDom();
@@ -80,7 +81,7 @@ describe("JsonView", () => {
     fireEvent.click(root);
     expect(root.getAttribute("aria-expanded")).toBe("false");
     expect(root.textContent).toContain("1 key");
-    expect(page().queryByText("x:", { exact: false })).toBeNull();
+    expectAbsent(page().queryByText("x:", { exact: false }));
   });
 
   it("truncates long strings with show more", () => {
@@ -275,7 +276,7 @@ describe("JsonEditor", () => {
     fireEvent.change(input, { target: { value: '{\n  "a": tru\n}' } });
     const last = onState.mock.calls.at(-1)![0];
     expect(last.valid).toBe(false);
-    expect(last.value).toBeUndefined();
+    expectUndefined(last.value);
     expect(last.error).toMatchObject({ line: 2, column: 11 });
     const error = page().getByText(/^Line 2, column 11:/);
     expect(error.textContent).toContain("Expected 'true'");

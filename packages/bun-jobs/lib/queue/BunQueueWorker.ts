@@ -92,7 +92,11 @@ import {
   workerConfigCrossFieldIssue,
   workerConfigIssue,
 } from "../shared/workers";
-import { claimSummonAttempt, holdsSummonClaim } from "../summon/claim";
+import {
+  claimSummonAttempt,
+  holdsSummonClaim,
+  markSummonClaimExit,
+} from "../summon/claim";
 import { resolveSummonProvenance } from "../summon/provenance";
 import { AttemptWrites } from "./attemptWrites";
 import { BackoffStrategies, nextBackoff } from "./backoff";
@@ -1941,6 +1945,8 @@ export class BunQueueWorker<
     }
 
     await this.#closeTarget();
+    // Before the record goes, so no reader ever sees neither.
+    await this.#markSummonExit();
     await this.#unregister();
     await this.#flushThroughput();
     await this.#metrics.close();
@@ -4878,6 +4884,49 @@ export class BunQueueWorker<
 
     try {
       await removeWorkerRecord(this.driver, this.ref, this.id);
+    } catch (error) {
+      this.#emitError(error, "report");
+    }
+  }
+
+  /**
+   * Marks this worker's exit on the summon claim it won — reason `"closed"`,
+   * code `0`, `forced` on a forced (or escalated) close — so the controller
+   * counts a summoned worker that closed as one that ran, and only a process
+   * that died without closing as a crash. Written after the attempts have
+   * settled and before the record is removed, so a reader always sees one or
+   * the other.
+   *
+   * Only fills an empty mark: `runSummoned` writes the real reason and code
+   * before it closes the worker, and that one stands. Nothing at all for a
+   * worker nobody summoned, one that did not win its claim, or one whose
+   * driver is already closed. Best effort: one compare-and-set loop, and a
+   * failure is reported as an error, never thrown.
+   */
+  async #markSummonExit(): Promise<void> {
+    if (this.#summon === undefined || this.#driverClosed) {
+      return;
+    }
+    // A first report still in flight decides the claim; `#unregister` waits
+    // for it anyway, so this adds no wait.
+    await this.#reporting;
+    if (this.#summonClaim !== "won") {
+      return;
+    }
+    try {
+      await markSummonClaimExit(
+        this.driver,
+        this.ref,
+        this.#summon.id,
+        this.id,
+        {
+          exitedAt: Date.now(),
+          reason: "closed",
+          code: 0,
+          ...(this.#closeForced ? { forced: true } : {}),
+        },
+        false,
+      );
     } catch (error) {
       this.#emitError(error, "report");
     }

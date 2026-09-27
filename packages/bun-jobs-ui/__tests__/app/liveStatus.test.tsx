@@ -1,6 +1,7 @@
 import type { LiveStatus } from "../../app/live";
 import { describe, expect, it } from "bun:test";
 import { liveStatusInfo } from "../../app/layout/liveStatusInfo";
+import { expectAbsent } from "./assert";
 import { act, page, setupDom } from "./dom";
 import { installLiveFake } from "./liveFake";
 import { renderApp } from "./renderApp";
@@ -177,7 +178,7 @@ describe("the live-status announcer", () => {
     renderApp();
     await page().findByTestId("live-status");
     expect(announcer().getAttribute("aria-live")).toBe("polite");
-    expect(announcer().getAttribute("role")).toBeNull();
+    expectAbsent(announcer().getAttribute("role"));
     expect(announcer().textContent).toBe("");
     // The badge's own text is unchanged by it.
     expect(badge().text).toBe("Connecting…");

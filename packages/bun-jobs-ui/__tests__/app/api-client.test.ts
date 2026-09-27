@@ -6,6 +6,7 @@ import {
   serializeQuery,
 } from "../../app/api/client";
 import { ApiError, isApiError } from "../../app/api/errors";
+import { expectUndefined } from "./assert";
 import { problem, queueListFixture } from "./fixtures";
 import { mockFetch } from "./mockFetch";
 
@@ -87,7 +88,7 @@ describe("createApiClient: request headers", () => {
     const { client, calls } = clientWith({ body: { paused: true } });
     await client.request("POST", "/x");
     expect(calls[0]!.headers["content-type"]).toBe("application/json");
-    expect(calls[0]!.body).toBeUndefined();
+    expectUndefined(calls[0]!.body);
   });
 
   it("sends Content-Type on PUT and PATCH, with the JSON body", async () => {
@@ -104,8 +105,8 @@ describe("createApiClient: request headers", () => {
     const { client, calls } = clientWith({ status: 204 });
     await client.request("GET", "/x");
     await client.request("DELETE", "/x");
-    expect(calls[0]!.headers["content-type"]).toBeUndefined();
-    expect(calls[1]!.headers["content-type"]).toBeUndefined();
+    expectUndefined(calls[0]!.headers["content-type"]);
+    expectUndefined(calls[1]!.headers["content-type"]);
   });
 
   it("adds the CSRF header on every mutation and never on a read", async () => {
@@ -144,7 +145,7 @@ describe("createApiClient: responses", () => {
 
   it("resolves undefined for a 204", async () => {
     const { client } = clientWith({ status: 204 });
-    expect(await client.request("DELETE", "/x")).toBeUndefined();
+    expectUndefined(await client.request("DELETE", "/x"));
   });
 
   it("turns problem+json into an ApiError with every field", async () => {
@@ -249,14 +250,14 @@ describe("createApiClient: requestRaw", () => {
     const byMethod = Object.fromEntries(
       calls.map((call) => [call.method, call]),
     );
-    expect(byMethod.GET!.headers[CSRF]).toBeUndefined();
-    expect(byMethod.GET!.headers["content-type"]).toBeUndefined();
+    expectUndefined(byMethod.GET!.headers[CSRF]);
+    expectUndefined(byMethod.GET!.headers["content-type"]);
     for (const method of ["POST", "PUT", "PATCH"]) {
       expect(byMethod[method]!.headers["content-type"]).toBe(
         "application/json",
       );
     }
-    expect(byMethod.DELETE!.headers["content-type"]).toBeUndefined();
+    expectUndefined(byMethod.DELETE!.headers["content-type"]);
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       expect(byMethod[method]!.headers[CSRF]).toBe(CSRF_HEADER_VALUE);
     }
@@ -290,7 +291,7 @@ describe("createApiClient: requestRaw", () => {
     expect(raw.status).toBe(201);
     expect(raw.statusText).toBe("Created");
     expect(raw.body).toEqual({ added: true });
-    expect(raw.error).toBeUndefined();
+    expectUndefined(raw.error);
     expect(Object.keys(raw.headers)).toEqual([
       "content-type",
       "location",
@@ -305,8 +306,8 @@ describe("createApiClient: requestRaw", () => {
     const raw = await client.requestRaw("DELETE", "/x");
     expect(raw.ok).toBe(true);
     expect(raw.status).toBe(204);
-    expect(raw.body).toBeUndefined();
-    expect(raw.error).toBeUndefined();
+    expectUndefined(raw.body);
+    expectUndefined(raw.error);
   });
 
   it("resolves a problem+json answer with its status, body and the ApiError request would throw", async () => {

@@ -8,6 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * The worker screens against a REAL `createJobsApi` where the worker is not
@@ -287,7 +288,7 @@ describe("the worker screens against a real API, mid-transition", () => {
     );
     const ui = await mountWorkerRow(queue, worker.id, fetchShim, CSRF);
     await ui.awaitState("Running");
-    expect(ui.blockedHint()).toBeNull();
+    expectAbsent(ui.blockedHint());
 
     const toast = await ui.stop();
     // The API accepted the stop, but the worker is finishing its job.
@@ -313,7 +314,7 @@ describe("the worker screens against a real API, mid-transition", () => {
       () => `the worker is ${worker.state}`,
     );
     await ui.awaitState("Stopped");
-    expect(ui.blockedHint()).toBeNull();
+    expectAbsent(ui.blockedHint());
   }, 30_000);
 
   it("pauses a busy worker at once: the toast's Paused is true", async () => {

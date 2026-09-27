@@ -17,6 +17,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { GATES } from "./fixtures/clear-actions/gated-runner";
 
 /**
@@ -591,7 +592,7 @@ for (const label of ["memory", "file", "SQLite"]) {
           (view) => view.lines.length === LOGGED_LINES,
         );
         expect(before.button).toBe("enabled");
-        expect(before.reason).toBeNull();
+        expectAbsent(before.reason);
         expect(before.total).toBe(LOGGED_LINES);
 
         const { confirmation, toast } = await ui.clear();
@@ -694,7 +695,7 @@ for (const label of ["memory", "file", "SQLite"]) {
           (view) => view.button === "enabled",
           15_000,
         );
-        expect(done.reason).toBeNull();
+        expectAbsent(done.reason);
         expect(done.total).toBe(2);
         ui.unmount();
       },
@@ -812,7 +813,7 @@ for (const label of ["memory", "file", "SQLite"]) {
         );
         const jobView = await job.awaitView((view) => view.total === 3);
         expect(jobView.button).toBe("absent");
-        expect(jobView.reason).toBeNull();
+        expectAbsent(jobView.reason);
         job.unmount();
         const runner = await runners.mountRunnerHistory(
           deploy.restricted,
@@ -881,7 +882,7 @@ async function expectClear(
     inActionGroup: false,
   });
   if (isLocal) {
-    expect(before.nonLocalHint).toBeNull();
+    expectAbsent(before.nonLocalHint);
   } else {
     // The hint names what a remote runner cannot do here; clearing is not
     // among them.

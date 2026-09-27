@@ -8,6 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectUndefined } from "../assert";
 
 /**
  * The worker CONTROL surface against a REAL `createJobsApi` with real
@@ -273,7 +274,7 @@ describe("a worker's row against a real API", () => {
     // acknowledges within the call: the message is the done one.
     const pauseCall = callsTo(`/workers/${worker.id}/pause`).at(-1)!;
     expect(pauseCall.query).toBe("wait=2000");
-    expect(pauseCall.body).toBeUndefined();
+    expectUndefined(pauseCall.body);
     expect(pauseCall.status).toBe(200);
     expect(pauseCall.json).toMatchObject({ desired: "paused", applied: true });
     expect(paused).toContain(`Paused ${worker.id}`);

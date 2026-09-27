@@ -8,6 +8,7 @@ import {
   pagerState,
   pageSizeOptions,
 } from "../../../app/components/pagerState";
+import { expectAbsent, expectNone } from "../assert";
 import { fireEvent, page, render, setupDom } from "../dom";
 
 setupDom();
@@ -261,12 +262,12 @@ describe("Pager", () => {
     const nav = page().getByRole("navigation", { name: "Pagination" });
     expect(nav.textContent).toContain("Page 3");
     // No page control at all: nothing can bound it without a page count.
-    expect(page().queryByLabelText("Page")).toBeNull();
+    expectAbsent(page().queryByLabelText("Page"));
     expect(nav.querySelector(".pager-page-static")).toBeTruthy();
     // Nothing is rendered disabled-and-unexplained: the size select is still
     // the only combobox, and prev/next still work.
     expect(nav.querySelectorAll("select")).toHaveLength(1);
-    expect(nav.querySelectorAll("input")).toHaveLength(0);
+    expectNone(nav.querySelectorAll("input"));
     expect(
       (page().getByRole("button", { name: "Next" }) as HTMLButtonElement)
         .disabled,
@@ -283,7 +284,7 @@ describe("Pager", () => {
       />,
     );
     expect(nav.textContent).not.toContain("Page");
-    expect(nav.querySelector(".pager-page-static")).toBeNull();
+    expectAbsent(nav.querySelector(".pager-page-static"));
     // ...and the rest of the pager is untouched.
     expect(page().getByLabelText("Rows per page")).toBeTruthy();
     expect(nav.textContent).toContain("1–3");
@@ -425,7 +426,7 @@ describe("Pager, walking by cursor", () => {
     expect(nav.textContent).not.toContain("1–20");
     // And no page number either, for the same reason.
     expect(nav.textContent).not.toContain("Page");
-    expect(page().queryByLabelText("Page")).toBeNull();
+    expectAbsent(page().queryByLabelText("Page"));
   });
 
   it("numbers the range again where the walked page does know where it sits", () => {

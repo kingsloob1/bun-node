@@ -1,6 +1,7 @@
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { MAX_ANALYTICS_SERIES } from "../../../app/api/contract";
+import { expectAbsent, expectNone } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import {
   ANALYTICS_NOW,
@@ -63,11 +64,11 @@ describe("the Overview's Workers section", () => {
     expect(within(table).getAllByRole("row").length - 1).toBe(
       MAX_ANALYTICS_SERIES,
     );
-    expect(
+    expectAbsent(
       page().queryByTestId(
         `worker-analytics-row-worker-${MAX_ANALYTICS_SERIES + 1}`,
       ),
-    ).toBeNull();
+    );
   });
 
   it("links a row's worker key to its worker page and its queue to the queue", async () => {
@@ -123,12 +124,8 @@ describe("the Overview's Workers section", () => {
     renderOverview();
     await overview();
     await page().findByTestId("worker-analytics-row-emails-1");
-    expect(
-      page().queryByRole("navigation", { name: "Worker pages" }),
-    ).toBeNull();
-    expect(
-      page().queryByRole("navigation", { name: "Runner pages" }),
-    ).toBeNull();
+    expectAbsent(page().queryByRole("navigation", { name: "Worker pages" }));
+    expectAbsent(page().queryByRole("navigation", { name: "Runner pages" }));
   });
 
   it("names how many rows the range holds when `truncated`", async () => {
@@ -215,7 +212,7 @@ describe("the Overview's Workers section", () => {
     });
     await overview();
     await page().findByText("No workers to show");
-    expect(page().queryByRole("table", { name: "Workers" })).toBeNull();
+    expectAbsent(page().queryByRole("table", { name: "Workers" }));
   });
 
   it("shows an error with a retry when the roll-up fails", async () => {
@@ -274,11 +271,11 @@ describe("the Overview's Workers section", () => {
         }),
       );
       // Not an alarm, and no Retry: the same range fails the same way.
-      expect(within(note).queryByRole("button")).toBeNull();
+      expectAbsent(within(note).queryByRole("button"));
     }
-    expect(
+    expectAbsent(
       within(page().getByTestId("workers-analytics")).queryByRole("alert"),
-    ).toBeNull();
+    );
   });
 
   it("keeps the rows when only the sparkline batch fails", async () => {
@@ -319,7 +316,7 @@ describe("the Overview's Runners section", () => {
     await overview();
     const row = await page().findByTestId("runner-analytics-row-nightly");
     expect(row.textContent).toContain("nightly");
-    expect(within(row).queryAllByRole("link")).toHaveLength(0);
+    expectNone(within(row).queryAllByRole("link"));
   });
 
   it("reads the roll-up and one batch, and labels the derived in-flight line", async () => {
@@ -356,8 +353,8 @@ describe("gating the analytics sections", () => {
       "GET /meta": { body: metaFixture({ analytics: null }) },
     });
     await overview();
-    expect(page().queryByTestId("runners-analytics")).toBeNull();
-    expect(page().queryByTestId("workers-analytics")).toBeNull();
+    expectAbsent(page().queryByTestId("runners-analytics"));
+    expectAbsent(page().queryByTestId("workers-analytics"));
     expect(calls.some((call) => call.path.startsWith("/analytics/"))).toBe(
       false,
     );
@@ -377,7 +374,7 @@ describe("gating the analytics sections", () => {
     });
     await overview();
     await page().findByTestId("workers-analytics");
-    expect(page().queryByTestId("runners-analytics")).toBeNull();
+    expectAbsent(page().queryByTestId("runners-analytics"));
     expect(calls.some((call) => call.path === "/analytics/runners")).toBe(
       false,
     );
@@ -392,7 +389,7 @@ describe("gating the analytics sections", () => {
     meta.features = { ...meta.features, runnerMetrics: false };
     const { calls } = renderOverview({ "GET /meta": { body: meta } });
     await page().findByTestId("workers-analytics");
-    expect(page().queryByTestId("runners-analytics")).toBeNull();
+    expectAbsent(page().queryByTestId("runners-analytics"));
     expect(calls.some((call) => call.path === "/analytics/runners")).toBe(
       false,
     );
@@ -416,8 +413,8 @@ describe("gating the analytics sections", () => {
     });
     await page().findByTestId("overview");
     await page().findByTestId("queue-row-emails");
-    expect(page().queryByTestId("runners-analytics")).toBeNull();
-    expect(page().queryByTestId("workers-analytics")).toBeNull();
+    expectAbsent(page().queryByTestId("runners-analytics"));
+    expectAbsent(page().queryByTestId("workers-analytics"));
     expect(calls.some((call) => call.path.startsWith("/analytics/"))).toBe(
       false,
     );

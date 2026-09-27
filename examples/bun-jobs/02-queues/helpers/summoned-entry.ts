@@ -14,6 +14,12 @@
  *
  * Its jobs: `quick` returns at once; `slow` works for `data.ms` and finishes
  * even when asked to stop, so a drain can be seen; `hang` never ends.
+ *
+ * With `SUMMONED_VANISH=1`, a `vanish` job, once completed, ends the process
+ * with a bare `process.exit(0)`: no `runSummoned` stop and no `close()`, so
+ * the worker leaves no exit mark, as a crash would. `summon-controller.ts`
+ * uses it for a worker that registers and then crashes. Without it, `vanish`
+ * is an ordinary job, like `quick`.
  */
 import type { DriverConfig } from "@kingsleyweb/bun-jobs";
 import process from "node:process";
@@ -53,6 +59,15 @@ const worker = jobs.worker<Work, string>(
   },
   { summon, pollInterval: 20, reportInterval: 200 },
 );
+
+if (process.env.SUMMONED_VANISH === "1") {
+  // Once the job is recorded, so the queue is left with nothing in flight.
+  worker.on("completed", (job) => {
+    if (job.name === "vanish") {
+      process.exit(0);
+    }
+  });
+}
 
 await runSummoned(worker, {
   idleFor: Number(process.env.SUMMONED_IDLE_FOR ?? 500),

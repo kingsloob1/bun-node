@@ -6,6 +6,7 @@ import {
   SHORTCUT_HELP,
   shortcutFor,
 } from "../../../app/layout/shortcuts";
+import { expectAbsent } from "../assert";
 import { wsFixture } from "../docs/ws/fixtures";
 import { act, fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
@@ -41,16 +42,16 @@ describe("shortcutFor", () => {
   it("maps / and ? and nothing else", () => {
     expect(shortcutFor(key("/"))).toBe("focus-search");
     expect(shortcutFor(key("?"))).toBe("show-help");
-    expect(shortcutFor(key("a"))).toBeNull();
-    expect(shortcutFor(key("Escape"))).toBeNull();
+    expectAbsent(shortcutFor(key("a")));
+    expectAbsent(shortcutFor(key("Escape")));
   });
 
   it("ignores a key with Ctrl, Meta or Alt, during composition, or already handled", () => {
-    expect(shortcutFor(key("/", { ctrlKey: true }))).toBeNull();
-    expect(shortcutFor(key("/", { metaKey: true }))).toBeNull();
-    expect(shortcutFor(key("?", { altKey: true }))).toBeNull();
-    expect(shortcutFor(key("/", { isComposing: true }))).toBeNull();
-    expect(shortcutFor(key("/", { defaultPrevented: true }))).toBeNull();
+    expectAbsent(shortcutFor(key("/", { ctrlKey: true })));
+    expectAbsent(shortcutFor(key("/", { metaKey: true })));
+    expectAbsent(shortcutFor(key("?", { altKey: true })));
+    expectAbsent(shortcutFor(key("/", { isComposing: true })));
+    expectAbsent(shortcutFor(key("/", { defaultPrevented: true })));
   });
 
   it("ignores a key typed into a field", () => {
@@ -63,8 +64,8 @@ describe("shortcutFor", () => {
     editable.append(inside);
     document.body.append(input, textarea, select, editable);
     for (const target of [input, textarea, select, editable, inside]) {
-      expect(shortcutFor(key("/", { target }))).toBeNull();
-      expect(shortcutFor(key("?", { target }))).toBeNull();
+      expectAbsent(shortcutFor(key("/", { target })));
+      expectAbsent(shortcutFor(key("?", { target })));
     }
   });
 
@@ -162,7 +163,7 @@ describe("the ? shortcut", () => {
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => {
-      expect(page().queryByRole("dialog")).toBeNull();
+      expectAbsent(page().queryByRole("dialog"));
     });
     expect(document.activeElement).toBe(toggle);
   });
@@ -171,7 +172,7 @@ describe("the ? shortcut", () => {
     const search = await renderOverview();
     search.focus();
     fireEvent.keyDown(search, { key: "?" });
-    expect(page().queryByRole("dialog")).toBeNull();
+    expectAbsent(page().queryByRole("dialog"));
   });
 });
 
@@ -208,8 +209,8 @@ describe("arrowTarget", () => {
     expect(arrowTarget("ArrowUp", items, a)).toBe(a);
     expect(arrowTarget("Home", items, c)).toBe(a);
     expect(arrowTarget("End", items, a)).toBe(c);
-    expect(arrowTarget("Enter", items, a)).toBeNull();
-    expect(arrowTarget("ArrowDown", [], null)).toBeNull();
+    expectAbsent(arrowTarget("Enter", items, a));
+    expectAbsent(arrowTarget("ArrowDown", [], null));
   });
 });
 

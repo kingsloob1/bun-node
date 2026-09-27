@@ -12,6 +12,7 @@ import {
   splitInterval,
   validateScheduleForm,
 } from "../../../../app/screens/runners/actions/schedule";
+import { expectAbsent, expectUndefined } from "../../assert";
 
 const ZONES = ["UTC", "Europe/London", "America/New_York"];
 
@@ -61,11 +62,11 @@ describe("interval conversion", () => {
   });
 
   it("refuses empty, zero, negative and sub-millisecond amounts", () => {
-    expect(intervalMs(undefined, "minutes")).toBeUndefined();
-    expect(intervalMs(0, "minutes")).toBeUndefined();
-    expect(intervalMs(-1, "minutes")).toBeUndefined();
-    expect(intervalMs(0.0001, "seconds")).toBeUndefined();
-    expect(intervalMs(Number.NaN, "seconds")).toBeUndefined();
+    expectUndefined(intervalMs(undefined, "minutes"));
+    expectUndefined(intervalMs(0, "minutes"));
+    expectUndefined(intervalMs(-1, "minutes"));
+    expectUndefined(intervalMs(0.0001, "seconds"));
+    expectUndefined(intervalMs(Number.NaN, "seconds"));
   });
 
   it("splits a sub-second interval as fractional seconds", () => {
@@ -103,7 +104,7 @@ describe("scheduleBody", () => {
   });
 
   it("sends null for none, which unschedules", () => {
-    expect(scheduleBody(emptyScheduleForm("none"))).toBeNull();
+    expectAbsent(scheduleBody(emptyScheduleForm("none")));
   });
 
   it("round-trips every stored form", () => {
@@ -142,9 +143,9 @@ describe("time zones", () => {
 
 describe("validateScheduleForm", () => {
   it("checks the cron shape: 5 or 6 fields, or a nickname", () => {
-    expect(cronShapeError("0 3 * * *")).toBeNull();
-    expect(cronShapeError("*/10 * * * * *")).toBeNull();
-    expect(cronShapeError("@hourly")).toBeNull();
+    expectAbsent(cronShapeError("0 3 * * *"));
+    expectAbsent(cronShapeError("*/10 * * * * *"));
+    expectAbsent(cronShapeError("@hourly"));
     expect(cronShapeError("")).toBe("Enter a cron expression.");
     expect(cronShapeError("0 3 *")).toContain("3 fields");
     expect(cronShapeError("1 2 3 4 5 6 7")).toContain("7 fields");

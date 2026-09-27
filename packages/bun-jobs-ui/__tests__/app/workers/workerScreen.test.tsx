@@ -6,6 +6,7 @@ import type {
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONFIG_KEYS } from "../../../app/api/contract";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import {
   ANALYTICS_NOW,
@@ -153,9 +154,9 @@ describe("the worker page", () => {
     const row = within(instances).getByTestId("worker-row-api.emails.b2");
     expect(within(row).getByRole("button", { name: "Pause" })).toBeTruthy();
     // No link to the page it is on.
-    expect(
+    expectAbsent(
       within(instances).queryByTestId("worker-key-link-api.emails.a1"),
-    ).toBeNull();
+    );
   });
 
   it("gives the Instances table a Memory column, one figure per process, and a dash where none is reported", async () => {
@@ -191,7 +192,7 @@ describe("the worker page", () => {
     expect(cellAt("api.emails.a1")).toBe("256.0 MiB");
     expect(cellAt("api.emails.a2")).toBe("256.0 MiB");
     expect(cellAt("api.emails.b2")).toBe("—");
-    expect(table.querySelector("tfoot")).toBeNull();
+    expectAbsent(table.querySelector("tfoot"));
     expect(instances.textContent).not.toContain("512.0 MiB");
   });
 
@@ -247,7 +248,7 @@ describe("the worker page", () => {
   it("offers no Edit settings… without workers.configure (opt-in)", async () => {
     open();
     await page().findByTestId("worker-config");
-    expect(page().queryByRole("button", { name: "Edit settings…" })).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: "Edit settings…" }));
   });
 
   it("edits the key's settings through the Settings dialog", async () => {
@@ -353,9 +354,9 @@ describe("the worker page", () => {
       ],
     });
     const offline = await page().findByTestId("worker-config-offline");
-    expect(
+    expectAbsent(
       within(offline).queryByRole("button", { name: "Reset to code values…" }),
-    ).toBeNull();
+    );
   });
 
   it("says no override is stored when the listing has none for the key", async () => {
@@ -364,9 +365,9 @@ describe("the worker page", () => {
     expect(
       within(offline).getByTestId("worker-config-none-stored"),
     ).toBeTruthy();
-    expect(
+    expectAbsent(
       within(offline).queryByRole("button", { name: "Reset to code values…" }),
-    ).toBeNull();
+    );
   });
 
   it("counts an entry a reset emptied as nothing stored, and offers no Reset", async () => {
@@ -390,11 +391,11 @@ describe("the worker page", () => {
     expect(
       within(offline).getByTestId("worker-config-none-stored"),
     ).toBeTruthy();
-    expect(within(offline).queryByTestId("worker-config-stored")).toBeNull();
+    expectAbsent(within(offline).queryByTestId("worker-config-stored"));
     expect(offline.textContent).not.toContain("An override is stored");
-    expect(
+    expectAbsent(
       within(offline).queryByRole("button", { name: "Reset to code values…" }),
-    ).toBeNull();
+    );
   });
 
   it("charts the key's throughput and busyness, each captioned from its own range", async () => {
@@ -421,7 +422,7 @@ describe("the worker page", () => {
       handlers: { "GET /meta": { body: metaFixture({ analytics: null }) } },
     });
     await page().findByTestId("worker-config");
-    expect(page().queryByTestId("worker-analytics")).toBeNull();
+    expectAbsent(page().queryByTestId("worker-analytics"));
     expect(calls.some((call) => call.path.includes("/analytics/"))).toBe(false);
   });
 
@@ -451,7 +452,7 @@ describe("the worker page", () => {
     });
     await page().findByText("Instances hidden");
     expect(await page().findByTestId("worker-jobs")).toBeTruthy();
-    expect(page().queryByTestId("worker-instances")).toBeNull();
+    expectAbsent(page().queryByTestId("worker-instances"));
   });
 
   it("still shows the key's analytics when the queue's answer refuses workers.list", async () => {
@@ -484,7 +485,7 @@ describe("the worker page", () => {
   it("is not routed without the Workers nav entry", async () => {
     open({ grant: { "workers.list": false } });
     expect(await page().findByText(/not found/i)).toBeTruthy();
-    expect(page().queryByTestId("worker-screen")).toBeNull();
+    expectAbsent(page().queryByTestId("worker-screen"));
   });
 });
 

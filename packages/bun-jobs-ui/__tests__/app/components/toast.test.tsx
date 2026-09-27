@@ -2,6 +2,7 @@ import type { ToastApi } from "../../../app/components/toast";
 import { afterEach, describe, expect, it, jest, mock } from "bun:test";
 import { TOAST_DURATION_MS, useToast } from "../../../app/components/toast";
 import { ToastProvider } from "../../../app/components/ToastProvider";
+import { expectNone } from "../assert";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 
 // Registered ahead of setupDom()'s hooks, which run in order and need
@@ -39,8 +40,8 @@ describe("toasts", () => {
   it("render into live regions present from the start: success/info polite, errors assertive", () => {
     const { api } = renderToasts();
     const { polite, assertive } = regions();
-    expect(polite.children).toHaveLength(0);
-    expect(assertive.children).toHaveLength(0);
+    expectNone(polite.children);
+    expectNone(assertive.children);
     act(() => {
       api.success("Queue paused", { description: "emails" });
       api.info("Heads up");
@@ -98,7 +99,7 @@ describe("toasts", () => {
     expect(regions().polite.children).toHaveLength(1);
     expect(regions().polite.textContent).toContain("Also sticky");
     act(() => api.dismiss(id));
-    expect(regions().polite.children).toHaveLength(0);
+    expectNone(regions().polite.children);
   });
 
   it("run an action, then dismiss", () => {
@@ -109,7 +110,7 @@ describe("toasts", () => {
     });
     fireEvent.click(page().getByRole("button", { name: "Undo" }));
     expect(onClick).toHaveBeenCalledTimes(1);
-    expect(regions().polite.children).toHaveLength(0);
+    expectNone(regions().polite.children);
   });
 
   it("stack up to the limit, dropping the oldest", () => {

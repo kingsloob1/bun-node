@@ -1,6 +1,7 @@
 import type { RunnerInfoDto, RunnerScheduleDto } from "../../../app/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { NON_LOCAL_RUNNER_NOTE } from "../../../app/screens/runners/runnerFormat";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
@@ -86,7 +87,7 @@ describe("the runner screen", () => {
     expect(page().getByTestId("runner-id").textContent).toBe("nightly");
     expect(summaryValue("Namespace")).toBe("shop");
     expect(summaryValue("Registered here")).toBe("Yes (local)");
-    expect(summaryValue("File")).toBeNull();
+    expectAbsent(summaryValue("File"));
     expect(summaryValue("Schedule")).toBe("Cron 0 3 * * * in Europe/London");
     expect(summaryValue("Execution mode")).toBe("worker-thread");
     expect(summaryValue("Run mode")).toBe("single");
@@ -96,7 +97,7 @@ describe("the runner screen", () => {
     expect(summaryValue("Running on")).toBe("—");
     expect(summaryValue("Last error")).toBe("—");
     expect(summaryValue("Next run")).not.toBe("Not scheduled");
-    expect(page().queryByTestId("non-local-note")).toBeNull();
+    expectAbsent(page().queryByTestId("non-local-note"));
 
     await waitFor(() => expect(tiles().Success).toBe("41"));
     expect(tiles()).toEqual({
@@ -155,7 +156,7 @@ describe("the runner screen", () => {
     expect(
       within(run).getByRole("button", { name: "Copy run id run-4" }),
     ).toBeTruthy();
-    expect(page().queryByTestId("no-active-runs")).toBeNull();
+    expectAbsent(page().queryByTestId("no-active-runs"));
   });
 
   it("shows a paused local runner, and a local runner another process is running", async () => {
@@ -189,7 +190,7 @@ describe("the runner screen", () => {
       (badge) => badge.textContent,
     );
     expect(badges).toEqual(["Paused", "Other process"]);
-    expect(page().queryByTestId("runner-id")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-id"));
     expect(page().getByTestId("non-local-note").textContent).toBe(
       NON_LOCAL_RUNNER_NOTE,
     );
@@ -202,7 +203,7 @@ describe("the runner screen", () => {
     expect(summaryValue("Queues triggers")).toBe("—");
     expect(summaryValue("Max concurrency")).toBe("unlimited");
     expect(summaryValue("Queued triggers")).toBe("2");
-    expect(page().queryByRole("region", { name: "Active runs" })).toBeNull();
+    expectAbsent(page().queryByRole("region", { name: "Active runs" }));
     expect(
       page().getByRole("region", { name: "Last run" }).textContent,
     ).toContain("has not run yet");
@@ -315,9 +316,7 @@ describe("the runner history", () => {
     fireEvent.click(
       within(killed).getByRole("button", { name: "Hide run run-1" }),
     );
-    await waitFor(() =>
-      expect(within(table).queryByTestId("run-run-1")).toBeNull(),
-    );
+    await waitFor(() => expectAbsent(within(table).queryByTestId("run-run-1")));
   });
 
   it("asks for min(50, maxHistory) runs and offers sizes only up to maxHistory", async () => {
@@ -432,7 +431,7 @@ describe("the runner screen's access gate", () => {
     );
     await settle(50);
     expect(runnerReads(calls)).toBe(0);
-    expect(page().queryByTestId("runner-screen")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-screen"));
   });
 
   /** Renders the screen with the runner's own permissions answered on demand. */
@@ -469,14 +468,14 @@ describe("the runner screen's access gate", () => {
     await advance(5_000);
     // The untargeted map grants runners.read, but the runner's is pending.
     expect(reads()).toBe(0);
-    expect(page().queryByTestId("runner-hidden")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-hidden"));
 
     release();
     await advance(100, 10);
     expect(page().getByTestId("runner-hidden").textContent).toContain(
       "Runner hidden",
     );
-    expect(page().queryByTestId("runner-screen")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-screen"));
     await advance(20_000);
     expect(reads()).toBe(0);
   });
@@ -500,7 +499,7 @@ describe("the runner screen's access gate", () => {
     });
     const panel = await page().findByTestId("runner-hidden");
     expect(panel.textContent).toContain("Not your team's runner");
-    expect(page().queryByText("Could not load the runner")).toBeNull();
+    expectAbsent(page().queryByText("Could not load the runner"));
     await settle(50);
     expect(calls.filter((call) => call.path === runnerApiPath())).toHaveLength(
       1,
@@ -532,7 +531,7 @@ describe("the runner screen's access gate", () => {
     const panel = await page().findByTestId("runner-not-found");
     expect(panel.textContent).toContain("Runner not found");
     expect(panel.textContent).toContain("ghost");
-    expect(page().queryByTestId("runner-hidden")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-hidden"));
     await settle(50);
     expect(
       calls.filter((call) => call.path === runnerApiPath("ghost")),

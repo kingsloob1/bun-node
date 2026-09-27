@@ -10,6 +10,7 @@ import {
   THEME_STORAGE_KEY,
 } from "../../app/theme";
 import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config.ts";
+import { expectAbsent, expectUndefined } from "./assert";
 import { act, fireEvent, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
 import { mockFetch } from "./mockFetch";
@@ -77,7 +78,7 @@ describe("theme", () => {
     applyTheme("dark", root);
     expect(root.dataset.theme).toBe("dark");
     applyTheme("system", root);
-    expect(root.dataset.theme).toBeUndefined();
+    expectUndefined(root.dataset.theme);
   });
 
   it("remembers the choice, preferring it over the mount's default", () => {
@@ -86,7 +87,7 @@ describe("theme", () => {
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
     expect(initialTheme("dark")).toBe("light");
     localStorage.setItem(THEME_STORAGE_KEY, "neon");
-    expect(readStoredTheme()).toBeNull();
+    expectAbsent(readStoredTheme());
   });
 
   it("survives storage that throws", () => {
@@ -101,7 +102,7 @@ describe("theme", () => {
       },
     });
     try {
-      expect(readStoredTheme()).toBeNull();
+      expectAbsent(readStoredTheme());
       expect(() => storeTheme("dark")).not.toThrow();
       expect(initialTheme("light")).toBe("light");
     } finally {
@@ -128,7 +129,7 @@ describe("boot", () => {
 
       // The header's toggle cycles and remembers the theme.
       fireEvent.click(page().getByRole("button", { name: /^Theme: Dark/ }));
-      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expectUndefined(document.documentElement.dataset.theme);
       expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("system");
     } finally {
       act(() => root.unmount());

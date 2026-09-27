@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "bun:test";
 import { formatNumber } from "../../../../app/format";
 import { RunnerSummary } from "../../../../app/screens/runners/RunnerScreen";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, render, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {
@@ -312,7 +313,7 @@ describe("the settings editor: what it shows", () => {
 
   it("shows nothing pending once the owner is on the stored version", async () => {
     const { dialog } = await openSettings();
-    expect(within(dialog).queryByTestId("config-pending")).toBeNull();
+    expectAbsent(within(dialog).queryByTestId("config-pending"));
   });
 
   it("shows the owner's refusal", async () => {
@@ -346,9 +347,7 @@ describe("the settings editor: what it shows", () => {
 describe("the settings editor: the warnings", () => {
   it("says an execution mode change applies from the next run", async () => {
     const { dialog } = await openSettings();
-    expect(
-      within(dialog).queryByTestId("config-warning-execution-mode"),
-    ).toBeNull();
+    expectAbsent(within(dialog).queryByTestId("config-warning-execution-mode"));
     set(dialog, "Execution mode", "in-process");
     expect(
       within(dialog).getByTestId("config-warning-execution-mode").textContent,
@@ -375,9 +374,9 @@ describe("the settings editor: the warnings", () => {
   it("does not warn about a raised cap", async () => {
     const { dialog } = await openSettings();
     set(dialog, "Max concurrency", "9");
-    expect(
+    expectAbsent(
       within(dialog).queryByTestId("config-warning-lower-concurrency"),
-    ).toBeNull();
+    );
   });
 
   it("warns about the code's values when an override is dropped", async () => {
@@ -414,7 +413,7 @@ describe("the settings editor: saving", () => {
     expect(call.headers["content-type"]).toBe("application/json");
     expect(sentConfig(calls)).toEqual({ executionMode: "in-process" });
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("sends runMode and the cap together when either changes", async () => {
@@ -476,7 +475,7 @@ describe("the settings editor: saving", () => {
     expect(dialogButton(dialog, "Save settings").disabled).toBe(false);
     set(dialog, "Max concurrency", "4");
     expect(dialogButton(dialog, "Save settings").disabled).toBe(true);
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
   });
 
   it("refuses a cap outside the range the API accepts, and sends nothing", async () => {
@@ -495,13 +494,13 @@ describe("the settings editor: saving", () => {
     expect(field(dialog, "Max concurrency").textContent).toContain(
       `Between ${min} and ${formatNumber(max)}`,
     );
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
     set(dialog, "Max concurrency", String(min - 1));
     fireEvent.click(dialogButton(dialog, "Save settings"));
     expect(field(dialog, "Max concurrency").textContent).toContain(
       `Between ${min} and ${formatNumber(max)}`,
     );
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
   });
 
   it("does not cap unlimited: an empty field sends maxConcurrency null", async () => {
@@ -540,18 +539,18 @@ describe("the settings editor: resetting every override", () => {
     fireEvent.click(dialogButton(dialog, "Reset to code defaults"));
     await toastSays("Reset nightly to its code defaults");
     expect(callTo(calls, "DELETE", PATH)).toBeTruthy();
-    expect(callTo(calls, "DELETE", PATH)!.body).toBeUndefined();
+    expectUndefined(callTo(calls, "DELETE", PATH)!.body);
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("is absent when nothing is overridden", async () => {
     const { dialog } = await openSettings({
       runner: configurable(unoverridden()),
     });
-    expect(
+    expectAbsent(
       within(dialog).queryByRole("button", { name: "Reset to code defaults" }),
-    ).toBeNull();
+    );
   });
 });
 
@@ -768,7 +767,7 @@ describe("the runner summary's override rows", () => {
 
   it("has no override row for a runner that reports no config", () => {
     render(<RunnerSummary runner={runnerFixture()} />);
-    expect(summaryValue("Settings override")).toBeNull();
-    expect(page().queryByTestId("runner-config-override")).toBeNull();
+    expectAbsent(summaryValue("Settings override"));
+    expectAbsent(page().queryByTestId("runner-config-override"));
   });
 });

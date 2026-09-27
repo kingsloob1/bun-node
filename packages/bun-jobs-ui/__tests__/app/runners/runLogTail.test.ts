@@ -27,6 +27,7 @@ import {
   levelTone,
   streamOptions,
 } from "../../../app/screens/runners/runLogFormat";
+import { expectUndefined } from "../assert";
 
 /** One line, `stdout` unless told otherwise. */
 function line(seq: number, overrides: Partial<RunLogLineDto> = {}) {
@@ -195,29 +196,29 @@ describe("the `logs` hint", () => {
       ),
     ).toBe(7);
     // Another run of the same runner.
-    expect(
+    expectUndefined(
       runLogHint(
         runnerEvent("logs", "nightly", { runId: "r2", lastSeq: 7 }),
         "nightly",
         "r1",
       ),
-    ).toBeUndefined();
+    );
     // The same run id on another runner.
-    expect(
+    expectUndefined(
       runLogHint(
         runnerEvent("logs", "other", { runId: "r1", lastSeq: 7 }),
         "nightly",
         "r1",
       ),
-    ).toBeUndefined();
+    );
     // Another type about the run.
-    expect(
+    expectUndefined(
       runLogHint(
         runnerEvent("started", "nightly", { runId: "r1" }),
         "nightly",
         "r1",
       ),
-    ).toBeUndefined();
+    );
   });
 
   it("is worth a read before the first page and while the cursor is behind, not once it has caught up", () => {

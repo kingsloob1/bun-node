@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {
@@ -27,7 +28,7 @@ describe("pause", () => {
     fireEvent.click(actionButton("Pause"));
     await toastSays("Paused nightly");
     const call = callTo(calls, "POST", "/runners/nightly/pause")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
   });
@@ -61,10 +62,10 @@ describe("resume", () => {
     fireEvent.click(dialogButton(dialog, "Resume"));
     await toastSays("Resumed nightly");
     const call = callTo(calls, "POST", "/runners/nightly/resume")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("sends triggerNow when ticked", async () => {
@@ -92,7 +93,7 @@ describe("reset stats", () => {
     fireEvent.click(dialogButton(dialog, "Reset stats"));
     await toastSays("Reset the stats of nightly");
     const call = callTo(calls, "POST", "/runners/nightly/stats/reset")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
   });
@@ -146,7 +147,7 @@ describe("kill", () => {
     await toastSays("Kill requested for 2 runs on nightly");
     expect(notifications().textContent).toContain("run-1, run-2");
     const call = callTo(calls, "POST", "/runners/nightly/kill")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
   });
@@ -224,7 +225,7 @@ describe("kill", () => {
     expect(
       JSON.parse(callTo(calls, "POST", "/runners/nightly/kill")!.body!),
     ).toEqual({ wait: true });
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("says so when no run was active any more", async () => {

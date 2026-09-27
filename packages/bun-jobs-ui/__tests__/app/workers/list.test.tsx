@@ -1,6 +1,7 @@
 import type { WorkerDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { groupByServer, matchesWorker } from "../../../app/api/workers";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
@@ -182,7 +183,7 @@ describe("the workers screen", () => {
     expect(cellAt("w-a")).toBe("256.0 MiB");
     expect(cellAt("w-b")).toBe("256.0 MiB");
     // And nowhere a sum of them: no footer, and no 512 MiB anywhere.
-    expect(table.querySelector("tfoot")).toBeNull();
+    expectAbsent(table.querySelector("tfoot"));
     expect(screen.textContent).not.toContain("512.0 MiB");
   });
 
@@ -246,7 +247,7 @@ describe("the workers screen", () => {
     });
     const screen = await page().findByTestId("workers-list");
     await within(screen).findByTestId("worker-row-w-hooks");
-    expect(within(screen).queryByRole("link", { name: "webhooks" })).toBeNull();
+    expectAbsent(within(screen).queryByRole("link", { name: "webhooks" }));
   });
 
   it("reports a failed read with a retry", async () => {

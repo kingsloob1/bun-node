@@ -6,6 +6,7 @@ import {
   formatDemandFigure,
   qualify,
 } from "../../../app/screens/queues/panels/demand";
+import { expectAbsent } from "../assert";
 import { page, setupDom, visit, waitFor, within } from "../dom";
 import {
   demandFixture,
@@ -66,9 +67,9 @@ describe("the Demand panel", () => {
       within(panel).getByTestId("demand-next-due").querySelector("time"),
     ).not.toBeNull();
     // Nothing to qualify, so no note and no marked figure.
-    expect(within(panel).queryByTestId("demand-capped")).toBeNull();
-    expect(within(panel).queryByTestId("demand-approximate")).toBeNull();
-    expect(within(panel).queryByTestId("demand-paused")).toBeNull();
+    expectAbsent(within(panel).queryByTestId("demand-capped"));
+    expectAbsent(within(panel).queryByTestId("demand-approximate"));
+    expectAbsent(within(panel).queryByTestId("demand-paused"));
     expect(panel.textContent).not.toMatch(/[≥≈]/);
     // What a scaler points at is named beside the figure.
     expect(panel.textContent).toContain("launch-style scaler");
@@ -186,7 +187,7 @@ describe("the Demand panel", () => {
       const { calls, unmount } = renderQueue({ handlers });
       await page().findByTestId("queue-screen");
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(page().queryByRole("tab", { name: "Demand" })).toBeNull();
+      expectAbsent(page().queryByRole("tab", { name: "Demand" }));
       expect(calls.some((call) => call.path.endsWith("/demand"))).toBe(false);
       unmount();
     }

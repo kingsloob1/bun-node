@@ -3,6 +3,7 @@ import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * Where a summoned worker came from (`WorkerDto.summon`), against a REAL
@@ -313,8 +314,8 @@ describe("a summoned worker against a real API", () => {
 
     const ui = await mount(plainFetch, queue);
     const view = await ui.awaitView((one) => one.ready);
-    expect(view.badge).toBeNull();
-    expect(view.headers).toBeNull();
+    expectAbsent(view.badge);
+    expectAbsent(view.headers);
     expect(view.card).toBe("");
     ui.unmount();
   }, 30_000);

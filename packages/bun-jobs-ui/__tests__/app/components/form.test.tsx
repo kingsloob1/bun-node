@@ -17,6 +17,7 @@ import {
   readDateTimeLocal,
   toDateTimeLocal,
 } from "../../../app/components/inputValues";
+import { expectUndefined } from "../assert";
 import { fireEvent, page, render, setupDom } from "../dom";
 import { stubRawValue } from "../rawInput";
 
@@ -137,9 +138,9 @@ describe("NumberInput", () => {
   });
 
   it("parses input values", () => {
-    expect(parseNumberInput("")).toBeUndefined();
-    expect(parseNumberInput("  ")).toBeUndefined();
-    expect(parseNumberInput("abc")).toBeUndefined();
+    expectUndefined(parseNumberInput(""));
+    expectUndefined(parseNumberInput("  "));
+    expectUndefined(parseNumberInput("abc"));
     expect(parseNumberInput("0")).toBe(0);
     expect(parseNumberInput("-1.5")).toBe(-1.5);
   });
@@ -156,8 +157,8 @@ describe("DateTimeInput", () => {
       withSeconds,
     );
     expect(toDateTimeLocal(undefined)).toBe("");
-    expect(fromDateTimeLocal("")).toBeUndefined();
-    expect(fromDateTimeLocal("not a date")).toBeUndefined();
+    expectUndefined(fromDateTimeLocal(""));
+    expectUndefined(fromDateTimeLocal("not a date"));
   });
 
   it("shows the value, emits epoch ms and names the time zone", () => {
@@ -182,7 +183,7 @@ describe("DateTimeInput", () => {
     expect(lastValue(onChange)).toBe(new Date(2026, 11, 31, 23, 59).getTime());
     fireEvent.change(input, { target: { value: "" } });
     expect(onChange).toHaveBeenCalledTimes(2);
-    expect(lastValue(onChange)).toBeUndefined();
+    expectUndefined(lastValue(onChange));
   });
 });
 
@@ -233,14 +234,14 @@ describe("DateTimeInput: the API's range, and what the browser cannot read", () 
     const input = page().getByLabelText("Run at") as HTMLInputElement;
     const raw = stubRawValue(input, "275760-12-31T00:00");
     fireEvent.change(input);
-    expect(lastValue(onChange)).toBeUndefined();
+    expectUndefined(lastValue(onChange));
     expect(lastValue(onProblem)).toBe(DATE_TIME_OUT_OF_RANGE);
     // The typed text stays: the field is not blanked under its error.
     expect(raw.written).not.toContain("");
     raw.restore();
     fireEvent.change(input, { target: { value: "2026-12-31T23:59" } });
     expect(lastValue(onChange)).toBe(new Date(2026, 11, 31, 23, 59).getTime());
-    expect(lastValue(onProblem)).toBeUndefined();
+    expectUndefined(lastValue(onProblem));
   });
 
   it("reports a half-typed entry as unreadable, not as cleared", () => {
@@ -266,7 +267,7 @@ describe("DateTimeInput: the API's range, and what the browser cannot read", () 
     // Emptied for real, it is no longer a problem.
     raw.restore();
     fireEvent.blur(input);
-    expect(lastValue(onProblem)).toBeUndefined();
+    expectUndefined(lastValue(onProblem));
   });
 
   it("clears its problem as it unmounts", () => {
@@ -299,7 +300,7 @@ describe("DateTimeInput: the API's range, and what the browser cannot read", () 
     fireEvent.change(input);
     expect(lastValue(onProblem)).toBe(DATE_TIME_OUT_OF_RANGE);
     fireEvent.click(page().getByRole("button", { name: "Hide" }));
-    expect(lastValue(onProblem)).toBeUndefined();
+    expectUndefined(lastValue(onProblem));
   });
 });
 

@@ -6,6 +6,7 @@ import type {
 } from "../../app/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectNone } from "./assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
@@ -56,6 +57,9 @@ function pager(label: string): HTMLElement | null {
  * against a live happy-dom element here (the same query printed the element
  * on the line above), so a single-page table growing a pager went unnoticed
  * in two of these checks until a deliberately broken build was run past them.
+ * The same false pass is why every absence check here now goes through
+ * `./assert` (`expectAbsent`, `expectNone`), which compares before it prints.
+ * Bun's issue: https://github.com/oven-sh/bun/issues/37310.
  */
 function pagerCount(label: string): number {
   return document.querySelectorAll(`nav[aria-label="${label}"]`).length;
@@ -564,9 +568,7 @@ describe("a runner's history", () => {
       },
     });
     expect(await page().findByText("No runs on this page")).toBeTruthy();
-    expect(
-      document.querySelectorAll("[data-testid^=history-row-]"),
-    ).toHaveLength(0);
+    expectNone(document.querySelectorAll("[data-testid^=history-row-]"));
     // The history is not empty, so Clear history… stays live and the pager is
     // there to come back with.
     const clear = page().getByRole("button", {

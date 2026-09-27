@@ -1,5 +1,5 @@
 import type { QueueStateEntry } from "../drivers/index";
-import type { SummonDedupe, SummonMarker } from "./types";
+import type { SummonDedupe, SummonMarker, WatchedSummon } from "./types";
 import { randomUUID } from "node:crypto";
 import { RESERVED_STATE_PREFIX } from "../queue/windows";
 
@@ -234,11 +234,47 @@ export function readMarker(
       unreadable: true,
     };
   }
-  return {
-    marker: structuredClone(entry.value),
-    version: entry.version,
-    unreadable: false,
-  };
+  const marker = structuredClone(entry.value);
+  // Optional and newer than the rest: absent, or not the shape this build
+  // writes, is "nothing watched" — never a reason to call the marker
+  // unreadable and start a fresh one over the failures and the budget.
+  const watching = watchedEntries(marker.watching);
+  if (watching.length > 0) {
+    marker.watching = watching;
+  } else {
+    delete marker.watching;
+  }
+  // The same for `lossStreak`: absent, or not a count, is `0`.
+  const streak: unknown = marker.lossStreak;
+  if (
+    typeof streak !== "number" ||
+    !Number.isSafeInteger(streak) ||
+    streak <= 0
+  ) {
+    delete marker.lossStreak;
+  }
+  return { marker, version: entry.version, unreadable: false };
+}
+
+/** The well-formed entries of a marker's `watching`, dropping anything else. */
+function watchedEntries(value: unknown): WatchedSummon[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry: unknown): entry is WatchedSummon => {
+    if (typeof entry !== "object" || entry === null) {
+      return false;
+    }
+    const watched = entry as Record<string, unknown>;
+    return (
+      typeof watched.id === "string" &&
+      isNumber(watched.at) &&
+      isNumber(watched.until) &&
+      isNumber(watched.count) &&
+      typeof watched.kind === "string" &&
+      isOptionalNumber(watched.extendedUntil)
+    );
+  });
 }
 
 /** Moves the budget's windows on to the ones `now` falls in, emptying any that changed. */

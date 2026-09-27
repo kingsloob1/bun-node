@@ -1,5 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
@@ -58,7 +59,7 @@ describe("the queue header", () => {
     });
     const actions = await loaded();
     await within(actions).findByRole("button", { name: "Resume" });
-    expect(within(actions).queryByRole("button", { name: "Pause" })).toBeNull();
+    expectAbsent(within(actions).queryByRole("button", { name: "Pause" }));
     expect(
       page().getByTestId("queue-screen").querySelector(".badge")?.textContent,
     ).toBe("Paused");
@@ -94,7 +95,7 @@ describe("pause and resume", () => {
       expect(notifications().textContent).toContain("Paused emails"),
     );
     const call = callTo(calls, "POST", "/queues/emails/pause")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     // Invalidation refetches the queue's detail.
     await waitFor(() =>
@@ -167,7 +168,7 @@ describe("drain", () => {
     const call = callTo(calls, "POST", "/queues/emails/drain")!;
     expect(JSON.parse(call.body!)).toEqual({ delayed: true });
     expect(call.headers["content-type"]).toBe("application/json");
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("shows a failure inside the dialog and stays open", async () => {
@@ -200,7 +201,7 @@ describe("drain", () => {
     fireEvent.click(drain);
     const dialog = await findDialog();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
     expect(document.activeElement === drain).toBe(true);
   });
 });
@@ -399,7 +400,7 @@ describe("permissions", () => {
         },
       });
       const actions = await loaded();
-      expect(within(actions).queryByRole("button", { name: label })).toBeNull();
+      expectAbsent(within(actions).queryByRole("button", { name: label }));
       expect(within(actions).getAllByRole("button").length).toBeGreaterThan(0);
     });
   }
@@ -414,9 +415,7 @@ describe("permissions", () => {
       },
     });
     const actions = await loaded();
-    expect(
-      within(actions).queryByRole("button", { name: "Resume" }),
-    ).toBeNull();
+    expectAbsent(within(actions).queryByRole("button", { name: "Resume" }));
   });
 
   it("offers no mutation at all when the API is read-only", async () => {
@@ -429,17 +428,15 @@ describe("permissions", () => {
     });
     await page().findByTestId("queue-total");
     await page().findByRole("table", { name: "Jobs in emails" });
-    expect(page().queryByRole("group", { name: "Queue actions" })).toBeNull();
-    expect(page().queryByRole("group", { name: "Bulk actions" })).toBeNull();
-    expect(page().queryByRole("button", { name: "Add job" })).toBeNull();
-    expect(page().queryByRole("checkbox", { name: /Select/ })).toBeNull();
+    expectAbsent(page().queryByRole("group", { name: "Queue actions" }));
+    expectAbsent(page().queryByRole("group", { name: "Bulk actions" }));
+    expectAbsent(page().queryByRole("button", { name: "Add job" }));
+    expectAbsent(page().queryByRole("checkbox", { name: /Select/ }));
     // The limits panel is a summary, not an editor; repeatables have no remove.
-    expect(page().queryByRole("button", { name: "Save limits" })).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: "Save limits" }));
     fireEvent.click(page().getByRole("tab", { name: "Repeatables" }));
     await page().findByTestId("repeatable-row-digest:cron");
-    expect(
-      page().queryByRole("button", { name: /Remove repeatable/ }),
-    ).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: /Remove repeatable/ }));
   });
 });
 
@@ -447,7 +444,7 @@ describe("the Add job button", () => {
   it("is absent by default (jobs.add is opt-in)", async () => {
     renderQueue();
     await loaded();
-    expect(page().queryByRole("button", { name: "Add job" })).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: "Add job" }));
   });
 
   it("is present with jobs.add and some addable name, or any name (null)", async () => {
@@ -477,6 +474,6 @@ describe("the Add job button", () => {
       },
     });
     await loaded();
-    expect(page().queryByRole("button", { name: "Add job" })).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: "Add job" }));
   });
 });

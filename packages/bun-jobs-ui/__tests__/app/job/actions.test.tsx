@@ -4,6 +4,7 @@ import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it, spyOn } from "bun:test";
 import { JOB_STATES } from "../../../app/api/contract";
 import { failConfirmation } from "../../../app/screens/job/failConfirm";
+import { expectAbsent, expectUndefined } from "../assert";
 import {
   act,
   cleanup,
@@ -92,7 +93,7 @@ describe("retry", () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     });
-    await waitFor(() => expect(page().queryByRole("dialog")).toBeNull());
+    await waitFor(() => expectAbsent(page().queryByRole("dialog")));
     const call = callTo(calls, "POST", "/retry")!;
     expect(call.path).toBe(`/queues/emails/jobs/${AWKWARD_ID_ENCODED}/retry`);
     expect(JSON.parse(call.body!)).toEqual({ resetAttempts: false });
@@ -152,7 +153,7 @@ describe("promote", () => {
     await act(async () => clickAction("Promote"));
     await waitFor(() => expect(toastText().polite).toContain("Job promoted"));
     const call = callTo(calls, "POST", "/promote")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
     expectInvalidated(invalidate);
   });
@@ -192,7 +193,7 @@ describe("remove", () => {
       expect(window.location.pathname).toBe("/jobs/queues/emails"),
     );
     const call = callTo(calls, "DELETE")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     await waitFor(() => expect(toastText().polite).toContain("Job removed"));
     expectInvalidated(invalidate);
     // The removed job is not read again.
@@ -256,7 +257,7 @@ describe("fail", () => {
     expect(reason.required).toBe(true);
     expect(within(dialog).getByText(/At most 4,096 characters/)).toBeTruthy();
     // No running-code note for a job that is not active.
-    expect(within(dialog).queryByTestId("fail-active-note")).toBeNull();
+    expectAbsent(within(dialog).queryByTestId("fail-active-note"));
     fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
       target: { value: AWKWARD_ID },
     });
@@ -276,7 +277,7 @@ describe("fail", () => {
     await act(async () => {
       fireEvent.click(confirm);
     });
-    await waitFor(() => expect(page().queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expectAbsent(page().queryByRole("alertdialog")));
     const call = callTo(calls, "POST", "/fail")!;
     expect(call.path).toBe(`/queues/emails/jobs/${AWKWARD_ID_ENCODED}/fail`);
     // Sent as typed: the API records the reason exactly as sent.
