@@ -106,3 +106,7 @@
 .events-gap td {
   font-style: italic;
 }
+
+.events-summary {
+  margin: 0 0 var(--space-1);
+}

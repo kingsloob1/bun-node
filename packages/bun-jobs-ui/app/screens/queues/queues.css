@@ -295,3 +295,19 @@ tr[aria-selected="true"] {
 .demand-url code {
   overflow-wrap: anywhere;
 }
+
+.summon-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.summon-heading {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.summon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

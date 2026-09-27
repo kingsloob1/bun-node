@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { JOB_STATES } from "../../api/contract";
 import { getQueue, getQueueCounts, queueKeys } from "../../api/queues";
+import { getSummonStatus, summonKeys } from "../../api/summon";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
@@ -27,6 +28,7 @@ import { DemandPanel } from "./panels/DemandPanel";
 import { useJobDefaultsGate } from "./panels/jobDefaultsGate";
 import { LimitsPanel } from "./panels/LimitsPanel";
 import { RepeatablesPanel } from "./panels/RepeatablesPanel";
+import { SummonPanel } from "./panels/SummonPanel";
 import { ThroughputPanel } from "./panels/ThroughputPanel";
 import { WorkersPanel } from "./panels/WorkersPanel";
 import { QueueActions } from "./QueueActions";
@@ -38,6 +40,7 @@ export type PanelId =
   | "job-defaults"
   | "workers"
   | "demand"
+  | "summon"
   | "throughput"
   | "repeatables";
 
@@ -190,6 +193,16 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   const canMetrics = useCan("metrics.read");
   const canRepeatables = useCan("repeatables.list");
   const jobDefaults = useJobDefaultsGate();
+  const api = useApiClient();
+  // `/meta` says nothing about summoning: the status read itself decides. A
+  // queue with no summoner in the API's process reads as `null` (409
+  // `SUMMON_NOT_CONFIGURED`) and gets no tab; the panel reuses this read.
+  const summon = useQuery({
+    queryKey: summonKeys.status(queue),
+    queryFn: ({ signal }) => getSummonStatus(api, queue, signal),
+    enabled: canRead,
+    retry: false,
+  });
 
   const panels: { value: PanelId; label: string; render: () => ReactNode }[] =
     [];
@@ -239,6 +252,15 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
       value: "demand",
       label: "Demand",
       render: () => <DemandPanel queue={queue} />,
+    });
+  }
+  // Shown once it answered with a status, and on a failure other than "no
+  // summoner here", which the panel then explains.
+  if (canRead && (summon.isError || (summon.data ?? null) !== null)) {
+    panels.push({
+      value: "summon",
+      label: "Summon",
+      render: () => <SummonPanel queue={queue} />,
     });
   }
   if (meta.features.throughput && canMetrics) {

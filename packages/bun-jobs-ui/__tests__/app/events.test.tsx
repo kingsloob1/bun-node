@@ -292,6 +292,34 @@ describe("the Events console", () => {
     );
   });
 
+  it("writes a summon event in words above its payload, and no other event", async () => {
+    await renderEvents();
+    await emit(
+      completed("a/1"),
+      queueEvent({
+        type: "summon",
+        target: "emails",
+        payload: {
+          id: "s-3f9a",
+          outcome: "started",
+          kind: "ecs",
+          count: 1,
+          reason: "add",
+        },
+      }),
+    );
+    const [summon, job] = rows();
+    expect(summon!.dataset.type).toBe("summon");
+    expect(
+      within(summon!).getByTestId("event-summon-summary").textContent,
+    ).toBe("Started 1 worker (ecs), because a job was added");
+    // The payload is still there beneath it.
+    expect(
+      summon!.querySelector('[aria-label^="Payload of summon"]'),
+    ).toBeTruthy();
+    expect(within(job!).queryByTestId("event-summon-summary")).toBeNull();
+  });
+
   it("links a worker event's target to its queue, under a kind badge of its own", async () => {
     await renderEvents("?channel=workers");
     expect(subscription().channels).toEqual(["workers"]);

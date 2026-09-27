@@ -160,7 +160,10 @@ describe("the Demand panel", () => {
     renderQueue({
       path: "/queues/emails?panel=demand",
       handlers: {
-        "GET /queues/emails/demand": problem(503, "UNAVAILABLE", "Down"),
+        "GET /queues/emails/demand": {
+          status: 503,
+          body: problem(503, "UNAVAILABLE", "Down"),
+        },
       },
     });
     await waitFor(() =>
