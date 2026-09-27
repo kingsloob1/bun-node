@@ -2086,8 +2086,11 @@ not rely on that alone.
 
 A malformed argument throws a `ConfigError`, and so does `summon` on a worker
 that could never report — `reportInterval: 0`, or a driver that cannot store
-worker records — since it could never release its attempt, and on a driver
-without queue state. **Claim-once:** before its first record says it was
+worker records — since it could never release its attempt. **So does `summon`
+on a driver without queue state** (`getQueueState`/`setQueueState`), where it
+could not claim its attempt once: every driver in this package has queue
+state, but a third-party driver without it that accepted `summon` before this
+release now refuses it at construction. **Claim-once:** before its first record says it was
 summoned, a worker claims its attempt id in queue state; a second process
 started with the same id (a platform's double start) finds it taken and runs
 as an ordinary worker, with no `summon` on its record (`worker.summon` is

@@ -35,7 +35,11 @@ export type SummonOutcomeKind =
   | "registered"
   /** The platform declined: capacity, quota, an inactive function. */
   | "unavailable"
-  /** The call threw or timed out. */
+  /**
+   * The call threw or timed out. A throw removes the attempt; a timeout
+   * (detail `timeout`) keeps it pending until it registers or is `lost`,
+   * since the platform may still have started the unit.
+   */
   | "failed"
   /** Accepted, but no worker registered within `bootBudget`. */
   | "lost"
@@ -409,8 +413,10 @@ export interface SummonPolicy {
   /** Scale-style only: when to set the count back to zero. */
   scaleDown?: {
     /**
-     * How long the queue must have had nothing outstanding — no waiting, due
-     * or active job, paused or not — first, in ms. Defaults to `300_000`.
+     * How long the queue must have been idle first, in ms: no active job,
+     * and either no waiting or due job or the queue paused (a paused queue
+     * claims nothing, so once its running jobs finish its workers are idle
+     * cost; it is never released mid-job). Defaults to `300_000`.
      */
     after?: number;
   };
@@ -465,7 +471,11 @@ export type SummonSkipReason =
   | "contended"
   /** The controller is closed. */
   | "closed"
-  /** The controller runs in a summoned process or runner child, without `fromSummoned`. */
+  /**
+   * The controller is inert: it runs in a summoned process or runner child
+   * without `fromSummoned`, or the queue's marker is a newer version than
+   * this build knows (`status().inertReason` says which).
+   */
   | "inert";
 
 /** What one check did. */
@@ -480,16 +490,19 @@ export type SummonCheckResult =
       /** A worker is needed, or may be, but a guard held the attempt back. */
       action: "skipped";
       /** Which guard. */
-      reason: Exclude<SummonSkipReason, "closed">;
+      reason: Exclude<SummonSkipReason, "closed" | "inert">;
       /** The reading it decided on. */
       demand: QueueDemand;
     }
   | {
-      /** The controller was closed before the check could read anything. */
+      /**
+       * The controller is closed or inert, so the check read nothing: it
+       * answers before touching the driver.
+       */
       action: "skipped";
-      /** Always `"closed"`. */
-      reason: "closed";
-      /** Never read: a closed controller touches no driver. */
+      /** `"closed"` or `"inert"`. */
+      reason: "closed" | "inert";
+      /** Never read. */
       demand?: undefined;
     }
   | {
@@ -579,8 +592,14 @@ export interface SummonStatus {
   queue: string;
   /** Whether a controller runs in *this* process (always `true` from `controller.status()`). */
   local: boolean;
-  /** Whether that controller is inert here (see `SummonPolicy.fromSummoned`). */
+  /** Whether that controller is inert here (see `SummonController.inert`). */
   inert: boolean;
+  /**
+   * Why it is inert, when it is: `"summoned-process"` (a summoned process or
+   * a runner child, without `fromSummoned`), or `"newer-marker"` (the queue's
+   * marker was written by a newer bun-jobs, which this build leaves alone).
+   */
+  inertReason?: "summoned-process" | "newer-marker";
   /** The summoner: its identity, its declared capabilities, and its `describe()` facts. */
   summoner?: {
     /** Who the provider is. */

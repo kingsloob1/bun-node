@@ -4,6 +4,7 @@ import type {
   QueueRef,
   WorkerInfo,
 } from "../drivers/index";
+import type { LocalAddedJob } from "../queue/BunQueue";
 import type { Logger } from "../shared/logger";
 import type { MarkerRead } from "./marker";
 import type {
@@ -24,14 +25,16 @@ import type {
 } from "./types";
 import process from "node:process";
 import {
+  DEFAULT_DEMAND_CAP,
   listWorkerRecords,
   readDemand,
   supportsWorkers,
 } from "../drivers/index";
+import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
 import { setReservedState } from "../queue/windows";
 import { CHILD_ENV } from "../runner/protocol";
 import { TypedEmitterBase } from "../shared/emitter";
-import { ConfigError } from "../shared/errors";
+import { ConfigError, JobsError } from "../shared/errors";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
@@ -112,21 +115,18 @@ export const ATTACH_QUEUE: unique symbol = Symbol(
   "bun-jobs: attach a queue to a summon controller",
 );
 
-/** What the `onAdd` trigger listens to: the local `added` event of a queue. */
+/**
+ * What the `onAdd` trigger hooks into: a queue's private local-add hooks
+ * (`LOCAL_ADD_HOOKS` in `queue/BunQueue.ts`), called for each job this
+ * process adds through it. Not the public `added` event: see there why.
+ */
 export interface AddedSource {
-  /** Adds the listener. */
-  on: (event: "added", listener: (job: AddedJob) => void) => unknown;
-  /** Removes it again, on close. */
-  off: (event: "added", listener: (job: AddedJob) => void) => unknown;
+  /** The hooks, `undefined` while none is set. */
+  [LOCAL_ADD_HOOKS]: ((job: AddedJob) => void)[] | undefined;
 }
 
 /** The two fields of an added job the fast path reads. */
-export interface AddedJob {
-  /** Where the job went: `waiting`, or `delayed` until `runAt`. */
-  state: string;
-  /** When it becomes due, epoch ms. */
-  runAt: number;
-}
+export type AddedJob = LocalAddedJob;
 
 /**
  * Whether this process was summoned, or is a bun-jobs runner or target child:
@@ -332,11 +332,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /** The queue's namespace. */
   readonly namespace: string;
   /**
-   * Whether it is inert: in a summoned process or a runner child, without
-   * `fromSummoned`. An inert controller arms no trigger, and `check()`
-   * answers `skipped: "inert"`.
+   * Whether it is inert: built in a summoned process or a runner child
+   * without `fromSummoned` (then no trigger is ever armed), or it found the
+   * queue's marker written by a newer bun-jobs, which it leaves alone rather
+   * than overwrite. An inert controller summons nothing: `check()` answers
+   * `skipped: "inert"` at once, reading nothing. It stays inert until it is
+   * rebuilt; `status().inertReason` says why.
    */
-  readonly inert: boolean;
+  get inert(): boolean {
+    return this.#inertReason !== undefined;
+  }
 
   /** The backend. */
   readonly #driver: JobsDriver;
@@ -350,6 +355,20 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   readonly #policy: ResolvedPolicy;
   /** Turns an attempt id into the platform's dedupe key. */
   readonly #dedupeKey: (id: string) => string;
+  /** Why the controller is inert, or `undefined` while it is live. */
+  #inertReason: "summoned-process" | "newer-marker" | undefined;
+  /**
+   * The `cap` each check reads demand with: `DEFAULT_DEMAND_CAP`, raised to
+   * `maxWorkers × jobsPerWorker` when that is finite and larger (§6.4 D3), so
+   * a capped `outstanding` can never under-state how many workers are wanted.
+   */
+  readonly #demandCap: number;
+  /** Whether the last events subscription failed, so the next poll tick retries it. */
+  #subscribeFailed = false;
+  /** Whether the current run of subscription failures has been warned about. */
+  #warnedSubscribe = false;
+  /** Whether the one `warn` about approximate (`exact: false`) demand was logged. */
+  #warnedInexact = false;
   /**
    * While `Date.now()` is below this, a live serving worker was last seen
    * covering what the queue wants, and a local `added` does nothing at all:
@@ -451,7 +470,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
 
-    this.inert = options.fromSummoned !== true && inSummonedProcess();
+    const product = this.#policy.maxWorkers * this.#policy.jobsPerWorker;
+    this.#demandCap = Number.isFinite(product)
+      ? Math.max(
+          DEFAULT_DEMAND_CAP,
+          Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
+        )
+      : DEFAULT_DEMAND_CAP;
+
+    if (options.fromSummoned !== true && inSummonedProcess()) {
+      this.#inertReason = "summoned-process";
+    }
     if (this.inert) {
       this.#logger.info(
         "summon controller inert: this process was summoned or is a runner child (set fromSummoned to override)",
@@ -460,10 +489,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
 
     if (this.#policy.poll !== false) {
-      this.#pollTimer = setInterval(
-        () => this.#trigger("poll"),
-        this.#policy.poll,
-      );
+      this.#pollTimer = setInterval(() => {
+        if (this.#subscribeFailed && !this.#closed) {
+          this.#subscribeFailed = false;
+          this.#subscription = this.#subscribe();
+        }
+        this.#trigger("poll");
+      }, this.#policy.poll);
       this.#pollTimer.unref?.();
     }
     if (this.#policy.events) {
@@ -600,7 +632,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * arms at most one timer per controller, however many jobs arrive.
    */
   readonly #onAdded = (job: AddedJob): void => {
-    if (this.#closed) {
+    if (this.#closed || this.#inertReason !== undefined) {
       return;
     }
     const now = Date.now();
@@ -621,7 +653,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     this.#arm("add");
   };
 
-  /** Attaches a queue's local `added` event. Called by `BunJobs`; idempotent. */
+  /** Hooks into a queue's local adds. Called by `BunJobs`; idempotent. */
   [ATTACH_QUEUE](source: AddedSource): void {
     if (
       this.inert ||
@@ -631,7 +663,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     ) {
       return;
     }
-    source.on("added", this.#onAdded);
+    source[LOCAL_ADD_HOOKS] = [
+      ...(source[LOCAL_ADD_HOOKS] ?? []),
+      this.#onAdded,
+    ];
     this.#sources.add(source);
   }
 
@@ -673,7 +708,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       if (this.#closed) {
         return undefined;
       }
-      return await this.#driver.subscribe(
+      const unsubscribe = await this.#driver.subscribe(
         this.namespace,
         "queue",
         this.queue,
@@ -687,8 +722,20 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           }
         },
       );
+      this.#warnedSubscribe = false;
+      return unsubscribe;
     } catch (error) {
-      this.#logger.error("summon events subscription failed", { error });
+      // Retried from the next poll tick; one warn per run of failures.
+      this.#subscribeFailed = true;
+      if (!this.#warnedSubscribe) {
+        this.#warnedSubscribe = true;
+        this.#logger.warn(
+          this.#policy.poll === false
+            ? "summon events subscription failed; with the poll off it is not retried"
+            : "summon events subscription failed; retrying on each poll until it succeeds",
+          { error },
+        );
+      }
       return undefined;
     }
   }
@@ -764,7 +811,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }> {
     const records = listWorkerRecords(this.#driver, this.#ref, now);
     const [demand, workers, entry] = await Promise.all([
-      readDemand(this.#driver, this.#ref, { now, workers: records }),
+      readDemand(this.#driver, this.#ref, {
+        now,
+        cap: this.#demandCap,
+        workers: records,
+      }),
       records,
       (async () =>
         await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER))(),
@@ -786,11 +837,26 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (this.#closed) {
       return { action: "skipped", reason: "closed" };
     }
+    if (this.inert) {
+      return { action: "skipped", reason: "inert" };
+    }
     await this.#connect();
     const now = Date.now();
     const { demand, workers, read } = await this.#read(now);
-    if (this.inert) {
-      return { action: "skipped", reason: "inert", demand };
+    if (!demand.exact && !this.#warnedInexact) {
+      this.#warnedInexact = true;
+      this.#logger.warn(
+        `the ${this.#driver.name} driver has no countDemand: demand is approximate (exact: false), from countJobs and nextDelayedAt`,
+        { driver: this.#driver.name },
+      );
+    }
+    if (read.newer !== undefined) {
+      this.#inertReason = "newer-marker";
+      this.#logger.warn(
+        "the summon marker was written by a newer bun-jobs; this controller leaves it alone and stays inert",
+        { markerVersion: read.newer },
+      );
+      return { action: "skipped", reason: "inert" };
     }
 
     const { marker, version } = read;
@@ -868,9 +934,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // Step 3: nothing needs a worker.
     const orphaned =
       !demand.paused && demand.active > 0 && workers.length === 0;
-    const nothingOutstanding =
-      demand.waiting + demand.dueNow + demand.active === 0;
-    if (!nothingOutstanding) {
+    // Scale style: whether the summoned count could go to zero. Nothing may be
+    // running (never release mid-job, paused or not), and nothing claimable
+    // may be waiting — unless the queue is paused, where nothing is claimed
+    // anyway, so once its running jobs finish its workers are idle cost.
+    const idle =
+      demand.active === 0 &&
+      (demand.paused || demand.waiting + demand.dueNow === 0);
+    if (!idle) {
       this.#zeroSince = undefined;
       this.#released = false;
     }
@@ -893,7 +964,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
     if (demand.paused || (demand.demand === 0 && !orphaned)) {
       await this.#settle(marker, version, changed, events, lost);
-      if (capabilities.style === "scale" && nothingOutstanding) {
+      if (capabilities.style === "scale" && idle) {
         this.#zeroSince ??= now;
         if (
           !this.#released &&
@@ -1236,6 +1307,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * registration or as `lost` once its `until` passes. The outcome is still
    * returned, emitted and logged here, with a `warn` saying it was not
    * recorded. Nothing is lost for good; a failed call is only counted late.
+   *
+   * **A timeout is not a definite failure.** A call that ran past
+   * `summonTimeout` may still have started the unit, so the attempt is kept
+   * pending (outcome `failed`, detail `timeout`) and settled like any other:
+   * released when its worker registers, or `lost` — and only then counted
+   * toward backoff and the circuit — once `until` passes. A throw or an
+   * `unavailable` answer removes the attempt at once.
    */
   async #record(
     id: string,
@@ -1255,15 +1333,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           ? undefined
           : errorDetail(failure);
     const kind = this.#summoner.provider.kind;
+    const timedOut = failure instanceof SummonTimeoutError;
 
     let recorded = false;
     for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
       const now = Date.now();
       const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
-      const { marker, version, unreadable } = readMarker(entry, now);
-      const index = unreadable
-        ? -1
-        : marker.pending.findIndex((pending) => pending.id === id);
+      const { marker, version, unreadable, newer } = readMarker(entry, now);
+      const index =
+        unreadable || newer !== undefined
+          ? -1
+          : marker.pending.findIndex((pending) => pending.id === id);
       // Gone: purged, or already released or declared lost by a check that
       // ran meanwhile. Nothing of this attempt is left to record.
       if (index === -1) {
@@ -1271,7 +1351,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         break;
       }
       const pending = marker.pending[index]!;
-      if (outcome === "failed" || outcome === "unavailable") {
+      if (timedOut) {
+        // A call that timed out may still have started the unit: the
+        // attempt stays on its way until it registers, or until its `until`
+        // passes and it is `lost` (counted then, like any lost attempt). A
+        // new attempt now could start a second worker.
+      } else if (outcome === "failed" || outcome === "unavailable") {
         marker.pending.splice(index, 1);
         this.#fail(
           marker,
@@ -1359,6 +1444,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
             SUMMON_CLAIM_RETENTION_MS,
             this.#policy.maxLifetime + this.#policy.bootBudget,
           ),
+        now,
       );
     } catch (error) {
       this.#logger.warn("could not sweep summon claims", { error });
@@ -1372,13 +1458,23 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     await this.#connect();
     const now = Date.now();
     const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
-    const { marker } = readMarker(entry, now);
+    const { marker, newer } = readMarker(entry, now);
+    if (newer !== undefined && this.#inertReason === undefined) {
+      this.#inertReason = "newer-marker";
+      this.#logger.warn(
+        "the summon marker was written by a newer bun-jobs; this controller leaves it alone and stays inert",
+        { markerVersion: newer },
+      );
+    }
     rollBudget(marker, now);
     const { perHour, perDay } = this.#policy.budget;
     return {
       queue: this.queue,
       local: true,
       inert: this.inert,
+      ...(this.#inertReason === undefined
+        ? {}
+        : { inertReason: this.#inertReason }),
       summoner: {
         provider: this.#summoner.provider,
         capabilities: this.#summoner.summon.capabilities,
@@ -1402,7 +1498,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     };
   }
 
-  /** Clears failures, backoff and an open circuit. Pending attempts are kept. */
+  /**
+   * Clears failures, backoff and an open circuit. Pending attempts are kept.
+   *
+   * @throws {JobsError} code `SUMMON_MARKER_CONTENDED` when other controllers
+   *   won every write it tried; try again.
+   */
   async reset(): Promise<void> {
     await this.#connect();
     for (let attempt = 0; attempt < RECORD_ATTEMPTS * 2; attempt++) {
@@ -1410,8 +1511,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       if (entry === null) {
         return;
       }
-      const { marker, version, unreadable } = readMarker(entry, Date.now());
-      if (unreadable) {
+      const { marker, version, unreadable, newer } = readMarker(
+        entry,
+        Date.now(),
+      );
+      // Garbage has nothing to reset, and a newer build's marker is not ours
+      // to write.
+      if (unreadable || newer !== undefined) {
         return;
       }
       marker.failures = 0;
@@ -1429,9 +1535,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         return;
       }
     }
-    throw new ConfigError(
-      "Could not reset the summon marker: other controllers kept writing it",
-      { queue: this.queue },
+    // Contention, not configuration: other controllers kept winning the
+    // write. Trying again later is the remedy.
+    throw new JobsError(
+      "Could not reset the summon marker: other controllers kept writing it; try again",
+      "SUMMON_MARKER_CONTENDED",
+      { queue: this.queue, attempts: RECORD_ATTEMPTS * 2 },
     );
   }
 
@@ -1455,7 +1564,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#dueTimer = undefined;
     }
     for (const source of this.#sources) {
-      source.off("added", this.#onAdded);
+      const rest = (source[LOCAL_ADD_HOOKS] ?? []).filter(
+        (hook) => hook !== this.#onAdded,
+      );
+      source[LOCAL_ADD_HOOKS] = rest.length > 0 ? rest : undefined;
     }
     this.#sources.clear();
     const subscription = this.#subscription;

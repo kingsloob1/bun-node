@@ -244,6 +244,15 @@ cover different gaps:
   `Job` view `added` carries has `state` and `runAt`, which is all the §4.8
   fast path reads. Listening costs one callback per add and no driver call
   while a worker is known to be live (§4.8).
+  **As built (PR-3, #208 review):** not the public `added` event but a
+  private, symbol-keyed hook on `BunQueue` (`LOCAL_ADD_HOOKS`), called from
+  `#addSimple` and `addBulk` for local adds only, synchronously, one property
+  read when unset. A public `added` listener made a subscribing queue fetch
+  every remote add to hand it over (measured: 200 `getJob` calls for 200
+  remote adds; 0 with the hook), could be removed by a user's
+  `removeAllListeners("added")`, and lost its trigger behind a throwing user
+  listener. A repeatable's first add and a flow's adds do not call the hook;
+  the poll hears those.
 - **Driver events from other processes**: `BunQueue` publishes `added`,
   `waiting` and `delayed` from `#addSimple` (`BunQueue.ts:647`, `:653`,
   `:656`) and from flows (`:1426-1437`), and also `promoted` (`:1687`),
@@ -589,7 +598,15 @@ interface PendingSummon {
 8. **Record** the result with a second CAS (retried against a fresh read, up to
    three times [D]). `started`, `deduped` and `already-running` keep the
    pending entry and add its handles. `unavailable` or a throw removes it,
-   increments `failures` and sets `backoffUntil`.
+   increments `failures` and sets `backoffUntil`. **As built (PR-3, #208
+   review): a timeout is not a throw.** A call that ran past `summonTimeout`
+   may still have started the unit, so the attempt is kept pending (outcome
+   `failed`, detail `timeout`) until it registers or its `until` passes; only
+   then is it `lost` and counted toward backoff and the circuit, as a
+   never-registering attempt is. A new attempt meanwhile could start a second
+   worker. If every write of the result loses its CAS, the answer is not
+   recorded: the attempt stays pending as claimed and is settled the same way
+   (a `warn` says so).
 
 **The marker's TTL is `bootBudget`**, per attempt. It must cover platform
 cold start, plus Bun boot, plus driver connect and `ensureQueue`, plus the
@@ -697,7 +714,7 @@ clamped to the declared `poolSize` ([`compute-provider-plugins.md`](compute-prov
 | Call | start N units: `RunTask`, `jobs:run`, `POST /jobs`, `systemd-run` | set the count to `target`: worker pool `manualInstanceCount`, ECS `desiredCount`, ASG `SetDesiredCapacity` |
 | Duplicate on a race | yes | no, idempotent by construction [I, aws §4.3; google-azure §3.3] |
 | Worker mode | `"exit-on-idle"` | `"until-stopped"`: never exits on idle, because the platform would restart it [I, google-azure §5] |
-| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once `outstanding == 0` has held for `scaleDown.after` (default `300_000` ms) [D] |
+| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once the queue has been idle for `scaleDown.after` (default `300_000` ms): `outstanding == 0` in the draft; as built, `active == 0 && (paused \|\| waiting + dueNow == 0)` (below) |
 
 A scale-style release uses `outstanding`, never `demand`. So it never sets a
 count to zero while a job is active, which is the ScaledObject hazard of §2.2
@@ -708,6 +725,13 @@ Cloud Run worker pools have a first-party path. The README recommends
 launch-style everywhere a platform offers both, because a crashed controller
 leaves a scale-style pool billing "as active … even if … idle" [V,
 google-azure §8].
+
+**As built (PR-3, #208 review; the coordinator's decision).** `outstanding`
+is `0` while the queue is paused, even with jobs running, so the release
+condition is not `outstanding == 0` but **`active == 0 && (paused ||
+waiting + dueNow == 0)`**, held for `scaleDown.after`. A paused queue claims
+nothing, so once its running jobs finish its workers are idle cost and are
+released; it is never released while a job is active, paused or not.
 
 ### 4.8 Hot-path cost of the enqueue hook
 

@@ -217,19 +217,27 @@ export async function holdsSummonClaim(
 /**
  * Removes claim entries older than `olderThan` (epoch ms), each by
  * compare-and-set on the version read, looking at no more than `maxScan`
- * entries. Names are hashes, so age says nothing about order: the listing is
- * paged through rather than cut at its first page. Best effort: a driver
- * without `listQueueState` keeps them. Answers how many went.
+ * entries — **except one any of whose holders is still live** (its worker
+ * record is listed at `now`): deleting that would make the holder's next
+ * report find its place gone and demote a working summoned worker. Names are
+ * hashes, so age says nothing about order: the listing is paged through
+ * rather than cut at its first page. Best effort: a driver without
+ * `listQueueState` keeps them. Answers how many went.
  */
 export async function sweepSummonClaims(
   driver: JobsDriver,
   q: QueueRef,
+  /** Remove entries created before this, epoch ms. */
   olderThan: number,
+  /** Now, epoch ms: which worker records count as live. */
+  now: number,
+  /** The most entries to look at in one sweep. */
   maxScan = 2_000,
 ): Promise<number> {
   if (typeof driver.listQueueState !== "function") {
     return 0;
   }
+  let live: Set<string> | undefined;
   const page = 200;
   let removed = 0;
   let scanned = 0;
@@ -242,10 +250,23 @@ export async function sweepSummonClaims(
     });
     for (const name of names) {
       const entry = await driver.getQueueState!(q, name);
-      const at = isClaim(entry?.value) ? entry.value.at : undefined;
+      if (entry === null) {
+        continue;
+      }
+      const claim = isClaim(entry.value) ? entry.value : undefined;
+      if (claim !== undefined && claim.at >= olderThan) {
+        continue;
+      }
+      if (claim !== undefined && claim.holders.length > 0) {
+        // Listed once per sweep, and only when an old entry has holders.
+        live ??= new Set(
+          (await listWorkerRecords(driver, q, now)).map((worker) => worker.id),
+        );
+        if (claim.holders.some((holder) => live!.has(holder.worker))) {
+          continue;
+        }
+      }
       if (
-        entry &&
-        (typeof at !== "number" || at < olderThan) &&
         (await setReservedState(driver, q, name, null, entry.version)) !== null
       ) {
         removed++;

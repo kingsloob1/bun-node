@@ -170,20 +170,46 @@ export function isSummonMarker(value: unknown): value is SummonMarker {
   );
 }
 
+/**
+ * The shape version of a marker written by a **newer** bun-jobs: an object
+ * whose `v` is a whole number above the `1` this build writes. `undefined`
+ * for anything else, garbage included.
+ */
+export function newerMarkerVersion(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const v = (value as { v?: unknown }).v;
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 1
+    ? v
+    : undefined;
+}
+
 /** A marker read from the driver, with the version to write it back at. */
 export interface MarkerRead {
   /** The marker, a private copy the caller may change. */
   marker: SummonMarker;
   /** The version it was read at, `null` when there is no entry yet. */
   version: number | null;
-  /** Whether an entry existed but did not have the marker's shape. */
+  /**
+   * Whether an entry existed that is neither a marker nor a newer one:
+   * garbage, which a fresh marker is written over.
+   */
   unreadable: boolean;
+  /**
+   * The shape version of a marker a newer bun-jobs wrote, which this build
+   * must not write over: set, and `marker` is a fresh one never to be
+   * written. `undefined` otherwise.
+   */
+  newer?: number;
 }
 
 /**
  * The marker in a queue-state entry, as a private copy. No entry gives a
  * fresh marker to create at `null`; an entry that is not a marker gives a
- * fresh one to write over it at its version.
+ * fresh one to write over it at its version — except a marker a newer
+ * bun-jobs wrote (`v` above 1), which is reported as `newer` and must be
+ * left alone.
  */
 export function readMarker(
   entry: QueueStateEntry | null,
@@ -191,6 +217,15 @@ export function readMarker(
 ): MarkerRead {
   if (entry === null) {
     return { marker: freshMarker(now), version: null, unreadable: false };
+  }
+  const newer = newerMarkerVersion(entry.value);
+  if (newer !== undefined) {
+    return {
+      marker: freshMarker(now),
+      version: entry.version,
+      unreadable: false,
+      newer,
+    };
   }
   if (!isSummonMarker(entry.value)) {
     return {
