@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 
 /**
@@ -44,6 +46,88 @@ export function chromeOrSkip(): string {
 }
 
 /**
+ * What every Chrome profile these examples make is named with, before the pid
+ * of the process that owns it: `bun-jobs-ui-example-chrome-p<pid>-<random>`.
+ * The pid is what lets a later run tell a profile nobody owns any more from
+ * one still in use, and the shape matches the e2e suites' own profiles, so
+ * either sweep can collect the other's leftovers and neither can take one
+ * whose owner is alive.
+ */
+const PROFILE_PREFIX = "bun-jobs-ui-example-chrome-p";
+/** A profile's name, with its owner's pid. */
+const PROFILE_NAME = /^bun-jobs-ui-example-chrome-p(\d+)-[^-]+$/;
+
+/** Whether a process with this pid is running (or exists but is not ours to signal). */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // `EPERM`: it exists, under another user. Only `ESRCH` means gone.
+    return (error as { code?: string }).code !== "ESRCH";
+  }
+}
+
+/** Deletes `directory`, never throwing: it is a temporary directory either way. */
+function removeQuietly(directory: string): void {
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    // Nothing to do: a sweep must never fail the example that started it.
+  }
+}
+
+/**
+ * Removes the profiles an earlier run left behind: those whose owning process
+ * has exited. A run killed before it exits cleanly leaves its profile, and a
+ * departing Chrome writes a few last files after its owner has deleted it;
+ * this is what collects both. Never one whose owner is alive.
+ */
+function sweepStaleProfiles(): void {
+  let names: string[];
+  try {
+    names = readdirSync(tmpdir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const owner = PROFILE_NAME.exec(name);
+    if (
+      owner &&
+      Number(owner[1]) !== process.pid &&
+      !isAlive(Number(owner[1]))
+    ) {
+      removeQuietly(join(tmpdir(), name));
+    }
+  }
+}
+
+/** This process's Chrome profile, once made: Chrome starts once per process. */
+let profile: string | undefined;
+
+/**
+ * The Chrome profile directory for this process's views, made on first use.
+ *
+ * Without one, `Bun.WebView`'s Chrome backend makes its own,
+ * `/tmp/.<hash>-00000000.bun-chrome`, which outlives `view.close()`: every
+ * run of a browser example left one, a few hundred files each, and 670 of them
+ * had built up in `/tmp` before this. A directory of our own is removed when
+ * the process exits, and whatever a killed run or a late-writing Chrome leaves
+ * is swept by the next run.
+ */
+function profileDirectory(): string {
+  if (profile === undefined) {
+    sweepStaleProfiles();
+    const directory = mkdtempSync(
+      join(tmpdir(), `${PROFILE_PREFIX}${process.pid}-`),
+    );
+    process.on("exit", () => removeQuietly(directory));
+    profile = directory;
+  }
+  return profile;
+}
+
+/**
  * Starts a headless Chrome of its own (`url: false`: never one you have
  * open), recording the page's console into `pageConsole`. If Chrome will not
  * start, runs `cleanup` and skips.
@@ -56,6 +140,8 @@ export async function openView(
   try {
     const view = new Bun.WebView({
       backend: { type: "chrome", url: false, path: chromePath },
+      // A profile this process owns and removes: see `profileDirectory`.
+      dataStore: { directory: profileDirectory() },
       width: 1280,
       height: 900,
       console: (type, ...args) => {
