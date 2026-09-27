@@ -154,6 +154,10 @@ export type {
   QueueDemandListDto,
   QueueDemandListQuery,
   QueueDemandQuery,
+  SummonCheckDto,
+  SummonEventDto,
+  SummonNowBody,
+  SummonStatusDto,
 } from "./api/contract/types";
 export { createJobsApi } from "./api/createJobsApi";
 
@@ -909,6 +913,7 @@ export {
   type WorkerEventName,
   type WorkerState,
   type WorkerStopPersistence,
+  type WorkerSummonInfo,
   type WorkerSummonProvenance,
   type WorkerTargetInfo,
   type WorkerTargetKind,

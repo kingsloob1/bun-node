@@ -27,7 +27,7 @@ import type {
   WorkerEventName,
   WorkerState,
   WorkerStopPersistence,
-  WorkerSummonProvenance,
+  WorkerSummonInfo,
   WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobEvent } from "./Job";
@@ -414,6 +414,17 @@ function assertPositiveMs(value: number, what: string): number {
  */
 export const DEFAULT_REPORT_INTERVAL = 10_000;
 
+/**
+ * Internal: the key of the method `runSummoned` records its resolved mode
+ * with (`WorkerInfo.summon.resolvedMode`). A symbol, not a public method, so
+ * only `runSummoned` sets it; exported from this module alone, never from the
+ * package root. It is taken once, before `run()`, and only on a worker that
+ * was given `summon`; any other call is ignored and answers `false`.
+ */
+export const SET_SUMMONED_MODE: unique symbol = Symbol(
+  "bun-jobs: set summoned mode",
+);
+
 /** How often a worker reads its stored instructions when it cannot subscribe. */
 const DEFAULT_CONTROL_INTERVAL = 2_000;
 
@@ -653,9 +664,12 @@ export class BunQueueWorker<
   /**
    * The heartbeat record's `summon`: the `summon` option, checked and copied
    * field by field in the constructor. `undefined` for a worker nobody
-   * summoned, which then writes no `summon` at all.
+   * summoned, which then writes no `summon` at all. Replaced at most once,
+   * before `run()`, by a frozen copy carrying `resolvedMode`
+   * ({@link SET_SUMMONED_MODE}), so the report writes it with no work of its
+   * own.
    */
-  readonly #summon: Readonly<WorkerSummonProvenance> | undefined;
+  #summon: Readonly<WorkerSummonInfo> | undefined;
   /**
    * Claim-once for {@link #summon}: `"won"` while this worker holds the
    * attempt id, `"lost"` when a live process claimed it first or took it
@@ -4611,8 +4625,35 @@ export class BunQueueWorker<
    * (after this worker's record had lapsed) — this worker then runs as an
    * ordinary one.
    */
-  get summon(): Readonly<WorkerSummonProvenance> | undefined {
+  get summon(): Readonly<WorkerSummonInfo> | undefined {
     return this.#summonClaim === "won" ? this.#summon : undefined;
+  }
+
+  /**
+   * Internal ({@link SET_SUMMONED_MODE}): records the mode `runSummoned`
+   * resolved, as the record's `summon.resolvedMode`. Taken once, and only
+   * before `run()`: ignored — answering `false`, leaving the value as it was —
+   * on a worker nobody summoned (whose record carries no `summon` to put it
+   * on), on one that already has a resolved mode, and on one that is running
+   * or closed. So a published value is never rewritten. It replaces the
+   * provenance with a frozen copy, which the report writes as before: nothing
+   * is read or allocated on the report path, set or not.
+   */
+  [SET_SUMMONED_MODE](
+    /** The mode `runSummoned` runs the worker in. */
+    mode: NonNullable<WorkerSummonInfo["resolvedMode"]>,
+  ): boolean {
+    const summon = this.#summon;
+    if (
+      summon === undefined ||
+      summon.resolvedMode !== undefined ||
+      this.#running ||
+      this.#closing
+    ) {
+      return false;
+    }
+    this.#summon = Object.freeze({ ...summon, resolvedMode: mode });
+    return true;
   }
 
   /**

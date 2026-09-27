@@ -202,9 +202,10 @@ describe("G20: an example on every message", () => {
         }
       }
     }
-    // jobs: 9 control + 21 queue + 3 worker; runner: 9 + 9 (`logs`, the
-    // run-log hint, is the ninth runner event); both: 9 + 33.
-    expect(checked).toBe(33 + 18 + 42);
+    // jobs: 9 control + 22 queue (`summon` is the 22nd) + 3 worker; runner:
+    // 9 + 9 (`logs`, the run-log hint, is the ninth runner event); both:
+    // 9 + 34.
+    expect(checked).toBe(34 + 18 + 43);
   });
 
   it("is checked against the message's own schema, not any frame's (the controls)", async () => {

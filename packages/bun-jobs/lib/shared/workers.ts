@@ -272,7 +272,8 @@ export interface WorkerTargetInfo {
  * given carries: `summonedFromArgs()`'s `namespace`, `queue`,
  * `maxLifetimeMs` and `graceMs` configure the worker and never reach the
  * record. Nothing in it is defaulted: a field the summoner did not pass is
- * absent.
+ * absent. The record may carry one more, `resolvedMode`, which is the
+ * worker's own and never an option: see {@link WorkerSummonInfo}.
  */
 export interface WorkerSummonProvenance {
   /**
@@ -310,6 +311,28 @@ export interface WorkerSummonProvenance {
    * Absent when none was requested — never defaulted.
    */
   deadlineAt?: number;
+}
+
+/**
+ * A summoned worker's `summon` as its heartbeat record carries it
+ * (`WorkerInfo.summon`): the provenance it was given, and what the worker
+ * itself resolved from it. A separate type from
+ * {@link WorkerSummonProvenance}, which is also what
+ * `BunQueueWorkerOptions.summon` takes, because the fields below are the
+ * worker's to report and never an option.
+ */
+export interface WorkerSummonInfo extends WorkerSummonProvenance {
+  /**
+   * The mode the worker actually runs in, as `runSummoned` resolved it: its
+   * `mode` option, else the summoner's requested `mode`, else
+   * `"exit-on-idle"`. Unlike `mode`, which is only what the summoner asked
+   * for, this is what the worker is doing, so a record may carry
+   * `resolvedMode: "exit-on-idle"` with no `mode` at all. Absent on a worker
+   * not run by `runSummoned`, and on one too old to say. Set once, before the
+   * worker starts, and never changed after. A reader meeting a mode it does
+   * not know shows the raw string: a later version may add one.
+   */
+  resolvedMode?: "exit-on-idle" | "until-stopped" | "in-invocation";
 }
 
 /** How a worker hears about a control change. */

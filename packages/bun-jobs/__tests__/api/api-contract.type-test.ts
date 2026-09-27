@@ -79,6 +79,9 @@ import type {
   QueueSummarySchema,
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
+  SummonCheckSchema,
+  SummonNowBodySchema,
+  SummonStatusSchema,
   ThroughputBucketSchema,
   ThroughputSchema,
 } from "../../lib/api/schemas/queues";
@@ -459,6 +462,81 @@ export type RootQueueDemandQueryOk = Expect<
 >;
 export type RootQueueDemandListQueryOk = Expect<
   Equal<Root.QueueDemandListQuery, Contract.QueueDemandListQuery>
+>;
+// Summoning: the status, "summon now"'s body and answer compare whole
+// against the schemas their routes validate with, and `force` is defaulted
+// by the server.
+export type SummonStatusOk = Expect<
+  DeepEqual<Contract.SummonStatusDto, Infer<typeof SummonStatusSchema>>
+>;
+export type SummonCheckOk = Expect<
+  DeepEqual<Contract.SummonCheckDto, Infer<typeof SummonCheckSchema>>
+>;
+export type SummonNowBodyOk = Expect<
+  DeepEqual<
+    Defaulted<Contract.SummonNowBody, "force">,
+    Infer<typeof SummonNowBodySchema>
+  >
+>;
+// The contract restates the runtime's vocabulary (it may import nothing), so
+// each list is held equal to the union it mirrors: an outcome, reason or
+// skip reason added to `summon/types.ts` and not to the contract fails here.
+export type SummonOutcomeKindOk = Expect<
+  Equal<Contract.SummonOutcomeKind, Root.SummonOutcomeKind>
+>;
+export type SummonReasonOk = Expect<
+  Equal<Contract.SummonReason, Root.SummonReason>
+>;
+export type SummonSkipReasonOk = Expect<
+  Equal<Contract.SummonSkipReason, Root.SummonSkipReason>
+>;
+// And the shapes: the event payload is the runtime's exactly, the
+// capabilities too, and the status is the runtime's with its read-only
+// arrays and records made plain (the serializer copies each one).
+export type SummonEventOk = Expect<
+  DeepEqual<Contract.SummonEventDto, Root.SummonEventPayload>
+>;
+export type SummonCapabilitiesOk = Expect<
+  DeepEqual<Contract.SummonCapabilitiesDto, Root.SummonCapabilities>
+>;
+/** Strips `readonly` all the way down, so a runtime type compares as a DTO. */
+type Plain<T> = T extends readonly (infer U)[]
+  ? Plain<U>[]
+  : T extends object
+    ? { -readonly [K in keyof T]: Plain<T[K]> }
+    : T;
+export type SummonProviderOk = Expect<
+  DeepEqual<Contract.SummonProviderDto, Plain<Root.ProviderIdentity>>
+>;
+export type SummonStatusRuntimeOk = Expect<
+  DeepEqual<Contract.SummonStatusDto, Plain<Root.SummonStatus>>
+>;
+export type SummonCheckActionsOk = Expect<
+  Equal<Contract.SummonCheckDto["action"], Root.SummonCheckResult["action"]>
+>;
+// Root exports, like the demand DTOs.
+export type RootSummonStatusDtoOk = Expect<
+  Equal<Root.SummonStatusDto, Contract.SummonStatusDto>
+>;
+export type RootSummonCheckDtoOk = Expect<
+  Equal<Root.SummonCheckDto, Contract.SummonCheckDto>
+>;
+export type RootSummonNowBodyOk = Expect<
+  Equal<Root.SummonNowBody, Contract.SummonNowBody>
+>;
+export type RootSummonEventDtoOk = Expect<
+  Equal<Root.SummonEventDto, Contract.SummonEventDto>
+>;
+// Negative control: a status whose pending attempt lost a field is not the
+// schema's.
+export type SummonStatusNegative = Expect<
+  // @ts-expect-error -- `pending[].until` is required by the schema
+  DeepEqual<
+    Omit<Contract.SummonStatusDto, "pending"> & {
+      pending: Omit<Contract.PendingSummonDto, "until">[];
+    },
+    Infer<typeof SummonStatusSchema>
+  >
 >;
 type QueueDemandWithoutExact = Equal<
   Omit<Contract.QueueDemandDto, "queue" | "exact">,
@@ -1598,12 +1676,26 @@ export type WorkerTargetKindTypeOk = Expect<
 export type WorkerTargetInfoRuntimeOk = Expect<
   DeepEqual<Workers.WorkerTargetInfo, Contract.WorkerTargetInfoDto>
 >;
-// And `summon`: the record's, the option's and the contract's are one shape.
+// And `summon`: the record's and the contract's are one shape, and the
+// option's is the record's without what the worker resolved itself
+// (`resolvedMode`), which is never an option.
 export type WorkerSummonProvenanceRuntimeOk = Expect<
-  DeepEqual<Workers.WorkerSummonProvenance, Contract.WorkerSummonProvenanceDto>
+  DeepEqual<Workers.WorkerSummonInfo, Contract.WorkerSummonProvenanceDto>
+>;
+export type WorkerSummonOptionOk = Expect<
+  DeepEqual<
+    Workers.WorkerSummonProvenance,
+    Omit<Contract.WorkerSummonProvenanceDto, "resolvedMode">
+  >
+>;
+export type WorkerSummonRecordFieldOk = Expect<
+  Equal<Root.WorkerInfo["summon"], Workers.WorkerSummonInfo | undefined>
 >;
 export type WorkerSummonRootOk = Expect<
   Equal<Root.WorkerSummonProvenance, Workers.WorkerSummonProvenance>
+>;
+export type WorkerSummonInfoRootOk = Expect<
+  Equal<Root.WorkerSummonInfo, Workers.WorkerSummonInfo>
 >;
 /**
  * And the worker payloads the socket sends are the driver's own: no error is

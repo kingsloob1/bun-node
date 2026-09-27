@@ -10,6 +10,8 @@ import {
   MAX_DATE_MS,
   MAX_NAME_LENGTH,
   MIN_ANALYTICS_SPAN_MS,
+  SUMMON_OUTCOMES,
+  SUMMON_SKIP_REASONS,
 } from "../contract/constants";
 import { s } from "../schema/builder";
 import { OverviewAnalyticsSchema, rangeQueryProperties } from "./analytics";
@@ -398,6 +400,286 @@ export const QueueDemandListSchema = s.named(
       description:
         "Whether more queues are visible than `limits.maxQueues`, so some were not read. Only when `queues` was not sent.",
     }),
+  }),
+);
+
+/** An epoch-ms instant, described. */
+const Instant = (description: string) => s.integer({ description });
+
+/** A summon outcome, described. */
+const SummonOutcomeEnum = (description: string) =>
+  s.enum(SUMMON_OUTCOMES, { description });
+
+/** How a summoner's platform dedupes a retried call. Mirrors `SummonDedupeDto`. */
+const SummonDedupeSchema = s.union(
+  s.object({
+    kind: s.literal("token", {
+      description:
+        "A request token the platform remembers (ECS `clientToken`).",
+    }),
+    maxLength: s.integer({
+      minimum: 1,
+      description: "The longest key it accepts.",
+    }),
+    charset: s.string({
+      description: "The characters it accepts, as a character-class body.",
+    }),
+    scope: s.string({
+      description: "What the token is unique within, e.g. `cluster`.",
+    }),
+    ttlMs: s.optional(
+      s.integer({
+        minimum: 0,
+        description:
+          "How long the platform remembers it, in ms, when documented.",
+      }),
+    ),
+    strict: s.boolean({
+      description:
+        "Whether a same-token request with different parameters is an error.",
+    }),
+  }),
+  s.object({
+    kind: s.literal("name", {
+      description: "A name the platform will not create twice.",
+    }),
+    maxLength: s.integer({
+      minimum: 1,
+      description: "The longest name it accepts.",
+    }),
+    charset: s.string({
+      description: "The characters it accepts, as a character-class body.",
+    }),
+  }),
+  s.object({
+    kind: s.literal("none", {
+      description:
+        "No platform dedupe: the marker's compare-and-set is the whole guard.",
+    }),
+  }),
+);
+
+/** What a summoner declares. Mirrors `SummonCapabilitiesDto`. */
+const SummonCapabilitiesSchema = s.named(
+  "SummonCapabilities",
+  s.object({
+    style: s.enum(["launch", "scale", "wake"], {
+      description:
+        "How it starts compute: `launch` starts new units, `scale` sets a count, `wake` starts one of a fixed pool.",
+    }),
+    dedupe: SummonDedupeSchema,
+    passes: s.enum(["argv", "none"], {
+      description:
+        "How per-attempt values reach the process: `argv`, or `none` when the command line is fixed.",
+    }),
+    bootBudgetMs: s.integer({
+      minimum: 0,
+      description:
+        "The default time an attempt counts as a worker on its way, in ms.",
+    }),
+    shutdown: s.object({
+      signal: s.enum(["SIGTERM", "SIGINT", "none"], {
+        description: "The stop signal; `none` for an in-invocation platform.",
+      }),
+      graceMs: s.integer({
+        minimum: 0,
+        description: "The grace after the signal, in ms.",
+      }),
+      graceMaxMs: s.optional(
+        s.integer({
+          minimum: 0,
+          description:
+            "The most the platform allows the grace to be raised to, when known.",
+        }),
+      ),
+    }),
+    maxLifetimeMs: s.nullable(
+      s.integer({
+        minimum: 0,
+        description:
+          "The platform's own cap on one unit's life, in ms, or `null` for none known.",
+      }),
+    ),
+    enforcesLifetime: s.boolean({
+      description:
+        "Whether the summoner maps the requested lifetime onto the platform's cap.",
+    }),
+    maxCountPerCall: s.optional(
+      s.integer({
+        minimum: 1,
+        description: "The most units one call may start, when limited.",
+      }),
+    ),
+    poolSize: s.optional(
+      s.integer({
+        minimum: 1,
+        description: "`wake` only: how many units the pool has.",
+      }),
+    ),
+  }),
+);
+
+/** A queue's summon status. Mirrors `SummonStatusDto`. */
+export const SummonStatusSchema = s.named(
+  "SummonStatus",
+  s.object(
+    {
+      queue: s.string({ description: "The queue." }),
+      local: s.boolean({
+        description:
+          "Whether the controller runs in the API's process: always `true` today (elsewhere the route answers 409 `SUMMON_NOT_CONFIGURED`).",
+      }),
+      inert: s.boolean({
+        description:
+          'Whether that controller is inert: it summons nothing, and "summon now" answers `skipped` with reason `inert`.',
+      }),
+      inertReason: s.optional(
+        s.enum(["summoned-process", "newer-marker"], {
+          description:
+            "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
+        }),
+      ),
+      summoner: s.optional(
+        s.object({
+          provider: s.object({
+            name: s.string({
+              description:
+                "The provider's unique name. `custom:<kind>` for one made by `defineSummoner`. Never parse it.",
+            }),
+            version: s.string({
+              description: "The provider's version, semver.",
+            }),
+            kind: s.string({
+              description: "A short label for badges, e.g. `ecs`.",
+            }),
+            displayName: s.optional(
+              s.string({
+                description: "A human name; show `kind` when absent.",
+              }),
+            ),
+            homepage: s.optional(
+              s.string({ description: "Where its documentation lives." }),
+            ),
+            apiVersion: s.object({
+              core: s.string({
+                description: "The core plugin API version, `major.minor`.",
+              }),
+              summon: s.optional(
+                s.string({ description: "The summon facet version." }),
+              ),
+            }),
+          }),
+          capabilities: SummonCapabilitiesSchema,
+          facts: s.record(s.string(), {
+            description:
+              "Secret-free facts from the summoner's `describe()`. A fact whose key looks like a credential (`token`, `secret`, `key`, `password`) is dropped whatever the summoner says.",
+          }),
+        }),
+      ),
+      pending: s.array(
+        s.object({
+          id: s.string({
+            description:
+              "The attempt's id: what the summoned worker's `summon.id` will say.",
+          }),
+          at: Instant("When it was claimed, epoch ms."),
+          until: Instant(
+            "When it stops counting as a worker on its way, epoch ms: past it, with no worker registered, the attempt is `lost`.",
+          ),
+          count: s.integer({
+            minimum: 1,
+            description: "How many workers it asked for.",
+          }),
+          kind: s.string({ description: "The summoner's kind." }),
+          handles: s.optional(
+            s.array(s.string(), {
+              description:
+                "The platform's identifiers for what it started. Omitted unless `serialize.exposeSummonHandles` is on (default off): a task ARN carries the AWS account id.",
+            }),
+          ),
+        }),
+        { description: "Attempts in flight, oldest first." },
+      ),
+      failures: s.integer({
+        minimum: 0,
+        description:
+          "Consecutive failed or lost attempts; reset by a registration or a reset.",
+      }),
+      backoffUntil: s.optional(
+        Instant(
+          "When the backoff after a failure ends, epoch ms, while one runs.",
+        ),
+      ),
+      circuitOpenUntil: s.optional(
+        Instant("When the open circuit closes, epoch ms, while it is open."),
+      ),
+      budget: s.optional(
+        s.object({
+          hour: s.integer({
+            minimum: 0,
+            description: "Attempts this UTC hour.",
+          }),
+          perHour: s.integer({ minimum: 0, description: "The hourly limit." }),
+          day: s.integer({ minimum: 0, description: "Attempts this UTC day." }),
+          perDay: s.integer({ minimum: 0, description: "The daily limit." }),
+        }),
+      ),
+      last: s.optional(
+        s.object({
+          id: s.string({
+            description:
+              "The attempt it concerns; empty for an outcome no attempt owns.",
+          }),
+          outcome: SummonOutcomeEnum(
+            "What happened. Show an outcome you do not know as the raw string.",
+          ),
+          at: Instant("When, epoch ms."),
+          detail: s.optional(
+            s.string({ description: "A short, secret-free explanation." }),
+          ),
+        }),
+      ),
+    },
+    {
+      description:
+        "A queue's summon status: its shared summon state (read from the backend, so the same from every process) plus the local controller's policy.",
+    },
+  ),
+);
+
+/** `POST /queues/:queue/summon` body. Mirrors `SummonNowBody`. */
+export const SummonNowBodySchema = s.object({
+  force: s.optional(
+    s.boolean({
+      default: true,
+      description:
+        'Skip the cooldown. Defaults to `true`: "summon now" means now. Never skips the circuit, the budget, the attempts already on their way, or the compare-and-set that keeps two controllers from summoning twice.',
+    }),
+  ),
+});
+
+/** What one summon check did. Mirrors `SummonCheckDto`. */
+export const SummonCheckSchema = s.named(
+  "SummonCheck",
+  s.object({
+    action: s.enum(["none", "skipped", "summoned", "released"], {
+      description:
+        "What the check did: `none` (nothing needs a worker), `skipped` (a guard held it back; see `reason`), `summoned` (an attempt was claimed and the summoner called; see `id` and `outcome`), or `released` (a scale-style summoner was set back to zero).",
+    }),
+    reason: s.optional(
+      s.enum(SUMMON_SKIP_REASONS, {
+        description: "For `skipped`: which guard held the attempt back.",
+      }),
+    ),
+    id: s.optional(
+      s.string({ description: "For `summoned`: the attempt's id." }),
+    ),
+    outcome: s.optional(
+      SummonOutcomeEnum(
+        "For `summoned`: what the summoner answered, or `failed`.",
+      ),
+    ),
+    demand: s.optional(QueueDemandSchema),
   }),
 );
 

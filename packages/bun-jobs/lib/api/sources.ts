@@ -1,9 +1,11 @@
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
+import type { SummonController } from "../summon/controller";
 import type { ResolvedJobsApiConfig } from "./config";
 import { RunnerController } from "../runner/RunnerController";
 import { ConfigError } from "../shared/errors";
 import { assertSegment } from "../shared/keys";
+import { FIND_SUMMON_CONTROLLER } from "../summon/controller";
 import { ApiError } from "./errors";
 
 /**
@@ -305,6 +307,41 @@ export class QueueSource {
       return { queue: jobs.queue(name), created: true };
     }
     return { queue: await this.get(name), created: false };
+  }
+
+  /**
+   * The summon controller for the queue a request names: the one the `jobs`
+   * context already runs for it in this process, never one built here.
+   * Validated (400 `INVALID_NAME`) and checked for membership (404
+   * `QUEUE_NOT_FOUND`) like {@link get}, except that with `queues: "all"` a
+   * queue with a controller is reachable before the backend lists it — the
+   * controller proves the queue is meant to exist; a configured list still
+   * restricts. A reachable queue with no controller here, or an API with no
+   * `jobs`, is 409 `SUMMON_NOT_CONFIGURED`.
+   */
+  async summonController(value: unknown): Promise<SummonController> {
+    const name = parseSegment(value, "queue");
+    const controller = this.#config.jobs?.[FIND_SUMMON_CONTROLLER](name);
+    const reachable =
+      (controller !== undefined && this.#known !== undefined) ||
+      (await this.has(name));
+    if (!reachable) {
+      throw new ApiError(
+        "QUEUE_NOT_FOUND",
+        404,
+        `Queue "${name}" was not found`,
+        { context: { queue: name } },
+      );
+    }
+    if (controller === undefined) {
+      throw new ApiError(
+        "SUMMON_NOT_CONFIGURED",
+        409,
+        `No summon controller for queue "${name}" runs in this process: configure one with the summon option or summonController() on the BunJobs this API was given`,
+        { context: { queue: name } },
+      );
+    }
+    return controller;
   }
 
   /** Forgets the cached queue list, so the next check reads the backend. */

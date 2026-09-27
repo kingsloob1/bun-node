@@ -2110,7 +2110,10 @@ carries, frozen, `file` included.
 `kind` (`"ecs"`, `"fly"`), the platform's `handle`, and the `mode`
 (`"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`) and `deadlineAt`
 **as the summoner requested them** — each absent when not requested, never
-defaulted. It is written from the worker's `summon` option, which is what
+defaulted — and, for a worker `runSummoned` runs, `resolvedMode`: the mode it
+**actually runs in** (`runSummoned`'s `mode` option, else the requested one,
+else `"exit-on-idle"`), so a record can say `resolvedMode: "exit-on-idle"`
+with no `mode` at all. It is written from the worker's `summon` option, which is what
 `summonedFromArgs()` builds from the `--bun-jobs-summon-*=` command-line
 arguments a summon passes (`SUMMON_ARGS`):
 
@@ -2232,7 +2235,10 @@ await runSummoned(worker, { idleFor: 30_000 }); // runs, then exits the process
 ```
 
 It starts `worker.run()` itself, so construct the worker without `autorun`
-(an already running worker is a `ConfigError`). The workers `BunJobs.start()`
+(an already running worker is a `ConfigError`). Before it does, it records the
+mode it resolved on the worker's heartbeat record, as `summon.resolvedMode`
+beside the summoner's requested `mode` (once, and only on a worker given
+`summon`; the management API serves it in `WorkerDto.summon`). The workers `BunJobs.start()`
 returns have already been run, so they are refused the same way: build the
 summoned one with `jobs.worker(...)`. It is also exported from
 `@kingsleyweb/bun-jobs/summon`.
@@ -2915,10 +2921,60 @@ spawns cannot know it descends from one; its controller is live, but under the
 same per-queue guards as every other.
 
 Each attempt that changes state emits `summon` on the controller
-(`{ id, outcome, kind, … }`: `started`, `registered`, `lost`, `failed`,
-`unavailable`, `deduped`, `already-running`, `budget-exhausted`, `released`)
-and is logged. `controller.status()` reads the shared state, and
-`controller.reset()` clears failures, backoff and an open circuit.
+(`{ id, outcome, kind, count?, handles?, reason?, detail? }`: `started`,
+`registered`, `lost`, `failed`, `unavailable`, `deduped`, `already-running`,
+`budget-exhausted`, `released`) and is logged. `controller.status()` reads the
+shared state, and `controller.reset()` clears failures, backoff and an open
+circuit.
+
+**The `summon` event crosses processes.** The controller also publishes each
+one through the driver as a queue event of type `summon`, **whatever
+`publishEvents` says** — at most one per attempt state change, bounded by the
+budget, and the only trail a lost attempt leaves. A `BunQueue` with
+`subscribe: true`, in any process, re-emits it as
+`queue.on("summon", (event) => …)` with the same payload, and a
+`JobsNotifier` and the management API's socket (`queue/{queue}`, `queues`)
+deliver it. Its payload `id` is the attempt's, never a job's: the envelope has
+no `id`, and it never reaches a job channel. It moves no job and changes no
+count.
+
+### Summoning from the management API
+
+`createJobsApi({ jobs })` finds a queue's controller on the `jobs` it was
+given — one from the `summon` option or `jobs.summonController()` — and never
+builds one:
+
+| Method | Path | Action | Answers |
+|---|---|---|---|
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, and the summoner's provider, capabilities and facts |
+| POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
+| POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset()`, then the `SummonStatusDto` after it |
+
+A queue with no controller in the API's process answers **409
+`SUMMON_NOT_CONFIGURED`**, whichever route; an unknown queue is 404 as
+everywhere, except that a queue with a controller is found before its first
+job. A reset that other controllers kept outwriting is 409
+`SUMMON_MARKER_CONTENDED`: try again.
+
+**`queues.summon` is opt-in and a mutation**: off unless `actions` names it,
+and removed by `readOnly`, since it spends money. Reading the status is
+`queues.read`: it spends nothing, and it is secret-free — `summoner.facts`
+come only from `describe()`, and any whose key looks like a credential
+(`token`, `secret`, `key`, `password`) is dropped anyway; a pending attempt's
+platform `handles`, like the `summon` event's, go out only with
+`serialize.exposeSummonHandles`.
+
+```ts
+import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
+
+// The default actions, plus "summon now" and reset.
+const actions = JOBS_API_ACTIONS.filter(
+  (action) => !JOBS_API_OPT_IN_ACTIONS.has(action) || action === "queues.summon",
+);
+export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
+// POST /admin/jobs/queues/emails/summon                   → { action: "summoned", id, outcome: "started", demand }
+// POST /admin/jobs/queues/emails/summon {"force": false}  → { action: "skipped", reason: "cooldown", demand }
+```
 
 ### Summon policy
 
@@ -3784,6 +3840,10 @@ for await (const event of notifier) {
   event carries it. Only a notifier whose
   `workers` option names the queue, or `"all"`, hears them.
   `follow("worker", queue)` and `hold("worker", queue)` also work.
+- **Summon events.** A queue event of type `summon` is about compute, not a
+  job: a summon attempt for the queue changed state (`payload.outcome`), as
+  [Summoning a worker](#summoning-a-worker) describes. A `SummonController`
+  publishes it whatever `publishEvents` says; its envelope has no `id`.
 - **Discovery has a gap.** Anything a newly used queue published before the
   next discovery pass is missed. Name the queues and runners, or `follow()`
   them, to hear every event from the start. Objects created by the same
@@ -4186,6 +4246,7 @@ asked about with no target.
 | `queues.limits` | mutation | |
 | `queues.defaults` | mutation | off by default |
 | `queues.applyDefaults` | mutation | off by default |
+| `queues.summon` | mutation | off by default |
 | `metrics.read` | read | |
 | `workers.list` | read | |
 | `workers.read` | read | |
@@ -4230,7 +4291,8 @@ payloads your handlers trust, `workers.configure` and `runners.configure`,
 which reconfigure a process from outside it, and `queues.defaults` and
 `queues.applyDefaults`, where one write changes the retries, timeout and
 retention of every job every producer adds to a queue, or of its whole
-backlog (`JOBS_API_OPT_IN_ACTIONS`). Once
+backlog, and `queues.summon`, which starts compute on a platform and so
+spends money (`JOBS_API_OPT_IN_ACTIONS`). Once
 you pass it, *only* the actions it names are enabled: `actions: ["jobs.add",
 "jobs.update"]` alone turns those two on and every other action — reads,
 `meta.read` and `docs.read` included — off. To enable the two on top of the
@@ -4338,6 +4400,9 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/queues/:queue/counts` | `queues.read` | no |
 | GET | `/queues/:queue/counts/added` | `queues.read` | no |
 | GET | `/queues/:queue/demand` | `queues.read` | no |
+| GET | `/queues/:queue/summon` | `queues.read` | no |
+| POST | `/queues/:queue/summon` | `queues.summon` | yes |
+| POST | `/queues/:queue/summon/reset` | `queues.summon` | yes |
 | POST | `/queues/:queue/pause` | `queues.pause` | yes |
 | POST | `/queues/:queue/resume` | `queues.resume` | yes |
 | POST | `/queues/:queue/drain` | `queues.drain` | yes |
@@ -4895,8 +4960,8 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `WORKER_STATE_CONFLICT` | 409 | | `QUEUE_FULL` | 503 |
 | `WORKER_NOT_CONTROLLABLE` | 409 | | `DRIVER_ERROR` | 503 |
 | `WORKER_PERSISTENCE_NOT_ALLOWED` | 409 | | `DEFAULTS_CHANGED` | 409 |
-| `CONTROL_CONTENDED` | 409 | | | |
-| `CONFIG_NOT_ALLOWED` | 409 | | | |
+| `CONTROL_CONTENDED` | 409 | | `SUMMON_NOT_CONFIGURED` | 409 |
+| `CONFIG_NOT_ALLOWED` | 409 | | `SUMMON_MARKER_CONTENDED` | 409 |
 | `RUNNER_NOT_CONFIGURABLE` | 409 | | | |
 | `INTERNAL` | 500 | | | |
 

@@ -480,6 +480,7 @@ describe("one definition of each constant", () => {
       "jobs.update",
       "queues.applyDefaults",
       "queues.defaults",
+      "queues.summon",
       "runners.configure",
       "workers.configure",
     ]);
@@ -519,6 +520,7 @@ describe("one definition of each constant", () => {
       "jobs.update",
       "queues.applyDefaults",
       "queues.defaults",
+      "queues.summon",
       "runners.configure",
       "workers.configure",
     ]);
@@ -564,6 +566,7 @@ describe("one definition of each constant", () => {
       "jobs.update",
       "queues.applyDefaults",
       "queues.defaults",
+      "queues.summon",
       "runners.configure",
       "workers.configure",
     ]);
@@ -763,10 +766,11 @@ describe("one definition of each constant", () => {
     // allow-list, and the analytics series expose nothing `metrics.read`,
     // `runners.read` and `workers.read` do not. So "no action was added" is an
     // invariant with a test, not a note in a review: this list is the whole
-    // list, and a 49th entry fails here. (The last four added were the clear
-    // actions, `jobs.clearLogs` and `runners.clearHistory`, and the queue job
-    // defaults, `queues.defaults` and `queues.applyDefaults`, each a
-    // deliberate new permission rather than an analytics series.)
+    // list, and a 50th entry fails here. (The last five added were the clear
+    // actions, `jobs.clearLogs` and `runners.clearHistory`, the queue job
+    // defaults, `queues.defaults` and `queues.applyDefaults`, and summoning,
+    // `queues.summon`, each a deliberate new permission rather than an
+    // analytics series.)
     expect([...Contract.JOBS_API_ACTIONS]).toEqual([
       "meta.read",
       "docs.read",
@@ -779,6 +783,7 @@ describe("one definition of each constant", () => {
       "queues.limits",
       "queues.defaults",
       "queues.applyDefaults",
+      "queues.summon",
       "metrics.read",
       "workers.list",
       "workers.read",

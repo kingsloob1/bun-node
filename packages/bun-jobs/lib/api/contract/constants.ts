@@ -28,6 +28,7 @@ export const JOBS_API_ACTIONS = [
   "queues.limits",
   "queues.defaults",
   "queues.applyDefaults",
+  "queues.summon",
   "metrics.read",
   "workers.list",
   "workers.read",
@@ -90,6 +91,7 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
     "queues.limits",
     "queues.defaults",
     "queues.applyDefaults",
+    "queues.summon",
     "workers.pause",
     "workers.resume",
     "workers.stop",
@@ -133,6 +135,12 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
  * producer adds to the queue (and, for the second, of every job already
  * pending), and `removeOnComplete: true` or `attempts: 1` by mistake discards
  * work fleet-wide.
+ *
+ * `queues.summon` — "summon now" and resetting a queue's summon failures —
+ * starts compute on a platform, which costs money, and a reset re-opens a
+ * circuit that tripped on purpose; so it is granted only on purpose, and a
+ * read-only API never has it. Reading a queue's summon status is
+ * `queues.read`.
  */
 export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
   new Set<JobsApiAction>([
@@ -140,6 +148,7 @@ export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
     "jobs.update",
     "queues.defaults",
     "queues.applyDefaults",
+    "queues.summon",
     "workers.configure",
     "runners.configure",
   ]);
@@ -226,7 +235,16 @@ export const JOB_LIST_SORTS = ["natural", "createdAt"] as const;
 /** One way to sort the job list. See {@link JOB_LIST_SORTS}. */
 export type JobListSort = (typeof JOB_LIST_SORTS)[number];
 
-/** Every queue event name, in the order the server declares them. */
+/**
+ * Every queue event name, in the order the server declares them.
+ *
+ * Every one but `summon` is about the queue's jobs or the queue itself.
+ * **`summon` is about compute**: a summon attempt for the queue changed
+ * state (its payload's `id` is the attempt's, never a job's, so it carries
+ * no envelope `id` and never reaches a job channel). It moves no job and
+ * changes no count; a client caching counts or job lists should not
+ * invalidate them on it.
+ */
 export const QUEUE_EVENT_TYPES = [
   "added",
   "duplicate",
@@ -249,7 +267,61 @@ export const QUEUE_EVENT_TYPES = [
   "debounced",
   "throttled",
   "repeatScheduled",
+  "summon",
 ] as const;
+
+/**
+ * What one summon attempt ended as, in a `summon` event's `outcome` and a
+ * summon status's `last.outcome`. A later server may add one: show an
+ * outcome you do not know as the raw string.
+ */
+export const SUMMON_OUTCOMES = [
+  "started",
+  "deduped",
+  "already-running",
+  "registered",
+  "unavailable",
+  "failed",
+  "lost",
+  "budget-exhausted",
+  "released",
+] as const;
+
+/** One summon outcome. See {@link SUMMON_OUTCOMES}. */
+export type SummonOutcomeKind = (typeof SUMMON_OUTCOMES)[number];
+
+/**
+ * Why a summon check ran: a local add, another process's event, the poll, a
+ * schedule, a manual call (the API's "summon now" among them), or a timer
+ * for a delayed job coming due.
+ */
+export const SUMMON_REASONS = [
+  "add",
+  "event",
+  "poll",
+  "schedule",
+  "manual",
+  "timer",
+] as const;
+
+/** One summon check reason. See {@link SUMMON_REASONS}. */
+export type SummonReason = (typeof SUMMON_REASONS)[number];
+
+/** Why a summon check did not summon, in `SummonCheckDto.reason`. */
+export const SUMMON_SKIP_REASONS = [
+  "served",
+  "pending",
+  "cooldown",
+  "backoff",
+  "circuit-open",
+  "budget",
+  "contended",
+  "closed",
+  "inert",
+] as const;
+
+/** One reason a summon check skipped. See {@link SUMMON_SKIP_REASONS}. */
+export type SummonSkipReason = (typeof SUMMON_SKIP_REASONS)[number];
 
 /**
  * Every runner event name, in the order the server declares them.

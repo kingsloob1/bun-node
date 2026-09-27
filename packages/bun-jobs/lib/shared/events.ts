@@ -1,5 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { JobState } from "../drivers/driver";
+import type { SummonEventPayload } from "../summon/types";
 import type { RunProgress } from "./progress";
 import type {
   WorkerConfigKey,
@@ -82,7 +83,21 @@ export interface QueueEventPayloads {
   throttled: { id: string };
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: { key: string; nextRunAt: number };
+  /**
+   * A summon attempt for the queue changed state: started, registered, lost,
+   * failed, … Published by a `SummonController` whatever `publishEvents`
+   * says. Its `id` is the attempt's, not a job's, so the envelope carries no
+   * `id` (see {@link NOT_JOB_ID_EVENTS}).
+   */
+  summon: SummonEventPayload;
 }
+
+/**
+ * Queue events whose payload `id` names something other than a job: the
+ * envelope does not copy it to `id`, so a job channel never receives one.
+ */
+export const NOT_JOB_ID_EVENTS: ReadonlySet<QueueEventName> =
+  new Set<QueueEventName>(["summon"]);
 
 /**
  * What a `control` event says changed: a remote controller paused, resumed or
@@ -328,8 +343,11 @@ export function queueEvent<Name extends QueueEventName>(
     target: event.target,
     type: event.type,
     // Kept alongside the payload because a transport may index on it, and
-    // because it is the one field every job event shares.
-    ...("id" in payload ? { id: (payload as { id: string }).id } : {}),
+    // because it is the one field every job event shares. Only a job's:
+    // a summon attempt's id would send the event to a job channel.
+    ...("id" in payload && !NOT_JOB_ID_EVENTS.has(event.type)
+      ? { id: (payload as { id: string }).id }
+      : {}),
     at: event.at ?? Date.now(),
     origin: event.origin,
     payload,

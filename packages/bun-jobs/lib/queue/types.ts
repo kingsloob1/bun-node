@@ -23,6 +23,7 @@ import type {
   WorkerStopPersistence,
   WorkerSummonProvenance,
 } from "../shared/workers";
+import type { SummonEventPayload } from "../summon/types";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -1415,6 +1416,14 @@ type BunQueueBaseEvents<
   throttled: (job: TJob) => void;
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: (key: string, nextRunAt: number) => void;
+  /**
+   * A summon attempt for this queue changed state, in another process or in
+   * this one: re-emitted from the `summon` events every `SummonController`
+   * on the queue publishes, so only on a queue that subscribes
+   * (`subscribe: true`). A controller's own `summon` event is the local
+   * form, heard on the controller.
+   */
+  summon: (event: SummonEventPayload) => void;
   /** Something failed outside a job. */
   error: (error: Error, context: string) => void;
 };

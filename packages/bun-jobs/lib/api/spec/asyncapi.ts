@@ -1,9 +1,11 @@
 import type { BunRequest } from "@kingsleyweb/bun-common";
+import type { QueueEventName } from "../../shared/events";
 import type { AsyncApiDocument, ResolvedJobsApiConfig } from "../config";
 import type { Schema } from "../schema/builder";
 import type { JsonSchema } from "../schema/validate";
 import type { ChannelDef } from "../ws/channels";
 import type { EventDescriptor } from "../ws/events";
+import { NOT_JOB_ID_EVENTS } from "../../shared/events";
 import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s, toJsonSchema } from "../schema/builder";
 import {
@@ -139,10 +141,13 @@ const CONTROL_MESSAGES: readonly {
  * Whether a queue event reaches a job channel: it is about one job (its
  * payload has an `id`) or lists several (`stalled`, `retried`, `cleaned`).
  * Queue-level events — `paused`, `resumed`, `drained`, `repeatScheduled` —
- * never do.
+ * never do, nor does `summon`, whose payload `id` is a summon attempt's.
  */
 export function reachesJobChannel(descriptor: EventDescriptor): boolean {
-  if (descriptor.kind !== "queue") {
+  if (
+    descriptor.kind !== "queue" ||
+    NOT_JOB_ID_EVENTS.has(descriptor.type as QueueEventName)
+  ) {
     return false;
   }
   if (MULTI_JOB_EVENTS.has(descriptor.type)) {

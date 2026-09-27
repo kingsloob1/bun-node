@@ -222,6 +222,19 @@ const QUEUE_EVENT_EXAMPLES: {
     at: AT + 1_500,
     payload: { key: "digest", nextRunAt: AT + 86_400_000 },
   },
+  // No envelope `id`: the payload's is a summon attempt's, not a job's.
+  summon: {
+    ...QUEUE_BASE,
+    type: "summon",
+    at: AT + 1_600,
+    payload: {
+      id: "s-3f9a1c0e7b2d4a6f",
+      outcome: "started",
+      kind: "ecs",
+      count: 1,
+      reason: "add",
+    },
+  },
 };
 
 /** An example runner event of each type. */
