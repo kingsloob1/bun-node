@@ -2897,9 +2897,36 @@ export const jobs = new BunJobs({
 ```
 
 The summoned process runs the worker with `summon: summonedFromArgs()` (see
-[worker records](#reading-a-queue-search-totals-workers-and-throughput)); its
-first heartbeat record carries the attempt's id, which is what releases the
-attempt. `jobs.summonController("emails")` returns the controller, and one can
+[worker records](#reading-a-queue-search-totals-workers-and-throughput)). Its
+first report **claims** the attempt's id in queue state (a second process
+started with the same id runs as an ordinary worker), and its heartbeat record
+then carries the id. The claim is what registers the attempt, and it outlives
+the record, so a worker that starts, drains the backlog and exits between two
+checks still registers. How each worker that claimed it left decides whether
+the attempt succeeded:
+
+- **Running, or closed**: registered, and the failure count is reset. A
+  worker marks its exit on the claim before its record goes — `runSummoned`
+  with its real reason (`idle`, `deadline`, `signal`, …), and any
+  `worker.close()`, graceful or forced, with `closed` where no mark is there
+  yet — so a summoned worker that closes counts, whether or not it ran
+  through `runSummoned`.
+- **`runSummoned` ended in `error`** (its `run()` failed): `lost`, detail
+  `exited-with-error`.
+- **Claimed, then gone without closing** — a crash, an OOM kill, `SIGKILL`:
+  `lost`, detail `died`, once its record has lapsed and its grace has passed
+  (the claim time plus one record lifetime, plus 5 s for the clocks).
+- **Never claimed**: `lost` when its `bootBudget` passes.
+
+Every `lost` counts toward the backoff and the circuit, so a worker that dies
+on every start stops being summoned instead of being retried after every
+cooldown. (One that a check has already seen running registered its attempt
+then; a later crash leaves its jobs to the orphan rule.) With several workers per attempt, one that ran is enough: a single
+job that kills its worker does not open the circuit for the whole queue. A
+summoner with `passes: "none"` gives the worker no id to claim, and its
+attempts register by a worker's start time alone.
+
+`jobs.summonController("emails")` returns the controller, and one can
 be built directly: `new SummonController({ driver, namespace, queue,
 summoner })`. `controller.check()` runs one check now — with every trigger
 off, that is the one-shot form for a cron or a scheduled function.
@@ -2918,7 +2945,11 @@ published (`triggers.events`: only producers that publish, and never a bulk
 add); and a poll every 30 s (`triggers.poll`), the only trigger that sees a
 delayed job or a retry come due, or a dead worker's lock lapse. Put the
 controller on a long-lived process — the management API server is the usual
-one — and add it to producers only when latency matters.
+one — and add it to producers only when latency matters. Whichever check
+comes first claims the attempt and names it — its `id`, and the `reason` on
+its request and its `started` event — so a fast poll can beat the add: the
+attempt then says `reason: "poll"`, and the add's own debounced check finds
+it pending.
 
 **The driver** must be reachable from another process, with queue state and
 worker records: the memory driver is a `ConfigError`, and the file and SQLite
@@ -5577,7 +5608,9 @@ app.use(scalerApi.basePath, scalerApi.router);
 
 **Checked:** this API registers eight routes, all `GET`: `/queues`, `/demand`,
 and per queue `/queues/:queue` with its `counts`, `counts/added`, `demand`,
-`limits` and `job-defaults`. So it reads queue figures and settings, never a
+`limits` and `job-defaults`. On the file and Redis drivers, which serve no
+`counts/added` (`features.addedByState` is false there), it registers seven.
+So it reads queue figures and settings, never a
 job, a payload, a worker or a runner; it has no docs, no socket and no
 mutation (a `POST /queues/emails/pause` is 404), and a missing or wrong token
 is 403. With `actions: ["queues.read"]` alone, `/queues` and `/demand` go too.

@@ -579,6 +579,44 @@ interface PendingSummon {
      put the platform's reason in `last.detail`; when it also has `cancel()`
      and the unit is still pending, cancel it so it cannot start late
      ([`compute-provider-plugins.md`](compute-provider-plugins.md) §7.3).
+
+   **As built (fix/summon-register-claim): registration counts claim
+   holders, and only a clean exit counts as success.** A live record alone
+   missed a worker that claimed, drained the backlog and closed between two
+   checks — its close removes the record — so the attempt was declared `lost`
+   and counted, and a short-lived worker looked like a failed summon. The
+   claim-once entry (`lib/summon/claim.ts`) outlives the record, so step 2
+   also reads it, one `getQueueState` per pending attempt (bounded by
+   `maxPending`; none with `passes: "none"`, which has no id to claim), and
+   never on the add path. Where the entry exists it decides alone: every
+   live record carrying the id is one of its holders, since a worker writes
+   the id only once it holds a place.
+   Counting a claim alone would have hidden a crash loop — a worker that
+   claims and then dies would register, `#fail` would never run, and the
+   controller would summon it again after every cooldown — so each holder
+   carries an **exit mark**, `{ exitedAt, reason, code, forced? }`, written
+   by compare-and-set before its record is removed: `runSummoned` writes its
+   real reason and code before it closes the worker, and `BunQueueWorker`'s
+   own `close()` (graceful or forced) fills in `closed`, code `0`, only where
+   no mark is there yet. Per holder, a mark decides first: code `0` ran,
+   code `1` failed. With no mark, a live record means it ran; no record once
+   the holder's `until` (claim time plus one record lifetime, the same test
+   claim-once uses to let a restart take a gone holder's place) plus 5 s of
+   clock allowance has passed means it **died**; before that it is still
+   starting. The attempt settles once every place is decided, or at `until`
+   unless nothing ran yet and a holder is still starting:
+   - any holder ran (or a live record carries the id, or the `passes: "none"`
+     start-time match): **registered**, `failures` reset — one worker that
+     ran is a success even if another of the same attempt died, so one job
+     that kills its worker cannot open the circuit for the whole queue;
+   - otherwise **lost**, counted toward backoff and the circuit, with
+     `detail` `exited-with-error` (a code-`1` mark), `died` (a holder gone
+     unmarked), or none (nothing claimed it: the old rule, unchanged).
+
+   A holder whose record lapsed long ago still counts: the attempt did start
+   a worker, and whether it is still alive is demand's question (orphaned
+   jobs), not registration's. Residual: a worker seen live by a check and
+   crashing afterwards has already registered its attempt, as before.
 3. If `paused`, or there is no demand and no orphan: if the marker changed,
    write it back. Otherwise return `none`. Scale-style summoners get their
    scale-down check here (§4.7).

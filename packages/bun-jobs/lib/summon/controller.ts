@@ -6,6 +6,7 @@ import type {
 } from "../drivers/index";
 import type { LocalAddedJob } from "../queue/BunQueue";
 import type { Logger } from "../shared/logger";
+import type { SummonClaim } from "./claim";
 import type { MarkerRead } from "./marker";
 import type {
   PendingSummon,
@@ -41,8 +42,10 @@ import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
 import {
   openSummonClaim,
+  readSummonClaims,
   SUMMON_CLAIM_RETENTION_MS,
   sweepSummonClaims,
+  tallySummonClaim,
 } from "./claim";
 import { toSummoner } from "./define";
 import {
@@ -158,6 +161,11 @@ function isServing(worker: WorkerInfo): boolean {
     return worker.state === "running" || worker.state === "restarting";
   }
   return !worker.paused;
+}
+
+/** How many live records carry an attempt's id: its workers still running. */
+function liveWithId(workers: readonly WorkerInfo[], id: string): number {
+  return workers.filter((worker) => worker.summon?.id === id).length;
 }
 
 /** A positive whole number, or a `ConfigError` naming the option. */
@@ -881,14 +889,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         .map((worker) => worker.id),
     );
     const keep: PendingSummon[] = [];
-    // Workers already registered per attempt still pending (count > 1):
-    // they are live records, counted as such, so only the rest are on their
-    // way. Worked out afresh each check, never written back.
+    // Places per attempt still pending (count > 1) that are no longer on
+    // their way — registered, or started and gone — so only the rest are.
+    // Worked out afresh each check, never written back.
     const partly = new Map<string, number>();
+    const claims = await this.#readClaims(marker.pending);
+    const liveIds = new Set(workers.map((worker) => worker.id));
     for (const attempt of marker.pending) {
-      let registered = workers.filter(
-        (worker) => worker.summon?.id === attempt.id,
-      ).length;
+      // The claim-once entry, where there is one: a worker that claimed,
+      // drained and closed between two checks has no record left, but its
+      // place in the claim says how it left (see `tallySummonClaim`). Every
+      // live record carrying the id is one of its holders (a worker writes
+      // the id only once it holds a place), so the claim decides alone —
+      // including a holder still listed that has marked a failing exit.
+      // Without one, live records carrying the id, as before.
+      const claim = claims.get(attempt.id);
+      const tally = tallySummonClaim(claim, liveIds, now, START_TIME_SLACK);
+      let registered =
+        claim === undefined ? liveWithId(workers, attempt.id) : tally.succeeded;
       if (registered === 0 && capabilities.passes === "none") {
         const match = workers.find(
           (worker) =>
@@ -900,11 +918,28 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           registered = 1;
         }
       }
-      if (
+      const failed = tally.exitedWithError + tally.died;
+      const decided = registered + failed;
+      // Settled once every place is decided, or at `until` — unless nothing
+      // succeeded yet and a holder is still inside its grace.
+      const settled =
         registered >= attempt.count ||
-        (registered > 0 && attempt.until <= now)
-      ) {
-        changed = true;
+        decided >= attempt.count ||
+        (attempt.until <= now && (registered > 0 || tally.starting === 0));
+      if (!settled) {
+        if (decided > 0) {
+          partly.set(attempt.id, decided);
+        }
+        keep.push(attempt);
+        continue;
+      }
+      changed = true;
+      // One worker that ran is a success, whatever became of the others: a
+      // platform that starts workers and code that runs is what backoff and
+      // the circuit guard, and one job that kills its worker must not stop
+      // summoning for the whole queue. Only an attempt none of whose workers
+      // ran is a failure.
+      if (registered > 0) {
         marker.failures = 0;
         marker.last = { id: attempt.id, outcome: "registered", at: now };
         events.push({
@@ -915,26 +950,29 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         });
         continue;
       }
-      if (attempt.until <= now) {
-        changed = true;
-        lost.push(attempt);
-        this.#fail(marker, now);
-        marker.last = { id: attempt.id, outcome: "lost", at: now };
-        events.push({
-          id: attempt.id,
-          outcome: "lost",
-          kind: attempt.kind,
-          count: attempt.count,
-          ...(attempt.handles === undefined
-            ? {}
-            : { handles: attempt.handles }),
-        });
-        continue;
-      }
-      if (registered > 0) {
-        partly.set(attempt.id, registered);
-      }
-      keep.push(attempt);
+      // Started and failed, rather than never seen: say how.
+      const detail =
+        tally.exitedWithError > 0
+          ? "exited-with-error"
+          : tally.died > 0
+            ? "died"
+            : undefined;
+      lost.push(attempt);
+      this.#fail(marker, now);
+      marker.last = {
+        id: attempt.id,
+        outcome: "lost",
+        at: now,
+        ...(detail === undefined ? {} : { detail }),
+      };
+      events.push({
+        id: attempt.id,
+        outcome: "lost",
+        kind: attempt.kind,
+        count: attempt.count,
+        ...(attempt.handles === undefined ? {} : { handles: attempt.handles }),
+        ...(detail === undefined ? {} : { detail }),
+      });
     }
     marker.pending = keep;
     rollBudget(marker, now);
@@ -1435,6 +1473,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     this.#announce([
       { id: "", outcome: "released", kind: this.#summoner.provider.kind },
     ]);
+  }
+
+  /**
+   * Step 2's second source: the claim of each pending attempt. One
+   * queue-state read per attempt (bounded by `maxPending`), and none at all
+   * when the platform passes no identity — nothing could have claimed an id
+   * it never received, so those attempts release by start time alone. Read
+   * even when live records already cover an attempt: a holder still listed
+   * may have marked a failing exit.
+   */
+  async #readClaims(
+    /** The marker's pending attempts. */
+    pending: readonly PendingSummon[],
+  ): Promise<Map<string, SummonClaim | undefined>> {
+    if (
+      pending.length === 0 ||
+      this.#summoner.summon.capabilities.passes === "none"
+    ) {
+      return new Map();
+    }
+    return await readSummonClaims(
+      this.#driver,
+      this.#ref,
+      pending.map((attempt) => attempt.id),
+    );
   }
 
   /** Sweeps old claim-once entries, at most once an hour, on a poll. Best effort. */
