@@ -1989,7 +1989,13 @@ const queueMessages = Object.keys(document.channels.queue!.messages);
 checkEqual(
   "the job channel has its own message list, without the queue-level events",
   queueMessages.filter((name) => !jobMessages.includes(name)).sort(),
-  ["queue.drained", "queue.paused", "queue.repeatScheduled", "queue.resumed"],
+  [
+    "queue.drained",
+    "queue.paused",
+    "queue.repeatScheduled",
+    "queue.resumed",
+    "queue.summon",
+  ],
 );
 check(
   "and with the multi-job events",

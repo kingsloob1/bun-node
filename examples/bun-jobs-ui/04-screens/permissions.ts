@@ -87,11 +87,12 @@
  *   none reports `true`; a worker too old to report the field has said
  *   nothing, so a panel whose live workers all omit it shows no note at all.
  *   It needs no permission of its own beyond the panel's.
- * - **Six actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
+ * - **Seven actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
  *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
- *   `workers.configure` and `runners.configure` are not routed, and so absent
- *   from the map, unless the host lists them in `actions`. This host lists
- *   every action; a second host built with the default shows the difference.
+ *   `queues.summon`, `workers.configure` and `runners.configure` are not
+ *   routed, and so absent from the map, unless the host lists them in
+ *   `actions`. This host lists every action; a second host built with the
+ *   default shows the difference.
  * - **Where the code needs more than the README says**, the gate records it
  *   under `unlisted`, and the table check names those rows, so a README fix
  *   shows up here as a change to review.
@@ -5452,13 +5453,14 @@ const defaultRunnerMap = (
   await onDefault("GET", "/meta/permissions?runner=nightly")
 ).body as PermissionsBody;
 checkEqual(
-  "JOBS_API_OPT_IN_ACTIONS: the six",
+  "JOBS_API_OPT_IN_ACTIONS: the seven",
   [...JOBS_API_OPT_IN_ACTIONS].sort(),
   [
     "jobs.add",
     "jobs.update",
     "queues.applyDefaults",
     "queues.defaults",
+    "queues.summon",
     "runners.configure",
     "workers.configure",
   ],

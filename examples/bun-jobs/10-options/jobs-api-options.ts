@@ -424,7 +424,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  72 + addedByState,
+  75 + addedByState,
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
@@ -491,7 +491,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 56 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 59 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -533,7 +533,7 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 35 + addedByState);
+checkEqual("what is left", readOnly.api.routes.length, 36 + addedByState);
 checkEqual(
   "the demand routes among them: reads, so readOnly keeps both",
   demandRoutes(readOnly.api),
@@ -554,23 +554,25 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("actions: an allow-list, with six opt-ins absent by default");
+step("actions: an allow-list, with seven opt-ins absent by default");
 
 const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  63 + addedByState,
+  64 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",
   jobMethodRoutes(byDefault.api),
   [...JOB_METHOD_ROUTES].sort(),
 );
-// The six write something a host may well want only some callers to: a new
+// The seven write something a host may well want only some callers to: a new
 // or changed job, a queue's job defaults (saving them, and separately
 // rewriting the backlog with them — tuning without a rewrite is a real
-// policy), and a worker's or a runner's remote configuration.
+// policy), summoning a worker now or clearing a queue's summon failures —
+// which starts compute, and costs money — and a worker's or a runner's
+// remote configuration.
 checkEqual(
   "the opt-ins: adding and updating jobs, job defaults, and remote config",
   [...JOBS_API_OPT_IN_ACTIONS],
@@ -579,30 +581,33 @@ checkEqual(
     "jobs.update",
     "queues.defaults",
     "queues.applyDefaults",
+    "queues.summon",
     "workers.configure",
     "runners.configure",
   ],
 );
-/** The nine routes those six actions authorize. */
+/** The eleven routes those seven actions authorize. */
 const OPT_IN_ROUTES = [
   "addJob",
   "updateJob",
   "setJobDefaults",
   "resetJobDefaults",
   "applyJobDefaults",
+  "summonQueue",
+  "resetQueueSummon",
   "configureWorker",
   "resetWorkerConfig",
   "configureRunner",
   "resetRunnerConfig",
 ];
 check(
-  "so none of their nine routes is registered",
+  "so none of their eleven routes is registered",
   OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
   idsOf(byDefault.api),
 );
 check(
-  "while reading job defaults and worker configs is a plain read, on by default",
-  ["getJobDefaults", "listWorkerConfigs"].every((id) =>
+  "while reading job defaults, worker configs and a queue's summon status is a plain read, on by default",
+  ["getJobDefaults", "listWorkerConfigs", "getQueueSummon"].every((id) =>
     idsOf(byDefault.api).includes(id),
   ),
 );
@@ -632,7 +637,7 @@ checkEqual(
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and all nine opt-in routes",
+  "while [...JOBS_API_ACTIONS] is the default and all eleven opt-in routes",
   idsOf(everything.api)
     .filter((id) => !idsOf(byDefault.api).includes(id))
     .sort(),
@@ -660,9 +665,9 @@ checkEqual(
   ].sort(),
 );
 checkEqual(
-  "48 actions in total",
+  "49 actions in total",
   [Object.keys(permissions).length, JOBS_API_ACTIONS.length],
-  [48, 48],
+  [49, 49],
 );
 /** Actions for job defaults, the worker controls, and the clear routes. */
 const controlActions: JobsApiAction[] = [
