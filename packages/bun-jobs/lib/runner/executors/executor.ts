@@ -128,6 +128,13 @@ export interface ExecutorStartOptions<TArgs = unknown> {
   kind?: "run" | "job";
   /** The job to process, when `kind` is `"job"`. */
   job?: JobRecord;
+  /**
+   * SQL tables whose collation the runner has already checked, as guard keys
+   * (`collation-guard.ts`), handed to a `child-process` or `worker-thread`
+   * run so the driver its handler builds does not repeat the warning. Ignored
+   * by `in-process`, which shares the runner's process and its guard.
+   */
+  collationChecked?: readonly string[];
 }
 
 /** One way of running a handler file. */

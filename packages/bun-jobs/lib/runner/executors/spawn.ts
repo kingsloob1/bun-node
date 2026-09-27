@@ -350,6 +350,9 @@ export function toSerializable<TArgs>(
     deadline: context.deadline,
     args: context.args,
     ...(context.driverConfig ? { driverConfig: context.driverConfig } : {}),
+    ...(options.collationChecked?.length
+      ? { collationChecked: [...options.collationChecked] }
+      : {}),
     file: options.file,
     closeTimeout: options.closeTimeout,
     forwardLogs: options.forwardLogs ?? false,
