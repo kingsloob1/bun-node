@@ -18,6 +18,11 @@
       "types": "./dts/api/contract/index.d.ts",
       "default": "./lib/api/contract/index.ts"
     },
+    "./summon": {
+      "@kingsleyweb/source": "./lib/summon/index.ts",
+      "types": "./dts/summon/index.d.ts",
+      "default": "./lib/summon/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -47,6 +52,11 @@
       "@kingsleyweb/source": "./lib/runner/index.ts",
       "types": "./dts/runner/index.d.ts",
       "default": "./lib/runner/index.ts"
+    },
+    "./lib/summon": {
+      "@kingsleyweb/source": "./lib/summon/index.ts",
+      "types": "./dts/summon/index.d.ts",
+      "default": "./lib/summon/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
