@@ -5523,6 +5523,10 @@ reserves exceed the budget is the close forced. Grace defaults from §5.2 (vendo
 
 ### Scaling on the depth endpoint
 
+Every URL, figure and metric below is checked against a real API by
+[`11-management-api/scaler-recipes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/scaler-recipes.ts),
+which reads the recipes from this README.
+
 On Kubernetes or ACA the platform's scaler can start workers itself, polling
 the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput),
 and bun-jobs writes no summoner. Point it at the right figure:
