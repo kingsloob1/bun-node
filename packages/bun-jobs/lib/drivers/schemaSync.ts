@@ -54,6 +54,24 @@ export interface SchemaChange {
   blocking: boolean;
   /** Whether it was actually run, or only reported. */
   applied: boolean;
+  /**
+   * Set on an `alter-column` change whose column compares in a collation
+   * other than the one the driver declares for it; absent on every other
+   * change, including a retype whose collation is already right.
+   *
+   * The one kind of drift that is a correctness difference rather than a
+   * storage one: the driver declares a collation only on identifier columns
+   * (ids, queue and state names, keys, namespaces), on MySQL and MariaDB,
+   * where the default is case- and accent-insensitive. Under that, `Report`
+   * and `report` are one key and a prefix listing's range scan can come back
+   * empty. Only the SQL driver sets it, and only on those two engines.
+   */
+  collation?: {
+    /** The collation the column has, as the engine reports it, lowercased. */
+    found: string;
+    /** The collation the driver declares for it, lowercased. */
+    expected: string;
+  };
 }
 
 /** A table's columns as the database reports them. */

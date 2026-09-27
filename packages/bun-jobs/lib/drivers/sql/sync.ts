@@ -6,7 +6,11 @@ import type {
   SyncBackend,
 } from "../schemaSync";
 import type { AlterColumn, SqlDialect } from "./dialect";
-import type { IndexDefinition, TableDefinition } from "./schema";
+import type {
+  ColumnDefinition,
+  IndexDefinition,
+  TableDefinition,
+} from "./schema";
 import { declaredCollation } from "./dialect";
 import { renderColumn, renderIndex, renderIndexColumn } from "./schema";
 
@@ -19,8 +23,13 @@ interface IndexRow extends BaseIndexRow {
   columns: string | null;
 }
 
-/** A column as the SQL dialects describe it: {@link ColumnRow} plus collation. */
-interface SqlColumnRow extends ColumnRow {
+/**
+ * A column as the SQL dialects describe it: {@link ColumnRow} plus its table
+ * and collation.
+ */
+export interface SqlColumnRow extends ColumnRow {
+  /** The table it belongs to, as the engine reports the name. */
+  tbl: string;
   /** The column's collation, or `null` where the engine does not report one. */
   collation: string | null;
 }
@@ -115,11 +124,14 @@ export async function syncSqlSchema(
   // dry run reports and what a caller can run by hand.
   const alterations = new Map<SchemaChange, AlterColumn>();
 
+  const columnsByTable = await readColumns(
+    backend,
+    dialect,
+    definition.tables.map((table) => table.name),
+  );
+
   for (const table of definition.tables) {
-    const existing = await backend.all<SqlColumnRow>(
-      dialect.describeColumns(table.name),
-      [table.name],
-    );
+    const existing = columnsByTable.get(table.name) ?? [];
 
     // A table that does not exist yet is `createSchema`'s business, not this
     // one's: it runs first and creates it in full.
@@ -145,27 +157,12 @@ export async function syncSqlSchema(
         continue;
       }
 
-      if (column.retype === false) {
-        continue;
-      }
-
-      const want = dialect.normalizeType(column.type);
-      const have = dialect.normalizeType(String(found.type));
-
-      // Collation, where the driver declares one and the engine reports one.
       // A collation change rewrites the table exactly as a type change does —
       // every index on the column is rebuilt in the new order — so it is the
       // same blocking change, made by the same statement.
-      const wantCollation = declaredCollation(column.type);
-      const haveCollation = found.collation
-        ? String(found.collation).toLowerCase()
-        : null;
-      const recollate =
-        wantCollation !== null &&
-        haveCollation !== null &&
-        wantCollation !== haveCollation;
+      const difference = compareColumn(dialect, column, found);
 
-      if (want === have && !recollate) {
+      if (!difference) {
         continue;
       }
 
@@ -182,12 +179,12 @@ export async function syncSqlSchema(
           table: table.name,
           target: column.name,
           statement,
-          reason:
-            want !== have
-              ? `stored as ${have}, the driver would create it as ${want}`
-              : `compares in ${haveCollation}, the driver would compare in ${wantCollation}`,
+          reason: difference.type
+            ? `stored as ${difference.type.have}, the driver would create it as ${difference.type.want}`
+            : `compares in ${difference.collation!.found}, the driver would compare in ${difference.collation!.expected}`,
           blocking: true,
           applied: false,
+          ...(difference.collation ? { collation: difference.collation } : {}),
         };
         changes.push(change);
         alterations.set(change, {
@@ -355,4 +352,194 @@ export async function syncSqlSchema(
   }
 
   return changes;
+}
+
+/**
+ * The columns of `tables` as the database reports them, in one catalog query
+ * ({@link SqlDialect.describeColumns}).
+ *
+ * Keyed by the table name as given. A table with no entry does not exist.
+ * Matched back case-insensitively, since an engine may report a name in a
+ * case other than the one it was asked for (MySQL with
+ * `lower_case_table_names`); the driver's own names never differ from one
+ * another by case alone.
+ *
+ * What connecting reads — to see which tables to create, and whether an
+ * existing one's identifiers have drifted (see {@link collationDrift}) — and
+ * what a sync compares against, so the two can never disagree about a table.
+ */
+export async function readColumns(
+  backend: Pick<SyncBackend, "all">,
+  dialect: SqlDialect,
+  tables: readonly string[],
+): Promise<Map<string, SqlColumnRow[]>> {
+  const columns = new Map<string, SqlColumnRow[]>();
+
+  if (tables.length === 0) {
+    return columns;
+  }
+
+  const byFolded = new Map(tables.map((name) => [name.toLowerCase(), name]));
+  const rows = await backend.all<SqlColumnRow>(
+    dialect.describeColumns(tables),
+    [...tables],
+  );
+
+  for (const row of rows) {
+    const table = byFolded.get(String(row.tbl).toLowerCase());
+    if (table === undefined) {
+      continue;
+    }
+    const list = columns.get(table) ?? [];
+    list.push(row);
+    columns.set(table, list);
+  }
+
+  return columns;
+}
+
+/** How an existing column differs from the driver's definition of it. */
+export interface ColumnDifference {
+  /**
+   * The type as stored and as the driver would create it, both normalised
+   * ({@link SqlDialect.normalizeType}), when they differ; `null` when not.
+   */
+  type: { have: string; want: string } | null;
+  /**
+   * The collation found and the one the driver declares, both lowercased,
+   * when they differ; `null` when not, or when the driver declares none or
+   * the engine reports none.
+   */
+  collation: { found: string; expected: string } | null;
+}
+
+/**
+ * Compares one existing column against the driver's definition of it:
+ * `null` when they agree, or when the column is exempt (`retype: false`, see
+ * {@link ColumnDefinition.retype}).
+ *
+ * The one comparison both a sync and connect's drift check make, so the
+ * warning names exactly the columns an `alterColumns` sync would change.
+ */
+export function compareColumn(
+  dialect: SqlDialect,
+  column: ColumnDefinition,
+  found: Pick<SqlColumnRow, "type" | "collation">,
+): ColumnDifference | null {
+  if (column.retype === false) {
+    return null;
+  }
+
+  const want = dialect.normalizeType(column.type);
+  const have = dialect.normalizeType(String(found.type));
+
+  // Collation, where the driver declares one and the engine reports one.
+  const wantCollation = declaredCollation(column.type);
+  const haveCollation = found.collation
+    ? String(found.collation).toLowerCase()
+    : null;
+  const collation =
+    wantCollation !== null &&
+    haveCollation !== null &&
+    wantCollation !== haveCollation
+      ? { found: haveCollation, expected: wantCollation }
+      : null;
+
+  if (want === have && collation === null) {
+    return null;
+  }
+
+  return { type: want === have ? null : { have, want }, collation };
+}
+
+/** An identifier column whose collation is not the one the driver declares. */
+export interface CollationDrift {
+  /** The table. */
+  table: string;
+  /** The column. */
+  column: string;
+  /** The collation it has, lowercased. */
+  found: string;
+  /** The collation the driver declares for it, lowercased. */
+  expected: string;
+}
+
+/**
+ * The columns of `tables` whose collation differs from the driver's, read
+ * from columns already fetched by {@link readColumns}.
+ *
+ * Collation drift only, never type drift: a column the driver declares a
+ * collation for is an identifier (see {@link SqlDialect.idType}), and one
+ * that compares case- or accent-insensitively returns wrong answers, where a
+ * type that differs (`jsonb` for `json`, say) costs only speed or space. Empty
+ * on Postgres and SQLite, whose column listing reports no collation, because
+ * the driver has never declared one there: see {@link SqlDialect.idType}.
+ */
+export function collationDrift(
+  dialect: SqlDialect,
+  tables: readonly TableDefinition[],
+  columns: ReadonlyMap<string, readonly SqlColumnRow[]>,
+): CollationDrift[] {
+  const drift: CollationDrift[] = [];
+
+  for (const table of tables) {
+    const byName = new Map(
+      (columns.get(table.name) ?? []).map((row) => [String(row.name), row]),
+    );
+
+    for (const column of table.columns) {
+      const found = byName.get(column.name);
+      const difference = found && compareColumn(dialect, column, found);
+
+      if (difference && difference.collation) {
+        drift.push({
+          table: table.name,
+          column: column.name,
+          ...difference.collation,
+        });
+      }
+    }
+  }
+
+  return drift;
+}
+
+/**
+ * The one warning connecting logs for {@link CollationDrift}: every drifted
+ * column, grouped by table and the collation found, and the fix.
+ */
+export function collationDriftWarning(drift: readonly CollationDrift[]): {
+  /** The warning's text. */
+  message: string;
+  /** The same, structured, for a sink that reads fields. */
+  fields: {
+    /** Every drifted column. */
+    columns: CollationDrift[];
+    /** The call that repairs them. */
+    fix: string;
+  };
+} {
+  // One phrase per table and collation pair, so a table created entirely by
+  // an older version reads as one entry rather than nine.
+  const groups = new Map<string, CollationDrift & { columns: string[] }>();
+
+  for (const entry of drift) {
+    const key = [entry.table, entry.found, entry.expected].join(" ");
+    const group = groups.get(key) ?? { ...entry, columns: [] };
+    group.columns.push(entry.column);
+    groups.set(key, group);
+  }
+
+  const listed = [...groups.values()]
+    .map(
+      (group) =>
+        `${group.table}: ${group.columns.join(", ")} (${group.found}, expected ${group.expected})`,
+    )
+    .join("; ");
+  const fix = "syncSchema({ alterColumns: true })";
+
+  return {
+    message: `${drift.length} identifier column${drift.length === 1 ? "" : "s"} of the jobs tables compare${drift.length === 1 ? "s" : ""} in a collation other than the one this driver declares, so keys differing only in case or accents are treated as one and prefix listings can come back empty or out of order: ${listed}. Repair with driver.${fix}, or the syncSchema option of the same shape; it rewrites each affected table under a lock that blocks every reader and writer until it finishes, so run it in a maintenance window. driver.syncSchema({ dryRun: true }) lists the statements.`,
+    fields: { columns: [...drift], fix },
+  };
 }

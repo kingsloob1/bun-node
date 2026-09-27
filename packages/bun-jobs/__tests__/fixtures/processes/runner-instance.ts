@@ -20,10 +20,14 @@ const runner = new BunRunner({
   runMode: "single",
   queueRuns: process.env.QUEUE_RUNS === "1",
   // Any backend: the test decides, and the runner cannot tell the difference.
+  // Silent like the runner, so stderr carries only a crash: the shared
+  // servers' default-prefix tables predate binary identifiers, and a SQL
+  // driver would otherwise warn about their collation on every connect.
   driver: createDriver(
     process.env.DRIVER_CONFIG
       ? (JSON.parse(process.env.DRIVER_CONFIG) as DriverConfig)
       : { type: "file", root: process.env.DRIVER_ROOT ?? "" },
+    { logger: noopLogger },
   ),
   waitToExit: false,
   logger: noopLogger,
