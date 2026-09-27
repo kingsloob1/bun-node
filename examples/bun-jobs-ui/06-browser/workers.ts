@@ -112,8 +112,14 @@
  *   "Summoned by ecs" badge last in the State cell, and its worker page a
  *   Summoned card listing it; its replica, started by hand, reports no
  *   `summon`, gets no badge, and is only counted on the card. What the
- *   summoner requested (a mode, a deadline) is shown as a request. The
- *   handle is given and never shown, since this API does not set
+ *   summoner requested (a mode, a deadline) is shown as a request. What the
+ *   worker actually runs as is shown apart from it: the mailer is run by
+ *   `runSummoned` with its own `mode: "until-stopped"`, which wins over the
+ *   requested exit when idle, so it reports `resolvedMode`, and the badge's
+ *   tooltip says "Runs as: Run until stopped" and the card grows a "Runs as"
+ *   column; a summoned worker that reports no `resolvedMode` (a record
+ *   written as one too old to say) gets neither. The handle is given and
+ *   never shown, since this API does not set
  *   `serialize.exposeSummonHandles`.
  * - **The housekeeping note needs a worker that said no, not one that said
  *   nothing.** A queue's Workers panel says nobody runs the queue's
@@ -144,6 +150,7 @@ import {
   JOBS_API_ACTIONS,
   registerWorkerRecord,
   removeWorkerRecord,
+  runSummoned,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
 import {
@@ -619,7 +626,18 @@ const mailerEmails = mailerJobs.worker<JobData, string>("emails", handle, {
   concurrency: 1,
   summon: MAILER_SUMMON,
 });
-void mailerEmails.run();
+/**
+ * The mode the mailer actually runs as: `runSummoned`'s own option, which wins
+ * over the `exit-on-idle` the summoner requested, and is recorded as the
+ * worker's `summon.resolvedMode`. It never exits on idle, installs no signal
+ * handlers and exits no process: this is an example, not a platform's unit.
+ */
+const MAILER_RUNS_AS = "until-stopped";
+void runSummoned(mailerEmails, {
+  mode: MAILER_RUNS_AS,
+  exit: false,
+  signals: false,
+});
 replica = Bun.spawn({
   cmd: [
     process.execPath,
@@ -1076,12 +1094,12 @@ try {
     ),
   );
   checkEqual(
-    "its tooltip: the attempt, what the summoner requested, called a request, and not a setting",
+    "its tooltip: the attempt, the mode it actually runs as (resolvedMode), then what the summoner requested, called a request, and not a setting",
     stateCells[ids.mailer]?.summonTitle,
-    `Started by a summoner, attempt ${MAILER_SUMMON.id}. The summoner's requested mode: Exit when idle; requested deadline: ${new Date(MAILER_SUMMON.deadlineAt).toISOString()}. How it was started, not a setting.`,
+    `Started by a summoner, attempt ${MAILER_SUMMON.id}. Runs as: Run until stopped. The summoner's requested mode: Exit when idle; requested deadline: ${new Date(MAILER_SUMMON.deadlineAt).toISOString()}. How it was started, not a setting.`,
   );
   checkEqual(
-    "the API reports the mailer's summon, bar the handle (serialize.exposeSummonHandles is off); its replica reports none",
+    "the API reports the mailer's summon, bar the handle (serialize.exposeSummonHandles is off), with the mode runSummoned resolved beside the one requested; its replica reports none",
     [(await record(ids.mailer))?.summon, (await record(ids.replica))?.summon],
     [
       {
@@ -1089,6 +1107,7 @@ try {
         kind: MAILER_SUMMON.kind,
         mode: MAILER_SUMMON.mode,
         deadlineAt: MAILER_SUMMON.deadlineAt,
+        resolvedMode: MAILER_RUNS_AS,
       },
       undefined,
     ],
@@ -1573,8 +1592,10 @@ try {
   // The Summoned card: one row per instance reporting `summon`, each column
   // only when a row has a value, and no Handle column, since this API does not
   // send handles. The replica reports none, so it is counted, not listed.
+  // "Runs as" is what the mailer reports as `resolvedMode`, and sits before
+  // the two requests, since it is what the worker is doing.
   checkEqual(
-    "the Summoned card: headers, the mailer's row (attempt, summoner, requested mode), none for the replica, and the replica counted",
+    "the Summoned card: headers (Runs as among them), the mailer's row (attempt, summoner, the mode it runs as, requested mode), none for the replica, and the replica counted",
     await view.evaluate<unknown>(
       poll(`(() => {
         const card = document.querySelector('[data-testid="worker-summon"]');
@@ -1586,8 +1607,8 @@ try {
         const mailer = cells(${JSON.stringify(ids.mailer)});
         return {
           headers: [...card.querySelectorAll("thead th")].map((th) => th.textContent.trim()),
-          mailer: mailer ? mailer.slice(0, 4) : null,
-          deadlineShown: mailer ? mailer[4] !== "" : null,
+          mailer: mailer ? mailer.slice(0, 5) : null,
+          deadlineShown: mailer ? mailer[5] !== "" : null,
           replica: cells(${JSON.stringify(ids.replica)}),
           others: card.querySelector('[data-testid="worker-summon-others"]')?.textContent.trim() ?? null,
         };
@@ -1598,14 +1619,34 @@ try {
         "Instance",
         "Summon",
         "Summoner",
+        "Runs as",
         "Requested mode",
         "Requested deadline",
       ],
-      mailer: [ids.mailer, MAILER_SUMMON.id, "ecs", "Exit when idle"],
+      mailer: [
+        ids.mailer,
+        MAILER_SUMMON.id,
+        "ecs",
+        "Run until stopped",
+        "Exit when idle",
+      ],
       deadlineShown: true,
       replica: null,
       others: "1 other instance of this key reports no summon.",
     },
+  );
+  checkEqual(
+    'the "Runs as" cell says what it is: the mode it actually runs in, not a request',
+    await view.evaluate<string | null>(
+      `(() => {
+        const card = document.querySelector('[data-testid="worker-summon"]');
+        const headers = card ? [...card.querySelectorAll("thead th")].map((th) => th.textContent.trim()) : [];
+        const row = card?.querySelector(\`[data-testid="worker-summon-row-${ids.mailer}"]\`);
+        const cell = row ? row.children[headers.indexOf("Runs as")] : null;
+        return cell ? cell.getAttribute("title") : null;
+      })()`,
+    ),
+    "The mode it actually runs in: its own option, else the requested mode, else exit when idle.",
   );
 
   /** Page-side: a setting's row as `[running with, code asks for, source]`. */
@@ -2246,6 +2287,54 @@ try {
     [[olderAlone.id, false]],
   );
 
+  // A summoned worker from before `resolvedMode`: it reports `summon`, so it
+  // has the badge and the Summoned card, and nothing says what it runs as —
+  // no "Runs as" in the tooltip, no column on the card. Its own key, so no
+  // table above gains a row.
+  const olderSummoned: WorkerInfo = {
+    ...olderRecord({
+      id: "older-summoned",
+      key: "legacy.summoned",
+      queue: "reports",
+    }),
+    summon: { id: "attempt-6", kind: "ecs", mode: "exit-on-idle" },
+  };
+  await registerWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("reports").ref,
+    olderSummoned,
+  );
+  checkEqual(
+    "the API serves its summon as written: the request, and no resolvedMode",
+    (await listed(`?queue=reports&key=${olderSummoned.key}`)).map(
+      (worker) => worker.summon,
+    ),
+    [{ id: "attempt-6", kind: "ecs", mode: "exit-on-idle" }],
+  );
+  await open(`/workers/reports/${olderSummoned.key}`);
+  await view.evaluate(rowsAre([olderSummoned.id]));
+  const olderSummonedCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
+  checkEqual(
+    'a summoned worker reporting no resolvedMode: the badge, a tooltip with no "Runs as", and a Summoned card with no "Runs as" column',
+    [
+      olderSummonedCells[olderSummoned.id]?.summon,
+      olderSummonedCells[olderSummoned.id]?.summonTitle,
+      await view.evaluate<string[] | null>(
+        poll(`(() => {
+          const card = document.querySelector('[data-testid="worker-summon"]');
+          return card ? [...card.querySelectorAll("thead th")].map((th) => th.textContent.trim()) : null;
+        })()`),
+      ),
+    ],
+    [
+      "Summoned by ecs",
+      "Started by a summoner, attempt attempt-6. The summoner's requested mode: Exit when idle. How it was started, not a setting.",
+      ["Instance", "Summon", "Summoner", "Requested mode"],
+    ],
+  );
+
   await removeWorkerRecord(
     apiJobs.driver,
     apiJobs.queue("emails").ref,
@@ -2256,12 +2345,19 @@ try {
     apiJobs.queue("reports").ref,
     olderAlone.id,
   );
+  await removeWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("reports").ref,
+    olderSummoned.id,
+  );
   await waitFor("the older records to go", async () => {
     const live = (await listed()).map((worker) => worker.id);
-    return !live.includes(olderInstance.id) && !live.includes(olderAlone.id);
+    return [olderInstance.id, olderAlone.id, olderSummoned.id].every(
+      (id) => !live.includes(id),
+    );
   });
   checkEqual(
-    "both records removed: /workers is back to the five live workers",
+    "all three records removed: /workers is back to the five live workers",
     (await listed()).map((worker) => worker.id).sort(),
     Object.values(ids).sort(),
   );
