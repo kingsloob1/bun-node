@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError } from "../../../app/api/errors";
 import { ConfirmDialog } from "../../../app/components/ConfirmDialog";
 import { Dialog } from "../../../app/components/Dialog";
+import { expectAbsent } from "../assert";
 import { act, fireEvent, page, render, setupDom, waitFor } from "../dom";
 
 setupDom();
@@ -100,7 +101,7 @@ describe("Dialog", () => {
   it("closes on Escape and restores focus to the opener", () => {
     const opener = openHarness();
     fireEvent.keyDown(page().getByRole("dialog"), { key: "Escape" });
-    expect(page().queryByRole("dialog")).toBeNull();
+    expectAbsent(page().queryByRole("dialog"));
     expect(document.activeElement).toBe(opener);
   });
 
@@ -109,7 +110,7 @@ describe("Dialog", () => {
     fireEvent.click(page().getByLabelText("First"));
     expect(page().queryByRole("dialog")).not.toBeNull();
     fireEvent.click(page().getByRole("dialog"));
-    expect(page().queryByRole("dialog")).toBeNull();
+    expectAbsent(page().queryByRole("dialog"));
   });
 
   it("can refuse Escape and the backdrop", () => {
@@ -119,7 +120,7 @@ describe("Dialog", () => {
     fireEvent.click(dialog);
     expect(page().queryByRole("dialog")).not.toBeNull();
     fireEvent.click(page().getByRole("button", { name: "Close" }));
-    expect(page().queryByRole("dialog")).toBeNull();
+    expectAbsent(page().queryByRole("dialog"));
   });
 });
 
@@ -256,6 +257,6 @@ describe("ConfirmDialog", () => {
         onConfirm={() => {}}
       />,
     );
-    expect(page().queryByRole("dialog")).toBeNull();
+    expectAbsent(page().queryByRole("dialog"));
   });
 });

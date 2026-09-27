@@ -1,5 +1,6 @@
 import type { JobDto, MetaDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { page, setupDom, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { jobFixture, jobPageFixture, renderQueue } from "./fixtures";
@@ -67,7 +68,7 @@ describe("the jobs table's Processed by column", () => {
       "Finished",
       "Failure",
     ]);
-    expect(table.querySelector(".job-processed-by-col")).toBeNull();
+    expectAbsent(table.querySelector(".job-processed-by-col"));
   });
 
   it("sits after Processed, with a header tooltip, when the flag is on", async () => {
@@ -97,7 +98,7 @@ describe("the jobs table's Processed by column", () => {
     const key = within(row).getByTestId("jobs-processed-by-key");
     expect(key.textContent).toBe("api.emails");
     expect(key.tagName).not.toBe("A");
-    expect(within(row).queryByRole("link", { name: "api.emails" })).toBeNull();
+    expectAbsent(within(row).queryByRole("link", { name: "api.emails" }));
   });
 
   it("shows the incarnation id as text when no key was recorded", async () => {
@@ -106,7 +107,7 @@ describe("the jobs table's Processed by column", () => {
     expect(within(row).getByTestId("jobs-processed-by-id").textContent).toBe(
       "worker-7",
     );
-    expect(within(row).queryByRole("link", { name: "worker-7" })).toBeNull();
+    expectAbsent(within(row).queryByRole("link", { name: "worker-7" }));
   });
 
   it("shows a dash, titled, when no worker is recorded", async () => {

@@ -1,5 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
+import { expectAbsent } from "../assert";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { jobApiPath, jobFixture, jobMeta, logPage } from "./fixtures";
 import { renderJobScreen } from "./render";
@@ -144,7 +145,7 @@ describe("the job logs", () => {
     jest.useFakeTimers();
     const { logCalls } = await renderLogs("completed", 500, false);
     await advance(100, 10);
-    expect(page().queryByTestId("logs-follow")).toBeNull();
+    expectAbsent(page().queryByTestId("logs-follow"));
     const before = logCalls().length;
     await advance(9_000);
     expect(logCalls().length).toBe(before);

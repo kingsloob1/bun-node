@@ -1,5 +1,6 @@
 import type { MetaDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { page, setupDom, within } from "../dom";
 import {
   allPermissions,
@@ -62,7 +63,7 @@ describe("the job screen's Processed by line", () => {
     expect(text).toContain("pid 4242");
     expect(text).toContain("last attempt");
     // A finished job has no holder, so no "Held by" row.
-    expect(page().queryByText("Held by")).toBeNull();
+    expectAbsent(page().queryByText("Held by"));
   });
 
   it("says no worker is recorded when processedBy is null", async () => {
@@ -85,8 +86,8 @@ describe("the job screen's Processed by line", () => {
       }),
       { meta: meta(false), handlers },
     );
-    expect(await processedByRow()).toBeNull();
-    expect(page().queryByTestId("job-processed-by")).toBeNull();
+    expectAbsent(await processedByRow());
+    expectAbsent(page().queryByTestId("job-processed-by"));
   });
 
   it("shows the key as text when the worker pages are not routed", async () => {
@@ -101,7 +102,7 @@ describe("the job screen's Processed by line", () => {
       },
     );
     const value = (await processedByRow())!;
-    expect(within(value).queryByRole("link")).toBeNull();
+    expectAbsent(within(value).queryByRole("link"));
     expect(within(value).getByTestId("job-processed-by-key").textContent).toBe(
       "api.emails",
     );
@@ -113,7 +114,7 @@ describe("the job screen's Processed by line", () => {
       { meta: meta(true), handlers },
     );
     const value = (await processedByRow())!;
-    expect(within(value).queryByRole("link")).toBeNull();
+    expectAbsent(within(value).queryByRole("link"));
     expect(value.textContent).toContain("worker-1");
     // Active: the holder is shown too.
     expect(page().getByText("Held by")).toBeTruthy();

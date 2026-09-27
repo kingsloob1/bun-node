@@ -8,6 +8,7 @@ import {
   useParams,
   useQueryParam,
 } from "../../app/routing";
+import { expectAbsent } from "./assert";
 import { act, fireEvent, page, render, setupDom, visit } from "./dom";
 
 setupDom();
@@ -23,9 +24,9 @@ describe("stripBasePath", () => {
   });
 
   it("refuses paths outside the base, including a shared prefix", () => {
-    expect(stripBasePath("/jobsx", "/jobs")).toBeNull();
-    expect(stripBasePath("/other", "/jobs")).toBeNull();
-    expect(stripBasePath("/", "/jobs")).toBeNull();
+    expectAbsent(stripBasePath("/jobsx", "/jobs"));
+    expectAbsent(stripBasePath("/other", "/jobs"));
+    expectAbsent(stripBasePath("/", "/jobs"));
   });
 
   it("handles a nested base and a root mount", () => {
@@ -48,9 +49,9 @@ describe("matchPath", () => {
   });
 
   it("requires the same number of segments", () => {
-    expect(matchPath("/queues/:queue", "/queues")).toBeNull();
-    expect(matchPath("/queues/:queue", "/queues/a/b")).toBeNull();
-    expect(matchPath("/queues", "/runners")).toBeNull();
+    expectAbsent(matchPath("/queues/:queue", "/queues"));
+    expectAbsent(matchPath("/queues/:queue", "/queues/a/b"));
+    expectAbsent(matchPath("/queues", "/runners"));
     expect(matchPath("/", "/")).toEqual({});
   });
 
@@ -155,9 +156,9 @@ describe("RouterProvider, Routes and Link", () => {
     expect(window.location.pathname).toBe("/jobs/queues");
     expect(page().getByRole("heading").textContent).toBe("Queue list");
     expect(queues.getAttribute("aria-current")).toBe("page");
-    expect(
+    expectAbsent(
       page().getByRole("link", { name: "Home" }).getAttribute("aria-current"),
-    ).toBeNull();
+    );
   });
 
   it("binds params through useParams", () => {
@@ -178,7 +179,7 @@ describe("RouterProvider, Routes and Link", () => {
     // `fireEvent` returns false when the default action was prevented.
     const leftToBrowser = fireEvent.click(link, { ctrlKey: true });
     expect(leftToBrowser).toBe(true);
-    expect(page().queryByText("Queue list")).toBeNull();
+    expectAbsent(page().queryByText("Queue list"));
     visit("/jobs");
     const handled = fireEvent.click(link);
     expect(handled).toBe(false);

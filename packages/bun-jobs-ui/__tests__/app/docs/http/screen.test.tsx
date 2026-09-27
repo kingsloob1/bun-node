@@ -1,6 +1,7 @@
 import type { SpecDocument } from "../../../../app/api/docs";
 import type { RenderAppOptions } from "../../renderApp";
 import { beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../../dom";
 import { metaFixture, permissionsFixture, problem } from "../../fixtures";
 import { renderApp } from "../../renderApp";
@@ -255,8 +256,8 @@ describe("try it", () => {
       /^\d+ ms$/,
     );
     const call = calls.filter((item) => item.path === "/meta").at(-1)!;
-    expect(call.headers[CSRF]).toBeUndefined();
-    expect(call.headers["content-type"]).toBeUndefined();
+    expectUndefined(call.headers[CSRF]);
+    expectUndefined(call.headers["content-type"]);
   });
 
   it("shows the real status, the visible headers, and no documented note when the status is documented", async () => {
@@ -285,7 +286,7 @@ describe("try it", () => {
     expect(
       headers.querySelector('[data-header="content-type"] dd')!.textContent,
     ).toBe("application/json");
-    expect(within(result).queryByTestId("tryit-documented")).toBeNull();
+    expectAbsent(within(result).queryByTestId("tryit-documented"));
   });
 
   it("shows a status the operation does not document, with the documented one as a note", async () => {
@@ -326,7 +327,7 @@ describe("try it", () => {
       ),
     );
     expect(result.textContent).toContain("No body.");
-    expect(within(result).queryByTestId("tryit-documented")).toBeNull();
+    expectAbsent(within(result).queryByTestId("tryit-documented"));
   });
 
   it("builds query arrays as repeated keys, and percent-encodes path params", async () => {
@@ -366,7 +367,7 @@ describe("try it", () => {
     expect(call.path).toBe("/queues/emails/pause");
     expect(call.headers["content-type"]).toBe("application/json");
     expect(call.headers[CSRF]).toBe("1");
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
   });
 
   it("needs the operation id typed before a destructive send", async () => {

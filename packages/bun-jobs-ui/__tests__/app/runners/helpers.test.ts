@@ -21,6 +21,7 @@ import {
   runDuration,
   runnerBadges,
 } from "../../../app/screens/runners/runnerFormat";
+import { expectAbsent } from "../assert";
 import { setupDom } from "../dom";
 import {
   nonLocalRunnerFixture,
@@ -75,7 +76,7 @@ describe("the runner's settings", () => {
   it("describes trigger queueing, and leaves it out when a remote runner does not say", () => {
     expect(describeQueueing(runnerFixture())).toBe("Yes, up to 100");
     expect(describeQueueing(runnerFixture({ queueRuns: false }))).toBe("No");
-    expect(describeQueueing(nonLocalRunnerFixture())).toBeNull();
+    expectAbsent(describeQueueing(nonLocalRunnerFixture()));
   });
 
   it("badges the local status, or the shared flags of a remote runner", () => {
@@ -126,9 +127,9 @@ describe("the runner's settings", () => {
         }),
       ),
     ).toBe("1m 30s");
-    expect(
+    expectAbsent(
       runDuration(runFixture({ durationMs: undefined, finishedAt: undefined })),
-    ).toBeNull();
+    );
   });
 });
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { formatNumber } from "../../app/format";
+import { expectAbsent, expectNone } from "./assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
 import {
   clampedRangeFixture,
@@ -70,7 +71,7 @@ describe("the Overview's range control", () => {
         return null;
       }
       // Never the deprecated `minutes`.
-      expect(read.query.get("minutes")).toBeNull();
+      expectAbsent(read.query.get("minutes"));
       return (
         (Number(read.query.get("to")) - Number(read.query.get("from"))) / 1_000
       );
@@ -132,22 +133,22 @@ describe("the Overview's range control", () => {
     renderApp();
     await overview();
     await page().findByTestId("jobs-series");
-    expect(page().queryByTestId("jobs-range-caption")).toBeNull();
+    expectAbsent(page().queryByTestId("jobs-range-caption"));
   });
 
   it("switches between one control for the page and one per section", async () => {
     renderApp();
     await overview();
     // On by default: one control, no per-section ones.
-    expect(page().queryByRole("group", { name: "Jobs range" })).toBeNull();
+    expectAbsent(page().queryByRole("group", { name: "Jobs range" }));
     fireEvent.click(page().getByLabelText("Apply date filter to page"));
     await waitFor(() =>
       expect(page().getByRole("group", { name: "Jobs range" })).toBeTruthy(),
     );
     expect(page().getByRole("group", { name: "Queues range" })).toBeTruthy();
-    expect(
+    expectAbsent(
       page().queryByRole("group", { name: "Range for every section" }),
-    ).toBeNull();
+    );
     expect(window.location.search).toContain("rangeScope=section");
   });
 });
@@ -198,7 +199,7 @@ describe("the Overview screen", () => {
     expect(tile.textContent).toContain("Failed attempts1");
     expect(tile.textContent).toContain("in 1-minute buckets");
     // No figure is set in the headline font, which is what made it too big.
-    expect(tile.querySelector(".stat-value")).toBeNull();
+    expectAbsent(tile.querySelector(".stat-value"));
     expect(formatNumber(98231)).toBe("98,231");
   });
 
@@ -236,11 +237,9 @@ describe("the Overview screen", () => {
     expect(summary).toContain("Total jobs");
     // Every analytics route is pruned, so nothing asks for one.
     expect(calls.some((call) => call.path.includes("/analytics/"))).toBe(false);
-    expect(page().queryByTestId("runners-analytics")).toBeNull();
-    expect(page().queryByTestId("workers-analytics")).toBeNull();
-    expect(
-      page().queryByRole("columnheader", { name: "Throughput" }),
-    ).toBeNull();
+    expectAbsent(page().queryByTestId("runners-analytics"));
+    expectAbsent(page().queryByTestId("workers-analytics"));
+    expectAbsent(page().queryByRole("columnheader", { name: "Throughput" }));
   });
 
   it("renders the queue table with paused badges, per-state counts and totals", async () => {
@@ -285,7 +284,7 @@ describe("the Overview screen", () => {
     });
     await overview();
     await page().findByText("No queues yet");
-    expect(page().queryByRole("table", { name: "Queues" })).toBeNull();
+    expectAbsent(page().queryByRole("table", { name: "Queues" }));
   });
 
   it("filters by name through the search box, kept in the URL", async () => {
@@ -365,7 +364,7 @@ describe("the Overview screen", () => {
     ]);
     // `from`/`to`/`resolution`, never the deprecated `minutes`.
     expect(reads[0]!.query.get("resolution")).toBe("60");
-    expect(reads[0]!.query.get("minutes")).toBeNull();
+    expectAbsent(reads[0]!.query.get("minutes"));
     expect(Number(reads[0]!.query.get("to"))).toBeGreaterThan(
       Number(reads[0]!.query.get("from")),
     );
@@ -399,14 +398,12 @@ describe("the Overview screen", () => {
     });
     await overview();
     await page().findByTestId("queue-row-emails");
-    expect(
-      page().queryByRole("columnheader", { name: "Throughput" }),
-    ).toBeNull();
-    expect(
+    expectAbsent(page().queryByRole("columnheader", { name: "Throughput" }));
+    expectNone(
       within(page().getByRole("table", { name: "Queues" })).queryAllByRole(
         "img",
       ),
-    ).toHaveLength(0);
+    );
     expect(
       calls.some(
         (call) =>
@@ -424,10 +421,8 @@ describe("the Overview screen", () => {
     });
     await page().findByTestId("overview");
     await page().findByTestId("queue-row-emails");
-    expect(page().queryByTestId("state-counts")).toBeNull();
-    expect(
-      page().queryByRole("columnheader", { name: "Throughput" }),
-    ).toBeNull();
+    expectAbsent(page().queryByTestId("state-counts"));
+    expectAbsent(page().queryByRole("columnheader", { name: "Throughput" }));
     expect(calls.some((call) => call.path === "/overview")).toBe(false);
   });
 
@@ -440,7 +435,7 @@ describe("the Overview screen", () => {
       },
     });
     await overview();
-    expect(page().queryByRole("table", { name: "Queues" })).toBeNull();
+    expectAbsent(page().queryByRole("table", { name: "Queues" }));
   });
 
   it("shows an error with a retry when the overview fails", async () => {

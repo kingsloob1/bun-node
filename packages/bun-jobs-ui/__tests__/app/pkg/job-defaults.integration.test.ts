@@ -12,6 +12,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent, expectUndefined } from "../assert";
 
 /**
  * The queue screen's Job defaults panel against a REAL `createJobsApi`:
@@ -647,7 +648,7 @@ function expectChained(calls: Exchange[], dryRun: boolean, seq: number) {
     expect(answer.dryRun).toBe(dryRun);
     expect(answer.examined).toBeLessThanOrEqual(BATCH);
     if (index === 0) {
-      expect(body.cursor).toBeUndefined();
+      expectUndefined(body.cursor);
     } else {
       expect(body.cursor).toBe((calls[index - 1]!.json as ApplyDto).next ?? "");
     }
@@ -1202,8 +1203,8 @@ for (const label of ["memory", "SQLite"]) {
           override: "Overridden",
         });
         expect(view.settings).toBe(false);
-        expect(view.apply).toBeNull();
-        expect(view.unavailable).toBeNull();
+        expectAbsent(view.apply);
+        expectAbsent(view.unavailable);
         ui.unmount();
         const sent = deploy.exchanges.slice(from).filter((one) => !one.direct);
         expect(sent.every((one) => one.api === "restricted")).toBe(true);
@@ -1287,8 +1288,8 @@ for (const label of ["memory", "SQLite"]) {
           (one) => one.pending.Total === "1",
         );
         expect(view.settings).toBe(true);
-        expect(view.apply).toBeNull();
-        expect(view.unavailable).toBeNull();
+        expectAbsent(view.apply);
+        expectAbsent(view.unavailable);
         settingsOnly.unmount();
         expect(
           deploy.exchanges

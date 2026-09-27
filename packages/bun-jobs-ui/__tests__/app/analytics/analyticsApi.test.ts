@@ -21,6 +21,7 @@ import {
   DEFAULT_ANALYTICS_RESOLUTION,
   MAX_ANALYTICS_SERIES,
 } from "../../../app/api/contract";
+import { expectAbsent, expectUndefined } from "../assert";
 import {
   jobsSeriesFixture,
   metaFixture,
@@ -205,14 +206,14 @@ describe("the analytics reads", () => {
       expect(call.query.get("from")).toBe(String(request.from));
       expect(call.query.get("to")).toBe(String(request.to));
       expect(call.query.get("resolution")).toBe("60");
-      expect(call.query.get("minutes")).toBeNull();
+      expectAbsent(call.query.get("minutes"));
     }
   });
 
   it("reads the runners roll-up without `ids`, and the batch with one `ids` per name", async () => {
     const { api, calls } = client();
     const rollup = await getRunnersAnalytics(api, request);
-    expect(rollup.seriesByRunner).toBeUndefined();
+    expectUndefined(rollup.seriesByRunner);
     expect(calls[0]!.query.getAll("ids")).toEqual([]);
     const batch = await getRunnersAnalytics(api, request, [
       "nightly",

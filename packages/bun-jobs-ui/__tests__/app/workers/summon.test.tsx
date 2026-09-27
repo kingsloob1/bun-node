@@ -4,6 +4,7 @@ import type {
 } from "../../../app/api/types";
 import type { SummonMode } from "../../../app/screens/workers/summon";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
@@ -126,7 +127,7 @@ describe("the summon badge in a worker table", () => {
       workerFixture({ id: "w-summoned", summon: summon({ kind: "fly" }) }),
     ]);
     await within(list).findByTestId("worker-row-w-plain");
-    expect(badgeOf(list, "w-plain")).toBeNull();
+    expectAbsent(badgeOf(list, "w-plain"));
     const row = within(list).getByTestId("worker-row-w-plain");
     expect(row.textContent).not.toMatch(/summon/i);
     // No column was added for it.
@@ -162,7 +163,7 @@ describe("the worker page's Summoned card", () => {
       workerFixture({ id: "api.emails.a1" }),
       workerFixture({ id: "api.emails.b2" }),
     ]);
-    expect(card).toBeNull();
+    expectAbsent(card);
     expect(page().getByTestId("worker-screen").textContent).not.toContain(
       "Summoned",
     );
@@ -208,7 +209,7 @@ describe("the worker page's Summoned card", () => {
     expect(card.textContent).toContain("what the summoner requested");
     // No handle was sent, so there is no column and nothing marks one withheld.
     expect(card.textContent).not.toMatch(/handle/i);
-    expect(within(card).queryByTestId("worker-summon-others")).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-summon-others"));
   });
 
   it("leaves out a column no instance has a value for, rather than defaulting it", async () => {

@@ -4,6 +4,7 @@ import { EmptyState } from "../../../app/components/EmptyState";
 import { ErrorView } from "../../../app/components/ErrorView";
 import { Link, RouterProvider, Routes } from "../../../app/router";
 import { onDemand } from "../../../app/screens/lazy";
+import { expectAbsent } from "../assert";
 import { act, fireEvent, page, render, setupDom, visit } from "../dom";
 import { auditDocument, formatFindings } from "./audit";
 
@@ -179,7 +180,7 @@ describe("the per-screen error boundary", () => {
     expect(
       await page().findByRole("heading", { name: "Fragile, recovered" }),
     ).toBeTruthy();
-    expect(page().queryByTestId("screen-error")).toBeNull();
+    expectAbsent(page().queryByTestId("screen-error"));
   });
 
   it("stays failed on a reload that crashes again, and recovers by navigating away", async () => {
@@ -194,7 +195,7 @@ describe("the per-screen error boundary", () => {
       fireEvent.click(page().getByRole("link", { name: "Fine" }));
     });
     expect(page().getByRole("heading", { name: "Fine" })).toBeTruthy();
-    expect(page().queryByTestId("screen-error")).toBeNull();
+    expectAbsent(page().queryByTestId("screen-error"));
   });
 
   it("retries a lazy screen whose chunk failed to load", async () => {

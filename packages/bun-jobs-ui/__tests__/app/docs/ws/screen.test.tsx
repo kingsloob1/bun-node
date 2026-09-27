@@ -3,6 +3,7 @@ import type { MetaDto, Permissions } from "../../../../app/api/types";
 import type { WsFixtureName } from "./fixtures";
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { liveChannels } from "../../../../app/live";
+import { expectAbsent, expectUndefined } from "../../assert";
 import {
   act,
   fireEvent,
@@ -223,9 +224,9 @@ describe("WsDocsScreen", () => {
     const selected = page().getByTestId("ws-nav-message-queue.completed");
     expect(selected.getAttribute("aria-current")).toBe("page");
     expect(selected.dataset.selected).toBe("true");
-    expect(
+    expectUndefined(
       page().getByTestId("ws-nav-channel-connection").dataset.selected,
-    ).toBeUndefined();
+    );
   });
 
   it("a channel shows its address, parameters, operations, messages and permission", async () => {
@@ -243,9 +244,7 @@ describe("WsDocsScreen", () => {
     expect(
       within(pane).getByRole("link", { name: "queue.completed" }),
     ).toBeTruthy();
-    expect(
-      within(pane).queryByRole("link", { name: "queue.paused" }),
-    ).toBeNull();
+    expectAbsent(within(pane).queryByRole("link", { name: "queue.paused" }));
     const marker = within(pane).getByTestId("ws-permission-events.subscribe");
     expect(marker.dataset.has).toBe("true");
     expect(marker.textContent).toContain("You have this");
@@ -269,9 +268,7 @@ describe("WsDocsScreen", () => {
       expect(within(pane).getByRole("link", { name })).toBeTruthy();
     }
     // Worker events travel on their own channels, and queue events do not.
-    expect(
-      within(pane).queryByRole("link", { name: "queue.completed" }),
-    ).toBeNull();
+    expectAbsent(within(pane).queryByRole("link", { name: "queue.completed" }));
   });
 
   it("a channel parameter's x-bun-jobs-schema is drawn by the schema tree, beside its description", async () => {
@@ -288,7 +285,7 @@ describe("WsDocsScreen", () => {
     expect(queue.closest("tr")!.textContent).toContain("A queue name");
     // A job id has no schema: any string, escaped.
     const jobId = within(pane).getByTestId("ws-parameter-schema-jobId");
-    expect(within(jobId).queryByRole("group")).toBeNull();
+    expectAbsent(within(jobId).queryByRole("group"));
     expect(jobId.textContent).toBe("Any string");
     expect(jobId.closest("tr")!.textContent).toContain("%uXXXX");
   });
@@ -336,11 +333,11 @@ describe("WsDocsScreen", () => {
   it("a control message shows its payload, not an event payload or try-it", async () => {
     await renderWs("/message-subscribe");
     const pane = page().getByTestId("ws-pane-message-subscribe");
-    expect(within(pane).queryByTestId("ws-event-payload")).toBeNull();
+    expectAbsent(within(pane).queryByTestId("ws-event-payload"));
     expect(
       within(pane).getByTestId("ws-message-payload").textContent,
     ).toContain("channels");
-    expect(within(pane).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(pane).queryByTestId("ws-try-link"));
   });
 
   it("an event message's example shows event.payload first, highlighted, then the whole frame", async () => {
@@ -382,9 +379,7 @@ describe("WsDocsScreen", () => {
     expect(within(example).getByTestId("ws-example-name").textContent).toBe(
       "subscribe",
     );
-    expect(
-      within(example).queryByTestId("ws-example-event-payload"),
-    ).toBeNull();
+    expectAbsent(within(example).queryByTestId("ws-example-event-payload"));
     expect(
       within(example).getByTestId("ws-example-frame").textContent,
     ).toContain("sub-1");
@@ -451,8 +446,8 @@ describe("WsDocsScreen", () => {
 
     fireEvent.click(page().getByTestId("ws-nav-message-ping"));
     const ping = await page().findByTestId("ws-pane-message-ping");
-    expect(within(ping).queryByTestId("ws-example")).toBeNull();
-    expect(within(ping).queryByText("Example")).toBeNull();
+    expectAbsent(within(ping).queryByTestId("ws-example"));
+    expectAbsent(within(ping).queryByText("Example"));
   });
 
   it("the limits panel lists every limit in its unit, and replay", async () => {
@@ -593,10 +588,10 @@ describe("WsDocsScreen try it", () => {
   it("fills a queue channel and opens the Events console on it", async () => {
     await renderWs("/channel-queue");
     const tryIt = page().getByTestId("ws-try-channel");
-    expect(within(tryIt).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(tryIt).queryByTestId("ws-try-link"));
     type("queue", "has space", within(tryIt));
     expect(tryIt.textContent).toContain("Letters, digits");
-    expect(within(tryIt).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(tryIt).queryByTestId("ws-try-link"));
 
     type("queue", "mail", within(tryIt));
     const link = within(tryIt).getByTestId("ws-try-link");
@@ -622,9 +617,9 @@ describe("WsDocsScreen try it", () => {
     expect(within(tryIt).getByTestId("ws-try-reason").textContent).toBe(
       "queue: At most 200 characters (this is 201).",
     );
-    expect(within(tryIt).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(tryIt).queryByTestId("ws-try-link"));
     type("queue", "x".repeat(200), within(tryIt));
-    expect(within(tryIt).queryByTestId("ws-try-reason")).toBeNull();
+    expectAbsent(within(tryIt).queryByTestId("ws-try-reason"));
     expect(within(tryIt).getByTestId("ws-try-link")).toBeTruthy();
   });
 
@@ -647,7 +642,7 @@ describe("WsDocsScreen try it", () => {
     expect(within(tryIt).getByTestId("ws-try-reason").textContent).toBe(
       "queue: Must match ^[a-z]+$.",
     );
-    expect(within(tryIt).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(tryIt).queryByTestId("ws-try-link"));
     type("queue", "mail", within(tryIt));
     expect(within(tryIt).getByTestId("ws-try-link")).toBeTruthy();
   });
@@ -681,7 +676,7 @@ describe("WsDocsScreen try it", () => {
 
   it("the connection channel has no try-it at all: nothing to subscribe to", async () => {
     await renderWs("/channel-connection");
-    expect(within(main()).queryByText("Try it")).toBeNull();
+    expectAbsent(within(main()).queryByText("Try it"));
     for (const id of [
       "ws-try-channel",
       "ws-try-link",
@@ -689,7 +684,7 @@ describe("WsDocsScreen try it", () => {
       "ws-try-reason",
       "ws-try-unavailable",
     ]) {
-      expect(within(main()).queryByTestId(id)).toBeNull();
+      expectAbsent(within(main()).queryByTestId(id));
     }
   });
 
@@ -704,8 +699,8 @@ describe("WsDocsScreen try it", () => {
     for (const slug of ["channel-socket", "channel-legacy"]) {
       const { unmount } = await renderWs(`/${slug}`, { document });
       expect(main().dataset.selected).toBe(slug);
-      expect(within(main()).queryByText("Try it")).toBeNull();
-      expect(within(main()).queryByTestId("ws-try-disabled")).toBeNull();
+      expectAbsent(within(main()).queryByText("Try it"));
+      expectAbsent(within(main()).queryByTestId("ws-try-disabled"));
       unmount();
     }
   });
@@ -725,7 +720,7 @@ describe("WsDocsScreen try it", () => {
   it("is not offered when the Events console is not available", async () => {
     await renderWs("/channel-queues", { actions: { "events.connect": false } });
     expect(within(main()).getByTestId("ws-try-unavailable")).toBeTruthy();
-    expect(within(main()).queryByTestId("ws-try-link")).toBeNull();
+    expectAbsent(within(main()).queryByTestId("ws-try-link"));
   });
 
   it("is not offered without the manage screens", async () => {

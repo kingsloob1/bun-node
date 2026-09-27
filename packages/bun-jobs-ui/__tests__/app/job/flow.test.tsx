@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { page, setupDom, within } from "../dom";
 import { childrenFixture, jobApiPath, jobFixture, logPage } from "./fixtures";
 import { renderJobScreen } from "./render";
@@ -53,7 +54,7 @@ describe("the job's flow", () => {
 
     const gone = within(flow).getByTestId("flow-child-archive:gone-7");
     expect(gone.textContent).toContain("unreachable");
-    expect(gone.querySelector(".state-badge")).toBeNull();
+    expectAbsent(gone.querySelector(".state-badge"));
 
     const failed = within(flow).getByTestId("flow-child-images:resize-2");
     expect(failed.textContent).toContain("ResizeError: bad format");
@@ -63,7 +64,7 @@ describe("the job's flow", () => {
       (call) => call.path === `${jobApiPath()}/children`,
     )!;
     expect([...request.query.keys()]).toEqual([]);
-    expect(page().queryByTestId("flow-truncated")).toBeNull();
+    expectAbsent(page().queryByTestId("flow-truncated"));
   });
 
   it("says when the children list is truncated", async () => {
@@ -99,7 +100,7 @@ describe("the job's flow", () => {
       handlers: handlers(),
     });
     await page().findByRole("region", { name: "Data" });
-    expect(page().queryByRole("region", { name: "Flow" })).toBeNull();
+    expectAbsent(page().queryByRole("region", { name: "Flow" }));
     expect(calls.some((call) => call.path.endsWith("/children"))).toBe(false);
   });
 });

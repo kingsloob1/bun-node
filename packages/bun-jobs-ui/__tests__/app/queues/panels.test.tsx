@@ -1,5 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import {
   metaFixture,
@@ -169,7 +170,7 @@ describe("the limits editor", () => {
     expect(callsTo(calls, "PUT", "/queues/emails/limits")[0]!.body).toBe(
       "null",
     );
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("shows VALIDATION issues on their fields", async () => {
@@ -209,7 +210,7 @@ describe("the limits editor", () => {
         .getAttribute("aria-invalid"),
     ).toBe("true");
     // Field issues are not repeated in a banner.
-    expect(within(form).queryByRole("alert")).toBeNull();
+    expectAbsent(within(form).queryByRole("alert"));
   });
 
   it("offers a retry on LIMITS_CONTENDED", async () => {
@@ -255,9 +256,7 @@ describe("the limits editor", () => {
     await within(panel).findByText("Queue");
     expect(panel.textContent).toContain("10 per 1m");
     expect(panel.textContent).toContain("4 at once");
-    expect(
-      within(panel).queryByRole("button", { name: "Save limits" }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: "Save limits" }));
   });
 });
 
@@ -307,7 +306,7 @@ describe("the other panels", () => {
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
     await page().findByTestId("worker-row-w-1");
-    expect(page().queryByTestId("sweep-warning")).toBeNull();
+    expectAbsent(page().queryByTestId("sweep-warning"));
   });
 
   it("warns when every live worker reports that it does not sweep", async () => {
@@ -371,7 +370,7 @@ describe("the other panels", () => {
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
     await page().findByTestId("worker-row-w-2");
-    expect(page().queryByTestId("sweep-warning")).toBeNull();
+    expectAbsent(page().queryByTestId("sweep-warning"));
   });
 
   it("charts throughput with a window select and an accessible table", async () => {
@@ -553,7 +552,7 @@ describe("the other panels", () => {
       },
     });
     expect(await panelLabels()).toEqual([]);
-    expect(page().queryByText("Details")).toBeNull();
+    expectAbsent(page().queryByText("Details"));
   });
 });
 
@@ -592,12 +591,12 @@ describe("repeatables, disable and enable", () => {
       },
     });
     const enabledRow = await row();
-    expect(within(enabledRow).queryByText("Disabled")).toBeNull();
-    expect(
+    expectAbsent(within(enabledRow).queryByText("Disabled"));
+    expectAbsent(
       within(enabledRow).queryByRole("button", {
         name: "Enable repeatable digest:cron",
       }),
-    ).toBeNull();
+    );
     const reads = callsTo(calls, "GET", "/queues/emails/repeatables").length;
     fireEvent.click(
       within(enabledRow).getByRole("button", {
@@ -614,7 +613,7 @@ describe("repeatables, disable and enable", () => {
       "POST",
       "/queues/emails/repeatables/digest%3Acron/disable",
     )[0]!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     await waitFor(() =>
       expect(
         callsTo(calls, "GET", "/queues/emails/repeatables").length,
@@ -648,11 +647,11 @@ describe("repeatables, disable and enable", () => {
     expect(page().getByTestId("repeatable-next-digest:cron").textContent).toBe(
       "paused (disabled)",
     );
-    expect(
+    expectAbsent(
       within(disabledRow).queryByRole("button", {
         name: "Disable repeatable digest:cron",
       }),
-    ).toBeNull();
+    );
     fireEvent.click(
       within(disabledRow).getByRole("button", {
         name: "Enable repeatable digest:cron",
@@ -707,11 +706,11 @@ describe("repeatables, disable and enable", () => {
     const enabledRow = await row();
     // The per-queue answer can arrive after the row; wait for it to settle.
     await waitFor(() =>
-      expect(
+      expectAbsent(
         within(enabledRow).queryByRole("button", {
           name: "Disable repeatable digest:cron",
         }),
-      ).toBeNull(),
+      ),
     );
     expect(
       within(enabledRow).getByRole("button", {
@@ -735,9 +734,9 @@ describe("repeatables, disable and enable", () => {
     });
     const disabledRow = await row();
     await waitFor(() =>
-      expect(
+      expectNone(
         within(disabledRow).queryAllByRole("button", { name: /repeatable/ }),
-      ).toHaveLength(0),
+      ),
     );
     // The badge is not an action: it shows whatever the caller may do.
     expect(within(disabledRow).getByText("Disabled")).toBeTruthy();
@@ -761,8 +760,8 @@ describe("repeatables, disable and enable", () => {
     });
     const disabledRow = await row();
     expect(within(disabledRow).getByText("Disabled")).toBeTruthy();
-    expect(
+    expectNone(
       within(disabledRow).queryAllByRole("button", { name: /repeatable/ }),
-    ).toHaveLength(0);
+    );
   });
 });

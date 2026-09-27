@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * Where a worker's attempts run (`WorkerDto.target`), against a REAL
@@ -241,7 +242,7 @@ describe("a worker's target against a real API", () => {
     expect(view.kind).toBe("Child process");
     expect(view.processor).toBe("File");
     // Withheld, and nothing on the card hints that a path exists.
-    expect(view.file).toBeNull();
+    expectAbsent(view.file);
     expect(view.labels).toEqual(["Runs in", "Processor"]);
     expect(view.card).not.toContain("processor.ts");
     ui.unmount();
@@ -276,7 +277,7 @@ describe("a worker's target against a real API", () => {
     expect(view.badge).toBe("Runs in: In process");
     expect(view.kind).toBe("In process");
     expect(view.processor).toBe("Function");
-    expect(view.file).toBeNull();
+    expectAbsent(view.file);
     ui.unmount();
   }, 30_000);
 });

@@ -18,6 +18,7 @@ import {
   INCLUDE_UNMARKED_HINT,
   RESET_CANNOT_RESTORE,
 } from "../../../app/screens/queues/panels/jobDefaults/text";
+import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
@@ -181,9 +182,7 @@ describe("the Job defaults panel's gate", () => {
       handlers: { "GET /meta": { body: meta } },
     });
     expect(await panelLabels()).not.toContain("Job defaults");
-    expect(callsTo(calls, "GET", "/queues/emails/job-defaults")).toHaveLength(
-      0,
-    );
+    expectNone(callsTo(calls, "GET", "/queues/emails/job-defaults"));
   });
 
   it("offers Settings… but not Apply where the apply route is not served", async () => {
@@ -197,9 +196,7 @@ describe("the Job defaults panel's gate", () => {
     expect(
       within(panel).getByRole("button", { name: "Settings…" }),
     ).toBeTruthy();
-    expect(
-      within(panel).queryByRole("button", { name: /^Apply to/ }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: /^Apply to/ }));
   });
 
   it("is a read-only summary when the read succeeds and neither action is granted", async () => {
@@ -217,12 +214,8 @@ describe("the Job defaults panel's gate", () => {
     // The pending counts, per state and in total.
     expect(panel.textContent).toContain("1,200");
     expect(panel.textContent).toContain("1,215");
-    expect(
-      within(panel).queryByRole("button", { name: "Settings…" }),
-    ).toBeNull();
-    expect(
-      within(panel).queryByRole("button", { name: /^Apply to/ }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: "Settings…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: /^Apply to/ }));
   });
 
   it("builds one row per contract key, in the contract's order", async () => {
@@ -242,9 +235,7 @@ describe("the Job defaults panel's gate", () => {
     expect(
       within(panel).getByRole("button", { name: "Settings…" }),
     ).toBeTruthy();
-    expect(
-      within(panel).queryByRole("button", { name: /^Apply to/ }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: /^Apply to/ }));
   });
 
   it("offers Apply with queues.applyDefaults alone, and no Settings…", async () => {
@@ -255,9 +246,7 @@ describe("the Job defaults panel's gate", () => {
         name: "Apply to 1,215 pending jobs…",
       }),
     ).toBeTruthy();
-    expect(
-      within(panel).queryByRole("button", { name: "Settings…" }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: "Settings…" }));
   });
 
   it("shows the panel at once when queues.defaults is granted, before the read answers", async () => {
@@ -276,12 +265,8 @@ describe("the Job defaults panel's gate", () => {
   it("offers neither button on a read-only API, whatever the permissions say", async () => {
     renderDefaults({ actions: BOTH, readOnly: true });
     const panel = await openPanel();
-    expect(
-      within(panel).queryByRole("button", { name: "Settings…" }),
-    ).toBeNull();
-    expect(
-      within(panel).queryByRole("button", { name: /^Apply to/ }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: "Settings…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: /^Apply to/ }));
   });
 
   it("is absent without queues.read, and never reads", async () => {
@@ -294,10 +279,8 @@ describe("the Job defaults panel's gate", () => {
         0,
       ),
     );
-    expect(callsTo(calls, "GET", "/queues/emails/job-defaults")).toHaveLength(
-      0,
-    );
-    expect(page().queryByRole("tab", { name: "Job defaults" })).toBeNull();
+    expectNone(callsTo(calls, "GET", "/queues/emails/job-defaults"));
+    expectAbsent(page().queryByRole("tab", { name: "Job defaults" }));
   });
 
   it("says why Apply is not offered when nothing is overridden", async () => {
@@ -317,9 +300,7 @@ describe("the Job defaults panel's gate", () => {
     expect(
       within(panel).getByTestId("apply-unavailable").textContent,
     ).toContain("Nothing is overridden");
-    expect(
-      within(panel).queryByRole("button", { name: /^Apply to/ }),
-    ).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: /^Apply to/ }));
   });
 });
 
@@ -389,7 +370,7 @@ describe("the job defaults editor", () => {
       priority: 7,
       expectedSeq: 4,
     });
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("sends a backoff and a retention in the stored shapes", async () => {
@@ -444,9 +425,7 @@ describe("the job defaults editor", () => {
       name: "Save defaults",
     }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
-    expect(callsTo(calls, "PUT", "/queues/emails/job-defaults")).toHaveLength(
-      0,
-    );
+    expectNone(callsTo(calls, "PUT", "/queues/emails/job-defaults"));
   });
 
   it("resets every key with DELETE, and says beside Reset that rewritten jobs cannot be restored", async () => {
@@ -522,7 +501,7 @@ describe("the job defaults editor", () => {
         (within(dialog).getByLabelText("Priority") as HTMLInputElement).value,
       ).toBe("0"),
     );
-    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expectAbsent(within(dialog).queryByRole("alert"));
     type(within(dialog).getByLabelText("Priority"), "8");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Save defaults" }),
@@ -763,7 +742,7 @@ describe("applying the defaults to pending jobs", () => {
       handlers: { "GET /queues/emails/job-defaults": { body: raised } },
     });
     const dialog = await openApply();
-    expect(within(dialog).queryByTestId("exhausted-warning")).toBeNull();
+    expectAbsent(within(dialog).queryByTestId("exhausted-warning"));
   });
 
   it("stops on DEFAULTS_CHANGED, asks to re-read, and applies the new seq after", async () => {
@@ -815,6 +794,6 @@ describe("applying the defaults to pending jobs", () => {
     const bodies = applyBodies(calls);
     expect(bodies[0]!.seq).toBe(4);
     expect(bodies[2]!.seq).toBe(6);
-    expect(bodies[2]!.cursor).toBeUndefined();
+    expectUndefined(bodies[2]!.cursor);
   });
 });

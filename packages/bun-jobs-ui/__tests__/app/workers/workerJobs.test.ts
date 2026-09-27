@@ -14,6 +14,7 @@ import {
   readWorkerJobFilters,
   writeFinishedRange,
 } from "../../../app/screens/workers/workerJobs";
+import { expectAbsent } from "../assert";
 
 /**
  * The job-attribution half of the jobs reader, and the worker page's URL
@@ -182,7 +183,7 @@ describe("the worker page's jobs URL state", () => {
         "k",
         LIMITS,
       );
-      expect(filters.attribution?.finished).toBeNull();
+      expectAbsent(filters.attribution?.finished);
     }
     expect(rangeApplies("all")).toBe(true);
     expect(rangeApplies("completed")).toBe(true);
@@ -190,7 +191,7 @@ describe("the worker page's jobs URL state", () => {
   });
 
   it("round-trips the range, leaving out only its own default", () => {
-    expect(writeFinishedRange(DEFAULT_FINISHED_RANGE)).toBeNull();
+    expectAbsent(writeFinishedRange(DEFAULT_FINISHED_RANGE));
     // The analytics default is NOT this section's, so it is written.
     expect(writeFinishedRange({ kind: "preset", seconds: 3600 })).toBe("3600s");
     expect(readFinishedRange("3600s")).toEqual({
@@ -218,7 +219,7 @@ describe("the worker page's jobs URL state", () => {
   });
 
   it("lets a picker with no longest span take any length", () => {
-    expect(rangeProblem(NOW - 90 * DAY, NOW, null)).toBeNull();
+    expectAbsent(rangeProblem(NOW - 90 * DAY, NOW, null));
     expect(rangeProblem(NOW, NOW - 1, null)).toBe(
       "The end must be after the start.",
     );

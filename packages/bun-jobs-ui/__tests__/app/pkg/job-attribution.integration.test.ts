@@ -18,6 +18,7 @@ import {
 import { STAMP_COLUMNS } from "@kingsleyweb/bun-jobs/lib/drivers/sql/schema.ts";
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * Job attribution end to end, against a REAL `createJobsApi` over real
@@ -543,7 +544,7 @@ async function checkDefaultView(
       (one) => one.rows.length > 0 || one.empty || one.alert !== null,
     );
     const after = Date.now();
-    expect(view.alert).toBeNull();
+    expectAbsent(view.alert);
     expect(view.range).toContain("Last 24 hours");
 
     const reads = jobReads(deployment, start);
@@ -630,7 +631,7 @@ async function checkActiveTab(
       expect(job.processedBy?.key).toBe(key);
     }
     expect(sorted(view.rows)).toEqual(sorted(active));
-    expect(view.range).toBeNull();
+    expectAbsent(view.range);
     expect(view.noRange).toContain("Active jobs have not finished");
     for (const exchange of deployment.exchanges.slice(start)) {
       expect(exchange.query.get("total")).not.toBe("true");
@@ -743,7 +744,7 @@ for (const { title, pick } of ATTRIBUTED) {
           await harness()
         ).readProcessedBy(deployment.fetch, QUEUE, id);
         expect(view.present).toBe(true);
-        expect(view.none).toBeNull();
+        expectAbsent(view.none);
         expect(view.key).toBe(KEY.api);
         expect(view.href).toBe(`/jobs/workers/${QUEUE}/${KEY.api}`);
         expect(view.text).toContain(`incarnation ${worker.id}`);
@@ -761,13 +762,13 @@ for (const { title, pick } of ATTRIBUTED) {
           `/queues/${QUEUE}/jobs/${IDS.delayed}`,
         );
         expect(job.state).toBe("delayed");
-        expect(job.processedBy).toBeNull();
+        expectAbsent(job.processedBy);
 
         const view = await (
           await harness()
         ).readProcessedBy(deployment.fetch, QUEUE, IDS.delayed);
         expect(view.present).toBe(true);
-        expect(view.key).toBeNull();
+        expectAbsent(view.key);
         expect(view.none).toBe("No worker recorded");
         expect(view.text).toContain("never claimed");
       },

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Tabs, UrlTabs } from "../../../app/components/Tabs";
 import { useUrlTab } from "../../../app/hooks/useUrlTab";
 import { RouterProvider } from "../../../app/router";
+import { expectAbsent } from "../assert";
 import { act, fireEvent, page, render, setupDom, visit } from "../dom";
 
 setupDom();
@@ -112,7 +113,7 @@ describe("Tabs", () => {
     fireEvent.click(active!);
     expect(onChange).toHaveBeenCalledWith("active");
     // No children: no panel.
-    expect(page().queryByRole("tabpanel")).toBeNull();
+    expectAbsent(page().queryByRole("tabpanel"));
   });
 });
 

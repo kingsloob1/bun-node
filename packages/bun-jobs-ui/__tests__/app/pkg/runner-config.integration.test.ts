@@ -17,6 +17,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent, expectUndefined } from "../assert";
 import { GATES } from "./fixtures/clear-actions/gated-runner";
 
 /**
@@ -579,7 +580,7 @@ for (const label of ["memory", "SQLite"]) {
           allowed: ["worker-thread", "in-process"],
           seq: 0,
         });
-        expect(config.error).toBeUndefined();
+        expectUndefined(config.error);
 
         const ui = await (
           await harness()
@@ -618,8 +619,8 @@ for (const label of ["memory", "SQLite"]) {
           concurrency:
             "Run mode and max concurrency: as the runner's code asks.",
         });
-        expect(view.pending).toBeNull();
-        expect(view.refused).toBeNull();
+        expectAbsent(view.pending);
+        expectAbsent(view.refused);
         expect(view.resetOffered).toBe(false);
         expect(view.saveDisabled).toBe(true);
         // Parallel enables the cap.
@@ -684,7 +685,7 @@ for (const label of ["memory", "SQLite"]) {
         expect(answer.seq).toBeGreaterThan(before.seq);
         // A local owner adopts at once.
         expect(answer.appliedSeq).toBe(answer.seq);
-        expect(answer.error).toBeUndefined();
+        expectUndefined(answer.error);
         expect(runner.config).toMatchObject({
           effective: { runMode: "parallel", maxConcurrency: 3 },
           seq: answer.seq,
@@ -707,7 +708,7 @@ for (const label of ["memory", "SQLite"]) {
           value: "3",
           hint: `Overridden here; its code asks for ${codeCap}`,
         });
-        expect(after.summary.executionMode?.hint).toBeNull();
+        expectAbsent(after.summary.executionMode?.hint);
         expect(after.summary.override).toEqual({
           value: "Run mode, Max concurrency",
           hint: null,
@@ -797,7 +798,7 @@ for (const label of ["memory", "SQLite"]) {
         const partly = await ui.awaitView(
           (view) => view.summary.runMode?.value === code.runMode,
         );
-        expect(partly.summary.runMode?.hint).toBeNull();
+        expectAbsent(partly.summary.runMode?.hint);
         expect(partly.summary.executionMode).toEqual({
           value: "worker-thread",
           hint: `Overridden here; its code asks for ${code.executionMode}`,
@@ -902,7 +903,7 @@ for (const label of ["memory", "SQLite"]) {
           "worker-thread",
           "in-process",
         ]);
-        expect(dialog.view().modesLimited).toBeNull();
+        expectAbsent(dialog.view().modesLimited);
         dialog.setExecutionMode("child-process");
         await before.stop({ force: true });
         await startRunner(deploy, deploy.renewed, narrowed, {
@@ -1140,7 +1141,7 @@ for (const label of ["memory", "SQLite"]) {
         expect(after.summary.runMode?.hint).toBe(
           "Overridden here; its code asks for single",
         );
-        expect(after.summary.override?.hint).toBeNull();
+        expectAbsent(after.summary.override?.hint);
         ui.unmount();
 
         // It runs with it: two overlap, a third is refused by the cap.

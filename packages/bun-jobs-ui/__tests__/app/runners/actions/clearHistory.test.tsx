@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { runLogKeys } from "../../../../app/api/runnerLogs";
 import { runnerKeys } from "../../../../app/api/runners";
 import { clearHistoryMessage } from "../../../../app/screens/runners/actions/explain";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {
@@ -56,7 +57,7 @@ describe("clear history: the confirmation", () => {
       history: finishedHistory(),
     });
     await openClearHistory();
-    expect(page().queryByTestId("clear-history-parallel-note")).toBeNull();
+    expectAbsent(page().queryByTestId("clear-history-parallel-note"));
   });
 
   it("has no parallel-run small print for a remote single-mode runner", async () => {
@@ -65,7 +66,7 @@ describe("clear history: the confirmation", () => {
       history: finishedHistory(),
     });
     await openClearHistory();
-    expect(page().queryByTestId("clear-history-parallel-note")).toBeNull();
+    expectAbsent(page().queryByTestId("clear-history-parallel-note"));
   });
 
   it("warns about long parallel runs on a remote parallel runner", async () => {
@@ -95,7 +96,7 @@ describe("clear history: the confirmation", () => {
       runner: nonLocalRunner({ runMode: "parallel", config }),
     });
     await openClearHistory();
-    expect(page().queryByTestId("clear-history-parallel-note")).toBeNull();
+    expectAbsent(page().queryByTestId("clear-history-parallel-note"));
   });
 });
 
@@ -111,7 +112,7 @@ describe("clear history: the request", () => {
     fireEvent.click(dialogButton(dialog, "Clear history"));
     await toastSays("Cleared 12 runs");
     const call = callTo(calls, "DELETE", "/runners/nightly/history")!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
     // The runner prefix reaches its history, its run logs and its detail.
@@ -119,7 +120,7 @@ describe("clear history: the request", () => {
     expect(covers(prefix, runnerKeys.historyAll("nightly"))).toBe(true);
     expect(covers(prefix, runnerKeys.detail("nightly"))).toBe(true);
     expect(covers(prefix, runLogKeys.run("nightly", "run-1"))).toBe(true);
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("says how many runs in progress were kept, and names them", async () => {

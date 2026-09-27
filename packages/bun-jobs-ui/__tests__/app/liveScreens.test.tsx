@@ -11,6 +11,7 @@ import { runnerKeys } from "../../app/api/runners";
 import { POLL_INTERVAL_MS } from "../../app/queryClient";
 import { COUNT_EVENTS, DETAIL_EVENTS } from "../../app/screens/queues/live";
 import { RUNNER_STATE_EVENTS } from "../../app/screens/runners/live";
+import { expectAbsent } from "./assert";
 import { act, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
@@ -343,9 +344,7 @@ describe("live Job screen", () => {
         ?.progress,
     ).toEqual({ step: 3, of: 7 });
     await waitFor(() =>
-      expect(
-        page().queryByRole("progressbar", { name: "Progress" }),
-      ).toBeNull(),
+      expectAbsent(page().queryByRole("progressbar", { name: "Progress" })),
     );
     expect(
       page().getByRole("list", { name: "Progress" }).textContent,
@@ -388,7 +387,7 @@ describe("live Job screen", () => {
     await waitFor(() => expect(gets(calls, path)).toBe(before + 1));
     // Dead: the fail action is gone, and retry is offered.
     await waitFor(() =>
-      expect(page().queryByRole("button", { name: "Fail…" })).toBeNull(),
+      expectAbsent(page().queryByRole("button", { name: "Fail…" })),
     );
     const group = page().getByRole("group", { name: "Job actions" });
     expect(within(group).getByRole("button", { name: "Retry" })).toBeTruthy();

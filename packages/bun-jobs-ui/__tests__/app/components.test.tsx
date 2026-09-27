@@ -11,6 +11,7 @@ import { Spinner } from "../../app/components/Spinner";
 import { StateBadge } from "../../app/components/StateBadge";
 import { Table } from "../../app/components/Table";
 import { createLimiter } from "../../app/limiter";
+import { expectAbsent } from "./assert";
 import { fireEvent, page, render, setupDom } from "./dom";
 
 setupDom();
@@ -154,7 +155,7 @@ describe("ErrorView", () => {
     expect(page().getByRole("alert").textContent).toBe(
       "Something went wrongboom",
     );
-    expect(page().queryByRole("button")).toBeNull();
+    expectAbsent(page().queryByRole("button"));
   });
 });
 

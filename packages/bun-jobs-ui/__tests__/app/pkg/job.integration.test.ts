@@ -8,6 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { native } from "../register-dom";
 
 /**
@@ -172,7 +173,7 @@ describe("the job UI against a real createJobsApi", () => {
     await waitingJob("emails", id);
     await ui.openJob("emails", id);
     expect(await ui.remove()).toBe("/jobs/queues/emails");
-    expect(await jobs.queue("emails").getJob(id)).toBeNull();
+    expectAbsent(await jobs.queue("emails").getJob(id));
   });
 
   it("fails a waiting job through the dialog: the API reads it back dead, with the reason", async () => {
@@ -205,7 +206,7 @@ describe("the job UI against a real createJobsApi", () => {
     await ui.toggleRepeatable("digests", "hourly", "disable");
     expect((await series())?.disabled).toBe(true);
     // Its pending occurrence went with it.
-    expect(await queue.getJob(pending)).toBeNull();
+    expectAbsent(await queue.getJob(pending));
 
     ui.cleanup();
     await ui.toggleRepeatable("digests", "hourly", "enable");

@@ -9,6 +9,7 @@ import {
   readInfo,
   resolveServerUrl,
 } from "../../../../app/screens/docs/http/model";
+import { expectUndefined } from "../../assert";
 import { openApiFixture } from "./openapiFixture";
 
 let doc: SpecDocument;
@@ -50,7 +51,7 @@ describe("reading a real generated document", () => {
       requireJson: true,
     });
     expect(op("getMeta").mutation).toBe(false);
-    expect(op("getMeta").csrf).toBeUndefined();
+    expectUndefined(op("getMeta").csrf);
     expect(op("getQueueThroughput").requires).toEqual(["getThroughput"]);
   });
 

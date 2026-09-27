@@ -16,6 +16,7 @@ import {
   requestUrl,
   tryItGate,
 } from "../../../../app/screens/docs/http/tryIt";
+import { expectUndefined } from "../../assert";
 import { openApiFixture } from "./openapiFixture";
 
 let doc: SpecDocument;
@@ -133,7 +134,7 @@ describe("bodies", () => {
 
   it("offers no editor for a bodiless POST that only requires the media type", () => {
     expect(op("pauseQueue").requestBody).toBeDefined();
-    expect(bodySchema(op("pauseQueue"))).toBeUndefined();
+    expectUndefined(bodySchema(op("pauseQueue")));
     expect(initialBodyText(op("pauseQueue"), doc)).toBe("");
   });
 });
@@ -255,9 +256,9 @@ describe("gating", () => {
 
 describe("documentedNote", () => {
   it("is silent for a documented status, success or error", () => {
-    expect(documentedNote(op("getMeta"), 200)).toBeUndefined();
-    expect(documentedNote(op("removeJob"), 204)).toBeUndefined();
-    expect(documentedNote(op("getQueue"), 404)).toBeUndefined();
+    expectUndefined(documentedNote(op("getMeta"), 200));
+    expectUndefined(documentedNote(op("removeJob"), 204));
+    expectUndefined(documentedNote(op("getQueue"), 404));
   });
 
   it("names the documented success statuses for one the operation does not document", () => {

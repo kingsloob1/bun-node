@@ -9,6 +9,7 @@ import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { LiveClient, liveSocketUrl } from "../../../app/live/client";
+import { expectNone } from "../assert";
 
 /**
  * `LiveClient` against a REAL live-events socket: `createJobsApi` over the
@@ -277,7 +278,7 @@ describe("LiveClient against a real API socket", () => {
     );
     a.release();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(sentOps(wire, "unsubscribe", from)).toHaveLength(0);
+    expectNone(sentOps(wire, "unsubscribe", from));
     b.release();
     await until(
       () => sentOps(wire, "unsubscribe", from).length === 1 && allAcked(wire),

@@ -1,6 +1,7 @@
 import type { JobDto, JobPageDto, MetaDto } from "../../../app/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent, expectNone } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { jobFixture } from "../queues/fixtures";
@@ -107,7 +108,7 @@ describe("the worker page's jobs section", () => {
     await within(card).findByTestId("worker-jobs-unrecorded");
     // Let the rest of the page settle, then look at every request it made.
     await page().findByTestId("worker-config");
-    expect(jobReads(calls)).toHaveLength(0);
+    expectNone(jobReads(calls));
     expect(anyAttributionParam(calls)).toBe(false);
     expect(card.textContent).not.toContain("Could not load");
   });
@@ -149,7 +150,7 @@ describe("the worker page's jobs section", () => {
       "Last 24 hours",
     );
     // No count is offered: the range is what keeps the read fast.
-    expect(within(card).queryByLabelText("Count total")).toBeNull();
+    expectAbsent(within(card).queryByLabelText("Count total"));
   });
 
   it("has no Processed by column: every row there is this key", async () => {
@@ -162,8 +163,8 @@ describe("the worker page's jobs section", () => {
     );
     expect(headers).toContain("Processed");
     expect(headers).not.toContain("Processed by");
-    expect(table.querySelector(".job-processed-by-col")).toBeNull();
-    expect(within(card).queryByTestId("jobs-processed-by-key")).toBeNull();
+    expectAbsent(table.querySelector(".job-processed-by-col"));
+    expectAbsent(within(card).queryByTestId("jobs-processed-by-key"));
   });
 
   it("titles the Retrying tab: failed an attempt, waiting to retry", async () => {
@@ -172,7 +173,7 @@ describe("the worker page's jobs section", () => {
     await within(card).findByTestId("job-row-job-1");
     const tab = within(card).getByRole("tab", { name: "Retrying" });
     expect(tab.getAttribute("title")).toContain("waiting to retry");
-    expect(within(card).queryByRole("tab", { name: "Failed" })).toBeNull();
+    expectAbsent(within(card).queryByRole("tab", { name: "Failed" }));
   });
 
   it("drops the range for running jobs, and says why", async () => {
@@ -198,7 +199,7 @@ describe("the worker page's jobs section", () => {
     );
     const note = await within(card).findByTestId("worker-jobs-no-range");
     expect(note.textContent).toContain("Active jobs have not finished");
-    expect(within(card).queryByTestId("worker-jobs-range")).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-jobs-range"));
   });
 
   it("sends a custom span from the link as both ends", async () => {
@@ -243,20 +244,20 @@ describe("the worker page's jobs section", () => {
     const { calls } = open({ path: "/workers/emails/a%2Cb" });
     await page().findByTestId("worker-jobs-unfilterable");
     await page().findByTestId("worker-config");
-    expect(jobReads(calls)).toHaveLength(0);
+    expectNone(jobReads(calls));
   });
 
   it("is hidden without jobs.list, and reads nothing", async () => {
     const { calls } = open({ grant: { "jobs.list": false } });
     await page().findByTestId("worker-jobs-hidden");
     await page().findByTestId("worker-config");
-    expect(jobReads(calls)).toHaveLength(0);
+    expectNone(jobReads(calls));
   });
 
   it("shows ids as text when the job screen is not routed", async () => {
     open({ grant: { "queues.list": false } });
     const row = await page().findByTestId("job-row-job-1");
-    expect(within(row).queryByRole("link", { name: "job-1" })).toBeNull();
+    expectAbsent(within(row).queryByRole("link", { name: "job-1" }));
     expect(row.textContent).toContain("job-1");
   });
 });

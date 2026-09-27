@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { queuePageFixture, renderQueue } from "./fixtures";
@@ -51,7 +52,7 @@ describe("the queue list screen", () => {
     await waitFor(() =>
       expect(lastList(calls).query.get("search")).toBe("Mail"),
     );
-    expect(lastList(calls).query.get("offset")).toBeNull();
+    expectAbsent(lastList(calls).query.get("offset"));
     expect(window.location.search).toBe("?search=Mail");
   });
 
@@ -133,6 +134,6 @@ describe("the queue list screen", () => {
       },
     });
     // Without queues.list the section is not routed at all.
-    await waitFor(() => expect(page().queryByTestId("queues-list")).toBeNull());
+    await waitFor(() => expectAbsent(page().queryByTestId("queues-list")));
   });
 });
