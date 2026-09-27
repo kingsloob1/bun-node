@@ -3,6 +3,7 @@ import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectNone } from "../assert";
 
 /**
  * The runner history's pager against a REAL `createJobsApi`, over a real
@@ -182,9 +183,7 @@ describe("the runner history against a real API", () => {
     expect(second!.runIds).toHaveLength(PAGE);
     expect(third!.runIds).toHaveLength(RUNS - 2 * PAGE);
     // Page two holds runs page one never had: the rows were read, not sliced.
-    expect(
-      first!.runIds.filter((id) => second!.runIds.includes(id)),
-    ).toHaveLength(0);
+    expectNone(first!.runIds.filter((id) => second!.runIds.includes(id)));
     expect(
       new Set([...first!.runIds, ...second!.runIds, ...third!.runIds]).size,
     ).toBe(RUNS);
@@ -224,7 +223,7 @@ describe("the runner history against a real API", () => {
       `?history=${PAGE}&offset=${RUNS * 10}`,
       0,
     );
-    expect(only!.runIds).toHaveLength(0);
+    expectNone(only!.runIds);
     expect(only!.emptyPage).toBe(true);
     // The runner has run: the card must not say otherwise, and Clear
     // history… must not go dead on a page that happens to hold nothing.

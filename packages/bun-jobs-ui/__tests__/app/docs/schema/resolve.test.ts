@@ -9,6 +9,7 @@ import {
   schemaSkeleton,
   typeLabel,
 } from "../../../../app/screens/docs/schema";
+import { expectAbsent, expectUndefined } from "../../assert";
 
 /** A document with components, a cycle, a ref chain and an escaped name. */
 const doc = {
@@ -55,11 +56,9 @@ describe("resolveRef", () => {
   });
 
   it("answers undefined for a missing target or a remote document", () => {
-    expect(resolveRef(doc, "#/components/schemas/Nope")).toBeUndefined();
-    expect(resolveRef(doc, "other.json#/x")).toBeUndefined();
-    expect(
-      resolveRef(doc, "#/components/schemas/Job/required/9"),
-    ).toBeUndefined();
+    expectUndefined(resolveRef(doc, "#/components/schemas/Nope"));
+    expectUndefined(resolveRef(doc, "other.json#/x"));
+    expectUndefined(resolveRef(doc, "#/components/schemas/Job/required/9"));
   });
 });
 
@@ -77,7 +76,7 @@ describe("deref", () => {
   it("stops at a ref cycle instead of looping", () => {
     const result = deref({ $ref: "#/components/schemas/LoopA" }, doc);
     expect(result.cycle).toBe(true);
-    expect(result.schema).toBeUndefined();
+    expectUndefined(result.schema);
   });
 });
 
@@ -145,7 +144,7 @@ describe("additionalFields", () => {
     expect(additionalFields({ additionalProperties: { type: "string" } })).toBe(
       "typed",
     );
-    expect(additionalFields({ type: "object" })).toBeNull();
+    expectAbsent(additionalFields({ type: "object" }));
   });
 });
 

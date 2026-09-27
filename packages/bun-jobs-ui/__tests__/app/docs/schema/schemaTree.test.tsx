@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import { SchemaTree } from "../../../../app/screens/docs/schema";
+import { expectAbsent } from "../../assert";
 import { fireEvent, render, setupDom, within } from "../../dom";
 
 setupDom();
@@ -112,9 +113,7 @@ describe("SchemaTree", () => {
     expect(items.querySelector(".schema-ref")!.textContent).toBe("Node");
     expect(items.textContent).toContain("recursive");
     // No toggle: a cycle is never expanded again.
-    expect(
-      items.querySelector(":scope > .schema-row > .schema-toggle"),
-    ).toBeNull();
+    expectAbsent(items.querySelector(":scope > .schema-row > .schema-toggle"));
     expect(root.querySelectorAll(".schema-node").length).toBeLessThan(20);
   });
 

@@ -10,6 +10,7 @@ import {
   checkJobId,
   validateAddForm,
 } from "../../../app/screens/job/addJobForm";
+import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
 import { stubRawValue } from "../rawInput";
@@ -235,7 +236,7 @@ describe("the add-job dialog: data and options", () => {
     expect(errorOf(dialog, "Job id")).toBe(
       `At most ${MAX_JOB_ID_LENGTH} characters (this one has ${MAX_JOB_ID_LENGTH + 1}).`,
     );
-    expect(posts()).toHaveLength(0);
+    expectNone(posts());
     type(dialog, "Job id", "x".repeat(MAX_JOB_ID_LENGTH));
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
@@ -248,7 +249,7 @@ describe("the add-job dialog: data and options", () => {
     type(dialog, "Run", "delay");
     type(dialog, "Delay (ms)", "500");
     type(dialog, "Run", "runAt");
-    expect(within(dialog).queryByLabelText(labelled("Delay (ms)"))).toBeNull();
+    expectAbsent(within(dialog).queryByLabelText(labelled("Delay (ms)")));
     type(dialog, "Run at", "2026-10-01T09:30");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
@@ -276,13 +277,13 @@ describe("the add-job dialog: data and options", () => {
     raw.restore();
     expect(errorOf(dialog, "Run at")).toBe(DATE_TIME_OUT_OF_RANGE);
     await submit(dialog);
-    expect(posts()).toHaveLength(0);
+    expectNone(posts());
     // The field goes with its timing, and takes its problem with it.
     type(dialog, "Run", "now");
     expect(addButton.disabled).toBe(false);
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!).opts).toBeUndefined();
+    expectUndefined(JSON.parse(posts()[0]!.body!).opts);
   });
 
   it("sends only the delay when a delay is chosen", async () => {
@@ -313,7 +314,7 @@ describe("the add-job dialog: data and options", () => {
     expect(errorOf(dialog, "Attempts")).toBe("Enter 1 or more.");
     expect(errorOf(dialog, "Backoff (ms)")).toBe("Enter 0 or more.");
     expect(errorOf(dialog, "Timeout (ms)")).toBe("Enter a whole number.");
-    expect(posts()).toHaveLength(0);
+    expectNone(posts());
   });
 
   it("meters the data against maxJobDataBytes and refuses more", async () => {
@@ -330,7 +331,7 @@ describe("the add-job dialog: data and options", () => {
     expect(errorOf(dialog, "Data")).toBe(
       "The data is larger than the API accepts.",
     );
-    expect(posts()).toHaveLength(0);
+    expectNone(posts());
   });
 });
 
@@ -469,7 +470,7 @@ describe("validateAddForm / addBody / checkJobId", () => {
   it("refuses a leading dot and control characters in a job id", () => {
     expect(checkJobId(".hidden")).toBe("An id cannot start with a dot.");
     expect(checkJobId("ab")).toBe("An id cannot contain control characters.");
-    expect(checkJobId("ok id/1")).toBeUndefined();
+    expectUndefined(checkJobId("ok id/1"));
   });
 
   it("ignores a delay while the timing is runAt", () => {

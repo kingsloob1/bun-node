@@ -17,6 +17,7 @@ import {
   scopesFor,
   typesFor,
 } from "../../app/screens/events/eventLog";
+import { expectAbsent, expectNone, expectUndefined } from "./assert";
 import { act, fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
 import { metaFixture, queueListFixture } from "./fixtures";
 import {
@@ -152,7 +153,7 @@ describe("eventLog", () => {
     expect(channelName({ scope: "queueWorkers", queue: "emails" })).toBe(
       "queue/emails/workers",
     );
-    expect(parseChannel("workers", "runner")).toBeNull();
+    expectAbsent(parseChannel("workers", "runner"));
     expect(typesFor({ scope: "workers" })).toEqual(WORKER_EVENT_TYPES);
   });
 
@@ -175,11 +176,11 @@ describe("eventLog", () => {
       scope: "runner",
       runner: "nightly",
     });
-    expect(parseChannel("runner/nightly", "jobs")).toBeNull();
-    expect(parseChannel("all", "jobs")).toBeNull();
-    expect(parseChannel("queue/a/b", "both")).toBeNull();
-    expect(parseChannel("queue/emails/job/%E0%A4%A", "both")).toBeNull();
-    expect(parseChannel(null, "both")).toBeNull();
+    expectAbsent(parseChannel("runner/nightly", "jobs"));
+    expectAbsent(parseChannel("all", "jobs"));
+    expectAbsent(parseChannel("queue/a/b", "both"));
+    expectAbsent(parseChannel("queue/emails/job/%E0%A4%A", "both"));
+    expectAbsent(parseChannel(null, "both"));
     const job = { scope: "job", queue: "emails", id: "a/b c" } as const;
     expect(parseChannel(channelName(job), "both")).toEqual(job);
   });
@@ -349,7 +350,7 @@ describe("the Events console", () => {
     expect(page().getByTestId("events-types-summary").textContent).toBe(
       "Types: completed, failed",
     );
-    expect(page().queryByTestId("events-types-ignored")).toBeNull();
+    expectAbsent(page().queryByTestId("events-types-ignored"));
   });
 
   it("notes unknown types instead of silently showing every type", async () => {
@@ -358,14 +359,14 @@ describe("the Events console", () => {
     expect(note.textContent).toBe(
       "Ignored in the link's types: bogus (not an event type); runner.started (queues does not carry it). Showing every type.",
     );
-    expect(subscription().events).toBeUndefined();
+    expectUndefined(subscription().events);
     // The names stay in the URL, so a reload shows the same note.
     expect(url().get("types")).toBe("bogus,runner.started");
 
     // Choosing a type from the filter replaces them.
     fireEvent.click(page().getByLabelText("completed"));
     await waitFor(() => expect(url().get("types")).toBe("completed"));
-    expect(page().queryByTestId("events-types-ignored")).toBeNull();
+    expectAbsent(page().queryByTestId("events-types-ignored"));
   });
 
   it("falls back to the default channel for one the mode lacks", async () => {
@@ -387,13 +388,13 @@ describe("the Events console", () => {
         queueEvent({ type: "progress", target: "emails", id: "x" }),
       );
     });
-    expect(rows()).toHaveLength(0);
+    expectNone(rows());
     await emit(completed("1"));
     expect(rows()).toHaveLength(1);
 
     fireEvent.click(page().getByRole("button", { name: "All types" }));
-    await waitFor(() => expect(url().get("types")).toBeNull());
-    expect(subscription().events).toBeUndefined();
+    await waitFor(() => expectAbsent(url().get("types")));
+    expectUndefined(subscription().events);
   });
 
   it("picks a queue from the queue list", async () => {
@@ -477,7 +478,7 @@ describe("the Events console", () => {
       (row) => row.querySelector(".events-id")!.textContent,
     );
     expect(shown).toEqual(["p2", "p1", "before"]);
-    expect(page().queryByTestId("events-held")).toBeNull();
+    expectAbsent(page().queryByTestId("events-held"));
   });
 
   it("caps what a pause holds, counting the rest as dropped", async () => {
@@ -497,7 +498,7 @@ describe("the Events console", () => {
     await emit(completed("1"), completed("2"));
     expect(rows()).toHaveLength(2);
     fireEvent.click(page().getByRole("button", { name: "Clear" }));
-    expect(rows()).toHaveLength(0);
+    expectNone(rows());
     expect(page().getByText("Waiting for events")).toBeTruthy();
   });
 

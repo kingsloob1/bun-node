@@ -8,6 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * The queue screen's HOUSEKEEPING NOTE against a REAL `createJobsApi` with
@@ -358,7 +359,7 @@ describe("the housekeeping note against a real API", () => {
       // Still nothing after another real read, not merely before the first.
       await panel.refresh();
       await panel.awaitRows([worker.id]);
-      expect(panel.note()).toBeNull();
+      expectAbsent(panel.note());
       panel.unmount();
     },
     TEST_TIMEOUT_MS,

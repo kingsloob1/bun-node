@@ -5,6 +5,7 @@ import {
 } from "../../../app/components/formatRelative";
 import { RelativeTime } from "../../../app/components/RelativeTime";
 import { NOW_TICK_MS, sharedClockState } from "../../../app/hooks/useNow";
+import { expectAbsent } from "../assert";
 import { act, page, render, setupDom } from "../dom";
 
 // Ahead of setupDom()'s hooks, which need real timers to settle.
@@ -69,9 +70,9 @@ describe("formatRelativeTime", () => {
   });
 
   it("normalises inputs", () => {
-    expect(toEpochMs(null)).toBeNull();
-    expect(toEpochMs(undefined)).toBeNull();
-    expect(toEpochMs("garbage")).toBeNull();
+    expectAbsent(toEpochMs(null));
+    expectAbsent(toEpochMs(undefined));
+    expectAbsent(toEpochMs("garbage"));
     expect(toEpochMs(new Date(NOW))).toBe(NOW);
     expect(toEpochMs(new Date(NOW).toISOString())).toBe(NOW);
     expect(toEpochMs(NOW)).toBe(NOW);
@@ -112,7 +113,7 @@ describe("RelativeTime", () => {
       </>,
     );
     expect(page().getAllByText("—")).toHaveLength(2);
-    expect(document.querySelector("time")).toBeNull();
+    expectAbsent(document.querySelector("time"));
     expect(sharedClockState()).toEqual({ subscribers: 0, running: false });
   });
 

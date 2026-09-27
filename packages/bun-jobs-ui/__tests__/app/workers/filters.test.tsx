@@ -7,6 +7,7 @@ import {
   readWorkerFilters,
   workerListQuery,
 } from "../../../app/screens/workers/filters";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
@@ -135,7 +136,7 @@ describe("the Workers page's filters", () => {
   it("sends the URL's filters to GET /workers, and offers what the live list has", async () => {
     const { screen, calls } = await open("?queue=emails&state=paused");
     await within(screen).findByTestId("worker-row-api.emails.b2");
-    expect(within(screen).queryByTestId("worker-row-api.emails.a1")).toBeNull();
+    expectAbsent(within(screen).queryByTestId("worker-row-api.emails.a1"));
     const queries = workerQueries(calls);
     expect(queries).toContain("queue=emails&state=paused");
     // The unfiltered read, for the choices.
@@ -169,9 +170,7 @@ describe("the Workers page's filters", () => {
     await waitFor(() => expect(window.location.search).toBe("?service=cron"));
     await waitFor(() => expect(workerQueries(calls)).toContain("service=cron"));
     await waitFor(() =>
-      expect(
-        within(screen).queryByTestId("worker-row-api.emails.a1"),
-      ).toBeNull(),
+      expectAbsent(within(screen).queryByTestId("worker-row-api.emails.a1")),
     );
     fireEvent.change(filterSelect(screen, "Host"), {
       target: { value: "api-1" },
@@ -192,7 +191,7 @@ describe("the Workers page's filters", () => {
   it("offers no host filter when the API hides hosts, and ignores one in the link", async () => {
     const { screen, calls } = await open("?host=api-1&queue=emails", HIDDEN);
     await within(screen).findByTestId("worker-row-api.emails.a1");
-    expect(within(screen).queryByLabelText("Host")).toBeNull();
+    expectAbsent(within(screen).queryByLabelText("Host"));
     expect(
       within(screen).getByTestId("workers-host-ignored").textContent,
     ).toContain("api-1");
@@ -243,7 +242,7 @@ describe("the Workers page's filters", () => {
     // Every instance of a key leads to the same page.
     expect(b2.getAttribute("href")).toBe(a1.getAttribute("href"));
     await within(screen).findByTestId("worker-row-old-one");
-    expect(within(screen).queryByTestId("worker-key-link-old-one")).toBeNull();
+    expectAbsent(within(screen).queryByTestId("worker-key-link-old-one"));
   });
 });
 

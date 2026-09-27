@@ -18,6 +18,7 @@ import {
 } from "../../../app/live";
 import { MetaContext } from "../../../app/meta/hooks";
 import { createQueryClient } from "../../../app/queryClient";
+import { expectAbsent, expectNone } from "../assert";
 import { act, render, setupDom, waitFor } from "../dom";
 import { metaFixture, permissionsFixture, uiConfig } from "../fixtures";
 import { FakeSocket, hello, queueEvent } from "./fakes";
@@ -110,7 +111,7 @@ describe("LiveProvider", () => {
       detail: "The API has no live-events socket",
       interval: 5_000,
     });
-    expect(FakeSocket.instances).toHaveLength(0);
+    expectNone(FakeSocket.instances);
   });
 
   it("is off, with why, when events.connect is denied", () => {
@@ -119,7 +120,7 @@ describe("LiveProvider", () => {
     });
     expect(status(container).state).toBe("off");
     expect(status(container).detail).toMatch(/events\.connect/);
-    expect(FakeSocket.instances).toHaveLength(0);
+    expectNone(FakeSocket.instances);
   });
 
   it("is off, with why, when the UI shows documentation only (sections.manage false)", () => {
@@ -131,7 +132,7 @@ describe("LiveProvider", () => {
       detail: "Live updates are off: this UI shows documentation only",
       interval: 5_000,
     });
-    expect(FakeSocket.instances).toHaveLength(0);
+    expectNone(FakeSocket.instances);
   });
 
   it("is off when events are local and nothing publishes", () => {
@@ -139,7 +140,7 @@ describe("LiveProvider", () => {
       meta: { events: "local", publishing: false },
     });
     expect(status(container).state).toBe("off");
-    expect(FakeSocket.instances).toHaveLength(0);
+    expectNone(FakeSocket.instances);
   });
 
   it("connects once, goes live on hello, notes local events, and relaxes polling", async () => {
@@ -173,7 +174,7 @@ describe("LiveProvider", () => {
       FakeSocket.last.receive(hello({ events: "push" }));
     });
     await waitFor(() => expect(status(container).state).toBe("live"));
-    expect(status(container).detail).toBeNull();
+    expectAbsent(status(container).detail);
   });
 
   it("closes the socket on unmount", () => {
@@ -181,7 +182,7 @@ describe("LiveProvider", () => {
     const socket = FakeSocket.last;
     unmount();
     expect(socket.closedWith).toBe(1000);
-    expect(openSockets()).toHaveLength(0);
+    expectNone(openSockets());
   });
 
   it("survives StrictMode's double mount with exactly one open socket", async () => {
@@ -195,7 +196,7 @@ describe("LiveProvider", () => {
     });
     await waitFor(() => expect(status(container).state).toBe("live"));
     unmount();
-    expect(openSockets()).toHaveLength(0);
+    expectNone(openSockets());
   });
 });
 
@@ -282,7 +283,7 @@ describe("useLiveSubscription", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(socket.ops("unsubscribe")).toHaveLength(0);
+    expectNone(socket.ops("unsubscribe"));
     act(() => show({ first: false, second: false }));
     await waitFor(() => expect(socket.ops("unsubscribe")).toHaveLength(1));
   });
@@ -330,7 +331,7 @@ describe("useLiveSubscription", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(socket.sent).toHaveLength(0);
+    expectNone(socket.sent);
   });
 });
 

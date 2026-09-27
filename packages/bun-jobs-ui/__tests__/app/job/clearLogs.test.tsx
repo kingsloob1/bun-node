@@ -7,6 +7,7 @@ import {
   CLEAR_LOGS_EMPTY_REASON,
   clearLogsBlocker,
 } from "../../../app/screens/job/clearLogs";
+import { expectAbsent, expectUndefined } from "../assert";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
 import {
@@ -88,26 +89,26 @@ describe("clear logs: gating", () => {
   it("is offered on a finished job with jobs.clearLogs", async () => {
     await renderLogs(jobFixture("completed"));
     expect(clearButton()!.disabled).toBe(false);
-    expect(page().queryByTestId("clear-logs-reason")).toBeNull();
+    expectAbsent(page().queryByTestId("clear-logs-reason"));
   });
 
   it("is absent without jobs.clearLogs", async () => {
     await renderLogs(jobFixture("completed"), {
       actions: { "jobs.clearLogs": false },
     });
-    expect(clearButton()).toBeNull();
+    expectAbsent(clearButton());
   });
 
   it("is absent while the route is not registered (the action missing from the map)", async () => {
     await renderLogs(jobFixture("completed"), {
       actions: { "jobs.clearLogs": undefined },
     });
-    expect(clearButton()).toBeNull();
+    expectAbsent(clearButton());
   });
 
   it("is absent on a read-only API, whatever the permissions say", async () => {
     await renderLogs(jobFixture("completed"), { readOnly: true });
-    expect(clearButton()).toBeNull();
+    expectAbsent(clearButton());
   });
 
   it("is disabled on an active job, with the reason shown and wired to it", async () => {
@@ -131,7 +132,7 @@ describe("clear logs: gating", () => {
 
   it("is offered on every state but active", async () => {
     for (const state of ["waiting", "delayed", "failed", "dead"] as const) {
-      expect(clearLogsBlocker(state, 3)).toBeNull();
+      expectAbsent(clearLogsBlocker(state, 3));
     }
     expect(clearLogsBlocker("active", 3)).toBe(CLEAR_LOGS_ACTIVE_REASON);
     // Active wins over empty: the reason that will still hold after lines arrive.
@@ -174,7 +175,7 @@ describe("clear logs: the request", () => {
     const deletes = calls.filter((call) => call.method === "DELETE");
     expect(deletes).toHaveLength(1);
     expect(deletes[0]!.path).toBe(LOGS);
-    expect(deletes[0]!.body).toBeUndefined();
+    expectUndefined(deletes[0]!.body);
     const keys = invalidate.mock.calls.map(
       (args) => (args[0] as { queryKey: unknown }).queryKey,
     );

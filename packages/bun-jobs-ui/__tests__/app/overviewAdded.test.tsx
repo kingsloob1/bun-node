@@ -2,6 +2,7 @@ import type { AddedByStateDto, MetaDto } from "../../app/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { formatNumber } from "../../app/format";
+import { expectAbsent, expectNone } from "./assert";
 import { page, setupDom, visit, waitFor, within } from "./dom";
 import { metaFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";
@@ -70,8 +71,8 @@ describe("the Over the range tile's added-by-state group", () => {
     // Let the rest of the page load too, then look at every request it made.
     await page().findByTestId("jobs-series");
     await page().findByTestId("queue-row-emails");
-    expect(addedReads(calls)).toHaveLength(0);
-    expect(within(stat).queryByTestId("range-stat-added")).toBeNull();
+    expectNone(addedReads(calls));
+    expectAbsent(within(stat).queryByTestId("range-stat-added"));
     expect(stat.textContent).not.toContain("Added in range");
     expect(stat.textContent).not.toContain("Retrying");
     // Group 1 alone, unlabelled, as before.
@@ -84,7 +85,7 @@ describe("the Over the range tile's added-by-state group", () => {
     await tile();
     await page().findByTestId("queue-row-emails");
     expect(metaFixture().features.addedByState).toBe(false);
-    expect(addedReads(calls)).toHaveLength(0);
+    expectNone(addedReads(calls));
   });
 
   it("reads the range on screen and shows every state apart from the finished figures", async () => {
@@ -137,7 +138,7 @@ describe("the Over the range tile's added-by-state group", () => {
     expect(text).toContain("added, not finished");
     expect(text).toContain("remove finished jobs");
     // Compact: nothing in the headline font.
-    expect(stat.querySelector(".stat-value")).toBeNull();
+    expectAbsent(stat.querySelector(".stat-value"));
   });
 
   it("shows the group even where no analytics are recorded", async () => {

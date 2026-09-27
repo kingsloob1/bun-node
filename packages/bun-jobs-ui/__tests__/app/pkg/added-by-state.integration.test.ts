@@ -18,6 +18,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * "Added in range, by state" and the job list's `sort=createdAt`, against a
@@ -736,7 +737,7 @@ for (const { title, pick } of SERVED) {
             ).toEqual(CREATED_DESC);
           }
           expect(sorted.rows).toEqual(CREATED_DESC);
-          expect(sorted.totalHint).toBeNull();
+          expectAbsent(sorted.totalHint);
 
           // Counting: no sort, the natural order, and the hint says so.
           const beforeTotal = all.exchanges.length;
@@ -873,10 +874,10 @@ describe("added by state off: the file driver", () => {
       const overview = await h.mountOverview(all.fetch);
       try {
         const tile = await h.awaitRangeStat((view) => view.finished !== null);
-        expect(tile.added).toBeNull();
+        expectAbsent(tile.added);
         expect(tile.text).not.toContain("Added in");
         // Alone, the finished group is unlabelled, as before the feature.
-        expect(tile.finished!.heading).toBeNull();
+        expectAbsent(tile.finished!.heading);
         expect(tile.finished!.rows.map(([label]) => label)).toEqual([
           "Completed",
           "Failed attempts",
@@ -927,7 +928,7 @@ describe("added by state off: the file driver", () => {
         ).toEqual([]);
         // Nothing about creation order where it is not offered.
         const counted = await ui.awaitTable((one) => one.rows.length === 3);
-        expect(counted.totalHint).toBeNull();
+        expectAbsent(counted.totalHint);
       } finally {
         ui.unmount();
       }

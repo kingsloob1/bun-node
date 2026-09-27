@@ -9,6 +9,7 @@ import {
   readRange,
   writeRange,
 } from "../../../app/analytics/range";
+import { expectAbsent } from "../assert";
 
 /** A fixed clock, so a rolling preset resolves to known instants. */
 const NOW = Date.UTC(2026, 8, 20, 12, 0, 0);
@@ -25,7 +26,7 @@ describe("a rolling preset", () => {
   });
 
   it("round-trips through the URL, leaving the default out", () => {
-    expect(writeRange(defaultRange())).toBeNull();
+    expectAbsent(writeRange(defaultRange()));
     expect(readRange(null)).toEqual(defaultRange());
     expect(writeRange({ kind: "preset", seconds: 60 })).toBe("60s");
     expect(readRange("60s")).toEqual({ kind: "preset", seconds: 60 });
@@ -52,7 +53,7 @@ describe("a custom range", () => {
     expect(rangeProblem(NOW, NOW + MAX_RANGE_MS + 1)).toContain(
       "longer than 1 day",
     );
-    expect(rangeProblem(NOW, NOW + MAX_RANGE_MS)).toBeNull();
+    expectAbsent(rangeProblem(NOW, NOW + MAX_RANGE_MS));
     // A deployment reporting a shorter span is what decides, not the default.
     expect(rangeProblem(NOW, NOW + 7_200_000, 3_600_000)).toContain(
       "longer than 1 hour",

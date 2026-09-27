@@ -3,6 +3,7 @@ import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectNone } from "../assert";
 
 /**
  * The RUN LOG view against a REAL `createJobsApi` with real runs that really
@@ -280,7 +281,7 @@ describe("the run log against a real API", () => {
       await screens()
     ).mountRunLog("quiet", runId, fetchShim);
     const view = await mounted.awaitText("This run logged nothing");
-    expect(view.lines).toHaveLength(0);
+    expectNone(view.lines);
     // A 200 with no lines, not a 409: the log is retained and empty.
     expect(view.text).not.toContain("Run logs are not retained");
     mounted.unmount();

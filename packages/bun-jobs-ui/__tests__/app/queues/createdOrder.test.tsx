@@ -1,6 +1,7 @@
 import type { MetaDto } from "../../../app/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { renderApp } from "../renderApp";
@@ -46,7 +47,7 @@ describe("the queue's jobs table", () => {
     expect(jobReads(calls).length).toBeGreaterThan(1);
     expect(jobReads(calls).some((call) => call.query.has("sort"))).toBe(false);
     // Nothing about creation order is said where it is not offered.
-    expect(page().queryByText(/creation order/)).toBeNull();
+    expectAbsent(page().queryByText(/creation order/));
   });
 
   it("sorts by creation time, newest first, on a one-state tab with the flag", async () => {

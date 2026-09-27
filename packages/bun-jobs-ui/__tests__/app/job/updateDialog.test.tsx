@@ -9,6 +9,7 @@ import {
   updateBody,
   validateUpdateForm,
 } from "../../../app/screens/job/updateJobForm";
+import { expectAbsent, expectNone } from "../assert";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
 import { stubRawValue } from "../rawInput";
@@ -60,7 +61,7 @@ describe("the update dialog", () => {
     expect(within(dialog).getByRole("alert").textContent).toBe(
       "Change at least one of data, priority or run time.",
     );
-    expect(patches()).toHaveLength(0);
+    expectNone(patches());
   });
 
   it("PATCHes only the priority when only the priority is given, then closes and toasts", async () => {
@@ -69,7 +70,7 @@ describe("the update dialog", () => {
       target: { value: "1" },
     });
     await save(dialog);
-    await waitFor(() => expect(page().queryByRole("dialog")).toBeNull());
+    await waitFor(() => expectAbsent(page().queryByRole("dialog")));
     expect(patches()).toHaveLength(1);
     const call = patches()[0]!;
     expect(call.path).toBe(jobApiPath());
@@ -124,7 +125,7 @@ describe("the update dialog", () => {
     await act(async () => {
       fireEvent.submit(dialog.querySelector("form")!);
     });
-    expect(patches()).toHaveLength(0);
+    expectNone(patches());
     fireEvent.change(input, { target: { value: "2026-10-01T09:30" } });
     expect(errorOf(dialog, "Run at")).toBe("");
     expect(saveButton.disabled).toBe(false);
@@ -186,7 +187,7 @@ describe("the update dialog", () => {
     expect(errorOf(dialog, "Data")).toBe(
       "The data is larger than the API accepts.",
     );
-    expect(patches()).toHaveLength(0);
+    expectNone(patches());
   });
 
   it("shows VALIDATION issues beside their fields", async () => {

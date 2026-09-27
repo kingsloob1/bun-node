@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, jest } from "bun:test";
 import { JOB_STATES } from "../../../app/api/contract";
 import { STATE_LABELS } from "../../../app/format";
 import { ProgressValue } from "../../../app/screens/job/JobScreen";
+import { expectAbsent } from "../assert";
 import {
   act,
   fireEvent,
@@ -160,7 +161,7 @@ describe("the job screen", () => {
     expect(
       page().getByRole("list", { name: "Progress" }).textContent,
     ).toContain("step");
-    expect(page().queryByRole("progressbar")).toBeNull();
+    expectAbsent(page().queryByRole("progressbar"));
   });
 
   it("shows number progress as a percentage bar with its value", async () => {
@@ -197,14 +198,14 @@ describe("the job screen", () => {
       handlers: sideHandlers(),
     });
     await heading();
-    expect(page().queryByRole("progressbar")).toBeNull();
-    expect(page().queryByTestId("job-progress")).toBeNull();
+    expectAbsent(page().queryByRole("progressbar"));
+    expectAbsent(page().queryByTestId("job-progress"));
   });
 
   it("still renders any other value as text, for an older API that passes it through", () => {
     render(<ProgressValue progress="half" />);
     expect(page().getByText("half")).toBeTruthy();
-    expect(page().queryByRole("progressbar")).toBeNull();
+    expectAbsent(page().queryByRole("progressbar"));
   });
 
   it("shows a friendly not-found panel linking back to the queue on 404 JOB_NOT_FOUND", async () => {
@@ -362,7 +363,7 @@ describe("the job screen", () => {
       meta: jobMeta({ features: { ...jobMeta().features, logs: false } }),
     });
     await heading();
-    expect(page().queryByRole("region", { name: "Logs" })).toBeNull();
+    expectAbsent(page().queryByRole("region", { name: "Logs" }));
   });
 
   it("polls an unfinished job every 5 s, and stops once it has finished", async () => {
@@ -434,7 +435,7 @@ describe("the job screen's access gate", () => {
     });
     await settle(50);
     expect(calls.filter((call) => call.path.includes("/jobs/"))).toEqual([]);
-    expect(page().queryByTestId("job-screen")).toBeNull();
+    expectAbsent(page().queryByTestId("job-screen"));
   });
 
   /** Renders the job screen with the queue's scoped permissions held back until released. */
@@ -470,14 +471,14 @@ describe("the job screen's access gate", () => {
     await advance(5_000);
     // The untargeted map grants jobs.read, but the queue's is still pending.
     expect(reads()).toBe(0);
-    expect(page().queryByTestId("job-hidden")).toBeNull();
+    expectAbsent(page().queryByTestId("job-hidden"));
 
     release();
     await advance(100, 10);
     expect(page().getByTestId("job-hidden").textContent).toContain(
       "Job hidden",
     );
-    expect(page().queryByTestId("job-screen")).toBeNull();
+    expectAbsent(page().queryByTestId("job-screen"));
     await advance(15_000);
     expect(reads()).toBe(0);
   });
@@ -506,8 +507,8 @@ describe("the job screen's access gate", () => {
     expect(
       within(panel).getByRole("link", { name: "Back to emails" }),
     ).toBeTruthy();
-    expect(page().queryByText("Could not load the job")).toBeNull();
-    expect(page().queryByRole("button", { name: "Retry" })).toBeNull();
+    expectAbsent(page().queryByText("Could not load the job"));
+    expectAbsent(page().queryByRole("button", { name: "Retry" }));
     // Not polled after the refusal.
     await settle(50);
     expect(calls.filter((call) => call.path === jobApiPath())).toHaveLength(1);
@@ -530,7 +531,7 @@ describe("the job screen's access gate", () => {
       }),
     });
     expect(await page().findByTestId("job-not-found")).toBeTruthy();
-    expect(page().queryByTestId("job-hidden")).toBeNull();
+    expectAbsent(page().queryByTestId("job-hidden"));
   });
 });
 

@@ -12,6 +12,7 @@ import { App } from "../../../app/App";
 import { AppProviders } from "../../../app/providers";
 import { createQueryClient } from "../../../app/queryClient";
 import { AddJobDialog } from "../../../app/screens/job";
+import { expectAbsent } from "../assert";
 import {
   act,
   cleanup,
@@ -73,7 +74,7 @@ async function confirmAction(action: string, role: "dialog" | "alertdialog") {
   await act(async () => {
     fireEvent.click(within(dialog).getByRole("button", { name: action }));
   });
-  await waitFor(() => expect(page().queryByRole(role)).toBeNull(), {
+  await waitFor(() => expectAbsent(page().queryByRole(role)), {
     timeout: STEP_TIMEOUT_MS,
   });
 }
@@ -155,7 +156,7 @@ export function createJobUiHarness({
       await act(async () => {
         fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
       });
-      await waitFor(() => expect(page().queryByRole("dialog")).toBeNull(), {
+      await waitFor(() => expectAbsent(page().queryByRole("dialog")), {
         timeout: STEP_TIMEOUT_MS,
       });
       await waitFor(
@@ -200,10 +201,9 @@ export function createJobUiHarness({
           within(dialog).getByRole("button", { name: "Fail job" }),
         );
       });
-      await waitFor(
-        () => expect(page().queryByRole("alertdialog")).toBeNull(),
-        { timeout: STEP_TIMEOUT_MS },
-      );
+      await waitFor(() => expectAbsent(page().queryByRole("alertdialog")), {
+        timeout: STEP_TIMEOUT_MS,
+      });
       const toasts = document.querySelector(
         '.toast-viewport [aria-live="polite"]',
       );

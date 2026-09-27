@@ -1,5 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
@@ -69,7 +70,7 @@ describe("the jobs table", () => {
     });
     const row = within(await jobsTable()).getByTestId("job-row-job-1");
     expect(row.textContent).toContain("(invalid)");
-    expect(page().queryByTestId("screen-error")).toBeNull();
+    expectAbsent(page().queryByTestId("screen-error"));
   });
 
   it("shows the queue's error state when its detail answers the wrong shape", async () => {
@@ -138,7 +139,7 @@ describe("the jobs table", () => {
       "Failed an attempt, waiting to retry",
     );
     expect(retrying.getAttribute("title")).toContain("Dead");
-    expect(within(tabs).queryByRole("tab", { name: /Failed/ })).toBeNull();
+    expectAbsent(within(tabs).queryByRole("tab", { name: /Failed/ }));
     // Only the state that needs one carries a tooltip.
     expect(
       within(tabs).getByRole("tab", { name: /Dead/ }).hasAttribute("title"),
@@ -165,7 +166,7 @@ describe("the jobs table", () => {
     await waitFor(() =>
       expect(lastJobs(calls).query.getAll("state")).toEqual(["failed"]),
     );
-    expect(lastJobs(calls).query.get("offset")).toBeNull();
+    expectAbsent(lastJobs(calls).query.get("offset"));
     const url = new URLSearchParams(window.location.search);
     expect(url.get("state")).toBe("failed");
     expect(url.has("offset")).toBe(false);
@@ -253,7 +254,7 @@ describe("the jobs table", () => {
     const request = lastJobs(calls);
     expect(request.url).toContain("name=send&name=digest");
     expect(request.query.get("search")).toBe("job-4");
-    expect(request.query.get("offset")).toBeNull();
+    expectAbsent(request.query.get("offset"));
     expect(new URLSearchParams(window.location.search).get("name")).toBe(
       "send,digest",
     );
@@ -410,7 +411,7 @@ describe("bulk actions", () => {
         calls.find((c) => c.path === "/queues/emails/jobs/remove")!.body!,
       ),
     ).toEqual({ ids: ["job-1"] });
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
     // The emptied selection disabled the opener, so focus stays in the bulk
     // bar. Compared by identity: `toBe` on happy-dom nodes is very slow.
     const bar = page().getByRole("group", { name: "Bulk actions" });
@@ -465,8 +466,8 @@ describe("bulk actions", () => {
       },
     });
     const table = await jobsTable();
-    expect(within(table).queryByRole("checkbox")).toBeNull();
-    expect(page().queryByRole("group", { name: "Bulk actions" })).toBeNull();
+    expectAbsent(within(table).queryByRole("checkbox"));
+    expectAbsent(page().queryByRole("group", { name: "Bulk actions" }));
   });
 
   it("offers only the permitted bulk actions", async () => {
@@ -482,9 +483,7 @@ describe("bulk actions", () => {
     expect(
       page().getByRole("button", { name: "Promote selected" }),
     ).toBeTruthy();
-    expect(
-      page().queryByRole("button", { name: "Remove selected…" }),
-    ).toBeNull();
+    expectAbsent(page().queryByRole("button", { name: "Remove selected…" }));
   });
 
   it("uses the counts fixture", () => {

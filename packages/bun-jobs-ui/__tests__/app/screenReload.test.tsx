@@ -1,5 +1,6 @@
 import type { RecordedCall } from "./mockFetch";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { expectAbsent } from "./assert";
 import { fireEvent, page, setupDom } from "./dom";
 import { allPermissions, jobApiPath, jobFixture } from "./job/fixtures";
 import { renderJobScreen } from "./job/render";
@@ -49,7 +50,7 @@ describe("Reload this screen, after a crash caused by the data", () => {
     fireEvent.click(page().getByRole("button", { name: "Reload this screen" }));
     expect(await page().findByTestId("job-screen")).toBeTruthy();
     expect(await page().findByText("worker-1")).toBeTruthy();
-    expect(page().queryByTestId("screen-error")).toBeNull();
+    expectAbsent(page().queryByTestId("screen-error"));
 
     // Exactly one new request, the job; the bootstrap reads were kept.
     expect(routes(calls.slice(before))).toEqual([`GET ${jobApiPath()}`]);

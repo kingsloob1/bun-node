@@ -7,6 +7,7 @@ import { JOBS_API_WS_SUBPROTOCOL } from "@kingsleyweb/bun-jobs/api/contract";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { LiveClient, liveSocketUrl } from "../../../app/live/client";
 import { liveChannels } from "../../../app/live/live";
+import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { FakeSocket, FakeTimers, hello, queueEvent, settle } from "./fakes";
 
 /**
@@ -118,7 +119,7 @@ describe("connection", () => {
     expect(socket.url).toBe("ws://localhost/jobs-api/ws");
     expect(states).toEqual(["connecting", "live"]);
     expect(client.sessionId).toBe("s1");
-    expect(client.getSnapshot().detail).toBeNull();
+    expectAbsent(client.getSnapshot().detail);
   });
 
   it("stops with code 1000 and state off, and can start again", async () => {
@@ -152,7 +153,7 @@ describe("subscriptions", () => {
     await settle();
     subscribes = socket.ops("subscribe");
     expect(subscribes).toHaveLength(2);
-    expect(subscribes[1]!.events).toBeUndefined();
+    expectUndefined(subscribes[1]!.events);
 
     // Its release narrows the filter again: a re-subscribe, not an unsubscribe.
     c.release();
@@ -160,7 +161,7 @@ describe("subscriptions", () => {
     subscribes = socket.ops("subscribe");
     expect(subscribes).toHaveLength(3);
     expect(subscribes[2]!.events).toEqual(["added", "completed"]);
-    expect(socket.ops("unsubscribe")).toHaveLength(0);
+    expectNone(socket.ops("unsubscribe"));
 
     // Its release narrows the merged filter once more.
     a.release();
@@ -185,7 +186,7 @@ describe("subscriptions", () => {
     expect(socket.ops("subscribe")).toHaveLength(1);
     a.release();
     await settle();
-    expect(socket.ops("unsubscribe")).toHaveLength(0);
+    expectNone(socket.ops("unsubscribe"));
     b.release();
     await settle();
     expect(socket.ops("unsubscribe")).toHaveLength(1);
@@ -211,10 +212,10 @@ describe("subscriptions", () => {
     const socket = FakeSocket.last;
     socket.open();
     await settle();
-    expect(socket.sent).toHaveLength(0);
+    expectNone(socket.sent);
     socket.receive(hello());
     expect(socket.ops("subscribe")).toHaveLength(1);
-    expect(socket.ops("subscribe")[0]!.resume).toBeUndefined();
+    expectUndefined(socket.ops("subscribe")[0]!.resume);
   });
 
   it("routes ack rejections to the holders of those channels only, by the raw name", async () => {
@@ -317,7 +318,7 @@ describe("events", () => {
     socket.receive(queueEvent(1, ["queue/emails", job]));
     expect(a.events).toHaveLength(1);
     expect(b.events).toHaveLength(1);
-    expect(c.events).toHaveLength(0);
+    expectNone(c.events);
   });
 
   it("applies each holder's own filter on a shared channel", async () => {
@@ -389,7 +390,7 @@ describe("gaps", () => {
       channels: ["queue/a"],
     });
     expect(a.gaps).toHaveLength(1);
-    expect(b.gaps).toHaveLength(0);
+    expectNone(b.gaps);
     socket.receive({
       type: "gap",
       epoch: "e1",
@@ -427,7 +428,7 @@ describe("reconnect and resume", () => {
     second.receive(queueEvent(7, ["queue/emails"]));
     second.ackAll({ resumed: true });
     expect(holder.events.map((event) => event.id)).toEqual(["1", "4", "8"]);
-    expect(holder.gaps).toHaveLength(0);
+    expectNone(holder.gaps);
     expect(client.getSnapshot().state).toBe("live");
   });
 
@@ -454,7 +455,7 @@ describe("reconnect and resume", () => {
       channels: ["queue/emails"],
     });
     expect(holder.gaps).toHaveLength(1);
-    expect(other.gaps).toHaveLength(0);
+    expectNone(other.gaps);
 
     // A later gap is delivered normally.
     second.receive({
@@ -488,7 +489,7 @@ describe("reconnect and resume", () => {
     expect(frames).toHaveLength(2);
     expect(frames.every((frame) => frame.resume !== undefined)).toBe(true);
     second.ackAll({ resumed: true });
-    expect(queue.gaps).toHaveLength(0);
+    expectNone(queue.gaps);
     expect(job.gaps).toHaveLength(1);
   });
 
@@ -579,7 +580,7 @@ describe("reconnect and resume", () => {
       status: 500,
       detail: "boom",
     });
-    expect(a.gaps).toHaveLength(0);
+    expectNone(a.gaps);
     expect(b.gaps).toEqual([
       expect.objectContaining({
         reason: "resume-expired",
@@ -590,7 +591,7 @@ describe("reconnect and resume", () => {
     timers.advance(timers.pending()[0]!);
     const retried = next.ops("subscribe");
     expect(retried).toHaveLength(1);
-    expect(retried[0]!.resume).toBeUndefined();
+    expectUndefined(retried[0]!.resume);
     next.drop(1006);
     timers.advance(timers.pending()[0]!);
     FakeSocket.last.open();
@@ -652,7 +653,7 @@ describe("reconnect and resume", () => {
     expect(holder.gaps).toEqual([
       expect.objectContaining({ reason: "epoch-changed", epoch: "e2" }),
     ]);
-    expect(second.ops("subscribe")[0]!.resume).toBeUndefined();
+    expectUndefined(second.ops("subscribe")[0]!.resume);
     // seq 3 of the new epoch is a different event: not a duplicate.
     second.receive(
       queueEvent(3, ["queue/emails"], "completed", { epoch: "e2" }),
@@ -694,10 +695,10 @@ describe("heartbeat", () => {
     const { client, socket } = await connected();
     socket.receive(hello({ heartbeatMs: 1000 }));
     timers.advance(6_999);
-    expect(socket.closedWith).toBeUndefined();
+    expectUndefined(socket.closedWith);
     socket.receive({ type: "heartbeat", seq: 0, at: 0 });
     timers.advance(6_999);
-    expect(socket.closedWith).toBeUndefined();
+    expectUndefined(socket.closedWith);
     timers.advance(1);
     expect(socket.closedWith).toBe(4000);
     expect(client.getSnapshot().state).toBe("reconnecting");
@@ -768,7 +769,7 @@ describe("close codes", () => {
     socket.ackAll();
     socket.drop(4008);
     expect(client.getSnapshot().state).toBe("reconnecting");
-    expect(holder.gaps).toHaveLength(0);
+    expectNone(holder.gaps);
     timers.advance(250);
     FakeSocket.last.open();
     FakeSocket.last.receive(hello());
@@ -821,7 +822,7 @@ describe("error frames", () => {
     });
     client.hold({ channels: ["queue/b"] });
     await settle();
-    expect(socket.sent).toHaveLength(0);
+    expectNone(socket.sent);
     timers.advance(2_000);
     await settle();
     const channels = socket.ops("subscribe").flatMap((sent) => sent.channels);
@@ -846,7 +847,7 @@ describe("error frames", () => {
     timers.advance(timers.pending()[0]!);
     expect(socket.ops("subscribe")).toHaveLength(1);
     socket.ackAll();
-    expect(client.getSnapshot().detail).toBeNull();
+    expectAbsent(client.getSnapshot().detail);
   });
 
   it("keeps sends within its own budget", async () => {

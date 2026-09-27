@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { DATE_TIME_OUT_OF_RANGE } from "../../../../app/components/inputValues";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import { stubRawValue } from "../../rawInput";
@@ -114,7 +115,7 @@ describe("the schedule editor: saving", () => {
       schedule: { cron: "0 9 * * 1", tz: "Europe/London" },
     });
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
   });
 
   it("converts an interval in hours to ms, with an anchor", async () => {
@@ -212,7 +213,7 @@ describe("the schedule editor: validation", () => {
         "“Mars/Base” is not a known time zone",
       ),
     );
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
   });
 
   it("refuses a malformed cron and an empty interval before sending", async () => {
@@ -229,7 +230,7 @@ describe("the schedule editor: validation", () => {
         "Enter an interval greater than zero.",
       ),
     );
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
   });
 
   it("refuses an anchor or a one-off time outside the API's range, with Save disabled", async () => {
@@ -264,7 +265,7 @@ describe("the schedule editor: validation", () => {
     expect(fieldError(/^Run at/)).toBe(DATE_TIME_OUT_OF_RANGE);
     expect(saveButton.disabled).toBe(true);
     fireEvent.submit(dialog.querySelector("form")!);
-    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+    expectUndefined(callTo(calls, "PUT", PATH));
   });
 
   it("shows INVALID_SCHEDULE on the field its issue names", async () => {
@@ -291,7 +292,7 @@ describe("the schedule editor: validation", () => {
       expect(input.getAttribute("aria-invalid")).toBe("true"),
     );
     expect(dialog.textContent).toContain("bad minute");
-    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expectAbsent(within(dialog).queryByRole("alert"));
     expect(openDialog()).toBeTruthy();
     expect(errorToasts().textContent).toBe("");
   });
@@ -430,7 +431,7 @@ describe("the schedule editor: validation", () => {
         .getByLabelText(/^Interval/)
         .getAttribute("aria-invalid"),
     ).not.toBe("true");
-    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expectAbsent(within(dialog).queryByRole("alert"));
   });
 
   it("shows any other failure as a banner, explained", async () => {

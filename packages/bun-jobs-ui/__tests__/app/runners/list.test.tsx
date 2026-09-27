@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
@@ -200,7 +201,7 @@ describe("the runner list screen", () => {
       permissions: permissionsFixture({ "runners.list": false }),
     });
     await page().findByTestId("not-found");
-    expect(page().queryByTestId("runners-list")).toBeNull();
+    expectAbsent(page().queryByTestId("runners-list"));
     expect(calls.some((call) => call.path === "/runners")).toBe(false);
   });
 

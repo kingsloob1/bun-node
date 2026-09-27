@@ -2,6 +2,7 @@ import type { WorkerDto } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONTROL_WAIT_MS } from "../../../app/api/workers";
+import { expectAbsent, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
@@ -75,7 +76,7 @@ describe("a worker's lifecycle buttons", () => {
     // `wait` is a query parameter, not a body field: in the body it is
     // ignored and every instruction reads as unacknowledged.
     expect(recorded[0]!.query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
-    expect(recorded[0]!.body).toBeUndefined();
+    expectUndefined(recorded[0]!.body);
     expect(await page().findByText(/Paused api\.emails/)).toBeTruthy();
   });
 
@@ -103,8 +104,8 @@ describe("a worker's lifecycle buttons", () => {
         },
       },
     });
-    expect(within(row).queryByRole("button", { name: "Pause" })).toBeNull();
-    expect(within(row).queryByRole("button", { name: "Resume" })).toBeNull();
+    expectAbsent(within(row).queryByRole("button", { name: "Pause" }));
+    expectAbsent(within(row).queryByRole("button", { name: "Resume" }));
     fireEvent.click(within(row).getByRole("button", { name: "Start" }));
     await waitFor(() => expect(recorded).toHaveLength(1));
   });
@@ -138,13 +139,13 @@ describe("the Stop dialog", () => {
     const dialog = await page().findByRole("alertdialog");
     expect(dialog.textContent).toContain("finishes the job it is running");
     expect(dialog.textContent).toContain("A redeploy or a restart brings this");
-    expect(within(dialog).queryByRole("combobox")).toBeNull();
+    expectAbsent(within(dialog).queryByRole("combobox"));
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Stop worker" }),
     );
     await waitFor(() => expect(recorded).toHaveLength(1));
     // No choice offered, so no `persist` is sent: the deployment decides.
-    expect(recorded[0]!.body).toBeUndefined();
+    expectUndefined(recorded[0]!.body);
   });
 
   it("offers both persistences when the deployment allows a choice, and sends it", async () => {
@@ -295,8 +296,8 @@ describe("a worker between states", () => {
       grant: { "workers.configure": true },
     });
     expect(within(row).getByRole("button", { name: "Settings…" })).toBeTruthy();
-    expect(within(row).queryByRole("button", { name: "Pause" })).toBeNull();
-    expect(within(row).queryByRole("button", { name: "Stop…" })).toBeNull();
+    expectAbsent(within(row).queryByRole("button", { name: "Pause" }));
+    expectAbsent(within(row).queryByRole("button", { name: "Stop…" }));
     expect(
       within(row).getByTestId("worker-blocked-api.emails.9f3c1d20").textContent,
     ).toContain("between states");
@@ -304,7 +305,7 @@ describe("a worker between states", () => {
 
   it("explains them when nothing at all is offered", async () => {
     const { row } = await openWorkers({ worker: stopping });
-    expect(within(row).queryByRole("button")).toBeNull();
+    expectAbsent(within(row).queryByRole("button"));
     expect(
       within(row).getByTestId("worker-blocked-api.emails.9f3c1d20").textContent,
     ).toContain("between states");
@@ -316,16 +317,16 @@ describe("a worker between states", () => {
       grant: { "workers.configure": true, "workers.pause": false },
     });
     expect(within(row).getByRole("button", { name: "Settings…" })).toBeTruthy();
-    expect(
+    expectAbsent(
       within(row).queryByTestId("worker-blocked-api.emails.9f3c1d20"),
-    ).toBeNull();
+    );
   });
 });
 
 describe("the Settings dialog", () => {
   it("is absent without the opt-in action", async () => {
     const { row } = await openWorkers();
-    expect(within(row).queryByRole("button", { name: "Settings…" })).toBeNull();
+    expectAbsent(within(row).queryByRole("button", { name: "Settings…" }));
   });
 
   it("sends only what changed, keyed by the stable key, with the seq it read", async () => {

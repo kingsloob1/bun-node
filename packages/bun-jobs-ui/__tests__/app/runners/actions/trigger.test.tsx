@@ -1,6 +1,7 @@
 import type { SkipReason } from "../../../../app/screens/runners/actions/explain";
 import { describe, expect, it } from "bun:test";
 import { SKIP_REASONS } from "../../../../app/screens/runners/actions/explain";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {
@@ -37,9 +38,9 @@ describe("trigger", () => {
       within(notifications()).getByRole("button", { name: "Copy run id" }),
     ).toBeTruthy();
     const call = callTo(calls, "POST", PATH)!;
-    expect(call.body).toBeUndefined();
+    expectUndefined(call.body);
     expect(call.headers["content-type"]).toBe("application/json");
-    await waitFor(() => expect(openDialog()).toBeNull());
+    await waitFor(() => expectAbsent(openDialog()));
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
   });
 
@@ -84,14 +85,14 @@ describe("trigger", () => {
       fireEvent.click(dialogButton(dialog, "Trigger"));
       await toastSays("Run skipped on nightly");
       expect(notifications().textContent).toContain(SKIP_REASONS[reason]);
-      await waitFor(() => expect(openDialog()).toBeNull());
+      await waitFor(() => expectAbsent(openDialog()));
     });
   }
 
   it("has no args editor unless the API accepts run arguments", async () => {
     await renderActions({ meta: { runnerTriggerArgs: false } });
     const dialog = await openAction("Trigger…");
-    expect(within(dialog).queryByLabelText("Arguments")).toBeNull();
+    expectAbsent(within(dialog).queryByLabelText("Arguments"));
   });
 
   it("sends args with runnerTriggerArgs, and blocks invalid JSON", async () => {

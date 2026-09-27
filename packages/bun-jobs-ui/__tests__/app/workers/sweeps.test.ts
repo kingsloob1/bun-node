@@ -1,6 +1,7 @@
 import type { WorkerDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { sweepWarning } from "../../../app/screens/workers/sweeps";
+import { expectAbsent } from "../assert";
 
 /**
  * The three-state rule behind the queue panel's housekeeping note. It is a
@@ -30,14 +31,14 @@ describe("the housekeeping warning", () => {
     // Absent is not `false`: these workers predate `sweeps` and have said
     // nothing. Warning here would make every fleet mid-upgrade read as
     // misconfigured.
-    expect(sweepWarning([worker(), worker()])).toBeNull();
-    expect(sweepWarning([])).toBeNull();
+    expectAbsent(sweepWarning([worker(), worker()]));
+    expectAbsent(sweepWarning([]));
   });
 
   it("says nothing when any live worker reports that it sweeps", () => {
-    expect(sweepWarning([worker(false), worker(true)])).toBeNull();
-    expect(sweepWarning([worker(true)])).toBeNull();
-    expect(sweepWarning([worker(true), worker()])).toBeNull();
+    expectAbsent(sweepWarning([worker(false), worker(true)]));
+    expectAbsent(sweepWarning([worker(true)]));
+    expectAbsent(sweepWarning([worker(true), worker()]));
   });
 
   it("warns, without hedging, when every live worker reports `false`", () => {

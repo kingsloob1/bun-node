@@ -39,6 +39,7 @@ import {
   intParam,
   splitList,
 } from "../../../app/screens/queues/urlState";
+import { expectUndefined } from "../assert";
 import { setupDom } from "../dom";
 import { repeatablesFixture } from "./fixtures";
 
@@ -126,14 +127,14 @@ describe("the queue screens' pure helpers", () => {
   it("converts and formats durations", () => {
     expect(toMs(2, "hours")).toBe(7_200_000);
     expect(toMs(1.5, "minutes")).toBe(90_000);
-    expect(toMs(undefined, "days")).toBeUndefined();
-    expect(toMs(-1, "days")).toBeUndefined();
+    expectUndefined(toMs(undefined, "days"));
+    expectUndefined(toMs(-1, "days"));
     expect(formatMs(90_000)).toBe("1m 30s");
     expect(formatMs(86_400_000)).toBe("1d");
     expect(formatMs(250)).toBe("250ms");
     expect(parseWindow(" 60000 ")).toBe(60_000);
     expect(parseWindow("1 minute")).toBe("1 minute");
-    expect(parseWindow("  ")).toBeUndefined();
+    expectUndefined(parseWindow("  "));
   });
 
   it("round-trips limits between the stored shape and the PUT body", () => {
@@ -202,8 +203,8 @@ describe("walking the jobs list by cursor", () => {
       "?state=waiting&cursor=opaque-cursor&limit=20&order=desc",
     );
     // No cursor asked for, none sent, and the filters are as they were.
-    expect(readJobFilters(params, "waiting", LIMITS).cursor).toBeUndefined();
-    expect(jobListQuery(jumped).cursor).toBeUndefined();
+    expectUndefined(readJobFilters(params, "waiting", LIMITS).cursor);
+    expectUndefined(jobListQuery(jumped).cursor);
   });
 
   it("keeps a cursor out of the query key's way: one key per page walked", () => {
@@ -217,18 +218,18 @@ describe("walking the jobs list by cursor", () => {
 
   it("walks forward and back through the trail, and starts empty", () => {
     const start = emptyWalk("k");
-    expect(walkCursor(start)).toBeUndefined();
+    expectUndefined(walkCursor(start));
     const second = walkForward(start, "c1");
     const third = walkForward(second, "c2");
     expect(walkCursor(second)).toBe("c1");
     expect(walkCursor(third)).toBe("c2");
     // Back is the exact inverse: the cursor that produced the page before.
     expect(walkCursor(walkBack(third))).toBe("c1");
-    expect(walkCursor(walkBack(walkBack(third)))).toBeUndefined();
+    expectUndefined(walkCursor(walkBack(walkBack(third))));
     // At the page it started from there is nothing behind it.
     expect(walkBack(start)).toBe(start);
     // Pure: walking on leaves the walk it came from alone.
-    expect(walkCursor(start)).toBeUndefined();
+    expectUndefined(walkCursor(start));
     expect(walkCursor(second)).toBe("c1");
   });
 
@@ -242,7 +243,7 @@ describe("walking the jobs list by cursor", () => {
     // carry one.
     const other = walkFor(walked, "k2");
     expect(other.trail).toEqual([]);
-    expect(walkCursor(other)).toBeUndefined();
+    expectUndefined(walkCursor(other));
     expect(other.key).toBe("k2");
   });
 });

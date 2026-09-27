@@ -5,6 +5,7 @@ import type {
 } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { WORKER_TARGET_KINDS } from "../../../app/api/contract";
+import { expectAbsent, expectNone } from "../assert";
 import { page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
@@ -135,7 +136,7 @@ describe("the target badge in a worker table", () => {
       workerFixture({ id: "w-new", target: target("worker-thread") }),
     ]);
     await within(list).findByTestId("worker-row-w-old");
-    expect(badgeOf(list, "w-old")).toBeNull();
+    expectAbsent(badgeOf(list, "w-old"));
     const row = within(list).getByTestId("worker-row-w-old");
     expect(row.textContent).not.toContain("In process");
     // No column was added for it: the dash convention is the columns'.
@@ -200,14 +201,14 @@ describe("the worker page's Target card", () => {
       within(card).getByTestId("worker-target-processor").textContent,
     ).toBe("File");
     // The path was withheld: nothing hints that one exists.
-    expect(within(card).queryByTestId("worker-target-file")).toBeNull();
-    expect(within(card).queryByText("File", { selector: "dt" })).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-target-file"));
+    expectAbsent(within(card).queryByText("File", { selector: "dt" }));
     // Not custom: no name.
-    expect(within(card).queryByTestId("worker-target-name")).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-target-name"));
     // A fact, not a setting: the card says so, and offers nothing to change.
     expect(card.textContent).toContain("not a setting");
-    expect(within(card).queryAllByRole("button")).toHaveLength(0);
-    expect(within(card).queryByTestId("worker-target-differs")).toBeNull();
+    expectNone(within(card).queryAllByRole("button"));
+    expectAbsent(within(card).queryByTestId("worker-target-differs"));
   });
 
   it("shows the file's path when the API sent it", async () => {
@@ -261,7 +262,7 @@ describe("the worker page's Target card", () => {
       within(card).getByTestId("worker-target-predates").textContent,
     ).toContain("predates target reporting");
     expect(card.textContent).not.toContain("In process");
-    expect(within(card).queryByTestId("worker-target-processor")).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-target-processor"));
   });
 
   it("lists every target when the instances disagree, each with the instances that report it", async () => {
@@ -285,7 +286,7 @@ describe("the worker page's Target card", () => {
       "——1 instance: api.emails.d4",
     ]);
     // Not the first instance's answer standing for all of them.
-    expect(within(card).queryByTestId("worker-target-kind")).toBeNull();
+    expectAbsent(within(card).queryByTestId("worker-target-kind"));
   });
 
   it("names the first five instances of a target and counts the rest", async () => {

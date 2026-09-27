@@ -8,6 +8,7 @@ import type {
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { CAPTURE_GAP_NOTE } from "../../../app/screens/runners/runLogFormat";
+import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
@@ -178,19 +179,17 @@ describe("the run log on a history row", () => {
       "run-3",
     );
     fireEvent.click(within(row()).getByRole("button", { name: "Hide log" }));
-    await waitFor(() =>
-      expect(page().queryByTestId("run-logs-run-3")).toBeNull(),
-    );
-    expect(new URLSearchParams(window.location.search).get("logs")).toBeNull();
+    await waitFor(() => expectAbsent(page().queryByTestId("run-logs-run-3")));
+    expectAbsent(new URLSearchParams(window.location.search).get("logs"));
   });
 
   it("offers no log for a finished run counted at zero lines, and says it logged nothing", async () => {
     await renderWithLogs({
       history: [loggedRun({ runId: "run-quiet", logLines: 0 })],
     });
-    expect(
+    expectAbsent(
       within(row("run-quiet")).queryByRole("button", { name: "Log" }),
-    ).toBeNull();
+    );
     fireEvent.click(
       within(row("run-quiet")).getByRole("button", {
         name: "Show run run-quiet",
@@ -235,14 +234,14 @@ describe("the run log on a history row", () => {
         features: { ...runnerMeta().features, runnerLogs: false },
       }),
     });
-    expect(page().queryByRole("columnheader", { name: "Log" })).toBeNull();
-    expect(within(row()).queryByRole("button", { name: "Log" })).toBeNull();
+    expectAbsent(page().queryByRole("columnheader", { name: "Log" }));
+    expectAbsent(within(row()).queryByRole("button", { name: "Log" }));
     unmount();
 
     await renderWithLogs({
       permissions: permissionsFixture({ "runners.logs": false }),
     });
-    expect(page().queryByRole("columnheader", { name: "Log" })).toBeNull();
+    expectAbsent(page().queryByRole("columnheader", { name: "Log" }));
   });
 });
 
@@ -395,7 +394,7 @@ describe("tailing a live run's log", () => {
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
     await advance(100, 10);
     expect(lines()).toEqual(["line 1"]);
-    expect(logCalls(calls)[0]!.query.get("since")).toBeNull();
+    expectAbsent(logCalls(calls)[0]!.query.get("since"));
 
     await tailFor(2_000);
     expect(logCalls(calls)[1]!.query.get("since")).toBe("1");
@@ -461,7 +460,7 @@ describe("the stream filter", () => {
     const last = logCalls(calls).at(-1)!;
     expect(last.query.get("stream")).toBe("stderr");
     // A filter reads from the start of what is kept: `since` is a raw seq.
-    expect(last.query.get("since")).toBeNull();
+    expectAbsent(last.query.get("since"));
     await settle();
   });
 });

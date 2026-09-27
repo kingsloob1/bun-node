@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { runnerActionGates } from "../../../../app/screens/runners/actions/gating";
+import { expectAbsent } from "../../assert";
 import { fireEvent, page, setupDom, within } from "../../dom";
 import {
   actionGroup,
@@ -75,7 +76,7 @@ describe("which runner actions are offered", () => {
 
   it("offers nothing on a read-only API, whatever the permissions say", async () => {
     await renderActions({ runner: runningRunner(), meta: { readOnly: true } });
-    expect(actionGroup()).toBeNull();
+    expectAbsent(actionGroup());
   });
 
   it("offers nothing when every write is denied", async () => {
@@ -90,7 +91,7 @@ describe("which runner actions are offered", () => {
         "runners.clearHistory": false,
       },
     });
-    expect(actionGroup()).toBeNull();
+    expectAbsent(actionGroup());
   });
 
   it("drops kill and reset stats on a remote runner, with a hint", async () => {
@@ -106,7 +107,7 @@ describe("which runner actions are offered", () => {
       runner: nonLocalRunner(),
       scoped: { "runners.kill": false, "runners.resetStats": false },
     });
-    expect(page().queryByTestId("runner-non-local-hint")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-non-local-hint"));
   });
 
   it("offers nothing in the header when clear history is the only write granted", async () => {
@@ -121,7 +122,7 @@ describe("which runner actions are offered", () => {
         "runners.resetStats": false,
       },
     });
-    expect(actionGroup()).toBeNull();
+    expectAbsent(actionGroup());
     expect(clearHistoryButton()).not.toBeNull();
   });
 });
@@ -154,9 +155,9 @@ describe("clear history: in the History card, not the header", () => {
     expect(clearHistoryButton()).not.toBeNull();
     const group = actionGroup()!;
     expect(group).not.toBeNull();
-    expect(
+    expectAbsent(
       within(group).queryByRole("button", { name: "Clear history…" }),
-    ).toBeNull();
+    );
     expect(actionNames()).not.toContain("Clear history…");
     // One button on the page: the card's.
     expect(
@@ -171,7 +172,7 @@ describe("clear history: in the History card, not the header", () => {
       scoped: { "runners.kill": false, "runners.resetStats": false },
     });
     expect(clearHistoryButton()).not.toBeNull();
-    expect(page().queryByTestId("runner-non-local-hint")).toBeNull();
+    expectAbsent(page().queryByTestId("runner-non-local-hint"));
   });
 
   it("is offered on a remote runner beside the remote hint for kill and reset stats", async () => {
@@ -190,7 +191,7 @@ describe("clear history: in the History card, not the header", () => {
       history: finishedHistory(),
       scoped: { "runners.clearHistory": false },
     });
-    expect(clearHistoryButton()).toBeNull();
+    expectAbsent(clearHistoryButton());
     // The rest of the card is still there.
     expect(within(historyCard()).getByLabelText("Runs shown")).not.toBeNull();
   });
@@ -201,7 +202,7 @@ describe("clear history: in the History card, not the header", () => {
       scoped: { "runners.clearHistory": undefined },
       permissions: { "runners.clearHistory": undefined },
     });
-    expect(clearHistoryButton()).toBeNull();
+    expectAbsent(clearHistoryButton());
   });
 
   it("is dropped on a read-only API", async () => {
@@ -209,8 +210,8 @@ describe("clear history: in the History card, not the header", () => {
       history: finishedHistory(),
       meta: { readOnly: true },
     });
-    expect(clearHistoryButton()).toBeNull();
-    expect(page().queryByRole("button", { name: "Clear history…" })).toBeNull();
+    expectAbsent(clearHistoryButton());
+    expectAbsent(page().queryByRole("button", { name: "Clear history…" }));
   });
 
   it("is disabled, saying so, when the history is empty", async () => {
@@ -227,7 +228,7 @@ describe("clear history: in the History card, not the header", () => {
     expect(button.title).toBe("No runs to clear.");
     fireEvent.click(button);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(openDialog()).toBeNull();
+    expectAbsent(openDialog());
     expect(calls.filter((call) => call.method === "DELETE")).toEqual([]);
   });
 });

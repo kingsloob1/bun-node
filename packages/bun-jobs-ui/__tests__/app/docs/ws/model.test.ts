@@ -28,6 +28,7 @@ import {
   tryProblems,
 } from "../../../../app/screens/docs/ws/model";
 import { parseChannel } from "../../../../app/screens/events/eventLog";
+import { expectAbsent, expectUndefined } from "../../assert";
 import { wsFixture } from "./fixtures";
 
 const both = readWsDoc(wsFixture("both"));
@@ -241,9 +242,9 @@ describe("readWsDoc on a real document (mode both)", () => {
     expect(
       eventPayloadSchema(message(both, "queue.completed").payload, root),
     ).toEqual({ $ref: "#/components/schemas/QueueCompletedPayload" });
-    expect(
+    expectUndefined(
       eventPayloadSchema(message(both, "subscribe").payload, root),
-    ).toBeUndefined();
+    );
   });
 });
 
@@ -344,8 +345,8 @@ describe("readWsDoc on other configurations", () => {
     expect(read.channels).toEqual([]);
     expect(read.operations).toEqual([]);
     expect(read.messages).toEqual([]);
-    expect(read.limits).toBeNull();
-    expect(read.server).toBeNull();
+    expectAbsent(read.limits);
+    expectAbsent(read.server);
     expect(read.subprotocol).toEqual({
       value: "bun-jobs.v1",
       fromDocument: false,
@@ -415,8 +416,8 @@ describe("the sidebar", () => {
     expect(selectItem(both, "upgrade-refusals")).toEqual({
       kind: "upgrade-refusals",
     });
-    expect(selectItem(both, "channel-nope")).toBeNull();
-    expect(selectItem(runner, "channel-queue")).toBeNull();
+    expectAbsent(selectItem(both, "channel-nope"));
+    expectAbsent(selectItem(runner, "channel-queue"));
     expect(itemPath("message-queue.completed")).toBe(
       "/docs/ws/message-queue.completed",
     );
@@ -443,15 +444,13 @@ describe("try it", () => {
   });
 
   it("refuses an incomplete address or an invalid name", () => {
-    expect(
-      fillAddress("queue/{queue}/job/{jobId}", { queue: "mail" }),
-    ).toBeNull();
-    expect(fillAddress("queue/{queue}", { queue: "has space" })).toBeNull();
-    expect(fillAddress("queue/{queue}", { queue: ".." })).toBeNull();
-    expect(fillAddress("queue/{queue}", { queue: "x".repeat(201) })).toBeNull();
+    expectAbsent(fillAddress("queue/{queue}/job/{jobId}", { queue: "mail" }));
+    expectAbsent(fillAddress("queue/{queue}", { queue: "has space" }));
+    expectAbsent(fillAddress("queue/{queue}", { queue: ".." }));
+    expectAbsent(fillAddress("queue/{queue}", { queue: "x".repeat(201) }));
     expect(parameterProblem("queue", "has/slash")).not.toBeNull();
-    expect(parameterProblem("queue", "")).toBeNull();
-    expect(parameterProblem("jobId", "any / thing")).toBeNull();
+    expectAbsent(parameterProblem("queue", ""));
+    expectAbsent(parameterProblem("jobId", "any / thing"));
   });
 
   it("links a channel into the console, filtering types only when the channel narrows them", () => {
@@ -472,7 +471,7 @@ describe("try it", () => {
     expect(link("queues")).toBe("/events?channel=queues");
     expect(link("queue")).toBe("/events?channel=queue%2Fmail");
     expect(link("runner")).toBe("/events?channel=runner%2Fnightly");
-    expect(link("connection")).toBeNull();
+    expectAbsent(link("connection"));
     // The worker channels carry every worker type the console offers for
     // them, so neither needs a filter; the per-queue one fills its {queue}.
     expect(channelEventTypes(both, channel(both, "workers"))).toEqual([
@@ -498,9 +497,9 @@ describe("try it", () => {
       id: "a/b",
     });
 
-    expect(
+    expectAbsent(
       channelTryLink(both, channel(both, "job"), { queue: "mail" }, "both"),
-    ).toBeNull();
+    );
   });
 
   it("only a logical channel is subscribable: not the connection, under any key, nor a socket path", () => {
@@ -534,8 +533,8 @@ describe("try it", () => {
   });
 
   it("gives no link for a channel the console cannot open in the mode", () => {
-    expect(eventsLink("all", [], "jobs")).toBeNull();
-    expect(eventsLink("runner/x", [], "jobs")).toBeNull();
+    expectAbsent(eventsLink("all", [], "jobs"));
+    expectAbsent(eventsLink("runner/x", [], "jobs"));
     expect(eventsLink("queue/x", ["completed"], "jobs")).toBe(
       "/events?channel=queue%2Fx&types=completed",
     );
@@ -552,7 +551,7 @@ describe("try it", () => {
     expect(messageTryLink(both, message(both, "worker.state"), "both")).toBe(
       "/events?channel=workers&types=state",
     );
-    expect(messageTryLink(both, message(both, "hello"), "both")).toBeNull();
+    expectAbsent(messageTryLink(both, message(both, "hello"), "both"));
   });
 });
 
@@ -666,7 +665,7 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
       pattern: "^(?!\\.\\.?$)[\\w.-]+$",
       maxLength: 200,
     });
-    expect(jobId!.schema).toBeUndefined();
+    expectUndefined(jobId!.schema);
     expect(channel(both, "runner").parameters[0]!.schema).toMatchObject({
       maxLength: 200,
     });
@@ -679,46 +678,46 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
   it("the document's schema decides, when it gives one", () => {
     const strict = { pattern: "^[a-z]+$", maxLength: 5 };
     // Accepted by the contract's rule, refused by the document's.
-    expect(parameterProblem("queue", "a.b")).toBeNull();
+    expectAbsent(parameterProblem("queue", "a.b"));
     expect(parameterProblem("queue", "a.b", strict)).toBe(
       "Must match ^[a-z]+$.",
     );
     expect(parameterProblem("queue", "abcdef", strict)).toBe(
       "At most 5 characters (this is 6).",
     );
-    expect(parameterProblem("queue", "abc", strict)).toBeNull();
-    expect(parameterProblem("queue", "", strict)).toBeNull();
+    expectAbsent(parameterProblem("queue", "abc", strict));
+    expectAbsent(parameterProblem("queue", "", strict));
     // A job id is held to a schema too, when the document gives it one.
     expect(parameterProblem("jobId", "a/b", strict)).not.toBeNull();
     expect(parameterProblem("x", "a", { minLength: 2 })).toBe(
       "At least 2 characters.",
     );
     // A pattern that does not compile is skipped, not a refusal of everything.
-    expect(parameterProblem("queue", "a b", { pattern: "(" })).toBeNull();
+    expectAbsent(parameterProblem("queue", "a b", { pattern: "(" }));
   });
 
   it("the real schema refuses what the server refuses", () => {
     const schema = channel(both, "queue").parameters[0]!.schema;
-    expect(parameterProblem("queue", "mail.v2-x_1", schema)).toBeNull();
+    expectAbsent(parameterProblem("queue", "mail.v2-x_1", schema));
     for (const bad of [".", "..", "a/b", "has space", "ümlaut"]) {
       expect(parameterProblem("queue", bad, schema)).toContain(
         "Letters, digits",
       );
     }
-    expect(parameterProblem("queue", "x".repeat(200), schema)).toBeNull();
+    expectAbsent(parameterProblem("queue", "x".repeat(200), schema));
     expect(parameterProblem("queue", "x".repeat(201), schema)).toBe(
       "At most 200 characters (this is 201).",
     );
   });
 
   it("fills an address under the document's schemas", () => {
-    expect(
+    expectAbsent(
       fillAddress(
         "queue/{queue}",
         { queue: "abcdef" },
         { queue: { maxLength: 3 } },
       ),
-    ).toBeNull();
+    );
     expect(
       fillAddress(
         "queue/{queue}",
@@ -741,7 +740,7 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
     };
     const read = readWsDoc(document);
     const queue = channel(read, "queue");
-    expect(channelTryLink(read, queue, { queue: "mail" }, "both")).toBeNull();
+    expectAbsent(channelTryLink(read, queue, { queue: "mail" }, "both"));
     expect(tryProblems(queue, { queue: "mail" })).toEqual([
       "queue: At most 3 characters (this is 4).",
     ]);
@@ -759,7 +758,7 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
     >;
     delete parameters.queue!["x-bun-jobs-schema"];
     const queue = channel(readWsDoc(document), "queue");
-    expect(queue.parameters[0]!.schema).toBeUndefined();
+    expectUndefined(queue.parameters[0]!.schema);
     expect(tryProblems(queue, { queue: "x".repeat(201) })[0]).toContain(
       "Letters, digits",
     );
@@ -806,11 +805,11 @@ describe("message examples", () => {
       id: "welcome:ada@example.com",
       returnValue: {},
     });
-    expect(
+    expectUndefined(
       exampleEventPayload(message(both, "subscribe").examples[0]!.payload),
-    ).toBeUndefined();
-    expect(exampleEventPayload(null)).toBeUndefined();
-    expect(exampleEventPayload({ event: 3 })).toBeUndefined();
+    );
+    expectUndefined(exampleEventPayload(null));
+    expectUndefined(exampleEventPayload({ event: 3 }));
   });
 
   it("drops malformed examples rather than throwing", () => {

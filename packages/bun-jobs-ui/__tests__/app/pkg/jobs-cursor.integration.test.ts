@@ -3,6 +3,7 @@ import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../assert";
 
 /**
  * The jobs table's cursor navigation against a REAL `createJobsApi`.
@@ -549,7 +550,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
       // and the route mints no cursor there.
       expect(first.query.has("sort")).toBe(false);
       expect(first.status).toBe(200);
-      expect(first.next).toBeNull();
+      expectAbsent(first.next);
 
       // So Next moved the offset, and no request carried a cursor.
       const turn = ours.find((call) => call.query.has("offset"));
@@ -590,7 +591,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
       expect(natural.status).toBe(200);
       expect(natural.body.items ?? []).toHaveLength(PAGE);
       expect(natural.body.page?.hasMore).toBe(true);
-      expect(natural.body.page?.next).toBeNull();
+      expectAbsent(natural.body.page?.next);
 
       // And a cursor sent there — even a genuine one, minted by the walk
       // above — is refused for the order, naming the key that moves.
