@@ -317,7 +317,7 @@ describe("the Events console", () => {
     expect(
       summon!.querySelector('[aria-label^="Payload of summon"]'),
     ).toBeTruthy();
-    expect(within(job!).queryByTestId("event-summon-summary")).toBeNull();
+    expectAbsent(within(job!).queryByTestId("event-summon-summary"));
   });
 
   it("links a worker event's target to its queue, under a kind badge of its own", async () => {

@@ -11,6 +11,7 @@ import {
   summonEventSummary,
   summonOutcome,
 } from "../../../app/screens/queues/panels/summonText";
+import { expectAbsent, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { findDialog, notifications, renderQueue } from "./fixtures";
@@ -156,7 +157,7 @@ describe("the Summon tab", () => {
     });
     await page().findByTestId("queue-screen");
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(page().queryByRole("tab", { name: "Summon" })).toBeNull();
+    expectAbsent(page().queryByRole("tab", { name: "Summon" }));
     expect(calls.some((call) => call.path === "/queues/emails/summon")).toBe(
       false,
     );
@@ -183,8 +184,8 @@ describe("the Summon panel", () => {
     expect(summoner.textContent).toContain("jobs-prod");
     expect(summoner.textContent).toContain("Launch: starts new units");
     // No backoff or circuit running: not shown.
-    expect(within(panel).queryByTestId("summon-backoff")).toBeNull();
-    expect(within(panel).queryByTestId("summon-circuit")).toBeNull();
+    expectAbsent(within(panel).queryByTestId("summon-backoff"));
+    expectAbsent(within(panel).queryByTestId("summon-circuit"));
     // No handles sent: no column, nothing marks them withheld.
     expect(panel.textContent).not.toMatch(/handle/i);
   });
@@ -337,7 +338,7 @@ describe("Summon now and Reset", () => {
     const post = calls.find(
       (call) => call.path === "/queues/emails/summon/reset",
     )!;
-    expect(post.body).toBeUndefined();
+    expectUndefined(post.body);
   });
 
   /**
@@ -359,10 +360,8 @@ describe("Summon now and Reset", () => {
       });
       await within(header).findByRole("button", { name: /Pause/ });
     }
-    expect(
-      within(panel).queryByRole("button", { name: "Summon now…" }),
-    ).toBeNull();
-    expect(within(panel).queryByRole("button", { name: "Reset…" })).toBeNull();
+    expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: "Reset…" }));
     return panel;
   }
 
