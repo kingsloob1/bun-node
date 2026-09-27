@@ -66,36 +66,42 @@ process.on("exit", () => {
   }
 });
 
-/** The worker processes the spawning summoner started, by attempt id. */
+/** The worker processes the spawning summoners started, by attempt id. */
 const started = new Map<string, Subprocess>();
+/** When each of those processes exited, epoch ms, by attempt id. */
+const exitedAt = new Map<string, Promise<number>>();
 
 /**
  * A summoner that starts the worker on this machine: the request's `argv`
  * carries the summon's identity, the queue and the namespace; the backend
  * travels in the environment, as a platform's task definition would carry it.
+ * The worker exits once idle for `idleFor` ms.
  */
-const spawnWorker = defineSummoner({
-  kind: "example-spawn",
-  invoke: async (request: SummonRequest) => {
-    const child = Bun.spawn({
-      cmd: [process.execPath, ENTRY, ...request.argv],
-      env: {
-        ...process.env,
-        ...request.env,
-        SUMMONED_DRIVER: JSON.stringify(config),
-        // Idle long enough to be seen: an attempt is registered by a check
-        // that finds the worker's record, and a worker gone before the next
-        // poll is never seen at all.
-        SUMMONED_IDLE_FOR: "3000",
-      },
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    children.add(child);
-    started.set(request.id, child);
-    return { status: "started", handles: [`pid:${child.pid}`] };
-  },
-});
+function spawnWorkerIdling(idleFor: number) {
+  return defineSummoner({
+    kind: "example-spawn",
+    invoke: async (request: SummonRequest) => {
+      const child = Bun.spawn({
+        cmd: [process.execPath, ENTRY, ...request.argv],
+        env: {
+          ...process.env,
+          ...request.env,
+          SUMMONED_DRIVER: JSON.stringify(config),
+          SUMMONED_IDLE_FOR: String(idleFor),
+        },
+        stdout: "ignore",
+        stderr: "inherit",
+      });
+      children.add(child);
+      started.set(request.id, child);
+      exitedAt.set(
+        request.id,
+        child.exited.then(() => Date.now()),
+      );
+      return { status: "started", handles: [`pid:${child.pid}`] };
+    },
+  });
+}
 
 /** Requests a recording summoner was handed, by queue. */
 const recorded = new Map<string, SummonRequest[]>();
@@ -136,9 +142,17 @@ const jobs = new BunJobs({
     // the last add, and a poll notices the worker registering. The poll is
     // kept well behind the add, since whichever check comes first claims the
     // attempt and names it: a fast poll would sometimes win.
+    // Its worker idles 3 s, long enough for the tour to watch it working.
     emails: {
-      summoner: spawnWorker,
+      summoner: spawnWorkerIdling(3_000),
       triggers: { poll: 1_000, debounce: 50 },
+    },
+    // Its worker is gone 200 ms after its job. Only the add checks on its
+    // own: no poll and no worker events, so the next check is the one the
+    // tour makes once that worker has exited, however quick the backend.
+    fast: {
+      summoner: spawnWorkerIdling(200),
+      triggers: { poll: false, events: false, debounce: 50 },
     },
     reports: { summoner: recording, triggers: ONE_SHOT },
     flaky: {
@@ -214,6 +228,50 @@ checkEqual(
   "and nothing summons another: the queue has no demand left",
   [emailEvents.length, started.size],
   [2, 1],
+);
+
+/* ------------------------------------------------------------------ */
+step("A worker gone between two checks is still registered");
+
+// Its first start claimed the attempt, and that claim outlives the worker's
+// record: so a check after it exited still counts it registered rather than
+// lost — and nothing counts against the backoff or the circuit.
+const fast = jobs.summonController("fast");
+const fastSeen: SummonEventPayload[] = [];
+fast.on("summon", (event) => {
+  fastSeen.push(event);
+});
+await jobs.queue("fast").add("quick", { n: 1 });
+/** Waits up to `ms` for a condition, without throwing, so a miss is a check. */
+async function within(ms: number, condition: () => boolean): Promise<void> {
+  const until = Date.now() + ms;
+  while (!condition() && Date.now() < until) {
+    await Bun.sleep(20);
+  }
+}
+await within(10_000, () => fastSeen.length > 0);
+const fastAttempt = fastSeen[0];
+// When its worker exited, or `undefined` if it has not within 10 s.
+const fastExit = fastAttempt
+  ? await Promise.race([
+      exitedAt.get(fastAttempt.id),
+      Bun.sleep(10_000).then(() => undefined),
+    ])
+  : undefined;
+const fastCheck = await fast.check();
+show("the check after the worker exited", fastCheck.action);
+show(
+  "the fast worker's attempt",
+  fastSeen.map(({ outcome, reason }) => ({ outcome, reason })),
+);
+checkEqual(
+  "started, then registered by a check made after its worker had exited",
+  [
+    fastExit !== undefined,
+    fastSeen.map((event) => event.outcome),
+    (await fast.status()).failures,
+  ],
+  [true, ["started", "registered"], 0],
 );
 
 /* ------------------------------------------------------------------ */
