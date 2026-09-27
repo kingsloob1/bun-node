@@ -26,6 +26,8 @@
         "WORKER_TARGET_KINDS",
         "SUMMON_ARGS",
         "summonedFromArgs",
+        "SummonController",
+        "defineSummoner",
         "runSummoned",
         "ConfigError",
         "encodeJobId",
@@ -60,6 +62,12 @@
         "JobDto",
         "QueueDemand",
         "DemandCounts",
+        "SummonPolicy",
+        "Summoner",
+        "SummonRequest",
+        "SummonResult",
+        "SummonCheckResult",
+        "SummonStatus",
         "QueueDemandDto",
         "QueueDemandListDto",
         "QueueDemandListQuery",
@@ -92,8 +100,27 @@
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/summon",
-      "values": ["runSummoned", "summonedFromArgs", "SUMMON_ARGS"],
-      "types": ["RunSummonedOptions", "SummonedExit", "SummonedArgs"]
+      "values": [
+        "SummonController",
+        "defineSummoner",
+        "summonedFromArgs",
+        "SUMMON_ARGS",
+        "runSummoned"
+      ],
+      "types": [
+        "SummonPolicy",
+        "Summoner",
+        "SummonRequest",
+        "SummonResult",
+        "SummonCheckResult",
+        "SummonStatus",
+        "SummonCapabilities",
+        "ProviderCallContext",
+        "RunSummonedOptions",
+        "SummonedExit",
+        "SummonedArgs"
+      ],
+      "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",
@@ -135,8 +162,13 @@
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/summon",
-      "values": ["runSummoned", "summonedFromArgs"],
-      "types": ["RunSummonedOptions", "SummonedExit"]
+      "values": [
+        "runSummoned",
+        "summonedFromArgs",
+        "SummonController",
+        "defineSummoner"
+      ],
+      "types": ["RunSummonedOptions", "SummonedExit", "SummonPolicy"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/drivers",

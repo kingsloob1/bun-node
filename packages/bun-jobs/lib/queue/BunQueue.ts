@@ -188,6 +188,32 @@ const RETRY_CONCURRENCY = 16;
 const DEFAULT_APPLY_LIMIT = 1_000;
 
 /**
+ * The key of a queue's private local-add hooks: functions called with each
+ * job **this process** adds through `add()` or `addBulk()` — never for a
+ * duplicate, never for another process's add.
+ *
+ * Internal: the summon controller's `onAdd` trigger, attached by `BunJobs`.
+ * It is not the public `added` event, on purpose: a listener on `added` makes
+ * a subscribing queue fetch every job another process adds (to hand it to
+ * that listener), which the trigger does not need; a user's
+ * `removeAllListeners("added")` would detach it; and a user listener that
+ * throws would stop it hearing the add. A hook is called synchronously,
+ * nothing is awaited, and with none set the add path does one property read.
+ * A hook that throws is logged and does not fail the add.
+ */
+export const LOCAL_ADD_HOOKS: unique symbol = Symbol(
+  "bun-jobs: local add hooks",
+);
+
+/** What a {@link LOCAL_ADD_HOOKS} hook is told about a job added here. */
+export interface LocalAddedJob {
+  /** Where the job went: `waiting`, or `delayed` until `runAt`. */
+  readonly state: string;
+  /** When it becomes due, epoch ms. */
+  readonly runAt: number;
+}
+
+/**
  * `queue.applyJobDefaults()` was asked to apply an override version that is
  * no longer the stored one: somebody saved or reset the queue's job defaults
  * since the caller read them. Nothing was written. Read them again, confirm,
@@ -381,6 +407,11 @@ export class BunQueue<
 
   /** Logger bound to this queue. */
   readonly #logger: Logger;
+  /**
+   * Local-add hooks ({@link LOCAL_ADD_HOOKS}), or `undefined` when none is
+   * set — the usual case, which costs the add path one property read.
+   */
+  [LOCAL_ADD_HOOKS]: ((job: LocalAddedJob) => void)[] | undefined;
   /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
   /** Whether this queue announces its events to other processes. */
@@ -650,6 +681,9 @@ export class BunQueue<
     }
 
     this.safeEmitScoped("added", job.name, view);
+    if (this[LOCAL_ADD_HOOKS] !== undefined) {
+      this.#runAddHooks(view);
+    }
     await this.#publish("added", { id: job.id });
 
     // Which of the two it is depends on whether it is claimable now, and a
@@ -725,11 +759,32 @@ export class BunQueue<
       }
     }
 
+    const hooked = this[LOCAL_ADD_HOOKS] !== undefined;
     return results.map(({ job, added }) => {
       const view = this.#view(job, added);
       this.safeEmit(added ? "added" : "duplicate", view);
+      if (added && hooked) {
+        this.#runAddHooks(view);
+      }
       return view;
     });
+  }
+
+  /**
+   * Tells every {@link LOCAL_ADD_HOOKS} hook about a job added here. The add
+   * has already been written and announced, so a hook that throws cannot be
+   * allowed to fail it: the error is logged, and the other hooks still run.
+   */
+  #runAddHooks(job: LocalAddedJob): void {
+    for (const hook of this[LOCAL_ADD_HOOKS] ?? []) {
+      try {
+        hook(job);
+      } catch (error) {
+        this.#logger.warn("A local add hook threw; the add stands", {
+          error,
+        });
+      }
+    }
   }
 
   /* --- reading -------------------------------------------------------- */
@@ -1463,6 +1518,11 @@ export class BunQueue<
 
     if (local) {
       this.safeEmitScoped("added", view.name, job);
+      // Only a job this queue owns: the hooks are this queue's, and another
+      // queue's own instance (if any) is not reached from here.
+      if (this[LOCAL_ADD_HOOKS] !== undefined) {
+        this.#runAddHooks(view);
+      }
     }
     await this.#publish("added", { id: view.id }, queue);
 
@@ -2912,6 +2972,9 @@ export class BunQueue<
 
     const view = this.#view(job, added);
     this.safeEmit(added ? "added" : "duplicate", view);
+    if (added && this[LOCAL_ADD_HOOKS] !== undefined) {
+      this.#runAddHooks(view);
+    }
     return view;
   }
 

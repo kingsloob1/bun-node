@@ -58,9 +58,10 @@ function optionalText(
  * summoner did not request stays absent.
  *
  * @throws {ConfigError} on a malformed value (`id` is required: it is what
- *   makes a worker summoned), and when the worker could never report — with
+ *   makes a worker summoned), when the worker could never report — with
  *   `reportInterval: 0`, or on a driver that cannot store worker records —
- *   since then it could never release its attempt.
+ *   since then it could never release its attempt, and on a driver without
+ *   queue state, where it could not claim its attempt once.
  */
 export function resolveSummonProvenance(
   /** The worker's `summon` option, as given. */
@@ -69,6 +70,11 @@ export function resolveSummonProvenance(
   reportInterval: number,
   /** Whether the worker's driver can store worker records (`supportsWorkers`). */
   storesWorkers: boolean,
+  /**
+   * Whether the worker's driver has queue state (`getQueueState` and
+   * `setQueueState`), which claim-once is written in.
+   */
+  storesState: boolean,
 ): Readonly<WorkerSummonProvenance> | undefined {
   if (summon === undefined) {
     return undefined;
@@ -88,6 +94,12 @@ export function resolveSummonProvenance(
   if (!storesWorkers) {
     throw new ConfigError(
       "summon needs a heartbeat record: this driver cannot store worker records, so the summon attempt the worker came from can never be released",
+    );
+  }
+
+  if (!storesState) {
+    throw new ConfigError(
+      "summon needs queue state: a summoned worker claims its attempt id there before its record says it was summoned (claim-once), and this driver has none",
     );
   }
 

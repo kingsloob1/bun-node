@@ -77,6 +77,9 @@ Options:
       --payload-bytes <n> Filler per job in 'payload'        (default: 4096)
       --poll <ms>         Poll interval for polling libraries (default: 50)
       --budget <s>        Seconds before a run is abandoned  (default: 120)
+      --summon            Attach a summon controller (a no-op summoner) to
+                          every bun-jobs contender but memory, which cannot
+                          summon: the hot-path guard for summoning
       --verify            Assert every contender delivers every job exactly
                           once, then exit without timing anything
       --verbose           Show each child's stderr
@@ -105,6 +108,7 @@ const { values } = parseArgs({
     "payload-bytes": { type: "string", default: "4096" },
     poll: { type: "string", default: "50" },
     budget: { type: "string", default: "120" },
+    summon: { type: "boolean", default: false },
     verify: { type: "boolean", default: false },
     verbose: { type: "boolean", default: false },
     json: { type: "boolean", default: false },
@@ -141,6 +145,7 @@ const config = {
   payloadBytes: Math.max(0, toInt(values["payload-bytes"], 4096)),
   poll: Math.max(1, toInt(values.poll, 50)),
   budget: Math.max(5, toInt(values.budget, 120)),
+  summon: !!values.summon,
   verify: !!values.verify,
   verbose: !!values.verbose,
   json: !!values.json,
@@ -196,6 +201,7 @@ if (values.child) {
     budgetSeconds: config.budget,
     name: String(values["child-name"] ?? "bench"),
     url: backendUrl(contender.backend),
+    summon: config.summon,
   });
 
   emit([measurement]);
@@ -247,6 +253,11 @@ const reachable = new Set<Backend>();
 const neededBackends = [...new Set(chosen.map((entry) => entry.backend))];
 
 console.log(`\nBun ${Bun.version} — job-queue benchmarks\n`);
+if (config.summon) {
+  console.log(
+    "A summon controller (no-op summoner) is attached to every bun-jobs contender but memory.\n",
+  );
+}
 console.log("Backends");
 for (const backend of neededBackends) {
   if (await backendAvailable(backend)) {
@@ -308,7 +319,7 @@ if (config.verify) {
           consumers: String(config.consumers),
           poll: String(config.poll),
           budget: String(config.budget),
-        }),
+        }).concat(config.summon ? ["--summon"] : []),
         timeoutMs: (config.budget + 30) * 1000,
         verbose: config.verbose,
       },
@@ -372,7 +383,7 @@ for (const scenario of scenarios) {
           "payload-bytes": String(config.payloadBytes),
           poll: String(config.poll),
           budget: String(config.budget),
-        }),
+        }).concat(config.summon ? ["--summon"] : []),
         timeoutMs: (config.budget + 60) * 1000,
         verbose: config.verbose,
       },

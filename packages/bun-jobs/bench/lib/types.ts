@@ -64,6 +64,13 @@ export interface QueueSetupContext {
   onCompleted: (payload: JobPayload) => void;
   /** Called when a contender's own machinery reports an error, so a run cannot look fast by failing. */
   onError: (error: unknown) => void;
+  /**
+   * `--summon`: attach a summon controller, with a summoner that does
+   * nothing, to the queue. Only `@kingsleyweb/bun-jobs` has one, and not on
+   * the memory backend, which cannot summon; every other contender ignores
+   * it. The guard that the add path's listener costs nothing measurable.
+   */
+  summon: boolean;
 }
 
 /** A live contender, ready to be driven by a scenario. */

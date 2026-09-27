@@ -898,6 +898,14 @@ export async function readDemand(
     now?: number;
     /** Count each figure up to this many. Defaults to {@link DEFAULT_DEMAND_CAP}. */
     cap?: number;
+    /**
+     * The live worker records at `now`, when the caller reads them anyway (a
+     * summon controller needs the records themselves, not just their count):
+     * they are counted instead of listed a second time. A promise is accepted
+     * so the listing can still run beside the other reads. Omitted, the
+     * records are listed here.
+     */
+    workers?: readonly WorkerInfo[] | Promise<readonly WorkerInfo[]>;
   } = {},
 ): Promise<QueueDemand> {
   const now = options.now ?? Date.now();
@@ -913,9 +921,11 @@ export async function readDemand(
   const [paused, workers, read] = await Promise.all([
     (async () => await driver.isQueuePaused(q))(),
     (async () =>
-      supportsWorkers(driver)
-        ? (await listWorkerRecords(driver, q, now)).length
-        : 0)(),
+      options.workers !== undefined
+        ? (await options.workers).length
+        : supportsWorkers(driver)
+          ? (await listWorkerRecords(driver, q, now)).length
+          : 0)(),
     (async () =>
       native
         ? {

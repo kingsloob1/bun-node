@@ -244,6 +244,16 @@ cover different gaps:
   `Job` view `added` carries has `state` and `runAt`, which is all the §4.8
   fast path reads. Listening costs one callback per add and no driver call
   while a worker is known to be live (§4.8).
+  **As built (PR-3, #208 review):** not the public `added` event but a
+  private, symbol-keyed hook on `BunQueue` (`LOCAL_ADD_HOOKS`), called from
+  `#addSimple` and `addBulk` for local adds only, synchronously, one property
+  read when unset. A public `added` listener made a subscribing queue fetch
+  every remote add to hand it over (measured: 200 `getJob` calls for 200
+  remote adds; 0 with the hook), could be removed by a user's
+  `removeAllListeners("added")`, and lost its trigger behind a throwing user
+  listener. It is called for every local add: `add()` and `addBulk()`, a
+  repeatable's first occurrence (with `immediately` or not), and a flow's jobs
+  in this queue (never for another queue's, nor for a remote event).
 - **Driver events from other processes**: `BunQueue` publishes `added`,
   `waiting` and `delayed` from `#addSimple` (`BunQueue.ts:647`, `:653`,
   `:656`) and from flows (`:1426-1437`), and also `promoted` (`:1687`),
@@ -589,7 +599,15 @@ interface PendingSummon {
 8. **Record** the result with a second CAS (retried against a fresh read, up to
    three times [D]). `started`, `deduped` and `already-running` keep the
    pending entry and add its handles. `unavailable` or a throw removes it,
-   increments `failures` and sets `backoffUntil`.
+   increments `failures` and sets `backoffUntil`. **As built (PR-3, #208
+   review): a timeout is not a throw.** A call that ran past `summonTimeout`
+   may still have started the unit, so the attempt is kept pending (outcome
+   `failed`, detail `timeout`) until it registers or its `until` passes; only
+   then is it `lost` and counted toward backoff and the circuit, as a
+   never-registering attempt is. A new attempt meanwhile could start a second
+   worker. If every write of the result loses its CAS, the answer is not
+   recorded: the attempt stays pending as claimed and is settled the same way
+   (a `warn` says so).
 
 **The marker's TTL is `bootBudget`**, per attempt. It must cover platform
 cold start, plus Bun boot, plus driver connect and `ensureQueue`, plus the
@@ -697,7 +715,7 @@ clamped to the declared `poolSize` ([`compute-provider-plugins.md`](compute-prov
 | Call | start N units: `RunTask`, `jobs:run`, `POST /jobs`, `systemd-run` | set the count to `target`: worker pool `manualInstanceCount`, ECS `desiredCount`, ASG `SetDesiredCapacity` |
 | Duplicate on a race | yes | no, idempotent by construction [I, aws §4.3; google-azure §3.3] |
 | Worker mode | `"exit-on-idle"` | `"until-stopped"`: never exits on idle, because the platform would restart it [I, google-azure §5] |
-| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once `outstanding == 0` has held for `scaleDown.after` (default `300_000` ms) [D] |
+| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once the queue has been idle for `scaleDown.after` (default `300_000` ms): `outstanding == 0` in the draft; as built, `active == 0 && (paused \|\| waiting + dueNow == 0)` (below) |
 
 A scale-style release uses `outstanding`, never `demand`. So it never sets a
 count to zero while a job is active, which is the ScaledObject hazard of §2.2
@@ -708,6 +726,13 @@ Cloud Run worker pools have a first-party path. The README recommends
 launch-style everywhere a platform offers both, because a crashed controller
 leaves a scale-style pool billing "as active … even if … idle" [V,
 google-azure §8].
+
+**As built (PR-3, #208 review; the coordinator's decision).** `outstanding`
+is `0` while the queue is paused, even with jobs running, so the release
+condition is not `outstanding == 0` but **`active == 0 && (paused ||
+waiting + dueNow == 0)`**, held for `scaleDown.after`. A paused queue claims
+nothing, so once its running jobs finish its workers are idle cost and are
+released; it is never released while a job is active, paused or not.
 
 ### 4.8 Hot-path cost of the enqueue hook
 
@@ -1627,7 +1652,12 @@ Construct the worker in the handler, never at module scope. A worker built
 during Init would outlive the invocation into a freeze [V/I, aws §2]. Under
 Lambda MicroVMs it would also share its id — and so its heartbeat record and
 limiter lease — across every restored VM [V, aws §4.7]. Its lock tokens are
-drawn per claim, at claim time (#187), so those are not shared.
+drawn per claim, at claim time (#187), so those are not shared: the #191
+follow-up draws each token's uuid from an unbuffered source (`node:crypto`'s
+`randomUUID({ disableEntropyCache: true })`), because the global
+`crypto.randomUUID()` and `getRandomValues` share an entropy cache that a
+snapshot copies (measured by the bun-jobs session on Bun 1.4.3). PR-3's marker
+`epoch` uses the same unbuffered source, for the same reason.
 
 
 ### 5.5 The identity channel: arguments only (revised 2026-09-26)
@@ -1700,6 +1730,31 @@ still start two processes with the same id. PR-3 adds **claim-once**: the
 first process to atomically claim an attempt id wins; a second claimant
 (a platform double-start, or any descendant that somehow sees the arguments)
 loses and runs unsummoned. PR-2 does not build it.
+
+**As built in PR-3 (2026-09-26)** [S, `lib/summon/claim.ts`]:
+
+- **The claim** is a reserved queue-state entry per attempt,
+  `__win:summon-claim:<hash of id>`, holding `{ capacity, holders[], at }`,
+  written only by compare-and-set. A worker claims in its first report, before
+  any record says it was summoned. An attempt for `count > 1` starts all its
+  units with one id, so the controller opens the entry with `capacity: count`
+  before calling the summoner; otherwise the first claimant creates it with
+  capacity 1. "Once" therefore means "at most `count` live processes".
+- **A restart is not a double start.** A platform restart (a scale-style
+  service, a container restart policy) runs the same arguments in a process
+  with a new worker id. **The rule: a claimant may take a holder's place when
+  that holder is gone — its worker record is not among the live ones
+  (`listWorkerRecords` at the claimant's `now`) and the holder's `until` has
+  passed**, `until` being its claim time plus one record lifetime
+  (`reportInterval × 3`), so a holder that has claimed but not yet written its
+  first record is never taken for dead. The takeover is a compare-and-set on
+  the entry, like the claim.
+- **A displaced holder steps down.** A summoned worker re-reads its place on
+  every later report; if it was taken over (it was only paused, not dead), it
+  runs unsummoned from then on, so two live records never carry one id for
+  more than a report interval.
+- Claim entries are swept, at most hourly, from a controller's poll once
+  older than `max(24 h, maxLifetime + bootBudget)`.
 
 ---
 

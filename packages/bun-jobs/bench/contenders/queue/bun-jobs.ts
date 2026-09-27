@@ -6,7 +6,13 @@ import type {
   QueueHandle,
   QueueSetupContext,
 } from "../../lib/types";
-import { BunQueue, BunQueueWorker, createDriver } from "../../../lib/index";
+import {
+  BunQueue,
+  BunQueueWorker,
+  createDriver,
+  SummonController,
+} from "../../../lib/index";
+import { ATTACH_QUEUE } from "../../../lib/summon/controller";
 import { padding } from "../../lib/harness";
 
 /**
@@ -114,6 +120,21 @@ function contender(backend: Backend, label: string): QueueContender {
 
       await sweepPreviousRuns(driver, namespace, ctx.name);
 
+      // `--summon`: a controller with every default but its summoner, which
+      // does nothing, hearing this queue's adds as a `BunJobs` would attach
+      // it. The memory driver cannot summon at all, so it runs without one.
+      const summon =
+        ctx.summon && !shared
+          ? new SummonController({
+              driver,
+              namespace,
+              queue: ctx.name,
+              summoner: async () => {},
+              logger: () => {},
+            })
+          : undefined;
+      summon?.[ATTACH_QUEUE](queue);
+
       let worker: BunQueueWorker<JobPayload> | undefined;
 
       return {
@@ -162,6 +183,7 @@ function contender(backend: Backend, label: string): QueueContender {
         },
 
         async close() {
+          await summon?.close().catch(() => {});
           await worker?.close({ force: true }).catch(() => {});
           await queue.close().catch(() => {});
           if (!shared) await driver.close().catch(() => {});
