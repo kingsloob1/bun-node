@@ -147,6 +147,7 @@
         "queue.repeatScheduled": {
           "$ref": "#/components/messages/queue.repeatScheduled"
         },
+        "queue.summon": { "$ref": "#/components/messages/queue.summon" },
         "runner.control": { "$ref": "#/components/messages/runner.control" },
         "runner.started": { "$ref": "#/components/messages/runner.started" },
         "runner.succeeded": {
@@ -187,7 +188,8 @@
         "queue.throttled": { "$ref": "#/components/messages/queue.throttled" },
         "queue.repeatScheduled": {
           "$ref": "#/components/messages/queue.repeatScheduled"
-        }
+        },
+        "queue.summon": { "$ref": "#/components/messages/queue.summon" }
       }
     },
     "queue": {
@@ -227,7 +229,8 @@
         "queue.throttled": { "$ref": "#/components/messages/queue.throttled" },
         "queue.repeatScheduled": {
           "$ref": "#/components/messages/queue.repeatScheduled"
-        }
+        },
+        "queue.summon": { "$ref": "#/components/messages/queue.summon" }
       }
     },
     "job": {
@@ -427,6 +430,7 @@
         { "$ref": "#/channels/all/messages/queue.debounced" },
         { "$ref": "#/channels/all/messages/queue.throttled" },
         { "$ref": "#/channels/all/messages/queue.repeatScheduled" },
+        { "$ref": "#/channels/all/messages/queue.summon" },
         { "$ref": "#/channels/all/messages/runner.control" },
         { "$ref": "#/channels/all/messages/runner.started" },
         { "$ref": "#/channels/all/messages/runner.succeeded" },
@@ -465,7 +469,8 @@
         { "$ref": "#/channels/queues/messages/queue.retried" },
         { "$ref": "#/channels/queues/messages/queue.debounced" },
         { "$ref": "#/channels/queues/messages/queue.throttled" },
-        { "$ref": "#/channels/queues/messages/queue.repeatScheduled" }
+        { "$ref": "#/channels/queues/messages/queue.repeatScheduled" },
+        { "$ref": "#/channels/queues/messages/queue.summon" }
       ],
       "x-bun-jobs-action": "events.subscribe"
     },
@@ -495,7 +500,8 @@
         { "$ref": "#/channels/queue/messages/queue.retried" },
         { "$ref": "#/channels/queue/messages/queue.debounced" },
         { "$ref": "#/channels/queue/messages/queue.throttled" },
-        { "$ref": "#/channels/queue/messages/queue.repeatScheduled" }
+        { "$ref": "#/channels/queue/messages/queue.repeatScheduled" },
+        { "$ref": "#/channels/queue/messages/queue.summon" }
       ],
       "x-bun-jobs-action": "events.subscribe"
     },
@@ -1924,6 +1930,105 @@
         "required": ["ids"],
         "additionalProperties": false
       },
+      "QueueSummonEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "summon" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueSummonPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A summon attempt for the queue changed state: started, registered, lost, failed, … Published whatever `publishEvents` says, at most once per attempt state change. About compute, not a job: it moves no job and changes no count."
+      },
+      "QueueSummonEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueSummonEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A summon attempt for the queue changed state: started, registered, lost, failed, … Published whatever `publishEvents` says, at most once per attempt state change. About compute, not a job: it moves no job and changes no count."
+      },
+      "QueueSummonPayload": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The summon attempt's id: what a summoned worker's `summon.id` says. Empty for an outcome no attempt owns (`budget-exhausted`, `released`). Never a job id."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "started",
+              "deduped",
+              "already-running",
+              "registered",
+              "unavailable",
+              "failed",
+              "lost",
+              "budget-exhausted",
+              "released"
+            ],
+            "description": "What happened to the attempt. Show an outcome you do not know as the raw string."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The summoner's kind, e.g. `ecs`."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "How many workers it asked for, when known."
+          },
+          "handles": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The platform's identifiers for what it started, when the summoner returned some. Omitted unless the server enables `serialize.exposeSummonHandles`: a task ARN carries the AWS account id."
+          },
+          "reason": {
+            "type": "string",
+            "enum": ["add", "event", "poll", "schedule", "manual", "timer"],
+            "description": "Why the check that started it ran."
+          },
+          "detail": {
+            "type": "string",
+            "description": "A short, secret-free explanation."
+          }
+        },
+        "required": ["id", "outcome", "kind"],
+        "additionalProperties": false
+      },
       "QueueThrottledEvent": {
         "type": "object",
         "properties": {
@@ -2627,6 +2732,7 @@
                 "debounced",
                 "throttled",
                 "repeatScheduled",
+                "summon",
                 "control",
                 "started",
                 "succeeded",
@@ -3761,6 +3867,39 @@
                 "type": "repeatScheduled",
                 "at": 1789808401500,
                 "payload": { "key": "digest", "nextRunAt": 1789894800000 }
+              }
+            }
+          }
+        ]
+      },
+      "queue.summon": {
+        "name": "queue.summon",
+        "title": "Queue summon",
+        "summary": "A summon attempt for the queue changed state: started, registered, lost, failed, … Published whatever `publishEvents` says, at most once per attempt state change. About compute, not a job: it moves no job and changes no count.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueSummonEventMessage" },
+        "examples": [
+          {
+            "name": "queue.summon",
+            "summary": "A summon attempt for the queue changed state: started, registered, lost, failed, … Published whatever `publishEvents` says, at most once per attempt state change. About compute, not a job: it moves no job and changes no count.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "summon",
+                "at": 1789808401600,
+                "payload": {
+                  "id": "s-3f9a1c0e7b2d4a6f",
+                  "outcome": "started",
+                  "kind": "ecs",
+                  "count": 1,
+                  "reason": "add"
+                }
               }
             }
           }
