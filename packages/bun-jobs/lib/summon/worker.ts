@@ -292,6 +292,13 @@ export interface RunSummonedProbe {
    * the backstop that could fire before a forced close had done anything.
    */
   forcedCloseFloor?: number;
+  /**
+   * `false` skips the `close({ force: true })` a signal during a graceful
+   * close issues, so the close runs on to its own end as it did before a
+   * forced close could escalate one (#207): the negative control for that
+   * escalation. Default `true`.
+   */
+  escalate?: boolean;
 }
 
 /** The property a {@link RunSummonedProbe} is set under on the options. */
@@ -810,13 +817,17 @@ class SummonedRun {
   }
 
   /**
-   * A signal during a graceful close asks the worker to force it.
-   * `close({ force: true })` issued mid-close escalates a close where the
-   * worker supports it; where it does not, it only waits for the close
-   * already running. Either way the backstop still bounds it.
+   * A signal during a graceful close forces it: `close({ force: true })`
+   * issued mid-close escalates the close already running (#207), aborting
+   * the attempts in flight and force-closing the target, so a child-process
+   * or worker-thread attempt is killed at once rather than after its grace.
+   * A custom target may ignore `force`; the backstop still bounds that.
    */
   #escalate(): void {
     if (this.#closing === undefined || this.#closingForced) {
+      return;
+    }
+    if (this.#options.probe?.escalate === false) {
       return;
     }
     this.#closingForced = true;
@@ -1162,9 +1173,11 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  *   rather than leaving SIGKILL to do it silently — but never sooner than
  *   `forcedCloseFloor` (1 s) after the close started, so a budget at or
  *   below zero still lets a forced close kill a target's children.
- * - **A signal during a graceful close** asks for `close({ force: true })`,
- *   which forces it where the worker supports escalation and otherwise
- *   waits for it; the backstop still bounds it.
+ * - **A signal during a graceful close** escalates it with
+ *   `close({ force: true })`: the attempts in flight are aborted and the
+ *   target force-closed, so the close finishes promptly and a child-process
+ *   attempt is killed, not orphaned. The backstop still bounds a custom
+ *   target that ignores `force`.
  * - **A second SIGINT exits at once**, with code 130, whatever `exit` says.
  * - **SIGTSTP / SIGCONT**, with `pauseSignals`, pause and resume claiming;
  *   SIGCONT resumes only a pause SIGTSTP made.

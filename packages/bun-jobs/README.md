@@ -2287,10 +2287,12 @@ in the Redis driver's options.
 - With `pauseSignals`, SIGTSTP pauses claiming and SIGCONT resumes it — but
   only a pause SIGTSTP made. An operator's pause, taken before or after,
   survives the SIGCONT.
-- A signal during a **graceful** close cannot shorten it yet: the jobs keep
-  the `timeout` the close started with, and the backstop, not the signal,
-  bounds what is left — which can cut a child-process target's own grace
-  short. Forcing a close already under way needs the worker to support it.
+- A signal during a **graceful** close escalates it to a forced one: the
+  worker's `close({ force: true })` aborts the attempts in flight and
+  force-closes the target, so the close finishes promptly and a
+  child-process or worker-thread attempt is killed, not orphaned — at once,
+  rather than after the target's 4 s grace. The backstop still bounds a
+  custom target that ignores `force`.
 - A worker an operator parked (`state: "stopped"`) serves nothing and costs
   money, so after `idleFor` it exits with `"parked"`, whatever demand says —
   except under `"until-stopped"`, whose platform would only restart it.

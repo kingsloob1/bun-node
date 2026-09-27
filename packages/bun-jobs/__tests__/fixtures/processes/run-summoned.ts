@@ -55,6 +55,9 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  *   `close({ timeout: budget − 1000 })`, for the negative control.
  *   `PROBE=no-floor`: arms the backstop with no floor, as before the fix,
  *   for the negative control of the forced-close floor.
+ *   `PROBE=no-escalate`: a signal during a graceful close no longer forces
+ *   it, as before a forced close could escalate one (#207), for the negative
+ *   control of that escalation.
  * - `PID_FILE`: where a file processor writes its pid.
  * - `LEAK_TIMER=1`: leaves a ref'd timer behind after the result, the
  *   negative control for "no timer left".
@@ -238,6 +241,11 @@ if (env.PROBE === "draft") {
 }
 if (env.PROBE === "no-floor") {
   const probe: RunSummonedProbe = { forcedCloseFloor: 0 };
+  (options as { [RUN_SUMMONED_PROBE]?: RunSummonedProbe })[RUN_SUMMONED_PROBE] =
+    probe;
+}
+if (env.PROBE === "no-escalate") {
+  const probe: RunSummonedProbe = { escalate: false };
   (options as { [RUN_SUMMONED_PROBE]?: RunSummonedProbe })[RUN_SUMMONED_PROBE] =
     probe;
 }

@@ -1548,13 +1548,19 @@ graceful choice never needs revisiting except by the backstop.
   child.
 - **`pauseSignals` defaults to `false`** (#195 review): handling SIGTSTP stops
   Ctrl-Z suspending the process, so a platform that sends it opts in.
-- **Known gap: a signal during a graceful close cannot shorten it.**
-  `runSummoned` calls `close({ force: true })` then, but on develop a
-  re-entrant close only awaits the one running, so the backstop bounds what is
-  left and can cut a child-process target's grace short, orphaning its child
-  (reproduced: a deadline close with timeout 1,249, then SIGTERM on a 3 s
-  grace). The bun-jobs session's close escalation (`fix/close-escalation`:
-  `close({ force: true })` mid-close escalates) closes it with no change here.
+- **A signal during a graceful close escalates it.** `runSummoned` calls
+  `close({ force: true })` then, and since #207 that escalates the close
+  already running: the attempts in flight are aborted and the target
+  force-closed, so the close finishes promptly and a child-process attempt is
+  killed, not orphaned. Before #207 a re-entrant close only awaited the one
+  running, so the backstop cut a child-process target's grace short and
+  orphaned its child (reproduced: a deadline close with timeout 1,249, then
+  SIGTERM on a 3 s grace). `run-summoned.test.ts` now plays that scenario, on
+  memory and Postgres, with the signal landing in the drain and in the
+  target's graceful close: the process exits within 1.5 s of the signal, no
+  backstop, and the child is gone. Its negative control (probe
+  `escalate: false`) reproduces the old gap: the backstop exits at +2,750 ms
+  and the child survives.
 - **A worker that is already running is a `ConfigError`**: `runSummoned`
   starts it.
 - **Measured** (Q38): a graceful child-process close is 4,006 ms in the
