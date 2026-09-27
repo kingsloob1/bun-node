@@ -2991,7 +2991,10 @@ export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, act
 // POST /admin/jobs/queues/emails/summon {"force": false}  → { action: "skipped", reason: "cooldown", demand }
 ```
 
-Example: [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-controller.ts).
+Examples:
+
+- [`11-management-api/summon-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/summon-routes.ts)
+- [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-controller.ts)
 
 ### Summon policy
 
