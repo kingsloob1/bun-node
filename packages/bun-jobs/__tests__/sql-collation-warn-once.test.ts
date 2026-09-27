@@ -180,6 +180,88 @@ describe("collation warning: the key", () => {
   });
 });
 
+describe("collation warning: a childDriver whose server stalls", () => {
+  it("costs isolated runs one bounded wait, not one each, and never holds up stop()", async () => {
+    // Accepts the connection and never says a word: the check neither
+    // succeeds nor fails, it hangs — the case a refused port cannot show.
+    /** Connections the stalling server has taken, in total and still open. */
+    const sockets = { accepted: 0, open: 0 };
+    const stall = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        open: () => {
+          sockets.accepted += 1;
+          sockets.open += 1;
+        },
+        close: () => {
+          sockets.open -= 1;
+        },
+        data: () => {},
+      },
+    });
+
+    const runner = new BunRunner({
+      id: "stall",
+      namespace: testNamespace(),
+      file: join(import.meta.dir, "fixtures", "handlers", "echo.ts"),
+      executionMode: "child-process",
+      driver: new MemoryDriver(),
+      childDriver: {
+        type: "sql",
+        adapter: "mysql",
+        url: `mysql://u:p@127.0.0.1:${stall.port}/none`,
+      },
+      waitToExit: false,
+      logger: noopLogger,
+    } as BunRunnerOptions<any>);
+
+    /** How long each run took from `trigger()` to its `started` event, ms. */
+    const dispatch: number[] = [];
+    try {
+      await runner.start();
+
+      for (let run = 0; run < 3; run += 1) {
+        const asked = performance.now();
+        const started = new Promise<number>((resolve) => {
+          runner.once("started", () => resolve(performance.now()));
+        });
+        const settled = new Promise<RunRecord>((resolve) => {
+          runner.once("finished", resolve);
+          runner.once("failed", resolve);
+        });
+        await runner.trigger();
+        dispatch.push((await started) - asked);
+        expect((await settled).status).toBe("success");
+      }
+
+      // The check really is stalled on this server, not failed elsewhere.
+      expect(sockets.accepted).toBeGreaterThanOrEqual(1);
+      // The first run waits out the bound (2 s from `start()`), once.
+      expect(dispatch[0]!).toBeGreaterThan(1_000);
+      expect(dispatch[0]!).toBeLessThan(3_500);
+      // Every later run finds "no keys" settled and does not wait again.
+      expect(dispatch[1]!).toBeLessThan(500);
+      expect(dispatch[2]!).toBeLessThan(500);
+
+      const stopping = performance.now();
+      await runner.stop();
+      expect(performance.now() - stopping).toBeLessThan(1_000);
+
+      // Nor does the stalled check hold the process open: its client gives up
+      // at its own connect deadline (5 s) and lets the socket go.
+      const deadline = Date.now() + 10_000;
+      while (sockets.open > 0 && Date.now() < deadline) {
+        await Bun.sleep(50);
+      }
+      expect(sockets.open).toBe(0);
+    } finally {
+      await runner.stop({ force: true }).catch(() => undefined);
+      stall.stop(true);
+    }
+  }, 30_000);
+});
+
 describe("collation warning: a childDriver the runner cannot reach", () => {
   it("hands no key over, so the run's own driver checks; never throws or warns", async () => {
     const { logger, events } = createTestLogger();

@@ -81,11 +81,13 @@ import { RunLogCapture } from "./runLogCapture";
 const SETTLED: Promise<void> = Promise.resolve();
 
 /**
- * How long a spawned or worker run waits, at most, for the runner's check of
- * its SQL tables' collation (`collationKeysForRuns`) before starting without
- * it — in which case the run's own driver checks, as it would unaided. The
- * check is one catalog query, started by `start()`, so a run normally finds
- * it long finished; the bound is for a server the parent cannot reach.
+ * How long the runner's check of its SQL tables' collation
+ * (`collationKeysForRuns`) may take, from when it starts, before spawned and
+ * worker runs stop waiting for it and start without its keys — in which case
+ * each run's own driver checks, as it would unaided. The check is one catalog
+ * query, started by `start()`, so a run normally finds it long finished; the
+ * bound is for a server that stalls. Paid at most once per runner: see
+ * `#collationKeysForRuns`.
  */
 const COLLATION_CHECK_WAIT = 2_000;
 
@@ -272,7 +274,8 @@ export class BunRunner<
   /**
    * The SQL tables whose collation this runner has checked, as guard keys,
    * once asked for: handed to spawned and worker runs so their drivers do not
-   * repeat the warning. See {@link collationKeysForRuns}.
+   * repeat the warning. See {@link collationKeysForRuns}. Bounded by
+   * `COLLATION_CHECK_WAIT` and never rejects.
    */
   #collationKeys: Promise<string[]> | undefined;
 
@@ -326,7 +329,11 @@ export class BunRunner<
     return this.#logger;
   }
 
-  /** Replaces the logger, keeping this runner's bindings. */
+  /**
+   * Replaces the logger, keeping this runner's bindings. A driver the runner
+   * built from a config keeps the logger it was built with, so its
+   * connect-time collation warning still goes to the runner's first logger.
+   */
   set logger(logger: Logger) {
     this.#logger = createJobsLogger(
       logger,
@@ -1618,13 +1625,34 @@ export class BunRunner<
   /**
    * The guard keys a spawned or worker run's driver can skip the collation
    * warning for, checked once per runner.
+   *
+   * What is remembered is the check raced against `COLLATION_CHECK_WAIT`, once,
+   * not the check itself: a check that stalls costs the runs waiting on it
+   * that wait, and every later run finds "no keys" settled — its driver checks
+   * for itself — rather than waiting again. Should the stalled check finish
+   * after all, its keys are adopted for the runs after that. Nothing here holds
+   * the process open: the wait's timer is unref'd, and the check's client has a
+   * connect deadline of its own.
    */
   async #collationKeysForRuns(): Promise<string[]> {
-    this.#collationKeys ??= collationKeysForRuns(
-      this.driver,
-      this.options.childDriver,
-      this.#logger,
-    );
+    if (this.#collationKeys === undefined) {
+      const check = collationKeysForRuns(
+        this.driver,
+        this.options.childDriver,
+        this.#logger,
+      );
+      const bounded = withTimeout(check, COLLATION_CHECK_WAIT).catch(
+        (): string[] => {
+          void check.then((keys) => {
+            if (this.#collationKeys === bounded) {
+              this.#collationKeys = Promise.resolve(keys);
+            }
+          });
+          return [];
+        },
+      );
+      this.#collationKeys = bounded;
+    }
     return await this.#collationKeys;
   }
 
@@ -1633,14 +1661,11 @@ export class BunRunner<
     // Before anything is recorded, so the wait cannot come between the
     // record's mode and the executor that runs it. Only an isolated run
     // builds a driver of its own; an in-process one shares this process's
-    // warning guard. Past the wait, the run's driver checks for itself.
+    // warning guard. Bounded, and at most once per runner.
     const collationChecked =
       this.#executionMode === "in-process"
         ? undefined
-        : await withTimeout(
-            this.#collationKeysForRuns(),
-            COLLATION_CHECK_WAIT,
-          ).catch(() => undefined);
+        : await this.#collationKeysForRuns();
 
     const runId = newId();
     const startedAt = Date.now();

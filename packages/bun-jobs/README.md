@@ -5666,8 +5666,9 @@ await driver.syncSchema({ alterColumns: true }); // rewrites each table under a 
   names other tables, checks those once at `start()`, read-only. Each run is
   told which tables were checked, so the driver that `jobsFromContext(ctx)`
   builds stays silent and the warning never lands in a run's log. If the
-  runner cannot reach the `childDriver` tables, a run's driver checks them
-  itself. An `in-process` run uses the runner's own driver.
+  runner cannot reach the `childDriver` tables, or gets no answer within 2 s,
+  a run's driver checks them itself. Only the first run waits out those 2 s.
+  An `in-process` run uses the runner's own driver.
 - It never fires on Postgres or SQLite. The driver has never declared a
   column collation there. Postgres equality is exact under any deterministic
   collation, and every ordering and range the driver runs names `COLLATE "C"`

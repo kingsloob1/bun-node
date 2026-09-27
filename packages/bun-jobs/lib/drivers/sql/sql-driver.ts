@@ -8,7 +8,6 @@ import type { SQL } from "bun";
 import type {
   ConnectionInput,
   ConnectionOptions,
-  UrlDefaults,
 } from "../../shared/connection";
 import type { RunLogStream } from "../../shared/constants";
 import type {
@@ -1171,6 +1170,10 @@ export interface SqlDriverOptions extends ConnectionInput {
    *
    * Pass bun-common's `noopLogger`, or a logger whose level is `error`, to
    * silence it — for a deployment that knows and has scheduled the rewrite.
+   *
+   * Fixed at construction: a driver keeps the logger it was built with, so
+   * replacing the logger of a component that built it (a runner's
+   * `logger` setter, say) does not reach it.
    */
   logger?: LoggerLike;
   /**
@@ -1205,6 +1208,66 @@ const DEFAULT_PORTS: Record<SqlAdapter, number> = {
   mariadb: 3306,
   sqlite: 0,
 };
+
+/**
+ * Opens a client for `options`' connection: the one a driver owns, or the
+ * collation check's own (`collationKeysForRuns`), with `limits` on top.
+ *
+ * On MySQL and MariaDB, `allowPublicKeyRetrieval` comes from the URL's query
+ * parameter or, for a connection given as fields, from that field — the URL
+ * wins, as it does for everything else. Bun's client ignores the parameter
+ * in a URL, so it is taken out and passed as the client option it has to be.
+ * Every other parameter, `ssl`/`tls`/`sslmode` included, stays in the URL for
+ * the client to read.
+ */
+function openSqlClient(
+  adapter: SqlAdapter,
+  options: ConnectionInput,
+  limits: {
+    /** Most connections the client pools. Bun's default when absent. */
+    max?: number;
+    /** Seconds to wait for a connection to be established. Bun's default when absent. */
+    connectionTimeout?: number;
+  } = {},
+): SQL {
+  const resolved = resolveConnectionUrl(
+    options,
+    {
+      scheme: adapter,
+      host: "127.0.0.1",
+      port: DEFAULT_PORTS[adapter] || undefined,
+    },
+    "The SQL driver",
+  );
+
+  if (adapter !== "mysql" && adapter !== "mariadb") {
+    return new BunSQL({ url: resolved, ...limits });
+  }
+
+  const { url, value } = takeBooleanParam(resolved, "allowPublicKeyRetrieval");
+  const allowPublicKeyRetrieval =
+    value ??
+    (options.url ? undefined : options.connection?.allowPublicKeyRetrieval);
+
+  return new BunSQL({
+    url,
+    ...limits,
+    ...(allowPublicKeyRetrieval === undefined
+      ? {}
+      : { allowPublicKeyRetrieval }),
+  });
+}
+
+/**
+ * How long the collation check for a runner's runs waits to connect, in
+ * seconds, before giving up (`collationKeysForRuns`). A server that accepts
+ * the connection and never answers would otherwise hold the check's socket —
+ * and the process with it — open until the OS gives up; Bun's `close()` waits
+ * for a connection still being established. A healthy server connects in
+ * milliseconds, and a check that gives up only means the runs check for
+ * themselves.
+ */
+const COLLATION_CHECK_CONNECT_TIMEOUT = 5;
 
 /** A driver's guard key; assigned in {@link SqlDriver}'s static block. */
 let guardKeyOf: (driver: SqlDriver) => string;
@@ -1298,6 +1361,7 @@ export async function collationKeysForRuns(
     return [...keys];
   }
 
+  let client: SQL | undefined;
   let probe: SqlDriver | undefined;
   try {
     const adapter = childDriver.adapter ?? detectAdapter(childDriver.url);
@@ -1309,9 +1373,14 @@ export async function collationKeysForRuns(
       return [...keys];
     }
 
+    // A client of its own, of one connection with a connect deadline, so a
+    // server that stalls cannot keep this check — or the process — alive.
+    client = openSqlClient(adapter, childDriver, {
+      max: 1,
+      connectionTimeout: COLLATION_CHECK_CONNECT_TIMEOUT,
+    });
     probe = new SqlDriver({
-      url: childDriver.url,
-      connection: childDriver.connection,
+      sql: client,
       adapter,
       tablePrefix: childDriver.tablePrefix,
       tables: childDriver.tables,
@@ -1327,6 +1396,7 @@ export async function collationKeysForRuns(
     // Unreachable or misconfigured from here: the run's driver checks itself.
   } finally {
     await probe?.close().catch(() => undefined);
+    await client?.close().catch(() => undefined);
   }
 
   return [...keys];
@@ -1610,7 +1680,7 @@ export class SqlDriver implements JobsDriver {
     this.#poll = options.pollInterval ?? POLL_MS;
     this.#ownsConnection = !options.sql;
 
-    this.#sql = options.sql ?? this.#openClient(options);
+    this.#sql = options.sql ?? openSqlClient(this.adapter, options);
     this.#guardKey = collationGuardKey(this.adapter, this.#sql, this.#tables);
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
@@ -1663,52 +1733,6 @@ export class SqlDriver implements JobsDriver {
       ns: (entry) => entry.ns,
       write: async (batch) => await this.#writeBusyness(batch),
     });
-  }
-
-  /**
-   * Opens the client this driver owns.
-   *
-   * On MySQL and MariaDB, `allowPublicKeyRetrieval` comes from the URL's query
-   * parameter or, for a connection given as fields, from that field — the URL
-   * wins, as it does for everything else. Bun's client ignores the parameter
-   * in a URL, so it is taken out and passed as the client option it has to be.
-   * Every other parameter, `ssl`/`tls`/`sslmode` included, stays in the URL for
-   * the client to read.
-   */
-  #openClient(options: SqlDriverOptions): SQL {
-    const resolved = resolveConnectionUrl(
-      options,
-      this.#urlDefaults(),
-      "The SQL driver",
-    );
-
-    if (this.adapter !== "mysql" && this.adapter !== "mariadb") {
-      return new BunSQL({ url: resolved });
-    }
-
-    const { url, value } = takeBooleanParam(
-      resolved,
-      "allowPublicKeyRetrieval",
-    );
-    const allowPublicKeyRetrieval =
-      value ??
-      (options.url ? undefined : options.connection?.allowPublicKeyRetrieval);
-
-    return new BunSQL({
-      url,
-      ...(allowPublicKeyRetrieval === undefined
-        ? {}
-        : { allowPublicKeyRetrieval }),
-    });
-  }
-
-  /** How a connection given as fields becomes a URL for this engine. */
-  #urlDefaults(): UrlDefaults {
-    return {
-      scheme: this.adapter,
-      host: "127.0.0.1",
-      port: DEFAULT_PORTS[this.adapter] || undefined,
-    };
   }
 
   /* --- lifecycle ---------------------------------------------------- */
