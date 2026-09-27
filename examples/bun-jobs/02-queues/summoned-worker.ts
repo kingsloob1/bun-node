@@ -30,6 +30,7 @@
  *   so its `SummonedExit` is simply returned.
  */
 import type { DriverConfig, SummonedExit } from "@kingsleyweb/bun-jobs";
+import type { Subprocess } from "bun";
 import process from "node:process";
 import { BunJobs, runSummoned } from "@kingsleyweb/bun-jobs";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
@@ -47,6 +48,20 @@ const namespace = exampleNamespace("summoned");
 // closing the context closes it too.
 const jobs = new BunJobs({ namespace, driver: config });
 const ENTRY = new URL("./helpers/summoned-entry.ts", import.meta.url).pathname;
+
+/**
+ * Every child this tour started. One still alive when it exits — a check
+ * failed mid-case, say — is killed: a child stopped by SIGTSTP would
+ * otherwise outlive the tour, suspended, holding the output it inherited.
+ */
+const children = new Set<Subprocess>();
+process.on("exit", () => {
+  for (const child of children) {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  }
+});
 
 /** One decision the child logged. */
 interface Decision {
@@ -84,6 +99,7 @@ function summonChild(
     stdout: "pipe",
     stderr: "inherit",
   });
+  children.add(child);
   const decisions: Decision[] = [];
   const reading = (async () => {
     const decoder = new TextDecoder();
@@ -117,11 +133,17 @@ function summonChild(
   };
 }
 
-/** Waits until a job is `active`, so a signal lands while it is in flight. */
+/**
+ * Waits until a job's attempt is running on the child, so a signal lands
+ * while it is in flight. Not its `active` state: that is set when the job is
+ * claimed, before the attempt starts, and a worker that begins closing in
+ * between leaves the claimed job unstarted for the stalled sweep. The handler
+ * reports progress `1` once it is running.
+ */
 async function activeJob(queue: string, id: string) {
   await waitFor(
     `${queue}'s job to start`,
-    async () => (await jobs.queue(queue).getJob(id))?.state === "active",
+    async () => (await jobs.queue(queue).getJob(id))?.progress === 1,
     WAIT,
   );
 }
@@ -178,6 +200,11 @@ const drain = summonChild("drain", ["--bun-jobs-summon-grace-ms=10000"]);
 await activeJob("drain", slow.id);
 drain.child.kill("SIGTERM");
 const drainCode = await drain.exited();
+show(
+  "what it decided",
+  drain.decisions.map((one) => one.message),
+);
+show("how it closed", drain.decisions.at(-2)?.fields);
 checkEqual(
   "exit 0 on the signal, a graceful close, with the slow job completed rather than abandoned",
   [

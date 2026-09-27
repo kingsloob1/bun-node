@@ -9,6 +9,9 @@
  * one JSON line, so the tour can read why the process exited — the last one,
  * "Summoned worker stopped", carries the whole `SummonedExit`.
  *
+ * It opts in to `pauseSignals`, so the tour's SIGTSTP stops claiming rather
+ * than suspending the process.
+ *
  * Its jobs: `quick` returns at once; `slow` works for `data.ms` and finishes
  * even when asked to stop, so a drain can be seen; `hang` never ends.
  */
@@ -34,6 +37,12 @@ const jobs = new BunJobs({
 const worker = jobs.worker<Work, string>(
   summon.queue,
   async (job) => {
+    // Written once the attempt is running here, so the tour can tell a job
+    // this worker is working on from one merely claimed: `active` is set at
+    // the claim, before the attempt starts.
+    if (job.name !== "quick") {
+      await job.updateProgress(1);
+    }
     if (job.name === "hang") {
       return await new Promise<never>(() => {});
     }
@@ -47,6 +56,9 @@ const worker = jobs.worker<Work, string>(
 
 await runSummoned(worker, {
   idleFor: Number(process.env.SUMMONED_IDLE_FOR ?? 500),
+  // SIGTSTP as "stop claiming" and SIGCONT as "resume" are opt-in: without
+  // this, Ctrl-Z suspends the process as it would any other.
+  pauseSignals: true,
   idleCheckInterval: 50,
   logger: (event) => {
     console.log(
