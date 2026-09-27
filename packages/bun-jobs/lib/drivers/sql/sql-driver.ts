@@ -1,4 +1,9 @@
-import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
+import type {
+  Logger,
+  LoggerLike,
+  LogLevel,
+  SerializedError,
+} from "@kingsleyweb/bun-common";
 import type { SQL } from "bun";
 import type {
   ConnectionInput,
@@ -90,8 +95,9 @@ import type {
   SqlAdapter,
   SqlDialect,
 } from "./dialect";
-import type { SchemaTableNames } from "./schema";
-import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import type { SchemaTableNames, TableDefinition } from "./schema";
+import type { CollationDrift, SqlColumnRow } from "./sync";
+import { jsonClone, resolveLogger, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
 import {
   assertRewriteRequest,
@@ -193,7 +199,12 @@ import {
   schemaDefinition,
   STAMP_COLUMNS,
 } from "./schema";
-import { syncSqlSchema } from "./sync";
+import {
+  collationDrift,
+  collationDriftWarning,
+  readColumns,
+  syncSqlSchema,
+} from "./sync";
 
 /**
  * A driver backed by a SQL database.
@@ -1133,6 +1144,28 @@ export interface SqlDriverOptions extends ConnectionInput {
    */
   syncSchema?: boolean | SchemaSyncOptions;
   /**
+   * Where the driver logs, as any `LoggerLike`: a bun-common `Logger`, a sink
+   * function, or a pino / winston / consola / console-like logger. Defaults
+   * to bun-common's console logger at `info`. Records carry `driver: "sql"`
+   * and `adapter` as bindings.
+   *
+   * Its one record today is a `warn` on connect, once per connect, when an
+   * identifier column of an existing table (an id, a queue or state name, a
+   * key, a namespace) compares in a collation other than the one this driver
+   * declares — a MySQL or MariaDB table created by a version from before
+   * identifiers were declared binary. Such a table treats `Report` and
+   * `report` as one key, and its prefix listings can come back empty. The
+   * warning names each table and column, the collation found and expected,
+   * and the fix, `syncSchema({ alterColumns: true })`, which rewrites the
+   * table under a lock. It is still given with `syncSchema: true` when
+   * `alterColumns` is not set, since that sync leaves those columns as they
+   * are. Type differences never trigger it; they cost speed, not answers.
+   *
+   * Pass bun-common's `noopLogger`, or a logger whose level is `error`, to
+   * silence it — for a deployment that knows and has scheduled the rewrite.
+   */
+  logger?: LoggerLike;
+  /**
    * Prepended to every table name. Defaults to `bun_jobs_`, which keeps this
    * driver's tables together in a database it shares with an application.
    */
@@ -1211,6 +1244,8 @@ export class SqlDriver implements JobsDriver {
   readonly #notify: boolean;
   /** What to reconcile on connect, if anything. */
   readonly #syncOnConnect: boolean | SchemaSyncOptions;
+  /** Where connect's schema warnings go: see {@link SqlDriverOptions.logger}. */
+  readonly #logger: Logger;
   /** Arrival notifications, where the engine can push them. */
   readonly #arrivals: Arrivals;
   /** Rows written since the planner's statistics were last refreshed. */
@@ -1440,6 +1475,10 @@ export class SqlDriver implements JobsDriver {
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
     this.#syncOnConnect = options.syncSchema ?? false;
+    this.#logger = resolveLogger(options.logger).child({
+      driver: "sql",
+      adapter: this.adapter,
+    });
     this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
 
@@ -7362,35 +7401,56 @@ export class SqlDriver implements JobsDriver {
   /* --- internals ------------------------------------------------------------ */
 
   /**
-   * The schema's tables that already exist, asked of the engine's own column
-   * listing — the one `syncSchema` reads — so a table with no columns
-   * reported is one to create.
+   * The columns of the schema's tables that already exist, in one catalog
+   * query — the listing `syncSchema` reads — so a table with no entry is one
+   * to create, and an existing one's identifiers can be checked for drift
+   * ({@link collationDrift}) without a second read.
    *
    * A process that starts beside another may see a table the other has just
    * created and so leave its indexes to that one. Should that one then fail
    * before creating them, they are missing until a sync, which reports them.
    */
-  async #existingTables(): Promise<Set<string>> {
-    const existing = new Set<string>();
+  async #existingColumns(
+    tables: readonly TableDefinition[],
+  ): Promise<Map<string, SqlColumnRow[]>> {
+    return await readColumns(
+      {
+        all: async <T>(text: string, params: unknown[]) =>
+          (await withLockRetry(
+            async () => await this.#sql.unsafe(text, params as never),
+          )) as T[],
+      },
+      this.dialect,
+      tables.map((table) => table.name),
+    );
+  }
 
-    for (const table of schemaDefinition(this.#tables, this.dialect).tables) {
-      const columns = await withLockRetry(
-        async () =>
-          await this.#sql.unsafe(this.dialect.describeColumns(table.name), [
-            table.name,
-          ]),
-      );
-
-      if ((columns as unknown[]).length > 0) {
-        existing.add(table.name);
-      }
+  /**
+   * Logs the one warning connecting gives for identifier columns in the wrong
+   * collation, when there are any. See {@link SqlDriverOptions.logger}.
+   *
+   * Never fails the connect: a logger that throws loses the warning, not the
+   * connection.
+   */
+  #warnCollationDrift(drift: readonly CollationDrift[]): void {
+    if (drift.length === 0) {
+      return;
     }
 
-    return existing;
+    const { message, fields } = collationDriftWarning(drift);
+    try {
+      this.#logger.warn(message, fields);
+    } catch {
+      // The warning is advice; the connect it rides on has succeeded.
+    }
   }
 
   /** Creates the schema and applies any connection pragmas. */
   async #migrate(): Promise<void> {
+    // Identifier columns whose collation differs from the driver's, warned
+    // about once the migration has succeeded.
+    let drift: CollationDrift[] = [];
+
     try {
       for (const statement of this.dialect.pragmas) {
         // Best-effort: `journal_mode` wants a moment's exclusive access, and
@@ -7405,7 +7465,9 @@ export class SqlDriver implements JobsDriver {
       // build — reported, and `CONCURRENTLY` on Postgres — rather than a plain
       // `CREATE INDEX` here, which would block every write to a live jobs
       // table for the length of the build. See `createSchema`.
-      const existing = await this.#existingTables();
+      const definition = schemaDefinition(this.#tables, this.dialect);
+      const columns = await this.#existingColumns(definition.tables);
+      const existing = new Set(columns.keys());
 
       // Two processes starting together both create the schema, and one is
       // told the database is busy. Every statement is `IF NOT EXISTS`, so
@@ -7431,10 +7493,30 @@ export class SqlDriver implements JobsDriver {
 
       // After the tables exist, not instead of creating them: a sync compares
       // against what is there and has nothing to say about what is not.
+      //
+      // Identifier columns in the wrong collation return wrong answers, so
+      // they are warned about on every connect until repaired. Without a sync,
+      // from the columns already read; tables created just now are correct by
+      // construction, and had no columns to read. With one, from what the sync
+      // left undone — which is all of it unless `alterColumns` was set, since
+      // the repair is the blocking rewrite a plain sync declines.
       if (this.#syncOnConnect !== false) {
-        await this.#syncSchema(
+        const changes = await this.#syncSchema(
           typeof this.#syncOnConnect === "object" ? this.#syncOnConnect : {},
         );
+        drift = changes.flatMap((change) =>
+          change.collation && !change.applied
+            ? [
+                {
+                  table: change.table,
+                  column: change.target,
+                  ...change.collation,
+                },
+              ]
+            : [],
+        );
+      } else {
+        drift = collationDrift(this.dialect, definition.tables, columns);
       }
 
       // Whether the table the claims will write has the stamp's columns, so
@@ -7459,6 +7541,8 @@ export class SqlDriver implements JobsDriver {
 
       throw new DriverError("sql", "migrate", error, { adapter: this.adapter });
     }
+
+    this.#warnCollationDrift(drift);
   }
 
   /**

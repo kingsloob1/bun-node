@@ -1,3 +1,4 @@
+import type { LoggerLike } from "../shared/logger";
 import type { DriverConfig, JobsDriver } from "./driver";
 import type { MetricsOptions } from "./metrics";
 import { ConfigError } from "../shared/errors";
@@ -19,7 +20,18 @@ import { SqlDriver } from "./sql/sql-driver";
  * {@link ConfigError} naming what is missing rather than failing later with
  * something obscure.
  */
-export function createDriver(config: DriverConfig): JobsDriver {
+export function createDriver(
+  config: DriverConfig,
+  options: {
+    /**
+     * Where the built driver logs, for a driver that logs at all — today the
+     * SQL driver's connect-time schema warning (`SqlDriverOptions.logger`).
+     * Not part of the config because a config crosses process boundaries and
+     * a logger cannot. Ignored by every other driver.
+     */
+    logger?: LoggerLike;
+  } = {},
+): JobsDriver {
   switch (config.type) {
     case "memory":
       return new MemoryDriver({ metrics: config.metrics });
@@ -42,6 +54,7 @@ export function createDriver(config: DriverConfig): JobsDriver {
         pollInterval: config.pollInterval,
         eventRetentionMs: config.eventRetentionMs,
         metrics: config.metrics,
+        logger: options.logger,
       });
     case "mongodb":
       return new MongoDriver({
@@ -85,10 +98,14 @@ export function createDriver(config: DriverConfig): JobsDriver {
  * here — a config that names no `metrics` of its own gets it, and with no
  * driver at all the default memory driver is built with it — and never an
  * instance, whose recording was decided by whoever constructed it.
+ *
+ * `logger` is the component's own `logger` option, and reaches a driver built
+ * here the same way: see {@link createDriver}.
  */
 export function resolveDriver(
   driver: JobsDriver | DriverConfig | undefined,
   metrics?: MetricsOptions,
+  logger?: LoggerLike,
 ): {
   driver: JobsDriver;
   owned: boolean;
@@ -104,6 +121,7 @@ export function resolveDriver(
         metrics === undefined || config.metrics !== undefined
           ? config
           : { ...config, metrics },
+        { logger },
       ),
       owned: true,
     };
