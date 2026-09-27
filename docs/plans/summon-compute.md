@@ -1824,8 +1824,12 @@ const scalerApi = createJobsApi({
 `authorize` is `(req, context)`, and a `BunRequest` reads a header with
 `getHeader(name)`; the draft's `({ req }) => req.headers.get(…)` failed with a
 500 [S, corrected 2026-09-26 by PR-5's test of this recipe]. It can read
-demand and nothing else: `/demand` is `queues.list`, which this API does not
-allow. `queues.summon` is a write that spends
+queue-level figures and nothing more: `queues.read` serves the per-queue
+demand route and also `/queues/:queue`, its counts, `/counts/added`,
+`/limits` and `/job-defaults` — reads only, with no job, payload, worker or
+runner data [S, corrected 2026-09-27 by PR-7's check of this recipe; the
+draft said "demand and nothing else"]. `/demand` is `queues.list`, which this
+API does not allow. `queues.summon` is a write that spends
 money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS`
 (`api/contract/constants.ts:19-68`), **`JOBS_API_MUTATIONS`** (`:84-117`, so
 `readOnly: true` removes it) and **`JOBS_API_OPT_IN_ACTIONS`** (`:136-144`,

@@ -120,6 +120,12 @@ reference.
   - [Analytics in a driver of your own](#analytics-in-a-driver-of-your-own)
 - [Management API](#management-api)
   - [Analytics routes](#analytics-routes)
+- [Recipes: summoning workers and scaling on demand](#recipes-summoning-workers-and-scaling-on-demand)
+  - [Where the summoner runs](#where-the-summoner-runs)
+  - [The worker file](#the-worker-file)
+  - [Shutdown budgets per platform](#shutdown-budgets-per-platform)
+  - [Scaling on the depth endpoint](#scaling-on-the-depth-endpoint)
+  - [What a poll costs](#what-a-poll-costs)
 - [Drivers](#drivers)
   - [Choosing a driver](#choosing-a-driver)
   - [Driver configs](#driver-configs)
@@ -2039,6 +2045,10 @@ routes are served.
 
 Example: [`11-management-api/demand-for-a-scaler.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/demand-for-a-scaler.ts).
 
+For KEDA, Azure Container Apps, CREMA and a GKE HPA reading it, and the
+scaler's own read-only API, see
+[Scaling on the depth endpoint](#scaling-on-the-depth-endpoint).
+
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
 paused, started, last heartbeat, `sweeps`, `target`, `rssBytes` and
@@ -2329,6 +2339,8 @@ return, so it logs a warning when the close outlives its deadline instead.
 Raise the platform's grace where it can be raised (Fly's `kill_timeout`,
 Railway's `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`): a short grace against a long
 job means the job runs twice.
+Every platform's grace, and what it leaves the jobs, is in
+[Shutdown budgets per platform](#shutdown-budgets-per-platform).
 
 For Lambda, where the worker must live inside one invocation, build the worker
 in the handler, never at module scope:
@@ -5284,6 +5296,609 @@ Examples:
 - [`11-management-api/openapi-and-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/openapi-and-docs.ts)
 - [`10-options/jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts)
 - [`10-options/jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts)
+
+## Recipes: summoning workers and scaling on demand
+
+How the summon pieces fit a deployment: where a
+[`SummonController`](#summoning-a-worker) runs, the one file a summoned worker
+runs, how long each platform gives it to stop, and how a platform's own scaler
+reads the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput)
+instead. The design and its evidence are in the
+[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/summon-compute.md)
+(sections cited as §).
+
+**How far each recipe is checked.** Code written against this package is
+**checked**: run against it for this README, or asserted by its tests.
+Platform configuration is **read**: field names, defaults and behaviour taken
+from the vendor's docs or source (on 2026-09-27; the grace table is the
+plan's, read 2026-09-25), but **not run**. Nothing here
+has been deployed on KEDA, Azure Container Apps, CREMA or GKE. What neither
+covers is marked **unverified**. No first-party summoner ships yet, so a
+summoner is one you write with `defineSummoner`.
+
+Three ways to start a worker (§2), which differ in who notices the work and
+who starts the process:
+
+| Model | Who notices | Who starts the worker | What must stay awake |
+|---|---|---|---|
+| bun-jobs-driven | a `SummonController` | your summoner | a bun-jobs process that polls |
+| platform-driven | the platform's scaler | the platform | the scaler, and the API it polls |
+| schedule-driven | a scheduled `check()` | your summoner | a scheduler you already have |
+
+From an `add()` to the summon call: the 250 ms debounce for an add in the
+controller's own process, up to one 30 s poll for due, stalled or remote work;
+up to one polling interval for a platform (30 s by default on KEDA and ACA);
+up to one period for a schedule. After the call, the platform's cold start is
+unmeasured everywhere (§12).
+
+### Where the summoner runs
+
+| Placement | Sees an `add()` at once | Sees due jobs and dead workers | Credentials live in |
+|---|---|---|---|
+| one long-lived process | through events, from producers that publish | yes, by poll | that process |
+| each producer (`triggers.onAdd`) | its own adds | only while it lives and polls | every producer |
+| a scheduled check | no | once per tick | the scheduled function |
+
+**The default: one long-lived process** with the poll and events on, which is
+what a policy gives unless told otherwise. The management API server is the
+usual choice. It alone holds the platform credentials, and its poll catches
+what no add announces:
+
+```ts
+// api-server.ts: the long-lived process
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: { emails: { summoner } }, // poll every 30 s, events, local adds
+});
+```
+
+Events carry another process's adds only from producers that publish
+(`publishEvents: true`) and never a bulk add; the poll covers both.
+
+**Add producers only where latency matters.** A controller on a producer
+summons for that producer's adds within the debounce, and leaves the rest to
+the long-lived one:
+
+```ts
+// producer.ts: summon on this process's own adds only
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: { emails: { summoner, triggers: { poll: false, events: false } } },
+});
+```
+
+Both controllers claim attempts through the same guard in the driver, so they
+never summon twice for one backlog. The price is platform credentials in
+every producer.
+
+**Never producers alone.** Nothing is added when a delayed job or a retry
+comes due, or when a worker dies holding jobs, so a producer-only deployment
+strands that work until the next add. It suits only a queue that never
+delays, never retries and never loses a worker.
+
+**With no long-lived process**, use the platform's scaler on Kubernetes or
+ACA ([below](#scaling-on-the-depth-endpoint)). Elsewhere, run one check per
+tick from a scheduler (EventBridge Scheduler to a Lambda, Cloud Scheduler to
+a Cloud Run job, cron):
+
+```ts
+// check.ts: one check, then exit
+import { createDriver, defineSummoner, SummonController } from "@kingsleyweb/bun-jobs";
+
+const driver = createDriver({ type: "redis", url: process.env.REDIS_URL! });
+await driver.connect();
+const controller = new SummonController({
+  driver,
+  namespace: "shop",
+  queue: "emails",
+  summoner: defineSummoner({
+    kind: "my-cloud",
+    invoke: async (request) => {
+      await startWorkerOnMyCloud(request.argv, request.dedupeKey);
+    },
+  }),
+  triggers: { onAdd: false, events: false, poll: false },
+});
+export const result = await controller.check({ reason: "schedule" });
+await controller.close();
+await driver.close();
+```
+
+It holds no lease, so a short-lived function can run it, and a burst between
+ticks waits for the next one (EventBridge Scheduler's floor is a minute).
+**Checked:** on the file driver, one check answered `action: "summoned"` with
+one summoner call carrying the seven `--bun-jobs-summon-*=` arguments. The
+zero-code fallback is to schedule the worker itself: with `runSummoned` it
+exits after `idleFor` on an empty queue, at the cost of one minimum bill per
+empty tick.
+
+A controller in a process that was itself summoned is inert unless its policy
+says `fromSummoned: true` ([Summoning a worker](#summoning-a-worker)). A
+worker a platform started has no `--bun-jobs-summon-id=`, so there the rule
+does not apply: leave `summon` out of the `BunJobs` a platform-started worker
+builds.
+
+### The worker file
+
+One file serves every model. A summoner passes the worker's identity on the
+command line; a worker a platform started has none, and falls back to fixed
+names:
+
+```ts
+// worker.ts: what every platform runs, as `bun worker.ts`
+import process from "node:process";
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+import { processor } from "./processor";
+
+const summon = summonedFromArgs(); // undefined unless --bun-jobs-summon-id= was passed
+const jobs = new BunJobs({
+  namespace: summon?.namespace ?? "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+});
+const worker = jobs.worker(summon?.queue ?? "emails", processor, { summon });
+
+await runSummoned(worker, {
+  // A summoner passes its platform's grace; a platform-started worker is told here.
+  grace: summon?.graceMs ?? Number(process.env.STOP_GRACE_MS ?? 10_000),
+  // A Deployment or a worker pool restarts a process that exits.
+  mode: process.env.WORKER_MODE === "until-stopped" ? "until-stopped" : undefined,
+});
+```
+
+- **Settings may come from the environment; identity never does.** Grace and
+  mode are the same for every process a deployment starts. The attempt id is
+  not, and an environment leaks to every descendant
+  ([why](#reading-a-queue-search-totals-workers-and-throughput)).
+- **Which mode.** `"exit-on-idle"`, the default, for a process started per
+  burst: a summoner's launch, a KEDA `ScaledJob`, an ACA event job.
+  `"until-stopped"` for a replica a platform keeps running: a KEDA
+  `ScaledObject`, a Cloud Run worker pool, an HPA's Deployment, which would
+  restart an exited worker. `"in-invocation"` for
+  [Lambda](#summoned-workers-runsummoned).
+- **Build it with `jobs.worker(...)`**, never `autorun` or `jobs.start()`:
+  `runSummoned` starts the worker itself.
+- **Exit 0 for everything but a failed `run()`**, so a Job's `backoffLimit`
+  or an ACA job's retry limit retries only a real failure.
+
+**Checked:** with no summon arguments, on the memory driver, the worker
+drained three jobs and resolved `{ reason: "idle", code: 0 }`, with a delayed
+job due 60 s later not holding it up.
+
+### Shutdown budgets per platform
+
+The worker cannot learn its platform's grace, so `grace` must say it: passed
+by a summoner as `--bun-jobs-summon-grace-ms=`, or set in the worker file.
+[The close rule](#summoned-workers-runsummoned) turns it into the time jobs in
+flight get: the budget is `grace − 250` ms, of which a `"child-process"` or
+`"worker-thread"` target reserves 4,500 ms and every target `tailReserve`
+(1,000 ms). What remains goes to the jobs; with nothing left, the close is
+forced. Grace defaults from §5.2 (vendor docs, read 2026-09-25):
+
+| Platform | Stop signal | Grace | Child-process target | In-process target |
+|---|---|---|---|---|
+| Railway | SIGTERM | 0 s | `force`, if it runs at all | `force` |
+| Fly Machines | SIGINT | 5 s | `force` | jobs get 3.75 s |
+| Cloud Run jobs, worker pools | SIGTERM | 10 s | jobs get 4.25 s | jobs get 8.75 s |
+| Heroku, AWS Batch | SIGTERM | 30 s | jobs get 24.25 s | jobs get 28.75 s |
+| Kubernetes pod | SIGTERM | 30 s | jobs get 24.25 s | jobs get 28.75 s |
+| ECS, Fargate | SIGTERM | 30 s | jobs get 24.25 s | jobs get 28.75 s |
+| Render | SIGTERM | 30 s | jobs get 24.25 s | jobs get 28.75 s |
+| Fargate Spot, EC2 Spot | SIGTERM | 2 min | jobs get 114.25 s | jobs get 118.75 s |
+| Cloudflare Containers | SIGTERM | up to 15 min | up to 894.25 s | up to 898.75 s |
+| Azure Container Apps jobs | unverified | unverified | set `grace` yourself | set `grace` yourself |
+| Lambda | none usable | 0–2 s | `"in-invocation"` | `"in-invocation"` |
+| systemd unit | `KillSignal=` | `TimeoutStopSec=` | from `grace` | from `grace` |
+
+- **Raise it where you can**, and set `grace` to match: Fly's `kill_timeout`
+  (up to 300 s, and `kill_signal = "SIGTERM"`), Railway's
+  `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, a pod's
+  `terminationGracePeriodSeconds`, ECS's `stopTimeout` (up to 120 s), Render's
+  up to 300 s for services (whether a one-off job's cancellation honours it is
+  unverified). A 5 s grace against a 5-minute job abandons it: it is
+  recovered as stalled and runs twice.
+- **A custom target** reserves 5,000 ms either way, since it may ignore
+  `force`: on Fly's default it needs 6 s even forced, and the hard backstop
+  ends it first — never sooner than 1 s after the close began.
+- **Cloud Run jobs over an hour** get SIGTSTP 10 s before a maintenance
+  migration and SIGCONT after. Pass `pauseSignals: true` (off by default) to
+  stop claiming meanwhile; whether catching SIGTSTP delays the pause is
+  unverified.
+- **At a deadline** the budget is `deadline − 250` ms instead, and claiming
+  stops `shutdownBuffer` (7 s) before it.
+
+### Scaling on the depth endpoint
+
+On Kubernetes or ACA the platform's scaler can start workers itself, polling
+the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput),
+and bun-jobs writes no summoner. Point it at the right figure:
+
+- **`demand`** for a scaler that starts a process per burst (a KEDA
+  `ScaledJob`, an ACA event job): work a worker could claim now.
+- **`outstanding`** for one that sets a replica count (a KEDA `ScaledObject`,
+  CREMA, an HPA). Scale-to-zero follows the metric reaching zero for
+  `cooldownPeriod` (300 s on KEDA), and `demand` reaches zero while a worker
+  is still busy on a long job, which would be stopped mid-job. `outstanding`
+  counts active jobs too.
+
+A paused queue reads `0` on both, so its workers scale away and its backlog
+waits. KEDA counts the Jobs it started, not bun-jobs workers, so a worker
+started some other way does not lower its count (Q12). And something must
+answer the poll: the process serving the endpoint cannot scale to zero with
+the workers.
+
+#### The scaler's own API
+
+Give the scaler a second, read-only `createJobsApi` with its own credential,
+beside the admin one:
+
+```ts
+import { Buffer } from "node:buffer";
+import { timingSafeEqual } from "node:crypto";
+import process from "node:process";
+import { createJobsApi } from "@kingsleyweb/bun-jobs";
+
+const token = process.env.SCALER_TOKEN;
+if (!token) {
+  throw new Error("SCALER_TOKEN is not set"); // else "Bearer undefined" would pass
+}
+const expected = Buffer.from(`Bearer ${token}`);
+
+export const scalerApi = createJobsApi({
+  jobs,
+  basePath: "/scaler",
+  readOnly: true,
+  actions: ["queues.read", "queues.list"], // queues.list is for GET /demand
+  authorize: (req) => {
+    const sent = Buffer.from(req.getHeader("authorization") ?? "");
+    return sent.length === expected.length && timingSafeEqual(sent, expected);
+  },
+});
+app.use(scalerApi.basePath, scalerApi.router);
+```
+
+**Checked:** this API registers eight routes, all `GET`: `/queues`, `/demand`,
+and per queue `/queues/:queue` with its `counts`, `counts/added`, `demand`,
+`limits` and `job-defaults`. So it reads queue figures and settings, never a
+job, a payload, a worker or a runner; it has no docs, no socket and no
+mutation (a `POST /queues/emails/pause` is 404), and a missing or wrong token
+is 403. With `actions: ["queues.read"]` alone, `/queues` and `/demand` go too.
+`authorize` is `(req, context)`, and a `BunRequest` reads a header with
+`getHeader(name)`.
+
+- **Per-queue route or `/demand`.** A scaler watching one queue reads
+  `/queues/:queue/demand`, which is 404 for an unknown queue, so a typo fails
+  loudly. A Prometheus server scrapes `/demand` once for the namespace.
+- **JSON or Prometheus.** KEDA's `metrics-api` sends no `Accept` header (read
+  in its v2.21.0 source), so it gets JSON unless the URL says
+  `?format=prometheus`. A Prometheus 3 scrape's `Accept` selects the
+  exposition (checked), but put `format=prometheus` in the scrape's params
+  anyway.
+
+#### KEDA `ScaledJob`: a worker per burst
+
+```yaml
+# Read: KEDA v2.21 docs (scaledjob-spec, metrics-api). Checked: the route,
+# `demand` in its JSON and the bearer check. Not run on a cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bun-jobs-scaler
+stringData:
+  token: replace-me # the API's SCALER_TOKEN
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: bun-jobs-scaler
+spec:
+  secretTargetRef:
+    - parameter: token
+      name: bun-jobs-scaler
+      key: token
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: emails-worker
+spec:
+  jobTargetRef:
+    backoffLimit: 2
+    template:
+      spec:
+        restartPolicy: Never
+        terminationGracePeriodSeconds: 30
+        containers:
+          - name: worker
+            image: registry.example.com/shop-worker:latest
+            command: [bun, worker.ts]
+            env:
+              - name: STOP_GRACE_MS
+                value: "30000"
+  pollingInterval: 30
+  maxReplicaCount: 5
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: http://shop-api.default.svc:3000/scaler/queues/emails/demand
+        valueLocation: demand
+        targetValue: "500"
+        authMode: bearer
+      authenticationRef:
+        name: bun-jobs-scaler
+```
+
+`targetValue` is how many jobs one run should take. Each poll KEDA starts
+`min(maxReplicaCount, ceil(demand / targetValue))` less the Jobs still
+running (its default strategy), so a large target means one drainer at a
+time. `authMode: bearer` sends `Authorization: Bearer <token>`, the header
+the scaler API checks. Keep `terminationGracePeriodSeconds` and
+`STOP_GRACE_MS` in step.
+
+#### KEDA `ScaledObject`: replicas on `outstanding`
+
+The same `TriggerAuthentication`, and a Deployment running `worker.ts` with
+`WORKER_MODE=until-stopped` and `STOP_GRACE_MS` matching its grace:
+
+```yaml
+# Read: KEDA v2.21 docs (scaledobject-spec, metrics-api). Not run on a cluster.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: emails-worker
+spec:
+  scaleTargetRef:
+    name: emails-worker # the Deployment
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: http://shop-api.default.svc:3000/scaler/queues/emails/demand
+        valueLocation: outstanding
+        targetValue: "200"
+        authMode: bearer
+      authenticationRef:
+        name: bun-jobs-scaler
+```
+
+`cooldownPeriod` applies only to the last replica; between one and many the
+HPA decides, and the Deployment picks which pod to stop. A stopped worker closes by the
+close rule, and whatever it cannot finish in the grace is recovered as
+stalled.
+
+#### KEDA on the Prometheus exposition
+
+`metrics-api` can read the exposition directly:
+
+```yaml
+# Read: KEDA v2.21.0 source, getValueFromPrometheusResponse. Not run.
+triggers:
+  - type: metrics-api
+    metadata:
+      url: http://shop-api.default.svc:3000/scaler/queues/emails/demand?format=prometheus
+      format: prometheus
+      valueLocation: 'bunjobs_queue_outstanding{queue="emails"}'
+      targetValue: "200"
+      authMode: bearer
+    authenticationRef:
+      name: bun-jobs-scaler
+```
+
+KEDA parses `valueLocation` as a PromQL series selector and takes the first
+sample whose labels match, so name the family and the queue. That answers the
+plan's open question Q13 from source, without a cluster to confirm it.
+
+Or KEDA's `prometheus` scaler, through a Prometheus server that scrapes the
+namespace:
+
+```yaml
+# prometheus.yml. Read: Prometheus configuration docs. Not run.
+scrape_configs:
+  - job_name: bun-jobs-demand
+    metrics_path: /scaler/demand
+    params:
+      format: [prometheus]
+    authorization:
+      credentials_file: /etc/prometheus/scaler-token
+    static_configs:
+      - targets: ["shop-api.default.svc:3000"]
+```
+
+```yaml
+# Read: KEDA v2.21 docs (prometheus scaler). Not run.
+triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.monitoring.svc:9090
+      query: max(bunjobs_queue_outstanding{ns="shop",queue="emails"})
+      threshold: "200"
+      ignoreNullValues: "false"
+```
+
+- **`max`, not `sum`:** every replica of the API reports the same figure, so
+  a sum over scraped instances multiplies it.
+- **`ignoreNullValues: "false"`** makes a lost scrape target an error; by
+  default KEDA ignores the empty answer, and a scaler reading no series as
+  zero scales to zero over a backlog. For the same reason, alert on
+  `bunjobs_demand_truncated == 1`: that scrape left queues out.
+
+#### Azure Container Apps event jobs
+
+An ACA event job is a `ScaledJob` that ACA runs:
+
+```bash
+# Read: Microsoft Learn, "Jobs in Azure Container Apps". Not run.
+az containerapp job create \
+  --name emails-worker --resource-group shop --environment shop-env \
+  --trigger-type Event \
+  --replica-timeout 3600 --replica-retry-limit 1 \
+  --image registry.example.com/shop-worker:latest \
+  --cpu 0.5 --memory 1Gi \
+  --min-executions 0 --max-executions 5 --polling-interval 30 \
+  --scale-rule-name demand --scale-rule-type metrics-api \
+  --scale-rule-metadata "url=https://shop-api.example.com/scaler/queues/emails/demand" \
+    "valueLocation=demand" "targetValue=500" "authMode=bearer" \
+  --scale-rule-auth "token=scaler-token" \
+  --secrets "scaler-token=<SCALER_TOKEN>"
+```
+
+`--scale-rule-auth` maps the scaler's `token` parameter to the secret. ACA
+takes any KEDA scaler a `ScaledJob` can, and authenticates a non-Azure one
+with secrets only. **Unverified:** which KEDA version ACA runs, and so whether
+`metrics-api` with `authMode=bearer` works there; whether the environment can
+reach the API's URL; and the grace a job replica gets when stopped, so the
+worker keeps `runSummoned`'s 10 s. Set the retry limit to at least 1: ACA
+says maintenance may interrupt a long replica. An ACA app scales the same way
+on `valueLocation=outstanding`, with `WORKER_MODE=until-stopped`.
+
+#### Cloud Run worker pools with CREMA
+
+CREMA runs KEDA as a Cloud Run service that sets a worker pool's instance
+count. Google lists its Prometheus scaler as verified and `metrics-api` as
+unknown, so it reads the figure from Google Cloud Managed Service for
+Prometheus:
+
+```yaml
+# Read: CREMA's README and configuration reference; KEDA v2.21 docs
+# (prometheus scaler, Google Managed Prometheus). Not run.
+apiVersion: crema/v1
+kind: CremaConfig
+spec:
+  pollingInterval: 30
+  triggerAuthentications:
+    - metadata:
+        name: crema-identity
+      spec:
+        podIdentity:
+          provider: gcp
+  scaledObjects:
+    - spec:
+        scaleTargetRef:
+          name: projects/my-project/locations/us-central1/workerpools/emails-worker
+        minReplicaCount: 0
+        maxReplicaCount: 5
+        triggers:
+          - type: prometheus
+            name: emails-outstanding
+            metadata:
+              serverAddress: https://monitoring.googleapis.com/v1/projects/my-project/location/global/prometheus
+              query: max(bunjobs_queue_outstanding{ns="shop",queue="emails"})
+              threshold: "200"
+              ignoreNullValues: "false"
+            authenticationRef:
+              name: crema-identity
+```
+
+- The pool runs `worker.ts` with `WORKER_MODE=until-stopped`; Cloud Run's
+  10 s grace is `runSummoned`'s default.
+- CREMA ignores `cooldownPeriod`: scale-down follows the HPA's default
+  behaviour unless `advanced.horizontalPodAutoscalerConfig` says otherwise.
+  One CREMA per worker pool.
+- CREMA is always on when it polls; without `pollingInterval` it runs only
+  when POSTed to, so Cloud Scheduler can drive it once a minute.
+- **Unverified:** how the endpoint reaches Managed Prometheus when the API
+  does not run on GKE (on GKE, the `PodMonitoring` below does it).
+
+#### GKE: an HPA on an external metric
+
+Managed Service for Prometheus scrapes the endpoint, and the Custom Metrics
+Stackdriver Adapter (v0.13.1 or later) serves it to an HPA:
+
+```yaml
+# Read: the prometheus-engine API reference (PodMonitoring), Google's
+# "HPA with Managed Service for Prometheus" and "Autoscaling on metrics"
+# guides. Not run.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: bun-jobs-demand
+spec:
+  selector:
+    matchLabels:
+      app: shop-scaler-api
+  endpoints:
+    - port: 3000
+      path: /scaler/demand
+      params:
+        format: [prometheus]
+      interval: 30s
+      authorization:
+        type: Bearer
+        credentials:
+          secret:
+            name: bun-jobs-scaler
+            key: token
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: emails-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: emails-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: prometheus.googleapis.com|bunjobs_queue_outstanding|gauge
+          selector:
+            matchLabels:
+              metric.labels.queue: emails # unverified: see below
+        target:
+          type: AverageValue
+          averageValue: "200"
+```
+
+- The metric's name is Google's convention: `prometheus.googleapis.com/<name>/<kind>`
+  with each `/` written `|`.
+- **Unverified:** selecting by a metric label as `metric.labels.queue`.
+  Google's own example selects a resource label
+  (`resource.labels.subscription_id`); this follows the same convention.
+- **Scrape one pod.** Every scraped replica of the API exports the same
+  figure as its own series, and an external metric's series are summed
+  (unverified), so serve the scaler API from a single-replica Deployment.
+- `minReplicas: 1`: GKE's native HPA scale-to-zero (announced 2026-09-24) was
+  not checked here, and KEDA is the verified route to zero.
+- Under Workload Identity the adapter's service account needs Monitoring
+  Viewer.
+
+### What a poll costs
+
+A demand read is three reads at once: the queue's pause flag, its live worker
+records, and the driver's `countDemand`. Every figure is read from an index
+(per-state counts on SQL and MongoDB, sorted sets on Redis, marker listings
+on file), and none reads retained history, so a scaler can poll every
+queue every 30 s. PR-1 measured it (§6.4 D4) on a queue of 49,064 jobs (5,000
+waiting, 2,000 delayed, 1,000 failed, 64 active, 1,000 dead or waiting on
+children, and 40,000 completed), then
+with ten times the completed history:
+
+| Driver | What is read | Base → 10× history |
+|---|---|---|
+| memory | in-heap sets, including an active-id `Set` | 0.089 → 0.131 ms |
+| file | marker directory listings; no record opened | 6.75 → 7.50 ms |
+| Postgres 16 | index-only scans of `ix_lock` and `ix_due`, one statement | 1.59 → 1.64 ms |
+| SQLite 3.53 | covering `ix_lock` and `ix_due`, one statement | 0.95 → 1.17 ms |
+| MySQL 8.4 | covering reads of `ix_lock`, `ix_due`, `ix_claim` | 5.97 → 5.05 ms |
+| MariaDB 11.8 | covering reads, `MIN`s optimised away | 7.13 → 6.36 ms |
+| Redis | one Lua script of `ZCOUNT`/`ZCARD`, one round trip | 0.049 → 0.046 ms |
+| MongoDB | covered index scans, no document examined | 6.66 → 6.79 ms |
+
+On the same data `countJobs`, which `/counts` serves, grew 5 to 11 times, and
+each engine's negative control (the index dropped or hinted away) grew 4 to 27
+times, so the flat line is the index and not a small table. Two limits: the
+file driver's listings grow with the backlog, not with the cap; and each
+figure is counted up to 10,000, past which `capped` says the figures are lower
+bounds. It needed no new database index; the memory driver gained its
+active-id `Set`, at 1.2% of claim-and-complete throughput.
 
 ## Drivers
 
