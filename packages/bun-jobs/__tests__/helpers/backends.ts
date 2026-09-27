@@ -31,6 +31,17 @@ export interface Backend {
   available: boolean;
 }
 
+/**
+ * The SQL table prefix every cross-process suite runs on: the shared test
+ * tables the driver contract and the other SQL suites use, created by the
+ * current DDL. Without it they ran on the default `bun_jobs_*` tables, which a
+ * shared server may still hold in an old driver's shape (a MariaDB
+ * `bun_jobs_kv` in `utf8mb4_uca1400_ai_ci`, found 2026-09-27), so a suite
+ * tested that schema rather than the one the driver creates. Child fixtures
+ * receive the whole config, so they use it too.
+ */
+const TEST_TABLE_PREFIX = "bun_jobs_test_";
+
 /** A server-backed backend and the variable that points at it. */
 const SERVERS: {
   name: string;
@@ -40,17 +51,32 @@ const SERVERS: {
   {
     name: "postgres",
     variable: "BUN_JOBS_TEST_POSTGRES_URL",
-    toConfig: (url) => ({ type: "sql", url, adapter: "postgres" }),
+    toConfig: (url) => ({
+      type: "sql",
+      url,
+      adapter: "postgres",
+      tablePrefix: TEST_TABLE_PREFIX,
+    }),
   },
   {
     name: "mysql",
     variable: "BUN_JOBS_TEST_MYSQL_URL",
-    toConfig: (url) => ({ type: "sql", url, adapter: "mysql" }),
+    toConfig: (url) => ({
+      type: "sql",
+      url,
+      adapter: "mysql",
+      tablePrefix: TEST_TABLE_PREFIX,
+    }),
   },
   {
     name: "mariadb",
     variable: "BUN_JOBS_TEST_MARIADB_URL",
-    toConfig: (url) => ({ type: "sql", url, adapter: "mariadb" }),
+    toConfig: (url) => ({
+      type: "sql",
+      url,
+      adapter: "mariadb",
+      tablePrefix: TEST_TABLE_PREFIX,
+    }),
   },
   {
     name: "mongodb",
@@ -118,6 +144,20 @@ export function reportUnreachable(
       );
     });
   });
+}
+
+/**
+ * The driver config a named server backend gets from its URL, exactly as
+ * {@link crossProcessBackends} builds it. `undefined` for a name that is not a
+ * server backend. Exported so a test can pin the config without a server.
+ */
+export function serverDriverConfig(
+  /** The backend's name: `postgres`, `mysql`, `mariadb`, `mongodb`, `redis`. */
+  name: string,
+  /** The URL its variable holds. */
+  url: string,
+): DriverConfig | undefined {
+  return SERVERS.find((server) => server.name === name)?.toConfig(url);
 }
 
 /**
