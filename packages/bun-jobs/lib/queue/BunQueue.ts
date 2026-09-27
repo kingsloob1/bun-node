@@ -1514,6 +1514,11 @@ export class BunQueue<
 
     if (local) {
       this.safeEmitScoped("added", view.name, job);
+      // Only a job this queue owns: the hooks are this queue's, and another
+      // queue's own instance (if any) is not reached from here.
+      if (this[LOCAL_ADD_HOOKS] !== undefined) {
+        this.#runAddHooks(view);
+      }
     }
     await this.#publish("added", { id: view.id }, queue);
 
@@ -2963,6 +2968,9 @@ export class BunQueue<
 
     const view = this.#view(job, added);
     this.safeEmit(added ? "added" : "duplicate", view);
+    if (added && this[LOCAL_ADD_HOOKS] !== undefined) {
+      this.#runAddHooks(view);
+    }
     return view;
   }
 

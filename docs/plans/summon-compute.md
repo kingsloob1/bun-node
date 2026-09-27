@@ -251,8 +251,9 @@ cover different gaps:
   every remote add to hand it over (measured: 200 `getJob` calls for 200
   remote adds; 0 with the hook), could be removed by a user's
   `removeAllListeners("added")`, and lost its trigger behind a throwing user
-  listener. A repeatable's first add and a flow's adds do not call the hook;
-  the poll hears those.
+  listener. It is called for every local add: `add()` and `addBulk()`, a
+  repeatable's first occurrence (with `immediately` or not), and a flow's jobs
+  in this queue (never for another queue's, nor for a remote event).
 - **Driver events from other processes**: `BunQueue` publishes `added`,
   `waiting` and `delayed` from `#addSimple` (`BunQueue.ts:647`, `:653`,
   `:656`) and from flows (`:1426-1437`), and also `promoted` (`:1687`),

@@ -31,6 +31,7 @@ import {
   supportsWorkers,
 } from "../drivers/index";
 import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
+import { MAX_TIMER_MS } from "../queue/BunQueueWorker";
 import { setReservedState } from "../queue/windows";
 import { CHILD_ENV } from "../runner/protocol";
 import { TypedEmitterBase } from "../shared/emitter";
@@ -690,12 +691,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (this.#dueTimer !== undefined) {
       clearTimeout(this.#dueTimer.timer);
     }
+    // A timer cannot wait past MAX_TIMER_MS (about 24.8 days): a longer
+    // delay overflows and fires at once. So a job due further out gets a
+    // timer for the longest wait there is, re-armed until it is due.
     const timer = setTimeout(
       () => {
         this.#dueTimer = undefined;
+        if (Date.now() < at) {
+          this.#armDue(at);
+          return;
+        }
         this.#trigger("timer");
       },
-      Math.max(0, at - Date.now()),
+      Math.min(MAX_TIMER_MS, Math.max(0, at - Date.now())),
     );
     timer.unref?.();
     this.#dueTimer = { at, timer };

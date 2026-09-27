@@ -4615,11 +4615,16 @@ export class BunQueueWorker<
    * Claims {@link #summon}'s attempt id for this worker, or, once claimed,
    * checks the place is still its own: a process that restarted with the
    * same arguments may take over the place of a holder whose record lapsed,
-   * and a holder that was only slow must not then report as summoned too. A
-   * failed read or write leaves things as they were — undecided stays
-   * undecided (the record unsummoned), won stays won — for the next report.
+   * and a holder that was only slow must not then report as summoned too.
+   *
+   * Answers whether **this report** may say the worker was summoned: only
+   * when this very read or write confirmed the place. A failed one leaves the
+   * decision as it was — undecided stays undecided, won stays won, so the
+   * next successful read decides — but this report goes out without
+   * `summon`: a worker whose place was taken over must not publish it for
+   * one more interval just because the read that would have told it failed.
    */
-  async #claimSummon(now: number): Promise<void> {
+  async #claimSummon(now: number): Promise<boolean> {
     const summon = this.#summon!;
     try {
       const held =
@@ -4641,8 +4646,10 @@ export class BunQueueWorker<
         );
       }
       this.#summonClaim = held ? "won" : "lost";
+      return held;
     } catch (error) {
       this.#emitError(error, "report");
+      return false;
     }
   }
 
@@ -4681,10 +4688,12 @@ export class BunQueueWorker<
       }
 
       // Claim-once, before any record says this worker was summoned; and on
-      // every later report, that nobody has taken the place over since.
-      if (this.#summon !== undefined && this.#summonClaim !== "lost") {
-        await this.#claimSummon(now);
-      }
+      // every later report, that nobody has taken the place over since. The
+      // record says `summon` only when this report's own read confirmed it.
+      const summonedNow =
+        this.#summon !== undefined &&
+        this.#summonClaim !== "lost" &&
+        (await this.#claimSummon(now));
 
       const active = this.#active.size;
       const concurrency = this.#concurrency;
@@ -4731,7 +4740,7 @@ export class BunQueueWorker<
           // too old to say", and is never defaulted.
           // And only once it holds the attempt id (claim-once): a second
           // process started with the same id runs, and reports, unsummoned.
-          ...(this.summon === undefined ? {} : { summon: this.summon }),
+          ...(summonedNow ? { summon: this.#summon } : {}),
           config: this.config,
           control: this.control,
         });

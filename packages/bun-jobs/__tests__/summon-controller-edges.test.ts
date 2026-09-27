@@ -4,6 +4,7 @@ import type {
   SummonEventPayload,
   SummonRequest,
 } from "../lib/index";
+import process from "node:process";
 import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import {
   afterAll,
@@ -16,6 +17,7 @@ import {
 import {
   BunJobs,
   BunQueue,
+  BunQueueWorker,
   createDriver,
   defineSummoner,
   JobsError,
@@ -23,6 +25,7 @@ import {
   registerWorkerRecord,
   SummonController,
 } from "../lib/index";
+import { LOCAL_ADD_HOOKS } from "../lib/queue/BunQueue";
 import { setReservedState } from "../lib/queue/windows";
 import {
   claimSummonAttempt,
@@ -606,5 +609,216 @@ describe("a failed events subscription", () => {
     await Bun.sleep(200);
     expect(attempts).toBe(4);
     expect(summon.inert).toBe(false);
+  });
+});
+
+describe("the onAdd hook hears every kind of local add (round 4)", () => {
+  /** A queue on SQLite with a controller hooked into it, and its summon calls. */
+  async function hooked(): Promise<{
+    queue: BunQueue<unknown>;
+    summon: SummonController;
+    calls: SummonRequest[];
+  }> {
+    const { driver, namespace } = await open(SQLITE.config);
+    const queue = new BunQueue("work", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    perTest.unshift(async () => await queue.close());
+    const { calls, invoke } = recorder();
+    const summon = controller({
+      driver,
+      namespace,
+      queue: "work",
+      summoner: invoke,
+      triggers: { onAdd: true, events: false, poll: false, debounce: 10 },
+    });
+    summon[ATTACH_QUEUE](queue);
+    return { queue, summon, calls };
+  }
+
+  /** Waits for the one summon an add should cause, then makes sure it stays one. */
+  async function expectOneSummon(calls: SummonRequest[]): Promise<void> {
+    await waitFor(() => calls.length >= 1, { timeout: 5_000 });
+    await Bun.sleep(100);
+    expect(calls).toHaveLength(1);
+  }
+
+  it("a plain add", async () => {
+    const { queue, calls } = await hooked();
+    await queue.add("a", {});
+    await expectOneSummon(calls);
+  });
+
+  it("a repeat added with `immediately`", async () => {
+    const { queue, calls } = await hooked();
+    await queue.add(
+      "r",
+      {},
+      { repeat: { every: 3_600_000, immediately: true } },
+    );
+    await expectOneSummon(calls);
+  });
+
+  it("a flow, whose children are in this queue", async () => {
+    const { queue, calls } = await hooked();
+    await queue.addFlow({
+      name: "parent",
+      data: {},
+      children: [
+        { name: "child-1", data: {} },
+        { name: "child-2", data: {} },
+      ],
+    });
+    await expectOneSummon(calls);
+  });
+
+  it("a delayed add, once it is due", async () => {
+    const { queue, calls } = await hooked();
+    await queue.add("later", {}, { delay: 200 });
+    await Bun.sleep(100);
+    expect(calls).toHaveLength(0);
+    await expectOneSummon(calls);
+  });
+});
+
+describe("closing removes the hook (round 4)", () => {
+  it("controller.close() takes its hook off, and jobs.close() leaves none (undefined)", async () => {
+    const { driver } = await open(SQLITE.config);
+    const jobs = new BunJobs({
+      namespace: testNamespace("summon-edges"),
+      driver,
+      logger: noopLogger,
+      summon: {
+        work: {
+          summoner: async () => {},
+          triggers: { poll: false, events: false },
+        },
+        other: {
+          summoner: async () => {},
+          triggers: { poll: false, events: false },
+        },
+      },
+    });
+    perTest.unshift(async () => {
+      await jobs.close();
+      await driver.purge(jobs.namespace);
+    });
+    const work = jobs.queue("work");
+    const other = jobs.queue("other");
+    expect(work[LOCAL_ADD_HOOKS]).toHaveLength(1);
+    expect(other[LOCAL_ADD_HOOKS]).toHaveLength(1);
+
+    // The design: an empty list is put back to `undefined`, which is what
+    // lets the add path skip the hooks with one property read.
+    await jobs.summonController("work").close();
+    expect(work[LOCAL_ADD_HOOKS]).toBeUndefined();
+    expect(other[LOCAL_ADD_HOOKS]).toHaveLength(1);
+
+    await jobs.close();
+    expect(other[LOCAL_ADD_HOOKS]).toBeUndefined();
+  });
+});
+
+describe("a delayed job past the longest timer (round 4)", () => {
+  it("arms no overflowing timer: no TimeoutOverflowWarning, and no check before it is due", async () => {
+    const { driver, namespace } = await open(SQLITE.config);
+    let checks = 0;
+    const counting = wrap(driver, {
+      countDemand: async (
+        ...args: Parameters<NonNullable<JobsDriver["countDemand"]>>
+      ) => {
+        checks++;
+        return await driver.countDemand!(...args);
+      },
+    });
+    const queue = new BunQueue("work", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    perTest.unshift(async () => await queue.close());
+    const summon = controller({
+      driver: counting,
+      namespace,
+      queue: "work",
+      summoner: async () => {},
+      triggers: { onAdd: true, events: false, poll: false, debounce: 10 },
+    });
+    summon[ATTACH_QUEUE](queue);
+    const warnings: string[] = [];
+    const onWarning = (warning: Error) => warnings.push(warning.name);
+    process.on("warning", onWarning);
+    perTest.unshift(async () => {
+      process.off("warning", onWarning);
+    });
+
+    // About 40 days out: beyond a timer's 2^31 - 1 ms.
+    await queue.add("far", {}, { delay: 40 * 86_400_000 });
+    await Bun.sleep(300);
+    expect(warnings).not.toContain("TimeoutOverflowWarning");
+    expect(checks).toBe(0);
+  });
+});
+
+describe("a failed claim read (round 4)", () => {
+  it("leaves summon off that one report's record, and does not demote the worker", async () => {
+    const { driver, namespace, ref } = await open(SQLITE.config);
+    let failNext = false;
+    const flaky = wrap(driver, {
+      getQueueState: async (
+        ...args: Parameters<NonNullable<JobsDriver["getQueueState"]>>
+      ) => {
+        if (failNext && args[1] === summonClaimName("sm_flaky")) {
+          failNext = false;
+          throw new Error("read failed once");
+        }
+        return await driver.getQueueState!(...args);
+      },
+    });
+    const worker = new BunQueueWorker("work", async () => {}, {
+      namespace,
+      driver: flaky,
+      pollInterval: 20,
+      reportInterval: 150,
+      logger: noopLogger,
+      summon: { id: "sm_flaky" },
+    });
+    worker.on("error", () => {});
+    perTest.unshift(async () => await worker.close({ force: true }));
+    void worker.run();
+
+    // Every heartbeat the worker writes, in order: summoned or not.
+    const seen: boolean[] = [];
+    const record = async () =>
+      (await driver.listWorkers!(ref, Date.now())).find(
+        (one) => one.id === worker.id,
+      );
+    const watch = async (until: () => boolean) => {
+      let last = -1;
+      const deadline = Date.now() + 5_000;
+      while (!until()) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `reports seen, summoned or not: ${JSON.stringify(seen)}`,
+          );
+        }
+        const mine = await record();
+        if (mine && mine.heartbeatAt !== last) {
+          last = mine.heartbeatAt;
+          seen.push(mine.summon !== undefined);
+        }
+        await Bun.sleep(10);
+      }
+    };
+    await watch(() => seen.includes(true));
+
+    failNext = true;
+    await watch(() => !failNext && seen.at(-1) === false);
+    expect(worker.summon?.id).toBe("sm_flaky");
+    // The next report's read succeeds and puts it back.
+    await watch(() => seen.at(-1) === true);
+    expect(worker.summon?.id).toBe("sm_flaky");
   });
 });
