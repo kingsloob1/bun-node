@@ -1064,7 +1064,17 @@ class SummonedRun {
       limits.push(this.#deadlineAt - RUN_SUMMONED_DEFAULTS.backstopMargin);
     }
     const until = limits.length === 0 ? undefined : Math.min(...limits);
-    const budget = until === undefined ? Number.POSITIVE_INFINITY : until - now;
+    const total = until === undefined ? Number.POSITIVE_INFINITY : until - now;
+    // The exit mark is written before the close starts, out of this same
+    // budget (`#markExit`), so the close rule is given what is left after
+    // the most that write may wait: sized against the whole budget, a close
+    // could plan a graceful drain that a slow mark write then pushes past
+    // its limit, escalating it to a forced one.
+    const markWait =
+      this.#worker.summon === undefined
+        ? 0
+        : Math.min(EXIT_MARK_WAIT, Math.max(0, total / 4));
+    const budget = total - markWait;
     // Before `ready` nothing has been claimed, and a graceful close would
     // first wait out the connect it interrupts: a forced one ends the
     // startup at once, and the worker resolves `run()` for it.
@@ -1110,7 +1120,7 @@ class SummonedRun {
     );
 
     const close = async (): Promise<void> => {
-      await this.#markExit(stop, budget);
+      await this.#markExit(stop, markWait);
       await this.#worker.close(
         decision.force
           ? { force: true }
@@ -1137,16 +1147,17 @@ class SummonedRun {
    * record goes, so a check never sees neither. A code `1` mark is never
    * replaced by a clean one.
    *
-   * Waits at most {@link EXIT_MARK_WAIT} (a quarter of the budget, if less),
-   * then lets the close begin while the write carries on. A failed write is
+   * Waits at most `wait` — {@link EXIT_MARK_WAIT}, or a quarter of the
+   * budget if less, already taken out of the budget the close rule sized the
+   * close against — then lets the close begin while the write carries on. A failed write is
    * logged, never thrown: the exit goes ahead either way, and the worker's
    * own close still fills in its `closed` mark.
    */
   async #markExit(
     /** The stop under way. */
     stop: SummonedStop,
-    /** The close's budget, in ms; infinite with none. */
-    budget: number,
+    /** The most to wait for the write before the close begins, in ms. */
+    wait: number,
   ): Promise<void> {
     const summon = this.#worker.summon;
     if (summon === undefined) {
@@ -1180,7 +1191,6 @@ class SummonedRun {
         );
       },
     );
-    const wait = Math.min(EXIT_MARK_WAIT, Math.max(0, budget / 4));
     if (wait <= 0) {
       return;
     }

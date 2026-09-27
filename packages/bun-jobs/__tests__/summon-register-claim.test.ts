@@ -4,15 +4,17 @@ import type {
   QueueRef,
   SummonControllerOptions,
   SummonEventPayload,
+  SummonMarker,
   SummonPolicy,
   SummonRequest,
+  WatchedSummon,
 } from "../lib/index";
 import type {
   SummonClaim,
   SummonClaimant,
   SummonClaimExit,
 } from "../lib/summon/claim";
-import { noopLogger } from "@kingsleyweb/bun-common";
+import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import {
   afterAll,
   afterEach,
@@ -27,6 +29,7 @@ import {
   createDriver,
   defineSummoner,
   registerWorkerRecord,
+  removeWorkerRecord,
   runSummoned,
   SummonController,
 } from "../lib/index";
@@ -37,6 +40,12 @@ import {
   SUMMON_CLAIM_PREFIX,
   summonClaimName,
 } from "../lib/summon/claim";
+import {
+  freshMarker,
+  isSummonMarker,
+  readMarker,
+  SUMMON_MARKER,
+} from "../lib/summon/marker";
 import { testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 import { fakePlatform, workerLines } from "./helpers/summon";
@@ -57,10 +66,18 @@ import { fakePlatform, workerLines } from "./helpers/summon";
  * it closes (`runSummoned` with the real reason and code, `close()` with
  * `"closed"` where no mark is there yet), and the controller reads:
  *
- * - live, or gone with a code-0 mark: ran — `registered`, failures reset;
+ * - gone with a code-0 mark: ran — `registered`, failures reset;
+ * - live with no mark yet: `registered` too, but **watched** until its
+ *   `until`, off the capacity count, so one that crashes after its first
+ *   report is still counted (`lost`, `died`) and a clean one resets failures;
  * - a code-1 mark: `lost`, detail `exited-with-error`, counted;
- * - gone with no mark past its grace: `lost`, detail `died`, counted;
+ * - gone with no mark past its grace — the later of the attempt's and the
+ *   claim's `until`, plus 5 s — `lost`, detail `died`, counted; before it, a
+ *   holder whose record lapsed may only be busy, and is not dead;
  * - no claim at all: `lost` at `until`, as before.
+ *
+ * The grace is seconds past a boot budget, so cases that need it passed move
+ * the marker's clock back ({@link ageMarker}) rather than wait it out.
  *
  * Each case has a negative control run the same way with one ingredient
  * taken out.
@@ -225,6 +242,118 @@ async function unmark(
   ).not.toBe(null);
 }
 
+/**
+ * Moves every pending and watched attempt's `until` (and start) a minute into
+ * the past, and its claim holders' with it, as if its boot budget and grace
+ * had run out: what a check would find after waiting that long.
+ */
+async function ageMarker(driver: JobsDriver, ref: QueueRef): Promise<void> {
+  const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
+  const marker = entry!.value as SummonMarker;
+  const past = Date.now() - 60_000;
+  for (const { id } of [...marker.pending, ...(marker.watching ?? [])]) {
+    const name = summonClaimName(id);
+    const claimEntry = await driver.getQueueState!(ref, name);
+    if (claimEntry === null) {
+      continue;
+    }
+    const claim = claimEntry.value as SummonClaim;
+    const holders = claim.holders.map((holder) => ({
+      ...holder,
+      at: past,
+      until: past + 600,
+    }));
+    expect(
+      await setReservedState(
+        driver,
+        ref,
+        name,
+        { ...claim, holders },
+        claimEntry.version,
+      ),
+    ).not.toBe(null);
+  }
+  const aged: SummonMarker = {
+    ...marker,
+    pending: marker.pending.map((one) => ({ ...one, at: past, until: past })),
+    ...(marker.watching === undefined
+      ? {}
+      : {
+          watching: marker.watching.map((one) => ({
+            ...one,
+            at: past,
+            until: past,
+          })),
+        }),
+  };
+  expect(
+    await setReservedState(driver, ref, SUMMON_MARKER, aged, entry!.version),
+  ).not.toBe(null);
+}
+
+/** The marker's watched attempts, read straight from the store. */
+async function watchedIds(
+  driver: JobsDriver,
+  ref: QueueRef,
+): Promise<string[]> {
+  const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
+  return ((entry?.value as SummonMarker | undefined)?.watching ?? []).map(
+    (one) => one.id,
+  );
+}
+
+/** A live heartbeat record for `worker`, carrying `summonId` when given. */
+async function liveRecord(
+  driver: JobsDriver,
+  ref: QueueRef,
+  worker: string,
+  summonId?: string,
+  lifetime = 60_000,
+): Promise<void> {
+  const now = Date.now();
+  await registerWorkerRecord(driver, ref, {
+    id: worker,
+    queue: ref.queue,
+    host: "h",
+    pid: 1,
+    concurrency: 1,
+    active: 0,
+    paused: false,
+    startedAt: now,
+    heartbeatAt: now,
+    expiresAt: now + lifetime,
+    ...(summonId === undefined ? {} : { summon: { id: summonId } }),
+  });
+}
+
+/**
+ * The same driver, counting every write to the summon marker. Everything
+ * else goes to the real driver untouched.
+ */
+function countMarkerWrites(driver: JobsDriver): {
+  driver: JobsDriver;
+  writes: () => number;
+} {
+  let writes = 0;
+  const proxy = new Proxy(driver, {
+    get(target, property) {
+      if (property === "setQueueState") {
+        return async (
+          ...args: Parameters<NonNullable<JobsDriver["setQueueState"]>>
+        ) => {
+          if (args[1] === SUMMON_MARKER) {
+            writes++;
+          }
+          return await target.setQueueState!(...args);
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { driver: proxy, writes: () => writes };
+}
+
 /** The outcomes a controller announced, in order. */
 function outcomes(events: readonly SummonEventPayload[]): string[] {
   return events.map((event) => event.outcome);
@@ -241,7 +370,9 @@ for (const backend of BACKENDS) {
         ref: QueueRef;
         queue: BunQueue<unknown>;
         controller: (
-          policy: Partial<SummonPolicy> & Pick<SummonPolicy, "summoner">,
+          policy: Partial<SummonPolicy> &
+            Pick<SummonPolicy, "summoner"> &
+            Pick<Partial<SummonControllerOptions>, "logger">,
           over?: JobsDriver,
         ) => SummonController;
         events: SummonEventPayload[];
@@ -448,6 +579,7 @@ for (const backend of BACKENDS) {
         await runUntilDone(summoned, queue, job.id, id);
         await summoned.close();
         await unmark(driver, ref, id);
+        await ageMarker(driver, ref);
 
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
@@ -692,6 +824,7 @@ for (const backend of BACKENDS) {
               claimant(`w${round}`, true),
             ),
           ).toBe(true);
+          await ageMarker(driver, ref);
           await summon.check();
           await Bun.sleep(5);
         }
@@ -825,36 +958,78 @@ for (const backend of BACKENDS) {
         expect((await summon.status()).failures).toBe(0);
       });
 
-      it("counts an attempt for two workers, one clean and one dead, as a success", async () => {
-        const { driver, ref, queue, controller, events } = await setup();
-        const { calls, summoner } = recorder();
-        const summon = controller({
-          summoner,
-          maxWorkers: 2,
-          jobsPerWorker: 1,
-          cooldown: 60_000,
-        });
-        await queue.addBulk([
-          { name: "a", data: {} },
-          { name: "b", data: {} },
-        ]);
-        await summon.check();
-        expect(calls[0]!.count).toBe(2);
-        const id = calls[0]!.id;
-        expect(
-          await claimSummonAttempt(driver, ref, id, claimant("clean", true)),
-        ).toBe(true);
-        expect(
-          await markSummonClaimExit(driver, ref, id, "clean", CLEAN, true),
-        ).toBe("written");
-        expect(
-          await claimSummonAttempt(driver, ref, id, claimant("dead", true)),
-        ).toBe(true);
+      for (const second of ["dead", "clean"] as const) {
+        it(
+          second === "dead"
+            ? "counts an attempt for two workers, one clean and one dead, as registered and then one failure"
+            : "negative control: the same attempt with both workers clean is registered and counts nothing",
+          async () => {
+            const { driver, ref, queue, controller, events } = await setup();
+            const { calls, summoner } = recorder();
+            const summon = controller({
+              summoner,
+              maxWorkers: 2,
+              jobsPerWorker: 1,
+              cooldown: 60_000,
+            });
+            await queue.addBulk([
+              { name: "a", data: {} },
+              { name: "b", data: {} },
+            ]);
+            await summon.check();
+            expect(calls[0]!.count).toBe(2);
+            const id = calls[0]!.id;
+            for (const worker of [
+              "clean",
+              second === "dead" ? "dead" : "clean2",
+            ]) {
+              expect(
+                await claimSummonAttempt(
+                  driver,
+                  ref,
+                  id,
+                  claimant(worker, true),
+                ),
+              ).toBe(true);
+            }
+            expect(
+              await markSummonClaimExit(driver, ref, id, "clean", CLEAN, true),
+            ).toBe("written");
+            if (second === "clean") {
+              expect(
+                await markSummonClaimExit(
+                  driver,
+                  ref,
+                  id,
+                  "clean2",
+                  CLEAN,
+                  true,
+                ),
+              ).toBe("written");
+            }
 
-        await summon.check();
-        expect(outcomes(events)).toEqual(["started", "registered"]);
-        expect((await summon.status()).failures).toBe(0);
-      });
+            // Before the attempt's until, a holder gone unmarked is not dead yet.
+            await summon.check();
+            if (second === "dead") {
+              expect(outcomes(events)).toEqual(["started"]);
+              await ageMarker(driver, ref);
+              await summon.check();
+              // One failure for the attempt, after its registration.
+              expect(outcomes(events)).toEqual([
+                "started",
+                "registered",
+                "lost",
+              ]);
+              expect(events[2]).toMatchObject({ id, detail: "died" });
+              expect((await summon.status()).failures).toBe(1);
+            } else {
+              expect(outcomes(events)).toEqual(["started", "registered"]);
+              expect((await summon.status()).failures).toBe(0);
+            }
+            expect(await watchedIds(driver, ref)).toEqual([]);
+          },
+        );
+      }
 
       it("negative control: an attempt for two workers, both dead, is lost and counted", async () => {
         const { driver, ref, queue, controller, events } = await setup();
@@ -877,14 +1052,410 @@ for (const backend of BACKENDS) {
           ).toBe(true);
         }
 
+        await ageMarker(driver, ref);
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
         expect(events[1]!.detail).toBe("died");
         expect((await summon.status()).failures).toBe(1);
       });
+
+      /* --- watching: a crash after the first report -------------------- */
+
+      for (const exit of ["crash", "clean"] as const) {
+        it(
+          exit === "crash"
+            ? "A2: workers seen live that then die unmarked are each counted once, late, and the loop opens the circuit"
+            : "negative control: the same loop with each worker closing cleanly counts nothing and never opens the circuit",
+          async () => {
+            const { driver, ref, queue, controller, events } = await setup();
+            const { calls, summoner } = recorder();
+            const summon = controller({
+              summoner,
+              backoff: { initial: 1, max: 1 },
+              circuit: { failures: 2, resetAfter: 60_000 },
+            });
+            await queue.add("a", {});
+            expect(await summon.check()).toMatchObject({ action: "summoned" });
+
+            for (let round = 0; round < 2; round++) {
+              const id = calls.at(-1)!.id;
+              const worker = `w${round}`;
+              // Its first report: the claim, then a record carrying the id.
+              expect(
+                await claimSummonAttempt(driver, ref, id, claimant(worker)),
+              ).toBe(true);
+              await liveRecord(driver, ref, worker, id);
+              // A check sees it running: registered, off `pending`, watched.
+              await summon.check();
+              expect(outcomes(events).at(-1)).toBe("registered");
+              expect(await watchedIds(driver, ref)).toEqual([id]);
+              expect((await summon.status()).pending).toHaveLength(0);
+              // Registration alone resets nothing while it is watched.
+              expect((await summon.status()).failures).toBe(
+                exit === "crash" ? round : 0,
+              );
+              if (exit === "clean") {
+                expect(
+                  await markSummonClaimExit(
+                    driver,
+                    ref,
+                    id,
+                    worker,
+                    CLEAN,
+                    true,
+                  ),
+                ).toBe("written");
+                await removeWorkerRecord(driver, ref, worker);
+                await summon.check();
+                expect(await watchedIds(driver, ref)).toEqual([]);
+              } else {
+                // exit(1) after its first report: no mark, the record gone.
+                await removeWorkerRecord(driver, ref, worker);
+                await ageMarker(driver, ref);
+                await summon.check();
+                const lost = () =>
+                  events.filter(
+                    (event) => event.id === id && event.outcome === "lost",
+                  );
+                expect(lost()).toHaveLength(1);
+                expect(lost()[0]!.detail).toBe("died");
+                // Visible where status is read, and emitted once only.
+                expect((await summon.status()).last).toMatchObject({
+                  id,
+                  outcome: "lost",
+                  detail: "died",
+                });
+                await Bun.sleep(5);
+                await summon.check();
+                expect(lost()).toHaveLength(1);
+              }
+              await Bun.sleep(5);
+              // The next attempt, if the check above did not start it.
+              if (round === 0 && calls.at(-1)!.id === id) {
+                expect(await summon.check()).toMatchObject({
+                  action: "summoned",
+                });
+              }
+            }
+
+            const status = await summon.status();
+            if (exit === "crash") {
+              expect(await summon.check()).toMatchObject({
+                action: "skipped",
+                reason: "circuit-open",
+              });
+              expect(status.failures).toBe(2);
+            } else {
+              expect(outcomes(events)).not.toContain("lost");
+              expect(status.failures).toBe(0);
+              expect(status.circuitOpenUntil).toBeUndefined();
+            }
+          },
+        );
+      }
+
+      it("does not count a watched attempt as capacity: a second job is summoned for while the first worker runs past until", async () => {
+        const { driver, namespace, ref, queue, controller, events } =
+          await setup();
+        const { calls, summoner } = recorder();
+        const summon = controller({
+          summoner,
+          maxWorkers: 2,
+          jobsPerWorker: 1,
+          bootBudget: 300,
+        });
+        const hold = Promise.withResolvers<void>();
+        perTest.push(async () => hold.resolve());
+        await queue.add("a", {});
+        await summon.check();
+        const id = calls[0]!.id;
+        const summoned = summonedWorker(
+          driver,
+          namespace,
+          id,
+          async () => await hold.promise,
+        );
+        void summoned.run();
+        await waitFor(
+          async () =>
+            summoned.summon?.id === id &&
+            (await queue.listWorkers()).some((one) => one.summon?.id === id) &&
+            (await queue.getDemand()).active === 1,
+          { timeout: 10_000 },
+        );
+        await summon.check();
+        expect(outcomes(events)).toEqual(["started", "registered"]);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+
+        // A second job: one worker serving, nothing on its way, two wanted.
+        await queue.add("b", {});
+        expect(await summon.check()).toMatchObject({ action: "summoned" });
+        expect(calls).toHaveLength(2);
+
+        // It runs on past its until: no failure, still watched until the
+        // grace passes, then dropped quietly.
+        await Bun.sleep(350);
+        await summon.check();
+        expect(
+          events.filter((event) => event.id === id && event.outcome === "lost"),
+        ).toHaveLength(0);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        await ageMarker(driver, ref);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([]);
+        expect(outcomes(events).filter((one) => one === "registered")).toEqual([
+          "registered",
+        ]);
+        expect(
+          events.filter((event) => event.id === id && event.outcome === "lost"),
+        ).toHaveLength(0);
+        expect((await summon.status()).failures).toBe(0);
+      });
+
+      it("negative control: the same first attempt kept pending instead, the second job is not summoned for", async () => {
+        const { driver, ref, queue, controller } = await setup();
+        const { calls, summoner } = recorder();
+        const summon = controller({
+          summoner,
+          maxWorkers: 2,
+          jobsPerWorker: 1,
+        });
+        await queue.add("a", {});
+        await summon.check();
+        const id = calls[0]!.id;
+        // Its worker is live, and the attempt is still pending: counted twice.
+        await liveRecord(driver, ref, "elsewhere");
+        await queue.add("b", {});
+        expect(await summon.check()).toMatchObject({ action: "skipped" });
+        expect(calls).toHaveLength(1);
+        expect((await summon.status()).pending.map((one) => one.id)).toEqual([
+          id,
+        ]);
+      });
+
+      for (const aged of [false, true]) {
+        it(
+          aged
+            ? "negative control: the same stalled holder past the attempt's until and grace reads as died"
+            : "does not read a holder whose record lapsed as died before the attempt's until: it may be busy, not dead",
+          async () => {
+            const { driver, ref, queue, controller, events } = await setup();
+            const { calls, summoner } = recorder();
+            const summon = controller({ summoner });
+            await queue.add("a", {});
+            await summon.check();
+            const id = calls[0]!.id;
+            // Claimed long ago by its own clock; its reports stalled (a
+            // CPU-bound job), so its record lapsed.
+            expect(
+              await claimSummonAttempt(driver, ref, id, claimant("busy", true)),
+            ).toBe(true);
+            if (aged) {
+              await ageMarker(driver, ref);
+            }
+            await summon.check();
+            if (aged) {
+              expect(outcomes(events)).toEqual(["started", "lost"]);
+              expect(events[1]!.detail).toBe("died");
+            } else {
+              expect(outcomes(events)).toEqual(["started"]);
+              expect((await summon.status()).failures).toBe(0);
+              // Its record comes back: it was alive all along.
+              await liveRecord(driver, ref, "busy", id);
+              await summon.check();
+              expect(outcomes(events)).toEqual(["started", "registered"]);
+            }
+          },
+        );
+      }
+
+      it("keeps a watched worker whose record lapsed watched before its grace, and lets it end clean when it reports again", async () => {
+        const { driver, ref, queue, controller, events } = await setup();
+        const { calls, summoner } = recorder();
+        const summon = controller({ summoner });
+        await queue.add("a", {});
+        await summon.check();
+        const id = calls[0]!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        // A stall: the record lapses; the attempt's until is still ahead.
+        await removeWorkerRecord(driver, ref, "w");
+        await summon.check();
+        expect(
+          events.filter((event) => event.id === id && event.outcome === "lost"),
+        ).toHaveLength(0);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+        // It reports again; past the grace it is dropped as having run.
+        await liveRecord(driver, ref, "w", id);
+        await ageMarker(driver, ref);
+        await summon.check();
+        expect(await watchedIds(driver, ref)).toEqual([]);
+        expect(
+          events.filter((event) => event.id === id && event.outcome === "lost"),
+        ).toHaveLength(0);
+        expect((await summon.status()).failures).toBe(0);
+      });
+
+      it("writes no marker while checks find a quiet watch list", async () => {
+        const { driver, ref, queue, controller } = await setup();
+        const { calls, summoner } = recorder();
+        const counted = countMarkerWrites(driver);
+        const summon = controller({ summoner }, counted.driver);
+        await queue.add("a", {});
+        await summon.check();
+        const id = calls[0]!.id;
+        expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
+          true,
+        );
+        await liveRecord(driver, ref, "w", id);
+        // The control: the check that starts the watch writes the marker.
+        const beforeRelease = counted.writes();
+        await summon.check();
+        expect(counted.writes()).toBe(beforeRelease + 1);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+
+        const quiet = counted.writes();
+        for (let check = 0; check < 5; check++) {
+          await summon.check();
+        }
+        expect(counted.writes()).toBe(quiet);
+        expect(await watchedIds(driver, ref)).toEqual([id]);
+      });
+
+      for (const extra of [0, 1]) {
+        it(
+          extra === 1
+            ? "evicts the oldest watched attempt past the limit, with one warn naming it"
+            : "negative control: a watch list at its limit evicts nothing and warns nothing",
+          async () => {
+            const { driver, ref, queue, controller } = await setup();
+            const { calls, summoner } = recorder();
+            const { logger, events: logs } = createTestLogger();
+            // maxPending 1 × ⌈20 s / 60 s⌉ = 1, so the floor: 8.
+            const summon = controller({ summoner, cooldown: 60_000, logger });
+            await queue.add("a", {});
+            await summon.check();
+            expect(calls).toHaveLength(1);
+            // Watched attempts whose one holder is live, so none ends.
+            await liveRecord(driver, ref, "w-live");
+            const now = Date.now();
+            const watching: WatchedSummon[] = [];
+            for (let index = 0; index < 8 + extra; index++) {
+              const id = `sm_watched_${index}`;
+              expect(
+                await claimSummonAttempt(driver, ref, id, claimant("w-live")),
+              ).toBe(true);
+              watching.push({
+                id,
+                at: now + index,
+                until: now + 60_000,
+                count: 1,
+                kind: "rec",
+              });
+            }
+            const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
+            expect(
+              await setReservedState(
+                driver,
+                ref,
+                SUMMON_MARKER,
+                { ...(entry!.value as SummonMarker), watching },
+                entry!.version,
+              ),
+            ).not.toBe(null);
+
+            await summon.check();
+            const warns = logs.filter((log) =>
+              log.message.startsWith("summon watch list full"),
+            );
+            if (extra === 1) {
+              expect(warns).toHaveLength(1);
+              expect(warns[0]!.fields).toMatchObject({
+                ids: ["sm_watched_0"],
+                limit: 8,
+              });
+              expect(await watchedIds(driver, ref)).toEqual(
+                watching.slice(1).map((one) => one.id),
+              );
+            } else {
+              expect(warns).toHaveLength(0);
+              expect(await watchedIds(driver, ref)).toEqual(
+                watching.map((one) => one.id),
+              );
+            }
+          },
+        );
+      }
+
+      it("reads a marker without watching, or with a malformed one, as nothing watched — never as corruption", async () => {
+        const { driver, ref, queue, controller } = await setup();
+        const { summoner } = recorder();
+        const summon = controller({ summoner, cooldown: 60_000 });
+        await queue.add("a", {});
+        await summon.check();
+        const entry = await driver.getQueueState!(ref, SUMMON_MARKER);
+        const marker = entry!.value as SummonMarker;
+        expect(marker.watching).toBeUndefined();
+        expect(
+          await setReservedState(
+            driver,
+            ref,
+            SUMMON_MARKER,
+            { ...marker, failures: 3, watching: "junk" },
+            entry!.version,
+          ),
+        ).not.toBe(null);
+        await summon.check();
+        expect((await summon.status()).failures).toBe(3);
+
+        // The control: a marker that really is malformed starts afresh.
+        const again = await driver.getQueueState!(ref, SUMMON_MARKER);
+        expect(
+          await setReservedState(
+            driver,
+            ref,
+            SUMMON_MARKER,
+            { ...(again!.value as SummonMarker), epoch: "" },
+            again!.version,
+          ),
+        ).not.toBe(null);
+        await summon.check();
+        expect((await summon.status()).failures).toBe(0);
+      });
     },
   );
 }
+
+describe("the watch list across versions", () => {
+  it("is a marker a controller that predates it accepts, and keeps unchanged when it writes it back", () => {
+    const now = Date.now();
+    const watched: WatchedSummon = {
+      id: "sm_w",
+      at: now,
+      until: now + 1_000,
+      count: 1,
+      kind: "rec",
+    };
+    const marker = { ...freshMarker(now), watching: [watched] };
+    // `isSummonMarker` and `readMarker`'s clone are unchanged from the
+    // version before `watching`: an older controller validates the marker
+    // as before and carries the field through its own writes untouched.
+    expect(isSummonMarker(marker)).toBe(true);
+    const read = readMarker({ value: marker, version: 4 }, now);
+    expect(read.unreadable).toBe(false);
+    expect(read.newer).toBeUndefined();
+    expect(read.marker.watching).toEqual([watched]);
+    expect(read.marker.v).toBe(1);
+    // The control: a newer shape version is still refused.
+    expect(
+      readMarker({ value: { ...marker, v: 2 }, version: 4 }, now).newer,
+    ).toBe(2);
+  });
+});
 
 /**
  * End to end with the fake platform: real processes. Spawning is the slow
@@ -901,6 +1472,7 @@ for (const backend of BACKENDS.filter((one) =>
       async function setup(
         env: Record<string, string>,
         hide = false,
+        policy: Partial<SummonPolicy> = {},
       ): Promise<{
         driver: JobsDriver;
         ref: QueueRef;
@@ -926,6 +1498,7 @@ for (const backend of BACKENDS.filter((one) =>
           summoner: platform.summoner,
           bootBudget: 1_500,
           backoff: { initial: 5_000 },
+          ...policy,
         });
         const events: SummonEventPayload[] = [];
         controller.on("summon", (event) => events.push(event));
@@ -999,6 +1572,40 @@ for (const backend of BACKENDS.filter((one) =>
         expect(recordLeft).toBe(false);
         expect(outcomes(events)).toEqual(["started", "lost"]);
         expect(failures).toBe(1);
+      });
+
+      it("A2: workers that crash after their first report, checked densely, open the circuit", async () => {
+        const { queue, controller, events } = await setup(
+          // Every worker, not only the first: exit(1) 400 ms after start.
+          { SUMMON_TEST_CRASH_AFTER_MS: "400" },
+          false,
+          {
+            backoff: { initial: 1, max: 1 },
+            circuit: { failures: 2, resetAfter: 60_000 },
+            cooldown: 300,
+          },
+        );
+        await queue.add("a", {});
+        let last: Awaited<ReturnType<SummonController["check"]>> | undefined;
+        await waitFor(
+          async () => {
+            last = await controller.check();
+            return last.action === "skipped" && last.reason === "circuit-open";
+          },
+          { timeout: 45_000, interval: 100 },
+        );
+        const lost = events.filter((event) => event.outcome === "lost");
+        expect(lost.length).toBeGreaterThanOrEqual(2);
+        for (const event of lost.slice(0, 2)) {
+          expect(event.detail).toBe("died");
+          // Seen running first — the case a live record alone let through.
+          expect(
+            events.some(
+              (one) => one.id === event.id && one.outcome === "registered",
+            ),
+          ).toBe(true);
+        }
+        expect((await controller.status()).failures).toBeGreaterThanOrEqual(2);
       });
 
       it("reads a worker killed with SIGKILL, never closed, as died", async () => {

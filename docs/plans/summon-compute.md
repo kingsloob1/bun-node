@@ -586,8 +586,8 @@ interface PendingSummon {
    checks — its close removes the record — so the attempt was declared `lost`
    and counted, and a short-lived worker looked like a failed summon. The
    claim-once entry (`lib/summon/claim.ts`) outlives the record, so step 2
-   also reads it, one `getQueueState` per pending attempt (bounded by
-   `maxPending`; none with `passes: "none"`, which has no id to claim), and
+   also reads it, one `getQueueState` per pending or watched attempt
+   (bounded by `maxPending` and the watch list's bound; none with `passes: "none"`, which has no id to claim), and
    never on the add path. Where the entry exists it decides alone: every
    live record carrying the id is one of its holders, since a worker writes
    the id only once it holds a place.
@@ -599,24 +599,68 @@ interface PendingSummon {
    real reason and code before it closes the worker, and `BunQueueWorker`'s
    own `close()` (graceful or forced) fills in `closed`, code `0`, only where
    no mark is there yet. Per holder, a mark decides first: code `0` ran,
-   code `1` failed. With no mark, a live record means it ran; no record once
-   the holder's `until` (claim time plus one record lifetime, the same test
-   claim-once uses to let a restart take a gone holder's place) plus 5 s of
-   clock allowance has passed means it **died**; before that it is still
-   starting. The attempt settles once every place is decided, or at `until`
-   unless nothing ran yet and a holder is still starting:
-   - any holder ran (or a live record carries the id, or the `passes: "none"`
-     start-time match): **registered**, `failures` reset — one worker that
-     ran is a success even if another of the same attempt died, so one job
-     that kills its worker cannot open the circuit for the whole queue;
-   - otherwise **lost**, counted toward backoff and the circuit, with
-     `detail` `exited-with-error` (a code-`1` mark), `died` (a holder gone
-     unmarked), or none (nothing claimed it: the old rule, unchanged).
+   code `1` failed. With no mark, a live record means it is running; no
+   record means it **died** only past the later of the attempt's `until` and
+   the holder's own `until` (claim time plus one record lifetime), plus 5 s
+   of clock allowance. Before that it may still be starting, or be alive
+   with its reports stalled (a CPU-bound job): deciding `died` at the
+   holder's `until` alone read such a worker as dead (#217 review, item 3).
+   - **Settled by registration**: any holder that ran (or a live record
+     carrying the id, or the `passes: "none"` start-time match). The attempt
+     leaves `pending` at once, so a running worker is never counted twice
+     (on its way and live). If every holder has a clean mark, `failures` is
+     reset now. Otherwise — a holder counted only by its live record, one
+     still starting, or one already failed — the attempt moves to
+     `watching` and `failures` is left alone until the watch ends.
+   - **Lost**: nothing ran and every place is decided failing, or `until`
+     has passed with nothing still starting; counted once, `detail`
+     `exited-with-error`, `died`, or none (never claimed: the old rule).
+
+   **As built (#217 review, item 1): the watch list.** A live record alone
+   let a worker that crashes after its first report register: at the
+   defaults a check almost always lands while its record is still listed,
+   so a crash loop read as a stream of registrations (reproduced on all
+   seven backends: 13–15 crashes, all `registered`, failures 0, circuit
+   never open). Keeping the attempt pending until `until` would have
+   counted a running worker twice and blocked new attempts through
+   `maxPending`, so instead `SummonMarker.watching?: WatchedSummon[]`
+   (`{ id, at, until, count, kind }`) holds released attempts, **never as
+   capacity**. Each check reads a watched attempt's claim, as it does a
+   pending one's, and: a code-`1` mark → one failure, `lost`,
+   `exited-with-error`; a holder gone unmarked past the grace above → one
+   failure, `lost`, `died`; every holder marked clean, or the grace passed
+   with every holder listed or marked clean → dropped, `failures` reset, no
+   event; the claim gone (purged) → dropped. One failure per attempt,
+   however many holders failed. A late failure goes through the normal
+   event path (`#announce`, so #218's publishing carries it) and sets
+   `last`. The marker is written only when the list changed; a quiet watch
+   list costs reads and no write. Bounded at `maxPending × ⌈bootBudget /
+   cooldown⌉`, floor 8, cap 256 (the cap when `cooldown` is 0); past it the
+   oldest are evicted with one `warn` naming them, and no summon is ever
+   refused for room. Cost: a crash is counted a `bootBudget` (plus grace)
+   after its attempt started, so a crash loop runs at the cooldown's pace
+   until then (the hourly budget still caps it).
+
+   **Mixed versions.** `watching` is optional and `v` stays `1`, so the
+   inert-on-newer-`v` rule does not fire. A new controller reads a missing
+   or malformed `watching` as empty, never as a corrupt marker. An older
+   controller validates the marker with an `isSummonMarker` that ignores
+   unknown fields and clones the whole value, so it keeps `watching`
+   untouched through its own writes and never settles it — detection waits
+   for a newer controller — and it can cause no false failure. (Should a
+   version ever rebuild the marker and drop the field, the effect is the
+   same: late failures go uncounted, nothing is counted falsely.)
+
+   **Caveats.** A summoned worker must exit through `runSummoned` or
+   `worker.close()` to count as clean; `process.exit(0)` without either
+   leaves no mark and reads as `died`. And if both mark writes fail (the
+   backend unreachable across the exit), a clean exit reads as `died`
+   (accepted, #217 review item 2).
 
    A holder whose record lapsed long ago still counts: the attempt did start
    a worker, and whether it is still alive is demand's question (orphaned
-   jobs), not registration's. Residual: a worker seen live by a check and
-   crashing afterwards has already registered its attempt, as before.
+   jobs), not registration's. A worker still running when its watch ends has
+   run; a crash after that is left to the orphan rule.
 3. If `paused`, or there is no demand and no orphan: if the marker changed,
    write it back. Otherwise return `none`. Scale-style summoners get their
    scale-down check here (§4.7).

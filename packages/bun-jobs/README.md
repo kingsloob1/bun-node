@@ -2905,26 +2905,49 @@ the record, so a worker that starts, drains the backlog and exits between two
 checks still registers. How each worker that claimed it left decides whether
 the attempt succeeded:
 
-- **Running, or closed**: registered, and the failure count is reset. A
-  worker marks its exit on the claim before its record goes — `runSummoned`
-  with its real reason (`idle`, `deadline`, `signal`, …), and any
-  `worker.close()`, graceful or forced, with `closed` where no mark is there
-  yet — so a summoned worker that closes counts, whether or not it ran
-  through `runSummoned`.
+- **Closed**: registered, and the failure count is reset. A worker marks its
+  exit on the claim before its record goes — `runSummoned` with its real
+  reason (`idle`, `deadline`, `signal`, …), and any `worker.close()`,
+  graceful or forced, with `closed` where no mark is there yet — so a
+  summoned worker that closes counts, whether or not it ran through
+  `runSummoned`.
+- **Running**: registered as soon as a check sees its record, so it stops
+  counting as a worker on its way at once, but **watched** until the
+  attempt's `bootBudget` has passed: if it then leaves without a mark, the
+  attempt is still counted as a failure (`lost`, detail `died`, with the
+  attempt's id — an event after its `registered` one). Only a watch that ends
+  clean resets the failure count.
 - **`runSummoned` ended in `error`** (its `run()` failed): `lost`, detail
   `exited-with-error`.
 - **Claimed, then gone without closing** — a crash, an OOM kill, `SIGKILL`:
-  `lost`, detail `died`, once its record has lapsed and its grace has passed
-  (the claim time plus one record lifetime, plus 5 s for the clocks).
+  `lost`, detail `died`. Never before the attempt's `until` (plus its claim's
+  record lifetime and 5 s for the clocks): a worker busy on a CPU-bound job
+  can let its record lapse and still be alive.
 - **Never claimed**: `lost` when its `bootBudget` passes.
 
-Every `lost` counts toward the backoff and the circuit, so a worker that dies
-on every start stops being summoned instead of being retried after every
-cooldown. (One that a check has already seen running registered its attempt
-then; a later crash leaves its jobs to the orphan rule.) With several workers per attempt, one that ran is enough: a single
-job that kills its worker does not open the circuit for the whole queue. A
-summoner with `passes: "none"` gives the worker no id to claim, and its
-attempts register by a worker's start time alone.
+Every `lost` counts toward the backoff and the circuit, once per attempt
+however many of its workers failed, so a worker that dies on every start
+stops being summoned instead of being retried after every cooldown. That
+covers a crash **before the claim** (never claimed), **after the first
+report** (claimed, seen running or not, then gone unmarked) and an **error
+exit** (`exited-with-error`); a failure is counted a `bootBudget` after its
+attempt started, so until then attempts go on at the cooldown's pace. A
+worker still running when the watch ends has run: a later crash is left to
+the orphan rule. A summoner with `passes: "none"` gives the worker no id to
+claim, and its attempts register by a worker's start time alone.
+
+Two consequences to know:
+
+- **A summoned worker must exit through `runSummoned` or `worker.close()`
+  to count as clean.** One that drains and calls `process.exit(0)` itself
+  leaves no mark, and reads as `died`.
+- **The mark is written to the backend.** If both writes fail — the one
+  `runSummoned` makes before closing and the one `close()` makes — because
+  the backend is unreachable across the exit, a clean exit reads as `died`.
+
+The watch list is bounded at `maxPending × ⌈bootBudget / cooldown⌉` attempts
+(at least 8, at most 256, and 256 with no cooldown); past it the oldest are
+dropped with a warning naming them, never refusing a summon.
 
 `jobs.summonController("emails")` returns the controller, and one can
 be built directly: `new SummonController({ driver, namespace, queue,

@@ -207,6 +207,13 @@ export async function claimSummonAttempt(
       if (gone === -1) {
         return false;
       }
+      // The gone holder's place, exit mark and all, goes to the claimant.
+      // Losing that mark is harmless: only a restart of the same unit takes
+      // a place (it runs the same command line, so the same attempt id), and
+      // the controller judges an attempt by the process holding each place
+      // now. A restart that runs well is the attempt working; one that dies
+      // or fails is still counted — its own mark, or its missing one, says
+      // so — and an attempt counts one failure at most either way.
       holders = claim.holders.map((holder, index) =>
         index === gone ? claimant : holder,
       );
@@ -290,6 +297,11 @@ export interface SummonClaimTally {
   died: number;
   /** Holders gone with no mark but still inside their grace: undecided yet. */
   starting: number;
+  /**
+   * Of `succeeded`, the holders counted only because their record is listed:
+   * no mark yet, so how they will leave is still open.
+   */
+  unmarked: number;
 }
 
 /**
@@ -297,12 +309,14 @@ export interface SummonClaimTally {
  *
  * A holder's mark decides first — code `0` succeeded, code `1` failed, even
  * while its record is still listed (it is on its way out). With no mark, a
- * listed record means it is running; no record means it is gone **once its
- * grace has passed**: its `until` (the claim time plus one record lifetime,
- * the very test claim-once uses to let a restart take a gone holder's place)
- * plus `slack` for the two processes' clocks, since `until` is the holder's
- * and `now` the caller's. Before that its first record may simply not have
- * been written yet.
+ * listed record means it is running; no record means it **died** only once
+ * its grace has passed: the later of its own `until` (the claim time plus
+ * one record lifetime, the test claim-once uses to let a restart take a gone
+ * holder's place) and the attempt's `until` (`notBefore`), plus `slack` for
+ * the two processes' clocks, since the holder's `until` is by its clock and
+ * `now` by the caller's. Before that its first record may not have been
+ * written yet, or a worker busy on a CPU-bound job may have let its record
+ * lapse while it is still alive: neither is a death.
  */
 export function tallySummonClaim(
   /** The claim, or `undefined` when there is none. */
@@ -313,12 +327,15 @@ export function tallySummonClaim(
   now: number,
   /** The clock-skew allowance added to each holder's grace, in ms. */
   slack: number,
+  /** The attempt's `until`, epoch ms: no holder is declared dead before it. */
+  notBefore: number,
 ): SummonClaimTally {
   const tally: SummonClaimTally = {
     succeeded: 0,
     exitedWithError: 0,
     died: 0,
     starting: 0,
+    unmarked: 0,
   };
   for (const holder of claim?.holders ?? []) {
     if (holder.exit !== undefined) {
@@ -329,8 +346,13 @@ export function tallySummonClaim(
       }
     } else if (live.has(holder.worker)) {
       tally.succeeded++;
+      tally.unmarked++;
     } else if (
-      (typeof holder.until === "number" ? holder.until : holder.at) + slack <=
+      Math.max(
+        typeof holder.until === "number" ? holder.until : holder.at,
+        notBefore,
+      ) +
+        slack <=
       now
     ) {
       tally.died++;

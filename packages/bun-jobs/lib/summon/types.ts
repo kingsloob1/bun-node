@@ -538,6 +538,28 @@ export interface PendingSummon {
   handles?: string[];
 }
 
+/**
+ * An attempt released on a live record whose worker has not said how it left
+ * yet: watched, off the capacity count, until its `until` passes, so a
+ * worker that crashes after its first report is still counted as a failure.
+ */
+export interface WatchedSummon {
+  /** The attempt id. */
+  id: string;
+  /** When it was released, epoch ms: eviction takes the oldest first. */
+  at: number;
+  /**
+   * The attempt's own `until`, epoch ms. A holder gone with no mark is
+   * declared dead only past the later of this and its claim's `until`, plus
+   * the clock allowance; a watch still open then ends.
+   */
+  until: number;
+  /** How many workers the attempt asked for. */
+  count: number;
+  /** The summoner's `kind`. */
+  kind: string;
+}
+
 /** The most recent outcome on a marker. */
 export interface SummonLastOutcome {
   /** The attempt it concerns. */
@@ -563,6 +585,14 @@ export interface SummonMarker {
   epoch: string;
   /** Attempts started and not yet matched to a live worker record, oldest first. */
   pending: PendingSummon[];
+  /**
+   * Attempts released on a live record and watched until their `until`, so
+   * a worker that dies after its first report still counts as a failure.
+   * Never capacity. Optional, with `v` unchanged: a marker written before it
+   * existed reads as none watched, and a controller that predates it keeps
+   * the field as it found it.
+   */
+  watching?: WatchedSummon[];
   /** When the last attempt was started, epoch ms; the cooldown counts from here. */
   lastAttemptAt?: number;
   /** Consecutive failed or never-registered attempts; reset by a registration. */

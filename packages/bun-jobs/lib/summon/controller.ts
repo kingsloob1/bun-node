@@ -23,6 +23,7 @@ import type {
   SummonResult,
   SummonSkipReason,
   SummonStatus,
+  WatchedSummon,
 } from "./types";
 import process from "node:process";
 import {
@@ -93,6 +94,10 @@ const DEFAULT_SUMMON_TIMEOUT = 30_000;
 const START_TIME_SLACK = 5_000;
 /** How many times a result is written back against a fresh read before giving up. */
 const RECORD_ATTEMPTS = 3;
+/** The fewest attempts the watch list holds, whatever the policy. */
+const WATCH_FLOOR = 8;
+/** The most attempts the watch list holds, whatever the policy. */
+const WATCH_CAP = 256;
 /** How often old claim-once entries are swept, at most, in ms. */
 const CLAIM_SWEEP_EVERY = 3_600_000;
 
@@ -893,8 +898,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // their way — registered, or started and gone — so only the rest are.
     // Worked out afresh each check, never written back.
     const partly = new Map<string, number>();
-    const claims = await this.#readClaims(marker.pending);
+    const claims = await this.#readClaims([
+      ...marker.pending,
+      ...(marker.watching ?? []),
+    ]);
     const liveIds = new Set(workers.map((worker) => worker.id));
+    // Attempts released this check on a live record alone: watched below.
+    const released: WatchedSummon[] = [];
     for (const attempt of marker.pending) {
       // The claim-once entry, where there is one: a worker that claimed,
       // drained and closed between two checks has no record left, but its
@@ -904,7 +914,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       // including a holder still listed that has marked a failing exit.
       // Without one, live records carrying the id, as before.
       const claim = claims.get(attempt.id);
-      const tally = tallySummonClaim(claim, liveIds, now, START_TIME_SLACK);
+      const tally = tallySummonClaim(
+        claim,
+        liveIds,
+        now,
+        START_TIME_SLACK,
+        attempt.until,
+      );
       let registered =
         claim === undefined ? liveWithId(workers, attempt.id) : tally.succeeded;
       if (registered === 0 && capabilities.passes === "none") {
@@ -934,13 +950,27 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         continue;
       }
       changed = true;
-      // One worker that ran is a success, whatever became of the others: a
-      // platform that starts workers and code that runs is what backoff and
-      // the circuit guard, and one job that kills its worker must not stop
-      // summoning for the whole queue. Only an attempt none of whose workers
-      // ran is a failure.
+      // A worker that ran releases the attempt: it leaves `pending`, so it is
+      // never counted as capacity twice (on its way and live). Where the
+      // claim cannot yet say every holder left cleanly — one is only listed,
+      // still starting, or already failed — the attempt is watched until its
+      // `until` instead, and the failure count is reset only once the watch
+      // ends clean: a worker that crashes after its first report still counts.
       if (registered > 0) {
-        marker.failures = 0;
+        if (
+          claim !== undefined &&
+          tally.unmarked + tally.starting + failed > 0
+        ) {
+          released.push({
+            id: attempt.id,
+            at: now,
+            until: attempt.until,
+            count: attempt.count,
+            kind: attempt.kind,
+          });
+        } else {
+          marker.failures = 0;
+        }
         marker.last = { id: attempt.id, outcome: "registered", at: now };
         events.push({
           id: attempt.id,
@@ -975,6 +1005,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       });
     }
     marker.pending = keep;
+    if (this.#watch(marker, claims, liveIds, released, now, events)) {
+      changed = true;
+    }
     rollBudget(marker, now);
 
     // Step 3: nothing needs a worker.
@@ -1476,6 +1509,122 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }
 
   /**
+   * Step 2's watch: settles the attempts released on a live record, and adds
+   * this check's (`released`). Answers whether the marker changed — only
+   * when an entry was added, dropped or evicted — so a check over a quiet
+   * watch list writes nothing.
+   *
+   * Per watched attempt, from its claim:
+   * - a holder marked code `1`: `lost`, detail `exited-with-error`;
+   * - a holder gone with no mark past its grace (the later of the attempt's
+   *   and its claim's `until`, plus the clock allowance): `lost`, `died`;
+   * - either way one failure for the attempt, however many holders failed,
+   *   with the event and `last` saying so;
+   * - every holder marked clean, or past the grace with every holder still
+   *   listed or marked clean: it ran — dropped, failures reset, no event;
+   * - no claim any more (purged): dropped, nothing counted;
+   * - otherwise kept.
+   *
+   * Bounded by {@link #watchLimit}: past it the oldest are evicted, with one
+   * warn naming them — a summon is never refused for want of room.
+   */
+  #watch(
+    /** The marker being settled. */
+    marker: SummonMarker,
+    /** The claims this check read, by attempt id. */
+    claims: ReadonlyMap<string, SummonClaim | undefined>,
+    /** The ids of the live worker records. */
+    live: ReadonlySet<string>,
+    /** Attempts released this check, to watch from now. */
+    released: readonly WatchedSummon[],
+    /** Now, epoch ms. */
+    now: number,
+    /** Where this check's events are collected. */
+    events: SummonEventPayload[],
+  ): boolean {
+    const before = marker.watching ?? [];
+    let changed = released.length > 0;
+    const kept: WatchedSummon[] = [];
+    for (const watched of [...before, ...released]) {
+      const claim = claims.get(watched.id);
+      if (claim === undefined) {
+        changed = true;
+        continue;
+      }
+      const tally = tallySummonClaim(
+        claim,
+        live,
+        now,
+        START_TIME_SLACK,
+        watched.until,
+      );
+      const detail =
+        tally.exitedWithError > 0
+          ? "exited-with-error"
+          : tally.died > 0
+            ? "died"
+            : undefined;
+      if (detail !== undefined) {
+        changed = true;
+        this.#fail(marker, now);
+        marker.last = { id: watched.id, outcome: "lost", at: now, detail };
+        events.push({
+          id: watched.id,
+          outcome: "lost",
+          kind: watched.kind,
+          count: watched.count,
+          detail,
+        });
+        continue;
+      }
+      const ended =
+        tally.starting === 0 &&
+        (tally.unmarked === 0 || watched.until + START_TIME_SLACK <= now);
+      if (ended) {
+        changed = true;
+        marker.failures = 0;
+        continue;
+      }
+      kept.push(watched);
+    }
+    const limit = this.#watchLimit();
+    if (kept.length > limit) {
+      const evicted = kept.splice(0, kept.length - limit);
+      changed = true;
+      this.#logger.warn(
+        "summon watch list full: evicted the oldest watched attempts, whose late failures will not be counted",
+        { ids: evicted.map((watched) => watched.id), limit },
+      );
+    }
+    if (!changed) {
+      return false;
+    }
+    if (kept.length > 0) {
+      marker.watching = kept;
+    } else {
+      delete marker.watching;
+    }
+    return true;
+  }
+
+  /**
+   * How many attempts may be watched at once: as many as can be released
+   * within one boot budget, `maxPending × ⌈bootBudget / cooldown⌉`, at least
+   * {@link WATCH_FLOOR} and at most {@link WATCH_CAP}. With no cooldown
+   * nothing bounds how often attempts start, so it is the cap.
+   */
+  #watchLimit(): number {
+    const { maxPending, bootBudget, cooldown } = this.#policy;
+    if (cooldown <= 0) {
+      return WATCH_CAP;
+    }
+    return Math.min(
+      WATCH_CAP,
+      Math.max(WATCH_FLOOR, maxPending * Math.ceil(bootBudget / cooldown)),
+    );
+  }
+
+  /**
    * Step 2's second source: the claim of each pending attempt. One
    * queue-state read per attempt (bounded by `maxPending`), and none at all
    * when the platform passes no identity — nothing could have claimed an id
@@ -1484,8 +1633,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * may have marked a failing exit.
    */
   async #readClaims(
-    /** The marker's pending attempts. */
-    pending: readonly PendingSummon[],
+    /** The marker's pending and watched attempts. */
+    pending: readonly { id: string }[],
   ): Promise<Map<string, SummonClaim | undefined>> {
     if (
       pending.length === 0 ||
