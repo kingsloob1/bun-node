@@ -1643,11 +1643,17 @@ export class BunRunner<
       );
       const bounded = withTimeout(check, COLLATION_CHECK_WAIT).catch(
         (): string[] => {
-          void check.then((keys) => {
-            if (this.#collationKeys === bounded) {
-              this.#collationKeys = Promise.resolve(keys);
-            }
-          });
+          // `collationKeysForRuns` is documented never to reject; the handler
+          // keeps that promise local, so a regression there cannot surface
+          // as an unhandled rejection in the runner's process.
+          void check.then(
+            (keys) => {
+              if (this.#collationKeys === bounded) {
+                this.#collationKeys = Promise.resolve(keys);
+              }
+            },
+            () => undefined,
+          );
           return [];
         },
       );
