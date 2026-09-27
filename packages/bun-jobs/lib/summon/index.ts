@@ -4,7 +4,9 @@
  * `SummonController` watches a queue and calls a `Summoner` — made with
  * `defineSummoner({ invoke })`, or a bare function — when it needs one. A
  * summoned worker passes `summon: summonedFromArgs()` so its heartbeat record
- * releases the attempt. Also reachable from the package root.
+ * releases the attempt, and runs through `runSummoned(worker)`, which starts
+ * it, handles the platform's signals and stops it inside the platform's
+ * grace. Everything here is also reachable from the package root.
  */
 export { SUMMON_ARGS, type SummonedArgs, summonedFromArgs } from "./args";
 export { SummonController } from "./controller";
@@ -35,3 +37,8 @@ export type {
   SummonStatus,
   UnitStatus,
 } from "./types";
+export {
+  runSummoned,
+  type RunSummonedOptions,
+  type SummonedExit,
+} from "./worker";

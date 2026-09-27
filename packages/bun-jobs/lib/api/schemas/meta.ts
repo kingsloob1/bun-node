@@ -212,6 +212,10 @@ export const MetaSchema = s.named(
           description:
             "The backend can rewrite pending jobs with them, so `POST /queues/{queue}/job-defaults/apply` exists. `true` on every built-in driver; `false` in `runner` mode and on a custom driver without `rewritePendingOptions`.",
         }),
+        demand: s.boolean({
+          description:
+            "`GET /queues/{queue}/demand` and `GET /demand` are served. They need no driver method, so `true` on every backend and `false` only in `runner` mode. Whether an answer's figures are exact is its own `exact` (`false` on a custom driver without `countDemand`), not this flag.",
+        }),
       }),
       events: s.enum(["push", "poll", "local"]),
       publishing: s.nullable(s.boolean()),

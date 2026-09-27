@@ -28,6 +28,7 @@
         "summonedFromArgs",
         "SummonController",
         "defineSummoner",
+        "runSummoned",
         "ConfigError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
@@ -49,6 +50,8 @@
         "WorkerTargetInfo",
         "WorkerSummonProvenance",
         "SummonedArgs",
+        "RunSummonedOptions",
+        "SummonedExit",
         "BunRunnerOptions",
         "JobOptions",
         "JobsDriver",
@@ -64,9 +67,13 @@
         "SummonRequest",
         "SummonResult",
         "SummonCheckResult",
-        "SummonStatus"
+        "SummonStatus",
+        "QueueDemandDto",
+        "QueueDemandListDto",
+        "QueueDemandListQuery",
+        "QueueDemandQuery"
       ],
-      "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;\nexport const _summoned: t.BunQueueWorkerOptions = { namespace: \"shop\", driver, summon: m.summonedFromArgs([]) };\nexport type _summonMode = Expect<IsAny<t.WorkerSummonProvenance[\"mode\"]>>;\nexport type _demand = Expect<IsAny<Awaited<ReturnType<typeof emails.getDemand>>[\"outstanding\"]>>;\nexport const _demandTyped: Equal<Awaited<ReturnType<typeof emails.getDemand>>, t.QueueDemand> = true;"
+      "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;\nexport const _summoned: t.BunQueueWorkerOptions = { namespace: \"shop\", driver, summon: m.summonedFromArgs([]) };\nexport type _summonMode = Expect<IsAny<t.WorkerSummonProvenance[\"mode\"]>>;\nexport type _demand = Expect<IsAny<Awaited<ReturnType<typeof emails.getDemand>>[\"outstanding\"]>>;\nexport const _demandTyped: Equal<Awaited<ReturnType<typeof emails.getDemand>>, t.QueueDemand> = true;\nexport const _runSummoned: () => Promise<t.SummonedExit> = () => m.runSummoned(worker, { mode: \"in-invocation\", idleFor: 1_000 });\nexport type _exitReason = Expect<IsAny<t.SummonedExit[\"reason\"]>>;\nexport const _exitCode: Equal<t.SummonedExit[\"code\"], 0 | 1> = true;"
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/api/contract",
@@ -97,7 +104,8 @@
         "SummonController",
         "defineSummoner",
         "summonedFromArgs",
-        "SUMMON_ARGS"
+        "SUMMON_ARGS",
+        "runSummoned"
       ],
       "types": [
         "SummonPolicy",
@@ -107,14 +115,12 @@
         "SummonCheckResult",
         "SummonStatus",
         "SummonCapabilities",
-        "ProviderCallContext"
+        "ProviderCallContext",
+        "RunSummonedOptions",
+        "SummonedExit",
+        "SummonedArgs"
       ],
       "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
-    },
-    {
-      "spelling": "@kingsleyweb/bun-jobs/lib/summon",
-      "values": ["SummonController", "defineSummoner"],
-      "types": ["SummonPolicy"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",
@@ -153,6 +159,11 @@
       "spelling": "@kingsleyweb/bun-jobs/lib/runner",
       "values": ["BunRunner", "SpawnExecutor", "WorkerExecutor"],
       "types": ["BunRunnerOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/summon",
+      "values": ["runSummoned", "summonedFromArgs", "SummonController", "defineSummoner"],
+      "types": ["RunSummonedOptions", "SummonedExit", "SummonPolicy"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/drivers",

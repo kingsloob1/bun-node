@@ -264,3 +264,34 @@ tr[aria-selected="true"] {
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+.demand-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.demand-urls {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.demand-urls p {
+  margin: 0;
+}
+
+.demand-url {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.demand-url-label {
+  min-width: 6rem;
+  font-weight: 600;
+}
+
+.demand-url code {
+  overflow-wrap: anywhere;
+}

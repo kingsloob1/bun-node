@@ -150,6 +150,10 @@ export {
 export type {
   JobDefaultBackoff,
   JobDefaultsValues,
+  QueueDemandDto,
+  QueueDemandListDto,
+  QueueDemandListQuery,
+  QueueDemandQuery,
 } from "./api/contract/types";
 export { createJobsApi } from "./api/createJobsApi";
 
@@ -954,3 +958,13 @@ export {
   type SummonStatus,
   type UnitStatus,
 } from "./summon/index";
+
+/* ------------------------------------------------------------------ *
+ * A summoned worker's run: `runSummoned(worker)` starts it, handles the
+ * platform's signals, and stops it inside the platform's grace.
+ * ------------------------------------------------------------------ */
+export {
+  runSummoned,
+  type RunSummonedOptions,
+  type SummonedExit,
+} from "./summon/worker";

@@ -4,6 +4,7 @@ import type { JsonSchema } from "../schema/validate";
 import { ConfigError } from "../../shared/errors";
 import { isMutation } from "../config";
 import { API_ERROR_STATUS, problemTitle } from "../errors";
+import { defaultStatus } from "../routes/define";
 import { toJsonSchema } from "../schema/builder";
 import {
   ErrorDtoSchema,
@@ -183,13 +184,34 @@ function operation(
     "Send `Content-Type: application/json` even with no body (an empty body, or `{}`): this API refuses a state-changing POST of any other media type with 415 UNSUPPORTED_MEDIA_TYPE.";
 
   const responses: Record<string, unknown> = {};
+  const alternateStatus = defaultStatus(def);
   for (const [key, schema] of Object.entries(def.responses as RouteResponses)) {
     const status = Number(key);
-    responses[key] = {
-      description: SUCCESS_DESCRIPTIONS[status] ?? "Success",
+    // Other representations of the default status, written by the handler
+    // itself: documented beside the JSON body, each as a string.
+    const alternates =
+      status === alternateStatus && def.alternateContent
+        ? Object.fromEntries(
+            Object.entries(def.alternateContent).map(([type, alternate]) => [
+              type,
+              {
+                schema: { type: "string", description: alternate.description },
+                ...(alternate.example === undefined
+                  ? {}
+                  : { example: alternate.example }),
+              },
+            ]),
+          )
+        : {};
+    const content = {
       ...(schema === null
         ? {}
-        : { content: { "application/json": { schema: emit(schema.json) } } }),
+        : { "application/json": { schema: emit(schema.json) } }),
+      ...alternates,
+    };
+    responses[key] = {
+      description: SUCCESS_DESCRIPTIONS[status] ?? "Success",
+      ...(Object.keys(content).length > 0 ? { content } : {}),
     };
   }
 

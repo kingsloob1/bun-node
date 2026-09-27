@@ -1514,6 +1514,53 @@ graceful choice never needs revisiting except by the backstop.
   (`state: "stopped"`) serves nothing and costs money; it exits with reason
   `"parked"` after `idleFor`, whatever demand says [D].
 
+**As built in PR-4 (2026-09-26)**, where the code differs from the above
+[M/D; the code wins]:
+
+- **The target's kind is `worker.target.kind`** (#198), exact from the
+  worker's construction on every driver. `"worker-thread"` is budgeted like
+  `"child-process"`: one executor, the same constants.
+- **`SummonedExit.reason` also has `"closed"`**: something other than
+  `runSummoned` closed the worker.
+- **A stop before `ready` closes at once, with `force`**: nothing has been
+  claimed, and a close during startup ends it there (#199), so `run()`
+  resolves without `ready`. A graceful close would first wait out the connect
+  it interrupts.
+- **The parked exit does not apply to `"until-stopped"`**, whose platform
+  would restart the worker into the same stop.
+- **The backstop is armed only with `exit`** (never in `"in-invocation"`);
+  with `exit: false` the close rule still budgets for the platform's kill.
+- **"A second SIGINT" means one after an earlier SIGINT.** A first SIGINT
+  during an idle or deadline close is the platform's stop, not exit 130.
+- **Defaults come from the arguments, not the environment** (§5.5): `mode`
+  from `--bun-jobs-summon-mode=`, `deadline` from
+  `--bun-jobs-summon-max-lifetime-ms=`, `grace` from
+  `--bun-jobs-summon-grace-ms=`.
+- **A failed `run()` closes with `force`** and exits 1, without the rule. A
+  signal during the start has already closed the worker, whose `run()` then
+  resolves rather than fails (#199): that exits 0 with reason `"signal"`.
+- **The backstop has a floor** (#195 review): it never fires sooner than
+  `forcedCloseFloor` (1,000 ms = `TARGET_CLOSE_REAP` + 500 ms of round trips)
+  after the close started, so a budget at or below zero (Railway's 0 s) still
+  lets the forced close kill a child-process target's children. Without it,
+  on Postgres, the backstop fired 2 ms into the forced close and orphaned the
+  child.
+- **`pauseSignals` defaults to `false`** (#195 review): handling SIGTSTP stops
+  Ctrl-Z suspending the process, so a platform that sends it opts in.
+- **Known gap: a signal during a graceful close cannot shorten it.**
+  `runSummoned` calls `close({ force: true })` then, but on develop a
+  re-entrant close only awaits the one running, so the backstop bounds what is
+  left and can cut a child-process target's grace short, orphaning its child
+  (reproduced: a deadline close with timeout 1,249, then SIGTERM on a 3 s
+  grace). The bun-jobs session's close escalation (`fix/close-escalation`:
+  `close({ force: true })` mid-close escalates) closes it with no change here.
+- **A worker that is already running is a `ConfigError`**: `runSummoned`
+  starts it.
+- **Measured** (Q38): a graceful child-process close is 4,006 ms in the
+  target plus ~6 ms reaping, a forced one 5–19 ms in all, and the tail after
+  the target 5–15 ms on local servers. `tailReserve` stays 1,000 ms for a
+  remote database.
+
 ### 5.4 Registration, so the guard releases
 
 On `BunQueueWorkerOptions` (`queue/types.ts:910`) [D] — the option is
@@ -1647,8 +1694,11 @@ environment. PR-2's tests reproduce it as their negative control [M].
   `WorkerSummonProvenance.id` is required.
 - **`mode` and `deadlineAt` are "as requested by the summoner"** and never
   defaulted: absent when not requested, per the rule behind `target` and
-  `sweeps`. PR-4 reports the worker's own resolved mode through a getter, the
-  way `#report` writes `sweeps` from what the worker actually arms.
+  `sweeps`. **Reporting the worker's own resolved mode moves to PR-6**
+  (revised 2026-09-26): it is a worker-record/DTO field, so a contract
+  change, and PR-4 does not touch the worker. `runSummoned` resolves the
+  mode itself: `options.mode`, else `--bun-jobs-summon-mode=`, else
+  `"exit-on-idle"`.
 - **`summon` on a driver that cannot store worker records
   (`!supportsWorkers`) is a `ConfigError`**, like `reportInterval: 0`: either
   way the worker could never report, so never release its attempt.
@@ -1738,14 +1788,23 @@ action is `queues.summon` (S17).
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| `GET` | `/queues/:queue/demand` | `queues.read` | `QueueDemandDto` as JSON. With `?format=prometheus` or `Accept: text/plain`, the exposition below |
-| `GET` | `/demand` | `queues.list`, then per queue `queues.read` when `listQueues: "authorized"` | `{ queues: QueueDemandDto[] }`, for `?queues=a,b` or every queue. `?format=prometheus` gives one scrape for the namespace |
+| `GET` | `/queues/:queue/demand` | `queues.read` | `QueueDemandDto` as JSON. With `?format=prometheus` or `Accept: text/plain`, the exposition below. Operation `getQueueDemand`; an unknown queue is 404 `QUEUE_NOT_FOUND` |
+| `GET` | `/demand` | `queues.list`, then per queue `queues.read` when `listQueues: "authorized"` | `{ queues: QueueDemandDto[], truncated }`, for `?queues=a,b` or every queue, at most `limits.maxQueues`. `?format=prometheus` gives one scrape for the namespace. Operation `listQueueDemand` |
 | `GET` | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto` (§9.3) |
 | `POST` | `/queues/:queue/summon` | **`queues.summon`** (new) | runs `check({ reason: "manual", force: true })`. `409 SUMMON_NOT_CONFIGURED` when no controller runs in the API's process |
 | `POST` | `/queues/:queue/summon/reset` | `queues.summon` | `reset()`. It works from any process, since the marker lives in the driver |
 
 `QueueDemandDto` is `QueueDemand` (§4.10) with `queue` added. It lives in the
 browser-safe `api/contract/types.ts`, beside `JobCountsDto`.
+
+**As shipped (PR-5, 2026-09-26)** [S]: without `?queues=`, `/demand` reads the
+visible queues by name and sets `truncated` when there were more than
+`limits.maxQueues`; a `?queues=` longer than that is 400. A name in
+`?queues=` that the caller cannot see (unknown, outside the `queues`
+allowlist, or refused `queues.read`) is left out, never an error. A scaler
+that must fail on a missing queue reads the per-queue route, which answers
+404. Neither route takes a `cap` (§6.4 D3), and `?cap=` is ignored like any
+unknown query parameter.
 
 **Auth.** The scaler sends a bearer, an API key, basic auth or mTLS
 [W: keda.sh metrics-api, 2026-09-25]. `createJobsApi` refuses to start
@@ -1757,11 +1816,15 @@ without `authorize` unless `allowUnauthenticated: true` [S, google-azure
 ```ts
 const scalerApi = createJobsApi({
   jobs, basePath: "/scaler", readOnly: true, actions: ["queues.read"],
-  authorize: ({ req }) => req.headers.get("authorization") === `Bearer ${process.env.SCALER_TOKEN}`,
+  authorize: (req) => req.getHeader("authorization") === `Bearer ${process.env.SCALER_TOKEN}`,
 });
 ```
 
-It can read demand and nothing else. `queues.summon` is a write that spends
+`authorize` is `(req, context)`, and a `BunRequest` reads a header with
+`getHeader(name)`; the draft's `({ req }) => req.headers.get(…)` failed with a
+500 [S, corrected 2026-09-26 by PR-5's test of this recipe]. It can read
+demand and nothing else: `/demand` is `queues.list`, which this API does not
+allow. `queues.summon` is a write that spends
 money, so it is never in a read-only API. It joins `JOBS_API_ACTIONS`
 (`api/contract/constants.ts:19-68`), **`JOBS_API_MUTATIONS`** (`:84-117`, so
 `readOnly: true` removes it) and **`JOBS_API_OPT_IN_ACTIONS`** (`:136-144`,
@@ -1769,8 +1832,12 @@ so it is off unless `actions` names it, like `workers.configure`) [D; the
 draft named only the first, and the other two sets are what "granted on
 purpose" means in this code]. The demand routes need no driver feature
 (`countDemand` is optional, with a fallback), so they carry no `requires`;
-`/meta` gains `features.demand` from `DRIVER_FEATURES` (`api/routes/meta.ts:62`)
-saying whether the figures are exact [D].
+`/meta` gains `features.demand`, which says, like every other flag, that the
+routes are served: `DRIVER_FEATURES.demand` is empty, so it is `false` only in
+`runner` mode. Whether an answer's figures are exact is that answer's
+`exact`, the only signal of approximate figures [D; the draft had the flag
+say whether figures are exact, which merged "no routes" with "approximate
+figures"].
 
 ### 6.3 Prometheus exposition: worth it
 
@@ -1785,6 +1852,7 @@ It serves three consumers the JSON cannot:
 It is about 40 lines of text rendering [I]:
 
 ```
+# HELP bunjobs_queue_demand Jobs a worker could claim now: waiting + due + stalled. 0 while the queue is paused.
 # TYPE bunjobs_queue_demand gauge
 bunjobs_queue_demand{ns="shop",queue="emails"} 15
 bunjobs_queue_outstanding{ns="shop",queue="emails"} 16
@@ -1806,6 +1874,25 @@ draft's `bun_jobs_…` names would have sat beside those under a different
 prefix, so the metrics are `bunjobs_queue_*` (§13.9 S12, approved). A `capped` sample
 (`bunjobs_queue_demand_capped`, 0 or 1) says when the figures are lower
 bounds (§6.4).
+
+**As shipped (PR-5, 2026-09-26)** [S]: each family is one group with its own
+`# HELP` and `# TYPE … gauge` lines (the sample above shows one family's; the
+format requires them per family), label values escape `\`, `"` and line
+feed, and the body ends with a line feed. There are **11 families**: the eight
+above, `bunjobs_queue_demand_capped`, `bunjobs_queue_demand_exact` (0 when the
+figures come from the fallback, so a scaler can see what JSON's `exact`
+says), and the namespace-level `bunjobs_demand_truncated{ns}` (1 when
+`GET /demand` left visible queues out past `limits.maxQueues`, always 0 on the
+per-queue route) — added after #193's review: many scalers read an absent
+series as 0, so a silently cut scrape would scale to zero over a backlog. `Content-Type` is `text/plain;
+version=0.0.4; charset=utf-8`. Content negotiation offers `text/plain;
+version=0.0.4`, so `Accept: text/plain`, `text/plain;version=0.0.4` and a
+Prometheus server's scrape header select the exposition; no `Accept`, `*/*`, a
+browser's header, and an `Accept` naming only `text/plain;version=1.0.0` get
+JSON, never 406. `?format=` overrides `Accept` both ways. KEDA is expected to
+work through `?format=prometheus`, since its docs name no `Accept` header it
+sends, with `valueLocation: bunjobs_queue_demand` on the per-queue route, which
+holds one sample per family [U: not verified against KEDA; Q13 stands].
 
 ### 6.4 `countDemand`: the driver method, specified before code
 
@@ -3357,6 +3444,11 @@ run-all.ts` in `examples/bun-jobs-ui`.
   bun-jobs session, which owns the close path this PR budgets for and must
   not edit.
 - **Risk: medium.** Signal delivery under Bun, `process.exit` during a close.
+- **As built** (2026-09-26): the deviations are listed at the end of §5.3.
+  Tests add a `RUN_SUMMONED_PROBE` seam (a symbol on the options, like
+  `DEMAND_READ_PROBE`) so the negative control can swap in the draft's
+  graceful close. **The end-to-end handoff test waits for PR-3's fixture**;
+  PR-4 ships its own (`__tests__/fixtures/processes/run-summoned.ts`).
 
 ### 13.6 PR-5 — The depth endpoint and Prometheus
 
@@ -3364,7 +3456,8 @@ run-all.ts` in `examples/bun-jobs-ui`.
   namespace route `GET /demand` [S11]; `QueueDemandDto`
   (`api/contract/types.ts`, beside `JobCountsDto` `:783`); its schema; a small
   Prometheus renderer (`api/prometheus.ts`, new) [S12]; `DRIVER_FEATURES` and
-  `/meta` `features.demand` (`api/routes/meta.ts:62`); the OpenAPI lists.
+  `/meta` `features.demand` (`api/routes/meta.ts:62`; the routes are served,
+  `false` only in `runner` mode, §6.2); the OpenAPI lists.
 - **Ships.** Model (b), §2.2, for every platform that polls a metric.
 - **Tests.** Route and auth (`queues.read`; `listQueues: "authorized"`
   filtering `/demand`); JSON and `?format=prometheus`/`Accept: text/plain`;
@@ -3381,7 +3474,9 @@ run-all.ts` in `examples/bun-jobs-ui`.
   in `JOBS_API_ACTIONS`, `JOBS_API_MUTATIONS` and `JOBS_API_OPT_IN_ACTIONS`;
   `summon` [S13] in `QUEUE_EVENT_TYPES`); `shared/events.ts`,
   `api/contract/ws.ts`, `api/ws/events.ts`, `BunQueue`'s re-emit (§9.1);
-  `SummonStatusDto`; AsyncAPI; the controller publishing `summon`.
+  `SummonStatusDto`; AsyncAPI; the controller publishing `summon`; **the
+  worker's resolved summon mode on its record and `WorkerDto`** (moved from
+  PR-4, §5.5: a contract change).
 - **Ships.** Operators see and drive summoning through the API; the UI can
   build its card.
 - **Tests.** The routes, `409 SUMMON_NOT_CONFIGURED`, the action's gating

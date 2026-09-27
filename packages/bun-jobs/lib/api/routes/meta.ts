@@ -101,6 +101,12 @@ export const DRIVER_FEATURES = {
   // five built-in drivers implement `rewritePendingOptions`; a custom driver
   // without it keeps saving defaults and loses only the apply route.
   jobDefaultsApply: ["getQueueState", "setQueueState", "rewritePendingOptions"],
+  // The demand routes, like every other flag: whether they are served. They
+  // need no driver method — without `countDemand`, `readDemand` falls back to
+  // reads every driver has — so the list is empty and the flag is false only
+  // where the API's mode prunes the routes (`runner`). Whether one answer's
+  // figures are exact is that answer's `exact`, never this flag.
+  demand: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -205,6 +211,9 @@ export const FEATURE_ROUTES = {
   jobDefaults: ["getJobDefaults", "setJobDefaults", "resetJobDefaults"],
   // The rewrite, which `requires` `DRIVER_FEATURES.jobDefaultsApply`.
   jobDefaultsApply: ["applyJobDefaults"],
+  // The depth endpoint, one queue and the namespace. Neither is pruned for
+  // the driver, so only the API's mode turns the flag off, through these.
+  demand: ["getQueueDemand", "listQueueDemand"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
