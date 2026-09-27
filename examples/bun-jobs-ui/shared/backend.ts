@@ -115,6 +115,17 @@ export function exampleDriver(): DriverConfig {
 }
 
 /**
+ * A driver another process can reach: the backend `EXAMPLE_DRIVER` names, or
+ * a temporary SQLite file in place of `memory`. For what the memory driver
+ * refuses, such as a queue's `summon` policy.
+ */
+export function crossProcessDriver(): DriverConfig {
+  return exampleBackend() === "memory"
+    ? { type: "sql", url: `sqlite://${join(tempDir("shared"), "jobs.db")}` }
+    : exampleDriver();
+}
+
+/**
  * A namespace for one run. A persistent backend outlives the process, so
  * there a suffix keeps one run from finding what an earlier run left.
  */
