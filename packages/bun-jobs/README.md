@@ -2971,13 +2971,24 @@ everywhere, except that a queue with a controller is found before its first
 job. A reset that other controllers kept outwriting is 409
 `SUMMON_MARKER_CONTENDED`: try again.
 
+Every POST — a bodyless "summon now" or reset included — must send
+`Content-Type: application/json` (with an empty body or `{}`), or the API
+answers 415 `UNSUPPORTED_MEDIA_TYPE`: the CSRF rule in the
+[Security checklist](#security-checklist), on by default (`csrf.requireJson`).
+
 **`queues.summon` is opt-in and a mutation**: off unless `actions` names it,
 and removed by `readOnly`, since it spends money. Reading the status is
 `queues.read`: it spends nothing, and it is secret-free — `summoner.facts`
-come only from `describe()`, and any whose key looks like a credential
-(`token`, `secret`, `key`, `password`) is dropped anyway; a pending attempt's
+come only from `describe()`, and three kinds are dropped anyway: a fact whose
+key has a credential word in it (`token`, `secret`, `key`, `password`, as a
+whole word: `apiKey` and `secretArn` go, `keyspace` stays), one whose value
+holds a URL with userinfo (`postgres://user:pass@…`), and a `host` or
+`hostname` fact unless `serialize.exposeHosts` is on; a pending attempt's
 platform `handles`, like the `summon` event's, go out only with
-`serialize.exposeSummonHandles`.
+`serialize.exposeSummonHandles`. That switch guards the API's edge only: the
+event carries its `handles` through the backend, so a `JobsNotifier`, a
+subscribing `BunQueue` or a `serialize.event` hook (which is handed the raw
+event) sees them.
 
 ```ts
 import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
@@ -3013,7 +3024,7 @@ Examples:
 | `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
 | `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |
 | `scaleDown` | `300_000` | Scale style: how long nothing is outstanding before the count goes to 0. |
-| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. |
+| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long `close()` waits for `summon` events still publishing. |
 | `env` | `{}` | Static environment for every request. Never identity. |
 | `fromSummoned` | `false` | Whether the controller runs in a summoned process or runner child. |
 

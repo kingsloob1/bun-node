@@ -1618,7 +1618,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /**
    * Stops the triggers and waits for a check in flight, including its
    * summoner call (bounded by `summonTimeout`), and for the `summon` events
-   * it published. Leaves the marker as it is. Idempotent.
+   * it published (for at most `summonTimeout` more; one `warn` if they are
+   * still in flight). Leaves the marker as it is. Idempotent.
    */
   async close(): Promise<void> {
     this.#closed = true;
@@ -1648,7 +1649,25 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#logger.warn("summon events unsubscribe failed", { error });
     });
     await this.#chain;
-    // The last check's events, before whoever closes the driver does.
-    await this.#publishing;
+    // The last check's events, before whoever closes the driver does — but
+    // bounded, like the summoner call, by `summonTimeout`: a publish that
+    // never settles (a Redis client queueing commands while it reconnects)
+    // must not hold `close()`.
+    const waitMs = this.#policy.summonTimeout;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const published = await Promise.race([
+      this.#publishing.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(resolve, waitMs, false);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!published) {
+      this.#logger.warn(
+        "summon events still publishing at close; not waiting for them",
+        { waitedMs: waitMs },
+      );
+    }
   }
 }

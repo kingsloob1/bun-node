@@ -5,7 +5,7 @@ import type {
   SummonEventPayload,
 } from "../lib/index";
 import { join } from "node:path";
-import { noopLogger } from "@kingsleyweb/bun-common";
+import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import {
   afterAll,
   afterEach,
@@ -14,7 +14,12 @@ import {
   it,
   setDefaultTimeout,
 } from "bun:test";
-import { BunQueue, createDriver } from "../lib/index";
+import {
+  BunQueue,
+  createDriver,
+  defineSummoner,
+  SummonController,
+} from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 import { runBun } from "./helpers/spawnBun";
@@ -175,3 +180,95 @@ for (const backend of BACKENDS) {
     },
   );
 }
+
+/**
+ * `close()` waits for the `summon` events a controller is still publishing,
+ * but never longer than `summonTimeout`: a publish that never settles — a
+ * Redis client queueing commands while it reconnects — must not hold it. On
+ * SQLite, with the driver's `publish` wrapped.
+ */
+describe("close() and a publish that never settles", () => {
+  const sqlite = BACKENDS.find((backend) => backend.name === "sqlite")!;
+
+  /** A controller whose driver's `publish` takes `publishMs` (`Infinity`: never settles), after one summon. */
+  async function summonedWith(publishMs: number): Promise<{
+    controller: SummonController;
+    published: () => number;
+    warnings: () => string[];
+  }> {
+    const inner = createDriver(sqlite.config);
+    await inner.connect();
+    let published = 0;
+    const driver = new Proxy(inner, {
+      get(target, property) {
+        if (property === "publish") {
+          return async (...args: Parameters<JobsDriver["publish"]>) => {
+            if (!Number.isFinite(publishMs)) {
+              return await new Promise<void>(() => {});
+            }
+            await Bun.sleep(publishMs);
+            await target.publish(...args);
+            published++;
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const namespace = testNamespace("summon-close");
+    const queue = new BunQueue("work", {
+      namespace,
+      driver: inner,
+      logger: noopLogger,
+    });
+    await queue.add("job", {});
+    const { logger, events } = createTestLogger();
+    const controller = new SummonController({
+      driver,
+      namespace,
+      queue: "work",
+      summoner: defineSummoner({ kind: "fake", invoke: async () => {} }),
+      triggers: { onAdd: false, events: false, poll: false },
+      summonTimeout: 300,
+      logger,
+    });
+    perTest.push(async () => {
+      await controller.close();
+      await queue.close();
+      await inner.purge(namespace);
+      await inner.close();
+    });
+    expect(await controller.check()).toMatchObject({ action: "summoned" });
+    return {
+      controller,
+      published: () => published,
+      warnings: () =>
+        events
+          .filter((event) => event.level === "warn")
+          .map((event) => String(event.message)),
+    };
+  }
+
+  it("returns within summonTimeout, with one warn, when a publish never settles", async () => {
+    const { controller, warnings } = await summonedWith(Infinity);
+    const started = performance.now();
+    await controller.close();
+    const took = performance.now() - started;
+    // Bounded: `summonTimeout` is 300 ms here; a generous ceiling for load.
+    expect(took).toBeGreaterThanOrEqual(250);
+    expect(took).toBeLessThan(2_000);
+    expect(
+      warnings().filter((message) => message.includes("still publishing")),
+    ).toHaveLength(1);
+  });
+
+  it("negative control: a publish that settles inside the bound is waited for, with no warn", async () => {
+    const { controller, published, warnings } = await summonedWith(100);
+    expect(published()).toBe(0);
+    await controller.close();
+    expect(published()).toBe(1);
+    expect(
+      warnings().filter((message) => message.includes("still publishing")),
+    ).toEqual([]);
+  });
+});

@@ -838,11 +838,61 @@ export function toEventDto(
 }
 
 /**
- * Keys of a summoner's `describe()` facts that look like credentials. The
- * contract says `describe()` is secret-free; a fact under such a key is
- * dropped anyway, whatever it holds (plan §9.3).
+ * The words that make a fact's key look like a credential, matched against
+ * whole words of the key (see {@link factKeyWords}), singular or plural: so
+ * `apiKey`, `api_key`, `secretArn` and `password` are dropped, and
+ * `keyspace` or `monkey` are not.
  */
-const CREDENTIAL_FACT_KEY = /token|secret|key|password/i;
+const CREDENTIAL_WORD = /^(?:token|secret|key|password)s?$/;
+
+/**
+ * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@` — in a
+ * fact's value: a connection string with its password in it.
+ */
+const URL_USERINFO = /:\/\/[^/\s]*@/;
+
+/** Fact keys that name a machine, served only with `exposeHosts`. */
+const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
+
+/**
+ * A fact key's words, lower case: split at camelCase humps and at `_`, `-`,
+ * `.` and spaces (`secretArn` → `secret`, `arn`; `API_KEY` → `api`, `key`).
+ */
+function factKeyWords(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * Whether a summoner's `describe()` fact may be served. The contract says
+ * `describe()` is secret-free; this drops what would leak if one were not
+ * (plan §9.3): a key with a credential word in it, a value holding a URL
+ * with userinfo, whatever its key, and a `host` or `hostname` fact unless
+ * `exposeHosts` is on, as a worker's `host` is.
+ */
+export function isServableFact(
+  /** The fact's key. */
+  key: string,
+  /** The fact's value; anything but a string is dropped. */
+  value: unknown,
+  /** Whether hosts are served (`serialize.exposeHosts`). */
+  exposeHosts: boolean,
+): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  if (factKeyWords(key).some((word) => CREDENTIAL_WORD.test(word))) {
+    return false;
+  }
+  if (URL_USERINFO.test(value)) {
+    return false;
+  }
+  return exposeHosts || !HOST_FACT_KEYS.has(key.toLowerCase());
+}
 
 /** A summoner's declared capabilities, copied field by field. */
 function toSummonCapabilitiesDto(
@@ -891,12 +941,15 @@ function toSummonCapabilitiesDto(
 /**
  * Shapes a queue's summon status, field by field: a pending attempt's
  * platform `handles` only with `exposeSummonHandles` (a task ARN carries the
- * AWS account id), and the summoner's facts without any whose key looks like
- * a credential.
+ * AWS account id), and the summoner's facts without any that could carry a
+ * secret or a machine's name ({@link isServableFact}).
  */
 export function toSummonStatusDto(
   status: SummonStatus,
-  options: Pick<ResolvedJobsApiSerializers, "exposeSummonHandles">,
+  options: Pick<
+    ResolvedJobsApiSerializers,
+    "exposeSummonHandles" | "exposeHosts"
+  >,
 ): SummonStatusDto {
   const summoner = status.summoner;
   const provider = summoner?.provider;
@@ -930,9 +983,8 @@ export function toSummonStatusDto(
             },
             capabilities: toSummonCapabilitiesDto(summoner.capabilities),
             facts: Object.fromEntries(
-              Object.entries(summoner.facts).filter(
-                ([key, value]) =>
-                  typeof value === "string" && !CREDENTIAL_FACT_KEY.test(key),
+              Object.entries(summoner.facts).filter(([key, value]) =>
+                isServableFact(key, value, options.exposeHosts),
               ),
             ),
           },

@@ -586,8 +586,16 @@ const DEMAND_NOTE = `A few bounded reads per queue on every built-in driver, nev
 /** Errors every route naming a queue can answer with. */
 const QUEUE_ERRORS = ["INVALID_NAME", "QUEUE_NOT_FOUND"] as const;
 
-/** Errors every summon route can answer with. */
-const SUMMON_ERRORS = [...QUEUE_ERRORS, "SUMMON_NOT_CONFIGURED"] as const;
+/**
+ * Errors every summon route can answer with. `DRIVER_ERROR` (503) is the
+ * backend refusing a read — the membership check, or the controller's
+ * marker read — as after `jobs.close()` closed the driver.
+ */
+const SUMMON_ERRORS = [
+  ...QUEUE_ERRORS,
+  "SUMMON_NOT_CONFIGURED",
+  "DRIVER_ERROR",
+] as const;
 
 /** What every summon route says about where its controller comes from, once. */
 const SUMMON_NOTE =

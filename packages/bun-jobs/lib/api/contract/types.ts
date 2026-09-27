@@ -1222,7 +1222,13 @@ export interface SummonLastOutcomeDto {
 export interface SummonStatusDto {
   /** The queue. */
   queue: string;
-  /** Whether the controller runs in the API's process: always `true` today. */
+  /**
+   * Whether the controller runs in the API's process. **Always `true`
+   * today**: status and reset both need a controller in the API's process,
+   * and answer 409 `SUMMON_NOT_CONFIGURED` without one. A read of a queue
+   * whose controller runs elsewhere (`false`, from the shared state alone) is
+   * a recorded follow-up (plan §13.7, "As built").
+   */
   local: boolean;
   /**
    * Whether that controller is inert: it summons nothing, and "summon now"
@@ -1243,8 +1249,11 @@ export interface SummonStatusDto {
     capabilities: SummonCapabilitiesDto;
     /**
      * Secret-free facts from the summoner's `describe()`: a cluster, a
-     * region, an image. Any fact whose key looks like a credential (`token`,
-     * `secret`, `key`, `password`) is dropped whatever the summoner says.
+     * region, an image. Dropped whatever the summoner says: a fact whose key
+     * has a credential word in it (`token`, `secret`, `key`, `password`, as
+     * whole words: `apiKey` and `secretArn` go, `keyspace` stays), one whose
+     * value holds a URL with userinfo (`://user:pass@`), and a `host` or
+     * `hostname` fact unless the server enables `serialize.exposeHosts`.
      */
     facts: Record<string, string>;
   };

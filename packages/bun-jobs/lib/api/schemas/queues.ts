@@ -527,7 +527,7 @@ export const SummonStatusSchema = s.named(
       queue: s.string({ description: "The queue." }),
       local: s.boolean({
         description:
-          "Whether the controller runs in the API's process: always `true` today (elsewhere the route answers 409 `SUMMON_NOT_CONFIGURED`).",
+          "Whether the controller runs in the API's process. Always `true` today: status and reset both need a controller in the API's process, and answer 409 `SUMMON_NOT_CONFIGURED` without one. A read of a queue whose controller runs elsewhere (`false`) is a recorded follow-up.",
       }),
       inert: s.boolean({
         description:
@@ -572,7 +572,7 @@ export const SummonStatusSchema = s.named(
           capabilities: SummonCapabilitiesSchema,
           facts: s.record(s.string(), {
             description:
-              "Secret-free facts from the summoner's `describe()`. A fact whose key looks like a credential (`token`, `secret`, `key`, `password`) is dropped whatever the summoner says.",
+              "Secret-free facts from the summoner's `describe()`. Dropped whatever the summoner says: a fact whose key has a credential word in it (`token`, `secret`, `key`, `password`, as whole words: `apiKey` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.",
           }),
         }),
       ),

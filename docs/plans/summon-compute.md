@@ -3520,16 +3520,24 @@ run-all.ts` in `examples/bun-jobs-ui`.
   - **Reset answers the status after it**; a reset outwritten every time is
     409 `SUMMON_MARKER_CONTENDED` (a second new code).
   - **`GET …/summon` is `queues.read`** (§6.2): it spends nothing, and it is
-    secret-free — facts whose key matches `/token|secret|key|password/i` are
-    dropped (§9.3), and a pending attempt's `handles` go out only with
-    `serialize.exposeSummonHandles`, as `WorkerDto.summon.handle` does.
+    secret-free — a fact is dropped when its key has a credential word in it
+    (`token`, `secret`, `key`, `password`, matched as whole words split at
+    camelCase and `_`/`-`/`.`, so `keyspace` stays; the draft's substring
+    regex also dropped it), when its value holds a URL with userinfo
+    (`://user:pass@`), and, for a `host`/`hostname` fact, unless
+    `exposeHosts` is on (#218 review) — and a pending attempt's `handles`
+    go out only with `serialize.exposeSummonHandles`, as
+    `WorkerDto.summon.handle` does.
   - **The `summon` event has no envelope `id`**: its payload `id` is an
     attempt's, and `queueEvent` would otherwise have copied it, sending the
     event to a job channel (`NOT_JOB_ID_EVENTS` in `shared/events.ts`;
     `reachesJobChannel` excludes it in AsyncAPI). The controller publishes
     each event — `budget-exhausted` too, which the gate emits outside the
     marker write — with its own origin token, in order, and `close()` waits
-    for them; the socket strips `handles` unless `exposeSummonHandles`.
+    for them, for at most `summonTimeout` (then one `warn`: a publish that
+    never settles, as on a Redis client queueing while it reconnects, must
+    not hold `close()`; #218 review); the socket strips `handles` unless
+    `exposeSummonHandles`.
   - **The contract restates the vocabulary** it may not import:
     `SUMMON_OUTCOMES`, `SUMMON_REASONS`, `SUMMON_SKIP_REASONS`, held equal to
     the runtime unions by `api-contract.type-test.ts`. Root exports
@@ -3545,6 +3553,17 @@ run-all.ts` in `examples/bun-jobs-ui`.
     frozen copy of the provenance, so `#report` is untouched: no read or
     allocation on the report path. `WorkerDto.summon.resolvedMode` passes it
     through whatever `exposeSummonHandles` says.
+  - **Follow-up (recorded, not built; #218 review): handles are published
+    raw.** The controller publishes each `summon` event with its `handles`
+    into the backend, and only the management API's socket strips them
+    (`toEventDto`, without `serialize.exposeSummonHandles`). Everything else
+    that reads the backend sees them: an API server from before PR-6 (which
+    forwards unknown events as they are), a `JobsNotifier` listener, a
+    subscribing `BunQueue`, and a host's own `serialize.event` hook, which is
+    handed the raw event. Stripping at the source would need a controller
+    option (e.g. whether to publish handles), a public name the user must
+    approve first; until then the handle's secrecy holds at the API's edge
+    only, and the README says where.
   - **No `/meta` feature flag.** A `features.summon` was tried and dropped: it
     broke the UI package's typecheck (its `MetaDto` fixtures), and nothing
     here needs it; the route answers 404 in `runner` mode and on older

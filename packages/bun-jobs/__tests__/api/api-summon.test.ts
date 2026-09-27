@@ -27,7 +27,7 @@ import {
   QUEUE_EVENT_TYPES,
 } from "../../lib/api/contract/constants";
 import { createJobsApi } from "../../lib/api/createJobsApi";
-import { toEventDto } from "../../lib/api/serialize";
+import { isServableFact, toEventDto } from "../../lib/api/serialize";
 import { reachesJobChannel } from "../../lib/api/spec/asyncapi";
 import { QUEUE_EVENTS } from "../../lib/api/ws/events";
 import {
@@ -82,9 +82,13 @@ type Behaviour = "start" | "throw";
 /**
  * A context on SQLite with a summon controller for queue `work`, every
  * trigger off so only the API runs checks, and a summoner that records its
- * calls and describes itself with two credential-shaped facts.
+ * calls and describes itself with two credential-shaped facts, plus any
+ * `facts` given.
  */
-function summoning(policy: Partial<SummonPolicy> = {}): {
+function summoning(
+  policy: Partial<SummonPolicy> = {},
+  facts: Record<string, string> = {},
+): {
   jobs: BunJobs;
   calls: SummonRequest[];
   behave: (next: Behaviour) => void;
@@ -119,6 +123,7 @@ function summoning(policy: Partial<SummonPolicy> = {}): {
             region: "eu-west-1",
             apiToken: "tok-must-not-leak",
             dbPassword: "pw-must-not-leak",
+            ...facts,
           }),
         }),
         triggers: { onAdd: false, events: false, poll: false },
@@ -220,6 +225,91 @@ describe("GET /queues/{queue}/summon", () => {
     const shown = harness({ jobs, serialize: { exposeSummonHandles: true } });
     const exposed = await shown.call("GET", "/queues/work/summon");
     expect(exposed.body.pending[0].handles).toEqual([ARN]);
+  });
+});
+
+describe("summoner facts", () => {
+  it("drops a key with a credential word in it, as a whole word, and keeps the rest", () => {
+    for (const key of [
+      "apiKey",
+      "api_key",
+      "API_KEY",
+      "api-key",
+      "accessKeyId",
+      "secretArn",
+      "clientSecret",
+      "password",
+      "dbPassword",
+      "token",
+      "tokens",
+      "sessionToken",
+    ]) {
+      expect({ key, served: isServableFact(key, "x", true) }).toEqual({
+        key,
+        served: false,
+      });
+    }
+    // Negative controls: a credential word inside another word is not one.
+    // The substring regex this replaced dropped all but `cluster`.
+    for (const key of ["keyspace", "monkey", "cluster", "tokenizerModel"]) {
+      expect({ key, served: isServableFact(key, "x", true) }).toEqual({
+        key,
+        served: true,
+      });
+    }
+  });
+
+  it("drops a value holding a URL with userinfo, whatever its key", () => {
+    expect(isServableFact("connectionUrl", "postgres://u:p@h/db", true)).toBe(
+      false,
+    );
+    expect(isServableFact("endpoint", "https://tok@api.example", true)).toBe(
+      false,
+    );
+    // Negative control: the same URL without userinfo is served.
+    expect(isServableFact("connectionUrl", "postgres://h/db", true)).toBe(true);
+    expect(isServableFact("contact", "ops@example.com", true)).toBe(true);
+  });
+
+  it("serves a host or hostname fact only with exposeHosts", () => {
+    expect(isServableFact("host", "10.1.2.3", false)).toBe(false);
+    expect(isServableFact("Hostname", "db-1", false)).toBe(false);
+    expect(isServableFact("host", "10.1.2.3", true)).toBe(true);
+    // Negative control: another key with the same value is not a host fact.
+    expect(isServableFact("region", "10.1.2.3", false)).toBe(true);
+  });
+
+  it("applies all three on the status route", async () => {
+    const { jobs } = summoning(
+      {},
+      {
+        connectionUrl: "postgres://u:p@h/db",
+        dashboard: "https://console.example/cluster/jobs",
+        host: "10.1.2.3",
+        keyspace: "jobs",
+      },
+    );
+    const shown = harness({ jobs });
+    const hidden = harness({ jobs, serialize: { exposeHosts: false } });
+    const shownBody = (await shown.call("GET", "/queues/work/summon")).body;
+    const hiddenBody = (await hidden.call("GET", "/queues/work/summon")).body;
+    const withHosts = shownBody.summoner.facts;
+    const withoutHosts = hiddenBody.summoner.facts;
+    const kept = {
+      kind: "fake",
+      cluster: "jobs",
+      region: "eu-west-1",
+      dashboard: "https://console.example/cluster/jobs",
+      keyspace: "jobs",
+    };
+    expect(withHosts).toEqual({ ...kept, host: "10.1.2.3" });
+    expect(withoutHosts).toEqual(kept);
+    // Negative control: the controller reports every one of them.
+    const raw = await jobs[FIND_SUMMON_CONTROLLER]("work")!.status();
+    expect(raw.summoner!.facts).toMatchObject({
+      connectionUrl: "postgres://u:p@h/db",
+      host: "10.1.2.3",
+    });
   });
 });
 
@@ -327,6 +417,22 @@ describe("POST /queues/{queue}/summon", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("needs Content-Type: application/json even with no body, as every mutation does", async () => {
+    const { jobs, calls } = summoning();
+    await backlog(jobs, 1);
+    const h = harness({ jobs });
+    for (const path of ["/queues/work/summon", "/queues/work/summon/reset"]) {
+      const bare = await h.root.fetch(`/admin/jobs${path}`, { method: "POST" });
+      expect({ path, status: bare.status }).toEqual({ path, status: 415 });
+      expect(((await bare.json()) as { code: string }).code).toBe(
+        "UNSUPPORTED_MEDIA_TYPE",
+      );
+    }
+    expect(calls).toHaveLength(0);
+    // Negative control: the same bodyless POST with the header is served.
+    expect((await h.call("POST", "/queues/work/summon")).status).toBe(200);
+  });
+
   it("refuses a body that is not the schema's", async () => {
     const { jobs, calls } = summoning();
     const h = harness({ jobs });
@@ -401,6 +507,47 @@ describe("finding the controller", () => {
     const built = jobs.summonController("work");
     expect(jobs[FIND_SUMMON_CONTROLLER]("work")).toBe(built);
     await built.close();
+  });
+
+  it("documents 409 SUMMON_NOT_CONFIGURED and 503 DRIVER_ERROR, and answers the 503 once the context is closed", async () => {
+    const { jobs } = summoning();
+    const h = harness({ jobs });
+    const spec = (await h.call("GET", "/openapi.json")).body;
+    const operations: Record<string, Record<string, unknown>> = {};
+    for (const methods of Object.values(spec.paths) as Record<
+      string,
+      { operationId?: string; responses: Record<string, unknown> }
+    >[]) {
+      for (const operation of Object.values(methods)) {
+        if (operation.operationId !== undefined) {
+          operations[operation.operationId] = operation.responses;
+        }
+      }
+    }
+    for (const id of ["getQueueSummon", "summonQueue", "resetQueueSummon"]) {
+      const responses = operations[id]!;
+      expect({ id, codes: responses["409"] }).toMatchObject({
+        id,
+        codes: {
+          "x-bun-jobs-codes": expect.arrayContaining(["SUMMON_NOT_CONFIGURED"]),
+        },
+      });
+      expect({ id, codes: responses["503"] }).toMatchObject({
+        id,
+        codes: { "x-bun-jobs-codes": ["DRIVER_ERROR"] },
+      });
+    }
+    expect(
+      (operations.resetQueueSummon!["409"] as { "x-bun-jobs-codes": string[] })[
+        "x-bun-jobs-codes"
+      ],
+    ).toEqual(["SUMMON_MARKER_CONTENDED", "SUMMON_NOT_CONFIGURED"]);
+
+    // And the 503 is real: closing the context closes its driver.
+    await jobs.close();
+    const closed = await h.call("GET", "/queues/work/summon");
+    expect(closed.status).toBe(503);
+    expect(closed.body.code).toBe("DRIVER_ERROR");
   });
 
   it("answers 409 on an API built without jobs", async () => {
