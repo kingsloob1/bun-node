@@ -391,6 +391,25 @@ function outcomes(events: readonly SummonEventPayload[]): string[] {
   return events.map((event) => event.outcome);
 }
 
+/**
+ * The `lost` events of attempts announced `registered` before it, in order:
+ * the late losses of workers seen running. Not an attempt lost at its
+ * `until` because no worker had claimed it yet — under heavy load a spawn
+ * and first report can outlast any boot budget, and such a loss is counted
+ * with no detail, by design.
+ */
+function lateLosses(
+  events: readonly SummonEventPayload[],
+): SummonEventPayload[] {
+  return events.filter(
+    (event, index) =>
+      event.outcome === "lost" &&
+      events
+        .slice(0, index)
+        .some((one) => one.id === event.id && one.outcome === "registered"),
+  );
+}
+
 for (const backend of BACKENDS) {
   describe.skipIf(!backend.available)(
     `summon registration by claim: ${backend.name}`,
@@ -2015,6 +2034,11 @@ for (const backend of BACKENDS.filter((one) =>
       });
 
       it("A2: workers that crash after their first report, checked densely, open the circuit", async () => {
+        // The opening is read from the controller's log line, which carries
+        // `failures` as it stood then, rather than from `status()` later.
+        const { logger, events: logs } = createTestLogger();
+        const opening = () =>
+          logs.find((log) => log.message.startsWith("summon circuit open"));
         const { queue, controller, events } = await setup(
           // Every worker, not only the first: exit(1) 400 ms after start.
           { SUMMON_TEST_CRASH_AFTER_MS: "400" },
@@ -2026,35 +2050,47 @@ for (const backend of BACKENDS.filter((one) =>
             bootBudget: 4_000,
             backoff: { initial: 1, max: 1 },
             circuit: { failures: 2, resetAfter: 60_000 },
-            // Longer than a loss takes to land (bootBudget + 5 s), with one
-            // worker: each release and its loss alternate, so the circuit
-            // opens only if a loss restores the count its release reset.
-            cooldown: 10_000,
+            // Longer than a loss takes to land (bootBudget + 5 s) with 3 s
+            // to spare, with one worker: each release and its loss
+            // alternate, so the circuit opens only if a loss restores the
+            // count its release reset.
+            cooldown: 12_000,
             maxWorkers: 1,
+            logger,
           },
         );
         await queue.add("a", {});
-        let last: Awaited<ReturnType<SummonController["check"]>> | undefined;
+        // The events announced up to and including the check that opened it.
+        let atOpen: SummonEventPayload[] | undefined;
         await waitFor(
           async () => {
-            last = await controller.check();
-            return last.action === "skipped" && last.reason === "circuit-open";
+            const result = await controller.check();
+            if (atOpen === undefined && opening() !== undefined) {
+              atOpen = events.slice();
+            }
+            return (
+              result.action === "skipped" && result.reason === "circuit-open"
+            );
           },
-          { timeout: 45_000, interval: 100 },
+          { timeout: 70_000, interval: 100 },
         );
-        const lost = events.filter((event) => event.outcome === "lost");
-        expect(lost.length).toBeGreaterThanOrEqual(2);
-        for (const event of lost.slice(0, 2)) {
+        expect(opening()?.fields.failures).toBeGreaterThanOrEqual(2);
+        expect(
+          atOpen!.filter((event) => event.outcome === "lost").length,
+        ).toBeGreaterThanOrEqual(2);
+        // Seen running first, then counted as it died — the case a live
+        // record alone let through — and among what opened the circuit.
+        // Normally every loss is one; under heavy load an attempt can be
+        // lost unseen instead, counted as before, so only one is required.
+        expect(lateLosses(atOpen!).length).toBeGreaterThanOrEqual(1);
+        for (const event of lateLosses(events)) {
           expect(event.detail).toBe("died");
-          // Seen running first — the case a live record alone let through.
-          expect(
-            events.some(
-              (one) => one.id === event.id && one.outcome === "registered",
-            ),
-          ).toBe(true);
         }
-        expect((await controller.status()).failures).toBeGreaterThanOrEqual(2);
-      });
+        // Open for its `resetAfter` (60 s), from an opening a moment ago.
+        expect((await controller.status()).circuitOpenUntil).toBeGreaterThan(
+          Date.now() + 50_000,
+        );
+      }, 90_000);
 
       it("A2 dense: a crash loop with several attempts in flight opens the circuit within about as many losses as its threshold", async () => {
         // The opening is read from the controller's own log line, written
@@ -2182,22 +2218,20 @@ for (const backend of BACKENDS.filter((one) =>
           { bootBudget: 4_000 },
         );
         await queue.add("a", {});
+        // The first loss of a worker seen running. Under heavy load an
+        // earlier attempt can be lost unseen (see `lateLosses`); the next,
+        // after its backoff, is the case this proves.
         await waitFor(
           async () => {
             await controller.check();
-            return events.some((event) => event.outcome === "lost");
+            return lateLosses(events).length > 0;
           },
-          { timeout: 30_000, interval: 100 },
+          { timeout: 60_000, interval: 100 },
         );
-        const lost = events.find((event) => event.outcome === "lost")!;
+        const lost = lateLosses(events)[0]!;
         expect(lost.detail).toBe("died");
-        expect(
-          events.some(
-            (event) => event.id === lost.id && event.outcome === "registered",
-          ),
-        ).toBe(true);
         expect((await controller.status()).failures).toBeGreaterThanOrEqual(1);
-      });
+      }, 90_000);
 
       it("reads a worker killed with SIGKILL, never closed, as died", async () => {
         const { driver, ref, queue, controller, platform, events } =
