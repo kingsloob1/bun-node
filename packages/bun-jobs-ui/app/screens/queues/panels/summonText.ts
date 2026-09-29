@@ -54,12 +54,12 @@ const OUTCOMES: Readonly<Record<SummonOutcomeKind, OutcomeText>> = {
   unavailable: {
     label: "Unavailable",
     tone: "warning",
-    hint: "The platform had no capacity to start one.",
+    hint: "The platform could not start one now: no capacity, a throttled call or a spent quota. It counts towards the backoff and the circuit, except a throttle, which only waits the platform's retry time.",
   },
   failed: {
     label: "Failed",
     tone: "danger",
-    hint: "The summoner's call failed. Counts towards the backoff and the circuit.",
+    hint: "The summoner's call failed. Counts towards the backoff and the circuit, and an auth or misconfiguration error opens the circuit at once. A call that timed out stays on its way, and counts only if no worker registers in time.",
   },
   lost: {
     label: "Lost",
