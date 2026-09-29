@@ -3176,7 +3176,7 @@ Examples:
 | `maxQueuedRuns` | `number` | `100` | Trigger queue cap. |
 | `maxConcurrency` | `number` | unlimited | Concurrency cap in `parallel` mode. |
 | `timeout` | `number` | `0` (none) | Per-run timeout in ms. |
-| `closeTimeout` | `number` | `5000` | Grace after asking a run to stop, before `SIGTERM`. A `child-process` child exits itself 500 ms before it ends, so 500 or less leaves a cooperative handler no time to unwind. |
+| `closeTimeout` | `number` | `5000` | Grace after asking a run to stop, before `SIGTERM`. A `child-process` child exits itself 500 ms before it ends, so 500 or less leaves a cooperative handler no time to unwind. A child that stops itself exits `143`, including one closed before its handler started (the handler is then never called); a cooperative unwind exits `0`. |
 | `killTimeout` | `number` | `2000` | Grace after `SIGTERM`, before `SIGKILL`. |
 | `waitToExit` | `boolean` | `true` | Keep the process alive for the schedule. `false` unrefs timers and children. |
 | `lockTtl` | `number` | `30000` | How long the single-run lock lives. |

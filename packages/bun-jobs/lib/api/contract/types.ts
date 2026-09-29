@@ -2756,7 +2756,11 @@ export interface RunRecordDto {
   durationMs?: number;
   /** Its outcome, or `"running"`. */
   status: "running" | "success" | "failed" | "timeout" | "killed";
-  /** Exit code of a spawned process. */
+  /**
+   * Exit code of a spawned process. `143`: it stopped itself after a close,
+   * including before its handler started (the handler was then never called);
+   * a cooperative unwind exits `0`.
+   */
   exitCode?: number | null;
   /** Signal that ended a spawned process. */
   signal?: string | null;

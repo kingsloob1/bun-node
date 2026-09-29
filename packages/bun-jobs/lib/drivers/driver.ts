@@ -205,7 +205,12 @@ export interface RunRecord {
   durationMs?: number;
   /** Outcome; `"running"` until it settles. */
   status: RunStatus;
-  /** The child's exit code, when it had one. */
+  /**
+   * The child's exit code, when it had one. `143` means the child stopped
+   * itself after a close (a `timeout` or a non-forced kill or stop), including
+   * one that arrived before its handler started, in which case the handler was
+   * never called; a cooperative handler that unwinds after the close exits `0`.
+   */
   exitCode?: number | null;
   /** The signal that killed the child, when one did. */
   signal?: string | null;
