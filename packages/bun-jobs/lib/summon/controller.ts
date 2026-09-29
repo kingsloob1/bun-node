@@ -11,11 +11,13 @@ import type { MarkerRead } from "./marker";
 import type {
   PendingSummon,
   ProviderCallContext,
+  SummonCapabilities,
   SummonCheckResult,
   SummonControllerEvents,
   SummonControllerOptions,
   Summoner,
   SummonEventPayload,
+  SummonFacet,
   SummonMarker,
   SummonOutcomeKind,
   SummonReason,
@@ -32,6 +34,10 @@ import {
   readDemand,
   supportsWorkers,
 } from "../drivers/index";
+import { facetReadiness, providerSecrets } from "../provider/configure";
+import { providerCallContext } from "../provider/context";
+import { redactingLogger } from "../provider/redact";
+import { registerProvider } from "../provider/version";
 import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
 import { MAX_TIMER_MS } from "../queue/BunQueueWorker";
 import { setReservedState } from "../queue/windows";
@@ -50,7 +56,7 @@ import {
   sweepSummonClaims,
   tallySummonClaim,
 } from "./claim";
-import { toSummoner } from "./define";
+import { DEFAULT_BOOT_BUDGET, toSummoner } from "./define";
 import {
   attemptId,
   backoffFor,
@@ -212,6 +218,9 @@ function errorDetail(error: unknown): string {
   if (error instanceof SummonTimeoutError) {
     return "timeout";
   }
+  if (error instanceof ProviderNotReadyError) {
+    return error.detail;
+  }
   if (error instanceof Error) {
     const code = (error as { code?: unknown }).code;
     return typeof code === "string" && code.length > 0 ? code : error.name;
@@ -226,6 +235,46 @@ class SummonTimeoutError extends Error {
     this.name = "SummonTimeoutError";
   }
 }
+
+/** The detail of an attempt whose provider's `ready` outlasted `summonTimeout`. */
+const READY_TIMED_OUT = "ready timed out";
+
+/**
+ * The summoner's provider was not ready for this attempt: its asynchronous
+ * config validation failed, or did not settle within `summonTimeout`. The
+ * attempt is recorded as `failed` with `detail`; the summoner is not called.
+ */
+class ProviderNotReadyError extends Error {
+  constructor(
+    /** The attempt's detail: `"ready timed out"`, or the failure's code or name. */
+    readonly detail: string,
+    /** What validation threw, when it threw. */
+    cause?: unknown,
+  ) {
+    super(
+      detail === READY_TIMED_OUT
+        ? "the summoner's provider did not become ready in time"
+        : "the summoner's provider is not ready: its config validation failed",
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "ProviderNotReadyError";
+  }
+}
+
+/**
+ * What the controller assumes of a provider whose config is still validating
+ * (asynchronously), until it is: `defineSummoner`'s defaults. Only the steps
+ * before the call read them; the call itself waits for the real facet.
+ */
+const PROVISIONAL_CAPABILITIES: SummonCapabilities = Object.freeze({
+  style: "launch",
+  dedupe: Object.freeze({ kind: "none" as const }),
+  passes: "argv",
+  bootBudgetMs: DEFAULT_BOOT_BUDGET,
+  shutdown: Object.freeze({ signal: "SIGTERM" as const, graceMs: 10_000 }),
+  maxLifetimeMs: null,
+  enforcesLifetime: false,
+});
 
 /** Every option resolved, with its default. */
 interface ResolvedPolicy {
@@ -382,10 +431,32 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   readonly #logger: Logger;
   /** The summoner, normalised. */
   readonly #summoner: Summoner;
+  /** The options, kept to resolve the policy again when a provider's facet is adopted late. */
+  readonly #options: SummonControllerOptions;
+  /**
+   * The facet the controller calls: the summoner's, or — for a provider whose
+   * config is still validating — its stand-in, never called before adoption.
+   */
+  #facet!: SummonFacet;
+  /** The facet's capabilities, or provisional ones until a late facet is adopted. */
+  #capabilities!: SummonCapabilities;
+  /**
+   * Set while the summoner's provider validates its config asynchronously:
+   * waits for its real facet. Cleared once adopted.
+   */
+  #pendingFacet: (() => Promise<SummonFacet>) | undefined;
+  /**
+   * A `ConfigError` the late-adopted facet's capabilities raised (a scale
+   * style without `release`, a lifetime over the platform's cap, …): as
+   * permanent as at construction, so every check throws it.
+   */
+  #adoptError: unknown;
+  /** Whether the current run of not-ready attempts has been warned about. */
+  #warnedNotReady = false;
   /** The policy with its defaults. */
-  readonly #policy: ResolvedPolicy;
+  #policy!: ResolvedPolicy;
   /** Turns an attempt id into the platform's dedupe key. */
-  readonly #dedupeKey: (id: string) => string;
+  #dedupeKey!: (id: string) => string;
   /** Why the controller is inert, or `undefined` while it is live. */
   #inertReason: "summoned-process" | "newer-marker" | undefined;
   /**
@@ -393,7 +464,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * `maxWorkers × jobsPerWorker` when that is finite and larger (§6.4 D3), so
    * a capped `outstanding` can never under-state how many workers are wanted.
    */
-  readonly #demandCap: number;
+  #demandCap!: number;
   /** Whether the last events subscription failed, so the next poll tick retries it. */
   #subscribeFailed = false;
   /** Whether the current run of subscription failures has been warned about. */
@@ -485,40 +556,25 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
 
     this.#summoner = toSummoner(options.summoner);
-    const capabilities = this.#summoner.summon.capabilities;
-    if (
-      capabilities.style === "scale" &&
-      typeof this.#summoner.summon.release !== "function"
-    ) {
-      throw new ConfigError(
-        "A scale-style summoner needs release(): nothing else can set its count back to zero",
-        { kind: this.#summoner.provider.kind },
-      );
+    this.#options = options;
+    // A provider whose config validates asynchronously has no facet yet: the
+    // controller runs on provisional capabilities, and adopts the real ones
+    // when its first attempt finds the config ready.
+    const readiness = facetReadiness(this.#summoner.summon);
+    const facet = readiness.settled();
+    if (facet === undefined) {
+      this.#pendingFacet = readiness.settle;
+      this.#bind(this.#summoner.summon, PROVISIONAL_CAPABILITIES);
+    } else {
+      this.#bind(facet, facet.capabilities);
     }
-    try {
-      this.#dedupeKey = dedupeKeyFor(capabilities.dedupe);
-    } catch (error) {
-      throw new ConfigError(
-        "The summoner's dedupe charset is not a valid character class",
-        { error: String(error) },
-      );
-    }
-
-    this.#policy = this.#resolve(options);
     if (!driver.capabilities.multiHost) {
       this.#logger.warn(
         "this driver works on one host only: a summoned worker must run on this host to reach it",
         { driver: driver.name, kind: this.#summoner.provider.kind },
       );
     }
-
-    const product = this.#policy.maxWorkers * this.#policy.jobsPerWorker;
-    this.#demandCap = Number.isFinite(product)
-      ? Math.max(
-          DEFAULT_DEMAND_CAP,
-          Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
-        )
-      : DEFAULT_DEMAND_CAP;
+    registerProvider(this.#summoner.provider, this.#logger);
 
     if (options.fromSummoned !== true && inSummonedProcess()) {
       this.#inertReason = "summoned-process";
@@ -545,9 +601,50 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
   }
 
+  /**
+   * Reads a facet's capabilities into the controller: the checks that need
+   * them, the dedupe key, the policy and the demand cap. Assigns nothing
+   * until every check has passed.
+   *
+   * @throws {ConfigError} for a scale style without `release`, a dedupe
+   *   charset that is not a character class, or a policy the capabilities
+   *   rule out (see `#resolve`).
+   */
+  #bind(facet: SummonFacet, capabilities: SummonCapabilities): void {
+    if (capabilities.style === "scale" && typeof facet.release !== "function") {
+      throw new ConfigError(
+        "A scale-style summoner needs release(): nothing else can set its count back to zero",
+        { kind: this.#summoner.provider.kind },
+      );
+    }
+    let dedupeKey: (id: string) => string;
+    try {
+      dedupeKey = dedupeKeyFor(capabilities.dedupe);
+    } catch (error) {
+      throw new ConfigError(
+        "The summoner's dedupe charset is not a valid character class",
+        { error: String(error) },
+      );
+    }
+    const policy = this.#resolve(this.#options, capabilities);
+    const product = policy.maxWorkers * policy.jobsPerWorker;
+    this.#facet = facet;
+    this.#capabilities = capabilities;
+    this.#dedupeKey = dedupeKey;
+    this.#policy = policy;
+    this.#demandCap = Number.isFinite(product)
+      ? Math.max(
+          DEFAULT_DEMAND_CAP,
+          Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
+        )
+      : DEFAULT_DEMAND_CAP;
+  }
+
   /** Every option, checked, with its default. */
-  #resolve(options: SummonControllerOptions): ResolvedPolicy {
-    const capabilities = this.#summoner.summon.capabilities;
+  #resolve(
+    options: SummonControllerOptions,
+    capabilities: SummonCapabilities,
+  ): ResolvedPolicy {
     const triggers = options.triggers ?? {};
     const poll =
       triggers.poll === false
@@ -889,6 +986,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (this.inert) {
       return { action: "skipped", reason: "inert" };
     }
+    if (this.#adoptError !== undefined) {
+      throw this.#adoptError;
+    }
     await this.#connect();
     const now = Date.now();
     const { demand, workers, read } = await this.#read(now);
@@ -909,7 +1009,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
 
     const { marker, version } = read;
-    const capabilities = this.#summoner.summon.capabilities;
+    const capabilities = this.#capabilities;
     const events: SummonEventPayload[] = [];
     const lost: PendingSummon[] = [];
     let changed = read.unreadable;
@@ -1116,6 +1216,20 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       return { action: "skipped", reason: gate, demand };
     }
 
+    // Step 5b: a provider whose config validates asynchronously must be ready
+    // before its first call. Ready: adopt its facet and check again, on its
+    // real capabilities. Not ready: the attempt below fails without a call.
+    let notReady: ProviderNotReadyError | undefined;
+    if (this.#pendingFacet !== undefined) {
+      const facet = await this.#awaitFacet(this.#pendingFacet);
+      if (facet instanceof ProviderNotReadyError) {
+        notReady = facet;
+      } else {
+        this.#adopt(facet);
+        return await this.#check(reason, force);
+      }
+    }
+
     // Step 6: claim. Nothing has been called yet, so losing costs nothing.
     const count = Math.min(
       want,
@@ -1156,7 +1270,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // Claim-once for several workers: they all start with this id, so the
     // claim is opened for `count` of them before any can start. One worker
     // needs nothing — its claim is created by the worker itself.
-    if (count > 1) {
+    if (count > 1 && notReady === undefined) {
       try {
         await openSummonClaim(this.#driver, this.#ref, id, count, now);
       } catch (error) {
@@ -1173,10 +1287,39 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       }
     }
 
-    // Step 7: call.
+    // Step 7: call — unless the provider was not ready, which fails the
+    // attempt without one.
+    let result: SummonResult | undefined;
+    let failure: unknown = notReady;
+    if (notReady === undefined) {
+      [result, failure] = await this.#summon(
+        id,
+        count,
+        counted.length + onTheirWay + count,
+        kind,
+        demand,
+        reason,
+      );
+    }
+
+    // Step 8: record.
+    const outcome = await this.#record(id, count, reason, result, failure);
+    return { action: "summoned", id, outcome, demand };
+  }
+
+  /** Step 7: builds the request and calls the facet. Answers its result, or what it threw. */
+  async #summon(
+    id: string,
+    count: number,
+    target: number,
+    kind: string,
+    demand: QueueDemand,
+    reason: SummonReason,
+  ): Promise<[SummonResult | undefined, unknown]> {
+    const capabilities = this.#capabilities;
     const request: SummonRequest = {
       ...wireRequest(
-        { id, count, target: counted.length + onTheirWay + count },
+        { id, count, target },
         {
           namespace: this.namespace,
           queue: this.queue,
@@ -1192,20 +1335,86 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       reason,
     };
 
-    let result: SummonResult | undefined;
-    let failure: unknown;
+    const facet = this.#facet;
     try {
-      result = await this.#call(
-        async (context) => await this.#summoner.summon.summon(request, context),
-        id,
-      );
+      return [
+        await this.#call(
+          async (context) => await facet.summon(request, context),
+          id,
+        ),
+        undefined,
+      ];
     } catch (error) {
-      failure = error;
+      return [undefined, error];
     }
+  }
 
-    // Step 8: record.
-    const outcome = await this.#record(id, count, reason, result, failure);
-    return { action: "summoned", id, outcome, demand };
+  /**
+   * Waits, at most `summonTimeout`, for the real facet of a provider whose
+   * config validates asynchronously. A validation in flight is shared (the
+   * provider's own); one that failed is retried. Not ready — a rejection or
+   * the timeout — answers the error the attempt fails with, and logs one
+   * `warn` per run of such failures.
+   */
+  async #awaitFacet(
+    settle: () => Promise<SummonFacet>,
+  ): Promise<SummonFacet | ProviderNotReadyError> {
+    const ms = this.#policy.summonTimeout;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new ProviderNotReadyError(READY_TIMED_OUT)),
+        ms,
+      );
+    });
+    try {
+      const facet = await Promise.race([settle(), timeout]);
+      this.#warnedNotReady = false;
+      return facet;
+    } catch (error) {
+      const failure =
+        error instanceof ProviderNotReadyError
+          ? error
+          : new ProviderNotReadyError(errorDetail(error), error);
+      if (!this.#warnedNotReady) {
+        this.#warnedNotReady = true;
+        this.#providerLogger().warn(
+          "the summoner's provider is not ready: its config validation failed or has not finished; each attempt fails without a call until it is (backoff and circuit apply)",
+          {
+            kind: this.#summoner.provider.kind,
+            provider: this.#summoner.provider.name,
+            detail: failure.detail,
+            error: failure.cause ?? failure,
+          },
+        );
+      }
+      return failure;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Adopts a late provider's real facet: its capabilities are read as at
+   * construction. A `ConfigError` then is permanent: kept, and thrown by
+   * this check and every later one.
+   */
+  #adopt(facet: SummonFacet): void {
+    this.#pendingFacet = undefined;
+    try {
+      this.#bind(facet, facet.capabilities);
+    } catch (error) {
+      this.#adoptError = error;
+      throw error;
+    }
+  }
+
+  /** The controller's logger, redacting the summoner's declared secrets and credential shapes. */
+  #providerLogger(bindings?: Record<string, unknown>): Logger {
+    return redactingLogger(
+      bindings === undefined ? this.#logger : this.#logger.child(bindings),
+      providerSecrets(this.#summoner),
+    );
   }
 
   /**
@@ -1421,8 +1630,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * them lost, so only one controller asks.
    */
   async #explainLost(lost: readonly PendingSummon[]): Promise<void> {
-    const facet = this.#summoner.summon;
-    if (facet.status === undefined) {
+    const facet = this.#facet;
+    if (this.#pendingFacet !== undefined || facet.status === undefined) {
       return;
     }
     for (const attempt of lost) {
@@ -1474,12 +1683,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         reject(error);
       }, ms);
     });
-    const context: ProviderCallContext = {
-      signal: abort.signal,
-      logger: this.#logger.child(id === undefined ? {} : { attempt: id }),
-      fetch: globalThis.fetch,
-      now: Date.now,
-    };
+    const context: ProviderCallContext = providerCallContext(
+      abort.signal,
+      this.#providerLogger(id === undefined ? {} : { attempt: id }),
+    );
     try {
       return await Promise.race([fn(context), timeout]);
     } finally {
@@ -1583,7 +1790,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
 
-    if (failure !== undefined) {
+    // A provider that was not ready was warned about once, not per attempt.
+    if (failure !== undefined && !(failure instanceof ProviderNotReadyError)) {
       this.#logger.error("summoner call failed", {
         id,
         kind,
@@ -1606,7 +1814,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
   /** Scale style: sets the platform's count to zero. */
   async #release(): Promise<void> {
-    const facet = this.#summoner.summon;
+    const facet = this.#facet;
     await this.#call(
       async (context) =>
         await facet.release!(
@@ -1782,10 +1990,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     /** The marker's pending and watched attempts. */
     pending: readonly { id: string }[],
   ): Promise<Map<string, SummonClaim | undefined>> {
-    if (
-      pending.length === 0 ||
-      this.#summoner.summon.capabilities.passes === "none"
-    ) {
+    if (pending.length === 0 || this.#capabilities.passes === "none") {
       return new Map();
     }
     return await readSummonClaims(
@@ -1841,11 +2046,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(this.#inertReason === undefined
         ? {}
         : { inertReason: this.#inertReason }),
-      summoner: {
-        provider: this.#summoner.provider,
-        capabilities: this.#summoner.summon.capabilities,
-        facts: this.#summoner.describe(),
-      },
+      // Until a late provider's facet is adopted its capabilities are
+      // unknown, so the summoner is left out rather than shown provisional.
+      ...(this.#pendingFacet !== undefined || this.#adoptError !== undefined
+        ? {}
+        : {
+            summoner: {
+              provider: this.#summoner.provider,
+              capabilities: this.#capabilities,
+              facts: this.#summoner.describe(),
+            },
+          }),
       pending: marker.pending,
       failures: marker.failures,
       ...(marker.backoffUntil !== undefined && marker.backoffUntil > now
