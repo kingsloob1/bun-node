@@ -3,12 +3,14 @@ import type {
   ParentToChild,
   SerializableContext,
 } from "../lib/runner/protocol";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import process from "node:process";
 import { serializeError } from "@kingsleyweb/bun-common";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { runChildProtocol } from "../lib/runner/bootstrap/child-runtime";
-import { JOB_CHANNEL } from "../lib/runner/protocol";
-import { makeJob } from "./helpers";
+import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../lib/runner/protocol";
+import { makeJob, makeTmpDir, waitFor } from "./helpers";
 
 /**
  * The child half of the protocol, driven in this process through a fake
@@ -158,5 +160,182 @@ describe("child runtime: job channel replies", () => {
         },
       },
     });
+  });
+});
+
+describe("child runtime: a close before the handler is called", () => {
+  /**
+   * Both entry points — the spawned child and the worker — run this same
+   * protocol, so these cases hold for both modes. They are the only ones that
+   * can put a *timeout's* close ahead of `start` in a worker for certain: a
+   * worker cannot be held before it boots the way `gated-start.sh` holds a
+   * child, while here the test is the parent and chooses the order.
+   */
+  const cleanups: (() => Promise<void> | void)[] = [];
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) {
+      await cleanup();
+    }
+  });
+
+  /** A child runtime driven by the test, with `slow-import.ts` as its handler. */
+  async function harness() {
+    const dir = await makeTmpDir("child-close");
+    cleanups.push(dir.cleanup);
+    const importing = join(dir.path, "importing");
+    const gate = join(dir.path, "gate");
+    const ready = join(dir.path, "ready");
+
+    // The module reads these at import, from this process.
+    process.env.RUNNER_TEST_IMPORTING = importing;
+    process.env.RUNNER_TEST_GATE = gate;
+    cleanups.push(() => {
+      delete process.env.RUNNER_TEST_IMPORTING;
+      delete process.env.RUNNER_TEST_GATE;
+    });
+
+    const runId = "run-1";
+    const startedAt = Date.now();
+    const ctx: SerializableContext = {
+      runId,
+      runnerId: "early",
+      runnerName: "early",
+      namespace: "test",
+      attempt: 1,
+      source: "manual",
+      mode: "worker-thread",
+      startedAt,
+      deadline: startedAt + 250,
+      // A fresh module, so its import really happens here — this process has
+      // no other way to forget one — and the handler finishes on its own, so
+      // a runtime that ignores the close still settles.
+      args: { ms: 100, ready },
+      file: `${handler("slow-import")}?t=${crypto.randomUUID()}`,
+      closeTimeout: 10_000,
+      forwardLogs: false,
+    };
+
+    const sent: ChildToParent[] = [];
+    const exits: number[] = [];
+    const listeners: ((message: ParentToChild) => void)[] = [];
+    let settle: (message: Settled) => void = () => {};
+    const settled = new Promise<Settled>((resolve) => {
+      settle = resolve;
+    });
+
+    runChildProtocol({
+      onMessage: (listener) => {
+        listeners.push(listener);
+      },
+      send: (message) => {
+        sent.push(message);
+        if (message.t === "done" || message.t === "error") {
+          settle(message);
+        }
+      },
+      exit: (code) => {
+        exits.push(code);
+      },
+    });
+
+    /** Delivers a message as a transport would: on a later turn. */
+    const deliver = async (message: ParentToChild) => {
+      await new Promise<void>((resolve) => {
+        queueMicrotask(() => {
+          for (const listener of [...listeners]) {
+            listener(message);
+          }
+          resolve();
+        });
+      });
+    };
+
+    return {
+      ctx,
+      sent,
+      exits,
+      settled,
+      importing,
+      gate,
+      ready,
+      start: () => deliver({ t: "start", runId, ctx }),
+      close: (reason: "timeout" | "kill") =>
+        deliver({ t: "close", runId, reason }),
+    };
+  }
+
+  it("never imports the handler when a kill's close came before `start`", async () => {
+    const child = await harness();
+    // The gate stands open: a runtime that dropped the close imports and runs
+    // the handler to its end, and fails the assertions below rather than
+    // hanging on the gate.
+    await Bun.write(child.gate, "");
+
+    await child.close("kill");
+    await child.start();
+    const settled = await child.settled;
+
+    expect(settled.t).toBe("error");
+    if (settled.t === "error") {
+      expect(settled.error.name).toBe("RunKilledError");
+      expect(settled.error.message).toBe("Run was killed: kill");
+    }
+    expect(child.exits).toEqual([CLOSE_EXIT_CODE]);
+    // Nothing between `ready` and the result: no `started`, no import.
+    expect(child.sent.map((message) => message.t)).toEqual(["ready", "error"]);
+    expect(existsSync(child.importing)).toBe(false);
+    expect(existsSync(child.ready)).toBe(false);
+  });
+
+  it("reports a timeout as one when its close came before `start`", async () => {
+    const child = await harness();
+    await Bun.write(child.gate, "");
+
+    await child.close("timeout");
+    await child.start();
+    const settled = await child.settled;
+
+    expect(settled.t).toBe("error");
+    if (settled.t === "error") {
+      expect(settled.error.name).toBe("JobTimeoutError");
+      expect(settled.error.message).toBe("Timed out after 250ms");
+    }
+    expect(child.exits).toEqual([CLOSE_EXIT_CODE]);
+    expect(existsSync(child.importing)).toBe(false);
+  });
+
+  it("skips the handler when a timeout's close lands mid-import", async () => {
+    const child = await harness();
+
+    await child.start();
+    await waitFor(() => existsSync(child.importing), {
+      message: "the handler's import never began",
+    });
+    await child.close("timeout");
+    await Bun.write(child.gate, "");
+    const settled = await child.settled;
+
+    expect(settled.t).toBe("error");
+    if (settled.t === "error") {
+      expect(settled.error.name).toBe("JobTimeoutError");
+    }
+    expect(child.exits).toEqual([CLOSE_EXIT_CODE]);
+    // Its module was evaluated; the handler it exports was never called.
+    expect(existsSync(child.ready)).toBe(false);
+  });
+
+  it("still calls the handler when no close came", async () => {
+    // The control: the same harness, unclosed, runs the handler to the end.
+    const child = await harness();
+
+    await child.start();
+    await waitFor(() => existsSync(child.importing));
+    await Bun.write(child.gate, "");
+    const settled = await child.settled;
+
+    expect(settled).toMatchObject({ t: "done", result: "finished" });
+    expect(child.exits).toEqual([0]);
+    expect(existsSync(child.ready)).toBe(true);
   });
 });

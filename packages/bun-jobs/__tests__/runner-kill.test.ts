@@ -1,10 +1,11 @@
 import type { BunRunnerOptions, ExecutionMode, RunRecord } from "../lib/index";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunRunner, MemoryDriver, RunKilledError } from "../lib/index";
-import { testNamespace, waitFor } from "./helpers";
+import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 
 /**
  * Stopping a run that does not want to stop.
@@ -21,11 +22,15 @@ const fixture = (name: string) =>
 
 const started: BunRunner<any, any>[] = [];
 
+/** Temp directories to remove after each test, however it ended. */
+const cleanups: (() => Promise<void>)[] = [];
+
 afterEach(async () => {
   await Promise.allSettled(
     started.map((runner) => runner.stop({ force: true })),
   );
   started.length = 0;
+  await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
 function makeRunner(
@@ -59,6 +64,29 @@ function settled(runner: BunRunner<any, any>): Promise<RunRecord> {
   });
 }
 
+/**
+ * A path the handler writes once it is running, and a wait for it.
+ *
+ * A run's `timeout` counts from the spawn, and a child's start-up — Bun,
+ * then the handler module's imports — measured 170ms to 1.7s under load. So
+ * no fixed delay says the handler is running; the handler saying so does.
+ */
+async function readiness() {
+  const dir = await makeTmpDir("runner-kill");
+  cleanups.push(dir.cleanup);
+  const path = join(dir.path, "ready");
+  return {
+    /** The file the handler writes; pass it as the run's `ready` argument. */
+    path,
+    /** Resolves once the handler has written it. */
+    wait: () =>
+      waitFor(() => existsSync(path), {
+        timeout: 15_000,
+        message: "the handler never reported it was running",
+      }),
+  };
+}
+
 /** Whether a process id is still alive. */
 function isAlive(pid: number): boolean {
   try {
@@ -71,23 +99,59 @@ function isAlive(pid: number): boolean {
 
 describe("kill escalation: spawn", () => {
   it("SIGKILLs a child that catches SIGTERM and blocks its loop", async () => {
+    const ready = await readiness();
     const runner = makeRunner("child-process", {
-      timeout: 100,
       closeTimeout: 150,
       killTimeout: 150,
-      args: { ms: 10_000 },
+      args: { ms: 10_000, ready: ready.path },
     });
     await runner.start();
 
     const outcome = await runner.trigger();
+    const record = settled(runner);
+    expect(outcome.outcome).toBe("started");
+
+    // The SIGTERM handler is installed and the loop is blocked: now neither
+    // the close nor SIGTERM can end it.
+    await ready.wait();
+    await runner.kill(
+      outcome.outcome === "started" ? outcome.runId : undefined,
+      { reason: "test" },
+    );
+
+    const finished = await record;
+    expect(finished.status).toBe("killed");
+    expect(finished.signal).toBe("SIGKILL");
+
+    const pid = finished.pid;
+    expect(pid).toBeGreaterThan(0);
+    await waitFor(() => !isAlive(pid!), {
+      message: "the child survived the escalation",
+    });
+  }, 20_000);
+
+  it("stays a timeout when a signal is what ends it", async () => {
+    const ready = await readiness();
+    const runner = makeRunner("child-process", {
+      // Past the child's start-up (1.7s at worst, measured under load), so the
+      // handler is running and blocked when the deadline comes: a deadline
+      // that beat `start` would end the run with no signal at all.
+      timeout: 3_000,
+      closeTimeout: 150,
+      killTimeout: 150,
+      args: { ms: 20_000, ready: ready.path },
+    });
+    await runner.start();
+
+    await runner.trigger();
     const record = await settled(runner);
 
-    expect(outcome.outcome).toBe("started");
+    // The premise: the handler was running, SIGTERM handler installed.
+    expect(existsSync(ready.path)).toBe(true);
     // The deadline is what it missed, so the outcome stays a timeout even
     // though a signal is what ended it.
     expect(record.status).toBe("timeout");
     expect(record.signal).toBe("SIGKILL");
-
     const pid = record.pid;
     expect(pid).toBeGreaterThan(0);
     await waitFor(() => !isAlive(pid!), {
@@ -99,9 +163,9 @@ describe("kill escalation: spawn", () => {
     const runner = makeRunner("child-process", {
       file: fixture("graceful"),
       timeout: 100,
-      closeTimeout: 2000,
-      killTimeout: 2000,
-      args: { ms: 10_000 },
+      closeTimeout: 10_000,
+      killTimeout: 10_000,
+      args: { ms: 30_000 },
     });
     await runner.start();
 
@@ -110,9 +174,12 @@ describe("kill escalation: spawn", () => {
     const record = await settled(runner);
 
     expect(record.status).toBe("timeout");
-    // It exited itself: no signal, and long before SIGTERM was due.
+    // It exited itself — the handler unwound, or was never called because the
+    // deadline beat its `start` or its import — so no signal, and well before
+    // SIGTERM was due. Which of those depends on the machine's load, so the
+    // bound is the close window itself, not a guess at the start-up time.
     expect(record.signal).toBeNull();
-    expect(Date.now() - started).toBeLessThan(1500);
+    expect(Date.now() - started).toBeLessThan(10_000);
   }, 20_000);
 
   it("kills immediately when forced", async () => {
@@ -249,11 +316,12 @@ describe("the reason a run was killed", () => {
     mode: ExecutionMode,
     reason: string | undefined,
   ) {
+    const ready = await readiness();
     const runner = makeRunner(mode, {
       file: fixture("graceful"),
       closeTimeout: 2_000,
       killTimeout: 2_000,
-      args: { ms: 10_000 },
+      args: { ms: 10_000, ready: ready.path },
     });
     await runner.start();
 
@@ -269,8 +337,10 @@ describe("the reason a run was killed", () => {
     const outcome = await runner.trigger();
     const runId = outcome.outcome === "started" ? outcome.runId : undefined;
     expect(runId).toBeDefined();
-    // Long enough for the handler to be running and watching its signal.
-    await Bun.sleep(300);
+    // The handler is running and watching its signal: the kill is one after
+    // start, whatever the machine's load. (A fixed 300ms sleep was shorter
+    // than the handler's import under load.)
+    await ready.wait();
 
     await runner.kill(runId, reason === undefined ? undefined : { reason });
 

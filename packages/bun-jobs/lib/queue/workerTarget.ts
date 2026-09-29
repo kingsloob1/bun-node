@@ -136,6 +136,11 @@ export interface ChildProcessTarget {
    * After the worker asks an attempt to stop, how long the child has to
    * unwind before it is sent `SIGTERM`, in milliseconds. Defaults to 5000
    * (`DEFAULT_CLOSE_TIMEOUT`).
+   *
+   * The child itself exits 500 ms before this runs out, so that `SIGTERM` is
+   * a fallback rather than the normal path. A value of 500 or less therefore
+   * leaves a cooperative handler no time to unwind: the child exits as soon
+   * as it is asked to stop.
    */
   closeTimeout?: number;
   /**

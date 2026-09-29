@@ -74,7 +74,11 @@ export interface SerializableContext<TArgs = unknown> {
   collationChecked?: string[];
   /** The handler file to import. */
   file: string;
-  /** How long the child has to unwind after `close` before it exits itself. */
+  /**
+   * The run's `closeTimeout`. A spawned child exits itself 500 ms
+   * (`SELF_EXIT_MARGIN`) before it runs out, so a value of 500 or less gives
+   * its handler no time to unwind; a worker cannot exit itself.
+   */
   closeTimeout: number;
   /** Whether the child's logger should be forwarded to the parent. */
   forwardLogs: boolean;
