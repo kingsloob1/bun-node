@@ -1274,6 +1274,52 @@ async function escalate(
     forced.killedAfter < 20_000,
     forced.killedAfter,
   );
+
+  // A kill that arrives before the handler is called — the child still
+  // booting, or its module still importing — ends the run without calling
+  // it, and just as a later kill would: `killed`, the reason, a
+  // RunKilledError. The child stops itself, so `exitCode` is 143 and there is
+  // no signal. It used to be dropped, and the handler then ran unaborted
+  // until SIGTERM or `terminate()` at `closeTimeout`.
+  for (const mode of ["child-process", "worker-thread"] as const) {
+    const { runner, t } = makeRunner<undefined, string>({
+      id: `kill-early-${mode}`,
+      file: handler("runner-slow-import"),
+      executionMode: mode,
+      closeTimeout: 20_000,
+      killTimeout: 20_000,
+    });
+    await runner.start();
+    const runId = startedId(`kill early (${mode})`, await runner.trigger());
+    const killedAt = Date.now();
+    await runner.kill(runId, { reason: "changed my mind" });
+    const record = await settle(t, runId);
+    const killedAfter = Date.now() - killedAt;
+
+    checkEqual(
+      `kill before the handler is called (${mode}): killed, with the reason, the handler never called`,
+      [
+        record.status,
+        record.error?.name,
+        t.killed.map((entry) => entry.reason),
+        t.messages,
+      ],
+      ["killed", "RunKilledError", ["changed my mind"], []],
+    );
+    check(
+      `kill before the handler is called (${mode}): ended inside closeTimeout, not at it`,
+      killedAfter < 20_000,
+      killedAfter,
+    );
+    if (mode === "child-process") {
+      checkEqual(
+        "kill before the handler is called (child-process): the child stopped itself, exit 143, no signal",
+        [record.exitCode, record.signal],
+        [143, null],
+      );
+    }
+    await runner.stop();
+  }
 }
 
 /* ------------------------------------------------------------------ */
