@@ -487,7 +487,12 @@ export interface RunHandle {
    * registry such as `BunRunnerManager`.
    */
   send: (message: unknown) => boolean;
-  /** Resolves when the run settles. */
+  /**
+   * Resolves when the run settles and its outcome is recorded. For a
+   * `worker-thread` run the runner ended (`timeout` or `killed`), that is once
+   * its thread has actually stopped, or `RUN_THREAD_REAP` (500 ms) after it
+   * was terminated if it is still running then (oven-sh/bun#44216).
+   */
   done: Promise<RunStatus>;
 }
 
