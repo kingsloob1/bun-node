@@ -50,11 +50,6 @@ interface ProviderState {
   /** The validation in flight, if one is. */
   inFlight: Promise<SummonFacet | undefined> | undefined;
   /**
-   * The newest validation's number. An older one that settles late (after
-   * it was abandoned) is ignored, so it never overwrites a newer result.
-   */
-  generation: number;
-  /**
    * What building the facets from a valid config threw: deterministic for
    * that config, so kept, and every later settle rejects with it.
    */
@@ -257,19 +252,35 @@ function attempt(
   state: ProviderState,
   result: PromiseLike<StandardSchemaV1.Result<unknown>>,
 ): Promise<SummonFacet | undefined> {
-  const generation = ++state.generation;
+  // This validation's shared promise, once made: a late failure compares it
+  // with `state.inFlight` to tell whether a newer validation is running.
+  let settled: Promise<SummonFacet | undefined> | undefined;
   const run = (async () => {
-    const outcome = await result;
-    if (state.generation !== generation) {
-      // Abandoned (it outlasted a caller's timeout) and superseded: its
-      // answer, late, must not overwrite the newer validation's.
-      throw new ConfigError(
-        `Compute provider ${state.identity.name}: a superseded config validation settled late`,
-        { provider: state.identity.name },
-      );
+    let outcome: StandardSchemaV1.Result<unknown>;
+    try {
+      outcome = await result;
+      if (outcome.issues !== undefined) {
+        throw invalid(state, outcome.issues);
+      }
+    } catch (error) {
+      // A failure, perhaps late and after this validation was abandoned:
+      // whoever still waits on it takes a success another validation
+      // reached meanwhile, or joins the one in flight, before failing.
+      if (state.known) {
+        return state.facet;
+      }
+      if (state.inFlight !== undefined && state.inFlight !== settled) {
+        return await state.inFlight;
+      }
+      throw error;
     }
-    if (outcome.issues !== undefined) {
-      throw invalid(state, outcome.issues);
+    // Any success is as good as another (the input never changes): the
+    // first one adopts, a later one — abandoned or in parallel — reuses it.
+    if (state.known) {
+      return state.facet;
+    }
+    if (state.fatal !== undefined) {
+      throw state.fatal;
     }
     try {
       return adopt(state, outcome.value);
@@ -280,25 +291,28 @@ function attempt(
       throw error;
     }
   })();
-  const settled = run.finally(() => {
+  const shared = run.finally(() => {
     // Dropped once settled: a success is kept in `state`, a failure is
     // retried by whoever asks next.
-    if (state.inFlight === settled) {
+    if (state.inFlight === shared) {
       state.inFlight = undefined;
     }
   });
-  state.inFlight = settled;
+  settled = shared;
+  state.inFlight = shared;
   const current = run.then(() => undefined);
   // `ready` may never be awaited; its rejection must not be unhandled.
   current.catch(() => {});
-  settled.catch(() => {});
+  shared.catch(() => {});
   state.current = current;
-  return settled;
+  return shared;
 }
 
 /**
- * Abandons the validation in flight, if it is still `inFlight`: the next
- * settle starts a fresh one, and this one's late answer is ignored.
+ * Abandons a validation that outlasted a caller's timeout: it stops being
+ * the one new callers join, so the next settle starts a fresh one in
+ * parallel. It keeps running for whoever already waits on it (another
+ * controller, `ready`), and its answer, however late, still counts.
  */
 function abandon(
   state: ProviderState,
@@ -306,7 +320,6 @@ function abandon(
 ): void {
   if (inFlight !== undefined && state.inFlight === inFlight) {
     state.inFlight = undefined;
-    state.generation++;
   }
 }
 
@@ -399,7 +412,6 @@ export function configure<TConfig, TInput>(
     facet: undefined,
     current: Promise.resolve(),
     inFlight: undefined,
-    generation: 0,
     fatal: undefined,
   };
 

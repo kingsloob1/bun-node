@@ -79,6 +79,10 @@ function asyncProvider(options: {
   delay?: number;
   /** Validation `n` never answers. */
   hang?: (n: number) => boolean;
+  /** How long validation `n` takes, in ms, over `delay`. */
+  delayOf?: (n: number) => number;
+  /** The first validation waits for this before answering: its timing is the test's. */
+  latch?: Promise<void>;
   /** Validate synchronously instead: the control twin of an async provider. */
   sync?: boolean;
   capabilities?: Partial<SummonCapabilities>;
@@ -101,7 +105,10 @@ function asyncProvider(options: {
         if (options.delay === Infinity || options.hang?.(n)) {
           return await new Promise<never>(() => {});
         }
-        await Bun.sleep(options.delay ?? 20);
+        if (n === 1 && options.latch !== undefined) {
+          await options.latch;
+        }
+        await Bun.sleep(options.delayOf?.(n) ?? options.delay ?? 20);
         return options.fail?.(n)
           ? {
               issues: [
@@ -208,7 +215,13 @@ describe("SummonController and a provider's ready", () => {
     const { logger, events: logs } = createTestLogger();
     let failing = true;
     const { provider, counts } = asyncProvider({ fail: () => failing });
-    const summon = controller({ summoner: provider({ region: "eu" }), logger });
+    // A backoff long enough for the status read and the gated check below to
+    // land inside it on a loaded machine (5 ms did not, at load ~38).
+    const summon = controller({
+      summoner: provider({ region: "eu" }),
+      logger,
+      backoff: { initial: 500, max: 500 },
+    });
     await add();
 
     // The validation provider(config) started is awaited (or, if it already
@@ -247,7 +260,7 @@ describe("SummonController and a provider's ready", () => {
 
     // The fault clears; the next check after the backoff validates again.
     failing = false;
-    await afterBackoff();
+    await Bun.sleep(550);
     const second = await summon.check();
     expect(second).toMatchObject({ action: "summoned", outcome: "started" });
     expect(counts.validations).toBe(validated + 1);
@@ -570,6 +583,142 @@ describe("SummonController and a provider's ready", () => {
     expect(await summon.check()).toMatchObject({ outcome: "started" });
     const used = logs.find((event) => event.message.startsWith("using"));
     expect(used?.message).toBe("using [REDACTED]");
+  });
+
+  it("adopts a valid validation that outlasted summonTimeout, when it lands (round 4 #1)", async () => {
+    const { controller, add } = await setup();
+    let land = (): void => {};
+    const latch = new Promise<void>((resolve) => {
+      land = resolve;
+    });
+    // Any later validation hangs: only validation 1's late answer can help.
+    const { provider, counts } = asyncProvider({
+      latch,
+      delay: 1,
+      hang: (n) => n >= 2,
+    });
+    const summon = controller({
+      summoner: provider({ region: "eu" }),
+      summonTimeout: 100,
+    });
+    await add();
+    // The validation outlasts the check's wait: a failed attempt.
+    expect(await summon.check()).toMatchObject({
+      outcome: "failed",
+    });
+    // It lands late, valid: adopted, not thrown away as superseded.
+    land();
+    await Bun.sleep(20);
+    await afterBackoff();
+    expect(await summon.check()).toMatchObject({ outcome: "started" });
+    expect(counts.calls).toBe(1);
+    // Adopted from validation 1, at the top of the check: none other ran.
+    expect(counts.validations).toBe(1);
+  });
+
+  it("lets one controller's timeout leave another's wait, and ready, alone (round 4 #2)", async () => {
+    const { controller, add } = await setup();
+    let land = (): void => {};
+    const latch = new Promise<void>((resolve) => {
+      land = resolve;
+    });
+    const { provider, counts } = asyncProvider({ latch, delay: 1 });
+    await add("short");
+    await add("long");
+    const configured = provider({ region: "eu" });
+    const ready = configured.ready.then(
+      () => "resolved",
+      (error: unknown) => `rejected: ${String(error)}`,
+    );
+    const short = controller({
+      summoner: configured,
+      queue: "short",
+      summonTimeout: 100,
+    });
+    const long = controller({
+      summoner: configured,
+      queue: "long",
+      summonTimeout: 5_000,
+    });
+    const waiting = long.check();
+    // The short wait gives up and abandons; only then does validation 1 land.
+    const a = await short.check();
+    land();
+    const b = await waiting;
+    expect(a).toMatchObject({ action: "summoned", outcome: "failed" });
+    expect(b).toMatchObject({ action: "summoned", outcome: "started" });
+    expect(await ready).toBe("resolved");
+    expect(counts.calls).toBe(1);
+  });
+
+  it("lets a waiter on an abandoned validation that then fails take a newer success", async () => {
+    const { controller, add } = await setup();
+    // Validation 1 takes 300 ms and fails; every later one succeeds at once.
+    const { provider, counts } = asyncProvider({
+      fail: (n) => n === 1,
+      delayOf: (n) => (n === 1 ? 300 : 5),
+    });
+    await add("short");
+    await add("long");
+    const configured = provider({ region: "eu" });
+    const ready = configured.ready.then(
+      () => "resolved",
+      () => "rejected",
+    );
+    const short = controller({
+      summoner: configured,
+      queue: "short",
+      summonTimeout: 100,
+      backoff: { initial: 5, max: 5 },
+    });
+    const long = controller({
+      summoner: configured,
+      queue: "long",
+      summonTimeout: 5_000,
+    });
+    const waiting = long.check();
+    expect(await short.check()).toMatchObject({ outcome: "failed" });
+    await afterBackoff();
+    // A fresh validation, in parallel with the abandoned one, succeeds.
+    expect(await short.check()).toMatchObject({ outcome: "started" });
+    // The long wait joined validation 1, which fails late: it takes the
+    // success instead of failing.
+    expect(await waiting).toMatchObject({ outcome: "started" });
+    expect(await ready).toBe("resolved");
+    expect(counts.validations).toBe(2);
+  });
+
+  it("bounds the background validation too: a hung first one, no demand, still adopts and releases (round 4 #3)", async () => {
+    const { controller } = await setup();
+    const { provider, counts } = asyncProvider({
+      hang: (n) => n === 1,
+      delay: 1,
+      release: true,
+      capabilities: { style: "scale" },
+    });
+    const summon = controller({
+      summoner: provider({ region: "eu" }),
+      scaleDown: { after: 0 },
+      summonTimeout: 100,
+    });
+    const actions: string[] = [];
+    for (let i = 0; i < 10 && !actions.includes("released"); i++) {
+      actions.push((await summon.check()).action);
+      await Bun.sleep(60);
+    }
+    expect(actions).toContain("released");
+    expect(counts.releases).toBe(1);
+    expect(counts.validations).toBe(2);
+  });
+
+  it("shows the summoner in status() once ready resolves, before any check (round 4 #5)", async () => {
+    const { controller } = await setup();
+    const { provider } = asyncProvider({ delay: 300 });
+    const configured = provider({ region: "eu" });
+    const summon = controller({ summoner: configured });
+    expect((await summon.status()).summoner).toBeUndefined();
+    await configured.ready;
+    expect((await summon.status()).summoner?.provider.kind).toBe("async");
   });
 
   it("shares one ready in flight between overlapping checks", async () => {

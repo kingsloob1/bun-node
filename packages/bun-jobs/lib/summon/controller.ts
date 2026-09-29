@@ -510,6 +510,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #warnedGrace = false;
   /** Lost attempts being explained by the summoner's `status()`; `close()` waits for them. */
   readonly #explaining = new Set<Promise<void>>();
+  /** Whether a background validation (`#kickProvider`) is running, so kicks never pile up. */
+  #kicking = false;
   /** The policy with its defaults. */
   #policy!: ResolvedPolicy;
   /** Turns an attempt id into the platform's dedupe key. */
@@ -1009,7 +1011,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         }
         this.#loggedAdoptError = true;
       }
-      this.#logger.error("summon check failed", { error, reason });
+      // The error may be the provider's (a throwing release, a facet build).
+      this.#providerLogger().error("summon check failed", { error, reason });
     });
   }
 
@@ -1535,21 +1538,46 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    */
   #kickProvider(): void {
     const pending = this.#pending;
-    if (pending === undefined || pending.fatal() !== undefined) {
+    if (
+      pending === undefined ||
+      this.#kicking ||
+      pending.fatal() !== undefined
+    ) {
       return;
     }
-    pending.settle().then(
-      () => {
-        this.#warnedNotReady = false;
-      },
-      (error: unknown) => {
-        if (pending.fatal() === undefined) {
-          this.#noteNotReady(
-            new ProviderNotReadyError(errorDetail(error), error),
-          );
-        }
-      },
-    );
+    // Bounded like a check's wait: a hung validation is abandoned at
+    // `summonTimeout`, so the next kick starts a fresh one.
+    this.#kicking = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new ProviderNotReadyError(READY_TIMED_OUT)),
+        this.#policy.summonTimeout,
+      );
+      timer.unref?.();
+    });
+    Promise.race([pending.settle(), timeout])
+      .then(
+        () => {
+          this.#warnedNotReady = false;
+        },
+        (error: unknown) => {
+          const failure =
+            error instanceof ProviderNotReadyError
+              ? error
+              : new ProviderNotReadyError(errorDetail(error), error);
+          if (failure.detail === READY_TIMED_OUT) {
+            pending.abandon();
+          }
+          if (pending.fatal() === undefined) {
+            this.#noteNotReady(failure);
+          }
+        },
+      )
+      .finally(() => {
+        clearTimeout(timer);
+        this.#kicking = false;
+      });
   }
 
   /**
@@ -1587,7 +1615,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     this.#warnShortGrace();
   }
 
-  /** The controller's logger, redacting the summoner's declared secrets and credential shapes. */
+  /**
+   * The controller's logger, redacting the summoner's declared secrets and
+   * credential shapes. Every log carrying something the provider produced — a
+   * thrown error (and its cause), a result's reason, a unit's detail — goes
+   * through it, never through `#logger` directly.
+   */
   #providerLogger(bindings?: Record<string, unknown>): Logger {
     return redactingLogger(
       bindings === undefined ? this.#logger : this.#logger.child(bindings),
@@ -1792,12 +1825,15 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       };
       switch (event.outcome) {
         case "failed":
-          this.#logger.error("summon attempt failed", fields);
+          this.#providerLogger().error("summon attempt failed", fields);
           break;
         case "lost":
         case "unavailable":
         case "budget-exhausted":
-          this.#logger.warn(`summon attempt ${event.outcome}`, fields);
+          this.#providerLogger().warn(
+            `summon attempt ${event.outcome}`,
+            fields,
+          );
           break;
         default:
           this.#logger.info(`summon attempt ${event.outcome}`, fields);
@@ -1915,7 +1951,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           await this.#writeLostDetail(attempt.id, detail);
         }
       } catch (error) {
-        this.#logger.warn("could not explain a lost summon attempt", {
+        this.#providerLogger().warn("could not explain a lost summon attempt", {
           id: attempt.id,
           error,
         });
@@ -1931,10 +1967,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
             attempt.id,
           );
         } catch (error) {
-          this.#logger.warn("could not cancel a lost summon attempt's units", {
-            id: attempt.id,
-            error,
-          });
+          this.#providerLogger().warn(
+            "could not cancel a lost summon attempt's units",
+            {
+              id: attempt.id,
+              error,
+            },
+          );
         }
       }
     }
@@ -2148,7 +2187,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           { id, kind, error: failure },
         );
       } else {
-        this.#logger.error("summoner call failed", {
+        this.#providerLogger().error("summoner call failed", {
           id,
           kind,
           error: failure,
@@ -2442,6 +2481,15 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /** The marker as it stands, plus this controller's policy. Reads; writes nothing. */
   async status(): Promise<SummonStatus> {
     await this.#connect();
+    // A late provider ready by now is adopted here too, so its summoner shows
+    // before any check. Its errors are kept for the next check to throw.
+    if (this.#pending !== undefined) {
+      try {
+        this.#adoptSettled(this.#pending);
+      } catch {
+        // Kept in `#adoptError`.
+      }
+    }
     const now = Date.now();
     const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
     const { marker, newer } = readMarker(entry, now);
