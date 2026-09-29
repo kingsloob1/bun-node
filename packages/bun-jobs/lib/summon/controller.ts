@@ -4,6 +4,7 @@ import type {
   QueueRef,
   WorkerInfo,
 } from "../drivers/index";
+import type { FacetReadiness } from "../provider/configure";
 import type { LocalAddedJob } from "../queue/BunQueue";
 import type { Logger } from "../shared/logger";
 import type { SummonClaim } from "./claim";
@@ -442,9 +443,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #capabilities!: SummonCapabilities;
   /**
    * Set while the summoner's provider validates its config asynchronously:
-   * waits for its real facet. Cleared once adopted.
+   * how its real facet stands, and how to wait for it. Cleared once adopted.
    */
-  #pendingFacet: (() => Promise<SummonFacet>) | undefined;
+  #pending: FacetReadiness | undefined;
   /**
    * A `ConfigError` the late-adopted facet's capabilities raised (a scale
    * style without `release`, a lifetime over the platform's cap, …): as
@@ -453,6 +454,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #adoptError: unknown;
   /** Whether the current run of not-ready attempts has been warned about. */
   #warnedNotReady = false;
+  /** Whether `#adoptError` has been logged by a triggered check; every check still throws it. */
+  #loggedAdoptError = false;
   /** The policy with its defaults. */
   #policy!: ResolvedPolicy;
   /** Turns an attempt id into the platform's dedupe key. */
@@ -563,7 +566,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     const readiness = facetReadiness(this.#summoner.summon);
     const facet = readiness.settled();
     if (facet === undefined) {
-      this.#pendingFacet = readiness.settle;
+      this.#pending = readiness;
       this.#bind(this.#summoner.summon, PROVISIONAL_CAPABILITIES);
     } else {
       this.#bind(facet, facet.capabilities);
@@ -910,6 +913,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       () => undefined,
     );
     run.catch((error: unknown) => {
+      // A late provider's adoption error is thrown by every check; logged once.
+      if (error === this.#adoptError) {
+        if (this.#loggedAdoptError) {
+          return;
+        }
+        this.#loggedAdoptError = true;
+      }
       this.#logger.error("summon check failed", { error, reason });
     });
   }
@@ -975,10 +985,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return { demand, workers, read };
   }
 
-  /** The body of a check. */
+  /**
+   * The body of a check. `carried` is a provider's not-ready failure from a
+   * pass that waited for it: this pass, on a fresh read, records it.
+   */
   async #check(
     reason: SummonReason,
     force: boolean,
+    carried?: ProviderNotReadyError,
   ): Promise<SummonCheckResult> {
     if (this.#closed) {
       return { action: "skipped", reason: "closed" };
@@ -988,6 +1002,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     if (this.#adoptError !== undefined) {
       throw this.#adoptError;
+    }
+    // A late provider whose config has become ready is adopted now, before
+    // anything reads capabilities — whether or not this check summons.
+    if (this.#pending !== undefined) {
+      this.#adoptSettled(this.#pending);
     }
     await this.#connect();
     const now = Date.now();
@@ -1026,10 +1045,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // their way — registered, or started and gone — so only the rest are.
     // Worked out afresh each check, never written back.
     const partly = new Map<string, number>();
-    const claims = await this.#readClaims([
-      ...marker.pending,
-      ...(marker.watching ?? []),
-    ]);
+    // Until a late provider is adopted, its `passes` and boot budget are
+    // unknown: step 2 decides nothing (every attempt stays as it is), so no
+    // provisional decision is ever written to the marker.
+    const provisional = this.#pending !== undefined;
+    const claims = provisional
+      ? new Map<string, SummonClaim | undefined>()
+      : await this.#readClaims([...marker.pending, ...(marker.watching ?? [])]);
     const liveIds = new Set(workers.map((worker) => worker.id));
     const expiries = new Map(
       workers.map((worker) => [worker.id, worker.expiresAt]),
@@ -1037,6 +1059,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // Attempts released this check on a live record alone: watched below.
     const released: WatchedSummon[] = [];
     for (const attempt of marker.pending) {
+      if (provisional) {
+        keep.push(attempt);
+        continue;
+      }
       // The claim-once entry, where there is one: a worker that claimed,
       // drained and closed between two checks has no record left, but its
       // place in the claim says how it left (see `tallySummonClaim`). Every
@@ -1142,7 +1168,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       });
     }
     marker.pending = keep;
-    if (this.#watch(marker, claims, expiries, released, now, events)) {
+    if (
+      !provisional &&
+      this.#watch(marker, claims, expiries, released, now, events)
+    ) {
       changed = true;
     }
     rollBudget(marker, now);
@@ -1179,6 +1208,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         : 0;
 
     if (demand.paused || (demand.demand === 0 && !orphaned)) {
+      this.#kickProvider();
       await this.#settle(marker, version, changed, events, lost);
       if (capabilities.style === "scale" && idle) {
         this.#zeroSince ??= now;
@@ -1201,6 +1231,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     );
     const want = wanted - counted.length - onTheirWay;
     if (want <= 0) {
+      this.#kickProvider();
       await this.#settle(marker, version, changed, events, lost);
       return {
         action: "skipped",
@@ -1218,16 +1249,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
     // Step 5b: a provider whose config validates asynchronously must be ready
     // before its first call. Ready: adopt its facet and check again, on its
-    // real capabilities. Not ready: the attempt below fails without a call.
-    let notReady: ProviderNotReadyError | undefined;
-    if (this.#pendingFacet !== undefined) {
-      const facet = await this.#awaitFacet(this.#pendingFacet);
+    // real capabilities. Not ready: check again on a fresh read (the wait may
+    // have been long), where the attempt fails without a call.
+    const notReady = this.#pending === undefined ? undefined : carried;
+    if (this.#pending !== undefined && notReady === undefined) {
+      const facet = await this.#awaitFacet(this.#pending);
       if (facet instanceof ProviderNotReadyError) {
-        notReady = facet;
-      } else {
-        this.#adopt(facet);
-        return await this.#check(reason, force);
+        return await this.#check(reason, force, facet);
       }
+      this.#adopt(facet);
+      return await this.#check(reason, force);
     }
 
     // Step 6: claim. Nothing has been called yet, so losing costs nothing.
@@ -1357,7 +1388,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * `warn` per run of such failures.
    */
   async #awaitFacet(
-    settle: () => Promise<SummonFacet>,
+    pending: FacetReadiness,
   ): Promise<SummonFacet | ProviderNotReadyError> {
     const ms = this.#policy.summonTimeout;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1368,29 +1399,87 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     });
     try {
-      const facet = await Promise.race([settle(), timeout]);
+      const facet = await Promise.race([pending.settle(), timeout]);
       this.#warnedNotReady = false;
       return facet;
     } catch (error) {
+      // A valid config whose facet could not be built: as permanent as a
+      // capability error, so kept and thrown by every check.
+      this.#adoptSettled(pending);
       const failure =
         error instanceof ProviderNotReadyError
           ? error
           : new ProviderNotReadyError(errorDetail(error), error);
-      if (!this.#warnedNotReady) {
-        this.#warnedNotReady = true;
-        this.#providerLogger().warn(
-          "the summoner's provider is not ready: its config validation failed or has not finished; each attempt fails without a call until it is (backoff and circuit apply)",
-          {
-            kind: this.#summoner.provider.kind,
-            provider: this.#summoner.provider.name,
-            detail: failure.detail,
-            error: failure.cause ?? failure,
-          },
-        );
+      if (failure.detail === READY_TIMED_OUT) {
+        // Not memoized: the next attempt starts a fresh validation.
+        pending.abandon();
       }
+      this.#noteNotReady(failure);
       return failure;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /** Logs one `warn` per run of not-ready failures. */
+  #noteNotReady(failure: ProviderNotReadyError): void {
+    if (this.#warnedNotReady) {
+      return;
+    }
+    this.#warnedNotReady = true;
+    this.#providerLogger().warn(
+      "the summoner's provider is not ready: its config validation failed or has not finished; each attempt fails without a call until it is (backoff and circuit apply)",
+      {
+        kind: this.#summoner.provider.kind,
+        provider: this.#summoner.provider.name,
+        detail: failure.detail,
+        error: failure.cause ?? failure,
+      },
+    );
+  }
+
+  /**
+   * On a check that will not summon (nothing wanted), starts — or joins — a
+   * late provider's validation without waiting for it, so a later check
+   * finds it ready and adopts it (a scale provider can then release), and a
+   * failed first validation does not pin the controller to provisional
+   * capabilities.
+   */
+  #kickProvider(): void {
+    const pending = this.#pending;
+    if (pending === undefined || pending.fatal() !== undefined) {
+      return;
+    }
+    pending.settle().then(
+      () => {
+        this.#warnedNotReady = false;
+      },
+      (error: unknown) => {
+        if (pending.fatal() === undefined) {
+          this.#noteNotReady(
+            new ProviderNotReadyError(errorDetail(error), error),
+          );
+        }
+      },
+    );
+  }
+
+  /**
+   * Adopts a late provider's facet if its config is ready now, or keeps and
+   * throws what building it threw.
+   *
+   * @throws the provider's build error, or a capability `ConfigError`.
+   */
+  #adoptSettled(pending: FacetReadiness): void {
+    const fatal = pending.fatal();
+    if (fatal !== undefined) {
+      this.#pending = undefined;
+      this.#adoptError = fatal;
+      throw fatal;
+    }
+    const facet = pending.settled();
+    if (facet !== undefined) {
+      this.#adopt(facet);
     }
   }
 
@@ -1400,7 +1489,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * this check and every later one.
    */
   #adopt(facet: SummonFacet): void {
-    this.#pendingFacet = undefined;
+    this.#pending = undefined;
     try {
       this.#bind(facet, facet.capabilities);
     } catch (error) {
@@ -1631,7 +1720,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    */
   async #explainLost(lost: readonly PendingSummon[]): Promise<void> {
     const facet = this.#facet;
-    if (this.#pendingFacet !== undefined || facet.status === undefined) {
+    if (this.#pending !== undefined || facet.status === undefined) {
       return;
     }
     for (const attempt of lost) {
@@ -2048,7 +2137,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         : { inertReason: this.#inertReason }),
       // Until a late provider's facet is adopted its capabilities are
       // unknown, so the summoner is left out rather than shown provisional.
-      ...(this.#pendingFacet !== undefined || this.#adoptError !== undefined
+      ...(this.#pending !== undefined || this.#adoptError !== undefined
         ? {}
         : {
             summoner: {

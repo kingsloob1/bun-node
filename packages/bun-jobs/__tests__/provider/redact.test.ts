@@ -73,7 +73,7 @@ describe("redactingLogger", () => {
       },
     );
     expect(events[0]!.message).toBe(
-      "GET https://admin:[REDACTED]@db.example/x with Authorization: Bearer [REDACTED]",
+      "GET https://[REDACTED]@db.example/x with Authorization: Bearer [REDACTED]",
     );
     expect(events[0]!.fields).toEqual({
       apiToken: "[REDACTED]",
@@ -141,6 +141,79 @@ describe("redactingLogger", () => {
     expect(events[0]!.bindings).toEqual({ key: "[REDACTED]" });
     expect(events[0]!.message).toBe("[REDACTED]");
     expect(log.isLevelEnabled("debug")).toBe(false);
+  });
+
+  it("replaces a URL's userinfo whole, a token alone included", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    log.info(
+      "clone https://ghp_abcdef0123456789@github.com/x and report to https://0123abcd@o1.ingest.sentry.io/42",
+    );
+    expect(events[0]!.message).toBe(
+      "clone https://[REDACTED]@github.com/x and report to https://[REDACTED]@o1.ingest.sentry.io/42",
+    );
+  });
+
+  it("converts URL, Headers, URLSearchParams, Map, Set and class instances before walking them", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    class Settings {
+      apiKey = "class-secret-value";
+      region = "eu";
+    }
+    log.info("objects", {
+      url: new URL("https://admin:url-password@db.example/x"),
+      headers: new Headers({ authorization: "Bearer abc", accept: "json" }),
+      query: new URLSearchParams({ token: "q-secret", page: "2" }),
+      map: new Map<unknown, unknown>([
+        ["password", "map-secret"],
+        ["region", "eu"],
+      ]),
+      set: new Set(["https://tok@host.example/"]),
+      settings: new Settings(),
+      at: new Date(0),
+    });
+    const fields = events[0]!.fields;
+    expect(fields.url).toBe("https://[REDACTED]@db.example/x");
+    expect(fields.headers).toEqual({
+      authorization: "[REDACTED]",
+      accept: "json",
+    });
+    expect(fields.query).toEqual({ token: "[REDACTED]", page: "2" });
+    expect(fields.map).toEqual({ password: "[REDACTED]", region: "eu" });
+    expect(fields.set).toEqual(["https://[REDACTED]@host.example/"]);
+    expect(fields.settings).toEqual({ apiKey: "[REDACTED]", region: "eu" });
+    expect(fields.at).toEqual(new Date(0));
+    expect(JSON.stringify(fields)).not.toMatch(
+      /url-password|map-secret|q-secret|class-secret/,
+    );
+  });
+
+  it("applies the name rule to an error's own fields", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    const error = Object.assign(new Error("refused"), {
+      apiKey: "err-secret-value",
+      status: 403,
+    });
+    log.error("call failed", { error });
+    const logged = events[0]!.error as Error & Record<string, unknown>;
+    expect(logged.apiKey).toBe("[REDACTED]");
+    expect(logged.status).toBe(403);
+    expect(logged.message).toBe("refused");
+  });
+
+  it("replaces whatever lies deeper than the walk goes, rather than passing it through", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    let deep: Record<string, unknown> = { note: "the bottom" };
+    for (let i = 0; i < 12; i++) {
+      deep = { next: deep };
+    }
+    log.info("deep", { deep });
+    const text = JSON.stringify(events[0]!.fields);
+    expect(text).not.toContain("the bottom");
+    expect(text).toContain("[REDACTED]");
   });
 
   it("fails without the wrapper (the control)", () => {
@@ -261,7 +334,7 @@ describe("a provider's call context, through a controller", () => {
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain(PASSWORD);
     expect(logged[0]!.message).toBe("starting with token [REDACTED]");
-    expect(logged[0]!.fields.db).toBe("postgres://app:[REDACTED]@db/x");
+    expect(logged[0]!.fields.db).toBe("postgres://[REDACTED]@db/x");
     // Bound to the attempt, as before.
     expect(logged[0]!.bindings.attempt).toBe(logged[0]!.fields.id);
   });
