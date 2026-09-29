@@ -1,0 +1,13 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91); ns per request, best of 5 x 200000
+
+new Request(url)                     (floor, not ours)        206 ns
+BunRequest.init, adapter defaults                            3279 ns
+BunRequest.init, body parse off (query+cookies on)           1755 ns
+BunRequest.init, parsing off                                  570 ns
+  + new BunResponse                                           729 ns
+  + router.getMatchedLayers (cache hit)                      1206 ns
+  + router.handle (send)                                     2153 ns
+  + getNativeResponse                                        2156 ns
+handleNativeRequest, parsing off (whole adapter path)        2219 ns
+handleNativeRequest, adapter defaults                        5102 ns
+floor: new Request + new Response(id)                         410 ns

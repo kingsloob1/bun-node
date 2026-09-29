@@ -1,0 +1,5 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91) linux x64
+ 500 routes: Bun.serve()    15.6 ms; GET first-registered 32.7 µs, last-registered 34.3 µs (sequential fetch, same process)
+1000 routes: Bun.serve()    73.4 ms; GET first-registered 31.7 µs, last-registered 35.1 µs (sequential fetch, same process)
+2000 routes: Bun.serve()   250.5 ms; GET first-registered 31.5 µs, last-registered 38.6 µs (sequential fetch, same process)
+4000 routes: Bun.serve()  1147.2 ms; GET first-registered 31.8 µs, last-registered 53.5 µs (sequential fetch, same process)

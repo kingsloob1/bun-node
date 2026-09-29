@@ -1,0 +1,56 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+
+GET     /users/new           -> 200 OK cl=71 {"by":"route:/users/new","method":"GET","params":{},"url":"/users/new"}
+GET     /users/42            -> 200 OK cl=79 {"by":"route:/users/:id","method":"GET","params":{"id":"42"},"url":"/users/42"}
+GET     /users/42/posts      -> 200 OK cl=74 {"by":"route:/users/*","method":"GET","params":{},"url":"/users/42/posts"}
+GET     /users/              -> 200 OK cl=66 {"by":"route:/users/*","method":"GET","params":{},"url":"/users/"}
+GET     /users               -> 200 OK cl=44 {"by":"fetch","method":"GET","url":"/users"}
+GET     /files               -> 200 OK cl=44 {"by":"fetch","method":"GET","url":"/files"}
+GET     /files/              -> 200 OK cl=66 {"by":"route:/files/*","method":"GET","params":{},"url":"/files/"}
+GET     /files/a/b%20c       -> 200 OK cl=73 {"by":"route:/files/*","method":"GET","params":{},"url":"/files/a/b%20c"}
+GET     /x/b                 -> 200 OK cl=67 {"by":"route:/x/:b","method":"GET","params":{"b":"b"},"url":"/x/b"}
+GET     /deep/1/2            -> 200 OK cl=77 {"by":"route:/deep/:a/*","method":"GET","params":{"a":"1"},"url":"/deep/1/2"}
+GET     /deep/1              -> 200 OK cl=65 {"by":"route:/deep/*","method":"GET","params":{},"url":"/deep/1"}
+GET     /a                   -> 200 OK cl=55 {"by":"route:/a","method":"GET","params":{},"url":"/a"}
+GET     /a/                  -> 200 OK cl=41 {"by":"fetch","method":"GET","url":"/a/"}
+GET     /b                   -> 200 OK cl=40 {"by":"fetch","method":"GET","url":"/b"}
+GET     /b/                  -> 200 OK cl=57 {"by":"route:/b/","method":"GET","params":{},"url":"/b/"}
+GET     /case                -> 200 OK cl=43 {"by":"fetch","method":"GET","url":"/case"}
+GET     /CASE                -> 200 OK cl=43 {"by":"fetch","method":"GET","url":"/CASE"}
+GET     /Case                -> 200 OK cl=61 {"by":"route:/Case","method":"GET","params":{},"url":"/Case"}
+GET     /p/hello%20world     -> 200 OK cl=89 {"by":"route:/p/:x","method":"GET","params":{"x":"hello world"},"url":"/p/hello%20world"}
+GET     /p/a%2Fb             -> 200 OK cl=73 {"by":"route:/p/:x","method":"GET","params":{"x":"a/b"},"url":"/p/a%2Fb"}
+GET     /p/%E2%82%AC         -> 200 OK cl=77 {"by":"route:/p/:x","method":"GET","params":{"x":"€"},"url":"/p/%E2%82%AC"}
+GET     /p/a+b               -> 200 OK cl=71 {"by":"route:/p/:x","method":"GET","params":{"x":"a+b"},"url":"/p/a+b"}
+GET     /p/%E0%A4%A          -> 200 OK cl=80 {"by":"route:/p/:x","method":"GET","params":{"x":"��A"},"url":"/p/%E0%A4%A"}
+GET     /p/%zz               -> 200 OK cl=71 {"by":"route:/p/:x","method":"GET","params":{"x":"�"},"url":"/p/%zz"}
+GET     /p/                  -> 200 OK cl=41 {"by":"fetch","method":"GET","url":"/p/"}
+GET     /opt                 -> 200 OK cl=42 {"by":"fetch","method":"GET","url":"/opt"}
+GET     /opt/1               -> 200 OK cl=73 {"by":"route:/opt/:a?","method":"GET","params":{"a?":"1"},"url":"/opt/1"}
+GET     /opt/:a?             -> 200 OK cl=75 {"by":"route:/opt/:a?","method":"GET","params":{"a?":":a"},"url":"/opt/:a"}
+GET     /re/12               -> 200 OK cl=85 {"by":"route:/re/:id(\\d+)","method":"GET","params":{"id(\\d+)":"12"},"url":"/re/12"}
+GET     /re/abc              -> 200 OK cl=87 {"by":"route:/re/:id(\\d+)","method":"GET","params":{"id(\\d+)":"abc"},"url":"/re/abc"}
+GET     /named/x/y           -> 200 OK cl=73 {"by":"route:/named/*rest","method":"GET","params":{},"url":"/named/x/y"}
+GET     /mid/1-2             -> 200 OK cl=78 {"by":"route:/mid/:a-:b","method":"GET","params":{"b":"1-2"},"url":"/mid/1-2"}
+GET     /two/1/2             -> 200 OK cl=46 {"by":"fetch","method":"GET","url":"/two/1/2"}
+GET     /m                   -> 200 OK cl=59 {"by":"route:/m GET","method":"GET","params":{},"url":"/m"}
+HEAD    /m                   -> 200 OK cl=60 
+POST    /m                   -> 200 OK cl=61 {"by":"route:/m POST","method":"POST","params":{},"url":"/m"}
+PUT     /m                   -> 200 OK cl=40 {"by":"fetch","method":"PUT","url":"/m"}
+OPTIONS /m                   -> 200 OK cl=44 {"by":"fetch","method":"OPTIONS","url":"/m"}
+DELETE  /bare                -> 200 OK cl=64 {"by":"route:/bare","method":"DELETE","params":{},"url":"/bare"}
+HEAD    /bare                -> 200 OK cl=62 
+GET     /static              -> 200 OK cl=11 static-body
+HEAD    /static              -> 200 OK cl=11 
+POST    /static              -> 200 OK cl=11 static-body
+error: Expected a Response object, but received 'undefined'
+GET     /undef               -> 200 OK cl=57 Welcome to Bun! To get started, return a Response object.
+GET     /throw               -> 500 Internal Server Error cl=13 error(): boom
+GET     /reject              -> 500 Internal Server Error cl=19 error(): async boom
+GET     /a?x=1               -> 200 OK cl=55 {"by":"route:/a","method":"GET","params":{},"url":"/a"}
+GET     //a                  -> 200 OK cl=41 {"by":"fetch","method":"GET","url":"//a"}
+GET     /x/../a              -> 200 OK cl=40 {"by":"fetch","method":"GET","url":"/a"}
+GET     /%61                 -> 200 OK cl=42 {"by":"fetch","method":"GET","url":"/%61"}
+GET     /caf%C3%A9           -> 200 OK cl=71 {"by":"route:/caf%C3%A9","method":"GET","params":{},"url":"/caf%C3%A9"}
+GET     /nothing             -> 200 OK cl=46 {"by":"fetch","method":"GET","url":"/nothing"}
+GET     /upgrade             -> 101 Switching Protocols �hi��

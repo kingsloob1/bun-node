@@ -1,0 +1,17 @@
+{
+  "pkg": "bun-common",
+  "bun": "1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)",
+  "stockFails": [],
+  "breaks": [],
+  "fixedByNative": [],
+  "harness": [
+    "BunHttpAdapter.fetch: matches a real socket request > needs no port, so repeated calls cannot collide"
+  ],
+  "indexBreaks": [],
+  "totals": {
+    "stock": 1141,
+    "served": 1141,
+    "native": 1141,
+    "index": 1141
+  }
+}

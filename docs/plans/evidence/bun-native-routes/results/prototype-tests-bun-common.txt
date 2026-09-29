@@ -1,0 +1,13 @@
+bun-common: bun test --preload prototype/tests/preload.ts, Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+
+stock   pass 1131  fail 0  skip 10  (6.3s, exit 0)
+served  pass 1130  fail 1  skip 10  (6.3s, exit 1)
+native  pass 1130  fail 1  skip 10  (6.4s, exit 1)
+index   pass 1131  fail 0  skip 10  (6.4s, exit 0)
+
+stock failures (preload itself broke something): 0
+native breaks (fail native, pass served): 0
+pass native, fail served: 0
+served-harness artefacts (fail served, pass stock): 1
+  BunHttpAdapter.fetch: matches a real socket request > needs no port, so repeated calls cannot collide
+index breaks (fail index, pass stock): 0

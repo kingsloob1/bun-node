@@ -1,0 +1,27 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+
+"/plain"                                                     accepted
+"/:a"                                                        accepted
+"/x/:a/:b/:c/:d/:e/:f/:g/:h/:i/:j/:k/:l/:m/:n/:o/:p/:q"      accepted
+"/two/:a/:a"                                                 REJECTED Support for duplicate route parameter names is not yet implemented.
+"/opt/:a?"                                                   accepted
+"/re/:id(\\d+)"                                              accepted
+"/star/*"                                                    accepted
+"/named/*rest"                                               accepted
+"/braced/{*rest}"                                            accepted
+"/mid/*/end"                                                 accepted
+"/mid/:a-:b"                                                 accepted
+"/dot/:file.json"                                            accepted
+"/café"                                                      REJECTED Invalid route "/café". Please encode all non-ASCII characters in the path.
+"/caf%C3%A9"                                                 accepted
+"noslash"                                                    REJECTED Invalid route "noslash". Path must start with '/'
+""                                                           accepted
+"/"                                                          accepted
+"*"                                                          REJECTED Invalid route "*". Path must start with '/'
+"/*"                                                         accepted
+"/sp ace"                                                    accepted
+"/q?x=1"                                                     accepted
+"/(group)"                                                   accepted
+"/{opt}"                                                     accepted
+"/a//b"                                                      accepted
+"/:"                                                         accepted

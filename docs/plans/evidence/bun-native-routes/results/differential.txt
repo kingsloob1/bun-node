@@ -1,0 +1,18 @@
+Differential fuzz (prototype/tests/differential.test.ts), Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+Random route tables x 40 raw requests each; native-served prototype vs stock adapter fetch().
+
+BNR_SEEDS=400                         compared 16000 requests; native-routed 1474, guard fallbacks 142; mismatches 0    -> pass
+BNR_SEEDS=400 BNR_NO_GUARD=1          compared 16000 requests; native-routed 1616, guard fallbacks 0;   mismatches 4    -> fail (negative control: shape guard is load-bearing)
+BNR_SEEDS=400 BNR_BREAK_CANDIDATES=1  compared 16000 requests; native-routed 1474, guard fallbacks 142; mismatches 613  -> fail (negative control: candidate lists are load-bearing)
+
+Candidate index (BNR_MODE=index) and the ring FIFO cache (BNR_RINGCACHE=1), same 400 seeds:
+BNR_MODE=index                                          misses 14499, mismatches 0     -> pass
+BNR_MODE=index BNR_NOCACHE=1                            misses 16000, mismatches 0     -> pass
+BNR_MODE=index BNR_RINGCACHE=1                          misses 14499, mismatches 0     -> pass
+BNR_MODE=index BNR_RINGCACHE=1 BNR_CACHEMAX=4           misses 15641, mismatches 0     -> pass (eviction on nearly every request)
+BNR_MODE=index BNR_RINGCACHE=1 BNR_SPECIFICITY=1        misses 14499, mismatches 0     -> pass (routeSpecificity: true on both sides)
+BNR_MODE=native BNR_SPECIFICITY=1                       native 1474,  mismatches 0     -> pass
+BNR_MODE=native BNR_NOCACHE=1                           native 1474,  mismatches 0     -> pass
+BNR_MODE=native BNR_RINGCACHE=1 BNR_CACHEMAX=3          native 1474,  mismatches 0     -> pass
+BNR_MODE=index BNR_NOCACHE=1 BNR_BREAK_CANDIDATES=1     mismatches 2222  -> fail (negative control)
+BNR_MODE=index BNR_RINGCACHE=1 BNR_SPECIFICITY=1 BNR_BREAK_CANDIDATES=1   mismatches 2230  -> fail (negative control)

@@ -1,0 +1,15 @@
+{
+  "pkg": "bun-nest",
+  "bun": "1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)",
+  "stockFails": [],
+  "breaks": [],
+  "fixedByNative": [],
+  "harness": [],
+  "indexBreaks": [],
+  "totals": {
+    "stock": 243,
+    "served": 243,
+    "native": 243,
+    "index": 243
+  }
+}
