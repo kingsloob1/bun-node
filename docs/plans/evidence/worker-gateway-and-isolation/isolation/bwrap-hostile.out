@@ -1,0 +1,130 @@
+bwrap 0.11.1, bun 1.4.3 from ~/.bun/bin
+
+### info (hardened)
+load: 3.64 3.52 3.02
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts info
+{"probe":"info","ok":true,"detail":{"uid":1000,"bun":"1.4.3","cgroup":"0::/","cwd":"/w"}}
+exit=0
+
+### a. shadow: hardened (/etc not bound)
+load: 3.64 3.52 3.02
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts shadow
+{"probe":"read /etc/shadow","ok":false,"detail":"ENOENT"}
+exit=0
+
+### a. shadow: control, host / bound read-only
+load: 3.64 3.52 3.02
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --ro-bind / /hostroot --remount-ro / sh -c ls -l /hostroot/etc/shadow; head -c1 /hostroot/etc/shadow >/dev/null && echo "host shadow readable" || echo "host shadow NOT readable"; test -r /hostroot~/.bashrc && echo "host ~/.bashrc readable (whole bound tree is readable as uid 1000)"; echo "uid_map: $(cat /proc/self/uid_map)"
+-rw-r----- 1 65534 65534 1638 Jun  1 14:34 /hostroot/etc/shadow
+head: cannot open '/hostroot/etc/shadow' for reading: Permission denied
+host shadow NOT readable
+host ~/.bashrc readable (whole bound tree is readable as uid 1000)
+uid_map:       1000          0          1
+exit=0
+
+### b. network: hardened (--unshare-all)
+load: 3.64 3.52 3.02
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts network
+{"probe":"fetch http://1.1.1.1/","ok":false,"detail":{"error":"FailedToOpenSocket","ms":0}}
+{"probe":"fetch http://169.254.169.254/","ok":false,"detail":{"error":"FailedToOpenSocket","ms":0}}
+{"probe":"dns example.com","ok":false,"detail":"EAI_AGAIN"}
+exit=0
+
+### b. network: control (--share-net)
+load: 3.43 3.48 3.01
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --share-net --ro-bind /etc/resolv.conf /etc/resolv.conf --ro-bind /run/systemd/resolve /run/systemd/resolve --remount-ro / bun hostile.ts network
+{"probe":"fetch http://1.1.1.1/","ok":true,"detail":{"status":200,"ms":1270}}
+{"probe":"fetch http://169.254.169.254/","ok":false,"detail":{"error":23,"ms":3001}}
+{"probe":"dns example.com","ok":true,"detail":{"address":"104.20.23.154","family":4}}
+exit=0
+
+### c. host: hardened
+load: 3.23 3.44 3.00
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts host 127.0.0.1:5432 127.0.0.1:6379 172.17.0.2:5432
+{"probe":"tcp 127.0.0.1:5432","ok":false,"detail":{"error":"ECONNREFUSED","ms":4}}
+{"probe":"tcp 127.0.0.1:6379","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+{"probe":"tcp 172.17.0.2:5432","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+exit=0
+
+### c. host: control (--share-net), host loopback
+load: 3.23 3.44 3.00
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --share-net --remount-ro / bun hostile.ts host 127.0.0.1:5432 127.0.0.1:6379 172.17.0.2:5432
+{"probe":"tcp 127.0.0.1:5432","ok":true,"detail":{"ms":3}}
+{"probe":"tcp 127.0.0.1:6379","ok":true,"detail":{"ms":0}}
+{"probe":"tcp 172.17.0.2:5432","ok":true,"detail":{"ms":0}}
+exit=0
+
+host load before d: 3.23 3.44 3.00 2/3728 1382773
+### d. forkbomb: hardened (TasksMax=64)
+load: 3.23 3.44 3.00
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts forkbomb
+{"probe":"forkbomb","ok":false,"detail":{"spawned":58,"cap":5000,"firstError":"EAGAIN","ownThreads":"4","pidsMax":"?","ms":137}}
+exit=0
+
+elapsed: .311816587 s; host load after: 3.23 3.44 3.00 3/3761 1382892
+
+### d. forkbomb: control (TasksMax=512)
+load: 3.23 3.44 3.00
+$ systemd-run --user --scope --quiet -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=512 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts forkbomb
+{"probe":"forkbomb","ok":false,"detail":{"spawned":506,"cap":5000,"firstError":"EAGAIN","ownThreads":"4","pidsMax":"?","ms":1813}}
+exit=0
+
+### e. memhog: hardened (MemoryMax=128M, no swap)
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts memhog 1024
+{"probe":"memhog","allocatedMb":64}
+exit=137
+
+### e. memhog: control (MemoryMax=512M), 256MB
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=512M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts memhog 256
+{"probe":"memhog","allocatedMb":64}
+{"probe":"memhog","allocatedMb":128}
+{"probe":"memhog","allocatedMb":192}
+{"probe":"memhog","allocatedMb":256}
+{"probe":"memhog","ok":true,"detail":{"survivedMb":256}}
+exit=0
+
+### f. read-only: hardened (--remount-ro /)
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts rofs
+{"probe":"write /etc/hostile-probe","ok":false,"detail":"ENOENT"}
+{"probe":"write /hostile-probe","ok":false,"detail":"EROFS"}
+{"probe":"write /usr/hostile-probe","ok":false,"detail":"EROFS"}
+exit=0
+
+### f. read-only: control (bwrap root left writable)
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --tmpfs /tmp --unshare-all --die-with-parent --clearenv --setenv PATH /opt/bun:/usr/bin bun hostile.ts rofs
+{"probe":"write /etc/hostile-probe","ok":false,"detail":"ENOENT"}
+{"probe":"write /hostile-probe","ok":true,"detail":"written"}
+{"probe":"write /usr/hostile-probe","ok":false,"detail":"EROFS"}
+exit=0
+
+### f. tmpfs: hardened (--size 16MiB), write 32MB
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts tmpfs /tmp/fill 32
+{"probe":"write 32MB to /tmp/fill","ok":false,"detail":{"writtenMb":16,"error":"ENOSPC"}}
+{"probe":"exec from /tmp","ok":true,"detail":{"exitCode":0}}
+exit=0
+
+### g. env: hardened (--clearenv), SECRET_PROBE set on host
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts env
+{"probe":"env","ok":true,"detail":{"keys":["HOME","PATH","PWD"]}}
+exit=0
+
+### h. caps: hardened
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts caps
+{"probe":"capabilities","ok":true,"detail":{"uid":1000,"gid":1000,"CapEff":"0000000000000000","CapBnd":"0000000000000000","NoNewPrivs":"1","Seccomp":"0"}}
+{"probe":"chown to uid 1","ok":false,"detail":"EINVAL"}
+{"probe":"mknod char device","ok":false,"detail":{"exitCode":255,"stderr":"mknod: Operation not permitted (os error 1)"}}
+exit=0
+
+### j. cpu: hardened (CPUQuota=50%)
+load: 3.14 3.41 2.99
+$ systemd-run --user --scope --quiet -p MemoryMax=128M -p MemorySwapMax=0 -p TasksMax=64 -p CPUQuota=50% bwrap --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --ro-bind ~/.bun/bin /opt/bun --ro-bind <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation /w --chdir /w --proc /proc --dev /dev --size 16777216 --tmpfs /tmp --unshare-all --die-with-parent --new-session --clearenv --setenv PATH /opt/bun:/usr/bin --setenv HOME /tmp --remount-ro / bun hostile.ts cpu 300000000
+{"probe":"cpu","ok":true,"detail":{"iterations":300000000,"wallMs":2623,"cpuMs":1322,"cpuShare":0.5,"cpuMax":"?","x":838144}}
+exit=0
+

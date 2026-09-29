@@ -1,0 +1,8 @@
+jobs=1000 perProcessN=20 image=oven/bun:1 host bun=1.4.3
+{"variant":"persistent host child (Bun.spawn)","firstJobMs":16,"sequentialMs":{"n":1000,"min":0.016,"median":0.023,"p90":0.034,"p99":0.094,"max":0.209},"sequentialJobsPerS":37896,"pipelinedJobsPerS":262963,"exit":0,"loadBefore":"4.50 3.44 2.92","loadAfter":"4.50 3.44 2.92"}
+{"variant":"persistent bwrap child","firstJobMs":25,"sequentialMs":{"n":1000,"min":0.016,"median":0.02,"p90":0.028,"p99":0.056,"max":0.132},"sequentialJobsPerS":44959,"pipelinedJobsPerS":252707,"exit":0,"loadBefore":"4.50 3.44 2.92","loadAfter":"4.54 3.47 2.93"}
+{"variant":"persistent docker run -i (hardened)","firstJobMs":291,"sequentialMs":{"n":1000,"min":0.063,"median":0.081,"p90":0.107,"p99":0.247,"max":0.563},"sequentialJobsPerS":11288,"pipelinedJobsPerS":334702,"exit":0,"loadBefore":"4.54 3.47 2.93","loadAfter":"4.54 3.47 2.93"}
+{"variant":"per-job Bun.spawn(bun -e) on host","ms":{"n":20,"min":2.99,"median":3.564,"p90":4.096,"p99":4.896,"max":4.896},"loadBefore":"4.54 3.47 2.93","loadAfter":"4.54 3.47 2.93"}
+{"variant":"per-job bwrap bun -e","ms":{"n":20,"min":8.761,"median":9.472,"p90":10.438,"p99":11.035,"max":11.035},"loadBefore":"4.54 3.47 2.93","loadAfter":"4.54 3.47 2.93"}
+{"variant":"per-job docker exec bun -e (hardened container)","ms":{"n":20,"min":164.561,"median":171.125,"p90":180.414,"p99":192.859,"max":192.859},"loadBefore":"4.54 3.47 2.93","loadAfter":"4.54 3.47 2.93"}
+{"variant":"per-job docker exec echo (exec overhead alone)","ms":{"n":20,"min":169.831,"median":202,"p90":226.418,"p99":240.17,"max":240.17},"loadBefore":"4.54 3.47 2.93","loadAfter":"4.74 3.53 2.95"}

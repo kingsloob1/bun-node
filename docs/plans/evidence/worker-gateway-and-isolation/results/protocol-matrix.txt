@@ -1,0 +1,12 @@
+bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+RESULT http/1.1 serve+fetch                             OK 1.6ms ok
+RESULT https serve+fetch (pinned ca)                    OK 2.5ms ok
+RESULT h2 Bun.serve+fetch                               OK 2.9ms ok via ?
+RESULT h2c node:http2 server+client                     OK 11.6ms ok
+RESULT h2c Bun.serve (no tls) <- node:http2 client      OK 3.7ms ok
+RESULT h3 Bun.serve+fetch (rejectUnauthorized:false)    OK 3.6ms ok
+RESULT ws serve+client                                  OK 1.5ms echo:hi
+RESULT wss serve+client (pinned ca)                     OK 3.8ms echo:hi
+RESULT tcp listen+connect                               OK 1.2ms echo:hi
+RESULT tcp+tls listen+connect                           OK 1.8ms echo:hi
+RESULT udp udpSocket                                    OK 0.3ms echo:hi

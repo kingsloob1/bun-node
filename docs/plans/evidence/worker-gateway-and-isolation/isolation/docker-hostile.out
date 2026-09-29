@@ -1,0 +1,201 @@
+image: oven/bun:1  (1.4.2+744846f84)
+
+### a. shadow: hardened (uid 65534)
+load: 4.18 2.80 2.65
+$ docker run --rm --name gwplan-a1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts shadow
+{"probe":"read /etc/shadow","ok":false,"detail":"EACCES"}
+exit=0
+
+### a. shadow: control root, default
+load: 4.18 2.80 2.65
+$ docker run --rm --name gwplan-a2 -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts shadow
+{"probe":"read /etc/shadow","ok":true,"detail":{"lines":20,"firstUser":"root"}}
+exit=0
+
+### a. uid_map: container root is host root (no userns-remap)
+load: 4.18 2.80 2.65
+$ docker run --rm --name gwplan-a3 oven/bun:1 cat /proc/self/uid_map
+         0          0 4294967295
+exit=0
+
+### b. network: hardened (--network none)
+load: 4.18 2.80 2.65
+$ docker run --rm --name gwplan-b1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts network
+{"probe":"fetch http://1.1.1.1/","ok":false,"detail":{"error":"FailedToOpenSocket","ms":0}}
+{"probe":"fetch http://169.254.169.254/","ok":false,"detail":{"error":"FailedToOpenSocket","ms":0}}
+{"probe":"dns example.com","ok":false,"detail":"ETIMEOUT"}
+exit=0
+
+### b. network: control, default bridge
+load: 4.00 2.78 2.65
+$ docker run --rm --name gwplan-b2 -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts network
+{"probe":"fetch http://1.1.1.1/","ok":true,"detail":{"status":200,"ms":1313}}
+{"probe":"fetch http://169.254.169.254/","ok":false,"detail":{"error":23,"ms":3001}}
+{"probe":"dns example.com","ok":true,"detail":{"address":"104.20.23.154","family":4}}
+exit=0
+
+### c. host: hardened (--network none)
+load: 3.84 2.77 2.65
+$ docker run --rm --name gwplan-c1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts host 172.17.0.1:80 172.17.0.1:57621 172.17.0.1:5432 172.17.0.2:5432 172.17.0.3:27017
+{"probe":"tcp 172.17.0.1:80","ok":false,"detail":{"error":"ECONNREFUSED","ms":4}}
+{"probe":"tcp 172.17.0.1:57621","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+{"probe":"tcp 172.17.0.1:5432","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+{"probe":"tcp 172.17.0.2:5432","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+{"probe":"tcp 172.17.0.3:27017","ok":false,"detail":{"error":"ECONNREFUSED","ms":0}}
+exit=0
+
+### c. host: control, default bridge
+load: 3.84 2.77 2.65
+$ docker run --rm --name gwplan-c2 -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts host 172.17.0.1:80 172.17.0.1:57621 172.17.0.1:5432 172.17.0.2:5432 172.17.0.3:27017
+{"probe":"tcp 172.17.0.1:80","ok":true,"detail":{"ms":4}}
+{"probe":"tcp 172.17.0.1:57621","ok":true,"detail":{"ms":0}}
+{"probe":"tcp 172.17.0.1:5432","ok":false,"detail":{"error":"ECONNREFUSED","ms":1}}
+{"probe":"tcp 172.17.0.2:5432","ok":true,"detail":{"ms":0}}
+{"probe":"tcp 172.17.0.3:27017","ok":true,"detail":{"ms":0}}
+exit=0
+
+### d. forkbomb: hardened (--pids-limit 64)
+host load before: 3.84 2.77 2.65 3/3861 1336407
+### d1
+load: 3.84 2.77 2.65
+$ docker run --rm --name gwplan-d1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts forkbomb
+{"probe":"forkbomb","ok":false,"detail":{"spawned":60,"cap":5000,"firstError":"EAGAIN","ownThreads":"4","pidsMax":"64","ms":20}}
+exit=0
+
+elapsed: .311219138 s; host load after: 3.85 2.79 2.65 2/3862 1336597
+### d. forkbomb: control (--pids-limit 512, otherwise hardened)
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-d2 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 512 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts forkbomb
+{"probe":"forkbomb","ok":false,"detail":{"spawned":508,"cap":5000,"firstError":"EAGAIN","ownThreads":"4","pidsMax":"512","ms":349}}
+exit=0
+
+host load after control: 3.85 2.79 2.65 7/3853 1337287
+
+### e. memhog e1 (--memory 128m --memory-swap 128m, allocate up to 1024MB)
+load: 3.85 2.79 2.65
+$ docker run --name gwplan-e1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts memhog 1024
+{"probe":"memhog","allocatedMb":64}
+inspect: ExitCode=137 OOMKilled=true
+
+### e. memhog e2 (--memory 512m --memory-swap 512m, allocate up to 256MB)
+load: 3.85 2.79 2.65
+$ docker run --name gwplan-e2 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 512m --memory-swap 512m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts memhog 256
+{"probe":"memhog","allocatedMb":192}
+{"probe":"memhog","allocatedMb":256}
+{"probe":"memhog","ok":true,"detail":{"survivedMb":256}}
+inspect: ExitCode=0 OOMKilled=false
+
+### f. read-only root: hardened
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-f1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts rofs
+{"probe":"write /etc/hostile-probe","ok":false,"detail":"EROFS"}
+{"probe":"write /hostile-probe","ok":false,"detail":"EROFS"}
+{"probe":"write /usr/hostile-probe","ok":false,"detail":"EROFS"}
+exit=0
+
+### f. read-only root: control root, writable
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-f2 -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts rofs
+{"probe":"write /etc/hostile-probe","ok":true,"detail":"written"}
+{"probe":"write /hostile-probe","ok":true,"detail":"written"}
+{"probe":"write /usr/hostile-probe","ok":true,"detail":"written"}
+exit=0
+
+### f. tmpfs 16m noexec: hardened, write 32MB
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-f3 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts tmpfs /tmp/fill 32
+{"probe":"write 32MB to /tmp/fill","ok":false,"detail":{"writtenMb":16,"error":"ENOSPC"}}
+{"probe":"exec from /tmp","ok":false,"detail":"EACCES"}
+exit=0
+
+### f. tmpfs control: size=64m, exec (Docker tmpfs defaults to noexec)
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-f4 --read-only --tmpfs /tmp:rw,exec,size=64m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts tmpfs /tmp/fill 32
+{"probe":"write 32MB to /tmp/fill","ok":true,"detail":{"writtenMb":32}}
+{"probe":"exec from /tmp","ok":true,"detail":{"exitCode":0}}
+exit=0
+
+### g. env: hardened, -e FOO=bar only (SECRET_PROBE is exported on host)
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-g1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -e FOO=bar -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts env
+{"probe":"env","ok":true,"detail":{"keys":["BUN_INSTALL_BIN","BUN_RUNTIME_TRANSPILER_CACHE_PATH","FOO","HOME","HOSTNAME","PATH","PWD"]}}
+exit=0
+
+### g. env: -e SECRET_PROBE (name only) copies the host value
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-g2 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -e SECRET_PROBE -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts env
+{"probe":"env","ok":true,"detail":{"keys":["BUN_INSTALL_BIN","BUN_RUNTIME_TRANSPILER_CACHE_PATH","HOME","HOSTNAME","PATH","PWD","SECRET_PROBE"],"SECRET_PROBE":"present"}}
+exit=0
+
+### g. env: --env-file passes every line of the file
+load: 3.85 2.79 2.65
+$ docker run --rm --name gwplan-g3 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none --env-file gwplan-envfile.tmp -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts env
+{"probe":"env","ok":true,"detail":{"keys":["BUN_INSTALL_BIN","BUN_RUNTIME_TRANSPILER_CACHE_PATH","HOME","HOSTNAME","PATH","PWD","SECRET_PROBE"],"SECRET_PROBE":"present"}}
+exit=0
+
+### h. caps: hardened (65534, cap-drop ALL)
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-h1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts caps
+{"probe":"capabilities","ok":true,"detail":{"uid":65534,"gid":65534,"CapEff":"0000000000000000","CapBnd":"0000000000000000","NoNewPrivs":"0","Seccomp":"2"}}
+{"probe":"chown to uid 1","ok":false,"detail":"EPERM"}
+{"probe":"mknod char device","ok":false,"detail":{"exitCode":1,"stderr":"mknod: /tmp/nod-probe: Operation not permitted"}}
+exit=0
+
+### h. caps: control root, default caps
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-h2 --tmpfs /tmp -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts caps
+{"probe":"capabilities","ok":true,"detail":{"uid":0,"gid":0,"CapEff":"00000000a80425fb","CapBnd":"00000000a80425fb","NoNewPrivs":"0","Seccomp":"2"}}
+{"probe":"chown to uid 1","ok":true,"detail":"changed"}
+{"probe":"mknod char device","ok":true,"detail":{"exitCode":0,"stderr":""}}
+exit=0
+
+### h. caps: root with --cap-drop=ALL
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-h3 --cap-drop=ALL --tmpfs /tmp -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts caps
+{"probe":"capabilities","ok":true,"detail":{"uid":0,"gid":0,"CapEff":"0000000000000000","CapBnd":"0000000000000000","NoNewPrivs":"0","Seccomp":"2"}}
+{"probe":"chown to uid 1","ok":false,"detail":"EPERM"}
+{"probe":"mknod char device","ok":false,"detail":{"exitCode":1,"stderr":"mknod: /tmp/nod-probe: Operation not permitted"}}
+exit=0
+
+### h. NNP: hardened + no-new-privileges (snap AppArmor profile kept)
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-h4 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none --security-opt no-new-privileges --security-opt apparmor=snap.docker.dockerd -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts caps
+{"probe":"capabilities","ok":true,"detail":{"uid":65534,"gid":65534,"CapEff":"0000000000000000","CapBnd":"0000000000000000","NoNewPrivs":"1","Seccomp":"2"}}
+{"probe":"chown to uid 1","ok":false,"detail":"EPERM"}
+{"probe":"mknod char device","ok":false,"detail":{"exitCode":1,"stderr":"mknod: /tmp/nod-probe: Operation not permitted"}}
+exit=0
+
+### h. NNP with default AppArmor transition (fails on snap Docker)
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-h5 --security-opt no-new-privileges oven/bun:1 true
+exec /usr/local/bin/docker-entrypoint.sh: operation not permitted
+exit=255
+
+### i. docker socket: hardened, not mounted
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-i1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts dockersock
+{"probe":"exists /var/run/docker.sock","ok":false,"detail":"absent"}
+{"probe":"exists /run/docker.sock","ok":false,"detail":"absent"}
+exit=0
+
+### j. cpu: hardened (--cpus 0.5)
+load: 4.03 2.84 2.67
+$ docker run --rm --name gwplan-j1 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts cpu 300000000
+{"probe":"cpu","ok":true,"detail":{"iterations":300000000,"wallMs":2779,"cpuMs":1384,"cpuShare":0.5,"cpuMax":"50000 100000","x":838144}}
+exit=0
+
+### j. cpu: control (no --cpus)
+load: 4.26 2.91 2.69
+$ docker run --rm --name gwplan-j2 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --user 65534:65534 --cap-drop=ALL --pids-limit 64 --memory 128m --memory-swap 128m --network none --ipc none -v <repo>/docs/plans/evidence/worker-gateway-and-isolation/isolation:/w:ro -w /w oven/bun:1 bun hostile.ts cpu 300000000
+{"probe":"cpu","ok":true,"detail":{"iterations":300000000,"wallMs":1348,"cpuMs":1353,"cpuShare":1,"cpuMax":"max 100000","x":838144}}
+exit=0
+
+### k. disk: --storage-opt size=64m
+load: 4.26 2.91 2.69
+$ docker run --rm --name gwplan-k1 --storage-opt size=64m oven/bun:1 true
+docker: Error response from daemon: --storage-opt is supported only for overlay over xfs with 'pquota' mount option
+
+Run 'docker run --help' for more information
+exit=125
+
+done; leftover gwplan containers: 0
