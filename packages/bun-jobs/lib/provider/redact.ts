@@ -82,10 +82,26 @@ function isOpaque(value: object): boolean {
   );
 }
 
+/** What a value that cannot be read (a throwing getter, a revoked proxy) is logged as. */
+const UNREADABLE = "[Unreadable]";
+
+/** What a reference back to an object already being walked is logged as. */
+const CIRCULAR = "[Circular]";
+
+/** One property of `value`, read without letting a throwing getter escape. */
+function read(value: object, key: PropertyKey): unknown {
+  try {
+    return Reflect.get(value, key);
+  } catch {
+    return UNREADABLE;
+  }
+}
+
 /**
  * A value the walk would not read, in a shape it does: a `URL` as its text,
  * `Headers`, `URLSearchParams` and a `Map` as their entries (keys as text), a
- * `Set` as its items, any other class instance as its own enumerable fields.
+ * `Set` as its items, any other class instance as its own enumerable fields
+ * (each read on its own, so one throwing getter costs only that field).
  */
 function readable(value: object): unknown {
   if (value instanceof URL) {
@@ -107,30 +123,39 @@ function readable(value: object): unknown {
   if (value instanceof Set) {
     return [...value];
   }
-  return { ...value };
+  return Object.fromEntries(
+    Object.keys(value).map((key) => [key, read(value, key)]),
+  );
 }
 
-/** A field's value: replaced whole under a credential name, else walked. */
+/**
+ * A field of `owner`: replaced whole under a credential name (without
+ * reading it), else read — a throwing getter reads as {@link UNREADABLE} —
+ * and walked.
+ */
 function redactField(
+  owner: object,
   key: string | symbol,
-  value: unknown,
   redact: (text: string) => string,
   seen: WeakMap<object, unknown>,
   depth: number,
 ): unknown {
-  return typeof key === "string" &&
-    isCredentialKey(key) &&
-    value !== undefined &&
-    value !== null
-    ? DEFAULT_REDACT_REPLACEMENT
-    : redactValue(value, redact, seen, depth);
+  if (typeof key === "string" && isCredentialKey(key)) {
+    const value = read(owner, key);
+    return value === undefined || value === null
+      ? value
+      : DEFAULT_REDACT_REPLACEMENT;
+  }
+  return redactValue(read(owner, key), redact, seen, depth);
 }
 
 /**
  * A copy of `value` with every string redacted: strings, arrays, plain
  * objects and errors (message, stack, cause and own fields) are walked,
- * other containers converted first (see {@link readable}), and anything
- * deeper than {@link MAX_DEPTH} replaced whole.
+ * other containers converted first (see {@link readable}), anything deeper
+ * than {@link MAX_DEPTH} replaced whole, and a cycle cut at
+ * {@link CIRCULAR}. It never throws: what cannot be read is
+ * {@link UNREADABLE}.
  */
 function redactValue(
   value: unknown,
@@ -141,7 +166,26 @@ function redactValue(
   if (typeof value === "string") {
     return redact(value);
   }
-  if (typeof value !== "object" || value === null || isOpaque(value)) {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  try {
+    return redactObject(value, redact, seen, depth);
+  } catch {
+    // A revoked proxy, an exotic object whose traps throw: nothing of it
+    // is logged, and the log call still succeeds.
+    return UNREADABLE;
+  }
+}
+
+/** {@link redactValue} for an object; may throw on an exotic one. */
+function redactObject(
+  value: object,
+  redact: (text: string) => string,
+  seen: WeakMap<object, unknown>,
+  depth: number,
+): unknown {
+  if (isOpaque(value)) {
     return value;
   }
   if (depth > MAX_DEPTH) {
@@ -151,36 +195,41 @@ function redactValue(
   if (seen.has(value)) {
     return seen.get(value);
   }
+  // While an object is being walked, a reference back to it is a cycle, cut
+  // at CIRCULAR, so the copy stays serialisable; once walked, a later
+  // (acyclic) reference shares its copy.
   if (Array.isArray(value)) {
     const copy: unknown[] = [];
-    seen.set(value, copy);
-    for (const item of value) {
-      copy.push(redactValue(item, redact, seen, depth + 1));
+    seen.set(value, CIRCULAR);
+    for (let index = 0; index < value.length; index++) {
+      copy.push(redactValue(read(value, index), redact, seen, depth + 1));
     }
+    seen.set(value, copy);
     return copy;
   }
   if (value instanceof Error) {
     // Same prototype, so the error's class and name survive for the sink.
     const copy = Object.create(Object.getPrototypeOf(value) as object) as Error;
-    seen.set(value, copy);
+    seen.set(value, CIRCULAR);
     for (const key of Reflect.ownKeys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-      if ("value" in descriptor) {
-        descriptor.value = redactField(
-          key,
-          descriptor.value,
-          redact,
-          seen,
-          depth + 1,
-        );
-      }
-      Object.defineProperty(copy, key, descriptor);
+      // A getter is read and replaced by its (redacted) value, so the sink
+      // never calls it and gets the raw text.
+      Object.defineProperty(copy, key, {
+        value: redactField(value, key, redact, seen, depth + 1),
+        enumerable: descriptor.enumerable,
+        writable: true,
+        configurable: true,
+      });
     }
+    seen.set(value, copy);
     return copy;
   }
   if (!isPlainObject(value)) {
-    const converted = readable(value);
-    const copy = redactValue(converted, redact, seen, depth);
+    // Registered before converting: a reference back to it, however many
+    // there are, is cut once rather than walked again to the depth limit.
+    seen.set(value, CIRCULAR);
+    const copy = redactValue(readable(value), redact, seen, depth);
     seen.set(value, copy);
     return copy;
   }
@@ -195,10 +244,17 @@ function redactFields(
   depth = 0,
 ): LogFields {
   const copy: LogFields = {};
-  seen.set(fields, copy);
-  for (const [key, value] of Object.entries(fields)) {
-    copy[key] = redactField(key, value, redact, seen, depth + 1);
+  seen.set(fields, CIRCULAR);
+  let keys: string[];
+  try {
+    keys = Object.keys(fields);
+  } catch {
+    return { value: UNREADABLE };
   }
+  for (const key of keys) {
+    copy[key] = redactField(fields, key, redact, seen, depth + 1);
+  }
+  seen.set(fields, copy);
   return copy;
 }
 
@@ -207,9 +263,11 @@ function redactMessage(
   message: string | Error,
   redact: (text: string) => string,
 ): string | Error {
-  return typeof message === "string"
-    ? redact(message)
-    : (redactValue(message, redact, new WeakMap(), 0) as Error);
+  if (typeof message === "string") {
+    return redact(message);
+  }
+  const copy = redactValue(message, redact, new WeakMap(), 0);
+  return copy instanceof Error ? copy : UNREADABLE;
 }
 
 /** The levels a `Logger` logs at, `log` included. */

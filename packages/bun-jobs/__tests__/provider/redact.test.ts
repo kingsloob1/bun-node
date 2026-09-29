@@ -216,6 +216,100 @@ describe("redactingLogger", () => {
     expect(text).toContain("[REDACTED]");
   });
 
+  it("keeps a cyclic class instance or Map small: each cycle is cut once (round 4 #4)", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    class Node {
+      token = "t";
+      a: unknown = this;
+      b: unknown = this;
+      c: unknown = this;
+      d: unknown = this;
+      e: unknown = this;
+      f: unknown = this;
+      g: unknown = this;
+    }
+    const map = new Map<string, unknown>([["password", "p"]]);
+    map.set("self", map);
+    map.set("again", map);
+    const plain: Record<string, unknown> = { region: "eu" };
+    plain.self = plain;
+    const shared = { region: "eu" };
+    log.info("cyclic", {
+      node: new Node(),
+      map,
+      plain,
+      pair: [shared, shared],
+    });
+    // Serialisable: every cycle is cut, a shared (acyclic) object is not.
+    const size = JSON.stringify(events[0]!.fields).length;
+    expect((events[0]!.fields.plain as Record<string, unknown>).self).toBe(
+      "[Circular]",
+    );
+    expect(events[0]!.fields.pair).toEqual([
+      { region: "eu" },
+      { region: "eu" },
+    ]);
+    expect(size).toBeLessThan(2_000);
+    expect(JSON.stringify(events[0]!.fields)).not.toMatch(/"t"|"p"/);
+  });
+
+  it("never throws: a throwing getter, a revoked proxy (round 4 #4)", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, []);
+    class Throwing {
+      region = "eu";
+      get broken(): string {
+        throw new Error("getter");
+      }
+    }
+    const instance = new Throwing();
+    Object.defineProperty(instance, "own", {
+      enumerable: true,
+      get: () => {
+        throw new Error("own getter");
+      },
+    });
+    const plain = {
+      region: "eu",
+      get secret(): string {
+        throw new Error("plain getter");
+      },
+    };
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(() =>
+      log.info("odd", { instance, plain, proxy, list: [proxy] }),
+    ).not.toThrow();
+    const fields = events[0]!.fields as Record<string, unknown> & {
+      instance: Record<string, unknown>;
+      plain: Record<string, unknown>;
+    };
+    expect(fields.instance.region).toBe("eu");
+    expect(fields.instance.own).toBe("[Unreadable]");
+    expect(fields.plain.secret).toBe("[REDACTED]");
+    expect(fields.plain.region).toBe("eu");
+    expect(fields.proxy).toBe("[Unreadable]");
+  });
+
+  it("redacts an error's getter-only own field (round 4 #4 nit)", () => {
+    const { logger, events } = createTestLogger();
+    const log = redactingLogger(logger, [SECRET]);
+    const error = new Error("refused");
+    Object.defineProperty(error, "detail", {
+      enumerable: true,
+      get: () => `with ${SECRET}`,
+    });
+    Object.defineProperty(error, "secret", {
+      enumerable: true,
+      get: () => "getter-secret",
+    });
+    log.error("failed", { error });
+    const logged = events[0]!.error as Error & Record<string, unknown>;
+    expect(logged.detail).toBe("with [REDACTED]");
+    expect(logged.secret).toBe("[REDACTED]");
+  });
+
   it("fails without the wrapper (the control)", () => {
     const { logger, events } = createTestLogger();
     logger.info(`calling with ${SECRET}`);
@@ -337,6 +431,49 @@ describe("a provider's call context, through a controller", () => {
     expect(logged[0]!.fields.db).toBe("postgres://[REDACTED]@db/x");
     // Bound to the attempt, as before.
     expect(logged[0]!.bindings.attempt).toBe(logged[0]!.fields.id);
+  });
+
+  it("redacts a thrown provider error, its message and its cause, from the controller's own logs (round 4 #6)", async () => {
+    const leaky = defineComputeProvider({
+      name: "test-redact-throw",
+      version: "1.0.0",
+      kind: "leaky",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      config: toStandardSchema<{ token: string }>((input) => ({
+        value: input as { token: string },
+      })),
+      secrets: ["token"],
+      summon: (config): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => {
+          throw new Error(`denied for ${config.token}`, {
+            cause: new Error(`token ${config.token} expired`),
+          });
+        },
+      }),
+    });
+    const { result, status, events } = await run(leaky({ token: SECRET }));
+    expect(result).toMatchObject({ outcome: "failed" });
+    const failed = events.find(
+      (event) => event.message === "summoner call failed",
+    );
+    expect(failed).toBeDefined();
+    expect(failed!.error?.message).toBe("denied for [REDACTED]");
+    expect((failed!.error?.cause as Error).message).toBe(
+      "token [REDACTED] expired",
+    );
+    const text = JSON.stringify(
+      events.map((event) => ({
+        message: event.message,
+        fields: event.fields,
+        error: event.error?.message,
+        stack: event.error?.stack,
+        cause: (event.error?.cause as Error | undefined)?.message,
+        causeStack: (event.error?.cause as Error | undefined)?.stack,
+      })),
+    );
+    expect(text).not.toContain(SECRET);
+    expect(JSON.stringify(status)).not.toContain(SECRET);
   });
 
   it("drops a fact holding a declared secret from status().summoner.facts, and from the DTO", async () => {
