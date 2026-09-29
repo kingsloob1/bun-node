@@ -216,9 +216,24 @@ for (const backend of BACKENDS) {
             expect(observed.targetCloses).toEqual(
               when === "drain" ? ["force"] : ["graceful", "force"],
             );
-            // The run had stopped: a child by the time the closes resolved,
-            // a thread — whose termination is asynchronous — moments later.
-            expect(observed.beacon.later).toBe(observed.beacon.settled);
+            // The run stopped: its beacon settled, where one left spinning
+            // (for 30 s) never does. How soon is not asserted — for a thread
+            // that is Bun's termination latency (oven-sh/bun#44216).
+            expect(observed.beacon.settled).toBe(true);
+            if (kind === "worker-thread") {
+              if (observed.overrunWarns === 0) {
+                // The close waited for the thread's `close`: nothing it did
+                // came after the closes resolved.
+                expect(observed.beacon.lastChangeMs).toBeNull();
+              } else {
+                // Bun ran past the reap window; the target said so, once.
+                expect(observed.overrunWarns).toBe(1);
+                // eslint-disable-next-line no-console -- worth seeing in the run's output.
+                console.warn(
+                  `${kind}/${when}: the thread outlived the reap window; its beacon last changed ${observed.beacon.lastChangeMs} ms after the close resolved`,
+                );
+              }
+            }
             if (kind === "child-process") {
               expect(observed.aliveAtClose).toBe(false);
               expect(childAfterExit).toBe(false);

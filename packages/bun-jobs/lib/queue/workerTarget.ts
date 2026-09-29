@@ -30,6 +30,7 @@ import {
   DEFAULT_START_TIMEOUT,
 } from "../shared/constants";
 import { ConfigError, UnrecoverableJobError } from "../shared/errors";
+import { resolveLogger } from "../shared/logger";
 
 /**
  * Where a worker's attempts run: the `target` option.
@@ -589,6 +590,12 @@ interface Runner {
   queue: string;
   /** The worker's id. */
   workerId: string;
+  /**
+   * Where the target reports what it could not do, such as a `worker-thread`
+   * run whose thread outlived a close's reap window. The worker passes its
+   * own, already bound to it; defaults to a console logger.
+   */
+  logger?: Logger;
 }
 
 /**
@@ -606,16 +613,28 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   readonly #target: LocalWorkerTarget;
   /** Who runs the attempts, for the run context the executors need. */
   readonly #runner: Runner;
+  /** Where a close reports a thread it could not see stop. */
+  readonly #logger: Logger;
   /** The executor, for `"worker-thread"` and `"child-process"`. */
   #executor: Executor | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
   /**
-   * Every run started and not yet ended, including one the worker has given
-   * up on: a timed-out attempt leaves the worker's books straight away, but
-   * its child is still being killed until its handle's `done` settles.
+   * Every run started and not yet ended, by its run id, including one the
+   * worker has given up on: a timed-out attempt leaves the worker's books
+   * straight away, but its child is still being killed until its handle's
+   * `done` settles. A `worker-thread` run stays until its thread has actually
+   * stopped — its handle's `exited` — which can be well after `done`: its
+   * outcome is decided when the executor calls `terminate()`, and the thread
+   * keeps running until the termination takes (oven-sh/bun#44216).
    */
-  readonly #live = new Set<ExecutorHandle>();
+  readonly #live = new Map<ExecutorHandle, string>();
+  /**
+   * The runs a close has already warned about for outliving its reap window,
+   * so a force over a graceful close, or a second close, warns about each
+   * thread once.
+   */
+  readonly #warned = new WeakSet<ExecutorHandle>();
   /**
    * The live runs already asked to stop — by their attempt's signal — whose
    * escalation is under way. A graceful close leaves them to it rather than
@@ -661,6 +680,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     this.file = file;
     this.#target = target;
     this.#runner = runner;
+    this.#logger = resolveLogger(runner.logger);
   }
 
   /**
@@ -754,7 +774,16 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       },
     });
 
-    this.#live.add(handle);
+    this.#live.set(handle, runContext.runId);
+    // Off the books once the run has really stopped, not merely been decided:
+    // for a thread, that is its `exited`, so a close that starts after the
+    // attempt has settled still waits for a thread that is still dying.
+    // Neither promise rejects.
+    void (handle.exited ?? handle.done).then(() => {
+      this.#live.delete(handle);
+      this.#stopping.delete(handle);
+      this.#killed.delete(handle);
+    });
 
     const stop = () => {
       this.#stopping.add(handle);
@@ -782,9 +811,6 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       );
     } finally {
       signal.removeEventListener("abort", stop);
-      this.#live.delete(handle);
-      this.#stopping.delete(handle);
-      this.#killed.delete(handle);
     }
   }
 
@@ -805,6 +831,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    * at once, synchronously, before this returns anything to await; the only
    * wait is `TARGET_CLOSE_REAP` at most, to see them reaped. A child's cleanup
    * is skipped, which is what `force` asks for.
+   *
+   * "Reaped" means stopped, not decided: a child once its exit is seen, a
+   * `worker-thread` run once its thread's `close` has fired (its handle's
+   * `exited`), since `terminate()` returns before the thread stops. A thread
+   * still running when `TARGET_CLOSE_REAP` runs out does not hold the close;
+   * it resolves anyway and logs one `warn` naming the run.
    *
    * Otherwise, in three steps:
    *
@@ -846,9 +878,8 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       return;
     }
 
-    const live = [...this.#live];
-    // `done` never rejects: it resolves with how the run ended.
-    const ended = Promise.all(live.map(async (handle) => await handle.done));
+    const live = [...this.#live.keys()];
+    const ended = FileTargetExecutor.#stopped(live);
 
     for (const handle of live) {
       if (!this.#stopping.has(handle)) {
@@ -870,7 +901,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
             this.#forceStop(handle);
           }
         }
-        finish(this.#reaped(ended));
+        finish(this.#reaped(live));
       }, TARGET_CLOSE_GRACE);
 
       let finished = false;
@@ -900,19 +931,14 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    * `TARGET_CLOSE_REAP` at most.
    */
   #kill(): Promise<void> {
-    const live = [...this.#live];
+    const live = [...this.#live.keys()];
     // Killed here, synchronously, before anything is awaited: a forced
     // close is typically a shutdown hook's, and the process may exit on
     // the very next line.
     for (const handle of live) {
       this.#forceStop(handle);
     }
-    const reaped =
-      live.length === 0
-        ? Promise.resolve()
-        : this.#reaped(
-            Promise.all(live.map(async (handle) => await handle.done)),
-          );
+    const reaped = live.length === 0 ? Promise.resolve() : this.#reaped(live);
     this.#graceful?.finish(reaped);
     return reaped;
   }
@@ -927,21 +953,77 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   }
 
   /**
-   * Resolves once killed runs have ended, or after `TARGET_CLOSE_REAP` at
-   * most. The kills are already sent; this is seeing the children reaped, so
-   * `close()` resolves with nothing alive. Its timer is ref'd for the same
-   * reason as the deadline's, and bounded so the wait ends strictly inside
-   * the worker's own bound.
+   * Resolves once every one of `handles` has stopped: a child when its exit
+   * settles `done`, a thread when its `close` settles `exited`. Neither
+   * rejects.
    */
-  async #reaped(ended: Promise<unknown>): Promise<void> {
+  static async #stopped(handles: ExecutorHandle[]): Promise<void> {
+    await Promise.all(
+      handles.map(async (handle) => await (handle.exited ?? handle.done)),
+    );
+  }
+
+  /**
+   * Resolves once killed runs have stopped, or after `TARGET_CLOSE_REAP` at
+   * most. The kills are already sent; this is seeing the children reaped and
+   * the threads gone, so `close()` resolves with nothing alive. Its timer is
+   * ref'd for the same reason as the deadline's, and bounded so the wait ends
+   * strictly inside the worker's own bound.
+   *
+   * The bound is kept for threads too, although it is Bun's to overrun: a
+   * busy `Worker` goes on running after `terminate()`, typically for tens of
+   * milliseconds but for up to a couple of seconds on a loaded machine
+   * (oven-sh/bun#44216), where Node stops one within a couple of
+   * milliseconds. Waiting longer would push the close past the worker's own
+   * bound, which is worse; so a thread still running at the bound is left to
+   * stop on its own — it always does — and logged, once, by
+   * {@link #warnOverrun}.
+   */
+  async #reaped(handles: ExecutorHandle[]): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      ended,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, TARGET_CLOSE_REAP);
+    const inTime = await Promise.race([
+      FileTargetExecutor.#stopped(handles).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(resolve, TARGET_CLOSE_REAP, false);
       }),
     ]);
     clearTimeout(timer);
+    if (!inTime) {
+      this.#warnOverrun(handles);
+    }
+  }
+
+  /**
+   * Logs one `warn` for the `worker-thread` runs among `handles` whose thread
+   * has still not stopped, leaving out any already warned about. A child that
+   * is slow to be reaped is not reported: that wait is what it always was.
+   */
+  #warnOverrun(handles: ExecutorHandle[]): void {
+    const runIds: string[] = [];
+    for (const handle of handles) {
+      const runId = this.#live.get(handle);
+      if (
+        handle.exited === undefined ||
+        runId === undefined ||
+        this.#warned.has(handle)
+      ) {
+        continue;
+      }
+      this.#warned.add(handle);
+      runIds.push(runId);
+    }
+    if (runIds.length === 0) {
+      return;
+    }
+    this.#logger.warn(
+      `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
+      {
+        runIds,
+        reapMs: TARGET_CLOSE_REAP,
+        file: this.file,
+        workerId: this.#runner.workerId,
+      },
+    );
   }
 
   /** The executor for this kind, built on first use. */

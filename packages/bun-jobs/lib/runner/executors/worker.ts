@@ -43,6 +43,17 @@ export class WorkerExecutor implements Executor {
 
   start<TArgs>(options: ExecutorStartOptions<TArgs>): ExecutorHandle {
     const outcome = createDeferred<RunOutcome>();
+    // Resolved by the worker's `close` event, the one sign that its thread has
+    // really stopped: `terminate()` returns nothing to wait on, and a busy
+    // thread keeps running for tens of milliseconds after it — seconds, on a
+    // loaded machine (oven-sh/bun#44216). Bun fires `close` on every path
+    // that ends a worker: after `terminate()`, after an uncaught error or a
+    // failure to load, and when it finishes on its own. The listener is added
+    // synchronously in `start()`, before any event can be dispatched, so a
+    // `close` fired before anyone awaits this still resolves it, and a
+    // `terminate()` on a worker that has already closed finds it resolved
+    // rather than waiting for an event that has already gone.
+    const exited = createDeferred<void>();
     const context = toSerializable(options);
 
     let reported: RunOutcome | undefined;
@@ -88,7 +99,11 @@ export class WorkerExecutor implements Executor {
       worker.unref();
     }
 
-    /** Settles the run exactly once and disposes of the worker. */
+    /**
+     * Settles the run exactly once and disposes of the worker. `terminate()`
+     * only asks: the thread may still be running when this returns, which is
+     * what `exited` is for.
+     */
     const settle = (result: RunOutcome): void => {
       if (settled) {
         return;
@@ -158,11 +173,23 @@ export class WorkerExecutor implements Executor {
         case "ready":
           send({ t: "start", runId: context.runId, ctx: context });
           break;
+        // Once the run is settled, a dying thread's progress and messages are
+        // dropped: they act on the run — a queued job's `updateProgress`, a
+        // reply through its driver — and the run is over, its driver possibly
+        // closing. Its log lines and console output are still delivered,
+        // since they only report, and a thread's last line may be the one
+        // that says why it was killed. (Bun 1.4.3 discards whatever a worker
+        // posted that is still undelivered when `terminate()` runs, so today
+        // this is a guard rather than a change anyone sees.)
         case "progress":
-          options.events.onProgress(message.value);
+          if (!settled) {
+            options.events.onProgress(message.value);
+          }
           break;
         case "message":
-          options.events.onMessage(message.data);
+          if (!settled) {
+            options.events.onMessage(message.data);
+          }
           break;
         case "log":
           options.events.onLog(message.level, message.message, message.fields);
@@ -191,6 +218,7 @@ export class WorkerExecutor implements Executor {
     });
 
     worker.addEventListener("close", () => {
+      exited.resolve();
       settle(
         reported ?? {
           status: "failed",
@@ -223,6 +251,7 @@ export class WorkerExecutor implements Executor {
 
     return {
       done: outcome.promise,
+      exited: exited.promise,
       stop: (reason, stopOptions) => {
         if (!reported) {
           reported = {

@@ -84,6 +84,19 @@ export interface ExecutorHandle {
   /** Resolves when the run settles. Never rejects. */
   done: Promise<RunOutcome>;
   /**
+   * Settles when the run's thread or process has actually stopped; absent
+   * when `done` already means that. Never rejects.
+   *
+   * Only `worker-thread` sets it: its `done` settles the moment the executor
+   * calls `terminate()`, which does not wait, and a busy thread keeps running
+   * for a while after it (oven-sh/bun#44216). `child-process`'s `done` already
+   * waits for the exit, and `in-process` has no thread or process of its own
+   * to wait for (a handler it detached on a timeout cannot be stopped at all).
+   * A caller that must see the run gone, rather than decided — a close that
+   * promises nothing is left running — awaits `exited ?? done`.
+   */
+  exited?: Promise<void>;
+  /**
    * Asks the run to stop: aborts its signal, and escalates to `SIGTERM` then
    * `SIGKILL` for a child that ignores it. `force` skips straight to the end
    * of the escalation.

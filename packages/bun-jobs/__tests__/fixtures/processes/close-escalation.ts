@@ -5,7 +5,11 @@ import type {
 } from "../../../lib/index";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { createDeferred, noopLogger } from "@kingsleyweb/bun-common";
+import {
+  createDeferred,
+  createTestLogger,
+  noopLogger,
+} from "@kingsleyweb/bun-common";
 import { BunQueue, BunQueueWorker, createDriver } from "../../../lib/index";
 import { FileTargetExecutor } from "../../../lib/queue/workerTarget";
 
@@ -55,14 +59,45 @@ export interface CloseEscalationObservation {
   /** Whether the child was alive when the closes resolved (child-process). */
   aliveAtClose: boolean | null;
   /**
-   * The beacon 200 ms after the closes resolved — time for a thread's
-   * `terminate()`, which is asynchronous, to take — and 400 ms after that.
+   * The beacon, watched from the moment the closes resolved until it has not
+   * changed for {@link STABLE_MS} (see {@link watchBeacon}).
    */
-  beacon: { settled: string; later: string };
+  beacon: BeaconWatch;
+  /**
+   * How many times the target warned that a thread outlived its close's reap
+   * window: Bun's termination running long (oven-sh/bun#44216), which a
+   * loaded machine can make it. The close resolved regardless.
+   */
+  overrunWarns: number;
+}
+
+/** What {@link watchBeacon} saw. */
+export interface BeaconWatch {
+  /**
+   * Whether the beacon stopped changing — unchanged for {@link STABLE_MS} —
+   * within {@link WATCH_MS}. A run left spinning never does.
+   */
+  settled: boolean;
+  /** The last value read. */
+  value: string;
+  /**
+   * Milliseconds from the closes resolving to the last change seen, or `null`
+   * when the first read, taken as they resolved, was already the last value.
+   */
+  lastChangeMs: number | null;
 }
 
 /** How long each close is given before the scenario reports it pending. */
 const BOUND_MS = 8_000;
+
+/** How often {@link watchBeacon} reads the beacon, in milliseconds. */
+const POLL_MS = 15;
+
+/** How long the beacon must stay unchanged to count as settled. */
+const STABLE_MS = 300;
+
+/** How long {@link watchBeacon} watches before giving up on it settling. */
+const WATCH_MS = 5_000;
 
 /** The graceful close's `timeout` in the `drain` shape; no other timer uses it. */
 const GRACE_MS = 43_217;
@@ -90,6 +125,38 @@ async function appears(file: string): Promise<string> {
   throw new Error(`${file} never appeared`);
 }
 
+/**
+ * Reads the beacon every {@link POLL_MS} until it has not changed for
+ * {@link STABLE_MS}, or {@link WATCH_MS} has passed. Polling rather than
+ * reading at fixed offsets: how soon a thread stops after `terminate()` is
+ * Bun's, tens of milliseconds idle and past a second under load
+ * (oven-sh/bun#44216), so a fixed read measured the machine. What the test
+ * asserts is that it stops at all; the run spins for 30 s, so one left
+ * running never settles.
+ */
+async function watchBeacon(since: number): Promise<BeaconWatch> {
+  const read = async () =>
+    await Bun.file(scenario.beaconFile)
+      .text()
+      .catch(() => "");
+  let value = await read();
+  let lastChangeMs: number | null = null;
+  let stableSince = Date.now();
+  const deadline = Date.now() + WATCH_MS;
+  while (Date.now() < deadline) {
+    await Bun.sleep(POLL_MS);
+    const next = await read();
+    if (next !== value) {
+      value = next;
+      stableSince = Date.now();
+      lastChangeMs = stableSince - since;
+    } else if (Date.now() - stableSince >= STABLE_MS) {
+      return { settled: true, value, lastChangeMs };
+    }
+  }
+  return { settled: false, value, lastChangeMs };
+}
+
 const graceArmed = createDeferred<void>();
 if (scenario.when === "drain") {
   // Marks the moment the graceful close starts waiting on the attempt: the
@@ -109,6 +176,8 @@ if (scenario.when === "drain") {
 
 const processor = new URL("../handlers/job-spin-beacon.ts", import.meta.url);
 const targetCloses: ("graceful" | "force")[] = [];
+/** The target's logger, to count the warnings a thread overrunning its reap gets. */
+const targetLog = createTestLogger();
 const gracefulTargetClose = createDeferred<void>();
 /** The built-in executor, unchanged but for noting its `close()` calls. */
 const target: WorkerTargetFactory = (context) => {
@@ -123,6 +192,7 @@ const target: WorkerTargetFactory = (context) => {
       namespace: context.namespace,
       queue: context.queue,
       workerId: context.workerId,
+      logger: targetLog.logger,
     },
   );
   const close = executor.close.bind(executor);
@@ -194,16 +264,17 @@ const both = await Promise.race([
   Promise.all([graceful, forced]).then(() => true),
   Bun.sleep(BOUND_MS).then(() => false),
 ]);
-const closeMs = both ? Date.now() - forcedAt : null;
+const closedAt = Date.now();
+const closeMs = both ? closedAt - forcedAt : null;
 
 const aliveAtClose =
   scenario.kind === "child-process"
     ? !["", "Z"].includes(stat(child.pid).slice(0, 1))
     : null;
-await Bun.sleep(200);
-const settled = await Bun.file(scenario.beaconFile).text();
-await Bun.sleep(400);
-const later = await Bun.file(scenario.beaconFile).text();
+const beacon = await watchBeacon(closedAt);
+const overrunWarns = targetLog.events.filter(
+  (event) => event.level === "warn" && event.message.includes("#44216"),
+).length;
 
 // eslint-disable-next-line no-console -- stdout is how the scenario reports.
 console.log(
@@ -213,7 +284,8 @@ console.log(
     resolved,
     targetCloses,
     aliveAtClose,
-    beacon: { settled, later },
+    beacon,
+    overrunWarns,
   } satisfies CloseEscalationObservation),
 );
 // No waiting for anything: whatever the close left running is orphaned now.
