@@ -3355,7 +3355,9 @@ within tens of milliseconds, but a loaded machine can take it past that
 ([oven-sh/bun#44216](https://github.com/oven-sh/bun/issues/44216)). In that
 case the run is recorded anyway and the runner logs one `warn` naming it. A run
 that returns or throws is recorded at once; `stop()` and `kill()` still wait,
-bounded the same way, for its thread to go.
+bounded the same way, for its thread to go. A killed or timed-out run's
+`durationMs` includes that wait, so it can read up to 500 ms past its
+`timeout`.
 
 Runner events:
 

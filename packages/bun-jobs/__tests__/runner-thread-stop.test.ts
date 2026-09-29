@@ -176,7 +176,7 @@ async function expectStoppedBy(
   const warned = overrunWarnings(spin.events);
   if (warned.length > 0) {
     expect(warned).toHaveLength(1);
-    expect(warned[0]!.message).toContain(spin.runId);
+    expect(warned[0]!.fields.runId).toBe(spin.runId);
     return;
   }
   const lastStamp = Number(last.value);
@@ -317,7 +317,7 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
 
     const warnings = overrunWarnings(events);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.message).toContain(outcome.runId);
+    expect(warnings[0]!.fields.runId).toBe(outcome.runId);
     expect(warnings[0]!.fields).toMatchObject({
       runId: outcome.runId,
       reapMs: RUN_THREAD_REAP,

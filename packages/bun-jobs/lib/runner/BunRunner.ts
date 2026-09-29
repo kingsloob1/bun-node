@@ -248,10 +248,11 @@ export class BunRunner<
    */
   readonly #settling = new Set<Promise<RunStatus>>();
   /**
-   * Each `worker-thread` run's wait for its thread to stop, by run id, from
-   * the moment the run settles until its handle's `exited` or
-   * {@link RUN_THREAD_REAP}, whichever is first; removed when it resolves. It
-   * never rejects. One wait per run, shared by `#finish`, `kill()` and
+   * Each `worker-thread` run's wait for its thread to stop, by run id. The
+   * entry exists from the run's start; its bound, {@link RUN_THREAD_REAP},
+   * counts from the moment the run settles, and it resolves on its handle's
+   * `exited` or that bound, whichever is first, then is removed. It never
+   * rejects. One wait per run, shared by `#finish`, `kill()` and
    * `stop()`, so an overrunning thread is warned about once.
    */
   readonly #exits = new Map<string, Promise<void>>();
@@ -1981,7 +1982,7 @@ export class BunRunner<
       clearTimeout(timer);
       if (!inTime) {
         this.#logger.warn(
-          `worker-thread run ${runId} had not stopped ${RUN_THREAD_REAP} ms after being terminated; the runner stopped waiting for it (oven-sh/bun#44216)`,
+          "worker-thread run had not stopped within the reap window after being terminated; the runner stopped waiting for it (oven-sh/bun#44216)",
           { runId, reapMs: RUN_THREAD_REAP, file: this.file },
         );
       }
