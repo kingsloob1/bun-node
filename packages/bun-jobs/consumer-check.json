@@ -30,6 +30,7 @@
         "defineSummoner",
         "runSummoned",
         "ConfigError",
+        "ProviderError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
       ],
@@ -65,6 +66,7 @@
         "DemandCounts",
         "SummonPolicy",
         "Summoner",
+        "ProviderErrorKind",
         "SummonRequest",
         "SummonResult",
         "SummonCheckResult",
@@ -143,7 +145,8 @@
         "CONFIGURED_PROVIDER",
         "toStandardSchema",
         "ConfigError",
-        "JobsError"
+        "JobsError",
+        "ProviderError"
       ],
       "types": [
         "ConfiguredProvider",
@@ -164,9 +167,10 @@
         "StandardSchemaV1",
         "Logger",
         "LoggerLike",
-        "LogLevel"
+        "LogLevel",
+        "ProviderErrorKind"
       ],
-      "snippet": "const p = m.defineComputeProvider({ name: \"x\", version: \"1.0.0\", kind: \"x\", apiVersion: { core: \"0.1\", summon: \"0.1\" }, summon: () => ({ capabilities: { style: \"launch\", dedupe: { kind: \"none\" }, passes: \"argv\", bootBudgetMs: 1, shutdown: { signal: \"SIGTERM\", graceMs: 1 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async () => ({ status: \"started\", handles: [] }) }) });\nexport type _p = Expect<IsAny<typeof p>>;\nconst configured = p();\nexport const _facet: t.SummonFacet = configured.summon;\nexport const _ready: Promise<void> = configured.ready;\ninterface AcmeConfig { region: string; apiToken: string }\nconst acme = m.defineComputeProvider({ name: \"@acme/bun-jobs-provider-acme\", version: \"1.0.0\", kind: \"acme\", apiVersion: { core: m.COMPUTE_PROVIDER_API.core, summon: m.COMPUTE_PROVIDER_API.summon }, config: m.toStandardSchema<AcmeConfig>((input) => ({ value: input as AcmeConfig })), secrets: [\"apiToken\"], describe: (config) => ({ region: config.region }), summon: (config, context) => {\n  const _region: string = config.region;\n  const _api: string = context.api.core;\n  return { capabilities: { style: \"scale\", dedupe: { kind: \"token\", maxLength: 64, charset: \"A-Za-z0-9-\", scope: \"region\", strict: true }, passes: \"argv\", bootBudgetMs: 60_000, shutdown: { signal: \"SIGTERM\", graceMs: 10_000 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async (request, ctx) => { const _argv: readonly string[] = request.argv; ctx.logger.info(\"summoning\", { id: request.id }); return { status: \"started\", handles: [] }; }, release: async () => {} };\n} });\nconst configuredAcme = acme({ region: \"eu\", apiToken: \"t\" });\nexport type _config = Expect<IsAny<typeof configuredAcme.config>>;\nexport const _configTyped: Equal<typeof configuredAcme.config, AcmeConfig> = true;\nexport const _checks: Promise<readonly t.ProviderCheck[]> = configuredAcme.validate();\n// Generic, so checked with their arguments rather than in \"types\".\nexport type _provider = Expect<IsAny<t.ComputeProvider<AcmeConfig>>>;\nexport type _definition = Expect<IsAny<t.ComputeProviderDefinition<AcmeConfig>>>;\nexport const _acmeTyped: t.ComputeProvider<unknown, AcmeConfig, true> = acme;\nexport const _error: t.JobsError = new m.ConfigError(\"bad config\");\nexport const _logger: (logger: t.Logger, level: t.LogLevel) => boolean = (logger, level) => logger.isLevelEnabled(level);"
+      "snippet": "const p = m.defineComputeProvider({ name: \"x\", version: \"1.0.0\", kind: \"x\", apiVersion: { core: \"0.1\", summon: \"0.1\" }, summon: () => ({ capabilities: { style: \"launch\", dedupe: { kind: \"none\" }, passes: \"argv\", bootBudgetMs: 1, shutdown: { signal: \"SIGTERM\", graceMs: 1 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async () => ({ status: \"started\", handles: [] }) }) });\nexport type _p = Expect<IsAny<typeof p>>;\nconst configured = p();\nexport const _facet: t.SummonFacet = configured.summon;\nexport const _ready: Promise<void> = configured.ready;\ninterface AcmeConfig { region: string; apiToken: string }\nconst acme = m.defineComputeProvider({ name: \"@acme/bun-jobs-provider-acme\", version: \"1.0.0\", kind: \"acme\", apiVersion: { core: m.COMPUTE_PROVIDER_API.core, summon: m.COMPUTE_PROVIDER_API.summon }, config: m.toStandardSchema<AcmeConfig>((input) => ({ value: input as AcmeConfig })), secrets: [\"apiToken\"], describe: (config) => ({ region: config.region }), summon: (config, context) => {\n  const _region: string = config.region;\n  const _api: string = context.api.core;\n  return { capabilities: { style: \"scale\", dedupe: { kind: \"token\", maxLength: 64, charset: \"A-Za-z0-9-\", scope: \"region\", strict: true }, passes: \"argv\", bootBudgetMs: 60_000, shutdown: { signal: \"SIGTERM\", graceMs: 10_000 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async (request, ctx) => { const _argv: readonly string[] = request.argv; ctx.logger.info(\"summoning\", { id: request.id }); return { status: \"started\", handles: [] }; }, release: async () => {} };\n} });\nconst configuredAcme = acme({ region: \"eu\", apiToken: \"t\" });\nexport type _config = Expect<IsAny<typeof configuredAcme.config>>;\nexport const _configTyped: Equal<typeof configuredAcme.config, AcmeConfig> = true;\nexport const _checks: Promise<readonly t.ProviderCheck[]> = configuredAcme.validate();\n// Generic, so checked with their arguments rather than in \"types\".\nexport type _provider = Expect<IsAny<t.ComputeProvider<AcmeConfig>>>;\nexport type _definition = Expect<IsAny<t.ComputeProviderDefinition<AcmeConfig>>>;\nexport const _acmeTyped: t.ComputeProvider<unknown, AcmeConfig, true> = acme;\nexport const _error: t.JobsError = new m.ConfigError(\"bad config\");\nexport const _logger: (logger: t.Logger, level: t.LogLevel) => boolean = (logger, level) => logger.isLevelEnabled(level);\nconst throttled = new m.ProviderError(\"slow down\", \"throttled\", { platformCode: \"ThrottlingException\", status: 429, retryAfterMs: 1_000 });\nexport const _kind: t.ProviderErrorKind = throttled.kind;\nexport const _providerError: t.JobsError = throttled;\nexport const _platformCode: string | undefined = throttled.platformCode;\nexport const _retryAfterMs: number | undefined = throttled.retryAfterMs;"
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",

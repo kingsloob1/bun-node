@@ -148,6 +148,46 @@ export function markHostBuilt(identity: ProviderIdentity): void {
   HOST_BUILT.add(identity);
 }
 
+/** Whether an identity was built by the host (`defineSummoner`), which the plugin warnings skip. */
+function isHostBuilt(identity: ProviderIdentity): boolean {
+  return HOST_BUILT.has(identity);
+}
+
+/** `name@version`s already warned about for throwing something other than a `ProviderError`. */
+const UNMAPPED = new Set<string>();
+
+/**
+ * Internal: says, once per process per `name@version`, that a provider threw
+ * something other than a `ProviderError` (plugins §6.5), which is treated as
+ * `transient`. Never for a provider `defineSummoner` built: that is the
+ * user's own code, and each of its failures is already logged as an `error`.
+ */
+export function warnUnmappedThrow(
+  /** The provider's identity. */
+  identity: ProviderIdentity,
+  /** Where the warning goes. */
+  logger: Logger,
+  /** What it threw. */
+  error: unknown,
+): void {
+  if (isHostBuilt(identity)) {
+    return;
+  }
+  const key = `${identity.name}@${identity.version}`;
+  if (UNMAPPED.has(key)) {
+    return;
+  }
+  UNMAPPED.add(key);
+  logger.warn(
+    `compute provider ${key} threw something other than a ProviderError; it is treated as transient (failed, counted toward the circuit). The provider should map it to a ProviderError kind`,
+    {
+      provider: identity.name,
+      version: identity.version,
+      thrown: error instanceof Error ? error.name : typeof error,
+    },
+  );
+}
+
 /** The name map: every provider name registered in this process, with the versions seen. */
 const SEEN = new Map<string, Set<string>>();
 
@@ -167,7 +207,7 @@ export function registerProvider(
   /** Where the warnings go. */
   logger: Logger,
 ): void {
-  if (HOST_BUILT.has(identity)) {
+  if (isHostBuilt(identity)) {
     return;
   }
   const key = `${identity.name}@${identity.version}`;

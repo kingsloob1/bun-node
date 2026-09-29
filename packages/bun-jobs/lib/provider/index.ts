@@ -39,6 +39,7 @@ export {
   type SummonFacet,
   type UnitStatus,
 } from "./define";
+export { ProviderError, type ProviderErrorKind } from "./errors";
 export { COMPUTE_PROVIDER_API } from "./version";
 export {
   type Logger,

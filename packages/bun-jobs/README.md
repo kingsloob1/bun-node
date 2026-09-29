@@ -102,6 +102,7 @@ reference.
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [Summoning a worker](#summoning-a-worker)
   - [Summon policy](#summon-policy)
+  - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3142,6 +3143,61 @@ long and in which characters `request.dedupeKey` may be) and `shutdown`. A
 request's `id` never repeats, even after the queue's state is purged, and
 everything in it but `demand` and `reason` is a pure function of that id, so a
 platform that remembers idempotency tokens can be handed it as one.
+
+### When the summoner fails: provider errors
+
+A summoner returns a result when the platform answered normally —
+`unavailable` included, for "no capacity right now" — and throws a
+`ProviderError` when it did not. Its `kind` says how the controller counts the
+failure, and its `code` is `PROVIDER_<KIND>`:
+
+```ts
+import { ProviderError } from "@kingsleyweb/bun-jobs/provider";
+
+if (response.status === 429) {
+  throw new ProviderError("RunTask is throttled", "throttled", {
+    platformCode: "ThrottlingException",
+    status: 429,
+    retryAfterMs: 5_000,
+  });
+}
+```
+
+| Kind | Outcome | Circuit | Backoff |
+|---|---|---|---|
+| `transient` (a network error, a 5xx) | `failed` | counted | the usual |
+| `throttled` (a 429, a rate limit) | `unavailable` | **not** counted | at least `retryAfterMs` |
+| `quota` (an account or regional limit) | `unavailable` | counted | at least `retryAfterMs` |
+| `auth` (credentials missing or rejected) | `failed` | **opens at once**, with an `error` naming the provider | — |
+| `misconfigured` (a missing cluster, a bad parameter) | `failed` | **opens at once**, with an `error` naming the provider | — |
+| `conflict` (a token reused with other parameters) | `failed` | counted, with an `error`: the provider's request was not a pure function of its key, a bug in the provider | the usual |
+
+- **Anything else thrown is `transient`**, a plain `Error` included: `failed`
+  and counted, exactly as before `ProviderError` existed. A provider made with
+  `defineComputeProvider` that throws one also logs one `warn` per process,
+  naming it, since it should map the failure; `defineSummoner` never does,
+  since it is your own code and each failure is already logged as an `error`.
+- **Opening at once** raises `failures` and the loss streak to
+  `circuit.failures`, as that many failures in a row would have: after
+  `resetAfter` the circuit is half-open like any other, and a registration or
+  a proven success closes it as usual. `controller.reset()` clears it.
+- **The same kinds apply to a provider's `ready`.** A config that validates
+  asynchronously and rejects with `misconfigured` or `auth` opens the circuit
+  on that check; `transient` or `throttled` only backs off.
+- **The detail** on `status().last` and on the `summon` event is the
+  `platformCode` when there is one (`ThrottlingException`), else the
+  `PROVIDER_<KIND>` code, else a plain error's `code` or name. The provider's
+  declared secrets and the usual credential shapes are redacted from it.
+- **A lost attempt is explained** when the summoner has `status()` and the
+  attempt has handles: the first unit's `detail`
+  (`CannotPullContainerError`, `OOMKilled`) becomes the `lost` event's detail
+  and `last.detail`. The event waits for that answer, bounded by
+  `summonTimeout`, and is announced without a detail when there is none.
+- **A short grace warns once.** A controller whose summoner declares a
+  `shutdown.graceMs` below `runSummoned`'s 7,000 ms `shutdownBuffer` (a
+  `SIGINT` with 5 s, Fly's default, say) logs one `warn`: a job in flight at
+  the stop signal may be killed before it settles. `defineSummoner`'s default
+  grace (10 s) never does, and a `signal` of `"none"` has no grace to check.
 
 ## BunRunner
 

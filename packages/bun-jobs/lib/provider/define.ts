@@ -160,8 +160,10 @@ export interface SummonFacet {
   readonly capabilities: SummonCapabilities;
   /**
    * Starts compute for one attempt. A result when the platform answered
-   * normally; a throw when it did not, which the controller records as
-   * `failed`.
+   * normally; a `ProviderError` when it did not, whose kind says how the
+   * controller counts it (`throttled` and `quota` are `unavailable`, `auth`
+   * and `misconfigured` open the circuit at once). Anything else thrown is
+   * `transient`: `failed`, and counted toward the circuit.
    */
   summon: (
     request: SummonRequest,
@@ -174,7 +176,8 @@ export interface SummonFacet {
   ) => Promise<void>;
   /**
    * What the platform says about units it started, by handle. Optional: asked
-   * once when an attempt is declared lost, to explain it.
+   * once when an attempt is declared lost, to explain it. The first unit's
+   * `detail` becomes the attempt's `last.detail` and its `lost` event's.
    */
   status?: (
     handles: readonly string[],
