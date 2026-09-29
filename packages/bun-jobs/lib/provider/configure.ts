@@ -497,10 +497,12 @@ export interface FacetReadiness {
   /** Waits for the real facet, joining a validation in flight; rejects with its failure. */
   settle: () => Promise<SummonFacet>;
   /**
-   * Gives up on the validation in flight (a caller's timeout passed): the
-   * next `settle` starts a fresh one, and its late answer is ignored.
+   * Gives up on the validation `waited` (a promise this `settle` returned)
+   * joined, after the caller's timeout passed: the next `settle` starts a
+   * fresh one. Only that validation: if another caller has since abandoned it
+   * and a newer one is in flight, the newer one is left alone.
    */
-  abandon: () => void;
+  abandon: (waited: Promise<SummonFacet>) => void;
 }
 
 /**
@@ -519,11 +521,22 @@ export function facetReadiness(facet: SummonFacet): FacetReadiness {
       abandon: () => {},
     };
   }
+  // Each promise `settle` returned, to the validation it joined, so a
+  // caller abandons that one and never whatever is in flight by then.
+  const joined = new WeakMap<
+    Promise<SummonFacet>,
+    Promise<SummonFacet | undefined>
+  >();
   return {
     settled: () => (state.known ? state.facet : undefined),
     fatal: () => state.fatal,
-    settle: async () => (await settle(state))!,
-    abandon: () => abandon(state, state.inFlight),
+    settle: () => {
+      const validation = settle(state);
+      const waited = validation.then((facet) => facet!);
+      joined.set(waited, validation);
+      return waited;
+    },
+    abandon: (waited) => abandon(state, joined.get(waited)),
   };
 }
 

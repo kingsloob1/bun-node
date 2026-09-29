@@ -3178,16 +3178,38 @@ if (response.status === 429) {
   naming it, since it should map the failure; `defineSummoner` never does,
   since it is your own code and each failure is already logged as an `error`.
 - **Opening at once** raises `failures` and the loss streak to
-  `circuit.failures`, as that many failures in a row would have: after
-  `resetAfter` the circuit is half-open like any other, and a registration or
-  a proven success closes it as usual. `controller.reset()` clears it.
+  `circuit.failures`, as that many failures in a row would have, so after
+  `resetAfter` the circuit is half-open like any other. A registration resets
+  `failures` but **not** the loss streak, so a registered worker that then
+  dies (a late loss, which raises `failures` to the streak) reopens it at
+  once, while a failed call after the registration counts from one. Only a
+  proven success (a clean exit mark, or a watch that ends clean) clears the
+  streak; `controller.reset()` clears both.
 - **The same kinds apply to a provider's `ready`.** A config that validates
   asynchronously and rejects with `misconfigured` or `auth` opens the circuit
-  on that check; `transient` or `throttled` only backs off.
+  on that check; `transient` is `failed` and counted, and `throttled` is
+  `unavailable` and only backs off, as they would from a call.
+- **A run of throttled answers warns once.** A `throttled` answer is never
+  counted toward the circuit, and without a `retryAfterMs` its backoff never
+  grows, so a platform that keeps throttling is retried at
+  `backoff.initial`, bounded only by the cooldown and the budget. When a
+  controller's attempts are throttled `circuit.failures` times in a row it
+  logs one `warn` saying so; any other outcome ends the run, and a new run
+  can warn again. The count is per controller and in memory.
+- **`retryAfterMs` is bounded.** From a `ProviderError` or an `unavailable`
+  result, a value that is not a finite number of 0 or more is ignored, and
+  one above the larger of `backoff.max` and `circuit.resetAfter` is clamped
+  to it, with one `warn` per controller: a `throttled` answer never opens the
+  circuit, so an unbounded wait would stop summoning until `reset()`.
 - **The detail** on `status().last` and on the `summon` event is the
   `platformCode` when there is one (`ThrottlingException`), else the
-  `PROVIDER_<KIND>` code, else a plain error's `code` or name. The provider's
-  declared secrets and the usual credential shapes are redacted from it.
+  `PROVIDER_<KIND>` code, else a plain error's `code` or name, else `error`.
+  A `platformCode`, code or name counts only if it looks like one
+  (`[A-Za-z0-9_.:-]{1,64}`); anything else falls through to the next choice.
+  Every detail from the provider — these, an `unavailable` reason, a unit's
+  `detail` — has the provider's declared secrets and the usual credential
+  shapes (a URL's password, `key=value` under a credential key, `Bearer …`, a
+  JWT) redacted, and is cut to 128 characters (ending in `…`).
 - **A lost attempt is explained** when the summoner has `status()` and the
   attempt has handles: the first unit's `detail`
   (`CannotPullContainerError`, `OOMKilled`) becomes the `lost` event's detail

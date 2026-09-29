@@ -159,7 +159,11 @@ export type SummonResult =
       status: "unavailable";
       /** A short, secret-free reason, shown on the status route. */
       reason: string;
-      /** Try no sooner than this many ms from now. Overrides the backoff when larger. */
+      /**
+       * Try no sooner than this many ms from now. Overrides the backoff when
+       * larger. Ignored unless a finite number of 0 or more, and clamped to
+       * the larger of `backoff.max` and `circuit.resetAfter`.
+       */
       retryAfterMs?: number;
     };
 

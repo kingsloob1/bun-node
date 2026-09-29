@@ -77,15 +77,18 @@ export class ProviderError extends JobsError {
   /**
    * The platform's own error code, when known (`"ThrottlingException"`,
    * `"CannotPullContainerError"`): the attempt's detail, in logs and the UI.
-   * Short and secret-free.
+   * Short and secret-free: the controller uses it only if it matches
+   * `[A-Za-z0-9_.:-]{1,64}`, and falls back to the `code` otherwise.
    */
   readonly platformCode?: string;
   /** The platform's HTTP status, when there was one. */
   readonly status?: number;
   /**
    * Try no sooner than this many ms from now, when the platform said.
-   * Honoured for `throttled` and `quota`: the backoff is at least this long.
-   * A value that is not a finite number of 0 or more is dropped.
+   * Honoured for `throttled` and `quota`: the backoff is at least this long,
+   * up to the larger of the policy's `backoff.max` and `circuit.resetAfter`,
+   * where the controller clamps it. A value that is not a finite number of 0
+   * or more is dropped.
    */
   readonly retryAfterMs?: number;
 
@@ -102,7 +105,7 @@ export class ProviderError extends JobsError {
       status?: number;
       /** Try no sooner than this many ms from now. Honoured for `throttled` and `quota`. */
       retryAfterMs?: number;
-      /** The original error, kept as `cause`. */
+      /** The original error, kept as `cause`. Redacted before it is logged. */
       cause?: unknown;
     },
   ) {
