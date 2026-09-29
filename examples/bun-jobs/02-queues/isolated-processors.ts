@@ -110,8 +110,12 @@ const guarded = new BunQueueWorker<{ spinMs: number }, string>(
     driver,
     target: {
       kind: "child-process",
-      closeTimeout: 200, // after the timeout aborts it: time to unwind…
-      killTimeout: 200, // …then SIGTERM, and this long before SIGKILL
+      // After the timeout aborts it, the grace before SIGTERM. A spawned
+      // child exits itself 500 ms before this runs out, so at 500 or less a
+      // cooperative processor gets no time to unwind; this one is blocked on
+      // the CPU and could not anyway, so SIGTERM is what ends it…
+      closeTimeout: 200,
+      killTimeout: 200, // …and this long after SIGTERM, SIGKILL
     },
     pollInterval: 20,
   },
