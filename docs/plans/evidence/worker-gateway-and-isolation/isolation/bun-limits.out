@@ -1,0 +1,34 @@
+## worker-plain
+{"label":"Worker (no options), heap to 512MB","parentRssBeforeMb":18}
+{"label":"Worker (no options), heap to 512MB","lastWorkerReport":{"done":true,"rssMb":547},"parentRssAfterMb":547,"ms":320}
+{"label":"Worker (no options), heap to 512MB","event":"close","code":0}
+exit=0
+## worker-smol
+{"label":"Worker smol:true, heap to 512MB","parentRssBeforeMb":18}
+{"label":"Worker smol:true, heap to 512MB","lastWorkerReport":{"done":true,"rssMb":542},"parentRssAfterMb":542,"ms":332}
+{"label":"Worker smol:true, heap to 512MB","event":"close","code":0}
+exit=0
+## worker-rl
+{"label":"Worker resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","parentRssBeforeMb":18}
+{"label":"Worker resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","lastWorkerReport":{"done":true,"rssMb":1037},"parentRssAfterMb":1037,"ms":859}
+{"label":"Worker resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","event":"close","code":0}
+exit=0
+## worker-nt-rl
+{"label":"worker_threads resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","parentRssBeforeMb":18}
+{"label":"worker_threads resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","lastWorkerReport":{"done":true,"rssMb":1044},"parentRssAfterMb":1044,"ms":915}
+{"label":"worker_threads resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","event":"exit","code":1}
+exit=0
+## worker-rl under MemoryMax=512M (worker asks for 1024MB heap, limit 64MB)
+2.71 3.12 2.93 1/3737 1393490
+{"label":"Worker resourceLimits.maxOldGenerationSizeMb=64, heap to 1024MB","parentRssBeforeMb":18}
+exit=137  (137 = the whole process, main thread included, was OOM-killed)
+## spawn-opts
+{"probe":"timeout:200 killSignal:SIGKILL on sleep 10","ms":201,"exitCode":null,"signalCode":"SIGKILL"}
+{"probe":"maxBuffer:1e6 on `yes`","ms":5,"bytesRead":1065536,"exitCode":null,"signalCode":"SIGTERM"}
+{"probe":"child rlimits (inherited, none set by Bun)","ulimit":["time(seconds)        unlimited","file(blocks)         unlimited","data(kbytes)         unlimited","stack(kbytes)        8192","coredump(blocks)     0","memory(kbytes)       unlimited","locked memory(kbytes) 8192","process              250543","nofiles              524288","vmemory(kbytes)      unlimited","locks                unlimited","rtprio               0"]}
+exit=0
+## spawn-cgroup (delegated scope)
+{"probe":"cgroup","root":"/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p1393549-i34901016.scope","job":"/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p1393549-i34901016.scope/job1","limits":{"memoryMax":"64M","pidsMax":16}}
+{"probe":"Bun.spawn({cgroup}) hostile memhog","ms":47,"exitCode":null,"signalCode":"SIGKILL","lastLines":[""],"memoryEvents":"low 0 high 0 max 36 oom 1 oom_kill 1 oom_group_kill 0 sock_throttled 0"}
+{"probe":"Bun.spawn({cgroup}) hostile forkbomb","ms":17,"exitCode":0,"signalCode":null,"lastLines":["{\"probe\":\"forkbomb\",\"ok\":false,\"detail\":{\"spawned\":12,\"cap\":5000,\"firstError\":\"EAGAIN\",\"ownThreads\":\"4\",\"pidsMax\":\"?\",\"ms\":3}}"],"memoryEvents":"low 0 high 0 max 36 oom 1 oom_kill 1 oom_group_kill 0 sock_throttled 0"}
+exit=0

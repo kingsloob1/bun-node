@@ -1,0 +1,7 @@
+RESULT h2c prior-knowledge -> Bun.serve({http2:true}, no tls): status=200 ok
+RESULT curl --http2-prior-knowledge http2:true: 2
+RESULT h2c prior-knowledge -> Bun.serve({http2:false}, no tls): ERR Protocol error
+RESULT curl --http2-prior-knowledge http2:false: 0
+RESULT curl --http2 over tls -> 2
+RESULT fetch protocol=default: 5 concurrent 200ms requests took 207ms over 5 client ports
+RESULT fetch protocol=http2: 5 concurrent 200ms requests took 203ms over 1 client ports

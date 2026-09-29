@@ -1,0 +1,11 @@
+N=10 image=oven/bun:1 host bun=1.4.3
+{"variant":"host: bun -e (no isolation)","min":3,"median":4,"p90":4,"loadBefore":"3.76 3.04 2.76","loadAfter":"3.76 3.04 2.76"}
+{"variant":"bwrap (unshare-all, clearenv)","min":8,"median":9,"p90":10,"loadBefore":"3.76 3.04 2.76","loadAfter":"3.76 3.04 2.76"}
+{"variant":"systemd-run scope + bwrap","min":42,"median":56,"p90":61,"loadBefore":"3.76 3.04 2.76","loadAfter":"3.76 3.04 2.76"}
+{"variant":"docker run --rm (defaults)","min":421,"median":437,"p90":453,"loadBefore":"3.76 3.04 2.76","loadAfter":"3.78 3.06 2.76"}
+{"variant":"docker run --rm (--network none only)","min":255,"median":273,"p90":287,"loadBefore":"3.78 3.06 2.76","loadAfter":"3.88 3.09 2.77"}
+{"variant":"docker run --rm (hardened)","min":253,"median":277,"p90":292,"loadBefore":"3.88 3.09 2.77","loadAfter":"3.88 3.09 2.77"}
+{"variant":"docker run --rm (hardened + NNP)","min":272,"median":281,"p90":290,"loadBefore":"3.88 3.09 2.77","loadAfter":"4.05 3.14 2.79"}
+{"variant":"docker create (hardened)","min":137,"median":145,"p90":150,"loadBefore":"4.05 3.14 2.79"}
+{"variant":"docker start -a (created)","min":250,"median":261,"p90":268}
+{"variant":"docker rm -f","min":137,"median":141,"p90":145,"loadAfter":"4.20 3.18 2.81"}

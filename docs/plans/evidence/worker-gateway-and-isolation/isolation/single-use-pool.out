@@ -1,0 +1,4 @@
+{"jobs":40,"spares":1,"jobsPerSec":6.96,"dispatchMs":{"p50":0.5,"p90":0.7,"max":0.8},"readyMs":{"p50":235.8,"p90":264.4,"max":336.9},"load":{"before":"2.09 2.09 2.27","after":"2.61 2.20 2.31"}}
+{"jobs":40,"spares":2,"jobsPerSec":12.97,"dispatchMs":{"p50":0.6,"p90":0.8,"max":1.9},"readyMs":{"p50":258.4,"p90":274.5,"max":301.8},"load":{"before":"2.61 2.20 2.31","after":"2.61 2.20 2.31"}}
+{"jobs":40,"spares":4,"jobsPerSec":19.72,"dispatchMs":{"p50":0.6,"p90":1,"max":20.2},"readyMs":{"p50":317.1,"p90":417.9,"max":446.8},"load":{"before":"2.61 2.20 2.31","after":"3.36 2.37 2.36"}}
+{"jobs":40,"spares":8,"jobsPerSec":26.55,"dispatchMs":{"p50":1.1,"p90":3,"max":5.9},"readyMs":{"p50":447.4,"p90":513,"max":618.4},"load":{"before":"3.36 2.37 2.36","after":"3.36 2.37 2.36"}}

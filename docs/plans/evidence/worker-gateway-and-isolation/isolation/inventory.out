@@ -1,0 +1,52 @@
+## host
+Linux 7.0.0-31-generic x86_64
+model name	: 11th Gen Intel(R) Core(TM) i9-11900H @ 2.50GHz
+16
+load: 2.31 2.98 2.89 1/3754 1395468
+
+## docker
+client 29.8.0 server 29.8.0
+runtimes=io.containerd.runc.v2 nvidia runc default=runc cgroup=v2 driver=systemd storage=overlay2 os=Ubuntu Core 24
+name=apparmor,profile=default
+name=seccomp,profile=builtin
+name=cgroupns
+
+  Backing Filesystem: zfs
+ Docker Root Dir: /var/snap/docker/common/var-lib-docker
+contexts:
+NAME        DESCRIPTION                               DOCKER ENDPOINT               ERROR
+default *   Current DOCKER_HOST based configuration   unix:///var/run/docker.sock   
+rootless socket: ls: cannot access '/run/user/1000/docker.sock': No such file or directory
+system socket: srw-rw---- 1 root docker 0 Sep 21 13:41 /var/run/docker.sock
+user in docker group: yes
+
+## other runtimes / sandboxes
+runsc                  absent
+kata-runtime           absent
+firecracker            absent
+podman                 absent
+nsjail                 absent
+crun                   absent
+youki                  absent
+firejail               absent
+dockerd-rootless.sh    absent
+rootlesskit            absent
+bwrap                  /usr/bin/bwrap
+systemd-run            /usr/bin/systemd-run
+unshare                /usr/bin/unshare
+
+## user namespaces and LSMs
+kernel.unprivileged_userns_clone = 1
+kernel.apparmor_restrict_unprivileged_userns = 1
+kernel.apparmor_restrict_unprivileged_unconfined = 1
+user.max_user_namespaces = 250543
+lsm: lockdown,capability,landlock,yama,apparmor,ima,evm
+landlock ABI: 8
+cgroup fs: cgroup2fs
+user@ delegated controllers: cpu memory pids
+
+## probes
+bwrap --unshare-all: exit 0
+unshare -Ur: exit 0
+systemd-run --user --scope MemoryMax/TasksMax: exit 0
+swap: /dev/dm-1 8G 8G 
