@@ -1911,7 +1911,8 @@ for (const backend of BACKENDS.filter((one) =>
       async function setup(
         env: Record<string, string>,
         hide = false,
-        policy: Partial<SummonPolicy> = {},
+        policy: Partial<SummonPolicy> &
+          Pick<SummonControllerOptions, "logger"> = {},
       ): Promise<{
         driver: JobsDriver;
         ref: QueueRef;
@@ -2019,12 +2020,16 @@ for (const backend of BACKENDS.filter((one) =>
           { SUMMON_TEST_CRASH_AFTER_MS: "400" },
           false,
           {
+            // Room for a spawn and first report under load: an attempt
+            // nobody has claimed by its `until` is lost unseen, with no
+            // detail — not the case this proves.
+            bootBudget: 4_000,
             backoff: { initial: 1, max: 1 },
             circuit: { failures: 2, resetAfter: 60_000 },
             // Longer than a loss takes to land (bootBudget + 5 s), with one
             // worker: each release and its loss alternate, so the circuit
             // opens only if a loss restores the count its release reset.
-            cooldown: 8_000,
+            cooldown: 10_000,
             maxWorkers: 1,
           },
         );
@@ -2052,6 +2057,16 @@ for (const backend of BACKENDS.filter((one) =>
       });
 
       it("A2 dense: a crash loop with several attempts in flight opens the circuit within about as many losses as its threshold", async () => {
+        // The opening is read from the controller's own log line, written
+        // by the check that opened it with `failures` as it stood then —
+        // not from the first check seen shut. Under load a worker of an
+        // attempt made before the opening can still register after it,
+        // resetting `failures` as every registration does, and serve while
+        // it lives; the gate is seen shut only once it dies, by when
+        // `failures` can read 0. The circuit stays open throughout.
+        const { logger, events: logs } = createTestLogger();
+        const opening = () =>
+          logs.find((log) => log.message.startsWith("summon circuit open"));
         const { queue, controller, events } = await setup(
           { SUMMON_TEST_CRASH_AFTER_MS: "400" },
           false,
@@ -2063,32 +2078,36 @@ for (const backend of BACKENDS.filter((one) =>
             maxWorkers: 1,
             backoff: { initial: 50, max: 50 },
             circuit: { failures: 3, resetAfter: 600_000 },
+            logger,
           },
         );
         for (let job = 0; job < 50; job++) {
           await queue.add("a", {});
         }
+        // The losses announced up to and including the check that opened it.
         let lossesAtOpen = -1;
         await waitFor(
           async () => {
             const result = await controller.check();
-            if (
-              result.action === "skipped" &&
-              result.reason === "circuit-open"
-            ) {
+            if (lossesAtOpen < 0 && opening() !== undefined) {
               lossesAtOpen = events.filter(
                 (event) => event.outcome === "lost",
               ).length;
-              return true;
             }
-            return false;
+            return (
+              result.action === "skipped" && result.reason === "circuit-open"
+            );
           },
           { timeout: 45_000, interval: 100 },
         );
+        expect(opening()?.fields.failures).toBeGreaterThanOrEqual(3);
         // Several attempts' losses can land in one check, so a little over.
         expect(lossesAtOpen).toBeGreaterThanOrEqual(3);
         expect(lossesAtOpen).toBeLessThanOrEqual(5);
-        expect((await controller.status()).failures).toBeGreaterThanOrEqual(3);
+        // Open for its `resetAfter` (600 s), from an opening a moment ago.
+        expect((await controller.status()).circuitOpenUntil).toBeGreaterThan(
+          Date.now() + 500_000,
+        );
       });
 
       it("two controllers on one dense crash loop count each loss once, and open the circuit", async () => {
@@ -2141,16 +2160,27 @@ for (const backend of BACKENDS.filter((one) =>
         expect(lost.length).toBe(new Set(lost).size);
         const marker = (await driver.getQueueState!(ref, SUMMON_MARKER))!
           .value as SummonMarker;
-        expect(marker.failures).toBeGreaterThanOrEqual(3);
+        // Open, and by at least the threshold's worth of losses. Not
+        // `failures`: a worker of an attempt made before the opening can
+        // register after it and reset that to 0 (see A2 dense). The streak
+        // is reset only by a proven clean exit, which no worker here makes.
+        expect(marker.circuitOpenUntil).toBeGreaterThan(Date.now() + 500_000);
+        expect(marker.lossStreak ?? 0).toBeGreaterThanOrEqual(3);
         expect(marker.lossStreak ?? 0).toBe(lost.length);
       });
 
       it("A2r: a worker whose record outlives the watch, crashing after its first report, is still counted", async () => {
-        const { queue, controller, events } = await setup({
-          SUMMON_TEST_CRASH_AFTER_MS: "400",
-          // A record lives 9 s: past the watch's end at bootBudget + 5 s.
-          SUMMON_TEST_REPORT_MS: "3000",
-        });
+        const { queue, controller, events } = await setup(
+          {
+            SUMMON_TEST_CRASH_AFTER_MS: "400",
+            // A record lives 12 s: past the watch's end at bootBudget + 5 s.
+            SUMMON_TEST_REPORT_MS: "4000",
+          },
+          false,
+          // Room for a spawn and first report under load: an attempt nobody
+          // has claimed by its `until` is lost unseen, with no detail.
+          { bootBudget: 4_000 },
+        );
         await queue.add("a", {});
         await waitFor(
           async () => {
