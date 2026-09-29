@@ -1010,6 +1010,14 @@ Example:
   without `force` during any close, change nothing, and also resolve once the
   close has finished — on a worker that never ran as well. A later call's
   `timeout` is ignored: `force` is the way to cut a graceful close short.
+- A built-in target's close counts a killed run as gone once it has actually
+  stopped: a child once its exit is seen, and a `worker-thread` run once its
+  thread's `close` event has fired, since `terminate()` returns before the
+  thread stops. That wait is bounded at 500 ms. A busy Bun `Worker` usually
+  stops within tens of milliseconds, but a loaded machine can take it past
+  that ([oven-sh/bun#44216](https://github.com/oven-sh/bun/issues/44216)).
+  In that case the close resolves anyway and logs one `warn` naming the run.
+  The thread still stops, only later.
 - `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
   claiming and running its background passes — liveness and housekeeping
   alike — drains its jobs in flight, and keeps
