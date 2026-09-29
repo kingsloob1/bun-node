@@ -3359,6 +3359,9 @@ bounded the same way, for its thread to go. A killed or timed-out run's
 `durationMs` includes that wait, so it can read up to 500 ms past its
 `timeout`.
 
+Example:
+[`07-runner/thread-deadline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/thread-deadline.ts).
+
 Runner events:
 
 - `scheduled`
@@ -6793,7 +6796,8 @@ Each run uses its own namespace and purges it on exit.
 | | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | | [`manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
 | | [`controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/controller.ts) | `controller(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
-| | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
+| | [`thread-deadline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/thread-deadline.ts) | a `worker-thread` run ended by its `timeout`, `kill()` or `stop()` is reported ended once its thread has stopped |
+| | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `busy-heartbeat.ts`, `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
 | [`08-drivers`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers) | [`choosing-a-driver.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/choosing-a-driver.ts) | every config shape, capabilities, one workload on each available backend |
 | | [`sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts) | `SqlDriver` on SQLite, `tablePrefix`, `syncSchema` repairing a drifted schema |
 | | [`postgres-and-mysql.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/postgres-and-mysql.ts) | Postgres, MySQL and MariaDB via `Bun.sql`, connection fields, `NOTIFY` wake-ups |

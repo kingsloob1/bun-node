@@ -120,6 +120,7 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`runner-enqueues-jobs.ts`](./07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | [`manager.ts`](./07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
 | [`controller.ts`](./07-runner/controller.ts) | `controller(id)` from a process that registered nothing: pause, reschedule, resume and trigger a runner another **process** owns ([`helpers/runner-owner.ts`](./07-runner/helpers/runner-owner.ts)); `info`, `history`, `stats`; no remote kill |
+| [`thread-deadline.ts`](./07-runner/thread-deadline.ts) | a busy `worker-thread` run ended by its `timeout`, `kill()` or `stop()` is reported ended only once its thread has stopped; the 500 ms cap and its `warn`; a returned result recorded at once |
 | [`handlers/`](./07-runner/handlers) | the handler files the runners run, each written with `defineHandler` |
 
 ### 08 — Drivers
