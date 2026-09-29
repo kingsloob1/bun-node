@@ -1,0 +1,5 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91) linux x64
+GET /public/..           -> {"route":"/public/:file","params":{"file":".."},"url":"/"}
+GET /public/%2e%2e       -> {"route":"/public/:file","params":{"file":".."},"url":"/"}
+GET /public/../admin     -> {"route":"fetch","url":"/admin"}
+GET /public/a.txt#frag   -> {"route":"/public/:file","params":{"file":"a.txt#frag"},"url":"/public/a.txt"}

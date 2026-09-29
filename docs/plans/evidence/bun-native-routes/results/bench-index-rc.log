@@ -1,0 +1,115 @@
+round 1 static        bun-common           49272 req/s  p99 2.05ms  load 1.89
+round 1 static        proto-index-rc       48561 req/s  p99 2.12ms  load 2.06
+round 1 static        bun-common-lean      80752 req/s  p99 1.31ms  load 2.2
+round 1 static        proto-index-rc-lean   79032 req/s  p99 1.42ms  load 2.41
+round 1 static        bun-nest             40776 req/s  p99 2.81ms  load 2.5
+round 1 static        proto-nest-index-rc   41462 req/s  p99 2.81ms  load 2.58
+round 1 param         bun-common           49049 req/s  p99 2.05ms  load 2.57
+round 1 param         proto-index-rc       48656 req/s  p99 2.06ms  load 2.56
+round 1 param         bun-common-lean      79538 req/s  p99 1.43ms  load 2.71
+round 1 param         proto-index-rc-lean   80460 req/s  p99 1.34ms  load 2.77
+round 1 param         bun-nest             38044 req/s  p99 2.93ms  load 2.73
+round 1 param         proto-nest-index-rc   37010 req/s  p99 3.01ms  load 2.76
+round 1 middleware    bun-common           49594 req/s  p99 2.06ms  load 2.8
+round 1 middleware    proto-index-rc       50725 req/s  p99 1.99ms  load 2.83
+round 1 middleware    bun-common-lean      75644 req/s  p99 1.48ms  load 2.86
+round 1 middleware    proto-index-rc-lean   78747 req/s  p99 1.41ms  load 3.19
+round 1 middleware    bun-nest             38517 req/s  p99 2.91ms  load 3.31
+round 1 middleware    proto-nest-index-rc   37760 req/s  p99 2.91ms  load 3.47
+round 1 routes-1000   bun-common           48372 req/s  p99 2.12ms  load 3.63
+round 1 routes-1000   proto-index-rc       49892 req/s  p99 2.04ms  load 3.61
+round 1 routes-1000   bun-common-lean      79860 req/s  p99 1.39ms  load 3.52
+round 1 routes-1000   proto-index-rc-lean   77863 req/s  p99 1.35ms  load 3.83
+round 1 routes-1000   bun-nest             38009 req/s  p99 2.98ms  load 3.79
+round 1 routes-1000   proto-nest-index-rc   37910 req/s  p99 2.92ms  load 3.66
+round 1 param-random  bun-common            7925 req/s  p99 12.04ms  load 3.78
+round 1 param-random  proto-index-rc       40057 req/s  p99 5.05ms  load 3.54
+round 1 param-random  bun-common-lean       8790 req/s  p99 10.63ms  load 3.54
+round 1 param-random  proto-index-rc-lean   56722 req/s  p99 3.19ms  load 3.3
+round 1 param-random  bun-nest              6605 req/s  p99 14.39ms  load 3.41
+round 1 param-random  proto-nest-index-rc   29971 req/s  p99 6.07ms  load 4.6
+round 1 json          bun-common           45752 req/s  p99 2.07ms  load 4.28
+round 1 json          proto-index-rc       46224 req/s  p99 2.12ms  load 3.93
+round 1 json          bun-nest             34559 req/s  p99 3.14ms  load 3.7
+round 1 json          proto-nest-index-rc   35130 req/s  p99 3.08ms  load 3.59
+  load 3.31 >= 2, waiting…
+  load 2.13 >= 2, waiting…
+round 2 static        bun-common           49999 req/s  p99 1.98ms  load 1.86
+round 2 static        proto-index-rc       49853 req/s  p99 2.05ms  load 1.96
+round 2 static        bun-common-lean      75310 req/s  p99 1.45ms  load 2.05
+round 2 static        proto-index-rc-lean   81306 req/s  p99 1.37ms  load 2.19
+round 2 static        bun-nest             41360 req/s  p99 2.73ms  load 2.24
+round 2 static        proto-nest-index-rc   41268 req/s  p99 2.76ms  load 2.53
+round 2 param         bun-common           50160 req/s  p99 1.99ms  load 2.61
+round 2 param         proto-index-rc       49038 req/s  p99 2.13ms  load 2.89
+round 2 param         bun-common-lean      78726 req/s  p99 1.44ms  load 2.93
+round 2 param         proto-index-rc-lean   82177 req/s  p99 1.35ms  load 3.01
+round 2 param         bun-nest             38653 req/s  p99 2.92ms  load 2.85
+round 2 param         proto-nest-index-rc   39515 req/s  p99 2.86ms  load 2.8
+round 2 middleware    bun-common           48505 req/s  p99 2.02ms  load 2.83
+round 2 middleware    proto-index-rc       48952 req/s  p99 2.10ms  load 2.86
+round 2 middleware    bun-common-lean      75558 req/s  p99 1.38ms  load 3.04
+round 2 middleware    proto-index-rc-lean   77234 req/s  p99 1.38ms  load 2.95
+round 2 middleware    bun-nest             37161 req/s  p99 3.01ms  load 2.9
+round 2 middleware    proto-nest-index-rc   39004 req/s  p99 2.86ms  load 2.84
+round 2 routes-1000   bun-common           51575 req/s  p99 1.99ms  load 2.87
+round 2 routes-1000   proto-index-rc       48923 req/s  p99 2.10ms  load 2.89
+round 2 routes-1000   bun-common-lean      78053 req/s  p99 1.46ms  load 2.98
+round 2 routes-1000   proto-index-rc-lean   81261 req/s  p99 1.44ms  load 3.22
+round 2 routes-1000   bun-nest             38578 req/s  p99 2.98ms  load 3.27
+round 2 routes-1000   proto-nest-index-rc   38136 req/s  p99 2.96ms  load 3.11
+round 2 param-random  bun-common            7750 req/s  p99 11.46ms  load 3.09
+round 2 param-random  proto-index-rc       39955 req/s  p99 5.05ms  load 2.92
+round 2 param-random  bun-common-lean       8432 req/s  p99 11.10ms  load 2.93
+round 2 param-random  proto-index-rc-lean   56783 req/s  p99 3.33ms  load 3.02
+round 2 param-random  bun-nest              6521 req/s  p99 15.07ms  load 3.09
+round 2 param-random  proto-nest-index-rc   31656 req/s  p99 5.96ms  load 3.14
+round 2 json          bun-common           45113 req/s  p99 2.19ms  load 3.21
+round 2 json          proto-index-rc       43628 req/s  p99 2.33ms  load 3.32
+round 2 json          bun-nest             33782 req/s  p99 3.17ms  load 3.09
+round 2 json          proto-nest-index-rc   35273 req/s  p99 3.12ms  load 3.08
+  load 3.06 >= 2, waiting…
+round 3 static        bun-common           49074 req/s  p99 1.99ms  load 1.99
+round 3 static        proto-index-rc       49542 req/s  p99 2.07ms  load 2.06
+round 3 static        bun-common-lean      80607 req/s  p99 1.44ms  load 2.2
+round 3 static        proto-index-rc-lean   78903 req/s  p99 1.38ms  load 2.4
+round 3 static        bun-nest             40023 req/s  p99 2.85ms  load 2.57
+round 3 static        proto-nest-index-rc   42432 req/s  p99 2.73ms  load 2.71
+round 3 param         bun-common           49829 req/s  p99 2.03ms  load 2.92
+round 3 param         proto-index-rc       49902 req/s  p99 2.01ms  load 2.85
+round 3 param         bun-common-lean      80559 req/s  p99 1.42ms  load 2.87
+round 3 param         proto-index-rc-lean   78087 req/s  p99 1.39ms  load 2.89
+round 3 param         bun-nest             39024 req/s  p99 2.90ms  load 3.07
+round 3 param         proto-nest-index-rc   38113 req/s  p99 2.88ms  load 3.06
+round 3 middleware    bun-common           49845 req/s  p99 1.99ms  load 2.89
+round 3 middleware    proto-index-rc       49620 req/s  p99 2.13ms  load 2.91
+round 3 middleware    bun-common-lean      76869 req/s  p99 1.46ms  load 2.85
+round 3 middleware    proto-index-rc-lean   80553 req/s  p99 1.41ms  load 2.8
+round 3 middleware    bun-nest             37713 req/s  p99 2.95ms  load 2.83
+round 3 middleware    proto-nest-index-rc   38556 req/s  p99 2.89ms  load 2.77
+round 3 routes-1000   bun-common           49429 req/s  p99 2.06ms  load 2.73
+round 3 routes-1000   proto-index-rc       47527 req/s  p99 2.09ms  load 2.77
+round 3 routes-1000   bun-common-lean      77183 req/s  p99 1.32ms  load 2.89
+round 3 routes-1000   proto-index-rc-lean   80667 req/s  p99 1.39ms  load 2.9
+round 3 routes-1000   bun-nest             39197 req/s  p99 2.86ms  load 3.12
+round 3 routes-1000   proto-nest-index-rc   37064 req/s  p99 2.99ms  load 3.1
+round 3 param-random  bun-common            7772 req/s  p99 11.52ms  load 3
+round 3 param-random  proto-index-rc       38880 req/s  p99 5.12ms  load 2.93
+round 3 param-random  bun-common-lean       8497 req/s  p99 11.04ms  load 3.09
+round 3 param-random  proto-index-rc-lean   60051 req/s  p99 3.21ms  load 3.08
+round 3 param-random  bun-nest              6611 req/s  p99 15.23ms  load 3.07
+round 3 param-random  proto-nest-index-rc   32047 req/s  p99 5.87ms  load 3.21
+round 3 json          bun-common           45133 req/s  p99 2.18ms  load 3.1
+round 3 json          proto-index-rc       44856 req/s  p99 2.13ms  load 3.08
+round 3 json          bun-nest             36834 req/s  p99 2.99ms  load 3.07
+round 3 json          proto-nest-index-rc   36165 req/s  p99 3.04ms  load 2.98
+
+| target | static | param | middleware | routes-1000 | param-random | json |
+|---|---:|---:|---:|---:|---:|---:|
+| bun-common | 49,272 | 49,829 | 49,594 | 49,429 | 7,772 | 45,133 |
+| proto-index-rc | 49,542 | 49,038 | 49,620 | 48,923 | 39,955 | 44,856 |
+| bun-common-lean | 80,607 | 79,538 | 75,644 | 78,053 | 8,497 | — |
+| proto-index-rc-lean | 79,032 | 80,460 | 78,747 | 80,667 | 56,783 | — |
+| bun-nest | 40,776 | 38,653 | 37,713 | 38,578 | 6,605 | 34,559 |
+| proto-nest-index-rc | 41,462 | 38,113 | 38,556 | 37,910 | 31,656 | 35,273 |
+wrote ../results/bench-index-rc.json

@@ -1,0 +1,8 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+
+stock, cache on (50,000, FIFO eviction)        89.66 µs per miss
+stock, cache off                               60.76 µs per miss
+index, cache on (50,000, FIFO eviction)        17.13 µs per miss
+index, cache off                                1.04 µs per miss
+stock, ring FIFO cache (50,000)                67.73 µs per miss
+index, ring FIFO cache (50,000)                 1.73 µs per miss

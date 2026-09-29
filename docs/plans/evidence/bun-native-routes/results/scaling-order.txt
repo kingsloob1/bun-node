@@ -1,0 +1,7 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91); req/s, oha -c 64, 3s
+
+reverse-registered, /s4999 (registered first): 119126
+reverse-registered, /s0 (registered last):         32826
+nested siblings, /api/v1/t0 (first):               33630
+nested siblings, /api/v1/t4999 (last):            16689
+unmatched → fetch, /nope:                          32815

@@ -1,0 +1,39 @@
+round 1 static        bun-common           48014 req/s  p99 2.03ms  load 1.84
+round 1 static        proto-native         41603 req/s  p99 2.29ms  load 1.94
+round 1 static        proto-ceiling        45573 req/s  p99 2.09ms  load 2.17
+round 1 static        bun-common-lean      79972 req/s  p99 1.46ms  load 2.24
+round 1 static        proto-native-lean    65517 req/s  p99 1.55ms  load 2.28
+round 1 static        proto-ceiling-lean   62711 req/s  p99 1.45ms  load 2.25
+round 1 param         bun-common           45702 req/s  p99 2.10ms  load 2.44
+round 1 param         proto-native         39526 req/s  p99 2.44ms  load 2.57
+round 1 param         proto-ceiling        41037 req/s  p99 2.28ms  load 2.48
+round 1 param         bun-common-lean      81305 req/s  p99 1.43ms  load 2.4
+round 1 param         proto-native-lean    55356 req/s  p99 1.67ms  load 2.45
+round 1 param         proto-ceiling-lean   54906 req/s  p99 1.68ms  load 2.53
+round 1 middleware    bun-common           49883 req/s  p99 2.02ms  load 2.57
+round 1 middleware    proto-native         38956 req/s  p99 2.40ms  load 2.56
+round 1 middleware    proto-ceiling        43971 req/s  p99 2.20ms  load 2.6
+round 1 middleware    bun-common-lean      77952 req/s  p99 1.31ms  load 2.66
+round 1 middleware    proto-native-lean    58868 req/s  p99 1.65ms  load 2.69
+round 1 middleware    proto-ceiling-lean   63850 req/s  p99 1.58ms  load 2.58
+round 1 routes-1000   bun-common           47621 req/s  p99 2.15ms  load 2.62
+round 1 routes-1000   proto-native         34287 req/s  p99 2.64ms  load 2.75
+round 1 routes-1000   proto-ceiling        32904 req/s  p99 3.10ms  load 2.69
+round 1 routes-1000   bun-common-lean      76032 req/s  p99 1.41ms  load 2.58
+round 1 routes-1000   proto-native-lean    44751 req/s  p99 2.05ms  load 2.62
+round 1 routes-1000   proto-ceiling-lean   46204 req/s  p99 1.86ms  load 2.9
+round 1 param-random  bun-common            7889 req/s  p99 11.57ms  load 2.83
+round 1 param-random  proto-native         34536 req/s  p99 2.65ms  load 2.93
+round 1 param-random  proto-ceiling        34714 req/s  p99 2.64ms  load 2.86
+round 1 param-random  bun-common-lean       8765 req/s  p99 10.27ms  load 2.95
+round 1 param-random  proto-native-lean    42388 req/s  p99 2.02ms  load 3.18
+round 1 param-random  proto-ceiling-lean   44610 req/s  p99 2.02ms  load 3.32
+
+| target | static | param | middleware | routes-1000 | param-random |
+|---|---:|---:|---:|---:|---:|
+| bun-common | 48,014 | 45,702 | 49,883 | 47,621 | 7,889 |
+| proto-native | 41,603 | 39,526 | 38,956 | 34,287 | 34,536 |
+| proto-ceiling | 45,573 | 41,037 | 43,971 | 32,904 | 34,714 |
+| bun-common-lean | 79,972 | 81,305 | 77,952 | 76,032 | 8,765 |
+| proto-native-lean | 65,517 | 55,356 | 58,868 | 44,751 | 42,388 |
+| proto-ceiling-lean | 62,711 | 54,906 | 63,850 | 46,204 | 44,610 |

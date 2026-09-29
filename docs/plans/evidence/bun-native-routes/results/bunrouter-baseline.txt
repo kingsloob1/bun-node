@@ -1,0 +1,30 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91); BunHttpAdapter defaults (caseSensitive: true)
+
+GET     /users/new         -> 200 {"by":"/users/:id","method":"GET","params":{"id":"new"}}
+GET     /users/42          -> 200 {"by":"/users/:id","method":"GET","params":{"id":"42"}}
+GET     /users/42/         -> 200 {"by":"/users/:id","method":"GET","params":{"id":"42"}}
+GET     /files             -> 404 
+GET     /files/            -> 200 {"by":"/files/*","method":"GET","params":{"0":""}}
+GET     /files/a/b%20c     -> 200 {"by":"/files/*","method":"GET","params":{"0":"a/b c"}}
+GET     /named/x/y         -> 200 {"by":"/named/*rest","method":"GET","params":{"0":"x/y","rest":"x/y"}}
+GET     /a                 -> 200 {"by":"/a","method":"GET","params":{}}
+GET     /a/                -> 200 {"by":"/a","method":"GET","params":{}}
+GET     /b                 -> 200 {"by":"/b/","method":"GET","params":{}}
+GET     /b/                -> 200 {"by":"/b/","method":"GET","params":{}}
+GET     /case              -> 404 
+GET     /Case              -> 200 {"by":"/Case","method":"GET","params":{}}
+GET     /p/hello%20world   -> 200 {"by":"/p/:x","method":"GET","params":{"x":"hello world"}}
+GET     /p/a%2Fb           -> 200 {"by":"/p/:x","method":"GET","params":{"x":"a/b"}}
+GET     /p/%zz             -> 400 <!DOCTYPE html> <html lang="en"> <head> <meta charset="utf-8"> <title>Error</title> </head> <body> <pre>Bad Re
+GET     /p/                -> 404 
+GET     /opt               -> 200 {"by":"/opt/:a?","method":"GET","params":{}}
+GET     /opt/1             -> 200 {"by":"/opt/:a?","method":"GET","params":{"a":"1"}}
+GET     /re/12             -> 200 {"by":"/re/:id(\\d+)","method":"GET","params":{"id":"12"}}
+GET     /re/abc            -> 404 
+GET     /m                 -> 200 {"by":"/m GET","method":"GET","params":{}}
+HEAD    /m                 -> 404 
+POST    /m                 -> 200 {"by":"/m POST","method":"POST","params":{}}
+PUT     /m                 -> 404 
+OPTIONS /m                 -> 404 
+GET     //a                -> 404 
+GET     /a?x=1             -> 200 {"by":"/a","method":"GET","params":{}}

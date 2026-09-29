@@ -1,0 +1,12 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91)
+
+reload() with   10 routes: 0.082 ms   (Bun.serve() with the same table: 0.170 ms)
+reload() with  100 routes: 1.263 ms   (Bun.serve() with the same table: 1.534 ms)
+reload() with 1000 routes: 92.143 ms   (Bun.serve() with the same table: 95.976 ms)
+reload() with 5000 routes: 3136.947 ms   (Bun.serve() with the same table: 3134.083 ms)
+
+reload({ routes }) alone, then GET /nothing -> 404 fetch
+in-flight /slow started before reload -> old-slow
+/which after reload -> new; /slow after reload -> 404 fetch
+websocket opened before reload, message after -> echo:after-reload
+reload storm: 599 reloads during 9600 requests -> {"200 a-N":4806,"200 b-N":4794}

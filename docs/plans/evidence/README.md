@@ -19,6 +19,7 @@ tooling. That is deliberate: the spikes contain **intentional type errors**.
 | `worker-runtimes/` | `../worker-runtimes.md` | A 14-system prior-art survey read from pinned primary sources |
 | `summon-compute/` | `../summon-compute.md`, `../compute-provider-plugins.md` | Three platform surveys (AWS; Google and Azure; PaaS, SSH and Kubernetes) for starting compute on demand, including a SigV4 signer checked against test vectors and a token helper not yet run against real endpoints. Indexed in its own `README.md` |
 | `remote-transports/` | `../remote-transports.md`, `../worker-runtimes.md` §5 | What Bun provides per network transport, **measured** by 27 re-runnable spikes (loopback, canary build), and which of ~35 platform shapes accept which transport. Indexed in its own `README.md` |
+| `bun-native-routes/` | `../bun-native-routes.md` | What `Bun.serve({ routes })` and `server.reload()` do on the canary build, **measured** by spikes; the router benchmark (bun-common, bun-nest, Elysia, raw Bun) run with `oha`; two routing prototypes (native partition, JS candidate index) with a differential fuzz and a harness that runs the packages' own suites against them; minimal Bun reproductions. Indexed in the plan's §15 |
 
 ## Provenance, and why it is marked
 

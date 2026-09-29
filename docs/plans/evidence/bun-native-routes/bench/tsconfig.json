@@ -1,0 +1,7 @@
+{
+  // Benchmarks for docs/plans/bun-native-routes.md. Throwaway measurement
+  // code, deliberately outside scripts/typecheck.ts (see ../../README.md).
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts", "../prototype/**/*.ts"]
+}

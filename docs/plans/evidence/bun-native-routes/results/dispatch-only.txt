@@ -1,0 +1,20 @@
+Bun 1.4.3 (5f554969bc8ab2159583cdf5ff26f5277ca35e91); oha -c 64, 3s, median of 3 rounds (interleaved), NODE_ENV=production
+
+trivial fetch                /static      126908   runs 124216, 126908, 127396
+trivial fetch                /user/42     117741   runs 117287, 117741, 127507
+trivial route-fn             /static      120698   runs 120698, 119850, 127548
+trivial route-fn             /user/42     121258   runs 121258, 117926, 122335
+trivial route-get            /static      120568   runs 126683, 119769, 120568
+trivial route-get            /user/42     120030   runs 120030, 119329, 122877
+adapter(lean) fetch          /static       79055   runs 79055, 80160, 74723
+adapter(lean) fetch          /user/42      79059   runs 79059, 73960, 81599
+adapter(lean) route-fn       /static       75559   runs 72302, 78724, 75559
+adapter(lean) route-fn       /user/42      75957   runs 77056, 73909, 75957
+adapter(lean) route-get      /static       78897   runs 78897, 76647, 79355
+adapter(lean) route-get      /user/42      76204   runs 77680, 68514, 76204
+adapter(defaults) fetch      /static       48847   runs 52143, 48847, 47017
+adapter(defaults) fetch      /user/42      52257   runs 52257, 51857, 52539
+adapter(defaults) route-fn   /static       49603   runs 47776, 50296, 49603
+adapter(defaults) route-fn   /user/42      48332   runs 50044, 48332, 47494
+adapter(defaults) route-get  /static       47841   runs 47755, 47841, 50417
+adapter(defaults) route-get  /user/42      48395   runs 47300, 49803, 48395

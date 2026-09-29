@@ -1,0 +1,10 @@
+{
+  // Minimal Bun reproductions found while writing docs/plans/bun-native-routes.md,
+  // reported to the maintainer for filing upstream. Run one at a time with
+  // `bun <file>.ts`. This file exists so an editor resolves them against Bun's
+  // types. Deliberately not in scripts/typecheck.ts — a spike records what one
+  // Bun version did; it is not maintained code.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}
