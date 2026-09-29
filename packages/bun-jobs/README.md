@@ -3346,6 +3346,17 @@ signal, it may be reported `detached`.
 `stop({ timeout?, force? })` stops the ticker, waits for runs in flight
 (killing them at `timeout`), releases the lock, and closes an owned driver.
 
+A `worker-thread` run ended by `kill()`, `stop()` or its `timeout` counts as
+ended once its thread has actually stopped, since `terminate()` returns before
+the thread stops. Until then it stays in `activeRuns`, its record still says
+`running`, it keeps the lock, and no `killed` or `timeout` event is emitted or
+published. That wait is bounded at 500 ms. A busy Bun `Worker` usually stops
+within tens of milliseconds, but a loaded machine can take it past that
+([oven-sh/bun#44216](https://github.com/oven-sh/bun/issues/44216)). In that
+case the run is recorded anyway and the runner logs one `warn` naming it. A run
+that returns or throws is recorded at once; `stop()` and `kill()` still wait,
+bounded the same way, for its thread to go.
+
 Runner events:
 
 - `scheduled`

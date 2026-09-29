@@ -92,6 +92,27 @@ const SETTLED: Promise<void> = Promise.resolve();
 const COLLATION_CHECK_WAIT = 2_000;
 
 /**
+ * How long the runner waits, after a `worker-thread` run has settled, to see
+ * its thread actually stop (its handle's `exited`), in milliseconds.
+ *
+ * `terminate()` returns before the thread stops, and a busy Bun `Worker` goes
+ * on running for tens of milliseconds after it — for up to a couple of
+ * seconds on a loaded machine (oven-sh/bun#44216), where Node stops one
+ * within a couple of milliseconds. A thread still running at this bound is
+ * left to stop on its own, which it always does, and logged once.
+ *
+ * The same 500 ms as the queue's `TARGET_CLOSE_REAP`, deliberately, but not
+ * derived from it: that one is half the margin inside a worker's bound on its
+ * target's `close()`, and a runner has no such outer bound. What sets it here
+ * is what the wait holds up — a killed or timed-out run's final record and
+ * events, its lock, and `stop()` — so it covers Bun's usual latency many times
+ * over without letting the rare multi-second tail stall a shutdown. Equal to
+ * the queue's, a `BunJobs.close()` stopping runners and workers side by side
+ * gives up on a slow thread at the same moment on both.
+ */
+export const RUN_THREAD_REAP = 500;
+
+/**
  * How many times a paused drain peeks again after losing a forced head to
  * another drainer, before leaving the queue to that drainer.
  */
@@ -226,6 +247,14 @@ export class BunRunner<
    * the lock it was holding.
    */
   readonly #settling = new Set<Promise<RunStatus>>();
+  /**
+   * Each `worker-thread` run's wait for its thread to stop, by run id, from
+   * the moment the run settles until its handle's `exited` or
+   * {@link RUN_THREAD_REAP}, whichever is first; removed when it resolves. It
+   * never rejects. One wait per run, shared by `#finish`, `kill()` and
+   * `stop()`, so an overrunning thread is warned about once.
+   */
+  readonly #exits = new Map<string, Promise<void>>();
   /** Publishes still in flight, which `close()` waits for. */
   readonly #publishing = new Set<Promise<void>>();
   /**
@@ -470,6 +499,13 @@ export class BunRunner<
   /**
    * Stops the ticker, refuses new triggers, waits for runs in flight (killing
    * them at `timeout`), releases the lock and closes an owned driver.
+   *
+   * A `worker-thread` run counts as finished once its thread has actually
+   * stopped, not when `terminate()` was called, which returns first: so this
+   * resolves with no thread of this runner's still running, having waited
+   * {@link RUN_THREAD_REAP} at most for each one to stop. One still running
+   * then (oven-sh/bun#44216) does not hold it; it is logged, once, and stops
+   * on its own later.
    */
   async stop(options?: { timeout?: number; force?: boolean }): Promise<void> {
     this.#status = "stopped";
@@ -496,6 +532,10 @@ export class BunRunner<
     }
 
     await Promise.allSettled([...this.#active.values()].map((run) => run.done));
+    // Then every thread still stopping, a killed run's or not: a run that
+    // finished on its own just before has settled, and its thread may still
+    // be on its way out. Each wait is already capped.
+    await Promise.allSettled([...this.#exits.values()]);
     this.#executor.close?.();
     // Then whatever is still being written for runs that already settled.
     await Promise.allSettled([...this.#settling]);
@@ -674,7 +714,11 @@ export class BunRunner<
     return { outcome: "started", runId };
   }
 
-  /** Kills one run, or every local run when no id is given. */
+  /**
+   * Kills one run, or every local run when no id is given, and resolves once
+   * each has ended — for a `worker-thread` run, once its thread has stopped,
+   * or after {@link RUN_THREAD_REAP} at most (see {@link BunRunner.stop}).
+   */
   async kill(
     runId?: string,
     options?: { force?: boolean; reason?: string },
@@ -690,7 +734,12 @@ export class BunRunner<
       run.abort(reason, { force: options?.force });
     }
 
+    // Taken now: each leaves the map once its thread has stopped.
+    const exits = targets.map((run) => this.#exits.get(run.record.runId));
     await Promise.allSettled(targets.map((run) => run.done));
+    // A killed run's `done` already includes its thread's exit; this covers a
+    // run that finished on its own as the kill arrived.
+    await Promise.allSettled(exits);
   }
 
   /** Sends a message to a running handler; `false` when nothing received it. */
@@ -1756,7 +1805,8 @@ export class BunRunner<
       },
     });
 
-    const settle = this.#finish(runId, record, handle, capture);
+    const exit = this.#awaitExit(runId, handle);
+    const settle = this.#finish(runId, record, handle, capture, exit);
     const tracked = settle.finally(() => {
       this.#settling.delete(tracked);
     });
@@ -1898,14 +1948,75 @@ export class BunRunner<
     };
   }
 
-  /** Waits for a run to settle, records the outcome and drains what is queued. */
+  /**
+   * The wait for a run's thread to stop once the run has settled, tracked in
+   * {@link #exits} until it resolves. Never rejects.
+   *
+   * Only a `worker-thread` handle has an `exited` to wait for; any other
+   * resolves at once, since its `done` already means stopped. The wait starts
+   * when `done` settles — that is when `terminate()` was called — and ends at
+   * `exited` or after {@link RUN_THREAD_REAP}, whichever comes first. Past the
+   * cap it logs one `warn` naming the run and resolves anyway: the thread
+   * still stops, only later, and waiting on it for good would let a runtime
+   * that never fires `close` hang every `stop()`. The timer is ref'd, as the
+   * queue's reap timer is, so a process does not exit mid-wait, and it is
+   * bounded.
+   */
+  #awaitExit(runId: string, handle: ExecutorHandle): Promise<void> {
+    const { exited } = handle;
+    if (exited === undefined) {
+      return SETTLED;
+    }
+
+    const waiting = (async () => {
+      // `done` never rejects, nor does `exited`.
+      await handle.done;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const inTime = await Promise.race([
+        exited.then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(resolve, RUN_THREAD_REAP, false);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!inTime) {
+        this.#logger.warn(
+          `worker-thread run ${runId} had not stopped ${RUN_THREAD_REAP} ms after being terminated; the runner stopped waiting for it (oven-sh/bun#44216)`,
+          { runId, reapMs: RUN_THREAD_REAP, file: this.file },
+        );
+      }
+    })().finally(() => {
+      this.#exits.delete(runId);
+    });
+    this.#exits.set(runId, waiting);
+    return waiting;
+  }
+
+  /**
+   * Waits for a run to settle, records the outcome and drains what is queued.
+   *
+   * A run the runner ended — `timeout` or `killed` — is not reported ended
+   * until it has stopped: for a `worker-thread` run that is `exit`, its
+   * thread's own stop, capped at {@link RUN_THREAD_REAP}, since `done`
+   * settles when `terminate()` is called and the thread goes on running after
+   * it (oven-sh/bun#44216). Until then the run stays in {@link #active} with
+   * its record `running`, holding the lock, and nothing — the history row,
+   * the `last*` state, the events, the published event — says otherwise. A
+   * run that reported its own result, `success` or `failed`, is recorded
+   * straight away: its handler has returned, and the thread's exit is waited
+   * for by `stop()` and `kill()` instead, so a result is never held back.
+   */
   async #finish(
     runId: string,
     record: RunRecord,
     handle: ExecutorHandle,
     capture: RunLogCapture | undefined,
+    exit: Promise<void>,
   ): Promise<RunStatus> {
     const outcome = await handle.done;
+    if (outcome.status === "timeout" || outcome.status === "killed") {
+      await exit;
+    }
     // Before the record is written, so the history row and the log agree, and
     // bounded by `RUN_LOG_GRACE_MS` inside `close()` so a store that has
     // stopped answering cannot hold the run open.

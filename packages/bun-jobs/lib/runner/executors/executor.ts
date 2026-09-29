@@ -93,7 +93,10 @@ export interface ExecutorHandle {
    * waits for the exit, and `in-process` has no thread or process of its own
    * to wait for (a handler it detached on a timeout cannot be stopped at all).
    * A caller that must see the run gone, rather than decided — a close that
-   * promises nothing is left running — awaits `exited ?? done`.
+   * promises nothing is left running — awaits `exited ?? done`, and always
+   * with a cap (the queue's `TARGET_CLOSE_REAP`, the runner's
+   * `RUN_THREAD_REAP`): it settles only when the runtime fires the worker's
+   * `close`, so a runtime that never does would otherwise hang the caller.
    */
   exited?: Promise<void>;
   /**
