@@ -30,7 +30,12 @@ import {
 } from "@kingsleyweb/bun-common/lib/utils/native";
 import { displayRepeatKey } from "../../queue/options";
 import { DEFAULT_LOCK_DURATION } from "../../shared/constants";
-import { ProtocolError, UnrecoverableJobError } from "../../shared/errors";
+import {
+  JobTimeoutError,
+  ProtocolError,
+  RunKilledError,
+  UnrecoverableJobError,
+} from "../../shared/errors";
 import { toHandler } from "../executors/executor";
 import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
 
@@ -46,7 +51,22 @@ import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
  * A child runs whatever handler the file holds, so it never knows that
  * handler's declared argument or message types: those stay `unknown` here,
  * and are the handler's to narrow.
+ *
+ * A `close` is honoured whenever it arrives, not only once the handler is
+ * running. One that arrives before `start` — the parent timed the run out or
+ * stopped it while this child was still booting — and one that arrives while
+ * the handler's module is still importing both end the run without calling
+ * the handler (see {@link runChildProtocol} and {@link execute}). Before
+ * that, a close ahead of `start` was dropped: the handler then ran with a
+ * signal nothing would ever abort, until `SIGTERM` or `terminate()` at
+ * `closeTimeout`.
  */
+
+/** Why the parent asked a run to stop, as its `close` message says. */
+type CloseReason = Extract<ParentToChild, { t: "close" }>["reason"];
+
+/** What `invoke` returns when a `close` meant the handler was never called. */
+const NOT_INVOKED: unique symbol = Symbol("not invoked");
 
 /** How a child talks to its parent. */
 export interface ChildTransport {
@@ -161,7 +181,15 @@ interface AttemptState {
   settled: boolean;
 }
 
-/** How long before `closeTimeout` the child stops waiting and exits itself. */
+/**
+ * How long before `closeTimeout` the child stops waiting and exits itself.
+ *
+ * So a `closeTimeout` of this or less leaves a cooperative handler in a
+ * spawned child no time at all to unwind: it exits the moment the `close`
+ * arrives. (A worker has no `exit`, so there the timer does nothing and
+ * `terminate()` at `closeTimeout` is what ends it.) Documented on the
+ * `closeTimeout` options rather than enforced.
+ */
 const SELF_EXIT_MARGIN = 500;
 
 /**
@@ -170,17 +198,42 @@ const SELF_EXIT_MARGIN = 500;
  * A child exits itself shortly before the parent's `closeTimeout` expires, so
  * the escalation to `SIGTERM` is a fallback for a wedged handler rather than
  * the normal path.
+ *
+ * A `close` that arrives before `start` is remembered, and the `start` that
+ * follows ends the run instead of beginning it: the handler is never
+ * imported, let alone called. The parent sends `start` only once this child
+ * reports `ready`, so a timeout or a `kill()`/`stop()` that lands while the
+ * child is still booting reaches it first — and a child that dropped it, as
+ * this one once did, ran the handler with a signal that could never abort.
  */
 export function runChildProtocol(transport: ChildTransport): void {
   let running = false;
+  /**
+   * The reason of a `close` that arrived before `start`, or `undefined` while
+   * none has. The first one stands, as the parent's first reason does.
+   */
+  let closedBeforeStart: CloseReason | undefined;
 
   transport.onMessage((message) => {
+    if (message?.t === "close" && !running) {
+      // Only one run is ever sent to a child, so a close before `start` can
+      // only be for the run about to be started.
+      closedBeforeStart ??= message.reason;
+      return;
+    }
+
     if (message?.t !== "start" || running) {
       // A second `start` is ignored: one child runs one run.
       return;
     }
 
     running = true;
+
+    if (closedBeforeStart !== undefined) {
+      reportClosed(transport, message.ctx, closedBeforeStart);
+      return;
+    }
+
     void execute(transport, message.ctx);
   });
 
@@ -203,6 +256,8 @@ async function execute(
   const replies = new Map<number, ReplyResolver>();
   /** How the attempt has gone, for an isolated job's `fail()`. */
   const attempt: AttemptState = { failedWith: undefined, settled: false };
+  /** Why the parent asked this run to stop, once it has; the first stands. */
+  let closedWith: CloseReason | undefined;
 
   transport.onMessage((message) => {
     if (message?.t === "message" && message.runId === ctx.runId) {
@@ -228,6 +283,7 @@ async function execute(
     }
 
     if (message?.t === "close" && message.runId === ctx.runId) {
+      closedWith ??= message.reason;
       controller.abort();
       scheduleSelfExit(ctx, () => attempt.settled, transport);
     }
@@ -302,7 +358,25 @@ async function execute(
         .catch(() => undefined);
     }
 
+    // Closed already — during the collation note's import — so the handler's
+    // module need not even be loaded.
+    if (closedWith !== undefined) {
+      return NOT_INVOKED;
+    }
+
     const module: unknown = await import(ctx.file);
+
+    // Closed while the module was importing, which can take seconds on a
+    // loaded machine: the handler is not called. Its module has been
+    // evaluated, though, and skipping the call cannot undo that — any
+    // top-level side effect (a connection opened, a file written, a timer
+    // armed) has already happened, exactly as it would have had the handler
+    // run and unwound. What this saves is the handler itself: it would only
+    // start work with its signal already aborted.
+    if (closedWith !== undefined) {
+      return NOT_INVOKED;
+    }
+
     return ctx.kind === "job" && ctx.job
       ? await toHandler(
           module,
@@ -333,6 +407,12 @@ async function execute(
         }, invoke)
       : await invoke();
     attempt.settled = true;
+    if (result === NOT_INVOKED) {
+      // `closedWith` is set: nothing returns NOT_INVOKED otherwise.
+      reportClosed(transport, ctx, closedWith ?? "kill");
+      return;
+    }
+
     // `job.fail()` was called: the attempt ends that way however the
     // processor returned, exactly as the worker settles an in-process one.
     if (attempt.failedWith) {
@@ -620,6 +700,41 @@ function scheduleSelfExit(
     }
   }, delay);
   timer.unref?.();
+}
+
+/**
+ * Ends a run that was closed before its handler was called: reports it as
+ * stopped and exits with the code a child that stops itself after a `close`
+ * uses.
+ *
+ * The report is what ends a `worker-thread` run promptly — a worker cannot
+ * exit itself, and without a result its parent would wait out `closeTimeout`
+ * before terminating it. Its content decides nothing: the parent recorded the
+ * run's outcome — `timeout` with a `JobTimeoutError`, or `killed` with a
+ * `RunKilledError` carrying the caller's reason — before it sent the `close`,
+ * and a result arriving after that does not replace it. So such a run is
+ * recorded, emitted and published exactly as one closed after its handler
+ * began. It is still the right kind of error, for any reader of the message.
+ */
+function reportClosed(
+  transport: ChildTransport,
+  ctx: SerializableContext,
+  reason: CloseReason,
+): void {
+  const error =
+    reason === "timeout"
+      ? new JobTimeoutError(
+          ctx.deadline === null ? 0 : ctx.deadline - ctx.startedAt,
+          { runId: ctx.runId },
+        )
+      : new RunKilledError(reason, { runId: ctx.runId });
+
+  transport.send({
+    t: "error",
+    runId: ctx.runId,
+    error: serializeError(error),
+  });
+  finish(transport, CLOSE_EXIT_CODE);
 }
 
 /** Closes the channel and ends the process. */

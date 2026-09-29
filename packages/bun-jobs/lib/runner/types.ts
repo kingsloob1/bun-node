@@ -711,7 +711,16 @@ export interface BunRunnerOptions<TArgs = unknown> {
   maxConcurrency?: number;
   /** Per-run timeout in milliseconds. `0` (the default) means none. */
   timeout?: number;
-  /** Grace after asking a run to stop, before `SIGTERM`. Defaults to 5000. */
+  /**
+   * Grace after asking a run to stop, before `SIGTERM` (`child-process`) or
+   * `terminate()` (`worker-thread`). Defaults to 5000.
+   *
+   * A `child-process` child exits itself 500 ms before this runs out, so that
+   * `SIGTERM` is a fallback rather than the normal path. A value of 500 or
+   * less therefore leaves a cooperative handler no time to unwind: the child
+   * exits as soon as it is asked to stop. (A worker cannot exit itself, so a
+   * `worker-thread` run has the whole of it.)
+   */
   closeTimeout?: number;
   /** Grace after `SIGTERM`, before `SIGKILL`. Defaults to 2000. */
   killTimeout?: number;

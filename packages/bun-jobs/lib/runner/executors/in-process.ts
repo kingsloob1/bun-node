@@ -157,7 +157,26 @@ export class InProcessExecutor implements Executor {
         ? `${options.file}?v=${++this.#reload}`
         : options.file;
 
-      const handler = toHandler(await import(specifier), options.file);
+      const module: unknown = await import(specifier);
+
+      // Stopped while the module was importing: the handler is not called,
+      // as in the other two modes (`child-runtime.ts`). The module has been
+      // evaluated, and skipping the call cannot undo that — its top-level
+      // side effects have already happened. The outcome is exactly the one a
+      // handler that saw its signal and returned would have produced. Only a
+      // stop can be pending here: the timeout's clock starts below.
+      const stoppedFor = controller.signal.aborted ? stopReason() : undefined;
+      if (stoppedFor !== undefined) {
+        return {
+          status: "killed",
+          error: serializeError(
+            new RunKilledError(stoppedFor, { runId: context.runId }),
+          ),
+          pid: process.pid,
+        };
+      }
+
+      const handler = toHandler(module, options.file);
 
       const work = Promise.resolve(handler(context)).then(
         (result) => {
