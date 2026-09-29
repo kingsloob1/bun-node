@@ -1516,3 +1516,67 @@ describe("review round 2: undeclared credential shapes never reach the detail", 
     expect(await clean(summon, events)).toBe("PROVIDER_TRANSIENT");
   });
 });
+
+describe("review round 3: a detail is redacted before it is cut", () => {
+  const SECRET = "s3cr3t-token-value-1234";
+
+  /** A plugin, with `token` declared secret or not, that answers `unavailable` with `reason`. */
+  function declining(reason: string, declared: boolean) {
+    const provider = defineComputeProvider({
+      name: `test-errors-cut-${++unique}`,
+      version: "1.0.0",
+      kind: "cut",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      config: toStandardSchema<{ token: string }>((input) => ({
+        value: input as { token: string },
+      })),
+      ...(declared ? { secrets: ["token"] } : {}),
+      summon: (): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => ({ status: "unavailable", reason }),
+      }),
+    });
+    return provider({ token: SECRET });
+  }
+
+  /** The prefixes of the secret, 4 characters or longer: what a cut through it would leave. */
+  const PREFIXES: string[] = [];
+  for (let end = 4; end <= SECRET.length; end++) {
+    PREFIXES.push(SECRET.slice(0, end));
+  }
+
+  /** A reason with the secret at `offset`, padded well past the cap. */
+  function reasonWith(offset: number): string {
+    return `${"a".repeat(offset)}${SECRET}${"b".repeat(200)}`;
+  }
+
+  // 105 ends the secret on character 127, where the cut's "…" lands; 110, 118
+  // and 122 straddle it, with less of the secret before the cut each time.
+  for (const offset of [105, 110, 118, 122]) {
+    it(`leaves no part of a declared secret at offset ${offset} across the 128-character cut`, async () => {
+      const { controller, events } = await setup();
+      const summon = controller({
+        summoner: declining(reasonWith(offset), true),
+      });
+      await summon.check();
+      const detail = (await summon.status()).last?.detail ?? "";
+      expect(detail).toHaveLength(DETAIL_MAX);
+      expect(detail.endsWith("…")).toBe(true);
+      for (const prefix of PREFIXES) {
+        expect(detail).not.toContain(prefix);
+      }
+      expect(events.at(-1)?.detail).toBe(detail);
+    });
+  }
+
+  it("negative control: undeclared, the cut keeps the secret's prefix, so the check can see one", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: declining(reasonWith(110), false),
+    });
+    await summon.check();
+    const detail = (await summon.status()).last?.detail ?? "";
+    expect(detail).toHaveLength(DETAIL_MAX);
+    expect(detail).toContain(SECRET.slice(0, 17));
+  });
+});

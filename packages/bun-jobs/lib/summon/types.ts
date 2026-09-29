@@ -435,7 +435,9 @@ export interface SummonLastOutcome {
    * A short, secret-free explanation: a `ProviderError`'s `platformCode`,
    * else its `PROVIDER_<KIND>` code; another error's code or name; an
    * `unavailable` reason; for `lost`, the platform's reason from the
-   * summoner's `status()` when it gave one.
+   * summoner's `status()` when it gave one. Served to API clients: a
+   * provider must never put a credential in it, since only its declared
+   * secrets and the usual credential shapes are redacted.
    */
   detail?: string;
 }

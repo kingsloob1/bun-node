@@ -3210,6 +3210,11 @@ if (response.status === 429) {
   `detail` — has the provider's declared secrets and the usual credential
   shapes (a URL's password, `key=value` under a credential key, `Bearer …`, a
   JWT) redacted, and is cut to 128 characters (ending in `…`).
+  **The detail is served to API clients, so a provider must never put a
+  credential in a `platformCode`, code, name, reason or unit detail.** A
+  code-shaped token such as `sk_live_abc123` passes the code rule and
+  matches no redaction pattern, so it would appear verbatim: only a value
+  the provider declares in `secrets` is redacted wherever it appears.
 - **A lost attempt is explained** when the summoner has `status()` and the
   attempt has handles: the first unit's `detail`
   (`CannotPullContainerError`, `OOMKilled`) becomes the `lost` event's detail
