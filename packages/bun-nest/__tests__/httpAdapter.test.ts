@@ -213,6 +213,65 @@ describe("Http Adapter Routing - Complex Paths", () => {
   // Add more cases as needed for edge conditions.
 });
 
+/**
+ * A client never sends a URL's fragment, so a served request never has one;
+ * `fetch()` must drop it too, or a route matches offline that 404s served.
+ */
+describe("BunHttpAdapter.fetch: drops the URL fragment, as a served request", () => {
+  /** Echoes what the route saw, minus the host (which differs). */
+  function build(adapter: BunHttpAdapter): void {
+    for (const path of ["/p/:id", "/p/:id/v"]) {
+      adapter.get(path, (req, res) => {
+        res.json({
+          route: path,
+          id: req.params.id,
+          url: req.url,
+          hash: req.hash,
+          query: req.query,
+        });
+      });
+    }
+  }
+
+  it("answers what a served request gets, for a string, a { url } and a Request", async () => {
+    const served = new BunHttpAdapter();
+    build(served);
+    await served.listen(0);
+
+    const offline = new BunHttpAdapter();
+    build(offline);
+
+    try {
+      for (const target of ["/p/a@1#1/v", "/p/x?q=1#frag", "/p/a%231"]) {
+        const overSocket = await fetch(
+          `http://127.0.0.1:${served.listeningPort}${target}`,
+        );
+        const expected = {
+          target,
+          status: overSocket.status,
+          body: await overSocket.text(),
+        };
+        expect(expected.status).toBe(200);
+
+        for (const input of [
+          target,
+          { url: target },
+          new Request(`http://localhost${target}`),
+        ]) {
+          const response = await offline.fetch(input);
+          expect({
+            target,
+            status: response.status,
+            body: await response.text(),
+          }).toEqual(expected);
+        }
+      }
+    } finally {
+      await served.close();
+    }
+  });
+});
+
 describe("BunHttpAdapter: responses NestJS sends", () => {
   it("redirect() finishes the response (no wait for the request timeout)", async () => {
     const adapter = new BunHttpAdapter();
