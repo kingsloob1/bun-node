@@ -10,28 +10,37 @@ import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
  *
  * 1. **exact values**: each declared secret of the current config (strings of
  *    {@link MIN_SECRET_LENGTH} characters or more; a shorter one would take
- *    ordinary words with it) is replaced wherever it appears, as it is and
+ *    ordinary words with it) is replaced wherever it appears: as it is,
  *    URL-encoded (`encodeURIComponent`'s form and a form's, `+` for a
- *    space);
+ *    space, each also with lower-case percent-escapes) and escaped for a
+ *    regular expression (see {@link encodedForms});
  * 2. **patterns**: the runner's redactor (`createRedactor` with its
  *    defaults: `key=value` pairs under a sensitive key, `Bearer …`, a URL's
- *    password, a JWT), then a bare `Basic <base64>` credential (when it
- *    decodes to `user:password`), an `X-Amz-Signature=` value and an Azure
- *    SAS `sig=` value. A field whose *name* is a credential's, by the rule
- *    the status route's fact filter uses (`isCredentialKey`: a credential
- *    word as one of the name's words, or ending it), has its value replaced
- *    whole: `apiKey`, `authToken` and `sessiontoken` are, `author` is not.
+ *    password, a JWT), then a bare `Basic <base64>` or base64url credential
+ *    (when it decodes to `user:password`), the values of `X-Amz-Signature=`
+ *    and `X-Goog-Signature=`, of an Azure SAS `sig=` inside a query, and of
+ *    an `x-amz-signature:` header. A field whose *name* is a credential's,
+ *    by the rule the status route's fact filter uses (`isCredentialKey`: a
+ *    credential word as one of the name's words, or ending it), has its
+ *    value replaced whole: `apiKey`, `authToken` and `sessiontoken` are,
+ *    `author` is not. Keys are text too, redacted like values.
  *
  * A URL's userinfo is replaced whole, whatever it holds (the status route's
  * rule): `https://ghp_…@github.com` and a Sentry DSN's key included. A value
  * the walk would not otherwise read is converted first — a `URL` to its
  * text, `Headers`, `URLSearchParams` and a `Map` to their entries, a `Set`
- * to its items, an object with a `toJSON` method to what it returns (called
- * guarded: a throw is `[Unreadable]`), another class instance to its own
- * fields, a `RegExp` to its text — so both rules apply to it; binary data
- * (a `Buffer`, a typed array, an `ArrayBuffer`, a `DataView`) is replaced
- * by `[Binary <n> bytes]`; an error's own fields follow the name rule too;
- * and anything deeper than the walk goes is replaced, never passed through.
+ * to its items, an object with a `toJSON` method (a `Date` with its own
+ * included) to what it returns (called guarded: a throw is `[Unreadable]`),
+ * another class instance to its own fields, a `RegExp` or a `String` object
+ * to its text, a `Symbol` to its description — so both rules apply to it.
+ * Binary data (a `Buffer`, a typed array, an `ArrayBuffer`, a `DataView`, a
+ * `Blob` or `File`) is replaced by `[Binary <n> bytes]` and a function by
+ * `[Function]`. An error is copied with its class and, as its own
+ * properties, its fields and `name`, `message`, `stack`, `code` and `cause`,
+ * plus a `toJSON` returning that redacted view, so neither a host class's
+ * brand-checked getters (a `DOMException`'s) nor a `toJSON` on its
+ * prototype runs on the copy; one still unreadable becomes a plain `Error`.
+ * Anything deeper than the walk goes is replaced, never passed through.
  *
  * It is text-level, so it misses what the runner's redactor misses (a secret
  * in prose, token shapes other than those above); declaring secrets is how a
@@ -51,16 +60,18 @@ const PATTERNS = createRedactor(true)!;
 const USERINFO = new RegExp(URL_USERINFO.source, "g");
 
 /**
- * A bare `Basic` credential: the scheme, then a run of base64. Replaced only
- * when the run decodes to `user:password` (see {@link isBasicCredential}),
- * so prose ("Basic authentication failed") is left alone.
+ * A bare `Basic` credential: the scheme, then a run of base64 or base64url
+ * with its padding, ending where the run does (the next character is none
+ * of the alphabet's). Replaced only when the run decodes to `user:password`
+ * (see {@link isBasicCredential}), so prose ("Basic authentication
+ * failed") is left alone.
  */
-const BASIC = /\b(basic\s+)([a-z0-9+/]{8,}={0,2})(?![\w+/=])/gi;
+const BASIC = /\b(basic\s+)([\w+/-]{8,}={0,2})(?![\w+/=-])/gi;
 
-/** Whether a base64 run decodes to a `user:password` pair, as a Basic credential does. */
+/** Whether a base64 (or base64url) run decodes to a `user:password` pair, as a Basic credential does. */
 function isBasicCredential(run: string): boolean {
   try {
-    return atob(run).includes(":");
+    return atob(run.replaceAll("-", "+").replaceAll("_", "/")).includes(":");
   } catch {
     return false;
   }
@@ -74,28 +85,70 @@ function basicRewrite(match: string, scheme: string, run: string): string {
 }
 
 /**
- * Query parameters that carry a signature by themselves, value replaced: an
- * S3 presigned URL's `X-Amz-Signature`, an Azure SAS token's `sig` (only as
- * a whole key, so `xsig=` and `signal=` are left alone).
+ * Parameters that carry a signature by themselves, value replaced, case
+ * insensitive: an S3 presigned URL's `X-Amz-Signature=` and a Google Cloud
+ * Storage signed URL's `X-Goog-Signature=` (as whole keys), and an Azure SAS
+ * token's `sig=` only inside a query, after `?` or `&` (so `xsig=`,
+ * `signal=` and prose such as "the sig=verified flag" are left alone).
  */
-const SIGNATURES = /(?<![\w.\-])((?:x-amz-signature|sig)=)[^&\s"'#;]+/gi;
+const SIGNATURES =
+  /((?<![\w.\-])x-(?:amz|goog)-signature=|[?&]sig=)[^&\s"'#;]+/gi;
 
-/**
- * A declared secret's forms in a URL: as it is, as `encodeURIComponent`
- * writes it, and as a form (`URLSearchParams`, `+` for a space) writes it.
- */
-function encodedForms(secret: string): string[] {
-  return [
-    secret,
-    encodeURIComponent(secret),
-    new URLSearchParams({ s: secret }).toString().slice(2),
-  ];
+/** The `X-Amz-Signature` header, `x-amz-signature: <value>`, value replaced. */
+const SIGNATURE_HEADER = /(\bx-amz-signature:[ \t]*)[^\s,;"']+/gi;
+
+/** A text with each percent-escape's hex digits in lower case (`%2F` → `%2f`). */
+function lowerPercent(text: string): string {
+  return text.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
+}
+
+/** A text escaped as the usual `escapeRegExp` helper writes it. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
- * A text redactor: the declared secrets by value (raw and URL-encoded), then
- * the default patterns, a URL's userinfo, a bare `Basic` credential and a
- * signature parameter.
+ * A declared secret's forms, each matched by value:
+ *
+ * - as it is;
+ * - URL-encoded, as `encodeURIComponent` writes it and as a form
+ *   (`URLSearchParams`, `+` for a space) writes it, each also with
+ *   lower-case percent-escapes;
+ * - escaped for a regular expression, as an `escapeRegExp` helper writes it,
+ *   as a `RegExp`'s `source` shows that (`/` as `\/`), and as
+ *   `RegExp.escape` writes it.
+ *
+ * An encoding that throws (a lone surrogate, for `encodeURIComponent`) is
+ * skipped; the other forms still count.
+ */
+export function encodedForms(
+  /** The declared secret. */
+  secret: string,
+): string[] {
+  const forms = [secret];
+  const attempt = (make: () => string): void => {
+    try {
+      const form = make();
+      forms.push(form, lowerPercent(form));
+    } catch {
+      // That form cannot exist for this secret: nothing to match.
+    }
+  };
+  attempt(() => encodeURIComponent(secret));
+  attempt(() => new URLSearchParams({ s: secret }).toString().slice(2));
+  attempt(() => escapeRegExp(secret));
+  attempt(() => escapeRegExp(secret).replaceAll("/", "\\/"));
+  const escape = (RegExp as { escape?: (text: string) => string }).escape;
+  if (typeof escape === "function") {
+    attempt(() => escape(secret));
+  }
+  return [...new Set(forms)];
+}
+
+/**
+ * A text redactor: the declared secrets by value (every form of
+ * {@link encodedForms}), then the default patterns, a URL's userinfo, a
+ * bare `Basic` credential and a signature parameter or header.
  */
 export function textRedactor(
   /** The declared secret values; short or non-string ones are ignored. */
@@ -121,7 +174,9 @@ export function textRedactor(
       out.replace(USERINFO, `://${DEFAULT_REDACT_REPLACEMENT}@`),
     );
     const basic = patterned.replace(BASIC, basicRewrite);
-    return basic.replace(SIGNATURES, `$1${DEFAULT_REDACT_REPLACEMENT}`);
+    return basic
+      .replace(SIGNATURES, `$1${DEFAULT_REDACT_REPLACEMENT}`)
+      .replace(SIGNATURE_HEADER, `$1${DEFAULT_REDACT_REPLACEMENT}`);
   };
 }
 
@@ -133,7 +188,7 @@ function isPlainObject(value: object): boolean {
 
 /**
  * Binary data (a `Buffer`, any typed array, an `ArrayBuffer`, a
- * `DataView`), as its placeholder: `[Binary <n> bytes]`, never the bytes,
+ * `DataView`, a `Blob` or `File`), as its placeholder: `[Binary <n> bytes]`, never the bytes,
  * which a sink could decode to text. `undefined` for anything else.
  */
 function binaryPlaceholder(value: object): string | undefined {
@@ -144,6 +199,9 @@ function binaryPlaceholder(value: object): string | undefined {
   ) {
     return `[Binary ${value.byteLength} bytes]`;
   }
+  if (value instanceof Blob) {
+    return `[Binary ${value.size} bytes]`;
+  }
   return undefined;
 }
 
@@ -152,6 +210,9 @@ const UNREADABLE = "[Unreadable]";
 
 /** What a reference back to an object already being walked is logged as. */
 const CIRCULAR = "[Circular]";
+
+/** What a function is logged as: never passed through, since a sink could call it (or its `toJSON`). */
+const FUNCTION = "[Function]";
 
 /** What {@link viaToJSON} answers for an object without a `toJSON` method. */
 const NO_TO_JSON: unique symbol = Symbol("no toJSON");
@@ -234,6 +295,12 @@ function redactValue(
   if (typeof value === "string") {
     return redact(value);
   }
+  if (typeof value === "function") {
+    return FUNCTION;
+  }
+  if (typeof value === "symbol") {
+    return redact(value.description ?? "");
+  }
   if (typeof value !== "object" || value === null) {
     return value;
   }
@@ -260,7 +327,11 @@ function redactObject(
   if (value instanceof RegExp) {
     return redact(String(value));
   }
-  if (value instanceof Date) {
+  const boxed = stringObjectText(value);
+  if (boxed !== undefined) {
+    return redact(boxed);
+  }
+  if (isPristineDate(value)) {
     // Its text is a time, and a sink serialises it to one.
     return value;
   }
@@ -275,6 +346,7 @@ function redactObject(
   // at CIRCULAR, so the copy stays serialisable; once walked, a later
   // (acyclic) reference shares its copy.
   if (!(value instanceof Error) && !(value instanceof URL)) {
+    // A Date that is not pristine (a subclass's own toJSON) goes here too.
     const serialised = viaToJSON(value, redact, seen, depth);
     if (serialised !== NO_TO_JSON) {
       return serialised;
@@ -290,20 +362,8 @@ function redactObject(
     return copy;
   }
   if (value instanceof Error) {
-    // Same prototype, so the error's class and name survive for the sink.
-    const copy = Object.create(Object.getPrototypeOf(value) as object) as Error;
     seen.set(value, CIRCULAR);
-    for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-      // A getter is read and replaced by its (redacted) value, so the sink
-      // never calls it and gets the raw text.
-      Object.defineProperty(copy, key, {
-        value: redactField(value, key, redact, seen, depth + 1),
-        enumerable: descriptor.enumerable,
-        writable: true,
-        configurable: true,
-      });
-    }
+    const copy = redactError(value, redact, seen, depth);
     seen.set(value, copy);
     return copy;
   }
@@ -316,6 +376,132 @@ function redactObject(
     return copy;
   }
   return redactFields(value as LogFields, redact, seen, depth);
+}
+
+/** A `String` object's text (brand-checked, so a look-alike is not one), or `undefined`. */
+function stringObjectText(value: object): string | undefined {
+  try {
+    return String.prototype.valueOf.call(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a value is a `Date` serialised the built-in way, so passed as it is. */
+function isPristineDate(value: object): boolean {
+  if (!(value instanceof Date)) {
+    return false;
+  }
+  try {
+    return (
+      (value as { toJSON?: unknown }).toJSON === Date.prototype.toJSON &&
+      (value as { toISOString?: unknown }).toISOString ===
+        Date.prototype.toISOString
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The fields every error copy carries as its own, whatever its prototype says. */
+const ERROR_FIELDS = ["name", "message", "stack", "code", "cause"] as const;
+
+/**
+ * A redacted copy of an error. It keeps the error's prototype, so its class
+ * survives for the sink, and carries as **own** properties its own fields
+ * (read, so a getter never runs again; string keys redacted too) and
+ * `name`, `message`, `stack`, `code` and `cause`, each from a guarded read
+ * of the original: those shadow the prototype's getters, which for a host
+ * class (a `DOMException`) are brand-checked and throw on a copy. An own
+ * `toJSON` returns the redacted plain view, so a `toJSON` on the prototype
+ * never runs. If the copy still cannot be read (`String(copy)`, its name or
+ * message, `JSON.stringify`), it is rebuilt as a plain `Error` with the
+ * same fields.
+ */
+function redactError(
+  value: Error,
+  redact: (text: string) => string,
+  seen: WeakMap<object, unknown>,
+  depth: number,
+): Error {
+  const fields = new Map<
+    string | symbol,
+    { value: unknown; enumerable: boolean }
+  >();
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === "toJSON") {
+      continue;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    fields.set(typeof key === "string" ? redact(key) : key, {
+      value: redactField(value, key, redact, seen, depth + 1),
+      enumerable: descriptor.enumerable ?? false,
+    });
+  }
+  for (const key of ERROR_FIELDS) {
+    if (fields.has(key)) {
+      continue;
+    }
+    let raw: unknown;
+    try {
+      raw = Reflect.get(value, key);
+    } catch {
+      raw =
+        key === "name" ? "Error" : key === "message" ? UNREADABLE : undefined;
+    }
+    if (raw === undefined && key !== "name" && key !== "message") {
+      continue;
+    }
+    fields.set(key, {
+      value:
+        key === "name" && typeof raw !== "string"
+          ? "Error"
+          : key === "message" && raw === undefined
+            ? ""
+            : redactField({ [key]: raw }, key, redact, seen, depth + 1),
+      enumerable: false,
+    });
+  }
+  const view = (): Record<string, unknown> => {
+    const plain: Record<string, unknown> = {};
+    for (const key of ["name", "message", "code", "cause"] as const) {
+      if (fields.has(key)) {
+        plain[key] = fields.get(key)!.value;
+      }
+    }
+    for (const [key, field] of fields) {
+      if (typeof key === "string" && field.enumerable) {
+        plain[key] = field.value;
+      }
+    }
+    return plain;
+  };
+  const build = (prototype: object): Error => {
+    const copy = Object.create(prototype) as Error;
+    for (const [key, field] of fields) {
+      Object.defineProperty(copy, key, {
+        value: field.value,
+        enumerable: field.enumerable,
+        writable: true,
+        configurable: true,
+      });
+    }
+    Object.defineProperty(copy, "toJSON", {
+      value: view,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    return copy;
+  };
+  const copy = build(Object.getPrototypeOf(value) as object);
+  try {
+    // A host class may reach a brand-checked getter some other way.
+    void `${String(copy)}${copy.name}${copy.message}${JSON.stringify(copy)}`;
+    return copy;
+  } catch {
+    return build(Error.prototype);
+  }
 }
 
 /**
@@ -366,7 +552,8 @@ function redactFields(
     return { value: UNREADABLE };
   }
   for (const key of keys) {
-    copy[key] = redactField(fields, key, redact, seen, depth + 1);
+    // A key is text too: a secret used as one is redacted like a value.
+    copy[redact(key)] = redactField(fields, key, redact, seen, depth + 1);
   }
   seen.set(fields, copy);
   return copy;

@@ -159,6 +159,23 @@ describe("summon.secrets.no-leak looks for every declared secret by its validate
   });
 });
 
+describe("summon.secrets.no-leak counts a declared secret that is not a string", () => {
+  it("an object at a declared path is not looked for by value, and the detail says so", async () => {
+    const report = await kit(
+      derivingProvider({
+        leak: false,
+        derive: () => ({ nested: "not a string" }) as unknown as string,
+      }),
+    );
+    const check = noLeak(report);
+    expect(check.status, report.toMarkdown()).toBe("pass");
+    expect(check.detail).toMatch(/^1 secret\(s\) looked for/);
+    expect(check.detail).toContain(
+      "; 1 declared secret(s) are not strings, so not checked by value",
+    );
+  });
+});
+
 /** Runs the describe check alone on a summoner describing `facts`. */
 function describeStatus(facts: Record<string, string>): ConformanceCheck {
   const check: ConformanceCheck = {

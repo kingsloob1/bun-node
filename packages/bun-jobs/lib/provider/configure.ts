@@ -14,6 +14,7 @@ import { createJobsLogger } from "../shared/logger";
 import { providerCallContext } from "./context";
 import { CONFIGURED_PROVIDER } from "./define";
 import {
+  encodedForms,
   MIN_SECRET_LENGTH,
   redactingLogger,
   redactThrown,
@@ -473,14 +474,18 @@ export function configure<TConfig, TInput>(
       (secret): secret is string =>
         typeof secret === "string" && secret.length > 0,
     );
+    // A secret long enough to redact is matched in every form the redactor
+    // matches (URL-encoded among them); a shorter one only as the whole fact.
+    const forms = secrets.map((secret) =>
+      secret.length >= MIN_SECRET_LENGTH ? encodedForms(secret) : [],
+    );
     return Object.fromEntries(
       Object.entries(facts).filter(
         ([, value]) =>
           !secrets.some(
-            (secret) =>
+            (secret, index) =>
               value === secret ||
-              (secret.length >= MIN_SECRET_LENGTH &&
-                String(value).includes(secret)),
+              forms[index]!.some((form) => String(value).includes(form)),
           ),
       ),
     );
