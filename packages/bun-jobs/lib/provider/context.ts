@@ -16,7 +16,12 @@ export interface ProviderCallContext {
    * provider's declared secrets and the usual credential shapes redacted.
    */
   readonly logger: Logger;
-  /** The `fetch` to use for every platform call. The global one. */
+  /**
+   * The `fetch` to use for every platform call. The global one, except under
+   * the conformance kit (`./provider/testing`), which replaces it to route
+   * and record platform requests: a provider calling the global `fetch`
+   * directly fails the kit's routing check.
+   */
   readonly fetch: typeof fetch;
   /** The host's clock, epoch ms. */
   readonly now: () => number;
@@ -37,6 +42,18 @@ export interface ProviderSetupContext {
 }
 
 /**
+ * Internal: the property a `SummonController`'s options carry the conformance
+ * kit's `fetch` under, so its calls' `ctx.fetch` is the kit's (summon-compute
+ * §13.10 Q-p7). A `Symbol.for` key, so a kit from another copy of the package
+ * still reaches it. Internal and not part of the public API: no entry
+ * exports it, and it is reachable only by a deep import into `lib/` (the
+ * `./lib/*` exports pattern). Nothing but the kit sets it.
+ */
+export const PROVIDER_FETCH_PROBE: unique symbol = Symbol.for(
+  "@kingsleyweb/bun-jobs:provider-fetch-probe",
+);
+
+/**
  * Internal: a call context. The one place one is built, so every facet call
  * (the controller's, and `ConfiguredProvider.validate`) gets the same shape.
  */
@@ -45,11 +62,13 @@ export function providerCallContext(
   signal: AbortSignal,
   /** The call's logger, already redacting. */
   logger: Logger,
+  /** The `fetch` to hand the provider. Defaults to the global one. */
+  fetchFn: typeof fetch = globalThis.fetch,
 ): ProviderCallContext {
   return {
     signal,
     logger,
-    fetch: globalThis.fetch,
+    fetch: fetchFn,
     now: Date.now,
   };
 }

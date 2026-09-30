@@ -3,7 +3,7 @@ import type {
   SummonControllerOptions,
   SummonEventPayload,
 } from "../lib/index";
-import type { FakePlatformOptions } from "./helpers/summon";
+import type { SpawningSummonerOptions } from "./helpers/summon";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import {
   afterAll,
@@ -16,7 +16,7 @@ import {
 import { BunQueue, createDriver, SummonController } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
-import { fakePlatform, workerLines } from "./helpers/summon";
+import { spawningSummoner, workerLines } from "./helpers/summon";
 
 /**
  * Summoning end to end with no cloud: a controller calls a fake platform,
@@ -53,13 +53,13 @@ for (const backend of BACKENDS) {
     () => {
       /** A namespace, a queue, a controller over a fake platform; all cleaned up. */
       async function setup(
-        platformOptions: Omit<FakePlatformOptions, "driver">,
+        platformOptions: Omit<SpawningSummonerOptions, "driver">,
         policy: Partial<SummonControllerOptions> = {},
       ): Promise<{
         driver: JobsDriver;
         queue: BunQueue<unknown>;
         controller: SummonController;
-        platform: ReturnType<typeof fakePlatform>;
+        platform: ReturnType<typeof spawningSummoner>;
         events: SummonEventPayload[];
         /** Runs a check every 100 ms until `predicate` holds. */
         checkUntil: (
@@ -75,7 +75,7 @@ for (const backend of BACKENDS) {
           driver,
           logger: noopLogger,
         });
-        const platform = fakePlatform({
+        const platform = spawningSummoner({
           driver: backend.config,
           ...platformOptions,
         });
