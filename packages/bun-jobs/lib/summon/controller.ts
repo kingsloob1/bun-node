@@ -37,10 +37,14 @@ import {
   readDemand,
   supportsWorkers,
 } from "../drivers/index";
-import { facetReadiness, providerSecrets } from "../provider/configure";
+import {
+  facetReadiness,
+  providerSecrets,
+  registeredProvider,
+} from "../provider/configure";
 import { PROVIDER_FETCH_PROBE, providerCallContext } from "../provider/context";
 import { providerErrorFacts } from "../provider/errors";
-import { redactingLogger, textRedactor } from "../provider/redact";
+import { redactDetail, redactingLogger } from "../provider/redact";
 import { registerProvider, warnUnmappedThrow } from "../provider/version";
 import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
 import { MAX_TIMER_MS } from "../queue/BunQueueWorker";
@@ -105,12 +109,6 @@ const DEFAULT_SUMMON_TIMEOUT = 30_000;
  * at most this long before the attempt was claimed (a clock-skew allowance).
  */
 const START_TIME_SLACK = 5_000;
-/**
- * The longest detail stored on the marker and sent in events: a longer one
- * (a provider passing a response body as its `platformCode`) is cut to this,
- * ending in `…`.
- */
-const DETAIL_MAX = 128;
 /** How many times a result is written back against a fresh read before giving up. */
 const RECORD_ATTEMPTS = 3;
 /** The fewest attempts the watch list holds, whatever the policy. */
@@ -2073,10 +2071,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * served to the UI.
    */
   #redactDetail(detail: string): string {
-    const redacted = textRedactor(providerSecrets(this.#summoner))(detail);
-    return redacted.length > DETAIL_MAX
-      ? `${redacted.slice(0, DETAIL_MAX - 1)}…`
-      : redacted;
+    return redactDetail(detail, providerSecrets(this.#summoner));
   }
 
   /**
@@ -2637,17 +2632,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(this.#inertReason === undefined
         ? {}
         : { inertReason: this.#inertReason }),
-      // Until a late provider's facet is adopted its capabilities are
-      // unknown, so the summoner is left out rather than shown provisional.
-      ...(this.#pending !== undefined || this.#adoptError !== undefined
-        ? {}
-        : {
-            summoner: {
-              provider: this.#summoner.provider,
-              capabilities: this.#capabilities,
-              facts: this.#summoner.describe(),
-            },
-          }),
+      summoner: this.#summonerStatus(),
       pending: marker.pending,
       failures: marker.failures,
       ...(marker.backoffUntil !== undefined && marker.backoffUntil > now
@@ -2664,6 +2649,56 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       },
       ...(marker.last === undefined ? {} : { last: marker.last }),
     };
+  }
+
+  /**
+   * The summoner as `status()` shows it. Until a late provider's facet is
+   * adopted its capabilities are unknown, so they are left out rather than
+   * shown provisional; its readiness says why. Reads the controller's state
+   * and changes none of it.
+   */
+  #summonerStatus(): NonNullable<SummonStatus["summoner"]> {
+    const readiness =
+      this.#adoptError !== undefined
+        ? "failed"
+        : this.#pending === undefined
+          ? "ready"
+          : this.#pending.failed()
+            ? "failed"
+            : "pending";
+    const providerId = registeredProvider(this.#summoner)?.id;
+    return {
+      provider: this.#summoner.provider,
+      ...(providerId === undefined ? {} : { providerId }),
+      readiness,
+      ...(readiness === "ready" ? { capabilities: this.#capabilities } : {}),
+      facts: this.#facts(),
+    };
+  }
+
+  /**
+   * The summoner's `describe()` facts, or `{}` when it throws: a broken
+   * `describe()` must not fail the status. Logged by name and code only,
+   * never the message, which may hold a secret.
+   */
+  #facts(): Readonly<Record<string, string>> {
+    try {
+      return this.#summoner.describe();
+    } catch (error) {
+      const code =
+        error instanceof Error ? (error as { code?: unknown }).code : undefined;
+      this.#providerLogger().error(
+        "the summoner's describe() threw; its facts are left out of the status",
+        {
+          provider: this.#summoner.provider.name,
+          thrown: error instanceof Error ? error.name : typeof error,
+          ...(typeof code === "string" && CODE_SHAPED.test(code)
+            ? { code }
+            : {}),
+        },
+      );
+      return {};
+    }
   }
 
   /**

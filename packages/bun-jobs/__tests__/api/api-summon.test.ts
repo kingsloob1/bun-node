@@ -165,6 +165,10 @@ describe("GET /queues/{queue}/summon", () => {
           kind: "fake",
           apiVersion: { core: "0.1", summon: "0.1" },
         },
+        // The configured instance's id in this process, for "Test
+        // connection", and ready: `defineSummoner` validates synchronously.
+        providerId: expect.stringMatching(/^custom:fake@0\.0\.0~\d+$/),
+        readiness: "ready",
         capabilities: {
           style: "launch",
           dedupe: {

@@ -241,17 +241,28 @@ checkEqual(
     { hour: 0, perHour: 30, day: 0, perDay: 300 },
   ],
 );
+// `readiness` says whether the summoner can be called: a `defineSummoner`
+// has no config to wait for, so it is "ready" at once, and that is why
+// `capabilities` is there (a provider still validating its config has none
+// yet). `providerId` is its instance in this process, `name@version~<n>`:
+// defineSummoner's anonymous provider is `custom:<kind>@0.0.0`, and this is
+// the first of that kind. The provider routes take it
+// ([`provider-routes.ts`](./provider-routes.ts)).
 checkEqual(
-  "the summoner: defineSummoner's provider and kind, and its facts less the token",
+  "the summoner: defineSummoner's provider and kind, ready, and its facts less the token",
   [
     status.summoner?.provider.name,
     status.summoner?.provider.kind,
-    status.summoner?.capabilities.style,
+    status.summoner?.providerId,
+    status.summoner?.readiness,
+    status.summoner?.capabilities?.style,
     status.summoner?.facts,
   ],
   [
     "custom:example-record",
     "example-record",
+    "custom:example-record@0.0.0~1",
+    "ready",
     "launch",
     { kind: "example-record", cluster: "local" },
   ],

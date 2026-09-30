@@ -180,6 +180,64 @@ export function textRedactor(
   };
 }
 
+/**
+ * The redactor's credential patterns alone, with no declared secrets:
+ * `Bearer …`, a `word:value` or `word=value` under a sensitive word, a URL's
+ * password or userinfo, a JWT, a bare `Basic` credential, a signature. A
+ * value they would change holds a credential shape.
+ */
+const CREDENTIAL_SHAPES = textRedactor([]);
+
+/** Why a `describe()` fact is not served, by {@link factProblem}. */
+export type FactProblem =
+  | "credential-key"
+  | "url-userinfo"
+  | "credential-shape";
+
+/**
+ * Internal: the one rule for a `describe()` fact, shared by the status
+ * route's filter (`isServableFact`, which adds its `host` rule) and the
+ * conformance kit's `summon.describe.facts`, so the kit warns about exactly
+ * what the route drops: a key naming a credential (`isCredentialKey`), a
+ * value holding a URL with userinfo, or a value the pattern redactor would
+ * change (`session-workers:prod`, `max_tokens=4096` and a `Bearer …` among
+ * them). `undefined` when none applies. Fails safe, by design.
+ */
+export function factProblem(
+  /** The fact's key. */
+  key: string,
+  /** The fact's value. */
+  value: string,
+): FactProblem | undefined {
+  if (isCredentialKey(key)) {
+    return "credential-key";
+  }
+  if (URL_USERINFO.test(value)) {
+    return "url-userinfo";
+  }
+  return CREDENTIAL_SHAPES(value) === value ? undefined : "credential-shape";
+}
+
+/**
+ * The longest detail stored or served — a marker's `last.detail`, a `summon`
+ * event's, a preflight's: a longer one (a provider passing a response body
+ * as its `platformCode`) is cut to this, ending in `…`.
+ */
+export const DETAIL_MAX = 128;
+
+/** A detail from a provider, redacted by {@link textRedactor} and cut to {@link DETAIL_MAX}. */
+export function redactDetail(
+  /** The detail. */
+  detail: string,
+  /** The provider's declared secret values. */
+  secrets: readonly unknown[],
+): string {
+  const redacted = textRedactor(secrets)(detail);
+  return redacted.length > DETAIL_MAX
+    ? `${redacted.slice(0, DETAIL_MAX - 1)}…`
+    : redacted;
+}
+
 /** Whether a value is a plain object literal, walked as it is. */
 function isPlainObject(value: object): boolean {
   const proto = Object.getPrototypeOf(value) as unknown;

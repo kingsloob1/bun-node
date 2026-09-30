@@ -150,6 +150,11 @@ export {
 export type {
   JobDefaultBackoff,
   JobDefaultsValues,
+  ProviderDto,
+  ProviderListDto,
+  ProviderSchemaDto,
+  ProviderValidateBody,
+  ProviderValidationDto,
   QueueDemandDto,
   QueueDemandListDto,
   QueueDemandListQuery,

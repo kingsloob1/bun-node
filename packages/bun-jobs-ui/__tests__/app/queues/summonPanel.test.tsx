@@ -47,6 +47,8 @@ function statusFixture(
         displayName: "Amazon ECS",
         apiVersion: { core: "0.1", summon: "0.1" },
       },
+      providerId: "@acme/bun-jobs-ecs@1.2.0~1",
+      readiness: "ready",
       capabilities: {
         style: "launch",
         dedupe: { kind: "none" },
@@ -265,6 +267,108 @@ describe("the Summon panel", () => {
     expect(panel.textContent).toContain(
       "arn:aws:ecs:eu-west-1:123456789012:task/jobs/abc",
     );
+  });
+});
+
+describe("the summoner's readiness and Test connection", () => {
+  /** The summoner's provider id in the fixture. */
+  const ID = "@acme/bun-jobs-ecs@1.2.0~1";
+
+  /** `GET /providers` listing the summoner's provider, with or without a preflight. */
+  function providers(preflight: boolean): MockReply {
+    return {
+      body: {
+        api: { core: "0.1", summon: "0.1" },
+        providers: [
+          {
+            id: ID,
+            provider: statusFixture().summoner!.provider,
+            readiness: "ready",
+            facts: {},
+            preflight,
+            configSchema: false,
+          },
+        ],
+      },
+    };
+  }
+
+  /** Every grant, both provider actions among them. */
+  const WITH_PROVIDERS = {
+    body: permissionsFixture({
+      "providers.read": true,
+      "providers.validate": true,
+    }),
+  };
+
+  it("shows the summoner's readiness, and no declared capabilities while it is pending", async () => {
+    const { panel } = await openPanel(
+      granted(
+        statusFixture({
+          summoner: {
+            ...statusFixture().summoner!,
+            readiness: "pending",
+            capabilities: undefined,
+          },
+        }),
+      ),
+    );
+    const summoner = within(panel).getByTestId("summon-summoner");
+    const badge = within(summoner).getByTestId("summon-readiness");
+    expect(badge.textContent).toBe("Pending");
+    expect(badge.title).toContain("still being validated");
+    // Not declared yet, so not shown: no invented style.
+    expect(summoner.textContent).not.toContain("Style");
+    expect(summoner.textContent).not.toContain("Boot budget");
+  });
+
+  it("offers Test connection where the provider has a preflight and the caller may validate", async () => {
+    const { panel } = await openPanel({
+      ...granted(statusFixture(), {
+        "GET /providers": providers(true),
+        [`POST /providers/${encodeURIComponent(ID)}/validate`]: {
+          body: { id: ID, ok: true, checks: [] },
+        },
+      }),
+      "GET /meta/permissions": WITH_PROVIDERS,
+    });
+    const button = await within(panel).findByRole("button", {
+      name: "Test connection: Amazon ECS",
+    });
+    fireEvent.click(button);
+    const result = await within(panel).findByTestId("provider-test-result");
+    expect(result.textContent).toBe("Connected.");
+  });
+
+  it("offers no Test connection for a provider without a preflight, or without providers.read", async () => {
+    const first = await openPanel({
+      ...granted(statusFixture(), { "GET /providers": providers(false) }),
+      "GET /meta/permissions": WITH_PROVIDERS,
+    });
+    await waitFor(() =>
+      expect(first.calls.some((call) => call.path === "/providers")).toBe(true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expectAbsent(
+      within(first.panel).queryByRole("button", { name: /Test connection/ }),
+    );
+    first.unmount();
+
+    // providers.validate alone: the preflight is unknown, so nothing is read or offered.
+    const second = await openPanel({
+      ...granted(statusFixture(), { "GET /providers": providers(true) }),
+      "GET /meta/permissions": {
+        body: permissionsFixture({
+          "queues.summon": true,
+          "providers.validate": true,
+        }),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expectAbsent(
+      within(second.panel).queryByRole("button", { name: /Test connection/ }),
+    );
+    expect(second.calls.some((call) => call.path === "/providers")).toBe(false);
   });
 });
 

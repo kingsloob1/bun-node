@@ -102,6 +102,15 @@ export interface JobsApiAuthorizeContext {
    */
   workerKey?: string;
   /**
+   * The compute provider a provider route targets: its id in the API's
+   * process, `name@version~<n>` (`POST /providers/{id}/validate`, `GET
+   * /providers/{id}/schema`, and each entry of `GET /providers`, which asks
+   * once per provider after the request's own call, with the `route` the
+   * schema read carries). Lets a host scope "Test connection" and the list
+   * by provider.
+   */
+  provider?: string;
+  /**
    * The WebSocket channel, in canonical form, e.g. `"queue/mail"`: set when a
    * `subscribe` (or a `/meta/permissions?channel=` preview) is authorized, and
    * on the per-target calls. A broad channel (`all`, `queues`, `runners`)
@@ -568,7 +577,9 @@ export interface JobsApiConfig {
    * Allow-list of actions to expose: **only** the actions named here are
    * enabled, and anything absent is neither routed nor documented. Defaults,
    * when unset, to every action except `JOBS_API_OPT_IN_ACTIONS` (`jobs.add`,
-   * `jobs.update`). It is not a list of extras on top of that default:
+   * `jobs.update`, `queues.summon`, `providers.read`, `providers.validate`
+   * and the remote-configuration ones). It is not a list of extras on top of
+   * that default:
    * `["jobs.add", "jobs.update"]` alone disables every other action, reads
    * included. To add those two to the default, pass `[...JOBS_API_ACTIONS]`
    * (or the default list plus them).

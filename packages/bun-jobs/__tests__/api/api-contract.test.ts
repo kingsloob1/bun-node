@@ -478,6 +478,8 @@ describe("one definition of each constant", () => {
     expect([...Contract.JOBS_API_OPT_IN_ACTIONS].sort()).toEqual([
       "jobs.add",
       "jobs.update",
+      "providers.read",
+      "providers.validate",
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
@@ -513,25 +515,30 @@ describe("one definition of each constant", () => {
     expect(Contract.JOBS_API_MUTATIONS.has("jobs.logs")).toBe(false);
     expect(Contract.JOBS_API_OPT_IN_ACTIONS.has("jobs.logs")).toBe(false);
     // The opt-in set is still exactly the actions that write a payload,
-    // reconfigure a process or change a queue's job defaults: a read must
-    // never have joined it.
+    // reconfigure a process, change a queue's job defaults or reach a
+    // platform, plus one read that discloses infrastructure
+    // (`providers.read`, plugins §14.1): no other read may join it.
     expect([...Contract.JOBS_API_OPT_IN_ACTIONS].sort()).toEqual([
       "jobs.add",
       "jobs.update",
+      "providers.read",
+      "providers.validate",
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
       "runners.configure",
       "workers.configure",
     ]);
-    // Every opt-in action is a mutation, and no action is in one list only by
-    // accident: the two lists are consistent for the whole set, not just the
-    // new one.
+    // Every opt-in action is a mutation but `providers.read`, and no action
+    // is in one list only by accident: the two lists are consistent for the
+    // whole set, not just the new one. `providers.read` is the deliberate
+    // exception: a read (`readOnly` keeps it once named) that is granted only
+    // by name, because it discloses clusters and regions.
     for (const action of Contract.JOBS_API_OPT_IN_ACTIONS) {
       expect({
         action,
         mutation: Contract.JOBS_API_MUTATIONS.has(action),
-      }).toEqual({ action, mutation: true });
+      }).toEqual({ action, mutation: action !== "providers.read" });
     }
   });
 
@@ -564,6 +571,8 @@ describe("one definition of each constant", () => {
     expect([...Contract.JOBS_API_OPT_IN_ACTIONS].sort()).toEqual([
       "jobs.add",
       "jobs.update",
+      "providers.read",
+      "providers.validate",
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
@@ -766,10 +775,11 @@ describe("one definition of each constant", () => {
     // allow-list, and the analytics series expose nothing `metrics.read`,
     // `runners.read` and `workers.read` do not. So "no action was added" is an
     // invariant with a test, not a note in a review: this list is the whole
-    // list, and a 50th entry fails here. (The last five added were the clear
+    // list, and a 52nd entry fails here. (The last seven added were the clear
     // actions, `jobs.clearLogs` and `runners.clearHistory`, the queue job
-    // defaults, `queues.defaults` and `queues.applyDefaults`, and summoning,
-    // `queues.summon`, each a deliberate new permission rather than an
+    // defaults, `queues.defaults` and `queues.applyDefaults`, summoning,
+    // `queues.summon`, and the compute providers, `providers.read` and
+    // `providers.validate`, each a deliberate new permission rather than an
     // analytics series.)
     expect([...Contract.JOBS_API_ACTIONS]).toEqual([
       "meta.read",
@@ -784,6 +794,8 @@ describe("one definition of each constant", () => {
       "queues.defaults",
       "queues.applyDefaults",
       "queues.summon",
+      "providers.read",
+      "providers.validate",
       "metrics.read",
       "workers.list",
       "workers.read",

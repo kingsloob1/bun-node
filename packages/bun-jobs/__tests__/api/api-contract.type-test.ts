@@ -53,6 +53,12 @@ import type {
   PermissionsSchema,
 } from "../../lib/api/schemas/meta";
 import type {
+  ProviderListSchema,
+  ProviderSchemaSchema,
+  ProviderValidateBodySchema,
+  ProviderValidationSchema,
+} from "../../lib/api/schemas/providers";
+import type {
   addedByStateQuerySchema,
   AddedByStateSchema,
   applyJobDefaultsBodySchema,
@@ -139,6 +145,7 @@ import type {
 } from "../../lib/drivers/driver";
 import type { THROUGHPUT_BUCKET_MS } from "../../lib/drivers/readApis";
 import type { JobState } from "../../lib/index";
+import type * as Provider from "../../lib/provider/index";
 import type { ClearHistoryResult as RunnerClearHistoryResult } from "../../lib/runner/clearHistory";
 import type { RunnerConfigInfo } from "../../lib/runner/types";
 import type { RunLogStream as SharedRunLogStream } from "../../lib/shared/constants";
@@ -536,6 +543,78 @@ export type SummonStatusNegative = Expect<
       pending: Omit<Contract.PendingSummonDto, "until">[];
     },
     Infer<typeof SummonStatusSchema>
+  >
+>;
+// Compute providers: each route's body compares whole against its schema,
+// `timeoutMs` is defaulted by the server, and the pieces restate the
+// runtime's vocabulary — the identity, a check, an error kind — exactly.
+export type ProviderListOk = Expect<
+  DeepEqual<Contract.ProviderListDto, Infer<typeof ProviderListSchema>>
+>;
+export type ProviderValidationOk = Expect<
+  DeepEqual<
+    Contract.ProviderValidationDto,
+    Infer<typeof ProviderValidationSchema>
+  >
+>;
+export type ProviderValidateBodyOk = Expect<
+  DeepEqual<
+    Defaulted<Contract.ProviderValidateBody, "timeoutMs">,
+    Infer<typeof ProviderValidateBodySchema>
+  >
+>;
+export type ProviderSchemaOk = Expect<
+  DeepEqual<Contract.ProviderSchemaDto, Infer<typeof ProviderSchemaSchema>>
+>;
+export type ProviderIdentityOk = Expect<
+  Equal<Contract.ProviderDto["provider"], Contract.SummonProviderDto>
+>;
+export type ProviderCheckOk = Expect<
+  DeepEqual<
+    Contract.ProviderValidationDto["checks"][number],
+    Plain<Provider.ProviderCheck>
+  >
+>;
+export type ProviderErrorKindOk = Expect<
+  Equal<
+    NonNullable<Contract.ProviderValidationDto["error"]>["kind"],
+    Root.ProviderErrorKind
+  >
+>;
+export type ProviderApiOk = Expect<
+  Equal<
+    Contract.ProviderListDto["api"],
+    { -readonly [K in keyof typeof Provider.COMPUTE_PROVIDER_API]: string }
+  >
+>;
+// One readiness vocabulary, on the list and on a summon status.
+export type ProviderReadinessOk = Expect<
+  Equal<
+    Contract.ProviderDto["readiness"],
+    NonNullable<Contract.SummonStatusDto["summoner"]>["readiness"]
+  >
+>;
+export type RootProviderListDtoOk = Expect<
+  Equal<Root.ProviderListDto, Contract.ProviderListDto>
+>;
+export type RootProviderDtoOk = Expect<
+  Equal<Root.ProviderDto, Contract.ProviderDto>
+>;
+export type RootProviderValidationDtoOk = Expect<
+  Equal<Root.ProviderValidationDto, Contract.ProviderValidationDto>
+>;
+export type RootProviderValidateBodyOk = Expect<
+  Equal<Root.ProviderValidateBody, Contract.ProviderValidateBody>
+>;
+export type RootProviderSchemaDtoOk = Expect<
+  Equal<Root.ProviderSchemaDto, Contract.ProviderSchemaDto>
+>;
+// Negative control: a verdict without its `ok` is not the schema's.
+export type ProviderValidationNegative = Expect<
+  // @ts-expect-error -- `ok` is required by the schema
+  DeepEqual<
+    Omit<Contract.ProviderValidationDto, "ok">,
+    Infer<typeof ProviderValidationSchema>
   >
 >;
 type QueueDemandWithoutExact = Equal<
@@ -1493,6 +1572,7 @@ export type MetaFeatureKeysOk = Expect<
     | "jobDefaults"
     | "jobDefaultsApply"
     | "demand"
+    | "providers"
   >
 >;
 export type MetaFeatureValuesOk = Expect<

@@ -78,7 +78,14 @@ export function normalizeAuthorizeResult(result: unknown): AuthDecision {
 /** The target fields of an authorize context. */
 export type AuthorizeTarget = Pick<
   JobsApiAuthorizeContext,
-  "queue" | "jobId" | "jobIds" | "runner" | "worker" | "workerKey" | "channel"
+  | "queue"
+  | "jobId"
+  | "jobIds"
+  | "runner"
+  | "worker"
+  | "workerKey"
+  | "provider"
+  | "channel"
 >;
 
 /** What {@link decide} is asked, minus what it derives itself (`mutation`). */
@@ -86,7 +93,7 @@ export type AuthorizeRequest = Omit<JobsApiAuthorizeContext, "mutation">;
 
 /**
  * The target fields of anything, and only those: `queue`, `jobId`, `runner`,
- * `worker`, `workerKey` and `channel` when they are strings, `jobIds` when it
+ * `worker`, `workerKey`, `provider` and `channel` when they are strings, `jobIds` when it
  * is an array of strings (copied and frozen). Everything else — an `action`, a
  * `transport`, a `mutation` a route's `target` happened to return — is
  * dropped, so a target can never change what is being authorized.
@@ -103,6 +110,7 @@ export function pickTarget(value: unknown): AuthorizeTarget {
     "runner",
     "worker",
     "workerKey",
+    "provider",
     "channel",
   ] as const) {
     if (typeof source[key] === "string") {

@@ -1,0 +1,25 @@
+.providers-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.provider-test,
+.provider-schema {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  justify-items: start;
+}
+
+.provider-test-result p {
+  margin: 0;
+}
+
+.provider-test-fail {
+  color: var(--danger);
+}
+
+.provider-checks {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-3);
+}

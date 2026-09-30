@@ -36,6 +36,31 @@ describe("buildNav", () => {
     ]);
   });
 
+  it("offers Providers after Workers, only with the opt-in providers.read and the routes served", () => {
+    const granted = permissionsFixture({ "providers.read": true });
+    const can = (action: JobsApiAction) => granted.actions[action] === true;
+    expect(ids({ can })).toEqual([
+      "overview",
+      "queues",
+      "workers",
+      "providers",
+      "runners",
+      "events",
+      "docs",
+    ]);
+    // Without the opt-in (the default grants): no entry.
+    expect(ids()).not.toContain("providers");
+    // Routes not served (runner mode, or an older API): no entry.
+    expect(
+      ids({
+        can,
+        meta: metaFixture({
+          features: { ...metaFixture().features, providers: false },
+        }),
+      }),
+    ).not.toContain("providers");
+  });
+
   it("drops the runner side in mode jobs, and the jobs side in mode runner", () => {
     expect(ids({ meta: metaFixture({ mode: "jobs" }) })).toEqual([
       "overview",

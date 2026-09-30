@@ -239,8 +239,11 @@ describe("SummonController and a provider's ready", () => {
     expect(failed.pending).toEqual([]);
     expect(failed.last).toMatchObject({ outcome: "failed", detail: "CONFIG" });
     expect(failed.backoffUntil).toBeNumber();
-    // Its capabilities are unknown until it is ready: no summoner shown.
-    expect(failed.summoner).toBeUndefined();
+    // Its capabilities are unknown until it is ready: the summoner is shown
+    // failed, without them, its detail on `last`.
+    expect(failed.summoner?.readiness).toBe("failed");
+    expect(failed.summoner?.capabilities).toBeUndefined();
+    expect(failed.summoner?.facts).toEqual({});
     // Logged as any failed attempt is (§9.1's one line per outcome), but
     // without the per-call "summoner call failed": nothing was called, and
     // the cause is in the one warn below.
@@ -267,7 +270,8 @@ describe("SummonController and a provider's ready", () => {
     expect(counts.calls).toBe(1);
     expect(notReadyWarnings(logs)).toHaveLength(1);
     const ready = await summon.status();
-    expect(ready.summoner?.capabilities.bootBudgetMs).toBe(20_000);
+    expect(ready.summoner?.readiness).toBe("ready");
+    expect(ready.summoner?.capabilities?.bootBudgetMs).toBe(20_000);
     expect(ready.summoner?.facts).toEqual({ region: "eu" });
     expect(ready.pending).toHaveLength(1);
 
@@ -413,7 +417,7 @@ describe("SummonController and a provider's ready", () => {
     const late = await threeChecks(false);
     expect(late.actions).toEqual(control.actions);
     expect(late.releases).toBe(1);
-    expect(late.status.summoner?.capabilities.style).toBe("scale");
+    expect(late.status.summoner?.capabilities?.style).toBe("scale");
   });
 
   it("validates in the background on a check that will not summon, and adopts at the next", async () => {
@@ -773,9 +777,17 @@ describe("SummonController and a provider's ready", () => {
     const { provider } = asyncProvider({ delay: 300 });
     const configured = provider({ region: "eu" });
     const summon = controller({ summoner: configured });
-    expect((await summon.status()).summoner).toBeUndefined();
+    // Pending: shown, with no capabilities (unknown until ready) and no facts.
+    const pending = (await summon.status()).summoner;
+    expect(pending?.provider.kind).toBe("async");
+    expect(pending?.readiness).toBe("pending");
+    expect(pending?.capabilities).toBeUndefined();
+    expect(pending?.facts).toEqual({});
     await configured.ready;
-    expect((await summon.status()).summoner?.provider.kind).toBe("async");
+    const ready = (await summon.status()).summoner;
+    expect(ready?.readiness).toBe("ready");
+    expect(ready?.capabilities?.bootBudgetMs).toBe(20_000);
+    expect(ready?.facts).toEqual({ region: "eu" });
   });
 
   it("shares one ready in flight between overlapping checks", async () => {
@@ -813,7 +825,11 @@ describe("SummonController and a provider's ready", () => {
     );
     await expect(summon.check()).rejects.toBeInstanceOf(ConfigError);
     expect(counts.calls).toBe(0);
-    expect((await summon.status()).summoner).toBeUndefined();
+    // Refused for good: failed, its provider validated but its capabilities
+    // not shown.
+    const summoner = (await summon.status()).summoner;
+    expect(summoner?.readiness).toBe("failed");
+    expect(summoner?.capabilities).toBeUndefined();
   });
 
   it("runs on the real capabilities once adopted", async () => {

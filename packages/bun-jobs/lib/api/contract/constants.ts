@@ -29,6 +29,8 @@ export const JOBS_API_ACTIONS = [
   "queues.defaults",
   "queues.applyDefaults",
   "queues.summon",
+  "providers.read",
+  "providers.validate",
   "metrics.read",
   "workers.list",
   "workers.read",
@@ -81,6 +83,8 @@ export type JobsApiAction = (typeof JOBS_API_ACTIONS)[number];
  * `jobs.clearLogs` and `runners.clearHistory` delete what they clear for good,
  * and are default-on all the same, as `jobs.remove` and `runners.resetStats`
  * are: they write no caller payload and reconfigure nothing.
+ * `providers.validate` writes nothing either, but it reaches the platform with
+ * the provider's credentials, so a read-only API never has it (plugins §13.2).
  */
 export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
   new Set<JobsApiAction>([
@@ -92,6 +96,7 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
     "queues.defaults",
     "queues.applyDefaults",
     "queues.summon",
+    "providers.validate",
     "workers.pause",
     "workers.resume",
     "workers.stop",
@@ -141,6 +146,14 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
  * circuit that tripped on purpose; so it is granted only on purpose, and a
  * read-only API never has it. Reading a queue's summon status is
  * `queues.read`.
+ *
+ * `providers.read` and `providers.validate` — the compute providers
+ * configured in the API's process, and a preflight against one's platform —
+ * disclose infrastructure (clusters, regions, which accounts are reachable),
+ * so both are granted only by name. `providers.read` is a read: `readOnly`
+ * keeps it when `actions` names it. `providers.validate` is a mutation, like
+ * `queues.summon`: it uses the provider's credentials, and `readOnly`
+ * removes it.
  */
 export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
   new Set<JobsApiAction>([
@@ -149,6 +162,8 @@ export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
     "queues.defaults",
     "queues.applyDefaults",
     "queues.summon",
+    "providers.read",
+    "providers.validate",
     "workers.configure",
     "runners.configure",
   ]);

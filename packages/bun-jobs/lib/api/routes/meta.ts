@@ -107,6 +107,8 @@ export const DRIVER_FEATURES = {
   // where the API's mode prunes the routes (`runner`). Whether one answer's
   // figures are exact is that answer's `exact`, never this flag.
   demand: [],
+  // The provider routes: no driver method, the same rule as `demand`.
+  providers: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -214,6 +216,10 @@ export const FEATURE_ROUTES = {
   // The depth endpoint, one queue and the namespace. Neither is pruned for
   // the driver, so only the API's mode turns the flag off, through these.
   demand: ["getQueueDemand", "listQueueDemand"],
+  // The compute provider routes read the process's registry, not the
+  // backend, so only the API's mode turns the flag off, as for `demand`.
+  // Their actions are opt-in, which a flag deliberately ignores.
+  providers: ["listProviders", "validateProvider", "getProviderSchema"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -286,6 +292,18 @@ export function actionMode(action: JobsApiAction): RouteMode {
     return "any";
   }
   return "jobs";
+}
+
+/**
+ * Whether an action's routes name the queue they act on, so a permissions
+ * preview for a queue asks with it: every queue-side (`"jobs"`) action but
+ * the compute provider ones. `providers.*` routes are queue-side for pruning
+ * (served in `jobs` mode) but target a provider, never a queue: their own
+ * request carries no `queue`, so neither does their preview, and a
+ * queue-scoped `authorize` answers the preview as it answers the route.
+ */
+function targetsQueue(action: JobsApiAction): boolean {
+  return actionMode(action) === "jobs" && !action.startsWith("providers.");
 }
 
 /**
@@ -569,7 +587,7 @@ export function previewRoute(
   }
   const mode = actionMode(action);
   const param =
-    mode === "jobs" && target.queue !== undefined
+    targetsQueue(action) && target.queue !== undefined
       ? ":queue"
       : mode === "runner" && target.runner !== undefined
         ? ":runner"
@@ -609,6 +627,10 @@ export function previewRoute(
  * - `events.connect` and `events.subscribe` carry `transport: "ws"` and no
  *   `route`, as the upgrade and a `subscribe` frame do.
  *
+ * - `providers.read` and `providers.validate` never carry `queue`, even
+ *   asked about one: their routes target a provider, and their request-level
+ *   call names no queue (see `targetsQueue`).
+ *
  * What no preview can carry is a job: `jobId` and `jobIds` are never set.
  */
 export async function evaluatePermissions(
@@ -636,7 +658,9 @@ export async function evaluatePermissions(
       const context: Omit<JobsApiAuthorizeContext, "mutation"> = {
         action,
         transport: socket ? "ws" : "http",
-        ...(mode === "jobs" && target.queue ? { queue: target.queue } : {}),
+        ...(targetsQueue(action) && target.queue
+          ? { queue: target.queue }
+          : {}),
         ...(mode === "runner" && target.runner
           ? { runner: target.runner }
           : {}),
@@ -687,7 +711,7 @@ export function metaRoutes(): AnyRouteDef[] {
       description:
         "Answers, for each distinct action among the routes this API registered (plus `events.connect` and `events.subscribe` when it has a socket), whether the caller may perform it, optionally for one queue or runner, so a client can hide what it may not do. An action whose routes are pruned is absent, not `false`.\n\n" +
         "**Cost.** `authorize` is called N + 1 times per request, where N is the number of actions in `actions`: once for this request itself (`meta.read` on `GET /meta/permissions`, like any route), then once per action. The request's own call is not reused for the map's `meta.read`: that entry previews `GET /meta`, a different route. With `channel`, add one more call when the channel parses and is available (a refused channel costs none).\n\n" +
-        '**Each call is shaped like the real request.** An HTTP action carries `transport: "http"` and `route`: the method and pattern of one of the action\'s routes, the first registered whose pattern names the queue or runner asked about (or, with neither, names neither; else the action\'s first route). `events.connect` and `events.subscribe` carry `transport: "ws"` and no `route`, as the upgrade and a `subscribe` frame do. No call names a job. With `channel`, the channel is parsed and checked as a `subscribe` frame\'s would be, and `authorize` is asked about `events.subscribe` on it with exactly the context that frame would carry.',
+        '**Each call is shaped like the real request.** An HTTP action carries `transport: "http"` and `route`: the method and pattern of one of the action\'s routes, the first registered whose pattern names the queue or runner asked about (or, with neither, names neither; else the action\'s first route). `events.connect` and `events.subscribe` carry `transport: "ws"` and no `route`, as the upgrade and a `subscribe` frame do. `providers.read` and `providers.validate` never carry `queue`, even with `?queue=`: their routes target a provider, and their own request-level call names no queue. No call names a job. With `channel`, the channel is parsed and checked as a `subscribe` frame\'s would be, and `authorize` is asked about `events.subscribe` on it with exactly the context that frame would carry.',
       tags: ["Meta"],
       query: PermissionsQuerySchema,
       responses: { 200: PermissionsSchema },
