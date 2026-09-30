@@ -38,7 +38,7 @@ import {
   supportsWorkers,
 } from "../drivers/index";
 import { facetReadiness, providerSecrets } from "../provider/configure";
-import { providerCallContext } from "../provider/context";
+import { PROVIDER_FETCH_PROBE, providerCallContext } from "../provider/context";
 import { providerErrorFacts } from "../provider/errors";
 import { redactingLogger, textRedactor } from "../provider/redact";
 import { registerProvider, warnUnmappedThrow } from "../provider/version";
@@ -229,7 +229,7 @@ function nonNegativeInt(name: string, value: number): number {
  * identifier, not prose. A value outside it (a credential, a URL, a response
  * body) is refused, and the next choice is taken.
  */
-const CODE_SHAPED = /^[\w.:-]{1,64}$/;
+export const CODE_SHAPED = /^[\w.:-]{1,64}$/;
 
 /** `value` if it is a code-shaped string, else `undefined`. */
 function codeShaped(value: unknown): string | undefined {
@@ -513,6 +513,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /** The options, kept to resolve the policy again when a provider's facet is adopted late. */
   readonly #options: SummonControllerOptions;
   /**
+   * The conformance kit's `fetch`, set under {@link PROVIDER_FETCH_PROBE} on
+   * the options, or `undefined`: every call context then carries the global
+   * one, read at the call.
+   */
+  readonly #fetch: typeof fetch | undefined;
+  /**
    * The facet the controller calls: the summoner's, or — for a provider whose
    * config is still validating — its stand-in, never called before adoption.
    */
@@ -652,6 +658,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
     this.#summoner = toSummoner(options.summoner);
     this.#options = options;
+    const probe = (options as { [PROVIDER_FETCH_PROBE]?: unknown })[
+      PROVIDER_FETCH_PROBE
+    ];
+    this.#fetch =
+      typeof probe === "function" ? (probe as typeof fetch) : undefined;
     // A provider whose config validates asynchronously has no facet yet: the
     // controller runs on provisional capabilities, and adopts the real ones
     // when its first attempt finds the config ready.
@@ -2126,6 +2137,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     const context: ProviderCallContext = providerCallContext(
       abort.signal,
       this.#providerLogger(id === undefined ? {} : { attempt: id }),
+      this.#fetch,
     );
     try {
       return await Promise.race([fn(context), timeout]);

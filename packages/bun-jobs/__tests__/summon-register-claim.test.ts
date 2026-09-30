@@ -48,7 +48,7 @@ import {
 } from "../lib/summon/marker";
 import { testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
-import { fakePlatform, workerLines } from "./helpers/summon";
+import { spawningSummoner, workerLines } from "./helpers/summon";
 
 /**
  * Step 2 registers an attempt by its claim-once entry, and counts only a
@@ -1917,7 +1917,7 @@ for (const backend of BACKENDS.filter((one) =>
         ref: QueueRef;
         queue: BunQueue<unknown>;
         controller: SummonController;
-        platform: ReturnType<typeof fakePlatform>;
+        platform: ReturnType<typeof spawningSummoner>;
         events: SummonEventPayload[];
       }> {
         const driver = createDriver(backend.config);
@@ -1928,7 +1928,7 @@ for (const backend of BACKENDS.filter((one) =>
           driver,
           logger: noopLogger,
         });
-        const platform = fakePlatform({ driver: backend.config, env });
+        const platform = spawningSummoner({ driver: backend.config, env });
         const controller = new SummonController({
           ...QUIET,
           driver: hide ? hideClaims(driver) : driver,
