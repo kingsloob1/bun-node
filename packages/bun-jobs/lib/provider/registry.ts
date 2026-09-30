@@ -9,7 +9,7 @@ import type {
  * what `GET /providers` lists and what `/providers/:id/…` finds.
  *
  * Every `provider(config)` registers the instance it makes, under an id
- * `name@version#<n>`: the nth instance of that `name@version` configured in
+ * `name@version~<n>`: the nth instance of that `name@version` configured in
  * this process, counted from 1. An id is never reused, so it is stable for
  * the process's life, and meaningless in any other process.
  *
@@ -23,7 +23,7 @@ export type ProviderReadiness = "ready" | "pending" | "failed";
 
 /** Internal: one configured provider, as the registry holds it. */
 export interface RegisteredProvider {
-  /** Its id, `name@version#<n>`. */
+  /** Its id, `name@version~<n>`. */
   readonly id: string;
   /** Its identity. */
   readonly identity: ProviderIdentity;
@@ -39,6 +39,11 @@ export interface RegisteredProvider {
   readonly readiness: () => ProviderReadiness;
   /** Its declared secrets' current values, for redaction. */
   readonly secrets: () => unknown[];
+  /**
+   * What building its facets from a valid config threw, kept for good
+   * (`readiness` is then `"failed"`); `undefined` otherwise.
+   */
+  readonly buildError: () => unknown;
 }
 
 /** The last `n` handed out, per `name@version`. */
@@ -56,14 +61,14 @@ const FINALIZER = new FinalizationRegistry<string>((id) => {
 });
 
 /**
- * Internal: the next id for an instance of `identity`, `name@version#<n>`.
+ * Internal: the next id for an instance of `identity`, `name@version~<n>`.
  * Called once per configured instance.
  */
 export function nextProviderId(identity: ProviderIdentity): string {
   const key = `${identity.name}@${identity.version}`;
   const n = (COUNTERS.get(key) ?? 0) + 1;
   COUNTERS.set(key, n);
-  return `${key}#${n}`;
+  return `${key}~${n}`;
 }
 
 /**

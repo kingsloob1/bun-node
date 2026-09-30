@@ -491,10 +491,14 @@ describe("an invalid query or body is authorized against the path's target", () 
       const [context] = h.calls;
       expect({
         route: def.operationId,
-        target: context?.queue ?? context?.runner,
+        target: context?.queue ?? context?.runner ?? context?.provider,
       }).toEqual({
         route: def.operationId,
-        target: path.startsWith("/runners/") ? "nightly" : "mail",
+        target: path.startsWith("/runners/")
+          ? "nightly"
+          : path.startsWith("/providers/")
+            ? "a"
+            : "mail",
       });
     }
   });
@@ -528,6 +532,7 @@ describe("authorize context integrity", () => {
         queue: "mail",
         jobId: "7",
         runner: "nightly",
+        provider: "acme@1.0.0~1",
         channel: "queues",
         jobIds: ["a", "b"],
         action: "jobs.read",
@@ -539,9 +544,11 @@ describe("authorize context integrity", () => {
       queue: "mail",
       jobId: "7",
       runner: "nightly",
+      provider: "acme@1.0.0~1",
       channel: "queues",
       jobIds: ["a", "b"],
     });
+    expect(pickTarget({ provider: 7 })).toEqual({});
     // A string is not a list of ids: it would spread into characters.
     expect(pickTarget({ jobIds: "abc" })).toEqual({});
     expect(pickTarget({ jobIds: ["a", 2] })).toEqual({});

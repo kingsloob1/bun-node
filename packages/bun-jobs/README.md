@@ -4497,6 +4497,7 @@ export type Authorize = (
     runner?: string;
     worker?: string;
     workerKey?: string;
+    provider?: string;   // a compute provider's id, on the provider routes
     channel?: string;
     route?: { method: string; path: string };
   },
@@ -4516,7 +4517,7 @@ A request that fails a check — a body or query that does not validate,
 malformed JSON, a missing CSRF token — is still authorized first, once, and
 only a caller `authorize` allows is told what was wrong. When the path is
 valid, `authorize` is asked with the target the path names (`queue`, `jobId`,
-`runner`, and `route`), just as for a well-formed request; a bulk route's
+`runner`, `provider`, and `route`), just as for a well-formed request; a bulk route's
 `jobIds` come from the body, so they are absent. A host that refuses one queue
 therefore answers 403 there, and one that refuses untargeted requests still
 lets its caller see the 400. Only a request whose path is itself invalid is
@@ -4913,15 +4914,32 @@ infrastructure (clusters, regions, which accounts are reachable):
 | POST | `/providers/:id/validate` | `providers.validate` | `ProviderValidationDto`: "Test connection", the provider's preflight (`ConfiguredProvider.validate()`), bounded by the body's `timeoutMs` (1,000–60,000, default 15,000) |
 | GET | `/providers/:id/schema` | `providers.read` | `ProviderSchemaDto`: the config as a draft-2020-12 JSON Schema, for a config form, when the provider's config schema implements [Standard JSON Schema](https://standardschema.dev); else 404 `PROVIDER_SCHEMA_NOT_FOUND` |
 
-**`:id` is `name@version#<n>`**: the nth instance of that `name@version`
-configured in the API's process, counted from 1. It is stable for that
-process's life and meaningless in another, and it holds `@`, `#` and often
-`/` and `:`, so percent-encode it in a path
-(`encodeURIComponent("@acme/bun-jobs-ecs@1.2.0#1")`). An id no live provider
-has is 404 `PROVIDER_NOT_FOUND`. A queue's summon status names its summoner's
-as `summoner.providerId`, beside `summoner.readiness`: `"ready"`, `"pending"`
-while an asynchronous config check runs (its `capabilities` are absent until
-then), or `"failed"` when it rejected.
+**`:id` is `name@version~<n>`**: the nth instance of that `name@version`
+configured in the API's process, counted from 1, e.g.
+`custom:example-record@0.0.0~1`. It is stable for that process's life and
+meaningless in another. `@`, `:` and `~` are safe in a path as they are, but
+a scoped package name holds a `/`, so percent-encode the id whenever it is
+not one you wrote (`encodeURIComponent("@acme/bun-jobs-ecs@1.2.0~1")`). An
+id no live provider has is 404 `PROVIDER_NOT_FOUND`. A queue's summon status
+names its summoner's as `summoner.providerId`, beside `summoner.readiness`:
+`"ready"`, `"pending"` while an asynchronous config check runs (its
+`capabilities` are absent until then), or `"failed"`.
+
+**`readiness` means two things in two places.** On `GET /providers` it is
+about the provider's config alone: `ready` once it validated and the facets
+were built, `failed` when the latest validation rejected or building the
+facets threw. On a queue's summon status it is about that queue's
+controller, which can also refuse a ready provider for its policy (a scale
+style without `release`, a lifetime over the platform's cap): the summon
+status says `failed` there while `GET /providers` says `ready`.
+
+**Scoped per provider.** `authorize` is told which provider a route targets,
+as `provider` (the id), so a multi-tenant host can allow "Test connection"
+on its own providers only. `GET /providers` asks once for the request (with
+no `provider`), then once per configured provider — with its id and the
+`route` its own read carries, `GET /providers/:id/schema`, as `listQueues:
+"authorized"` does for queues — at most 16 at a time, and leaves out every
+provider it denies. The list itself is always the process's.
 
 **The preflight answers 200 with a verdict.** `ok` is `true` when it answered
 and no check is `"fail"`. When it did not answer normally there are no
@@ -4939,13 +4957,50 @@ The preflight changes no summon controller's state, and aborts its signal at
 the deadline. It does wait for the config first, so for an asynchronous schema
 whose last validation failed it validates again, as `ready` would.
 
-**Secret-free, all three.** Facts pass the summon status's filter (a
-credential-named key, a URL with userinfo or another credential shape, a host
-without `serialize.exposeHosts`). Every detail — a check's, an error's — is
-redacted (the provider's declared secrets by value, `Bearer …`, `key=value`,
-URL userinfo, JWTs) and cut to 128 characters. The schema's strings are
-redacted the same way, and a property that is a declared secret or has a
-credential's name loses its `default`, `examples`, `const` and `enum`.
+**One run per provider, reused for 5 seconds.** A validate while one of the
+same provider instance runs joins it — and its timeout, whatever its own
+`timeoutMs` — and a completed verdict is answered again for 5 s, so a button
+pressed twice, or by two operators, reaches the platform once. The key is the
+id, so a provider configured again is a new instance and never gets the old
+config's verdict. A timed-out run's verdict goes to the requests that shared
+it and is never reused. `authorize` is still asked for every request.
+
+**Secret-free, all three.** Facts pass the summon status's filter (see
+[below](#which-facts-are-served)). A provider whose `describe()` throws is
+listed with `facts: {}`, and the failure logged by name and code, never its
+message. Every detail — a check's, an error's — is redacted (the provider's
+declared secrets by value, `Bearer …`, `key=value`, URL userinfo, JWTs) and
+cut to 128 characters.
+
+**The schema has no values in it.** A host bakes its own values into a
+config schema — `z.string().default(process.env.TOKEN)`, an OpenAPI
+`example`, an `x-` extension — wherever its library puts them: under `$defs`
+behind a `$ref`, inside `allOf`, as an object-level default holding the whole
+config. None of those is the configured value, so redaction cannot know them.
+So `default`, `example`, `examples`, `const` and every `x-*` key are removed
+**everywhere** in the served schema, and a config form built from it gets no
+pre-filled values. `enum`, the allowed choices, is kept, except under a
+property that is a declared secret or has a credential's name. Every other
+string is redacted as a detail is; a string equal to a declared secret is
+replaced whatever its length, and a number equal to one is dropped.
+
+#### Which facts are served
+
+A `describe()` fact reaches `GET /providers` and a summon status only when it
+passes a fail-safe filter. It drops, whatever the provider meant:
+
+- a key that has, or ends with, a credential word (`token`, `secret`, `key`,
+  `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`,
+  `bearer`, `private`, `cookie`, `session`): `apiKey`, `secretArn`,
+  `sessiontoken` go, `keyspace` stays;
+- a value holding a URL with userinfo (`postgres://user:pass@…`);
+- a value holding a credential shape the log redactor knows: `Bearer …`, a
+  JWT, or a `word:value` / `word=value` pair whose word contains a sensitive
+  word (`token`, `secret`, `auth`, `session`, `cookie`, `password`, `apikey`,
+  `credential`, …). That catches some honest facts too: an ARN whose resource
+  holds `auth-api:prod`, `session-workers:prod`, `max_tokens=4096`. Rename
+  the fact's value, or leave it out;
+- a `host` or `hostname` fact unless `serialize.exposeHosts` is on.
 
 ```ts
 import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
@@ -4958,8 +5013,8 @@ const actions = JOBS_API_ACTIONS.filter(
     action === "providers.validate",
 );
 export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
-// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0#1", … }] }
-// POST /admin/jobs/providers/bun-jobs-provider-acme%401.0.0%231/validate
+// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0~1", … }] }
+// POST /admin/jobs/providers/bun-jobs-provider-acme@1.0.0~1/validate
 //   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
 ```
 

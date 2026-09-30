@@ -148,12 +148,12 @@ describe("route-level authorization", () => {
     if (route.path.includes(":runner")) {
       target.runner = "nightly";
     }
-    // A provider's `:id` is no job's, and names no authorize target: the
-    // provider routes are authorized by action alone.
-    if (
+    // A provider's `:id` is no job's: it is the `provider` target.
+    if (route.path.includes("/providers/:id")) {
+      target.provider = "7";
+    } else if (
       route.path.includes(":id") &&
-      route.operationId !== "retryItem" &&
-      !route.path.includes("/providers/")
+      route.operationId !== "retryItem"
     ) {
       target.jobId = "7";
     }

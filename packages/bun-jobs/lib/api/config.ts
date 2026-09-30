@@ -102,6 +102,15 @@ export interface JobsApiAuthorizeContext {
    */
   workerKey?: string;
   /**
+   * The compute provider a provider route targets: its id in the API's
+   * process, `name@version~<n>` (`POST /providers/{id}/validate`, `GET
+   * /providers/{id}/schema`, and each entry of `GET /providers`, which asks
+   * once per provider after the request's own call, with the `route` the
+   * schema read carries). Lets a host scope "Test connection" and the list
+   * by provider.
+   */
+  provider?: string;
+  /**
    * The WebSocket channel, in canonical form, e.g. `"queue/mail"`: set when a
    * `subscribe` (or a `/meta/permissions?channel=` preview) is authorized, and
    * on the per-target calls. A broad channel (`all`, `queues`, `runners`)

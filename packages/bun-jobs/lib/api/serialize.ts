@@ -916,11 +916,13 @@ function toSummonProviderDto(provider: ProviderIdentity): SummonProviderDto {
 
 /**
  * Shapes a configured provider for `GET /providers`: its id, identity and
- * readiness, its facts under the summon status's filter, and whether it has a
+ * readiness, its facts (read by the caller, which guards a throwing
+ * `describe()`) under the summon status's filter, and whether it has a
  * preflight and a JSON Schema for its config. Never its config.
  */
 export function toProviderDto(
   entry: RegisteredProvider,
+  facts: Readonly<Record<string, string>>,
   options: Pick<ResolvedJobsApiSerializers, "exposeHosts">,
 ): ProviderDto {
   const { definition } = entry;
@@ -928,7 +930,7 @@ export function toProviderDto(
     id: entry.id,
     provider: toSummonProviderDto(entry.identity),
     readiness: entry.readiness(),
-    facts: servableFacts(entry.configured.describe(), options.exposeHosts),
+    facts: servableFacts(facts, options.exposeHosts),
     preflight: typeof definition.validate === "function",
     configSchema: hasJsonSchema(definition.config),
   };

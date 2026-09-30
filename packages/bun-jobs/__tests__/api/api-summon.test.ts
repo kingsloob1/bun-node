@@ -167,7 +167,7 @@ describe("GET /queues/{queue}/summon", () => {
         },
         // The configured instance's id in this process, for "Test
         // connection", and ready: `defineSummoner` validates synchronously.
-        providerId: expect.stringMatching(/^custom:fake@0\.0\.0#\d+$/),
+        providerId: expect.stringMatching(/^custom:fake@0\.0\.0~\d+$/),
         readiness: "ready",
         capabilities: {
           style: "launch",

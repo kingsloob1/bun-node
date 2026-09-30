@@ -519,6 +519,7 @@ export function configure<TConfig, TInput>(
     readiness: () => readinessOf(state),
     secrets: () =>
       secretValues(general, state.known ? state.config : state.input),
+    buildError: () => state.fatal,
   };
   registerConfigured(state.entry);
   return configured;

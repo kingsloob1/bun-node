@@ -231,7 +231,13 @@ export interface ComputeProviderDefinition<
   /**
    * Secret-free facts for the status route and the UI: a region, a cluster,
    * an app name. Never a token, a key, or a URL with credentials in it. A
-   * fact holding a declared secret's value is dropped anyway.
+   * fact holding a declared secret's value is dropped anyway, and the API
+   * drops more, failing safe: a key with a credential word in it (`apiKey`,
+   * `secretArn`), a value with URL userinfo, a `Bearer …` or a JWT, and a
+   * value holding a `word:value` or `word=value` pair whose word contains a
+   * sensitive word (`session-workers:prod`, `max_tokens=4096`, an ARN whose
+   * resource holds `auth-api:prod`). Choose values that pass. A `describe()`
+   * that throws is served as no facts.
    */
   readonly describe?: (config: TConfig) => Readonly<Record<string, string>>;
   /**

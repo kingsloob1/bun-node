@@ -1,11 +1,18 @@
-import type { JobsApiConfig } from "../../lib/api/config";
+import type {
+  JobsApiAuthorizeContext,
+  JobsApiConfig,
+} from "../../lib/api/config";
 import type {
   ProviderCheck,
   SummonCapabilities,
   SummonFacet,
 } from "../../lib/provider/index";
 import { join } from "node:path";
-import { noopLogger } from "@kingsleyweb/bun-common";
+import {
+  BunRouter,
+  createTestLogger,
+  noopLogger,
+} from "@kingsleyweb/bun-common";
 import {
   afterAll,
   afterEach,
@@ -19,6 +26,8 @@ import {
   JOBS_API_MUTATIONS,
   JOBS_API_OPT_IN_ACTIONS,
 } from "../../lib/api/contract/constants";
+import { createJobsApi } from "../../lib/api/createJobsApi";
+import { PROVIDER_VALIDATE_REUSE_MS } from "../../lib/api/routes/providers";
 import { isServableFact } from "../../lib/api/serialize";
 import { BunJobs } from "../../lib/index";
 import {
@@ -27,7 +36,10 @@ import {
   ProviderError,
   toStandardSchema,
 } from "../../lib/provider/index";
-import { configuredProvider } from "../../lib/provider/registry";
+import {
+  configuredProvider,
+  configuredProviders,
+} from "../../lib/provider/registry";
 import { makeTmpDir, testNamespace } from "../helpers";
 import { harness, openHarnesses } from "./fixtures";
 
@@ -179,7 +191,7 @@ function acme(
             },
           },
         };
-  return defineComputeProvider({
+  const provider = defineComputeProvider({
     name,
     version: options.version ?? "1.0.0",
     kind: "acme",
@@ -208,6 +220,30 @@ function acme(
       summon: async () => ({ status: "started", handles: [] }),
     }),
   });
+  // Every instance is held for the file's life: the registry holds them
+  // weakly, and an instance a case dropped could be collected mid-case.
+  return Object.assign((config: AcmeConfig) => held(provider(config)), {
+    definition: provider.definition,
+  });
+}
+
+/**
+ * The definition's own factory, unwrapped: an instance it makes is not held
+ * by the test, for the weak-holding case.
+ */
+function defineComputeProviderAgain(
+  make: ReturnType<typeof acme>,
+): (config: AcmeConfig) => unknown {
+  return defineComputeProvider(make.definition as never) as never;
+}
+
+/** Every configured instance a case made, held so the registry keeps it. */
+const HELD: unknown[] = [];
+
+/** Holds `value` for the rest of the file, and returns it. */
+function held<T>(value: T): T {
+  HELD.push(value);
+  return value;
 }
 
 /** Every action but the opt-ins, plus the two provider actions. */
@@ -252,14 +288,14 @@ describe("the registry and GET /providers", () => {
       .filter((provider) => provider.id.startsWith(`${name}@`))
       .map((provider) => provider.id);
     expect(ours).toEqual([
-      `${name}@1.0.0#1`,
-      `${name}@1.0.0#2`,
-      `${name}@2.0.0#1`,
+      `${name}@1.0.0~1`,
+      `${name}@1.0.0~2`,
+      `${name}@2.0.0~1`,
     ]);
     // Stable: the same instance under the same id on every read.
-    expect(configuredProvider(`${name}@1.0.0#2`)?.configured).toBe(second);
-    expect(configuredProvider(`${name}@1.0.0#1`)?.configured).toBe(first);
-    expect(configuredProvider(`${name}@2.0.0#1`)?.configured).toBe(other);
+    expect(configuredProvider(`${name}@1.0.0~2`)?.configured).toBe(second);
+    expect(configuredProvider(`${name}@1.0.0~1`)?.configured).toBe(first);
+    expect(configuredProvider(`${name}@2.0.0~1`)?.configured).toBe(other);
   });
 
   it("answers identity, readiness, secret-free facts, preflight and configSchema", async () => {
@@ -267,7 +303,7 @@ describe("the registry and GET /providers", () => {
     make(CONFIG);
     const bare = acme({ jsonSchema: false })(CONFIG);
     const h = api();
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const entry = await listed(h, id);
     expect(entry).toEqual({
       id,
@@ -286,7 +322,7 @@ describe("the registry and GET /providers", () => {
       preflight: true,
       configSchema: true,
     });
-    const bareEntry = await listed(h, `${bare.provider.name}@1.0.0#1`);
+    const bareEntry = await listed(h, `${bare.provider.name}@1.0.0~1`);
     expect(bareEntry).toMatchObject({ preflight: false, configSchema: false });
     // With `exposeHosts` off, the host goes too.
     const hidden = api({ serialize: { exposeHosts: false } });
@@ -325,6 +361,86 @@ describe("the registry and GET /providers", () => {
     expect(isServableFact("region", "eu-west-1", true)).toBe(true);
   });
 
+  it("lists a provider whose describe() throws with no facts, keeps the rest, and logs no secret", async () => {
+    const SECRET = "tok_live_SECRET_abcdef12345";
+    const broken = defineComputeProvider({
+      name: `bun-jobs-provider-throws-${++unique}`,
+      version: "1.0.0",
+      kind: "broken",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      secrets: ["apiToken"],
+      describe: (config: { apiToken: string }) => {
+        throw new Error(`cannot describe endpoint for ${config.apiToken}`);
+      },
+      summon: (): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => ({ status: "started", handles: [] }),
+      }),
+    });
+    const bad = held(broken({ apiToken: SECRET }));
+    const good = acme()(CONFIG);
+    const h = api();
+    const response = await h.call("GET", "/providers");
+    expect(response.status).toBe(200);
+    const byId = new Map(
+      (response.body.providers as { id: string; facts: object }[]).map(
+        (provider) => [provider.id, provider],
+      ),
+    );
+    expect(byId.get(`${bad.provider.name}@1.0.0~1`)).toMatchObject({
+      readiness: "ready",
+      facts: {},
+    });
+    expect(byId.get(`${good.provider.name}@1.0.0~1`)?.facts).toMatchObject({
+      region: "eu-west-1",
+    });
+    // Every held provider whose describe() throws is logged: this one once.
+    const logged = h.events.filter(
+      (event) =>
+        event.message.includes("describe() threw") &&
+        event.fields?.provider === `${bad.provider.name}@1.0.0~1`,
+    );
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.fields).toMatchObject({
+      provider: `${bad.provider.name}@1.0.0~1`,
+      thrown: "Error",
+    });
+    expect(JSON.stringify(h.events)).not.toContain(SECRET);
+    // Negative control: it really throws, with the secret in the message.
+    expect(() => bad.describe()).toThrow(SECRET);
+  });
+
+  it("holds its entries weakly: a dropped instance leaves the list, a held one stays", async () => {
+    const make = acme();
+    const name = make.definition.name;
+    const kept = make(CONFIG);
+    // Made and dropped in a frame of their own, so nothing on this stack
+    // keeps one alive. Not held: `make` holds every instance, so these go
+    // through the definition's own factory.
+    (() => {
+      for (let i = 0; i < 20; i++) {
+        defineComputeProviderAgain(make)(CONFIG);
+      }
+    })();
+    const ours = () =>
+      configuredProviders()
+        .map((entry) => entry.id)
+        .filter((id) => id.startsWith(`${name}@`));
+    expect(ours()).toHaveLength(21);
+    for (let round = 0; round < 20 && ours().length > 1; round++) {
+      Bun.gc(true);
+      await Bun.sleep(10);
+    }
+    // Most dropped ones are gone (a conservative scan may keep a few), and
+    // the held one never is. A registry holding strongly would keep all 21.
+    expect(ours().length).toBeLessThan(11);
+    expect(ours()).toContain(`${name}@1.0.0~1`);
+    expect(configuredProvider(`${name}@1.0.0~1`)?.configured).toBe(kept);
+    // Ids are never reused: the next instance is the 22nd.
+    const next = make(CONFIG);
+    expect(configuredProvider(`${name}@1.0.0~22`)?.configured).toBe(next);
+  });
+
   it("reports an asynchronous config pending, then failed, then ready", async () => {
     let answer: (valid: boolean) => void = () => {};
     const make = acme({
@@ -334,7 +450,7 @@ describe("the registry and GET /providers", () => {
         }),
     });
     const configured = make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const h = api();
     expect(await listed(h, id)).toMatchObject({
       readiness: "pending",
@@ -369,7 +485,7 @@ describe("POST /providers/{id}/validate", () => {
       ],
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const h = api();
     const response = await h.call("POST", path(id, "/validate"));
     expect(response.status).toBe(200);
@@ -399,7 +515,7 @@ describe("POST /providers/{id}/validate", () => {
       ],
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const response = await api().call("POST", path(id, "/validate"), {});
     expect(response.body).toEqual({
       id,
@@ -427,7 +543,7 @@ describe("POST /providers/{id}/validate", () => {
         },
       });
       make(CONFIG);
-      const id = `${make.definition.name}@1.0.0#1`;
+      const id = `${make.definition.name}@1.0.0~1`;
       const response = await api().call("POST", path(id, "/validate"));
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
@@ -448,7 +564,7 @@ describe("POST /providers/{id}/validate", () => {
       },
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const response = await api().call("POST", path(id, "/validate"));
     expect(response.body).toEqual({
       id,
@@ -466,7 +582,7 @@ describe("POST /providers/{id}/validate", () => {
       },
     });
     coded(CONFIG);
-    const codedId = `${coded.definition.name}@1.0.0#1`;
+    const codedId = `${coded.definition.name}@1.0.0~1`;
     expect(
       (await api().call("POST", path(codedId, "/validate"))).body.error,
     ).toEqual({ kind: "transient", detail: "ECONNRESET" });
@@ -482,7 +598,7 @@ describe("POST /providers/{id}/validate", () => {
       },
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const response = await api().call("POST", path(id, "/validate"));
     expect(response.body).toEqual({
       id,
@@ -507,7 +623,7 @@ describe("POST /providers/{id}/validate", () => {
         }),
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const started = Date.now();
     const response = await api().call("POST", path(id, "/validate"), {
       timeoutMs: 1_000,
@@ -525,7 +641,7 @@ describe("POST /providers/{id}/validate", () => {
   it("refuses a timeout outside 1 s to 60 s", async () => {
     const make = acme({ preflight: async () => [] });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const h = api();
     for (const timeoutMs of [999, 60_001]) {
       const response = await h.call("POST", path(id, "/validate"), {
@@ -538,7 +654,7 @@ describe("POST /providers/{id}/validate", () => {
 
   it("answers ok with no checks for a provider without a preflight", async () => {
     const configured = acme()(CONFIG);
-    const id = `${configured.provider.name}@1.0.0#1`;
+    const id = `${configured.provider.name}@1.0.0~1`;
     expect((await api().call("POST", path(id, "/validate"))).body).toEqual({
       id,
       ok: true,
@@ -549,10 +665,222 @@ describe("POST /providers/{id}/validate", () => {
   it("is 404 PROVIDER_NOT_FOUND for an id no live provider has", async () => {
     const response = await api().call(
       "POST",
-      path("bun-jobs-provider-nowhere@1.0.0#1", "/validate"),
+      path("bun-jobs-provider-nowhere@1.0.0~1", "/validate"),
     );
     expect(response.status).toBe(404);
     expect(response.body.code).toBe("PROVIDER_NOT_FOUND");
+  });
+});
+
+describe("POST /providers/{id}/validate, more", () => {
+  it("reports a facet build that threw a plain Error as misconfigured, not transient", async () => {
+    const make = defineComputeProvider({
+      name: `bun-jobs-provider-build-throws-${++unique}`,
+      version: "1.0.0",
+      kind: "build",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      config: toStandardSchema<object>(async (input) => ({
+        value: input as object,
+      })),
+      validate: async () => [],
+      summon: (): SummonFacet => {
+        throw new TypeError(`cannot read x of ${TOKEN}`);
+      },
+    });
+    const configured = held(make({}));
+    await configured.ready.catch(() => {});
+    const id = `${configured.provider.name}@1.0.0~1`;
+    const h = api();
+    expect(await listed(h, id)).toMatchObject({ readiness: "failed" });
+    const response = await h.call("POST", path(id, "/validate"));
+    expect(response.body).toEqual({
+      id,
+      ok: false,
+      checks: [],
+      error: { kind: "misconfigured", detail: "TypeError" },
+    });
+    expect(response.text).not.toContain(TOKEN);
+    // Negative control: the same TypeError thrown by the preflight itself,
+    // with the facets built, is the platform's: transient.
+    const control = acme({
+      preflight: async () => {
+        throw new TypeError("cannot read x");
+      },
+    });
+    control(CONFIG);
+    const controlId = `${control.definition.name}@1.0.0~1`;
+    expect(
+      (await h.call("POST", path(controlId, "/validate"))).body.error,
+    ).toEqual({ kind: "transient", detail: "TypeError" });
+  });
+
+  it("shares one run between concurrent requests, and reuses its verdict for 5 s", async () => {
+    let runs = 0;
+    let release: () => void = () => {};
+    const make = acme({
+      preflight: async () => {
+        runs++;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return [{ id: "credentials", status: "pass" }];
+      },
+    });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    const h = api();
+    const first = h.call("POST", path(id, "/validate"));
+    const second = h.call("POST", path(id, "/validate"));
+    await Bun.sleep(30);
+    expect(runs).toBe(1);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.body).toEqual(b.body);
+    expect(a.body.ok).toBe(true);
+    // Answered again from the completed run, within 5 s.
+    const third = await h.call("POST", path(id, "/validate"));
+    expect(third.body).toEqual(a.body);
+    expect(runs).toBe(1);
+    // Every request is still authorized.
+    expect(
+      h.calls.filter((call) => call.action === "providers.validate"),
+    ).toHaveLength(3);
+  });
+
+  it("runs again once 5 s have passed", async () => {
+    let runs = 0;
+    const make = acme({
+      preflight: async () => {
+        runs++;
+        return [];
+      },
+    });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    const h = api();
+    const realNow = Date.now;
+    try {
+      await h.call("POST", path(id, "/validate"));
+      expect(runs).toBe(1);
+      const start = realNow();
+      Date.now = () => start + PROVIDER_VALIDATE_REUSE_MS + 1;
+      await h.call("POST", path(id, "/validate"));
+      expect(runs).toBe(2);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("never shares between two instances of one name@version: a new config gets its own verdict", async () => {
+    let fail = false;
+    const make = acme({
+      preflight: async () => [
+        { id: "credentials", status: fail ? "fail" : "pass" },
+      ],
+    });
+    make(CONFIG);
+    make(CONFIG);
+    const one = `${make.definition.name}@1.0.0~1`;
+    const two = `${make.definition.name}@1.0.0~2`;
+    const h = api();
+    expect((await h.call("POST", path(one, "/validate"))).body.ok).toBe(true);
+    fail = true;
+    // The second instance runs its own preflight, within the first's 5 s.
+    expect((await h.call("POST", path(two, "/validate"))).body.ok).toBe(false);
+    // Negative control: the first is still answered from its own run.
+    expect((await h.call("POST", path(one, "/validate"))).body.ok).toBe(true);
+  });
+
+  it("serves a timeout to the requests that shared the run, and never reuses it", async () => {
+    let runs = 0;
+    let hang = true;
+    const make = acme({
+      preflight: async (_config, signal) => {
+        runs++;
+        if (!hang) {
+          return [];
+        }
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+        });
+      },
+    });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    const h = api();
+    const [a, b] = await Promise.all([
+      h.call("POST", path(id, "/validate"), { timeoutMs: 1_000 }),
+      h.call("POST", path(id, "/validate"), { timeoutMs: 60_000 }),
+    ]);
+    expect(runs).toBe(1);
+    for (const response of [a, b]) {
+      expect(response.body.error).toEqual({
+        kind: "transient",
+        detail: "timeout",
+      });
+    }
+    hang = false;
+    const again = await h.call("POST", path(id, "/validate"));
+    expect(runs).toBe(2);
+    expect(again.body).toEqual({ id, ok: true, checks: [] });
+  });
+
+  it("takes an unencoded id with @, : and ~ through a real served request", async () => {
+    // `~` rather than `#`: a `#` would start a URL fragment and never reach
+    // the server. A defineSummoner-style name, `custom:<kind>`, holds a `:`.
+    const make = defineComputeProvider({
+      name: `custom:served-${++unique}`,
+      version: "0.0.0",
+      kind: "served",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      validate: async () => [{ id: "credentials", status: "pass" }],
+      summon: (): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => ({ status: "started", handles: [] }),
+      }),
+    });
+    const configured = held(make({}));
+    const id = `${configured.provider.name}@0.0.0~1`;
+    const jobs = new BunJobs({ namespace: testNamespace("api-providers") });
+    cleanups.push(async () => {
+      await jobs.close();
+    });
+    const served = createJobsApi({
+      jobs,
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      logger: noopLogger,
+      actions: WITH_PROVIDERS,
+    });
+    const root = new BunRouter();
+    root.use(served.basePath, served.router);
+    const server = Bun.serve({ port: 0, fetch: (req) => root.fetch(req) });
+    try {
+      const url = `http://127.0.0.1:${server.port}/admin/jobs/providers/${id}/validate`;
+      // Sent as written: nothing encoded.
+      expect(url).toContain(`/${id}/`);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        id,
+        ok: true,
+        checks: [{ id: "credentials", status: "pass" }],
+      });
+      const schema = await fetch(
+        `http://127.0.0.1:${server.port}/admin/jobs/providers/${id}/schema`,
+      );
+      // Routed to this provider: it has no JSON Schema, which is its own 404.
+      expect(((await schema.json()) as { code: string }).code).toBe(
+        "PROVIDER_SCHEMA_NOT_FOUND",
+      );
+    } finally {
+      server.stop(true);
+      await served.close();
+    }
   });
 });
 
@@ -560,7 +888,7 @@ describe("GET /providers/{id}/schema", () => {
   it("answers the draft-2020-12 input schema, secret-free", async () => {
     const make = acme();
     const configured = make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const response = await api().call("GET", path(id, "/schema"));
     expect(response.status).toBe(200);
     expect(response.body.id).toBe(id);
@@ -568,18 +896,18 @@ describe("GET /providers/{id}/schema", () => {
     const schema = response.body.schema;
     // The converter was asked for draft-2020-12 (it echoes the target).
     expect(schema.target).toBe("draft-2020-12");
-    // Not a secret: kept whole.
-    expect(schema.properties.region).toMatchObject({
-      default: "eu-west-1",
+    // Value keywords go everywhere, a secret or not: no default is served.
+    // A non-secret keeps its allowed choices.
+    expect(schema.properties.region).toEqual({
+      type: "string",
       enum: ["eu-west-1", "us-east-1"],
+      description: expect.any(String),
     });
-    // A credential name and a declared secret path lose their values,
-    // nested branches included; a credential name deeper down too.
     expect(schema.properties.apiToken).toEqual({ type: "string" });
     expect(schema.properties.dsn).toEqual({ anyOf: [{ type: "string" }] });
     expect(schema.properties.tuning.properties).toEqual({
       sessionCookie: { type: "string" },
-      batch: { type: "integer", default: 10 },
+      batch: { type: "integer" },
     });
     // Every string redacted: the description's bearer token.
     expect(schema.properties.region.description).toContain("[REDACTED]");
@@ -604,6 +932,129 @@ describe("GET /providers/{id}/schema", () => {
     expect(configured.provider.name).toBe(make.definition.name);
   });
 
+  it("serves no value keyword anywhere: $defs, an object-level default, allOf, example, x-*, a numeric secret", async () => {
+    // A host's own secret baked into the schema, not the configured one:
+    // redaction by value cannot know it, so only removing the keywords can
+    // keep it out (the reviewer's five probes, plus x-*).
+    const HOST = "tok_live_HOSTENV_1234567";
+    const PIN = 918273;
+    const document = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      default: { region: "eu", apiToken: HOST },
+      "x-default-token": HOST,
+      properties: {
+        region: { type: "string", example: HOST },
+        dsn: { $ref: "#/$defs/Token" },
+        pin: { $ref: "#/$defs/Pin" },
+        mode: { type: "string", enum: ["a", "b"], const: "a" },
+        // A property named like a keyword is a name, and stays.
+        default: { type: "string", examples: [HOST] },
+      },
+      allOf: [{ properties: { dsn: { type: "string", default: HOST } } }],
+      $defs: {
+        Token: { type: "string", default: HOST, "x-example": HOST },
+        Pin: { type: "number", default: PIN, maximum: PIN },
+      },
+    };
+    const make = acme({ jsonSchema: () => document });
+    const configured = make({ ...CONFIG, pin: PIN } as AcmeConfig);
+    const response = await api().call(
+      "GET",
+      path(`${configured.provider.name}@1.0.0~1`, "/schema"),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.schema).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        region: { type: "string" },
+        dsn: { $ref: "#/$defs/Token" },
+        pin: { $ref: "#/$defs/Pin" },
+        mode: { type: "string", enum: ["a", "b"] },
+        default: { type: "string" },
+      },
+      allOf: [{ properties: { dsn: { type: "string" } } }],
+      // A number equal to no declared secret stays: `pin` is not declared.
+      $defs: {
+        Token: { type: "string" },
+        Pin: { type: "number", maximum: PIN },
+      },
+    });
+    expect(response.text).not.toContain(HOST);
+    // Negative control: the document held it, in every one of those places.
+    expect(JSON.stringify(document).split(HOST).length - 1).toBe(7);
+  });
+
+  it("drops a number and replaces a string equal to a declared secret, wherever they are", async () => {
+    // `apiToken` is short here: under the 8 characters redaction by value
+    // needs, so only exact equality can catch it.
+    const short = "k-42";
+    const make = acme({
+      jsonSchema: () => ({
+        type: "object",
+        properties: {
+          level: { type: "integer", enum: [1, 4242, 7], maximum: 4242 },
+          choice: { type: "string", enum: ["a", short] },
+        },
+      }),
+    });
+    const configured = make({ ...CONFIG, apiToken: short, dsn: "4242" });
+    const response = await api().call(
+      "GET",
+      path(`${configured.provider.name}@1.0.0~1`, "/schema"),
+    );
+    expect(response.body.schema.properties).toEqual({
+      level: { type: "integer", enum: [1, 7] },
+      choice: { type: "string", enum: ["a", "[REDACTED]"] },
+    });
+    // Negative control: another instance whose secrets are other values
+    // keeps both, so it is the equality that removed them.
+    const other = make(CONFIG);
+    const control = await api().call(
+      "GET",
+      path(`${other.provider.name}@1.0.0~2`, "/schema"),
+    );
+    expect(control.body.schema.properties).toEqual({
+      level: { type: "integer", enum: [1, 4242, 7], maximum: 4242 },
+      choice: { type: "string", enum: ["a", short] },
+    });
+  });
+
+  it("drops enum under a secret property and everything nested in it, and nowhere else", async () => {
+    const nested = {
+      type: "object",
+      properties: { tier: { type: "string", enum: ["gold", "silver"] } },
+    };
+    const make = acme({
+      jsonSchema: () => ({
+        type: "object",
+        properties: {
+          // A declared secret path, reached through a combinator.
+          dsn: { anyOf: [nested] },
+          // A credential name.
+          sessionConfig: nested,
+          // Neither: the negative control, the same subtree kept whole.
+          plain: nested,
+        },
+      }),
+    });
+    const configured = make(CONFIG);
+    const schema = (
+      await api().call(
+        "GET",
+        path(`${configured.provider.name}@1.0.0~1`, "/schema"),
+      )
+    ).body.schema;
+    const stripped = {
+      type: "object",
+      properties: { tier: { type: "string" } },
+    };
+    expect(schema.properties.dsn).toEqual({ anyOf: [stripped] });
+    expect(schema.properties.sessionConfig).toEqual(stripped);
+    expect(schema.properties.plain).toEqual(nested);
+  });
+
   it("is 404 PROVIDER_SCHEMA_NOT_FOUND without Standard JSON Schema, or when the converter fails", async () => {
     const bare = acme({ jsonSchema: false })(CONFIG);
     const throwing = acme({
@@ -615,13 +1066,13 @@ describe("GET /providers/{id}/schema", () => {
     for (const configured of [bare, throwing]) {
       const response = await h.call(
         "GET",
-        path(`${configured.provider.name}@1.0.0#1`, "/schema"),
+        path(`${configured.provider.name}@1.0.0~1`, "/schema"),
       );
       expect(response.status).toBe(404);
       expect(response.body.code).toBe("PROVIDER_SCHEMA_NOT_FOUND");
       expect(response.text).not.toContain(TOKEN);
     }
-    const unknown = await h.call("GET", path("nobody@0.0.0#9", "/schema"));
+    const unknown = await h.call("GET", path("nobody@0.0.0~9", "/schema"));
     expect(unknown.status).toBe(404);
     expect(unknown.body.code).toBe("PROVIDER_NOT_FOUND");
   });
@@ -655,7 +1106,7 @@ describe("the providers.read and providers.validate actions", () => {
       },
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     for (const overrides of [
       { actions: undefined },
       { actions: undefined, readOnly: true },
@@ -688,7 +1139,7 @@ describe("the providers.read and providers.validate actions", () => {
   it("are served once named; readOnly keeps the read and removes validate", async () => {
     const make = acme({ preflight: async () => [] });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const named = api({ actions: WITH_PROVIDERS });
     for (const [method, url] of requests(id)) {
       expect({ url, status: (await named.call(method, url)).status }).toEqual({
@@ -719,7 +1170,7 @@ describe("the providers.read and providers.validate actions", () => {
       },
     });
     make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     for (const [method, url] of requests(id)) {
       const action = url.endsWith("/validate")
         ? "providers.validate"
@@ -735,23 +1186,104 @@ describe("the providers.read and providers.validate actions", () => {
 
       const allowed = api({ actions: WITH_PROVIDERS });
       expect((await allowed.call(method, url)).status).toBe(200);
-      expect(allowed.calls.at(-1)).toEqual({
+      const pattern =
+        url === "/providers"
+          ? "/providers"
+          : url.endsWith("/validate")
+            ? "/providers/:id/validate"
+            : "/providers/:id/schema";
+      // The request's own call comes first: the list's names no provider,
+      // the two targeted routes name theirs.
+      expect(allowed.calls[0]).toEqual({
         action,
         mutation: action === "providers.validate",
         transport: "http",
-        route: {
-          method,
-          path:
-            url === "/providers"
-              ? "/providers"
-              : url.endsWith("/validate")
-                ? "/providers/:id/validate"
-                : "/providers/:id/schema",
-        },
+        route: { method, path: pattern },
+        ...(url === "/providers" ? {} : { provider: id }),
       });
     }
     // Only the allowed validate ran the preflight.
     expect(calls).toBe(1);
+  });
+
+  it("lists only the providers authorize allows, each asked with its id and its own read's route", async () => {
+    const make = acme();
+    const shown = make(CONFIG);
+    const hidden = make(CONFIG);
+    const shownId = `${make.definition.name}@1.0.0~1`;
+    const hiddenId = `${make.definition.name}@1.0.0~2`;
+    const calls: JobsApiAuthorizeContext[] = [];
+    const h = api({
+      actions: WITH_PROVIDERS,
+      authorize: (_req, context) => {
+        calls.push(context);
+        return context.provider !== hiddenId;
+      },
+    });
+    const response = await h.call("GET", "/providers");
+    expect(response.status).toBe(200);
+    const ids = (response.body.providers as { id: string }[]).map(
+      (provider) => provider.id,
+    );
+    expect(ids).toContain(shownId);
+    expect(ids).not.toContain(hiddenId);
+    // One call for the request, then one per provider in the process, each
+    // shaped like that provider's own read.
+    expect(calls[0]).toEqual({
+      action: "providers.read",
+      mutation: false,
+      transport: "http",
+      route: { method: "GET", path: "/providers" },
+    });
+    const perEntry = calls.slice(1);
+    expect(perEntry.find((call) => call.provider === hiddenId)).toEqual({
+      action: "providers.read",
+      mutation: false,
+      transport: "http",
+      provider: hiddenId,
+      route: { method: "GET", path: "/providers/:id/schema" },
+    });
+    expect(perEntry.every((call) => call.provider !== undefined)).toBe(true);
+    // And the same rule on the provider's own routes.
+    expect((await h.call("GET", path(hiddenId, "/schema"))).status).toBe(403);
+    expect((await h.call("GET", path(shownId, "/schema"))).status).toBe(200);
+    // Negative control: an authorize that allows everything lists both.
+    const all = await api({ actions: WITH_PROVIDERS }).call(
+      "GET",
+      "/providers",
+    );
+    const every = (all.body.providers as { id: string }[]).map((p) => p.id);
+    expect(every).toContain(hiddenId);
+    expect([shown, hidden]).toHaveLength(2);
+  });
+
+  it("scopes Test connection by provider: authorize sees the id and can refuse one instance", async () => {
+    let runs = 0;
+    const make = acme({
+      preflight: async () => {
+        runs++;
+        return [];
+      },
+    });
+    make(CONFIG);
+    make(CONFIG);
+    const mine = `${make.definition.name}@1.0.0~1`;
+    const theirs = `${make.definition.name}@1.0.0~2`;
+    const calls: JobsApiAuthorizeContext[] = [];
+    const h = api({
+      actions: WITH_PROVIDERS,
+      authorize: (_req, context) => {
+        calls.push(context);
+        return (
+          context.action !== "providers.validate" || context.provider === mine
+        );
+      },
+    });
+    expect((await h.call("POST", path(theirs, "/validate"))).status).toBe(403);
+    expect(runs).toBe(0);
+    expect((await h.call("POST", path(mine, "/validate"))).status).toBe(200);
+    expect(runs).toBe(1);
+    expect(calls.map((call) => call.provider)).toEqual([theirs, mine]);
   });
 
   it("are served in jobs mode and pruned in runner mode, where features.providers is false", async () => {
@@ -828,7 +1360,7 @@ describe("a summon status's providerId and readiness", () => {
     const h = api({ jobs });
     const status = await h.call("GET", "/queues/work/summon");
     expect(status.status).toBe(200);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     expect(status.body.summoner).toMatchObject({
       providerId: id,
       readiness: "ready",
@@ -843,17 +1375,16 @@ describe("a summon status's providerId and readiness", () => {
     expect(validated.body).toMatchObject({ id, ok: true });
   });
 
-  it("traces a spread copy to its instance, and leaves a validate run's controller untouched", async () => {
+  it("traces a spread copy to its instance, pending then failed", async () => {
     let answer: (valid: boolean) => void = () => {};
     const make = acme({
       asyncConfig: () =>
         new Promise<boolean>((resolve) => {
           answer = resolve;
         }),
-      preflight: async () => [],
     });
     const configured = make(CONFIG);
-    const id = `${make.definition.name}@1.0.0#1`;
+    const id = `${make.definition.name}@1.0.0~1`;
     const jobs = summoning({ ...configured });
     const h = api({ jobs });
     const pending = await h.call("GET", "/queues/work/summon");
@@ -863,26 +1394,126 @@ describe("a summon status's providerId and readiness", () => {
       readiness: "pending",
       facts: {},
     });
-
     answer(false);
     await configured.ready.catch(() => {});
     const failed = await h.call("GET", "/queues/work/summon");
     expect(failed.body.summoner.readiness).toBe("failed");
     expect(failed.body.summoner.capabilities).toBeUndefined();
+  });
 
-    // A preflight validates the config again and answers; the controller's
-    // shared state — failures, backoff, attempts, last — is what it was.
-    const before = { ...failed.body };
-    delete before.summoner;
+  /**
+   * A controller with real shared state — one attempt failed on a rejected
+   * config: failures 1, `last` `{ failed, CONFIG }`, a backoff running — then
+   * a preflight that validates the config again and passes, while `during`
+   * (if given) runs. Answers the status before and after, less `summoner`.
+   */
+  async function validateAgainstFailedController(
+    during?: (
+      controller: ReturnType<BunJobs["summonController"]>,
+    ) => Promise<void>,
+  ) {
+    let answer: (valid: boolean) => void = () => {};
+    const make = acme({
+      asyncConfig: () =>
+        new Promise<boolean>((resolve) => {
+          answer = resolve;
+        }),
+      preflight: async () => [],
+    });
+    const configured = make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    const jobs = summoning({ ...configured });
+    const h = api({ jobs });
+    answer(false);
+    await configured.ready.catch(() => {});
+    await jobs.queue("work").add("x", {});
+    const controller = jobs.summonController("work");
+    const checking = controller
+      .check({ reason: "manual", force: true })
+      .catch(() => {});
+    await Bun.sleep(20);
+    answer(false);
+    await checking;
+    const failed = await h.call("GET", "/queues/work/summon");
+    const { summoner: _before, ...before } = failed.body;
     const validating = h.call("POST", path(id, "/validate"));
     await Bun.sleep(20);
+    await during?.(controller);
     answer(true);
-    expect((await validating).body).toEqual({ id, ok: true, checks: [] });
+    const verdict = (await validating).body;
     const after = await h.call("GET", "/queues/work/summon");
     const { summoner, ...rest } = after.body;
+    return { id, before, rest, summoner, verdict };
+  }
+
+  it("leaves a controller with real state untouched: failures, last, backoff, budget", async () => {
+    const { id, before, rest, summoner, verdict } =
+      await validateAgainstFailedController();
+    // The baseline is real state, not an empty marker.
+    expect(before).toMatchObject({
+      failures: 1,
+      last: { outcome: "failed", detail: "CONFIG" },
+      backoffUntil: expect.any(Number),
+    });
+    expect(verdict).toEqual({ id, ok: true, checks: [] });
     expect(rest).toEqual(before);
-    // The provider's config is now known, so the controller adopts it on
-    // its next look, as it would have at its next attempt.
+    // The config is known now, so the controller adopts it on its next look.
     expect(summoner.readiness).toBe("ready");
+  });
+
+  it("negative control: the same comparison catches a controller change during the preflight", async () => {
+    const { before, rest } = await validateAgainstFailedController(
+      async (controller) => {
+        await controller.reset();
+      },
+    );
+    expect(before.failures).toBe(1);
+    expect(rest).not.toEqual(before);
+    expect(rest.failures).toBe(0);
+  });
+
+  it("serves a summon status whose summoner's describe() throws, with no facts and no secret logged", async () => {
+    const SECRET = "tok_live_DESCRIBE_THROWS_42";
+    const broken = defineComputeProvider({
+      name: `bun-jobs-provider-broken-describe-${++unique}`,
+      version: "1.0.0",
+      kind: "broken",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      secrets: ["apiToken"],
+      describe: (config: { apiToken: string }) => {
+        throw new Error(`cannot describe endpoint for ${config.apiToken}`);
+      },
+      summon: (): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => ({ status: "started", handles: [] }),
+      }),
+    });
+    const configured = held(broken({ apiToken: SECRET }));
+    const { logger, events } = createTestLogger();
+    const jobs = new BunJobs({
+      namespace: testNamespace("api-providers"),
+      driver: { type: "file", root: join(tmp.path, testNamespace("root")) },
+      logger,
+      summon: {
+        work: {
+          summoner: configured,
+          triggers: { onAdd: false, events: false, poll: false },
+        },
+      },
+    });
+    cleanups.push(async () => {
+      await jobs.close();
+    });
+    const response = await api({ jobs }).call("GET", "/queues/work/summon");
+    expect(response.status).toBe(200);
+    expect(response.body.summoner.facts).toEqual({});
+    expect(response.body.summoner.readiness).toBe("ready");
+    const logged = JSON.stringify(
+      events.map((event) => ({ ...event, error: String(event.error) })),
+    );
+    expect(logged).toContain("describe() threw");
+    expect(logged).not.toContain(SECRET);
+    // Negative control: describe() really throws, with the secret in it.
+    expect(() => configured.describe()).toThrow(SECRET);
   });
 });

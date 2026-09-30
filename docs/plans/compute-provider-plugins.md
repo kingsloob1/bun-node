@@ -1925,7 +1925,8 @@ The user guide (§15.4) carries this list, plainly [D]:
 | a lost attempt's reason | `marker.last.detail`, the `summon` event | `status()` (§7.3) |
 | config form | `GET /providers/:id/schema`, only when the schema implements Standard JSON Schema (§2.3) | `~standard.jsonSchema.input({ target: "draft-2020-12" })` |
 
-`:id` is `name@version#<n>`, the nth configured instance in this process; it
+`:id` is `name@version~<n>` (`~`, not `#`, which would start a URL
+fragment: decided 2026-09-30), the nth configured instance in this process; it
 is stable for a process's life and meaningless across processes [D].
 
 Everything in this table is secret-free by §13.2 and §13.3. The

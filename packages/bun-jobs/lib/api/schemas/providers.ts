@@ -36,7 +36,7 @@ export const ProviderParams = s.query(
       minLength: 1,
       maxLength: 512,
       description:
-        "The configured provider's id, `name@version#<n>`, percent-encoded (`@`, `/`, `:` and `#` included): from `GET /providers` or a summon status's `summoner.providerId`.",
+        "The configured provider's id, `name@version~<n>`: from `GET /providers` or a summon status's `summoner.providerId`. `@`, `:` and `~` are URL-safe; percent-encode a scoped name's `/`.",
     }),
   }),
 );
@@ -45,14 +45,14 @@ export const ProviderParams = s.query(
 const ProviderSchema = s.object({
   id: s.string({
     description:
-      "The instance's id, `name@version#<n>`: the nth instance of that `name@version` configured in the API's process. Stable for that process's life, meaningless in another.",
+      "The instance's id, `name@version~<n>`: the nth instance of that `name@version` configured in the API's process. Stable for that process's life, meaningless in another.",
   }),
   provider: SummonProviderSchema,
   readiness: ProviderReadinessSchema(
-    "How far its config has got: `ready` (validated, facets built), `pending` (an asynchronous schema is still validating it), `failed` (the latest validation rejected, or building its facets threw).",
+    "How far its config has got: `ready` (validated, facets built), `pending` (an asynchronous schema is still validating it), `failed` (the latest validation rejected, or building its facets threw). About the config alone: a controller refusing a ready provider for its policy shows on that queue's summon status, not here.",
   ),
   facts: s.record(s.string(), {
-    description: `Secret-free facts from its \`describe()\`, \`{}\` until its config is known. ${SERVABLE_FACTS_NOTE}`,
+    description: `Secret-free facts from its \`describe()\`, \`{}\` until its config is known or when \`describe()\` throws. ${SERVABLE_FACTS_NOTE}`,
   }),
   preflight: s.boolean({
     description:
@@ -97,7 +97,7 @@ export const ProviderValidateBodySchema = s.object({
       maximum: MAX_PROVIDER_VALIDATE_TIMEOUT_MS,
       default: DEFAULT_PROVIDER_VALIDATE_TIMEOUT_MS,
       description:
-        'How long to wait for the preflight, in ms. Past it the answer is `ok: false` with an `error` of kind `transient` and detail `"timeout"`, and the preflight\'s signal aborts.',
+        "How long to wait for the preflight, in ms. Past it the answer is `ok: false` with an `error` of kind `transient` and detail `\"timeout\"`, and the preflight's signal aborts. A request that joins a run already in flight shares that run's timeout.",
     }),
   ),
 });
@@ -147,7 +147,7 @@ export const ProviderValidationSchema = s.named(
           },
           {
             description:
-              "Why there are no checks: the config did not validate (`misconfigured`), or the preflight threw or timed out.",
+              "Why there are no checks: the config did not validate or its facets could not be built (`misconfigured`), or the preflight threw or timed out.",
           },
         ),
       ),
@@ -170,7 +170,7 @@ export const ProviderSchemaSchema = s.named(
       }),
       schema: s.record(s.unknown(), {
         description:
-          "The config's input JSON Schema, from `~standard.jsonSchema.input({ target })`, made secret-free: every string redacted as a detail is, and `default`, `examples`, `const` and `enum` dropped from a property that is a declared secret or has a credential's name.",
+          "The config's input JSON Schema, from `~standard.jsonSchema.input({ target })`, made secret-free. `default`, `example`, `examples`, `const` and every `x-*` key are removed everywhere (root, nested, `$defs`, combinators): a form built from it has no pre-filled values. `enum` is kept, except under a property that is a declared secret or has a credential's name. Every other string is redacted as a detail is; a string equal to a declared secret is replaced, a number equal to one dropped.",
       }),
     },
     {

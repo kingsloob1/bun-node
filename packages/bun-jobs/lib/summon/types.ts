@@ -529,7 +529,7 @@ export interface SummonStatus {
     /** Who the provider is. */
     provider: ProviderIdentity;
     /**
-     * The configured instance's id in this process, `name@version#<n>`: what
+     * The configured instance's id in this process, `name@version~<n>`: what
      * the management API's `/providers/:id/…` routes take. Absent for a copy
      * of a configured provider that replaced both its facet and `validate`,
      * which nothing can trace back to an instance.

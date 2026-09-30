@@ -1250,8 +1250,9 @@ export interface SummonStatusDto {
     provider: SummonProviderDto;
     /**
      * The configured provider's id in the API's process,
-     * `name@version#<n>`: what `POST /providers/{id}/validate` ("Test
-     * connection") and `GET /providers/{id}/schema` take, percent-encoded.
+     * `name@version~<n>`: what `POST /providers/{id}/validate` ("Test
+     * connection") and `GET /providers/{id}/schema` take (`@`, `:` and `~`
+     * are URL-safe; percent-encode a scoped name's `/`).
      * Stable for that process's life, meaningless in another. Absent only for
      * a summoner nothing can trace to a configured instance (a copy of one
      * that replaced both its facet and its `validate`).
@@ -1262,7 +1263,10 @@ export interface SummonStatusDto {
      * provider's asynchronous config check is still running; `"failed"` when
      * that check rejected — each attempt then fails without a call, and
      * validates again, and the failure's redacted detail is on
-     * `last.detail` — or when the controller refused the provider for good.
+     * `last.detail` — or when this queue's controller refused the provider
+     * for good (a scale style without `release`, a lifetime over the
+     * platform's cap). That last case is the controller's, not the
+     * provider's: `GET /providers` still says `"ready"` for it.
      */
     readiness: "ready" | "pending" | "failed";
     /** What it declares it can do. Only when `readiness` is `"ready"`: unknown before. */
@@ -1274,9 +1278,15 @@ export interface SummonStatusDto {
      * `key`, `password`, `passwd`, `pwd`, `credential`, `auth`,
      * `authorization`, `bearer`, `private`, `cookie`, `session`): `apiKey`,
      * `apikey`, `sessiontoken` and `secretArn` go, `keyspace` and
-     * `tokenizerModel` stay. Also one whose value holds a URL with userinfo
-     * (`://user:pass@`), and a `host` or
-     * `hostname` fact unless the server enables `serialize.exposeHosts`.
+     * `tokenizerModel` stay.
+     * Also one whose value holds a URL with userinfo (`://user:pass@`) or
+     * another credential shape the log redactor knows — `Bearer …`, a JWT, or
+     * a `word:value` / `word=value` pair whose word contains a sensitive word
+     * (`token`, `secret`, `auth`, `session`, …), which drops some honest facts
+     * too (`session-workers:prod`, `max_tokens=4096`, an ARN whose resource
+     * holds `auth-api:prod`) — and a `host` or `hostname` fact unless the
+     * server enables `serialize.exposeHosts`.
+     * `{}` when `describe()` throws.
      */
     facts: Record<string, string>;
   };
@@ -1352,9 +1362,10 @@ export interface SummonCheckDto {
  */
 export interface ProviderDto {
   /**
-   * The instance's id, `name@version#<n>`: the nth instance of that
+   * The instance's id, `name@version~<n>`: the nth instance of that
    * `name@version` configured in the API's process. Stable for that
-   * process's life, meaningless in another. Percent-encode it in a path.
+   * process's life, meaningless in another. `@`, `:` and `~` are URL-safe;
+   * percent-encode a scoped name's `/` (`encodeURIComponent` does both).
    */
   id: string;
   /** Who the provider is. */
@@ -1362,12 +1373,16 @@ export interface ProviderDto {
   /**
    * How far its config has got: `"ready"` (validated, facets built),
    * `"pending"` (an asynchronous schema is still validating it), `"failed"`
-   * (the latest validation rejected, or building its facets threw).
+   * (the latest validation rejected, or building its facets threw). About
+   * the provider's config alone: a summon controller that refuses a ready
+   * provider for its policy shows that on its queue's summon status
+   * (`summoner.readiness: "failed"`), not here.
    */
   readiness: "ready" | "pending" | "failed";
   /**
-   * Secret-free facts from its `describe()`, `{}` until its config is known,
-   * filtered as `SummonStatusDto.summoner.facts` is.
+   * Secret-free facts from its `describe()`, `{}` until its config is known
+   * or when `describe()` throws, filtered as `SummonStatusDto.summoner.facts`
+   * is.
    */
   facts: Record<string, string>;
   /**
@@ -1384,8 +1399,10 @@ export interface ProviderDto {
 
 /**
  * `GET /providers` (operation `listProviders`, action `providers.read`): the
- * compute providers configured in the API's process, oldest first, and the
- * plugin API versions it speaks. An empty list when none is.
+ * compute providers configured in the API's process, oldest first, less any
+ * `authorize` denies (it is asked once per provider, with the id as
+ * `provider`), and the plugin API versions it speaks. An empty list when
+ * none is.
  */
 export interface ProviderListDto {
   /** The plugin API versions this bun-jobs speaks (`COMPUTE_PROVIDER_API`), `"major.minor"`. */
@@ -1405,6 +1422,7 @@ export interface ProviderValidateBody {
    * How long to wait for the preflight, in ms (1,000 to 60,000; default
    * 15,000). Past it the answer is `ok: false` with an `error` of kind
    * `"transient"` and detail `"timeout"`, and the preflight's signal aborts.
+   * A request that joins a run already in flight shares that run's timeout.
    */
   timeoutMs?: number;
 }
@@ -1414,9 +1432,11 @@ export interface ProviderValidateBody {
  * `validateProvider`, action `providers.validate`). Answered with 200
  * whatever the platform said; `ok` is the verdict.
  *
- * - The config did not validate (an asynchronous schema rejected it, or its
- *   facets could not be built): `error.kind` is `"misconfigured"`, and the
- *   detail names the invalid paths (`invalid config: region`).
+ * - The config did not validate (an asynchronous schema rejected it):
+ *   `error.kind` is `"misconfigured"`, and the detail names the invalid
+ *   paths (`invalid config: region`).
+ * - Its facets could not be built from a valid config: `"misconfigured"`,
+ *   with the error's code or name.
  * - The preflight threw a `ProviderError`: its kind, and the detail the
  *   summon status would record (its `platformCode`, else its code).
  * - It threw anything else: `"transient"`, with the error's code or name.
@@ -1425,6 +1445,10 @@ export interface ProviderValidateBody {
  *
  * Every detail is redacted (declared secrets, credential shapes, URL
  * userinfo) and cut to 128 characters.
+ *
+ * Shared per provider instance (its id): a request while a preflight runs
+ * joins it, and a completed verdict is answered again for 5 s. A timed-out
+ * run's verdict is never reused.
  */
 export interface ProviderValidationDto {
   /** The provider's id, as asked. */
@@ -1473,10 +1497,13 @@ export interface ProviderSchemaDto {
   target: "draft-2020-12";
   /**
    * The config's input JSON Schema, as the schema's
-   * `~standard.jsonSchema.input({ target })` produced it, made secret-free:
-   * every string redacted as a detail is, and `default`, `examples`, `const`
-   * and `enum` dropped from a property that is a declared secret or has a
-   * credential's name.
+   * `~standard.jsonSchema.input({ target })` produced it, made secret-free.
+   * `default`, `example`, `examples`, `const` and every `x-*` key are
+   * removed everywhere (root, nested, `$defs`, combinators), so a form built
+   * from it has no pre-filled values. `enum` is kept, except under a property
+   * that is a declared secret or has a credential's name. Every other string
+   * is redacted as a detail is; a string equal to a declared secret is
+   * replaced, a number equal to one dropped.
    */
   schema: Record<string, unknown>;
 }

@@ -2672,8 +2672,33 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(providerId === undefined ? {} : { providerId }),
       readiness,
       ...(readiness === "ready" ? { capabilities: this.#capabilities } : {}),
-      facts: this.#summoner.describe(),
+      facts: this.#facts(),
     };
+  }
+
+  /**
+   * The summoner's `describe()` facts, or `{}` when it throws: a broken
+   * `describe()` must not fail the status. Logged by name and code only,
+   * never the message, which may hold a secret.
+   */
+  #facts(): Readonly<Record<string, string>> {
+    try {
+      return this.#summoner.describe();
+    } catch (error) {
+      const code =
+        error instanceof Error ? (error as { code?: unknown }).code : undefined;
+      this.#providerLogger().error(
+        "the summoner's describe() threw; its facts are left out of the status",
+        {
+          provider: this.#summoner.provider.name,
+          thrown: error instanceof Error ? error.name : typeof error,
+          ...(typeof code === "string" && CODE_SHAPED.test(code)
+            ? { code }
+            : {}),
+        },
+      );
+      return {};
+    }
   }
 
   /**

@@ -556,7 +556,7 @@ export const ProviderReadinessSchema = (description: string) =>
  * route that serves facts.
  */
 export const SERVABLE_FACTS_NOTE =
-  "Dropped whatever the provider says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`) or another credential shape (`Bearer …`, `key=value` under a sensitive key, a JWT), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.";
+  "Dropped whatever the provider says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`) or another credential shape (`Bearer …`, a JWT, or a `word:value` / `word=value` pair whose word contains a sensitive word such as `token`, `secret`, `auth` or `session` — which also drops `session-workers:prod`, `max_tokens=4096`, an ARN with `auth-api:prod` in it), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.";
 
 /** A queue's summon status. Mirrors `SummonStatusDto`. */
 export const SummonStatusSchema = s.named(
@@ -584,11 +584,11 @@ export const SummonStatusSchema = s.named(
           providerId: s.optional(
             s.string({
               description:
-                "The configured provider's id in the API's process, `name@version#<n>`: what `POST /providers/{id}/validate` (\"Test connection\") and `GET /providers/{id}/schema` take, percent-encoded. Stable for that process's life. Absent only for a summoner nothing can trace to a configured instance.",
+                "The configured provider's id in the API's process, `name@version~<n>`: what `POST /providers/{id}/validate` (\"Test connection\") and `GET /providers/{id}/schema` take, percent-encoded. Stable for that process's life. Absent only for a summoner nothing can trace to a configured instance.",
             }),
           ),
           readiness: ProviderReadinessSchema(
-            "Whether the summoner can be called: `ready`; `pending` while its provider's asynchronous config check is still running; `failed` when that check rejected (each attempt fails without a call and validates again; the redacted detail is on `last.detail`) or the controller refused the provider for good.",
+            "Whether the summoner can be called: `ready`; `pending` while its provider's asynchronous config check is still running; `failed` when that check rejected (each attempt fails without a call and validates again; the redacted detail is on `last.detail`) or this queue's controller refused the provider for good for its policy (then `GET /providers` still says `ready`: that readiness is the config's alone).",
           ),
           capabilities: s.optional(SummonCapabilitiesSchema),
           facts: s.record(s.string(), {
