@@ -2,6 +2,7 @@ import type { SummonStatusDto } from "../../../api/types";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { demandKeys } from "../../../api/demand";
+import { listProviders, providerKeys } from "../../../api/providers";
 import { queueKeys } from "../../../api/queues";
 import {
   getSummonStatus,
@@ -22,6 +23,9 @@ import { Table } from "../../../components/Table";
 import { useApiClient } from "../../../context";
 import { displayText, formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
+import { useCan, useMeta } from "../../../meta/hooks";
+import { providerReadiness } from "../../providers/providerText";
+import { TestConnection } from "../../providers/TestConnection";
 import { formatMs } from "../duration";
 import { useCanMutate } from "../gating";
 import { useRefreshInterval } from "../live";
@@ -286,6 +290,10 @@ function Summoner({
 }) {
   const { provider, capabilities, facts } = summoner;
   const factEntries = Object.entries(facts);
+  const readiness = providerReadiness(summoner.readiness);
+  const preflight = useProviderPreflight(summoner.providerId);
+  const canMutate = useCanMutate();
+  const name = displayText(provider.displayName ?? provider.kind);
   return (
     <div
       className="summon-summoner"
@@ -305,6 +313,20 @@ function Summoner({
                 </span>
               </span>
             ),
+          },
+          {
+            key: "readiness",
+            label: "Readiness",
+            value: (
+              <Badge
+                tone={readiness.tone}
+                title={readiness.hint}
+                testId="summon-readiness"
+              >
+                {readiness.label}
+              </Badge>
+            ),
+            hint: readiness.hint,
           },
           // Declared once the summoner is ready: unknown before.
           ...(capabilities === undefined
@@ -337,7 +359,41 @@ function Summoner({
           })),
         ]}
       />
+      {summoner.providerId !== undefined &&
+        preflight &&
+        canMutate("providers.validate") && (
+          <TestConnection
+            providerId={summoner.providerId}
+            label={name}
+          />
+        )}
     </div>
+  );
+}
+
+/**
+ * Whether the summoner's provider has a preflight, so "Test connection"
+ * checks the platform: `GET /providers` says so, read only where the API
+ * serves it (`features.providers`) and the caller may read providers
+ * (`providers.read`). Without either, the answer is no and nothing is read.
+ */
+function useProviderPreflight(providerId: string | undefined): boolean {
+  const api = useApiClient();
+  const meta = useMeta();
+  const canRead = useCan("providers.read");
+  const enabled =
+    providerId !== undefined && meta.features.providers && canRead;
+  const list = useQuery({
+    queryKey: providerKeys.list,
+    queryFn: ({ signal }) => listProviders(api, signal),
+    enabled,
+    staleTime: 30_000,
+  });
+  return (
+    enabled &&
+    list.data?.providers.some(
+      (item) => item.id === providerId && item.preflight,
+    ) === true
   );
 }
 

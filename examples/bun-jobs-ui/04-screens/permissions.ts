@@ -96,7 +96,29 @@
  *   backend another process can reach, has controllers on `mail`, `audit`
  *   and `payroll` and none on `plain`, and a summoner that starts nothing.
  *   Summon now… and Reset… need the opt-in `queues.summon` and a status with
- *   `local` true.
+ *   `local` true. The panel also shows the summoner's readiness, always, and
+ *   what it declares (style, boot budget, longest life) only once it is ready.
+ * - **Providers are the process's, and `/providers` reads the untargeted
+ *   map.** The Providers nav entry and `/providers` need `sections.manage`,
+ *   `meta.features.providers` (false only in `runner` mode) and the opt-in
+ *   `providers.read`; there is a card per provider `GET /providers` lists,
+ *   which `authorize` filters one provider at a time. On a card, Test
+ *   connection needs the opt-in mutation `providers.validate` (so never under
+ *   `readOnly`) and the provider's `preflight`, and the config schema its
+ *   `configSchema`. A third host shows each, over "Cumulus", a provider built
+ *   with `defineComputeProvider` on the conformance kit's `fakePlatform()`,
+ *   and a plain `defineSummoner`; the registry holds a provider weakly, so
+ *   every one is held here until the end.
+ * - **The panel's provider buttons follow the untargeted permission, as the
+ *   routes do.** The Summon panel's Test connection needs
+ *   `features.providers`, `providers.read` (to read the same cached
+ *   `GET /providers`) and `providers.validate`, a `providerId` on the status,
+ *   and a `preflight` on that provider in the list. The panel reads the two
+ *   actions from `?queue=`, but that map answers them **untargeted**: a
+ *   provider is the process's, not a queue's, and the provider routes are
+ *   authorized with the provider alone, never a queue. So a host whose
+ *   `authorize` grants only on one queue has no button there, and the
+ *   request it would send is refused with 403.
  * - **Nine actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
  *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
  *   `queues.summon`, `providers.read`, `providers.validate`,
@@ -146,6 +168,10 @@ import type {
   AnalyticsSeriesDto,
   JobDefaultsDto,
   PermissionsDto,
+  ProviderDto,
+  ProviderListDto,
+  ProviderSchemaDto,
+  ProviderValidationDto,
   QueueDetailDto,
   RunnerInfoDto,
   RunnerListDto,
@@ -160,6 +186,10 @@ import type {
   WorkersAnalyticsDto,
   WorkerState,
 } from "@kingsleyweb/bun-jobs/api/contract";
+import type {
+  ProviderCallContext,
+  SummonCapabilities,
+} from "@kingsleyweb/bun-jobs/provider";
 import { join } from "node:path";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
@@ -179,6 +209,13 @@ import {
   MAX_NAME_LENGTH,
   NAME_PARAM_PATTERN,
 } from "@kingsleyweb/bun-jobs/api/contract";
+import {
+  COMPUTE_PROVIDER_API,
+  defineComputeProvider,
+  ProviderError,
+  toStandardSchema,
+} from "@kingsleyweb/bun-jobs/provider";
+import { fakePlatform } from "@kingsleyweb/bun-jobs/provider/testing";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
@@ -510,6 +547,18 @@ interface ScreenInputs {
    * not read, which closes the tab too.
    */
   summon?: SummonStatusDto | null;
+  /**
+   * The cached `GET /providers` (query key `["providers"]`, one cache for the
+   * Providers screen and the Summon panel), as the Summon panel holds it: its
+   * `providers`. Absent where it was not read or not answered.
+   */
+  providers?: readonly ProviderDto[];
+  /**
+   * One provider of `GET /providers`, as the Providers screen draws its card:
+   * its `preflight` and `configSchema` pick Test connection and the config
+   * schema. Absent off a card.
+   */
+  provider?: ProviderDto;
   /**
    * How each Overview section's analytics read answered: `jobs` for the Jobs
    * card, `runners` and `workers` for their sections. Absent before a read.
@@ -1410,6 +1459,51 @@ const GATES = [
     needsOf: ["summon: Summon now…"],
   },
   {
+    // `Summoner` in `SummonPanel.tsx`: the readiness badge sits beside the
+    // provider wherever the status carries a summoner ("always present
+    // today"), whatever it says: `providerReadiness` names the three the
+    // contract lists and shows any other as its raw string.
+    name: "summon: summoner readiness",
+    row: "Summon panel summoner readiness",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => summon?.summoner !== undefined,
+  },
+  {
+    // The same row's second half: style, boot budget and longest life come
+    // from `capabilities`, which the status carries only once the summoner is
+    // ready, so they show only then and are never guessed before.
+    name: "summon: what the summoner declares",
+    row: "Summon panel summoner readiness",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => summon?.summoner?.capabilities !== undefined,
+  },
+  {
+    // `useProviderPreflight`: the panel reads the one cached `GET /providers`
+    // (shared with the Providers screen) only with `features.providers`, the
+    // queue's `providers.read` and a summoner reporting a `providerId`, and
+    // offers Test connection where the listed item with that id has a
+    // preflight and `providers.validate` is granted, never under `readOnly`.
+    // The panel sits in the queue's scope, so it reads the two actions from
+    // `?queue=`, which answers them untargeted, as the routes are authorized:
+    // with the provider, never a queue.
+    name: "summon: Test connection",
+    row: "Summon panel Test connection",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    features: ["providers"],
+    reads: ["providers.read"],
+    mutations: ["providers.validate"],
+    when: ({ summon, providers }) => {
+      const id = summon?.summoner?.providerId;
+      return (
+        id !== undefined &&
+        providers?.some((item) => item.id === id && item.preflight) === true
+      );
+    },
+  },
+  {
     name: "panel=throughput",
     row: "Throughput panel",
     map: "queue",
@@ -1683,6 +1777,44 @@ const GATES = [
     modes: ["jobs", "both"],
     features: ["workers"],
     reads: ["workers.list"],
+  },
+  // Providers: `/providers` is outside any queue, so the untargeted map
+  // decides everything on it, Test connection included.
+  {
+    // `buildNav`: inside `sections.manage`, with no mode of its own — the
+    // feature is what is false in `runner` mode.
+    name: "Providers: nav and /providers",
+    row: "Providers nav entry and `/providers`",
+    map: "boot",
+    sections: ["manage"],
+    features: ["providers"],
+    reads: ["providers.read"],
+  },
+  {
+    // `ProviderCard`: one per item of the screen's `GET /providers`.
+    name: "providers: card",
+    row: "Providers card",
+    map: "boot",
+    needsOf: ["Providers: nav and /providers"],
+    when: ({ provider }) => provider !== undefined,
+  },
+  {
+    // `canValidate && provider.preflight`, with `useCanMutate`.
+    name: "providers: Test connection",
+    row: "Providers Test connection",
+    map: "boot",
+    needsOf: ["providers: card"],
+    mutations: ["providers.validate"],
+    when: ({ provider }) => provider?.preflight === true,
+  },
+  {
+    // `provider.configSchema && <ConfigSchema>`: a button, and the read
+    // (`GET /providers/:id/schema`) only once it is opened.
+    name: "providers: config schema",
+    row: "Providers config schema",
+    map: "boot",
+    needsOf: ["providers: card"],
+    when: ({ provider }) => provider?.configSchema === true,
   },
   {
     name: "workers page: queue links",
@@ -2795,16 +2927,23 @@ checkEqual(
   ],
 );
 
-/** The rows gating on an opt-in action, and whether their cell says "opt-in". */
+/**
+ * The rows gating on an opt-in action, and whether their cell says "opt-in".
+ * Reads count as well as mutations: `providers.read` is the first opt-in read,
+ * and the Providers nav entry says so.
+ */
 const optInRows = readme
   .map((row) => ({
     element: row.element,
     says: /\bopt-in\b/.test(row.needs),
     gates: GATES.filter((gate: Gate) => gate.row === row.element).some(
       (gate: Gate) =>
-        [...(gate.mutations ?? []), ...(gate.anyMutation ?? [])].some(
-          (action) => JOBS_API_OPT_IN_ACTIONS.has(action),
-        ),
+        [
+          ...(gate.reads ?? []),
+          ...(gate.anyOf ?? []),
+          ...(gate.mutations ?? []),
+          ...(gate.anyMutation ?? []),
+        ].some((action) => JOBS_API_OPT_IN_ACTIONS.has(action)),
     ),
   }))
   .filter((row) => row.says || row.gates);
@@ -3805,7 +3944,7 @@ for (const queue of ["mail", "audit", "payroll"]) {
     [200, [...routed].sort()],
   );
   check(
-    `and authorize was told queue=${queue} for every queue-side action`,
+    `and authorize was told queue=${queue} for every queue-side action, and no queue for providers.read and providers.validate (a provider is the process's, and its routes name none)`,
     asked
       .filter(
         (call) =>
@@ -3814,7 +3953,12 @@ for (const queue of ["mail", "audit", "payroll"]) {
           !call.action.startsWith("events.") &&
           !call.action.startsWith("runners."),
       )
-      .every((call) => call.queue === queue && call.runner === undefined),
+      .every(
+        (call) =>
+          call.queue ===
+            (call.action.startsWith("providers.") ? undefined : queue) &&
+          call.runner === undefined,
+      ),
     asked,
   );
 }
@@ -3881,6 +4025,11 @@ const BOOT_NEEDS_INPUT = {
   "job: Processed by worker link": false,
   "workers page: Host filter": false,
   "worker table: key links": false,
+  // A provider's card and its two elements need a provider listed: asked on
+  // a host with some, in the providers step.
+  "providers: card": false,
+  "providers: Test connection": false,
+  "providers: config schema": false,
 } as const satisfies Partial<Gates>;
 
 /**
@@ -3922,6 +4071,9 @@ checkEqual(
     "panel=summon": false,
     "summon: Summon now…": false,
     "summon: Reset…": false,
+    "summon: summoner readiness": false,
+    "summon: what the summoner declares": false,
+    "summon: Test connection": false,
     // The browser-side pagers, which need a list longer than one page: asked
     // below with row counts either side of each table's size.
     "panel=repeatables, pager": false,
@@ -6921,6 +7073,822 @@ checkEqual(
   [(await summonedExit).reason, (await summonedExit).code],
   ["closed", 0],
 );
+
+/* ------------------------------------------------------------------ */
+step("Providers: the nav entry, cards, Test connection and the schema");
+
+// The compute providers configured in the API's process: `GET /providers`,
+// `POST /providers/:id/validate` ("Test connection") and
+// `GET /providers/:id/schema`. `/meta` says only whether those routes are
+// served (`features.providers`, false in `runner` mode alone); both actions
+// are opt-in. This host's summon policies use "Cumulus", made up, written
+// with `defineComputeProvider` over the conformance kit's `fakePlatform()` —
+// the pattern of `examples/bun-jobs/11-management-api/provider-routes.ts` —
+// with a preflight and a config schema, and a plain `defineSummoner` with
+// neither.
+
+/** The one API token the fake Cumulus accepts. */
+const CUMULUS_TOKEN = "cu_live_examples_ui_perm";
+/** The regions Cumulus has. */
+const CUMULUS_REGIONS = ["eu-west-1", "us-east-1"];
+/** How many preflights reached the fake platform. */
+let whoamiCalls = 0;
+/** A fake Cumulus: `GET /v1/whoami` answers for {@link CUMULUS_TOKEN} alone. */
+const cumulusPlatform = await fakePlatform({
+  "GET /v1/whoami": (request) => {
+    whoamiCalls += 1;
+    return request.headers.get("authorization") === `Bearer ${CUMULUS_TOKEN}`
+      ? Response.json({ account: "cumulus-test" })
+      : Response.json({ error: { code: "InvalidToken" } }, { status: 401 });
+  },
+});
+
+/** What a user configures Cumulus with. */
+interface CumulusInput {
+  /** The control API's base URL: the fake's, here. */
+  url: string;
+  /** The region, one of {@link CUMULUS_REGIONS}. */
+  region: string;
+  /** The API token, or a function reading it from a secret store. */
+  apiToken: string | (() => Promise<string>);
+}
+
+/** The validated config: the token, resolved. */
+interface CumulusConfig {
+  /** The control API's base URL. */
+  url: string;
+  /** The region. */
+  region: string;
+  /** The API token: a declared secret. */
+  apiToken: string;
+}
+
+/**
+ * Validates a config and resolves its token, always as a promise: a bad
+ * config is configured, listed as `failed`, and a token the secret store has
+ * not answered with yet leaves it `pending`.
+ */
+async function resolveCumulus(
+  input: unknown,
+): Promise<
+  { value: CumulusConfig } | { issues: { message: string; path: string[] }[] }
+> {
+  const given = (input ?? {}) as Partial<CumulusInput>;
+  if (
+    typeof given.url !== "string" ||
+    typeof given.region !== "string" ||
+    !CUMULUS_REGIONS.includes(given.region) ||
+    given.apiToken === undefined
+  ) {
+    return { issues: [{ message: "invalid config", path: ["region"] }] };
+  }
+  const apiToken =
+    typeof given.apiToken === "function"
+      ? await given.apiToken()
+      : given.apiToken;
+  return { value: { url: given.url, region: given.region, apiToken } };
+}
+
+// The config schema, with a Standard JSON Schema converter: what makes
+// `GET /providers/:id/schema` answer, and `configSchema` true.
+const cumulusBase = toStandardSchema<CumulusInput, CumulusConfig>(
+  resolveCumulus,
+);
+const cumulusStandard = {
+  ...cumulusBase["~standard"],
+  jsonSchema: {
+    input: () => ({
+      type: "object",
+      required: ["url", "region", "apiToken"],
+      properties: {
+        url: { type: "string", format: "uri" },
+        region: { type: "string", enum: CUMULUS_REGIONS },
+        apiToken: { type: "string" },
+      },
+    }),
+    output: () => ({}),
+  },
+};
+const cumulusSchema: typeof cumulusBase = { "~standard": cumulusStandard };
+
+/** The Cumulus provider, as its package would export it. */
+const cumulus = defineComputeProvider<CumulusConfig, CumulusInput>({
+  name: "bun-jobs-provider-cumulus",
+  version: "1.0.0",
+  kind: "cumulus",
+  displayName: "Cumulus",
+  apiVersion: {
+    core: COMPUTE_PROVIDER_API.core,
+    summon: COMPUTE_PROVIDER_API.summon,
+  },
+  config: cumulusSchema,
+  secrets: ["apiToken"],
+  describe: (config) => ({ region: config.region }),
+  // The preflight: can these credentials reach the platform? Starts nothing.
+  validate: async (config, ctx: ProviderCallContext) => {
+    const response = await ctx.fetch(`${config.url}/v1/whoami`, {
+      headers: { authorization: `Bearer ${config.apiToken}` },
+      signal: ctx.signal,
+    });
+    if (!response.ok) {
+      throw new ProviderError(`cumulus answered ${response.status}`, "auth");
+    }
+    return [{ id: "credentials", status: "pass" }];
+  },
+  summon: () => {
+    const capabilities: SummonCapabilities = {
+      style: "launch",
+      dedupe: { kind: "none" },
+      passes: "argv",
+      bootBudgetMs: 60_000,
+      shutdown: { signal: "SIGTERM", graceMs: 10_000 },
+      maxLifetimeMs: null,
+      enforcesLifetime: false,
+    };
+    return {
+      capabilities,
+      summon: async () => ({ status: "started", handles: [] }),
+    };
+  },
+});
+
+/** Hands the pending Cumulus its token, at the end. */
+let releaseToken: (token: string) => void = () => {};
+/** The token a slow secret store has not answered with yet. */
+const tokenLater = new Promise<string>((resolve) => {
+  releaseToken = resolve;
+});
+// Ready; rejected by its schema (a region Cumulus does not have); and
+// waiting on its secret store. Ids are `name@version~<n>`, in creation order.
+const cumulusReady = cumulus({
+  url: cumulusPlatform.url,
+  region: "eu-west-1",
+  apiToken: CUMULUS_TOKEN,
+});
+const cumulusFailed = cumulus({
+  url: cumulusPlatform.url,
+  region: "eu-nowhere-1",
+  apiToken: CUMULUS_TOKEN,
+});
+const cumulusPending = cumulus({
+  url: cumulusPlatform.url,
+  region: "us-east-1",
+  apiToken: () => tokenLater,
+});
+/** A plain summoner: an anonymous provider, with no preflight and no schema. */
+const plainSummoner = defineSummoner({
+  kind: "example-plain",
+  invoke: async () => ({ status: "started", handles: [] }),
+});
+// The registry holds each configured provider through a WeakRef: one nothing
+// strong references is collected and drops out of `GET /providers`, which is
+// how a MongoDB run once lost one. Held here to the end, where the last check
+// reads them.
+const heldProviders = [
+  recordingSummoner,
+  cumulusReady,
+  cumulusFailed,
+  cumulusPending,
+  plainSummoner,
+];
+await Promise.allSettled([cumulusReady.ready, cumulusFailed.ready]);
+
+/** The ids `GET /providers` lists, oldest first: the summon host's summoner, then these. */
+const CUMULUS = "bun-jobs-provider-cumulus@1.0.0";
+const PROVIDER_IDS = {
+  record: "custom:example-record@0.0.0~1",
+  ready: `${CUMULUS}~1`,
+  failed: `${CUMULUS}~2`,
+  pending: `${CUMULUS}~3`,
+  plain: "custom:example-plain@0.0.0~1",
+} as const;
+
+/** A queue per summoner: `mail` the ready Cumulus, then the failed, the pending and the plain one. */
+const PROVIDER_QUEUES = ["mail", "exports", "warming", "alerts"] as const;
+const providerJobs = new BunJobs({
+  namespace: exampleNamespace("examples-ui-permissions-providers"),
+  driver: crossProcessDriver(),
+  logger: noopLogger,
+  summon: {
+    mail: { summoner: cumulusReady, triggers: ONE_SHOT },
+    exports: { summoner: cumulusFailed, triggers: ONE_SHOT },
+    warming: { summoner: cumulusPending, triggers: ONE_SHOT },
+    alerts: { summoner: plainSummoner, triggers: ONE_SHOT },
+  },
+});
+
+/**
+ * An `authorize` that says yes to everything but what `refuse` names: an
+ * action, or every action on one provider. A provider is the process's, not a
+ * queue's, so neither looks at the queue.
+ */
+function providerAuthorize(
+  refuse: { action?: JobsApiAction; provider?: string } = {},
+): JobsApiAuthorize {
+  return (_req, ctx) =>
+    ctx.action === refuse.action ||
+    (refuse.provider !== undefined && ctx.provider === refuse.provider)
+      ? { allow: false, reason: "not for this caller" }
+      : true;
+}
+
+/** Every API a provider host built, closed at the end. */
+const providerApis: { close: () => Promise<void> }[] = [];
+
+/** One API over `providerJobs`, and what its screens read. */
+async function providerHost(
+  config: Partial<JobsApiConfig>,
+  decide: JobsApiAuthorize = providerAuthorize(),
+) {
+  const hostApi = createJobsApi({
+    jobs: providerJobs,
+    basePath: "/provider-api",
+    mode: "jobs",
+    actions: [...JOBS_API_ACTIONS],
+    authorize: decide,
+    logger: noopLogger,
+    ...config,
+  });
+  providerApis.push(hostApi);
+  const hostApp = new BunHttpAdapter();
+  hostApp.use(hostApi.basePath, hostApi.router);
+  /** A request through the real pipeline: status, and the parsed body. */
+  async function call<T>(method: "GET" | "POST", path: string) {
+    const response = await hostApp.fetch(`/provider-api${path}`, {
+      method,
+      ...(method === "POST"
+        ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+        : {}),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as T & { code?: string },
+    };
+  }
+  const hostMeta = (await call<MetaDto>("GET", "/meta")).body;
+  const hostBoot = (await call<PermissionsBody>("GET", "/meta/permissions"))
+    .body;
+  const list = await call<ProviderListDto>("GET", "/providers");
+  /** The cached `GET /providers`, where it answered. */
+  const listed = list.status === 200 ? list.body.providers : undefined;
+  const hostMaps: Record<string, PermissionsBody> = {};
+  const statuses: Record<string, SummonStatusDto | null | undefined> = {};
+  // `runner` mode has no queue screens.
+  for (const queue of hostMeta.mode === "runner" ? [] : PROVIDER_QUEUES) {
+    hostMaps[queue] = (
+      await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
+    ).body;
+    const read = await call<SummonStatusDto>("GET", `/queues/${queue}/summon`);
+    statuses[queue] = !can(hostMaps[queue]!, "queues.read")
+      ? undefined
+      : read.status === 200
+        ? read.body
+        : null;
+  }
+  /**
+   * The gates of one screen: `/providers` without a queue, a queue's screen
+   * (its map, its summon status and the cached list) with one. `inputs`
+   * overrides any of them.
+   */
+  function screen(queue?: string, inputs: Partial<ScreenInputs> = {}): Gates {
+    return screenGates({
+      meta: hostMeta,
+      sections,
+      boot: hostBoot,
+      ...(queue === undefined
+        ? {}
+        : {
+            queue: hostMaps[queue]!,
+            summon: statuses[queue],
+            providers: listed,
+          }),
+      ...inputs,
+    });
+  }
+  /** The ids of the cards `/providers` draws: one per listed provider its gate opens. */
+  function cards(): string[] {
+    return (listed ?? [])
+      .filter((provider) => screen(undefined, { provider })["providers: card"])
+      .map((provider) => provider.id);
+  }
+  return {
+    call,
+    meta: hostMeta,
+    boot: hostBoot,
+    list,
+    listed,
+    maps: hostMaps,
+    statuses,
+    screen,
+    cards,
+  };
+}
+
+/** A provider's route: its id percent-encoded, as the app sends it. */
+function providerPath(id: string, suffix: string): string {
+  return `/providers/${encodeURIComponent(id)}${suffix}`;
+}
+
+/** Every action but `name`. */
+function actionsWithout(name: JobsApiAction): JobsApiAction[] {
+  return JOBS_API_ACTIONS.filter((action) => action !== name);
+}
+
+const providerAll = await providerHost({});
+const providerRunner = await providerHost({ mode: "runner" });
+const providerNoRead = await providerHost({
+  actions: actionsWithout("providers.read"),
+});
+const providerNoValidate = await providerHost({
+  actions: actionsWithout("providers.validate"),
+});
+const providerReadOnly = await providerHost({ readOnly: true });
+const providerRefuseRead = await providerHost(
+  {},
+  providerAuthorize({ action: "providers.read" }),
+);
+const providerRefuseValidate = await providerHost(
+  {},
+  providerAuthorize({ action: "providers.validate" }),
+);
+const providerHidden = await providerHost(
+  {},
+  providerAuthorize({ provider: PROVIDER_IDS.ready }),
+);
+
+show(
+  "GET /provider-api/providers",
+  providerAll.listed?.map(
+    ({ id, readiness, preflight, configSchema }) =>
+      `${id}: ${readiness}, preflight ${preflight}, configSchema ${configSchema}`,
+  ),
+);
+checkEqual(
+  "GET /providers lists every provider configured in this process, oldest first: the summon host's plain summoner, the ready, failed and pending Cumulus (preflight and schema), and the plain summoner (neither)",
+  providerAll.listed?.map(({ id, readiness, preflight, configSchema }) => [
+    id,
+    readiness,
+    preflight,
+    configSchema,
+  ]),
+  [
+    [PROVIDER_IDS.record, "ready", false, false],
+    [PROVIDER_IDS.ready, "ready", true, true],
+    [PROVIDER_IDS.failed, "failed", true, true],
+    [PROVIDER_IDS.pending, "pending", true, true],
+    [PROVIDER_IDS.plain, "ready", false, false],
+  ],
+);
+
+/** A provider host, as {@link providerHost} builds it. */
+type ProviderHost = Awaited<ReturnType<typeof providerHost>>;
+
+/** The Providers nav entry on `host`: `features.providers`, the gate, and `GET /providers`' status. */
+function providersEntry(
+  host: ProviderHost,
+  inputs: Partial<ScreenInputs> = {},
+): [boolean, boolean, number] {
+  return [
+    (inputs.meta ?? host.meta).features.providers,
+    host.screen(undefined, inputs)["Providers: nav and /providers"],
+    host.list.status,
+  ];
+}
+checkEqual(
+  "the Providers entry and GET /providers: there with providers.read; absent in runner mode (features.providers false, not routed), with features.providers false on a map granting providers.read, without providers.read (not routed) and where authorize refuses it (403), and with sections.manage off (the server still answers: sections are the UI's)",
+  {
+    all: providersEntry(providerAll),
+    runner: providersEntry(providerRunner),
+    featureOff: providersEntry(providerAll, {
+      meta: {
+        ...providerAll.meta,
+        features: { ...providerAll.meta.features, providers: false },
+      },
+    }),
+    noRead: providersEntry(providerNoRead),
+    refused: providersEntry(providerRefuseRead),
+    manageOff: providersEntry(providerAll, {
+      sections: { ...sections, manage: false },
+    }),
+  },
+  {
+    all: [true, true, 200],
+    runner: [false, false, 404],
+    featureOff: [false, false, 200],
+    noRead: [true, false, 404],
+    refused: [true, false, 403],
+    manageOff: [true, false, 200],
+  },
+);
+
+// A card per provider the list holds: `GET /providers` asks `authorize` once
+// per provider, with its id as `provider`, and leaves out the ones refused.
+checkEqual(
+  "a card per provider GET /providers lists: all five here, none without providers.read, and one authorize refuses by id is not listed, so it has no card",
+  [providerAll.cards(), providerNoRead.cards(), providerHidden.cards()],
+  [
+    Object.values(PROVIDER_IDS),
+    [],
+    Object.values(PROVIDER_IDS).filter((id) => id !== PROVIDER_IDS.ready),
+  ],
+);
+checkEqual(
+  "and that provider's own routes refuse it too: 403 on its schema and its Test connection",
+  [
+    (
+      await providerHidden.call<object>(
+        "GET",
+        providerPath(PROVIDER_IDS.ready, "/schema"),
+      )
+    ).status,
+    (
+      await providerHidden.call<object>(
+        "POST",
+        providerPath(PROVIDER_IDS.ready, "/validate"),
+      )
+    ).status,
+  ],
+  [403, 403],
+);
+
+/** [Test connection, config schema] on each provider's card on `host`. */
+function cardElements(host: ProviderHost): Record<string, [boolean, boolean]> {
+  return Object.fromEntries(
+    (providerAll.listed ?? []).map((provider) => {
+      const set = host.screen(undefined, { provider });
+      return [
+        provider.id,
+        [set["providers: Test connection"], set["providers: config schema"]],
+      ];
+    }),
+  );
+}
+checkEqual(
+  "on /providers, [Test connection, config schema] per card: both for each Cumulus (a preflight and a configSchema), neither for the two plain summoners",
+  cardElements(providerAll),
+  {
+    [PROVIDER_IDS.record]: [false, false],
+    [PROVIDER_IDS.ready]: [true, true],
+    [PROVIDER_IDS.failed]: [true, true],
+    [PROVIDER_IDS.pending]: [true, true],
+    [PROVIDER_IDS.plain]: [false, false],
+  },
+);
+checkEqual(
+  "Test connection needs providers.validate and no readOnly: on a host without it, under readOnly and where authorize refuses it, no card offers it, while the schema stays",
+  [providerNoValidate, providerReadOnly, providerRefuseValidate].map((host) =>
+    cardElements(host),
+  ),
+  [0, 1, 2].map(
+    (): Record<string, [boolean, boolean]> => ({
+      [PROVIDER_IDS.record]: [false, false],
+      [PROVIDER_IDS.ready]: [false, true],
+      [PROVIDER_IDS.failed]: [false, true],
+      [PROVIDER_IDS.pending]: [false, true],
+      [PROVIDER_IDS.plain]: [false, false],
+    }),
+  ),
+);
+
+// Behind the buttons. The pending Cumulus is not tested: its preflight waits
+// for a config that is not coming until the end.
+const validateReady = await providerAll.call<ProviderValidationDto>(
+  "POST",
+  providerPath(PROVIDER_IDS.ready, "/validate"),
+);
+const validateFailed = await providerAll.call<ProviderValidationDto>(
+  "POST",
+  providerPath(PROVIDER_IDS.failed, "/validate"),
+);
+const validatePlain = await providerAll.call<ProviderValidationDto>(
+  "POST",
+  providerPath(PROVIDER_IDS.plain, "/validate"),
+);
+show("POST /provider-api/providers/<ready>/validate", validateReady.body);
+checkEqual(
+  "Test connection where it is offered: the ready Cumulus passes (one call to the platform) and the failed one says whose problem it is (misconfigured, without calling it); the plain summoner, which has no preflight, would check its config alone: ok, no checks",
+  [
+    [
+      validateReady.status,
+      validateReady.body.ok,
+      validateReady.body.checks.map((one) => one.id),
+    ],
+    [
+      validateFailed.status,
+      validateFailed.body.ok,
+      validateFailed.body.error?.kind,
+    ],
+    [validatePlain.status, validatePlain.body.ok, validatePlain.body.checks],
+    whoamiCalls,
+  ],
+  [
+    [200, true, ["credentials"]],
+    [200, false, "misconfigured"],
+    [200, true, []],
+    1,
+  ],
+);
+checkEqual(
+  "and where it is absent the server agrees: 404 (not routed) without providers.validate and under readOnly, 403 where authorize refuses it; the platform was not called again",
+  [
+    (
+      await providerNoValidate.call<object>(
+        "POST",
+        providerPath(PROVIDER_IDS.ready, "/validate"),
+      )
+    ).status,
+    (
+      await providerReadOnly.call<object>(
+        "POST",
+        providerPath(PROVIDER_IDS.ready, "/validate"),
+      )
+    ).status,
+    (
+      await providerRefuseValidate.call<object>(
+        "POST",
+        providerPath(PROVIDER_IDS.ready, "/validate"),
+      )
+    ).status,
+    whoamiCalls,
+  ],
+  [404, 404, 403, 1],
+);
+/** `GET /providers/:id/schema` on the provider host: its status, and the schema's properties or the problem code. */
+async function schemaOf(id: string): Promise<[number, string[] | string]> {
+  const { status, body } = await providerAll.call<ProviderSchemaDto>(
+    "GET",
+    providerPath(id, "/schema"),
+  );
+  return [
+    status,
+    status === 200
+      ? Object.keys(
+          (body.schema.properties ?? {}) as Record<string, unknown>,
+        ).sort()
+      : (body.code ?? ""),
+  ];
+}
+checkEqual(
+  "the config schema, read only when opened: Cumulus's answers with its properties; a plain summoner's is 404 PROVIDER_SCHEMA_NOT_FOUND, where no card offers it; and readOnly keeps the read",
+  [
+    await schemaOf(PROVIDER_IDS.ready),
+    await schemaOf(PROVIDER_IDS.plain),
+    (
+      await providerReadOnly.call<object>(
+        "GET",
+        providerPath(PROVIDER_IDS.ready, "/schema"),
+      )
+    ).status,
+  ],
+  [
+    [200, ["apiToken", "region", "url"]],
+    [404, "PROVIDER_SCHEMA_NOT_FOUND"],
+    200,
+  ],
+);
+
+// The Summon panel: the summoner's readiness, and what it declares once ready.
+checkEqual(
+  "each queue's summon status points at the list: the providerId of its summoner",
+  PROVIDER_QUEUES.map(
+    (queue) => providerAll.statuses[queue]?.summoner?.providerId,
+  ),
+  [
+    PROVIDER_IDS.ready,
+    PROVIDER_IDS.failed,
+    PROVIDER_IDS.pending,
+    PROVIDER_IDS.plain,
+  ],
+);
+checkEqual(
+  "the Summon panel's summoner, per queue, [readiness, capabilities sent, readiness shown, what it declares shown]: readiness always; style, boot budget and longest life only for a ready summoner, since the status sends them only then",
+  Object.fromEntries(
+    PROVIDER_QUEUES.map((queue) => {
+      const set = providerAll.screen(queue);
+      const summoner = providerAll.statuses[queue]?.summoner;
+      return [
+        queue,
+        [
+          summoner?.readiness,
+          summoner?.capabilities !== undefined,
+          set["summon: summoner readiness"],
+          set["summon: what the summoner declares"],
+        ],
+      ];
+    }),
+  ),
+  {
+    mail: ["ready", true, true, true],
+    exports: ["failed", false, true, false],
+    warming: ["pending", false, true, false],
+    alerts: ["ready", true, true, true],
+  },
+);
+/** mail's status with a readiness this version does not know, and so nothing declared. */
+const unknownReadiness = {
+  ...providerAll.statuses.mail!,
+  summoner: {
+    ...providerAll.statuses.mail!.summoner!,
+    readiness: "warming-up",
+    capabilities: undefined,
+  },
+} as unknown as SummonStatusDto;
+checkEqual(
+  "a readiness this version does not know still shows (as its raw string), with nothing declared; and without the tab, nothing of the summoner",
+  [
+    ["summon: summoner readiness", "summon: what the summoner declares"].map(
+      (name) =>
+        providerAll.screen("mail", { summon: unknownReadiness })[
+          name as GateName
+        ],
+    ),
+    ["summon: summoner readiness", "summon: what the summoner declares"].map(
+      (name) => providerAll.screen("mail", { summon: null })[name as GateName],
+    ),
+  ],
+  [
+    [true, false],
+    [false, false],
+  ],
+);
+
+// The panel's Test connection: every condition, one at a time, on mail.
+checkEqual(
+  "the Summon panel's Test connection, per queue: offered where the summoner's provider has a preflight (each Cumulus, ready or not), not for the plain summoner",
+  PROVIDER_QUEUES.map(
+    (queue) => providerAll.screen(queue)["summon: Test connection"],
+  ),
+  [true, true, true, false],
+);
+const mailStatus = providerAll.statuses.mail!;
+checkEqual(
+  "on mail it needs all of them: taken away one at a time, providers.read (a map without it closes it even with the list cached), providers.validate, readOnly, features.providers, the status's providerId and the listed provider's preflight each close it",
+  {
+    all: providerAll.screen("mail")["summon: Test connection"],
+    noRead: providerNoRead.screen("mail")["summon: Test connection"],
+    refusedRead: providerRefuseRead.screen("mail")["summon: Test connection"],
+    // A map without `providers.read` closes it even with the list cached.
+    readNotInMap: providerAll.screen("mail", {
+      queue: {
+        ...providerAll.maps.mail!,
+        actions: {
+          ...providerAll.maps.mail!.actions,
+          "providers.read": false,
+        },
+      },
+    })["summon: Test connection"],
+    noValidate: providerNoValidate.screen("mail")["summon: Test connection"],
+    refusedValidate:
+      providerRefuseValidate.screen("mail")["summon: Test connection"],
+    readOnly: providerReadOnly.screen("mail")["summon: Test connection"],
+    noFeature: providerAll.screen("mail", {
+      meta: {
+        ...providerAll.meta,
+        features: { ...providerAll.meta.features, providers: false },
+      },
+    })["summon: Test connection"],
+    noProviderId: providerAll.screen("mail", {
+      summon: {
+        ...mailStatus,
+        summoner: { ...mailStatus.summoner!, providerId: undefined },
+      },
+    })["summon: Test connection"],
+    noPreflight: providerAll.screen("mail", {
+      providers: providerAll.listed?.map((item) => ({
+        ...item,
+        preflight: false,
+      })),
+    })["summon: Test connection"],
+  },
+  {
+    all: true,
+    noRead: false,
+    refusedRead: false,
+    readNotInMap: false,
+    noValidate: false,
+    refusedValidate: false,
+    readOnly: false,
+    noFeature: false,
+    noProviderId: false,
+    noPreflight: false,
+  },
+);
+checkEqual(
+  "and without providers.read the panel reads nothing: mail's map lacks it or says no, GET /providers is 404 (not routed) or 403, and the tab and the readiness stay",
+  [providerNoRead, providerRefuseRead].map((host) => [
+    host.list.status,
+    can(host.maps.mail!, "providers.read"),
+    host.screen("mail")["panel=summon"],
+    host.screen("mail")["summon: summoner readiness"],
+  ]),
+  [
+    [404, false, true, true],
+    [403, false, true, true],
+  ],
+);
+
+// The memory host at the top grants every read untargeted and no mutation:
+// its Providers entry is there, and its cards offer no Test connection.
+const memoryProviders = await get<ProviderListDto>("/providers");
+const memoryValidate = await send(
+  "POST",
+  providerPath(PROVIDER_IDS.ready, "/validate"),
+);
+checkEqual(
+  "the memory host: the Providers entry and 200 from GET /providers (the registry is the process's, so it lists these five too), no Test connection on a card, and 403 on the request",
+  [
+    gates.mail["Providers: nav and /providers"],
+    memoryProviders.status,
+    memoryProviders.body.providers.map((item) => item.id),
+    screenGates({
+      meta,
+      sections,
+      boot,
+      provider: memoryProviders.body.providers.find(
+        (item) => item.id === PROVIDER_IDS.ready,
+      ),
+    })["providers: Test connection"],
+    memoryValidate.status,
+  ],
+  [true, 200, Object.values(PROVIDER_IDS), false, 403],
+);
+
+// The rule for a host deciding by queue: the panel's provider buttons follow
+// the untargeted permission, as the routes do. `?queue=mail` answers
+// `providers.read` and `providers.validate` untargeted, and the POST behind
+// Test connection is authorized with the provider alone, so the button and
+// the request agree whatever `authorize` says about the queue.
+/**
+ * Grants what names queue `mail`, and nothing untargeted but `/meta` and
+ * `/meta/permissions` (`meta.read`), without which the app cannot boot.
+ */
+const onlyMail: JobsApiAuthorize = (_req, ctx) =>
+  ctx.queue === "mail" || ctx.action === "meta.read"
+    ? true
+    : { allow: false, reason: "mail only" };
+/** The same, and the provider actions untargeted too. */
+const mailAndProviders: JobsApiAuthorize = (req, ctx) =>
+  ctx.queue === undefined && ctx.action.startsWith("providers.")
+    ? true
+    : onlyMail(req, ctx);
+const providerOnlyMail = await providerHost({}, onlyMail);
+const providerMailAndProviders = await providerHost({}, mailAndProviders);
+/**
+ * On `host`, mail's `providers.read` and `providers.validate`, the Summon tab,
+ * Test connection as the host's own read leaves it and again with the full
+ * list cached (so only the map can close it), and the statuses of
+ * `GET /providers` and of the POST behind the button.
+ */
+async function mailProviderAgreement(host: ProviderHost) {
+  return [
+    can(host.maps.mail!, "providers.read"),
+    can(host.maps.mail!, "providers.validate"),
+    host.screen("mail")["panel=summon"],
+    host.screen("mail")["summon: Test connection"],
+    host.screen("mail", { providers: providerAll.listed })[
+      "summon: Test connection"
+    ],
+    host.list.status,
+    (
+      await host.call<object>(
+        "POST",
+        providerPath(PROVIDER_IDS.ready, "/validate"),
+      )
+    ).status,
+  ];
+}
+checkEqual(
+  "an authorize granting only on queue mail: mail's map answers providers.read and providers.validate untargeted, so both are refused; the tab stays, Test connection is absent even with the list cached, and the server agrees: 403 on GET /providers and on the POST",
+  await mailProviderAgreement(providerOnlyMail),
+  [false, false, true, false, false, 403, 403],
+);
+checkEqual(
+  "and where the untargeted authorize grants the provider actions: mail's map grants both, the panel offers Test connection, and the POST passes",
+  await mailProviderAgreement(providerMailAndProviders),
+  [true, true, true, true, true, 200, 200],
+);
+
+// The WeakRef trap: every instance held above is still listed at the end.
+checkEqual(
+  "at the end, GET /providers still lists every provider held above, in order",
+  [
+    heldProviders.length,
+    (
+      await providerAll.call<ProviderListDto>("GET", "/providers")
+    ).body.providers.map((item) => item.id),
+  ],
+  [5, Object.values(PROVIDER_IDS)],
+);
+
+releaseToken(CUMULUS_TOKEN);
+await cumulusPending.ready;
+for (const providerApi of providerApis) {
+  await providerApi.close();
+}
+await cumulusPlatform.close();
+// Only this run's namespace: a persistent backend is shared.
+await providerJobs.purge();
+await providerJobs.close();
 
 for (const host of [summonHostAll, summonReadOnly, summonDefault]) {
   await host.api.close();

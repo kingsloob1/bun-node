@@ -112,6 +112,12 @@ export const WorkersListScreen = onDemand(
   "Loading the workers",
 );
 
+/** `/providers`, on demand. */
+export const ProvidersScreen = onDemand(
+  async () => (await import("./providers")).ProvidersScreen,
+  "Loading the providers",
+);
+
 /** `/workers/:queue/:key`, on demand. */
 export const WorkerScreen = onDemand(
   async () => (await import("./workers")).WorkerScreen,
