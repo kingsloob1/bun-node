@@ -5,6 +5,7 @@ import type {
   WorkerInfo,
 } from "../drivers/index";
 import type { FacetReadiness } from "../provider/configure";
+import type { ProviderErrorKind } from "../provider/errors";
 import type { LocalAddedJob } from "../queue/BunQueue";
 import type { Logger } from "../shared/logger";
 import type { SummonClaim } from "./claim";
@@ -26,6 +27,7 @@ import type {
   SummonResult,
   SummonSkipReason,
   SummonStatus,
+  UnitStatus,
   WatchedSummon,
 } from "./types";
 import process from "node:process";
@@ -37,8 +39,9 @@ import {
 } from "../drivers/index";
 import { facetReadiness, providerSecrets } from "../provider/configure";
 import { providerCallContext } from "../provider/context";
-import { redactingLogger } from "../provider/redact";
-import { registerProvider } from "../provider/version";
+import { providerErrorFacts } from "../provider/errors";
+import { redactingLogger, textRedactor } from "../provider/redact";
+import { registerProvider, warnUnmappedThrow } from "../provider/version";
 import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
 import { MAX_TIMER_MS } from "../queue/BunQueueWorker";
 import { setReservedState } from "../queue/windows";
@@ -66,6 +69,7 @@ import {
   rollBudget,
   SUMMON_MARKER,
 } from "./marker";
+import { RUN_SUMMONED_DEFAULTS } from "./worker";
 
 /**
  * The summon controller: watches one queue and summons compute when it has
@@ -214,13 +218,21 @@ function nonNegativeInt(name: string, value: number): number {
   return value;
 }
 
-/** A short, secret-free name for a thrown value: its error name or code, never its message. */
+/**
+ * A short, secret-free name for a thrown value, never its message: a
+ * `ProviderError`'s `platformCode`, else its `PROVIDER_<KIND>` code; any other
+ * error's code, else its name.
+ */
 function errorDetail(error: unknown): string {
   if (error instanceof SummonTimeoutError) {
     return "timeout";
   }
   if (error instanceof ProviderNotReadyError) {
     return error.detail;
+  }
+  const provider = providerErrorFacts(error);
+  if (provider !== undefined) {
+    return provider.platformCode ?? provider.code;
   }
   if (error instanceof Error) {
     const code = (error as { code?: unknown }).code;
@@ -260,6 +272,44 @@ class ProviderNotReadyError extends Error {
     );
     this.name = "ProviderNotReadyError";
   }
+}
+
+/**
+ * How a failed attempt is treated (plugins §6.5): the kind of the
+ * `ProviderError` the call threw — or its `ready` rejected with — with the
+ * wait the platform asked for, and whether it was one at all. Anything else is
+ * `transient`, as every failure was before provider errors existed.
+ */
+function classify(failure: unknown): {
+  /** How it is treated. */
+  kind: ProviderErrorKind;
+  /** The platform's requested wait, for `throttled` and `quota`. */
+  retryAfterMs?: number;
+  /** Whether the provider said so: a `ProviderError`, not an unmapped throw. */
+  mapped: boolean;
+} {
+  const facts = providerErrorFacts(
+    failure instanceof ProviderNotReadyError ? failure.cause : failure,
+  );
+  if (facts === undefined) {
+    return { kind: "transient", mapped: false };
+  }
+  return {
+    kind: facts.kind,
+    mapped: true,
+    ...((facts.kind === "throttled" || facts.kind === "quota") &&
+    facts.retryAfterMs !== undefined
+      ? { retryAfterMs: facts.retryAfterMs }
+      : {}),
+  };
+}
+
+/** A lost attempt the summoner may explain, and its `lost` event, held back until it has. */
+interface LostAttempt {
+  /** The attempt. */
+  attempt: PendingSummon;
+  /** Its `lost` event, announced once `status()` has answered (or failed). */
+  event: SummonEventPayload;
 }
 
 /**
@@ -456,6 +506,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #warnedNotReady = false;
   /** Whether `#adoptError` has been logged by a triggered check; every check still throws it. */
   #loggedAdoptError = false;
+  /** Whether the one `warn` about a shutdown grace under `runSummoned`'s `shutdownBuffer` was logged. */
+  #warnedGrace = false;
+  /** Lost attempts being explained by the summoner's `status()`; `close()` waits for them. */
+  readonly #explaining = new Set<Promise<void>>();
   /** The policy with its defaults. */
   #policy!: ResolvedPolicy;
   /** Turns an attempt id into the platform's dedupe key. */
@@ -588,6 +642,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
       return;
     }
+    this.#warnShortGrace();
 
     if (this.#policy.poll !== false) {
       this.#pollTimer = setInterval(() => {
@@ -641,6 +696,40 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
         )
       : DEFAULT_DEMAND_CAP;
+  }
+
+  /**
+   * One `warn`, once per controller, when the platform's grace after its stop
+   * signal is shorter than `runSummoned`'s `shutdownBuffer` (plugins §7.1):
+   * the worker stops claiming that long before a deadline, and a platform
+   * that kills sooner after a signal can cut off a job the buffer was meant
+   * to protect. For every provider, `defineSummoner` included — its default
+   * grace (10 s) is above the buffer, so only a grace the user set can warn —
+   * and never for a signal of `"none"`, where no grace applies. Only a live
+   * controller warns (an inert one summons nothing), on the real
+   * capabilities: at construction, or when a late provider's are adopted.
+   */
+  #warnShortGrace(): void {
+    if (this.#pending !== undefined) {
+      return;
+    }
+    const { signal, graceMs, graceMaxMs } = this.#capabilities.shutdown;
+    const buffer = RUN_SUMMONED_DEFAULTS.shutdownBuffer;
+    if (this.#warnedGrace || signal === "none" || graceMs >= buffer) {
+      return;
+    }
+    this.#warnedGrace = true;
+    this.#logger.warn(
+      `the summoner's platform allows ${graceMs}ms after its stop signal, less than runSummoned's ${buffer}ms shutdownBuffer: a job in flight at the signal may be killed before it settles; raise the platform's grace if it allows`,
+      {
+        provider: this.#summoner.provider.name,
+        kind: this.#summoner.provider.kind,
+        signal,
+        graceMs,
+        shutdownBuffer: buffer,
+        ...(graceMaxMs === undefined ? {} : { graceMaxMs }),
+      },
+    );
   }
 
   /** Every option, checked, with its default. */
@@ -1293,8 +1382,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (written === null) {
       return { action: "skipped", reason: "contended", demand };
     }
-    this.#announce(events);
-    void this.#explainLost(lost);
+    this.#announceSettled(events, lost);
     this.#released = false;
     this.#zeroSince = undefined;
 
@@ -1496,6 +1584,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#adoptError = error;
       throw error;
     }
+    this.#warnShortGrace();
   }
 
   /** The controller's logger, redacting the summoner's declared secrets and credential shapes. */
@@ -1570,12 +1659,35 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     now: number,
     retryAfterMs?: number,
     countsTowardCircuit = true,
-  ): void {
+    quiet = false,
+  ): boolean {
     if (countsTowardCircuit) {
       marker.failures++;
       marker.lossStreak = (marker.lossStreak ?? 0) + 1;
     }
-    this.#penalize(marker, now, retryAfterMs, countsTowardCircuit);
+    return this.#penalize(
+      marker,
+      now,
+      retryAfterMs,
+      countsTowardCircuit,
+      quiet,
+    );
+  }
+
+  /**
+   * Counts a failure that opens the circuit at once: a provider's `auth` or
+   * `misconfigured` error (plugins §6.5). It raises what the circuit reads —
+   * `failures`, and the `lossStreak` a late loss raises it to — to at least
+   * `circuit.failures`, as a run of failures would have. So the circuit
+   * behaves as one opened by count: after `resetAfter` it is half-open (the
+   * next failure, a late loss included, reopens it at once), and a
+   * registration or a proven success closes it as usual.
+   */
+  #failAtOnce(marker: SummonMarker, now: number): boolean {
+    const threshold = this.#policy.circuit.failures;
+    marker.failures = Math.max(marker.failures + 1, threshold);
+    marker.lossStreak = Math.max((marker.lossStreak ?? 0) + 1, threshold);
+    return this.#penalize(marker, now, undefined, true, true);
   }
 
   /**
@@ -1603,13 +1715,18 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     this.#penalize(marker, now, undefined, true);
   }
 
-  /** The backoff after a failure, and the circuit once enough have run. */
+  /**
+   * The backoff after a failure — at least `retryAfterMs` — and the circuit
+   * once enough have run. Answers whether it opened the circuit, and logs it
+   * unless `quiet`: `#record` logs once its write has landed.
+   */
   #penalize(
     marker: SummonMarker,
     now: number,
     retryAfterMs: number | undefined,
     countsTowardCircuit: boolean,
-  ): void {
+    quiet = false,
+  ): boolean {
     const wait = Math.max(
       backoffFor(Math.max(1, marker.failures), this.#policy.backoff),
       retryAfterMs ?? 0,
@@ -1620,12 +1737,21 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       marker.failures >= this.#policy.circuit.failures
     ) {
       marker.circuitOpenUntil = now + this.#policy.circuit.resetAfter;
-      this.#logger.error("summon circuit open: too many consecutive failures", {
-        failures: marker.failures,
-        until: marker.circuitOpenUntil,
-        kind: this.#summoner.provider.kind,
-      });
+      if (!quiet) {
+        this.#circuitOpened(marker);
+      }
+      return true;
     }
+    return false;
+  }
+
+  /** The `error` for a circuit opened by a run of failures. */
+  #circuitOpened(marker: SummonMarker): void {
+    this.#logger.error("summon circuit open: too many consecutive failures", {
+      failures: marker.failures,
+      until: marker.circuitOpenUntil,
+      kind: this.#summoner.provider.kind,
+    });
   }
 
   /**
@@ -1651,8 +1777,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       version,
     );
     if (written !== null) {
-      this.#announce(events);
-      void this.#explainLost(lost);
+      this.#announceSettled(events, lost);
     }
   }
 
@@ -1712,41 +1837,82 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     });
   }
 
+  /** Whether a lost attempt can be explained: the summoner has `status()`, and the attempt has handles to ask about. */
+  #explainable(attempt: PendingSummon): boolean {
+    return (
+      this.#pending === undefined &&
+      this.#facet.status !== undefined &&
+      attempt.handles !== undefined &&
+      attempt.handles.length > 0
+    );
+  }
+
+  /**
+   * Announces a settled check's events, except the `lost` event of each
+   * attempt the summoner can explain: those are announced by
+   * {@link #explainLost}, in the background (where `close()` can wait for
+   * it), with the explanation when there is one.
+   */
+  #announceSettled(
+    events: readonly SummonEventPayload[],
+    lost: readonly PendingSummon[],
+  ): void {
+    const held = new Map<string, PendingSummon>(
+      lost
+        .filter((attempt) => this.#explainable(attempt))
+        .map((attempt) => [attempt.id, attempt]),
+    );
+    const explain: LostAttempt[] = [];
+    const now: SummonEventPayload[] = [];
+    for (const event of events) {
+      const attempt = event.outcome === "lost" ? held.get(event.id) : undefined;
+      if (attempt === undefined) {
+        now.push(event);
+      } else {
+        held.delete(event.id);
+        explain.push({ attempt, event: { ...event } });
+      }
+    }
+    this.#announce(now);
+    if (explain.length === 0) {
+      return;
+    }
+    const run = this.#explainLost(explain).finally(() => {
+      this.#explaining.delete(run);
+    });
+    this.#explaining.add(run);
+  }
+
   /**
    * For attempts just declared lost: asks the platform why, once, when the
    * summoner can say (`status`), and cancels a unit still pending so it
-   * cannot start late (`cancel`). Best effort, after the write that declared
-   * them lost, so only one controller asks.
+   * cannot start late (`cancel`). After the write that declared them lost,
+   * so only one controller asks.
+   *
+   * The first unit's `detail` (`"CannotPullContainerError"`, `"OOMKilled"`)
+   * is the explanation (plugins §7.3): it becomes the attempt's `lost`
+   * event's `detail`, and `last.detail` while `last` is still this attempt.
+   * The event is held back until then, and announced whatever `status()`
+   * does — with the explanation, or without one when it had none, threw or
+   * timed out. Best effort: never rejects.
    */
-  async #explainLost(lost: readonly PendingSummon[]): Promise<void> {
+  async #explainLost(lost: readonly LostAttempt[]): Promise<void> {
     const facet = this.#facet;
-    if (this.#pending !== undefined || facet.status === undefined) {
-      return;
-    }
-    for (const attempt of lost) {
-      if (!attempt.handles || attempt.handles.length === 0) {
-        continue;
-      }
+    for (const { attempt, event } of lost) {
+      let units: readonly UnitStatus[] = [];
       try {
-        const units = await this.#call(
+        const answered = await this.#call(
           async (context) => await facet.status!(attempt.handles!, context),
           attempt.id,
         );
-        const detail = units.find((unit) => unit.detail)?.detail;
-        if (detail !== undefined) {
-          this.#logger.warn("lost summon attempt explained", {
-            id: attempt.id,
-            detail,
-          });
-        }
-        const stillPending = units
-          .filter((unit) => unit.state === "pending")
-          .map((unit) => unit.handle);
-        if (stillPending.length > 0 && facet.cancel !== undefined) {
-          await this.#call(
-            async (context) => await facet.cancel!(stillPending, context),
-            attempt.id,
-          );
+        units = Array.isArray(answered) ? answered : [];
+        const found = units.find(
+          (unit) => typeof unit.detail === "string" && unit.detail.length > 0,
+        )?.detail;
+        if (found !== undefined) {
+          const detail = this.#redactDetail(found);
+          event.detail = detail;
+          await this.#writeLostDetail(attempt.id, detail);
         }
       } catch (error) {
         this.#logger.warn("could not explain a lost summon attempt", {
@@ -1754,7 +1920,69 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           error,
         });
       }
+      this.#announce([event]);
+      const stillPending = units
+        .filter((unit) => unit?.state === "pending")
+        .map((unit) => unit.handle);
+      if (stillPending.length > 0 && facet.cancel !== undefined) {
+        try {
+          await this.#call(
+            async (context) => await facet.cancel!(stillPending, context),
+            attempt.id,
+          );
+        } catch (error) {
+          this.#logger.warn("could not cancel a lost summon attempt's units", {
+            id: attempt.id,
+            error,
+          });
+        }
+      }
     }
+  }
+
+  /**
+   * Writes a lost attempt's explanation onto `last.detail`, while `last` is
+   * still that attempt's `lost`: a later outcome is newer news, and is left
+   * alone. Against a fresh read, retried like any result.
+   */
+  async #writeLostDetail(id: string, detail: string): Promise<void> {
+    for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
+      const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
+      const { marker, version, unreadable, newer } = readMarker(
+        entry,
+        Date.now(),
+      );
+      if (
+        unreadable ||
+        newer !== undefined ||
+        marker.last?.id !== id ||
+        marker.last.outcome !== "lost"
+      ) {
+        return;
+      }
+      marker.last = { ...marker.last, detail };
+      if (
+        (await setReservedState(
+          this.#driver,
+          this.#ref,
+          SUMMON_MARKER,
+          marker,
+          version,
+        )) !== null
+      ) {
+        return;
+      }
+    }
+  }
+
+  /**
+   * A detail from the summoner — an `unavailable` reason, a `platformCode`, a
+   * unit's `detail` — with its declared secrets and the usual credential
+   * shapes redacted (plugins §13.3), since it is stored on the marker and
+   * served to the UI.
+   */
+  #redactDetail(detail: string): string {
+    return textRedactor(providerSecrets(this.#summoner))(detail);
   }
 
   /** Calls the summoner under `summonTimeout`, with a context whose signal aborts at it. */
@@ -1801,6 +2029,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * released when its worker registers, or `lost` — and only then counted
    * toward backoff and the circuit — once `until` passes. A throw or an
    * `unavailable` answer removes the attempt at once.
+   *
+   * **A `ProviderError` says how the failure counts** (plugins §6.5), whether
+   * the call threw it or the provider's `ready` rejected with it: `throttled`
+   * is `unavailable`, backed off at least `retryAfterMs` and not counted
+   * toward the circuit; `quota` is `unavailable` and counted; `auth` and
+   * `misconfigured` are `failed` and open the circuit at once, with one
+   * `error` naming the provider; `conflict` is `failed`, counted, with one
+   * `error` saying the provider is not a pure function of its key. Anything
+   * else — a plain `Error` included — is `transient`: `failed` and counted,
+   * with one `warn` per plugin provider that it should map it. The detail is
+   * the `platformCode`, else the `PROVIDER_<KIND>` code.
    */
   async #record(
     id: string,
@@ -1809,20 +2048,35 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     result: SummonResult | undefined,
     failure: unknown,
   ): Promise<SummonOutcomeKind> {
+    const timedOut = failure instanceof SummonTimeoutError;
+    const notReady = failure instanceof ProviderNotReadyError;
+    const mapping =
+      failure === undefined || timedOut ? undefined : classify(failure);
+    const refused = mapping?.kind === "throttled" || mapping?.kind === "quota";
     const outcome: SummonOutcomeKind =
-      result === undefined ? "failed" : result.status;
+      result !== undefined ? result.status : refused ? "unavailable" : "failed";
     const handles =
       result !== undefined && "handles" in result ? result.handles : undefined;
-    const detail =
+    const raw =
       result?.status === "unavailable"
         ? result.reason
         : failure === undefined
           ? undefined
           : errorDetail(failure);
+    const detail = raw === undefined ? undefined : this.#redactDetail(raw);
+    const retryAfterMs =
+      result?.status === "unavailable"
+        ? result.retryAfterMs
+        : mapping?.retryAfterMs;
+    const opensAtOnce =
+      mapping?.kind === "auth" || mapping?.kind === "misconfigured";
     const kind = this.#summoner.provider.kind;
-    const timedOut = failure instanceof SummonTimeoutError;
+    // The marker as written, when the answer's write opened the circuit:
+    // logged once it landed.
+    let opened: SummonMarker | undefined;
 
     let recorded = false;
+    let written = false;
     for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
       const now = Date.now();
       const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
@@ -1838,6 +2092,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         break;
       }
       const pending = marker.pending[index]!;
+      opened = undefined;
       if (timedOut) {
         // A call that timed out may still have started the unit: the
         // attempt stays on its way until it registers, or until its `until`
@@ -1845,11 +2100,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         // new attempt now could start a second worker.
       } else if (outcome === "failed" || outcome === "unavailable") {
         marker.pending.splice(index, 1);
-        this.#fail(
-          marker,
-          now,
-          result?.status === "unavailable" ? result.retryAfterMs : undefined,
-        );
+        const open = opensAtOnce
+          ? this.#failAtOnce(marker, now)
+          : this.#fail(
+              marker,
+              now,
+              retryAfterMs,
+              mapping?.kind !== "throttled",
+              true,
+            );
+        opened = open ? marker : undefined;
       } else if (handles !== undefined && handles.length > 0) {
         pending.handles = [...handles];
       }
@@ -1869,6 +2129,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         )) !== null
       ) {
         recorded = true;
+        written = true;
         break;
       }
     }
@@ -1880,13 +2141,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
 
     // A provider that was not ready was warned about once, not per attempt.
-    if (failure !== undefined && !(failure instanceof ProviderNotReadyError)) {
-      this.#logger.error("summoner call failed", {
-        id,
-        kind,
-        error: failure,
-      });
+    if (failure !== undefined && !notReady) {
+      if (refused) {
+        this.#logger.warn(
+          "summoner call refused: the platform is throttling or over quota; recorded as unavailable",
+          { id, kind, error: failure },
+        );
+      } else {
+        this.#logger.error("summoner call failed", {
+          id,
+          kind,
+          error: failure,
+        });
+      }
+      if (mapping !== undefined && !mapping.mapped) {
+        warnUnmappedThrow(this.#summoner.provider, this.#logger, failure);
+      }
     }
+    this.#providerVerdict(mapping, id, detail, written ? opened : undefined);
     this.#announce([
       {
         id,
@@ -1899,6 +2171,60 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       },
     ]);
     return outcome;
+  }
+
+  /**
+   * The `error`s a failed attempt's kind calls for, once its answer is
+   * written: `auth` and `misconfigured` name the provider and say the circuit
+   * is open (whenever the write opened it); `conflict` names the provider's
+   * bug; a circuit opened by a run of failures is logged as always.
+   */
+  #providerVerdict(
+    /** The failure's kind, or `undefined` for a result or a timeout. */
+    mapping: ReturnType<typeof classify> | undefined,
+    /** The attempt. */
+    id: string,
+    /** Its detail. */
+    detail: string | undefined,
+    /** The marker as written, when the answer opened the circuit. */
+    opened: SummonMarker | undefined,
+  ): void {
+    const provider = this.#summoner.provider;
+    const fields = {
+      id,
+      provider: provider.name,
+      kind: provider.kind,
+      ...(detail === undefined ? {} : { detail }),
+    };
+    switch (mapping?.kind) {
+      case "auth":
+      case "misconfigured":
+        this.#logger.error(
+          `compute provider ${provider.name} reported ${
+            mapping.kind === "auth"
+              ? "its credentials rejected"
+              : "its config invalid for the platform"
+          } (PROVIDER_${mapping.kind.toUpperCase()}): ${
+            opened === undefined
+              ? "its answer was not recorded, so the circuit is unchanged"
+              : "the summon circuit is open at once, until it resets or is reset"
+          }`,
+          opened === undefined
+            ? fields
+            : { ...fields, until: opened.circuitOpenUntil },
+        );
+        return;
+      case "conflict":
+        this.#logger.error(
+          `compute provider ${provider.name} reported a conflict (PROVIDER_CONFLICT): its request was not a pure function of its key, which is a bug in the provider`,
+          fields,
+        );
+        break;
+      default:
+    }
+    if (opened !== undefined) {
+      this.#circuitOpened(opened);
+    }
   }
 
   /** Scale style: sets the platform's count to zero. */
@@ -2217,7 +2543,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
   /**
    * Stops the triggers and waits for a check in flight, including its
-   * summoner call (bounded by `summonTimeout`), and for the `summon` events
+   * summoner call (bounded by `summonTimeout`), for lost attempts the
+   * summoner is still explaining (each `status()` and `cancel()` bounded the
+   * same way), and for the `summon` events
    * it published (for at most `summonTimeout` more; one `warn` if they are
    * still in flight). Leaves the marker as it is. Idempotent.
    */
@@ -2249,6 +2577,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#logger.warn("summon events unsubscribe failed", { error });
     });
     await this.#chain;
+    // Lost attempts still being explained announce their events when the
+    // summoner answers; each call is bounded by `summonTimeout`.
+    await Promise.all([...this.#explaining]);
     // The last check's events, before whoever closes the driver does — but
     // bounded, like the summoner call, by `summonTimeout`: a publish that
     // never settles (a Redis client queueing commands while it reconnects)

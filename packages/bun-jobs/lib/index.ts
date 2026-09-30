@@ -484,6 +484,9 @@ export {
   type NotifierFollowSource,
 } from "./notifier";
 
+/** What a compute provider throws when its platform did not answer normally. Also at `@kingsleyweb/bun-jobs/provider`. */
+export { ProviderError, type ProviderErrorKind } from "./provider/errors";
+
 export type { BackoffWarningFields } from "./queue/backoff";
 /* ------------------------------------------------------------------ *
  * The queue — producers, consumers and the job they exchange.
