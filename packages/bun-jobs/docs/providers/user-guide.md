@@ -219,6 +219,14 @@ by default, since they disclose infrastructure (see
 is told a provider's id as `provider`, so a host can allow "Test connection"
 on some providers only.
 
+**The list holds providers weakly.** A provider used as a queue's summoner
+is kept alive by that queue's controller, so it is always listed. One
+configured only to be listed (never used to summon) is listed only while
+your code keeps it reachable from something still in use: the jobs context,
+a summon policy, a module export that is read later. A module-level constant
+that nothing reads again can be collected, and the provider then disappears
+from the list.
+
 ## 7. Troubleshooting by error kind
 
 A provider reports a platform failure as a `ProviderError` of one of six
