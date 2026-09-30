@@ -10,6 +10,7 @@ import type {
   ProviderErrorKind,
   SummonCapabilities,
   SummonFacet,
+  SummonResult,
   UnitStatus,
 } from "../../lib/provider/index";
 import { join } from "node:path";
@@ -701,12 +702,17 @@ describe("a provider's ready rejecting with a ProviderError", () => {
     const { summoner } = rejecting(
       () => new ProviderError("the region's API is down", "transient"),
     );
-    const summon = controller({ summoner });
+    // A minute's backoff, so it cannot have run out by the time it is read.
+    const summon = controller({
+      summoner,
+      backoff: { initial: 60_000, max: 60_000 },
+    });
+    const before = Date.now();
     expect(await summon.check()).toMatchObject({ outcome: "failed" });
     const status = await summon.status();
     expect(status.failures).toBe(1);
     expect(status.circuitOpenUntil).toBeUndefined();
-    expect(status.backoffUntil).toBeNumber();
+    expect(status.backoffUntil).toBeGreaterThanOrEqual(before + 60_000);
     expect(status.last?.detail).toBe("PROVIDER_TRANSIENT");
   });
 
@@ -982,5 +988,531 @@ describe("the short-grace warn", () => {
     expect(graceWarnings(logs)).toEqual([]);
     await summon.check();
     expect(graceWarnings(logs)).toHaveLength(1);
+  });
+});
+
+/** Every string a log line carries: its message, fields, error, and the error's cause chain. */
+function logText(logs: LogEvent[]): string {
+  const parts: string[] = [];
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 8 || value === null || value === undefined) {
+      return;
+    }
+    if (typeof value === "string") {
+      parts.push(value);
+      return;
+    }
+    if (typeof value !== "object" || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    if (value instanceof Error) {
+      parts.push(value.message, value.stack ?? "");
+      walk(value.cause, depth + 1);
+    }
+    for (const inner of Object.values(value)) {
+      walk(inner, depth + 1);
+    }
+  };
+  for (const event of logs) {
+    parts.push(event.message);
+    walk(event.fields, 0);
+    walk(event.error, 0);
+    walk(event.bindings, 0);
+  }
+  return parts.join("\n");
+}
+
+/** A `defineSummoner` summoner that answers `result` to every call. */
+function answering(result: SummonResult) {
+  return defineSummoner({ kind: "answers", invoke: async () => result });
+}
+
+/** The longest detail the controller stores. */
+const DETAIL_MAX = 128;
+
+describe("review round 2: retryAfterMs is bounded", () => {
+  /** What a clamp caps a wait at under QUIET: the larger of backoff.max (5) and circuit.resetAfter. */
+  const RESET = 120_000;
+
+  it("clamps a throttled ProviderError's huge retryAfterMs to max(backoff.max, circuit.resetAfter), with one warn", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner, name } = throwing(
+      () => new ProviderError("slow down", "throttled", { retryAfterMs: 1e12 }),
+    );
+    const summon = controller({
+      summoner,
+      logger,
+      circuit: { failures: 5, resetAfter: RESET },
+    });
+    expect(await summon.check()).toMatchObject({ outcome: "unavailable" });
+    const after = Date.now();
+    const status = await summon.status();
+    expect(status.backoffUntil).toBeLessThanOrEqual(after + RESET);
+    expect(status.backoffUntil).toBeGreaterThan(after + RESET - 5_000);
+    // A second clamped value in the same controller says nothing more.
+    await summon.reset();
+    await summon.check();
+    const clamped = logged(logs, "warn", "clamped");
+    expect(clamped).toHaveLength(1);
+    expect(clamped[0]!.fields).toMatchObject({
+      provider: name,
+      retryAfterMs: 1e12,
+      clampedTo: RESET,
+    });
+  });
+
+  it("clamps quota, and a same-shaped error from another copy of the package, the same way", async () => {
+    for (const thrown of [
+      new ProviderError("limit", "quota", { retryAfterMs: 1e12 }),
+      Object.assign(new Error("foreign"), {
+        kind: "throttled",
+        code: "PROVIDER_THROTTLED",
+        retryAfterMs: 1e12,
+      }),
+    ]) {
+      const { controller } = await setup();
+      const { summoner } = throwing(() => thrown);
+      const summon = controller({
+        summoner,
+        circuit: { failures: 5, resetAfter: RESET },
+      });
+      expect(await summon.check()).toMatchObject({ outcome: "unavailable" });
+      expect((await summon.status()).backoffUntil).toBeLessThanOrEqual(
+        Date.now() + RESET,
+      );
+    }
+  });
+
+  it("clamps a returned unavailable result's retryAfterMs too", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: answering({
+        status: "unavailable",
+        reason: "no capacity",
+        retryAfterMs: 1e12,
+      }),
+      circuit: { failures: 5, resetAfter: RESET },
+    });
+    await summon.check();
+    expect((await summon.status()).backoffUntil).toBeLessThanOrEqual(
+      Date.now() + RESET,
+    );
+  });
+
+  it("negative control: a retryAfterMs within the cap is honoured as given, and nothing warns", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner } = throwing(
+      () =>
+        new ProviderError("slow down", "throttled", { retryAfterMs: 60_000 }),
+    );
+    const summon = controller({
+      summoner,
+      logger,
+      circuit: { failures: 5, resetAfter: RESET },
+    });
+    const before = Date.now();
+    await summon.check();
+    const until = (await summon.status()).backoffUntil!;
+    expect(until).toBeGreaterThanOrEqual(before + 60_000);
+    expect(until).toBeLessThan(before + RESET);
+    expect(logged(logs, "warn", "clamped")).toEqual([]);
+  });
+
+  it("uses backoff.max as the cap when it is the larger", async () => {
+    const { controller } = await setup();
+    const { summoner } = throwing(
+      () => new ProviderError("slow down", "throttled", { retryAfterMs: 1e12 }),
+    );
+    const summon = controller({
+      summoner,
+      backoff: { initial: 5, max: 600_000 },
+      circuit: { failures: 5, resetAfter: RESET },
+    });
+    await summon.check();
+    const after = Date.now();
+    const until = (await summon.status()).backoffUntil!;
+    expect(until).toBeLessThanOrEqual(after + 600_000);
+    expect(until).toBeGreaterThan(after + RESET);
+  });
+});
+
+describe("review round 2: a non-finite retryAfterMs on a returned result", () => {
+  for (const retryAfterMs of [Number.NaN, Infinity, -1]) {
+    it(`${retryAfterMs} is dropped, and the marker keeps its failures, budget and epoch`, async () => {
+      const { controller, marker } = await setup();
+      const summon = controller({
+        summoner: answering({
+          status: "unavailable",
+          reason: "no capacity",
+          retryAfterMs,
+        }),
+      });
+      await summon.check();
+      const first = await marker();
+      expect(first.backoffUntil).toBeNumber();
+      await Bun.sleep(15);
+      await summon.check();
+      const status = await summon.status();
+      expect(status.failures).toBe(2);
+      expect(status.budget?.hour).toBe(2);
+      expect((await marker()).epoch).toBe(first.epoch);
+    });
+  }
+
+  it("negative control: a finite retryAfterMs is kept", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: answering({
+        status: "unavailable",
+        reason: "no capacity",
+        retryAfterMs: 60_000,
+      }),
+    });
+    const before = Date.now();
+    await summon.check();
+    expect((await summon.status()).backoffUntil).toBeGreaterThanOrEqual(
+      before + 60_000,
+    );
+  });
+});
+
+describe("review round 2: the refused warn redacts", () => {
+  const SECRET = "s3cr3t-token-value-1234";
+
+  it("keeps a declared secret in a throttled error's message and cause out of the logs", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner } = throwing(
+      () =>
+        new ProviderError(`throttled for token ${SECRET}`, "throttled", {
+          cause: new Error(`upstream said no to ${SECRET}`),
+        }),
+      { secrets: true },
+    );
+    await controller({ summoner, logger }).check();
+    expect(logged(logs, "warn", "summoner call refused")).toHaveLength(1);
+    expect(logText(logs)).not.toContain(SECRET);
+  });
+
+  it("negative control: with no secret declared the same text reaches the log, so the check can see it", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner } = throwing(
+      () =>
+        new ProviderError(`throttled for token ${SECRET}`, "throttled", {
+          cause: new Error(`upstream said no to ${SECRET}`),
+        }),
+    );
+    await controller({ summoner, logger }).check();
+    expect(logText(logs)).toContain(SECRET);
+  });
+});
+
+describe("review round 2: details are capped", () => {
+  it("cuts a long unavailable reason to 128 characters, ending in an ellipsis", async () => {
+    const { controller, events } = await setup();
+    const summon = controller({
+      summoner: answering({ status: "unavailable", reason: "X".repeat(500) }),
+    });
+    await summon.check();
+    const detail = (await summon.status()).last?.detail ?? "";
+    expect(detail).toHaveLength(DETAIL_MAX);
+    expect(detail.endsWith("…")).toBe(true);
+    expect(events.at(-1)?.detail).toBe(detail);
+  });
+
+  it("negative control: a reason of exactly 128 characters is kept whole", async () => {
+    const { controller } = await setup();
+    const reason = "Y".repeat(DETAIL_MAX);
+    const summon = controller({
+      summoner: answering({ status: "unavailable", reason }),
+    });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe(reason);
+  });
+
+  it("negative control: a code-shaped platformCode of 64 characters is kept whole", async () => {
+    const { controller } = await setup();
+    const code = "C".repeat(64);
+    const { summoner } = throwing(
+      () => new ProviderError("x", "transient", { platformCode: code }),
+    );
+    const summon = controller({ summoner });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe(code);
+  });
+
+  it("cuts a unit's long detail from status() the same way", async () => {
+    const { controller, events } = await setup();
+    const base = defineSummoner({
+      kind: "explain",
+      bootBudget: 100,
+      invoke: async () => ({ status: "started", handles: ["unit-1"] }),
+    });
+    const summoner = {
+      ...base,
+      summon: {
+        ...base.summon,
+        status: async (): Promise<readonly UnitStatus[]> => [
+          { handle: "unit-1", state: "failed", detail: "Z".repeat(500) },
+        ],
+      },
+    };
+    const summon = controller({ summoner, backoff: { initial: 60_000 } });
+    await summon.check();
+    await Bun.sleep(150);
+    await summon.check();
+    await summon.close();
+    const lost = events.find((event) => event.outcome === "lost");
+    expect(lost?.detail).toHaveLength(DETAIL_MAX);
+    expect(lost?.detail?.endsWith("…")).toBe(true);
+    expect((await summon.status()).last?.detail).toBe(lost?.detail);
+  });
+});
+
+describe("review round 2: an unavailable result's reason is redacted", () => {
+  const SECRET = "s3cr3t-token-value-1234";
+
+  /** A plugin with a declared secret that answers `unavailable` with `reason`. */
+  function declining(reason: string, secret: boolean) {
+    const provider = defineComputeProvider({
+      name: `test-errors-reason-${++unique}`,
+      version: "1.0.0",
+      kind: "reason",
+      apiVersion: { core: "0.1", summon: "0.1" },
+      config: toStandardSchema<{ token: string }>((input) => ({
+        value: input as { token: string },
+      })),
+      ...(secret ? { secrets: ["token"] } : {}),
+      summon: (): SummonFacet => ({
+        capabilities: CAPABILITIES,
+        summon: async () => ({ status: "unavailable", reason }),
+      }),
+    });
+    return provider({ token: SECRET });
+  }
+
+  it("keeps a declared secret out of last.detail and the event", async () => {
+    const { controller, events } = await setup();
+    const summon = controller({
+      summoner: declining(`no capacity for ${SECRET}`, true),
+    });
+    await summon.check();
+    const detail = (await summon.status()).last?.detail ?? "";
+    expect(detail).toStartWith("no capacity for ");
+    expect(detail).not.toContain(SECRET);
+    expect(events.at(-1)?.detail).toBe(detail);
+  });
+
+  it("negative control: undeclared, the same reason is kept as given", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: declining(`no capacity for ${SECRET}`, false),
+    });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe(
+      `no capacity for ${SECRET}`,
+    );
+  });
+});
+
+describe("review round 2: a run of throttled answers warns once", () => {
+  /** The `warn`s about a run of throttled answers. */
+  function throttleWarnings(logs: LogEvent[]): LogEvent[] {
+    return logged(logs, "warn", "throttled");
+  }
+
+  it("warns once when consecutive throttled answers reach circuit.failures", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner, name } = throwing(
+      () => new ProviderError("slow down", "throttled"),
+    );
+    const summon = controller({
+      summoner,
+      logger,
+      circuit: { failures: 3, resetAfter: 60_000 },
+    });
+    for (let i = 0; i < 5; i++) {
+      expect(await summon.check()).toMatchObject({ outcome: "unavailable" });
+      await Bun.sleep(15);
+    }
+    const warned = throttleWarnings(logs);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]!.message).toContain("3 summon attempts in a row");
+    expect(warned[0]!.fields).toMatchObject({ provider: name, throttled: 3 });
+    // Still never the circuit: the warn changes nothing else.
+    expect((await summon.status()).circuitOpenUntil).toBeUndefined();
+  });
+
+  it("negative control: another outcome in between resets the run, so nothing warns", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    const { summoner } = throwing((call) =>
+      call === 3
+        ? new Error("boom")
+        : new ProviderError("slow down", "throttled"),
+    );
+    const summon = controller({
+      summoner,
+      logger,
+      circuit: { failures: 3, resetAfter: 60_000 },
+    });
+    const outcomes: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const result = await summon.check();
+      outcomes.push(
+        result.action === "summoned" ? result.outcome : result.action,
+      );
+      await Bun.sleep(15);
+    }
+    expect(outcomes).toEqual([
+      "unavailable",
+      "unavailable",
+      "failed",
+      "unavailable",
+      "unavailable",
+    ]);
+    expect(throttleWarnings(logs)).toEqual([]);
+  });
+
+  it("warns again for a new run after another outcome ends the first", async () => {
+    const { controller } = await setup();
+    const { logger, events: logs } = createTestLogger();
+    // throttled, throttled (warn), failed (reset), throttled, throttled (warn).
+    const { summoner } = throwing((call) =>
+      call === 3
+        ? new Error("boom")
+        : new ProviderError("slow down", "throttled"),
+    );
+    const summon = controller({
+      summoner,
+      logger,
+      circuit: { failures: 2, resetAfter: 60_000 },
+    });
+    for (let i = 0; i < 5; i++) {
+      await summon.check();
+      await Bun.sleep(15);
+    }
+    expect(throttleWarnings(logs)).toHaveLength(2);
+  });
+});
+
+describe("review round 2: undeclared credential shapes never reach the detail", () => {
+  /** What must not survive into a detail from the probes below. */
+  const LEAKS = ["u:pw@", ":pw@", "sk_live_abc123", "abc.def.ghi"];
+
+  /** Asserts that neither `last.detail` nor the last event's carries a leak. */
+  async function clean(
+    summon: SummonController,
+    events: SummonEventPayload[],
+  ): Promise<string> {
+    const detail = (await summon.status()).last?.detail ?? "";
+    for (const leak of LEAKS) {
+      expect(detail).not.toContain(leak);
+      expect(events.at(-1)?.detail ?? "").not.toContain(leak);
+    }
+    expect(events.at(-1)?.detail).toBe(detail);
+    return detail;
+  }
+
+  it("redacts URL userinfo in an unavailable reason", async () => {
+    const { controller, events } = await setup();
+    const summon = controller({
+      summoner: answering({
+        status: "unavailable",
+        reason: "postgres://u:pw@h quota",
+      }),
+    });
+    await summon.check();
+    const detail = await clean(summon, events);
+    expect(detail).toContain("quota");
+  });
+
+  it("negative control: a reason with no credential shape is kept as given", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: answering({
+        status: "unavailable",
+        reason: "postgres quota reached on host h",
+      }),
+    });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe(
+      "postgres quota reached on host h",
+    );
+  });
+
+  it("refuses a thrown code that is not code-shaped, falling back to the error's name", async () => {
+    const { controller, events } = await setup();
+    const summon = controller({
+      summoner: defineSummoner({
+        invoke: async () => {
+          throw Object.assign(new Error("x"), {
+            code: "token=sk_live_abc123 postgres://u:pw@h",
+          });
+        },
+      }),
+    });
+    await summon.check();
+    expect(await clean(summon, events)).toBe("Error");
+  });
+
+  it("negative control: a code-shaped code is the detail as before", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: defineSummoner({
+        invoke: async () => {
+          throw Object.assign(new Error("x"), { code: "ERR_SOCKET.closed:1" });
+        },
+      }),
+    });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe("ERR_SOCKET.closed:1");
+  });
+
+  it('refuses a name that is not code-shaped, with no code, falling back to "error"', async () => {
+    const { controller, events } = await setup();
+    const summon = controller({
+      summoner: defineSummoner({
+        invoke: async () => {
+          const error = new Error("x");
+          error.name = "Bearer abc.def.ghi";
+          throw error;
+        },
+      }),
+    });
+    await summon.check();
+    expect(await clean(summon, events)).toBe("error");
+  });
+
+  it("negative control: a code-shaped name is the detail as before", async () => {
+    const { controller } = await setup();
+    const summon = controller({
+      summoner: defineSummoner({
+        invoke: async () => {
+          throw new RangeError("x");
+        },
+      }),
+    });
+    await summon.check();
+    expect((await summon.status()).last?.detail).toBe("RangeError");
+  });
+
+  it("refuses a platformCode that is not code-shaped, falling back to PROVIDER_<KIND>", async () => {
+    const { controller, events } = await setup();
+    const { summoner } = throwing(
+      () =>
+        new ProviderError("x", "transient", {
+          platformCode: "token=sk_live_abc123 postgres://u:pw@h",
+        }),
+    );
+    const summon = controller({ summoner });
+    await summon.check();
+    expect(await clean(summon, events)).toBe("PROVIDER_TRANSIENT");
   });
 });

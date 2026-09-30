@@ -105,6 +105,12 @@ const DEFAULT_SUMMON_TIMEOUT = 30_000;
  * at most this long before the attempt was claimed (a clock-skew allowance).
  */
 const START_TIME_SLACK = 5_000;
+/**
+ * The longest detail stored on the marker and sent in events: a longer one
+ * (a provider passing a response body as its `platformCode`) is cut to this,
+ * ending in `…`.
+ */
+const DETAIL_MAX = 128;
 /** How many times a result is written back against a fresh read before giving up. */
 const RECORD_ATTEMPTS = 3;
 /** The fewest attempts the watch list holds, whatever the policy. */
@@ -219,9 +225,25 @@ function nonNegativeInt(name: string, value: number): number {
 }
 
 /**
+ * What a code or a name must look like to be used as a detail: an
+ * identifier, not prose. A value outside it (a credential, a URL, a response
+ * body) is refused, and the next choice is taken.
+ */
+const CODE_SHAPED = /^[\w.:-]{1,64}$/;
+
+/** `value` if it is a code-shaped string, else `undefined`. */
+function codeShaped(value: unknown): string | undefined {
+  return typeof value === "string" && CODE_SHAPED.test(value)
+    ? value
+    : undefined;
+}
+
+/**
  * A short, secret-free name for a thrown value, never its message: a
  * `ProviderError`'s `platformCode`, else its `PROVIDER_<KIND>` code; any other
- * error's code, else its name.
+ * error's code, else its name, else `"error"`. A `platformCode`, code or name
+ * is taken only if it is code-shaped (`[A-Za-z0-9_.:-]{1,64}`), so a
+ * credential or a response body passed as one never becomes the detail.
  */
 function errorDetail(error: unknown): string {
   if (error instanceof SummonTimeoutError) {
@@ -232,11 +254,14 @@ function errorDetail(error: unknown): string {
   }
   const provider = providerErrorFacts(error);
   if (provider !== undefined) {
-    return provider.platformCode ?? provider.code;
+    return codeShaped(provider.platformCode) ?? provider.code;
   }
   if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code;
-    return typeof code === "string" && code.length > 0 ? code : error.name;
+    return (
+      codeShaped((error as { code?: unknown }).code) ??
+      codeShaped(error.name) ??
+      "error"
+    );
   }
   return "error";
 }
@@ -508,6 +533,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #loggedAdoptError = false;
   /** Whether the one `warn` about a shutdown grace under `runSummoned`'s `shutdownBuffer` was logged. */
   #warnedGrace = false;
+  /** Whether the one `warn` about a `retryAfterMs` clamped to the longest wait was logged. */
+  #warnedRetryClamp = false;
+  /**
+   * How many of this controller's attempts in a row were `throttled`, which
+   * the circuit never counts; any other outcome resets it. In memory, per
+   * controller: see {@link #noteThrottled}.
+   */
+  #throttledRun = 0;
   /** Lost attempts being explained by the summoner's `status()`; `close()` waits for them. */
   readonly #explaining = new Set<Promise<void>>();
   /** Whether a background validation (`#kickProvider`) is running, so kicks never pile up. */
@@ -1489,8 +1522,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         ms,
       );
     });
+    const settling = pending.settle();
     try {
-      const facet = await Promise.race([pending.settle(), timeout]);
+      const facet = await Promise.race([settling, timeout]);
       this.#warnedNotReady = false;
       return facet;
     } catch (error) {
@@ -1502,8 +1536,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           ? error
           : new ProviderNotReadyError(errorDetail(error), error);
       if (failure.detail === READY_TIMED_OUT) {
-        // Not memoized: the next attempt starts a fresh validation.
-        pending.abandon();
+        // Not memoized: the next attempt starts a fresh validation. Only the
+        // one this wait joined: another controller's newer one is left alone.
+        pending.abandon(settling);
       }
       this.#noteNotReady(failure);
       return failure;
@@ -1556,7 +1591,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
       timer.unref?.();
     });
-    Promise.race([pending.settle(), timeout])
+    const settling = pending.settle();
+    Promise.race([settling, timeout])
       .then(
         () => {
           this.#warnedNotReady = false;
@@ -1567,7 +1603,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
               ? error
               : new ProviderNotReadyError(errorDetail(error), error);
           if (failure.detail === READY_TIMED_OUT) {
-            pending.abandon();
+            pending.abandon(settling);
           }
           if (pending.fatal() === undefined) {
             this.#noteNotReady(failure);
@@ -1760,9 +1796,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     countsTowardCircuit: boolean,
     quiet = false,
   ): boolean {
+    // `#record` validates and clamps a platform's wait (with its warn); the
+    // clamp here only guarantees no path stores more.
     const wait = Math.max(
       backoffFor(Math.max(1, marker.failures), this.#policy.backoff),
-      retryAfterMs ?? 0,
+      Math.min(retryAfterMs ?? 0, this.#longestWait()),
     );
     marker.backoffUntil = Math.max(marker.backoffUntil ?? 0, now + wait);
     if (
@@ -2021,7 +2059,50 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * served to the UI.
    */
   #redactDetail(detail: string): string {
-    return textRedactor(providerSecrets(this.#summoner))(detail);
+    const redacted = textRedactor(providerSecrets(this.#summoner))(detail);
+    return redacted.length > DETAIL_MAX
+      ? `${redacted.slice(0, DETAIL_MAX - 1)}…`
+      : redacted;
+  }
+
+  /**
+   * The longest wait a failure may impose, in ms: the larger of
+   * `backoff.max` and `circuit.resetAfter`. A platform's `retryAfterMs` above
+   * it is clamped, so a `throttled` answer — which never opens the circuit —
+   * cannot stop summoning for years.
+   */
+  #longestWait(): number {
+    return Math.max(this.#policy.backoff.max, this.#policy.circuit.resetAfter);
+  }
+
+  /**
+   * A platform's `retryAfterMs`, from a `ProviderError` or an `unavailable`
+   * result, made safe to store: dropped unless it is a finite number of 0 or
+   * more (`NaN` would serialise as `null` and make the marker unreadable),
+   * and clamped to {@link #longestWait}, with one `warn` per controller the
+   * first time a value is clamped.
+   */
+  #retryAfter(value: number | undefined): number | undefined {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      return undefined;
+    }
+    const cap = this.#longestWait();
+    if (value <= cap) {
+      return value;
+    }
+    if (!this.#warnedRetryClamp) {
+      this.#warnedRetryClamp = true;
+      this.#providerLogger().warn(
+        `the summoner asked to wait ${value}ms before the next attempt; clamped to ${cap}ms, the larger of backoff.max and circuit.resetAfter`,
+        {
+          provider: this.#summoner.provider.name,
+          kind: this.#summoner.provider.kind,
+          retryAfterMs: value,
+          clampedTo: cap,
+        },
+      );
+    }
+    return cap;
   }
 
   /** Calls the summoner under `summonTimeout`, with a context whose signal aborts at it. */
@@ -2103,10 +2184,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           ? undefined
           : errorDetail(failure);
     const detail = raw === undefined ? undefined : this.#redactDetail(raw);
-    const retryAfterMs =
+    const retryAfterMs = this.#retryAfter(
       result?.status === "unavailable"
         ? result.retryAfterMs
-        : mapping?.retryAfterMs;
+        : mapping?.retryAfterMs,
+    );
     const opensAtOnce =
       mapping?.kind === "auth" || mapping?.kind === "misconfigured";
     const kind = this.#summoner.provider.kind;
@@ -2182,7 +2264,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // A provider that was not ready was warned about once, not per attempt.
     if (failure !== undefined && !notReady) {
       if (refused) {
-        this.#logger.warn(
+        // Through the redacting logger: the error's message and `cause` are
+        // the provider's, and may carry a declared secret.
+        this.#providerLogger().warn(
           "summoner call refused: the platform is throttling or over quota; recorded as unavailable",
           { id, kind, error: failure },
         );
@@ -2197,6 +2281,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         warnUnmappedThrow(this.#summoner.provider, this.#logger, failure);
       }
     }
+    this.#noteThrottled(mapping?.kind === "throttled");
     this.#providerVerdict(mapping, id, detail, written ? opened : undefined);
     this.#announce([
       {
@@ -2264,6 +2349,34 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (opened !== undefined) {
       this.#circuitOpened(opened);
     }
+  }
+
+  /**
+   * Counts consecutive `throttled` outcomes, and logs one `warn` when a run
+   * reaches `circuit.failures`: throttling is not counted toward the
+   * circuit, and without a `retryAfterMs` its backoff never grows, so a
+   * platform that keeps throttling is retried at `backoff.initial` (bounded
+   * only by the cooldown and the budget) and this is the only sign of it.
+   * Any other outcome ends the run, and the next run can warn again. Per
+   * controller and in memory: controllers sharing a queue count separately.
+   */
+  #noteThrottled(throttled: boolean): void {
+    if (!throttled) {
+      this.#throttledRun = 0;
+      return;
+    }
+    this.#throttledRun++;
+    if (this.#throttledRun !== this.#policy.circuit.failures) {
+      return;
+    }
+    this.#providerLogger().warn(
+      `the platform has throttled ${this.#throttledRun} summon attempts in a row; throttling is not counted toward the circuit, so attempts go on at the backoff (from ${this.#policy.backoff.initial}ms), within the cooldown and the budget`,
+      {
+        provider: this.#summoner.provider.name,
+        kind: this.#summoner.provider.kind,
+        throttled: this.#throttledRun,
+      },
+    );
   }
 
   /** Scale style: sets the platform's count to zero. */
