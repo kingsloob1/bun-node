@@ -52,6 +52,7 @@ const RUN_ALONE: string[] = [];
 const SLOW_FIRST = [
   "06-browser/runner-and-job-tools.ts",
   "06-browser/workers.ts",
+  "06-browser/providers.ts",
   "06-browser/api-docs.ts",
   "06-browser/live-events.ts",
 ];
