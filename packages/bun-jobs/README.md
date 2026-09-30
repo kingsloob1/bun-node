@@ -3235,6 +3235,10 @@ if (response.status === 429) {
   the stop signal may be killed before it settles. `defineSummoner`'s default
   grace (10 s) never does, and a `signal` of `"none"` has no grace to check.
 
+Example: [`02-queues/custom-provider.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/custom-provider.ts), a provider over HTTP whose
+`ready` rejects and then times out, with `misconfigured`, `transient` and
+`throttled` answers injected into its fake platform.
+
 ### Testing a provider: `./provider/testing`
 
 A provider, or a `defineSummoner` summoner, is tested with no cloud
@@ -3269,6 +3273,10 @@ The report lists every check by a stable id (`summon.dedupe.same-key-one-unit`)
 and renders as a Markdown checklist with `report.toMarkdown()`. Passing means
 the provider behaves correctly against its own fake, not that the platform
 behaves as the fake does.
+
+Example: [`02-queues/custom-provider.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/custom-provider.ts), a provider and its fake
+([`02-queues/helpers/nimbus-platform.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/nimbus-platform.ts))
+conforming, and a copy calling the global `fetch` failing `summon.routing.through-ctx-fetch`.
 
 ## BunRunner
 
