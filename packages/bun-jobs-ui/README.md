@@ -904,6 +904,16 @@ reason, a destructive one that needs its id typed), the WebSocket panels and
 `runner-actions.integration.test.ts` render them under happy-dom against a
 real `createJobsApi` in `runner` mode with a real local `BunRunner`.
 
+The Providers screen and the Summon panel's summoner have theirs in
+`examples/bun-jobs-ui/06-browser/providers.ts`: the cards with their
+readiness, facts and config schema; Test connection passing, passing with a
+warning, refused by the platform (with its code) and on a bad config; the
+read-only and opt-in gates; and a provider whose config validates
+asynchronously reading "Pending", then "Ready" on the card and on the Summon
+panel, each on its own refetch. `__tests__/app/pkg/providers.integration.test.ts`
+renders the Providers screen under happy-dom against a real `createJobsApi`
+and real configured providers.
+
 ### Loaded on demand
 
 The Overview ships in the entry bundle, except its Runners and Workers
