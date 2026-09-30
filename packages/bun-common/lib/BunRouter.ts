@@ -342,6 +342,9 @@ export type UnmountedRouter = Router & {
  * - a `Request` — used as-is
  * - a `string` or `URL` — a `GET` to that path or URL
  * - a `RequestInit` carrying a `url` — any method, headers and body
+ *
+ * Whichever form, a URL's `#fragment` is dropped, as an HTTP client drops it:
+ * a served request never carries one, so `"/p/a#1/v"` is `/p/a` here too.
  */
 /**
  * The callback form of `group()`/`domain()`, as the implementation receives it.
@@ -405,8 +408,30 @@ export function toNativeRequest(
 ): Request {
   if (isRequestLike(input)) {
     // Already a request: `init` would have to rebuild it (and re-read its
-    // body), so it is ignored rather than silently half-applied.
-    return input;
+    // body), so it is ignored rather than silently half-applied. Rebuilt only
+    // to drop a fragment, carrying its method, headers, body and signal over.
+    const url = withoutFragment(input.url);
+    if (url === input.url) {
+      return input;
+    }
+    // Only a `Request` of the current global's own class can be rebuilt: the
+    // constructor used is that same class, so it accepts its own signal and
+    // body. A foreign one — happy-dom's in a DOM test, or a native one once a
+    // shim replaced the global — passes through as before, fragment and all:
+    // this function is synchronous, so it cannot re-read a foreign body into a
+    // new request. The router still matches on its path alone.
+    if (!(input instanceof Request)) {
+      return input;
+    }
+    // A used request is not rebuilt either. The Fetch spec throws on
+    // rebuilding one; Bun instead gives it an empty body (oven-sh/bun#44307),
+    // which would hand the route a body that looks unread. As-is, it behaves
+    // exactly as a used request without a fragment: `BunRequest` reads a used
+    // body as no body, and the router matches on the path before the `#`.
+    if (input.bodyUsed) {
+      return input;
+    }
+    return new Request(url, input);
   }
 
   // The init form is the only object form carrying a `url`; any other
@@ -422,8 +447,20 @@ export function toNativeRequest(
     : init;
 
   // `Request` accepts a string or another `Request`, not a `URL`.
-  const url = new URL(String(target), origin).href;
+  const url = withoutFragment(new URL(String(target), origin).href);
   return new Request(url, options);
+}
+
+/**
+ * `url` without its fragment, as an HTTP client puts it on the wire: a client
+ * never sends `#…`, so `Bun.serve` never sees one, but `new Request(url).url`
+ * keeps it (as the Fetch spec requires). The first `#` of a serialized URL is
+ * always the fragment's: one in the path or query is percent-encoded (`%23`),
+ * and stays part of them.
+ */
+function withoutFragment(url: string): string {
+  const hashStart = url.indexOf("#");
+  return hashStart === -1 ? url : url.slice(0, hashStart);
 }
 
 export class BunRouter<
@@ -4132,13 +4169,23 @@ export class BunRouter<
       : undefined;
   }
 
+  /**
+   * The path part of a request target: everything before the first `?` or
+   * `#`. A fragment ends the path as a query does — Express routes on
+   * `parseurl(req).pathname`, which excludes both — so a `req.url` carrying
+   * one still matches on its path alone.
+   */
   protected getRequestPathFromRequestURL(requestUrl: string) {
-    let requestPath = requestUrl;
-    if (requestUrl.includes("?")) {
-      requestPath = requestUrl.slice(0, requestUrl.indexOf("?"));
-    }
+    const queryStart = requestUrl.indexOf("?");
+    const hashStart = requestUrl.indexOf("#");
+    const pathEnd =
+      queryStart === -1
+        ? hashStart
+        : hashStart === -1
+          ? queryStart
+          : Math.min(queryStart, hashStart);
 
-    return requestPath;
+    return pathEnd === -1 ? requestUrl : requestUrl.slice(0, pathEnd);
   }
 
   getCacheKey(options: RouteMatchMethodOptionType) {
