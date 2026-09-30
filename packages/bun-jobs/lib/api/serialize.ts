@@ -36,6 +36,7 @@ import type {
 import type { EventWire } from "./ws/events";
 import { explicitKeys } from "../queue/jobDefaults";
 import { normalizeExecutionMode } from "../runner/config";
+import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
 import { JOB_INCLUDES } from "./contract/constants";
 
 /**
@@ -837,58 +838,8 @@ export function toEventDto(
   return options.event ? options.event(dto, event, req) : dto;
 }
 
-/**
- * The words that make a fact's key look like a credential, singular or
- * plural. A backstop must fail safe, so a key is dropped when any of its
- * words is one of these (see {@link factKeyWords}) **or** when the whole key,
- * lower case with its separators removed, ends with one: `apiKey`, `api_key`,
- * `apikey`, `sessiontoken`, `clientsecret` and `dbPassword` are all dropped,
- * while `keyspace` and `tokenizerModel` are served. `monkey` is dropped too,
- * which errs the safe way.
- */
-const CREDENTIAL_WORDS = [
-  "token",
-  "secret",
-  "key",
-  "password",
-  "passwd",
-  "pwd",
-  "credential",
-  "auth",
-  "authorization",
-  "bearer",
-  "private",
-  "cookie",
-  "session",
-] as const;
-
-/** One of {@link CREDENTIAL_WORDS}, as a whole word, optionally plural. */
-const CREDENTIAL_WORD = new RegExp(`^(?:${CREDENTIAL_WORDS.join("|")})s?$`);
-
-/** A key, joined, that ends with one of {@link CREDENTIAL_WORDS}. */
-const CREDENTIAL_SUFFIX = new RegExp(`(?:${CREDENTIAL_WORDS.join("|")})s?$`);
-
-/**
- * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@` — in a
- * fact's value: a connection string with its password in it.
- */
-const URL_USERINFO = /:\/\/[^/\s]*@/;
-
 /** Fact keys that name a machine, served only with `exposeHosts`. */
 const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
-
-/**
- * A fact key's words, lower case: split at camelCase humps and at `_`, `-`,
- * `.` and spaces (`secretArn` → `secret`, `arn`; `API_KEY` → `api`, `key`).
- */
-function factKeyWords(key: string): string[] {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-    .split(/[\s_.-]+/)
-    .filter((word) => word.length > 0)
-    .map((word) => word.toLowerCase());
-}
 
 /**
  * Whether a summoner's `describe()` fact may be served. The contract says
@@ -908,11 +859,7 @@ export function isServableFact(
   if (typeof value !== "string") {
     return false;
   }
-  const words = factKeyWords(key);
-  if (
-    words.some((word) => CREDENTIAL_WORD.test(word)) ||
-    CREDENTIAL_SUFFIX.test(words.join(""))
-  ) {
+  if (isCredentialKey(key)) {
     return false;
   }
   if (URL_USERINFO.test(value)) {

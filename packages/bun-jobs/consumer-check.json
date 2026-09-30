@@ -30,6 +30,7 @@
         "defineSummoner",
         "runSummoned",
         "ConfigError",
+        "ProviderError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
       ],
@@ -65,6 +66,7 @@
         "DemandCounts",
         "SummonPolicy",
         "Summoner",
+        "ProviderErrorKind",
         "SummonRequest",
         "SummonResult",
         "SummonCheckResult",
@@ -135,6 +137,59 @@
       "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
     },
     {
+      "spelling": "@kingsleyweb/bun-jobs/provider",
+      "values": [
+        "defineComputeProvider",
+        "COMPUTE_PROVIDER_API",
+        "COMPUTE_PROVIDER",
+        "CONFIGURED_PROVIDER",
+        "toStandardSchema",
+        "ConfigError",
+        "JobsError",
+        "ProviderError"
+      ],
+      "types": [
+        "ConfiguredProvider",
+        "ProviderCheck",
+        "ProviderSetupContext",
+        "ProviderCallContext",
+        "ProviderIdentity",
+        "ProviderApiVersions",
+        "SummonFacet",
+        "SummonCapabilities",
+        "SummonDedupe",
+        "UnitStatus",
+        "SummonRequest",
+        "SummonResult",
+        "SummonReleaseRequest",
+        "SummonReason",
+        "QueueDemand",
+        "StandardSchemaV1",
+        "Logger",
+        "LoggerLike",
+        "LogLevel",
+        "ProviderErrorKind"
+      ],
+      "snippet": "const p = m.defineComputeProvider({ name: \"x\", version: \"1.0.0\", kind: \"x\", apiVersion: { core: \"0.1\", summon: \"0.1\" }, summon: () => ({ capabilities: { style: \"launch\", dedupe: { kind: \"none\" }, passes: \"argv\", bootBudgetMs: 1, shutdown: { signal: \"SIGTERM\", graceMs: 1 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async () => ({ status: \"started\", handles: [] }) }) });\nexport type _p = Expect<IsAny<typeof p>>;\nconst configured = p();\nexport const _facet: t.SummonFacet = configured.summon;\nexport const _ready: Promise<void> = configured.ready;\ninterface AcmeConfig { region: string; apiToken: string }\nconst acme = m.defineComputeProvider({ name: \"@acme/bun-jobs-provider-acme\", version: \"1.0.0\", kind: \"acme\", apiVersion: { core: m.COMPUTE_PROVIDER_API.core, summon: m.COMPUTE_PROVIDER_API.summon }, config: m.toStandardSchema<AcmeConfig>((input) => ({ value: input as AcmeConfig })), secrets: [\"apiToken\"], describe: (config) => ({ region: config.region }), summon: (config, context) => {\n  const _region: string = config.region;\n  const _api: string = context.api.core;\n  return { capabilities: { style: \"scale\", dedupe: { kind: \"token\", maxLength: 64, charset: \"A-Za-z0-9-\", scope: \"region\", strict: true }, passes: \"argv\", bootBudgetMs: 60_000, shutdown: { signal: \"SIGTERM\", graceMs: 10_000 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async (request, ctx) => { const _argv: readonly string[] = request.argv; ctx.logger.info(\"summoning\", { id: request.id }); return { status: \"started\", handles: [] }; }, release: async () => {} };\n} });\nconst configuredAcme = acme({ region: \"eu\", apiToken: \"t\" });\nexport type _config = Expect<IsAny<typeof configuredAcme.config>>;\nexport const _configTyped: Equal<typeof configuredAcme.config, AcmeConfig> = true;\nexport const _checks: Promise<readonly t.ProviderCheck[]> = configuredAcme.validate();\n// Generic, so checked with their arguments rather than in \"types\".\nexport type _provider = Expect<IsAny<t.ComputeProvider<AcmeConfig>>>;\nexport type _definition = Expect<IsAny<t.ComputeProviderDefinition<AcmeConfig>>>;\nexport const _acmeTyped: t.ComputeProvider<unknown, AcmeConfig, true> = acme;\nexport const _error: t.JobsError = new m.ConfigError(\"bad config\");\nexport const _logger: (logger: t.Logger, level: t.LogLevel) => boolean = (logger, level) => logger.isLevelEnabled(level);\nconst throttled = new m.ProviderError(\"slow down\", \"throttled\", { platformCode: \"ThrottlingException\", status: 429, retryAfterMs: 1_000 });\nexport const _kind: t.ProviderErrorKind = throttled.kind;\nexport const _providerError: t.JobsError = throttled;\nexport const _platformCode: string | undefined = throttled.platformCode;\nexport const _retryAfterMs: number | undefined = throttled.retryAfterMs;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/provider/testing",
+      "values": ["runProviderConformance", "assertConformance", "fakePlatform"],
+      "types": [
+        "ConformanceReport",
+        "ConformanceCheck",
+        "FakePlatform",
+        "FakeFault",
+        "FakeUnit",
+        "FakePlatformState",
+        "FakePlatformOptions",
+        "FakeRoute",
+        "FakeUnitStart",
+        "ConformanceOptions"
+      ],
+      "snippet": "import { defineSummoner } from \"@kingsleyweb/bun-jobs/summon\";\nimport { defineComputeProvider, toStandardSchema } from \"@kingsleyweb/bun-jobs/provider\";\ninterface AcmeConfig { url: string; apiToken: string }\nconst acme = defineComputeProvider({ name: \"@acme/bun-jobs-provider-acme\", version: \"1.0.0\", kind: \"acme\", apiVersion: { core: \"0.1\", summon: \"0.1\" }, config: toStandardSchema<AcmeConfig, AcmeConfig>((input) => ({ value: input as AcmeConfig })), secrets: [\"apiToken\"], summon: (config) => ({ capabilities: { style: \"launch\", dedupe: { kind: \"token\", maxLength: 64, charset: \"A-Za-z0-9-\", scope: \"region\", strict: true }, passes: \"argv\", bootBudgetMs: 60_000, shutdown: { signal: \"SIGTERM\", graceMs: 10_000 }, maxLifetimeMs: null, enforcesLifetime: false }, summon: async (request, ctx) => { const response = await ctx.fetch(`${config.url}/v1/runs`, { method: \"POST\", body: JSON.stringify({ token: request.dedupeKey, args: request.argv }), signal: ctx.signal }); return { status: \"started\", handles: ((await response.json()) as { handles: string[] }).handles }; } }) });\nexport async function conforms(): Promise<void> {\n  const platform: t.FakePlatform = await m.fakePlatform({ \"POST /v1/runs\": async (request, state) => { const _state: t.FakePlatformState = state; const body = (await request.json()) as { token: string; args: string[] }; const earlier: readonly t.FakeUnit[] | undefined = state.recall(body.token); if (earlier) return Response.json({ deduped: true, handles: earlier.map((unit) => unit.handle) }); const unit: t.FakeUnit = state.start({ argv: body.args, token: body.token }); return Response.json({ handles: [unit.handle] }, { status: 201 }); } }, { limits: { tokenMaxLength: 64 }, faults: { throttled: (_request, fault) => Response.json({ wait: fault.retryAfterMs }, { status: 429 }) } });\n  const fault: t.FakeFault = \"capacity-200\";\n  platform.inject(fault, { times: 1, retryAfterMs: 1_000 });\n  const report: t.ConformanceReport = await m.runProviderConformance(acme, { config: { url: platform.url, apiToken: \"t\".repeat(16) }, invalidConfigs: [{ config: {}, path: \"url\" }], platform, skip: [{ id: \"summon.cas.one-call\", reason: \"slow\" }] });\n  const first: t.ConformanceCheck | undefined = report.checks[0];\n  const _level: \"must\" | \"should\" | undefined = first?.level;\n  const _markdown: string = report.toMarkdown();\n  m.assertConformance(report);\n  m.assertConformance(await m.runProviderConformance(defineSummoner({ invoke: async () => {} }), { platform }));\n  // @ts-expect-error the config must be the provider's input\n  await m.runProviderConformance(acme, { config: { nope: 1 }, platform });\n  await platform.close();\n}\nexport type _report = Expect<IsAny<Awaited<ReturnType<typeof m.runProviderConformance>>>>;\nexport type _fake = Expect<IsAny<Awaited<ReturnType<typeof m.fakePlatform>>>>;\nexport const _route: t.FakeRoute = async (_request, state) => Response.json({ handles: [state.start({ argv: [] } satisfies t.FakeUnitStart).handle] });\nexport const _fakeOptions: t.FakePlatformOptions = { limits: { tokenMaxLength: 64 } };\nexport const _options = (platform: t.FakePlatform): t.ConformanceOptions<{ url: string }> => ({ config: { url: platform.url }, platform, skip: [{ id: \"summon.cas.one-call\", reason: \"slow\" }] });"
+    },
+    {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",
       "values": ["BunQueue", "createJobsApi"]
     },
@@ -181,6 +236,16 @@
         "defineSummoner"
       ],
       "types": ["RunSummonedOptions", "SummonedExit", "SummonPolicy"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/provider",
+      "values": ["defineComputeProvider", "COMPUTE_PROVIDER_API"],
+      "types": ["ConfiguredProvider", "SummonFacet"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/provider/testing",
+      "values": ["runProviderConformance", "assertConformance", "fakePlatform"],
+      "types": ["ConformanceReport", "FakePlatform"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/drivers",

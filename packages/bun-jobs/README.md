@@ -102,6 +102,8 @@ reference.
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [Summoning a worker](#summoning-a-worker)
   - [Summon policy](#summon-policy)
+  - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
+  - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3126,7 +3128,7 @@ Examples:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `summoner` | required | A `Summoner` from `defineSummoner`, or a bare function. |
+| `summoner` | required | A `Summoner` from `defineSummoner`, a provider from `defineComputeProvider` (`@kingsleyweb/bun-jobs/provider`) called with its config, or a bare function. A hand-built object is refused: wrap its function in `defineSummoner`. |
 | `triggers` | on, on, `30_000`, `250` | `onAdd`, `events` (where events cross processes), `poll` (ms or `false`), `debounce` (ms). |
 | `bootBudget` | the summoner's (`180_000`) | How long an attempt counts as a worker on its way. |
 | `maxWorkers` | `1` | The most summoned workers at once. |
@@ -3139,7 +3141,7 @@ Examples:
 | `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
 | `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |
 | `scaleDown` | `300_000` | Scale style: how long nothing is outstanding before the count goes to 0. |
-| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long `close()` waits for `summon` events still publishing. |
+| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long an attempt waits for a provider whose config validates asynchronously (`ready`), and how long `close()` waits for `summon` events still publishing. |
 | `env` | `{}` | Static environment for every request. Never identity. |
 | `fromSummoned` | `false` | Whether the controller runs in a summoned process or runner child. |
 
@@ -3150,6 +3152,123 @@ long and in which characters `request.dedupeKey` may be) and `shutdown`. A
 request's `id` never repeats, even after the queue's state is purged, and
 everything in it but `demand` and `reason` is a pure function of that id, so a
 platform that remembers idempotency tokens can be handed it as one.
+
+### When the summoner fails: provider errors
+
+A summoner returns a result when the platform answered normally —
+`unavailable` included, for "no capacity right now" — and throws a
+`ProviderError` when it did not. Its `kind` says how the controller counts the
+failure, and its `code` is `PROVIDER_<KIND>`:
+
+```ts
+import { ProviderError } from "@kingsleyweb/bun-jobs/provider";
+
+if (response.status === 429) {
+  throw new ProviderError("RunTask is throttled", "throttled", {
+    platformCode: "ThrottlingException",
+    status: 429,
+    retryAfterMs: 5_000,
+  });
+}
+```
+
+| Kind | Outcome | Circuit | Backoff |
+|---|---|---|---|
+| `transient` (a network error, a 5xx) | `failed` | counted | the usual |
+| `throttled` (a 429, a rate limit) | `unavailable` | **not** counted | at least `retryAfterMs` |
+| `quota` (an account or regional limit) | `unavailable` | counted | at least `retryAfterMs` |
+| `auth` (credentials missing or rejected) | `failed` | **opens at once**, with an `error` naming the provider | — |
+| `misconfigured` (a missing cluster, a bad parameter) | `failed` | **opens at once**, with an `error` naming the provider | — |
+| `conflict` (a token reused with other parameters) | `failed` | counted, with an `error`: the provider's request was not a pure function of its key, a bug in the provider | the usual |
+
+- **Anything else thrown is `transient`**, a plain `Error` included: `failed`
+  and counted, exactly as before `ProviderError` existed. A provider made with
+  `defineComputeProvider` that throws one also logs one `warn` per process,
+  naming it, since it should map the failure; `defineSummoner` never does,
+  since it is your own code and each failure is already logged as an `error`.
+- **Opening at once** raises `failures` and the loss streak to
+  `circuit.failures`, as that many failures in a row would have, so after
+  `resetAfter` the circuit is half-open like any other. A registration resets
+  `failures` but **not** the loss streak, so a registered worker that then
+  dies (a late loss, which raises `failures` to the streak) reopens it at
+  once, while a failed call after the registration counts from one. Only a
+  proven success (a clean exit mark, or a watch that ends clean) clears the
+  streak; `controller.reset()` clears both.
+- **The same kinds apply to a provider's `ready`.** A config that validates
+  asynchronously and rejects with `misconfigured` or `auth` opens the circuit
+  on that check; `transient` is `failed` and counted, and `throttled` is
+  `unavailable` and only backs off, as they would from a call.
+- **A run of throttled answers warns once.** A `throttled` answer is never
+  counted toward the circuit, and without a `retryAfterMs` its backoff never
+  grows, so a platform that keeps throttling is retried at
+  `backoff.initial`, bounded only by the cooldown and the budget. When a
+  controller's attempts are throttled `circuit.failures` times in a row it
+  logs one `warn` saying so; any other outcome ends the run, and a new run
+  can warn again. The count is per controller and in memory.
+- **`retryAfterMs` is bounded.** From a `ProviderError` or an `unavailable`
+  result, a value that is not a finite number of 0 or more is ignored, and
+  one above the larger of `backoff.max` and `circuit.resetAfter` is clamped
+  to it, with one `warn` per controller: a `throttled` answer never opens the
+  circuit, so an unbounded wait would stop summoning until `reset()`.
+- **The detail** on `status().last` and on the `summon` event is the
+  `platformCode` when there is one (`ThrottlingException`), else the
+  `PROVIDER_<KIND>` code, else a plain error's `code` or name, else `error`.
+  A `platformCode`, code or name counts only if it looks like one
+  (`[A-Za-z0-9_.:-]{1,64}`); anything else falls through to the next choice.
+  Every detail from the provider — these, an `unavailable` reason, a unit's
+  `detail` — has the provider's declared secrets and the usual credential
+  shapes (a URL's password, `key=value` under a credential key, `Bearer …`, a
+  JWT) redacted, and is cut to 128 characters (ending in `…`).
+  **The detail is served to API clients, so a provider must never put a
+  credential in a `platformCode`, code, name, reason or unit detail.** A
+  code-shaped token such as `sk_live_abc123` passes the code rule and
+  matches no redaction pattern, so it would appear verbatim: only a value
+  the provider declares in `secrets` is redacted wherever it appears.
+- **A lost attempt is explained** when the summoner has `status()` and the
+  attempt has handles: the first unit's `detail`
+  (`CannotPullContainerError`, `OOMKilled`) becomes the `lost` event's detail
+  and `last.detail`. The event waits for that answer, bounded by
+  `summonTimeout`, and is announced without a detail when there is none.
+- **A short grace warns once.** A controller whose summoner declares a
+  `shutdown.graceMs` below `runSummoned`'s 7,000 ms `shutdownBuffer` (a
+  `SIGINT` with 5 s, Fly's default, say) logs one `warn`: a job in flight at
+  the stop signal may be killed before it settles. `defineSummoner`'s default
+  grace (10 s) never does, and a `signal` of `"none"` has no grace to check.
+
+### Testing a provider: `./provider/testing`
+
+A provider, or a `defineSummoner` summoner, is tested with no cloud
+credentials by the conformance kit: `fakePlatform(routes)` serves a stand-in
+for the platform's API on port 0, and `runProviderConformance(provider,
+{ config, platform })` runs every check against it (identity, config,
+capabilities, routing through `ctx.fetch`, purity, dedupe, concurrency, the
+error kinds, timeouts, scale, status and cancel, lifetime, validate, secrets)
+and ends with a real `SummonController` summoning the kit's own worker
+process, and two controllers in two processes racing for one backlog.
+
+```ts
+import { assertConformance, fakePlatform, runProviderConformance } from "@kingsleyweb/bun-jobs/provider/testing";
+
+const platform = await fakePlatform({
+  "POST /v1/runs": async (request, state) => {
+    const { token, args } = (await request.json()) as { token: string; args: string[] };
+    const earlier = state.recall(token);
+    if (earlier) return Response.json({ deduped: true, handles: earlier.map((unit) => unit.handle) });
+    return Response.json({ handles: [state.start({ argv: args, token }).handle] }, { status: 201 });
+  },
+});
+try {
+  const report = await runProviderConformance(acme, { config: { url: platform.url, apiToken: "test-token" }, platform });
+  assertConformance(report); // throws on a failed `must` check, never on a `should` warning
+} finally {
+  await platform.close();
+}
+```
+
+The report lists every check by a stable id (`summon.dedupe.same-key-one-unit`)
+and renders as a Markdown checklist with `report.toMarkdown()`. Passing means
+the provider behaves correctly against its own fake, not that the platform
+behaves as the fake does.
 
 ## BunRunner
 
