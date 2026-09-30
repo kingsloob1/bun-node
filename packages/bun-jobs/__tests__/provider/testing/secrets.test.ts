@@ -232,6 +232,34 @@ describe("summon.describe.facts warns about exactly the facts the status route d
     ]);
   });
 
+  it("warns about a value holding a credential shape, as the status route drops it", () => {
+    const shaped: Record<string, string> = {
+      note: "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+      limits: "max_tokens=4096",
+      cluster: "session-workers:prod",
+      // Negative control: ordinary values under ordinary keys pass.
+      region: "eu-west-1",
+      image: "ghcr.io/acme/worker:1.2.3",
+    };
+    const check = describeStatus(shaped);
+    expect(check.status).toBe("fail");
+    const problems = check.detail!.split("; ");
+    const warned = Object.keys(shaped).filter((key) =>
+      problems.some((problem) => problem.startsWith(`${key} `)),
+    );
+    const dropped = Object.entries(shaped)
+      .filter(([key, value]) => !isServableFact(key, value, true))
+      .map(([key]) => key);
+    expect(warned).toEqual(dropped);
+    expect(warned).toEqual(["note", "limits", "cluster"]);
+    expect(
+      describeStatus({
+        region: "eu-west-1",
+        image: "ghcr.io/acme/worker:1.2.3",
+      }).status,
+    ).toBe("pass");
+  });
+
   it("keyspace, tokenizerModel and author pass on their own", () => {
     expect(
       describeStatus({ keyspace: "a", tokenizerModel: "b", author: "c" })

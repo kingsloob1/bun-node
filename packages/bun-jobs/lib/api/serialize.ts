@@ -38,10 +38,9 @@ import type {
   SummonStatusDto,
 } from "./contract/types";
 import type { EventWire } from "./ws/events";
-import { textRedactor } from "../provider/redact";
+import { factProblem } from "../provider/redact";
 import { explicitKeys } from "../queue/jobDefaults";
 import { normalizeExecutionMode } from "../runner/config";
-import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
 import { JOB_INCLUDES } from "./contract/constants";
 
 /**
@@ -843,13 +842,6 @@ export function toEventDto(
   return options.event ? options.event(dto, event, req) : dto;
 }
 
-/**
- * The redactor's credential patterns alone (`Bearer …`, `key=value` under a
- * sensitive key, a URL's password, a JWT): a fact they would change holds a
- * credential shape, and is not served.
- */
-const CREDENTIAL_SHAPES = textRedactor([]);
-
 /** Fact keys that name a machine, served only with `exposeHosts`. */
 const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
 
@@ -869,13 +861,7 @@ export function isServableFact(
   /** Whether hosts are served (`serialize.exposeHosts`). */
   exposeHosts: boolean,
 ): boolean {
-  if (typeof value !== "string") {
-    return false;
-  }
-  if (isCredentialKey(key)) {
-    return false;
-  }
-  if (URL_USERINFO.test(value) || CREDENTIAL_SHAPES(value) !== value) {
+  if (typeof value !== "string" || factProblem(key, value) !== undefined) {
     return false;
   }
   return exposeHosts || !HOST_FACT_KEYS.has(key.toLowerCase());
