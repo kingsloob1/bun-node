@@ -1333,6 +1333,106 @@ describe("GET /providers/{id}/schema", () => {
   });
 });
 
+describe("/meta/permissions previews the provider actions untargeted", () => {
+  /** The provider actions' entries of a permissions map. */
+  function providerEntries(actions: Record<string, boolean>) {
+    return {
+      "providers.read": actions["providers.read"],
+      "providers.validate": actions["providers.validate"],
+    };
+  }
+
+  /** Every call `authorize` saw, and a harness deciding by `decide`. */
+  function scoped(decide: (context: JobsApiAuthorizeContext) => boolean): {
+    h: ReturnType<typeof api>;
+    calls: JobsApiAuthorizeContext[];
+  } {
+    const calls: JobsApiAuthorizeContext[] = [];
+    const h = api({
+      actions: WITH_PROVIDERS,
+      authorize: (_req, context) => {
+        calls.push(context);
+        return decide(context);
+      },
+    });
+    return { h, calls };
+  }
+
+  it("names no queue for providers.*, so a queue-scoped authorize agrees with the real route", async () => {
+    const make = acme({ preflight: async () => [] });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    // Refuses the provider actions whenever a queue is named, as a host that
+    // scopes by queue and knows providers name none.
+    const { h, calls } = scoped(
+      (context) =>
+        !context.action.startsWith("providers.") || context.queue === undefined,
+    );
+    const preview = await h.call("GET", "/meta/permissions?queue=mail");
+    expect(providerEntries(preview.body.actions)).toEqual({
+      "providers.read": true,
+      "providers.validate": true,
+    });
+    const previewed = calls.filter((call) =>
+      call.action.startsWith("providers."),
+    );
+    expect(previewed.every((call) => call.queue === undefined)).toBe(true);
+    // A queue-side action still names the queue in the same preview.
+    expect(calls.find((call) => call.action === "queues.read")?.queue).toBe(
+      "mail",
+    );
+    // And the real route agrees.
+    expect((await h.call("POST", path(id, "/validate"))).status).toBe(200);
+  });
+
+  it("reports providers.validate denied in the queue preview when untargeted calls are refused", async () => {
+    const make = acme({ preflight: async () => [] });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    const { h } = scoped(
+      (context) =>
+        context.action !== "providers.validate" || context.queue !== undefined,
+    );
+    const preview = await h.call("GET", "/meta/permissions?queue=mail");
+    expect(preview.body.actions["providers.validate"]).toBe(false);
+    expect((await h.call("POST", path(id, "/validate"))).status).toBe(403);
+  });
+
+  it("answers the same for providers.* with and without ?queue=, and as the routes do", async () => {
+    const make = acme({ preflight: async () => [] });
+    make(CONFIG);
+    const id = `${make.definition.name}@1.0.0~1`;
+    // Per queue: everything for "mail", nothing for another queue; and,
+    // untargeted, reading providers but not validating them.
+    const { h } = scoped((context) => {
+      if (context.queue === "mail") {
+        return true;
+      }
+      if (context.queue !== undefined) {
+        return false;
+      }
+      return context.action !== "providers.validate";
+    });
+    const untargeted = providerEntries(
+      (await h.call("GET", "/meta/permissions")).body.actions,
+    );
+    for (const queue of ["mail", "audit"]) {
+      const previewed = providerEntries(
+        (await h.call("GET", `/meta/permissions?queue=${queue}`)).body.actions,
+      );
+      expect({ queue, previewed }).toEqual({ queue, previewed: untargeted });
+    }
+    expect(untargeted).toEqual({
+      "providers.read": true,
+      "providers.validate": false,
+    });
+    // What the routes do.
+    expect((await h.call("GET", "/providers")).status).toBe(200);
+    expect((await h.call("GET", path(id, "/schema"))).status).toBe(200);
+    expect((await h.call("POST", path(id, "/validate"))).status).toBe(403);
+  });
+});
+
 describe("the providers.read and providers.validate actions", () => {
   /** One request per provider route, for an id that exists. */
   function requests(id: string): [string, string][] {

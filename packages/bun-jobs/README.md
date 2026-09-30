@@ -4648,6 +4648,10 @@ that decides by route gives the map the answer the request gets:
   (`jobs.read` untargeted → `POST /queues/:queue/jobs/lookup`, a read);
 - `events.connect` and `events.subscribe` carry `transport: "ws"` and no
   `route`, as the upgrade and a `subscribe` frame do;
+- `providers.read` and `providers.validate` never carry `queue`, even with
+  `?queue=`: their routes name a provider, not a queue, and their own
+  request-level call names neither. So a map asked for a queue answers them
+  as the provider routes will be answered;
 - no call names a job, so a rule on `jobId` cannot be previewed.
 
 #### Showing only the queues a caller may read
