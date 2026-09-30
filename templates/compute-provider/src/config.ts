@@ -86,13 +86,36 @@ function check(input: unknown): Issue[] {
       path: ["apiTokenFile"],
     });
   }
-  if (
-    config.url !== undefined &&
-    (typeof config.url !== "string" || !/^https?:\/\/[^/\s]+/.test(config.url))
-  ) {
-    issues.push({ message: "url must be an http(s) URL", path: ["url"] });
+  if (config.url !== undefined) {
+    const problem = urlProblem(config.url);
+    if (problem !== undefined) {
+      issues.push({ message: problem, path: ["url"] });
+    }
   }
   return issues;
+}
+
+/** The hosts plain `http:` may reach: this machine only (a local fake, a tunnel). */
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * What is wrong with a `url`, or `undefined`. The bearer token goes on every
+ * call, so it crosses plain HTTP only to this machine.
+ */
+function urlProblem(url: unknown): string | undefined {
+  const parsed = typeof url === "string" ? URL.parse(url) : null;
+  if (parsed === null || parsed.hostname === "") {
+    return "url must be an absolute https URL";
+  }
+  if (parsed.protocol === "https:") {
+    return undefined;
+  }
+  if (parsed.protocol === "http:") {
+    return LOOPBACK.has(parsed.hostname)
+      ? undefined
+      : `url must use https: the API token would cross the network in clear text (http is allowed only for ${[...LOOPBACK].join(", ")})`;
+  }
+  return `url must be an https URL, not ${parsed.protocol}`;
 }
 
 /**

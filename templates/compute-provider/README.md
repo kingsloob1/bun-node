@@ -23,8 +23,31 @@ The summon facet only: bun-jobs has no execute facet yet.
 1. **Copy this directory** and rename the package `bun-jobs-provider-<platform>`
    (or `@<scope>/bun-jobs-provider-<platform>`). Keep the keywords
    `bun-jobs-provider` and `bun-jobs-provider-summon`: they make it findable.
-2. **Remove `overrides` and `private`** from `package.json`. They point the
-   install at the bun-node repo's own packages; yours come from the registry.
+2. **Remove `private`** from `package.json`, and **`overrides`** once
+   `@kingsleyweb/bun-jobs` is on the registry: `overrides` points the install
+   at the bun-node repo's own packages, and works only inside that repo.
+   Until the packages are published, `@kingsleyweb/bun-jobs@2.2.x` cannot be
+   installed from a registry, so pack both from a checkout of bun-node and
+   point `overrides` at the tarballs:
+
+   ```bash
+   cd /path/to/bun-node && bun install
+   (cd packages/bun-common && bun pm pack --destination /path/to/tarballs)
+   (cd packages/bun-jobs && bun pm pack --destination /path/to/tarballs)
+   ```
+
+   ```json
+   {
+     "overrides": {
+       "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-2.2.0.tgz",
+       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-2.2.0.tgz"
+     }
+   }
+   ```
+
+   Not the checkout's directories: installed that way from outside the repo,
+   bun-common arrives without its own dependencies
+   ([oven-sh/bun#44299](https://github.com/oven-sh/bun/issues/44299)).
 3. **Identity**: `name` and `version` equal to `package.json`'s; a `kind` of
    1-24 lowercase letters, digits and dashes; `apiVersion` written as a
    literal, and repeated in `package.json`'s `"bun-jobs"` field. A test holds

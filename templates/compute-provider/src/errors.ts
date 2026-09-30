@@ -47,19 +47,35 @@ function byStatus(status: number): ProviderErrorKind {
  * never free text from the body.
  */
 function platformCodeOf(code: unknown): string | undefined {
-  return typeof code === "string" && code in BY_CODE ? code : undefined;
+  // `Object.hasOwn`, not `in`: `in` also finds `constructor`, `toString` and
+  // `__proto__` on the prototype, and a body naming one would then map to a
+  // function instead of a kind.
+  return typeof code === "string" && Object.hasOwn(BY_CODE, code)
+    ? code
+    : undefined;
 }
 
-/** `Retry-After` in ms: whole seconds, or an HTTP date. `undefined` when absent or unreadable. */
+/** RFC 9110 delay-seconds: digits only, so `0x10`, `1e3`, `1.5` and `-3` are not. */
+const DELAY_SECONDS = /^\d+$/;
+
+/**
+ * The start of an RFC 9110 HTTP-date, in each of its three forms
+ * (`Sun, 06 Nov 1994 …`, `Sunday, 06-Nov-94 …`, `Sun Nov  6 …`). Checked
+ * before `Date.parse`, which also reads `1.5` and `-3` as dates.
+ */
+const HTTP_DATE = /^[A-Z][a-z]{2,8},? /;
+
+/**
+ * `Retry-After` in ms: delay-seconds, or an HTTP-date (the time left, 0 once
+ * it has passed). `undefined` when absent or in any other form, so the
+ * controller's own backoff applies.
+ */
 function retryAfterMs(header: string | null, now: number): number | undefined {
-  if (header === null || header.trim() === "") {
-    return undefined;
+  const value = header?.trim() ?? "";
+  if (DELAY_SECONDS.test(value)) {
+    return Number(value) * 1_000;
   }
-  const seconds = Number(header);
-  if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1_000);
-  }
-  const date = Date.parse(header);
+  const date = HTTP_DATE.test(value) ? Date.parse(value) : Number.NaN;
   return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 

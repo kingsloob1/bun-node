@@ -192,7 +192,13 @@ type check. It is a standalone package like the bench ones — its own
   bun-common at `file:../../packages/…`, because neither is on a registry. Bun
   materialises a `file:` directory as a tree of per-file symlinks, so an edit
   to a package file is seen at once and a **new** file only after the next
-  `bun install` there.
+  `bun install` there. bun-common arrives through the override **without its
+  own dependencies** (a Bun behaviour: a `file:` directory that replaces a
+  transitive dependency is installed with none of its dependencies,
+  oven-sh/bun#44299), so
+  inside the repo they resolve from the root `node_modules`, an ancestor; a
+  copy outside the repo points `overrides` at packed tarballs instead (the
+  template's README, step 2).
 - **Types.** Its own `tsconfig.json` is a plugin author's: no source
   condition, so it would read bun-jobs' built `dts/`, which the repo does not
   keep. The repo checks the same files through `templates/tsconfig.json`
