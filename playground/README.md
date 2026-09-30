@@ -9,6 +9,7 @@ bun playground/index.ts                              # then open http://localhos
 cd playground && bun run dev                         # the same, restarting on file changes
 PORT=3000 bun playground/index.ts                    # another port
 PLAYGROUND_DRIVER=sqlite bun playground/index.ts     # keeps its state in playground/.data/
+PLAYGROUND_DRIVER=memory bun playground/index.ts     # nothing on disk, and no summoning
 PLAYGROUND_DRIVER=redis PLAYGROUND_URL=redis://localhost:6379/12 bun playground/index.ts
 PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
 ```
@@ -22,6 +23,14 @@ change keeps serving the old screens, whatever the browser reloads. If you
 use `bun run dev` and a UI change does not show, the same applies: stop it,
 start it again, then reload.
 
+**The default backend is `temp`**: SQLite in a file of the process's own,
+`playground/.data/temp-<pid>.db`, deleted when it stops (and, if it was
+killed before it could, by the next start). State is gone on restart, as it
+was with the old `memory` default, but another process can reach it — which
+the summoned workers below need, since the summon controller refuses the
+memory driver. `PLAYGROUND_DRIVER=memory` still works; it lists the compute
+providers but summons nothing.
+
 It listens on `127.0.0.1` only. Its API allows **every** action to anyone who
 can reach it, so never expose it.
 
@@ -29,8 +38,9 @@ can reach it, so never expose it.
 
 | Where | What |
 |---|---|
-| `/jobs` | the UI (Overview, Queues, Workers, Runners, Events, API docs) |
+| `/jobs` | the UI (Overview, Queues, Workers, Providers, Runners, Events, API docs) |
 | `/jobs-api` | the management API, with its live-events socket on the same port |
+| `/local-compute` | "Local Compute", the made-up platform the compute provider summons workers on: its API (`/local-compute/v1/…`) and a control page for its units and faults (see "Summoning and compute providers" below) |
 | `/` | redirects to `/jobs` |
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,
@@ -40,6 +50,7 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 |---|---|---|
 | `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
+| `compute` | `compute.renders.render` | **summoned**: separate processes a compute provider starts when `renders` has work, each gone again 10 s after the queue is empty; its Summon card names the attempt |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
 survives a restart of the playground and reaches every replica carrying it.
@@ -73,6 +84,7 @@ than piled onto one (each is commented where it is set):
 | `reports` | 1 at a time, 6–15 s each | an object progress (`{ step, done, of }`), a backlog |
 | `webhooks` | 2 at a time, rate-limited 20/min | retries with exponential backoff; `umbrella` always fails, so dead jobs pile up |
 | `images` | none in `api` — its only worker is `mailer.images.thumbs` (see above) | a backlog that drains slowly, one job at a time; pause that worker and it only grows |
+| `renders` | none always on — summoned on demand (`summoning.ts`) | a burst of 4–16 jobs every minute, a worker (or two) summoned for it, and back to no worker at all |
 
 Also on `emails`: two repeat series (`weekly-digest`, `daily-summary`: try
 Disable/Enable), a delayed `reminder-tomorrow`, and a flow
@@ -169,6 +181,85 @@ run's because capture attributes each `console` call to the run that made it
 | `reindex` | none | spawned; runs only when triggered; Trigger… may pass `{ "ms": 20000 }` for a long run to Kill…, or `{ "failRate": 1 }` |
 | `ping` | every 10 s, 5 s timeout | its 2–8 s of work times out about half the time, and one run in five that finishes in time throws; the Overview's Runners section counts the throws as Failed and the timeouts apart, under "Timed out / killed" |
 
+### Summoning and compute providers (`summoning.ts`, `compute/`)
+
+`renders` has **no** always-on worker. When it has work, its summon
+controller asks a **compute provider** for one, and the provider's platform
+starts a real worker process on this machine; that worker drains the queue
+and exits once there is nothing left for it.
+
+| File | What it is |
+|---|---|
+| `compute/provider.ts` | the provider, made with `defineComputeProvider` from `@kingsleyweb/bun-jobs/provider`: identity, a config schema with a JSON Schema for the config form, `apiToken` declared a secret, `describe()` facts, a `validate()` preflight, and a summon facet with `status()` and `cancel()` |
+| `compute/platform.ts` | "Local Compute", the made-up platform it talks to over HTTP (through `ctx.fetch`), served on the playground's own port under `/local-compute/v1`. A unit is `bun compute/worker.ts` with the summon's `--bun-jobs-summon-*=` arguments, and the policy's static `env` (how to reach the backend) |
+| `compute/worker.ts` | what a unit runs: a worker under `runSummoned`, which exits 10 s after the queue is empty and writes the exit mark that tells the controller the attempt ended cleanly |
+
+**Where to look:**
+
+- **Providers** (`/jobs/providers`): three instances of the one provider,
+  one per state a card can show.
+
+  | Card | Config | Readiness | Test connection |
+  |---|---|---|---|
+  | `…~1`, region `local-1` | token read from the playground's secret store, which takes 12 s to answer (`PLAYGROUND_SECRET_DELAY_MS`) | **Pending** for the first 12 s, then **Ready** | ok, with a `warn` check (units are not isolated), and the `credentials` check's detail naming the token — shown `[REDACTED]`, because `apiToken` is a declared secret |
+  | `…~2`, region `local-2` | a token the platform does not know | Ready | not ok: `auth`, `InvalidToken` |
+  | `…~3`, pool `gpu` | names a secret the store does not hold | Pending for 12 s, then **Failed** | not ok: `misconfigured`, `invalid config: apiTokenSecret` (it validates again first, so it takes 12 s) |
+
+  "Config schema" shows the served JSON Schema: the token's `default`,
+  `examples` and `x-ui-widget` in `compute/provider.ts` are gone from it.
+- **`renders` → Summon panel** (`/jobs/queues/renders`): the summoner
+  (`…~1`), its readiness — **pending** for the first 12 s, so the first
+  burst waits for it — its capabilities and facts, the attempts in flight,
+  failures, backoff, the circuit, the budget, and the last outcome. "Summon
+  now" and "Reset" work.
+- **Workers** (`/jobs/workers`): `compute.renders.render` appears under
+  `compute` while a summoned worker runs, with its summon provenance (the
+  attempt's id, `kind: local`, its mode and deadline), and is gone once it
+  exits.
+- **`/local-compute`**: the platform's own page — every unit, its pid, state,
+  exit code and detail, and buttons that queue a fault.
+
+**One cycle.** Every minute (`PLAYGROUND_SUMMON_EVERY_MS`) a burst of 4–16
+render jobs arrives. The add triggers a check, the controller summons (two
+workers when the burst is more than 8 jobs), the attempt shows as pending
+until the worker's first report **registers** it, the queue drains at two
+jobs per worker, and 10 s after the last job the worker exits (`idle`). Then
+nothing runs until the next burst.
+
+**Faults.** Before some bursts the platform is told to fail the next start,
+so the Summon panel shows how each answer is counted. The cycle, one burst a
+minute: normal, **throttled**, normal, **auth**, normal, **crash**, normal,
+**die**, and again. `PLAYGROUND_SUMMON_FAULTS=off` turns it off. Any fault
+can also be queued by hand, spent by the next start: press it on
+`/local-compute`, or
+
+```bash
+curl -X POST 'http://localhost:4000/local-compute/faults?kind=auth'
+curl -X POST 'http://localhost:4000/local-compute/faults/clear'
+```
+
+then add a job to `renders` (or press "Summon now") to spend it.
+
+| Fault | The platform answers | The Summon panel shows |
+|---|---|---|
+| `throttled` | 429, `Retry-After: 8` | last `unavailable`, detail `RateLimited`; failures **unchanged**; backoff 8 s, then a normal summon |
+| `quota` | 402 `QuotaExceeded`, `Retry-After: 20` | `unavailable`, but **counted**; backoff 20 s |
+| `auth` | 401 `TokenRevoked` | last `failed`; failures jump to 3 and the **circuit opens at once**, for a minute. Reset closes it now |
+| `misconfigured` | 404 `PoolNotFound` | as `auth` |
+| `transient` | 503 | `failed`, counted, backoff 5 s |
+| `crash` | a unit that exits 1 before its worker reports | a pending attempt that never registers; after the 20 s boot budget, **`lost`**, explained by the unit's own detail from `status()`: `ExitCode1: render worker: cannot load the GPU driver…` |
+| `die` | a unit `SIGKILL`ed after its first job | registered, then **`lost`**, detail `died`, once its grace has passed; the job it held is recovered as stalled and finished by the next worker |
+
+The policy is tighter than the defaults so a session sees all of it: a poll
+every 5 s, a 5 s cooldown, backoff from 5 s to 30 s, a circuit of 3 failures
+that half-opens after a minute, and at most 2 workers.
+
+**Stopping.** Ctrl+C (or `SIGTERM`) stops the bursts, sends every unit still
+running `SIGTERM` — `runSummoned` closes its worker and exits 0 — and
+`SIGKILL`s any that has not exited within 3 s, before the backend closes.
+Nothing outlives the playground. Killed with `SIGKILL` itself, it cannot do
+that: its units then exit on their own once idle.
+
 ## Things to try
 
 - Open the Overview after a minute: Jobs, Queues, Runners and Workers all show real numbers over the range.
@@ -195,6 +286,10 @@ run's because capture attributes each `console` call to the run that made it
 - Queues → `notifications` → Repeatables: six series, and `burst-window` counting down from five.
 - Queues → `dead-letters`: every job that died, with the queue it died in and why.
 - Try any operation from API docs → HTTP, and watch the screens follow.
+- Open Providers in the first 12 s: `…~1` and `…~3` say Pending. Then press Test connection on each of the three.
+- Open `renders` when a burst lands: a pending attempt, then registered, then a worker under `compute` on the Workers page; a minute later, no worker at all.
+- Queue `auth` on `/local-compute`, then press "Summon now" on `renders`: the circuit opens at once. Reset closes it.
+- Queue `crash`, add a job to `renders`, and watch the attempt go from pending to lost 20 s later, with the unit's own reason as its detail.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).

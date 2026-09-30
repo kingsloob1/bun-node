@@ -1,13 +1,20 @@
 import type { DriverConfig } from "@kingsleyweb/bun-jobs";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 
 /**
  * Which backend the playground runs on, chosen with `PLAYGROUND_DRIVER`.
  *
- * - `memory` (default): nothing to set up; state is gone on restart, and
- *   events are only this process's own (the badge says `events: local`).
+ * - `temp` (default): SQLite in a file of this process's own under
+ *   `playground/.data/`, deleted when the playground stops — so, like
+ *   `memory`, state is gone on restart. It is the default rather than
+ *   `memory` because summoning (`summoning.ts`) needs a backend **another
+ *   process** can reach: a summoned worker is a separate process, and the
+ *   memory driver is refused by the summon controller.
+ * - `memory`: nothing on disk at all, and events are only this process's own
+ *   (the badge says `events: local`). Summoning is skipped: the providers are
+ *   still listed, but no worker is summoned for `renders`.
  * - `file` / `sqlite`: kept in `playground/.data/`, so a restart keeps every
  *   queue, job and runner.
  * - `postgres`, `mysql`, `mariadb`, `redis`, `mongodb`: need
@@ -16,6 +23,7 @@ import process from "node:process";
  *   `bun scripts/setup-databases.ts` provisions local servers.
  */
 export type PlaygroundBackend =
+  | "temp"
   | "memory"
   | "file"
   | "sqlite"
@@ -31,9 +39,65 @@ const PREFIX = "bun_node_playground_";
 /** Where the file and SQLite backends keep their data. */
 const DATA_DIR = join(import.meta.dir, ".data");
 
-/** The backend named by `PLAYGROUND_DRIVER` (default `memory`). */
+/** The backend named by `PLAYGROUND_DRIVER` (default `temp`). */
 export function playgroundBackend(): PlaygroundBackend {
-  return (process.env.PLAYGROUND_DRIVER ?? "memory") as PlaygroundBackend;
+  return (process.env.PLAYGROUND_DRIVER ?? "temp") as PlaygroundBackend;
+}
+
+/** Whether the backend can be reached from another process, which summoning needs. */
+export function isCrossProcess(): boolean {
+  return playgroundBackend() !== "memory";
+}
+
+/**
+ * The `temp` backend's file: named after this process, so two playgrounds in
+ * one checkout never share one, and a stale one is recognisable.
+ */
+const TEMP_DB = join(DATA_DIR, `temp-${process.pid}.db`);
+
+/** The `temp-<pid>.db*` files, with the pid each belongs to. */
+function tempFiles(): { file: string; pid: number }[] {
+  let names: string[];
+  try {
+    names = readdirSync(DATA_DIR);
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const match = /^temp-(\d+)\.db/.exec(name);
+    return match ? [{ file: join(DATA_DIR, name), pid: Number(match[1]) }] : [];
+  });
+}
+
+/** Whether a process with this pid is alive. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: it exists, but is somebody else's.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Deletes the `temp` backend's files: this process's own when it stops, and
+ * on start any a playground left that was killed before it could (its pid is
+ * gone). A no-op on every other backend.
+ */
+export function removeTempData(scope: "mine" | "stale"): void {
+  if (playgroundBackend() !== "temp") {
+    return;
+  }
+  for (const { file, pid } of tempFiles()) {
+    if (
+      scope === "mine"
+        ? pid === process.pid
+        : pid !== process.pid && !isAlive(pid)
+    ) {
+      rmSync(file, { force: true });
+    }
+  }
 }
 
 /** `PLAYGROUND_URL`, or a clear exit when it is missing. */
@@ -72,6 +136,9 @@ const SYNC_SCHEMA = true;
 export function playgroundDriver(): DriverConfig {
   const backend = playgroundBackend();
   switch (backend) {
+    case "temp":
+      mkdirSync(DATA_DIR, { recursive: true });
+      return { type: "sql", url: `sqlite://${TEMP_DB}` };
     case "memory":
       return { type: "memory" };
     case "file":
@@ -109,7 +176,7 @@ export function playgroundDriver(): DriverConfig {
       };
     default:
       console.error(
-        `PLAYGROUND_DRIVER="${backend as string}" is not one of memory, file, sqlite, postgres, mysql, mariadb, redis, mongodb`,
+        `PLAYGROUND_DRIVER="${backend as string}" is not one of temp, memory, file, sqlite, postgres, mysql, mariadb, redis, mongodb`,
       );
       process.exit(1);
   }

@@ -27,8 +27,8 @@ import type { WedgeData, WedgeResult } from "./processors/wedge";
  * asks of the store — a log line, a lock renewal, a flow's children — travels
  * the executor's message channel and is answered by the worker, which keeps
  * the driver; progress is forwarded the same way. That is why these queues
- * work identically on the default memory driver and on
- * `PLAYGROUND_DRIVER=sqlite`: nothing in the child ever opens a backend.
+ * work identically on every backend, `PLAYGROUND_DRIVER=memory` included:
+ * nothing in the child ever opens a backend.
  *
  * Look for it in the UI: Workers groups all four under `api`, and a completed
  * job's `returnValue` on the Queues → job screen records the pid and thread
