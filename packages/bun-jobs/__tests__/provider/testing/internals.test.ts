@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import * as timersPromises from "node:timers/promises";
 import { promisify } from "node:util";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
@@ -102,6 +103,71 @@ describe("the timer tracker", () => {
       timers.restore();
     }
     expect(timers.pending()).toBe(0);
+  });
+
+  it("gives each wrapper its own promisified form even after a warm read site (oven-sh/bun#44275)", async () => {
+    // Warm the tracker's own install path, as many kit runs in one process
+    // do, and a read site of our own, on both native timers, until the JIT
+    // caches them: on Bun 1.4.2/1.4.3 a warm site reading the custom form
+    // off the native timers then answers setInterval's for setTimeout.
+    const read = (timer: unknown): unknown =>
+      (timer as Record<symbol, unknown>)[promisify.custom];
+    for (let index = 0; index < 50_000; index++) {
+      trackTimers().restore();
+      read(setTimeout);
+      read(setInterval);
+    }
+    const timers = trackTimers();
+    try {
+      expect(read(setTimeout)).toBe(timersPromises.setTimeout);
+      expect(read(setInterval)).toBe(timersPromises.setInterval);
+      expect(await promisify(setTimeout)(5, "x")).toBe("x");
+    } finally {
+      timers.restore();
+    }
+  });
+
+  it("overlapping trackers: the last to stop puts the true originals back", () => {
+    const originals = [setTimeout, clearTimeout, setInterval, clearInterval];
+    const current = (): unknown[] => [
+      globalThis.setTimeout,
+      globalThis.clearTimeout,
+      globalThis.setInterval,
+      globalThis.clearInterval,
+    ];
+    const a = trackTimers();
+    const b = trackTimers();
+    a.restore();
+    // B still tracks: the wrappers stay, and count B's timers.
+    expect(current()).not.toEqual(originals);
+    const handle = b.run(() => setTimeout(() => {}, 5_000));
+    expect(b.pending()).toBe(1);
+    clearTimeout(handle);
+    expect(b.pending()).toBe(0);
+    b.restore();
+    expect(current()).toEqual(originals);
+    // Restoring twice changes nothing.
+    a.restore();
+    b.restore();
+    expect(current()).toEqual(originals);
+  });
+
+  it("leaves a global something else replaced meanwhile, and restores the rest", () => {
+    const originals = [setTimeout, clearTimeout, setInterval, clearInterval];
+    const timers = trackTimers();
+    const theirs = ((..._args: unknown[]) => 0) as unknown as typeof setTimeout;
+    const ours = globalThis.setTimeout;
+    globalThis.setTimeout = theirs;
+    try {
+      timers.restore();
+      expect(globalThis.setTimeout).toBe(theirs);
+      expect([clearTimeout, setInterval, clearInterval]).toEqual(
+        originals.slice(1),
+      );
+    } finally {
+      globalThis.setTimeout = originals[0] as typeof setTimeout;
+    }
+    expect(ours).not.toBe(originals[0]);
   });
 
   it("does not count a timer other code creates meanwhile, nor one after restore", () => {
