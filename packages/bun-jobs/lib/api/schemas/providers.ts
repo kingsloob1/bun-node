@@ -170,7 +170,7 @@ export const ProviderSchemaSchema = s.named(
       }),
       schema: s.record(s.unknown(), {
         description:
-          "The config's input JSON Schema, from `~standard.jsonSchema.input({ target })`, made secret-free. `default`, `example`, `examples`, `const` and every `x-*` key are removed everywhere (root, nested, `$defs`, combinators): a form built from it has no pre-filled values. `enum` is kept, except under a property that is a declared secret or has a credential's name, and in every definition such a property reaches through `$ref`, transitively (one reached from both a secret and a non-secret property counts as secret). Every other string is redacted as a detail is; a string equal to a declared secret is replaced, a number equal to one dropped.",
+          "The config's input JSON Schema, from `~standard.jsonSchema.input({ target })`, made secret-free. `default`, `example`, `examples`, `const` and every `x-*` key are removed everywhere (root, nested, `$defs`, combinators): a form built from it has no pre-filled values. `enum` is kept, except under a property that is a declared secret or has a credential's name, and in every definition such a property reaches through `$ref`, transitively (one reached from both a secret and a non-secret property counts as secret; a pointer into a definition counts as all of it, and one anywhere else in the document, `#` included, drops every enum). Enums with non-scalar values are dropped wherever they are. Every other string is redacted as a detail is; a string equal to a declared secret is replaced, a number equal to one dropped.",
       }),
     },
     {

@@ -1115,6 +1115,92 @@ describe("GET /providers/{id}/schema", () => {
     expect(schema.$defs.Choice).toEqual({ type: "string" });
   });
 
+  it("drops an enum holding any non-scalar value, even under no secret", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        profile: {
+          type: "object",
+          enum: [{ region: "eu", apiToken: HOST_CHOICES[0] }],
+        },
+        mixed: { enum: ["a", ["b"]] },
+        // Negative control: an all-scalar enum on a plain property stays.
+        plain: { enum: ["a", 1, true, null] },
+      },
+    });
+    expect(schema.properties).toEqual({
+      profile: { type: "object" },
+      mixed: {},
+      plain: { enum: ["a", 1, true, null] },
+    });
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("flags a whole definition a pointer into it reaches, escapes decoded", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        dsn: { $ref: "#/$defs/Wr~1ap/properties/inner" },
+        region: { $ref: "#/definitions/Plain/properties/zone" },
+      },
+      $defs: {
+        "Wr/ap": {
+          type: "object",
+          properties: {
+            inner: { type: "string", enum: HOST_CHOICES },
+            other: { type: "string", enum: ["x", "y"] },
+          },
+        },
+      },
+      definitions: {
+        // Negative control: a pointer from a plain property flags nothing.
+        Plain: {
+          type: "object",
+          properties: { zone: { type: "string", enum: ["a", "b"] } },
+        },
+      },
+    });
+    // The whole of Wr/ap, fail closed: the pointed-at enum and its sibling.
+    expect(schema.$defs["Wr/ap"].properties).toEqual({
+      inner: { type: "string" },
+      other: { type: "string" },
+    });
+    expect(schema.definitions.Plain.properties.zone.enum).toEqual(["a", "b"]);
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("flags the whole document when a secret points at the root or at any other local path", async () => {
+    for (const ref of ["#", "#/properties/region"]) {
+      const schema = await served({
+        type: "string",
+        enum: HOST_CHOICES,
+        properties: {
+          region: { type: "string", enum: ["eu", "us"] },
+          dsn: { $ref: ref },
+        },
+        $defs: { Any: { type: "string", enum: ["p", "q"] } },
+      });
+      expect({ ref, schema }).toEqual({
+        ref,
+        schema: {
+          type: "string",
+          properties: {
+            region: { type: "string" },
+            dsn: { $ref: ref },
+          },
+          $defs: { Any: { type: "string" } },
+        },
+      });
+    }
+    // Negative control: the same pointer from a plain property flags nothing.
+    const plain = await served({
+      type: "string",
+      enum: ["eu", "us"],
+      properties: { backup: { $ref: "#" } },
+    });
+    expect(plain.enum).toEqual(["eu", "us"]);
+  });
+
   it("keeps the enum of a definition reached only from non-secret properties", async () => {
     const schema = await served({
       type: "object",

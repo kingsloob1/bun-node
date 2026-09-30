@@ -4983,7 +4983,11 @@ pre-filled values. `enum`, the allowed choices, is kept, except under a
 property that is a declared secret or has a credential's name, and in every
 `$defs`/`definitions` entry such a property reaches through `$ref`, however
 indirectly. A definition reached from both a secret and a non-secret property
-counts as secret, so it loses its choices too. Every other
+counts as secret, so it loses its choices too; a pointer into a definition
+(`#/$defs/X/properties/y`) counts as all of `X`, and one anywhere else in the
+document (`#`, `#/properties/x`) drops every enum in it. An enum with any
+non-scalar value (an object, an array) is dropped wherever it is: its values
+are data, not schema. Every other
 string is redacted as a detail is; a string equal to a declared secret is
 replaced whatever its length, and a number equal to one is dropped.
 

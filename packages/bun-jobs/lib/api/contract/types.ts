@@ -1504,7 +1504,10 @@ export interface ProviderSchemaDto {
    * that is a declared secret or has a credential's name, and in every
    * definition such a property reaches through `$ref`, however indirectly (a
    * definition reached from both a secret and a non-secret property counts
-   * as secret). Every other string
+   * as secret; a pointer into a definition counts as all of it, and one
+   * anywhere else in the document, `#` included, drops every enum). An enum
+   * with any non-scalar value (an object, an array) is dropped wherever it
+   * is. Every other string
    * is redacted as a detail is; a string equal to a declared secret is
    * replaced, a number equal to one dropped.
    */
