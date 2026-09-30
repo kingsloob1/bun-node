@@ -450,6 +450,154 @@ function secretEquals(
   return (value) => texts.has(String(value));
 }
 
+/** The root-level definition maps a local `$ref` can point into. */
+const DEFINITION_MAPS = ["$defs", "definitions"] as const;
+
+/** Whether a value is a plain JSON object (not an array). */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A local `$ref` to a root definition, `#/$defs/X` or `#/definitions/X`, as
+ * `[map, name]` with the JSON-pointer escapes (`~1` for `/`, `~0` for `~`)
+ * and any percent-encoding undone; `undefined` for anything else.
+ */
+function localDefinition(
+  ref: string,
+): [(typeof DEFINITION_MAPS)[number], string] | undefined {
+  let pointer = ref;
+  try {
+    pointer = decodeURIComponent(ref);
+  } catch {
+    // Not percent-encoded: read as it is.
+  }
+  for (const map of DEFINITION_MAPS) {
+    const prefix = `#/${map}/`;
+    if (pointer.startsWith(prefix)) {
+      const name = pointer.slice(prefix.length);
+      if (name.length === 0 || name.includes("/")) {
+        return undefined;
+      }
+      return [map, name.replaceAll("~1", "/").replaceAll("~0", "~")];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The root definitions a secret reaches: every `#/$defs/X` or
+ * `#/definitions/X` a `$ref` under a secret or credential-named property
+ * names — through nested properties and combinators, in the root schema or
+ * inside any definition — and, transitively,
+ * every one those definitions reach in turn, since everything inside a
+ * definition a secret uses describes the secret. Answered as
+ * `"<map>/<name>"` keys. A `$ref` that resolves to nothing local flags
+ * nothing: there is nothing to copy there.
+ */
+function secretDefinitions(
+  root: unknown,
+  secretPaths: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const flagged = new Set<string>();
+  const queue: unknown[] = [];
+  const seen = new Set<object>();
+  /** Walks `node` as {@link sanitizeSchema} does, noting refs reached under a secret. */
+  function scan(
+    node: unknown,
+    depth: number,
+    path: string | undefined,
+    secret: boolean,
+    isRoot: boolean,
+  ): void {
+    if (typeof node !== "object" || node === null || depth > MAX_SCHEMA_DEPTH) {
+      return;
+    }
+    if (seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    try {
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          scan(item, depth + 1, path, secret, false);
+        }
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (key === "$ref" && secret && typeof child === "string") {
+          const target = localDefinition(child);
+          if (target !== undefined) {
+            const id = `${target[0]}/${target[1]}`;
+            if (!flagged.has(id)) {
+              flagged.add(id);
+              const map = isObject(root) ? root[target[0]] : undefined;
+              if (isObject(map) && Object.hasOwn(map, target[1])) {
+                queue.push(map[target[1]]);
+              }
+            }
+          }
+        } else if (key === "properties" && isObject(child)) {
+          for (const [name, schema] of Object.entries(child)) {
+            let at: string | undefined;
+            if (path !== undefined) {
+              at = path === "" ? name : `${path}.${name}`;
+            }
+            scan(
+              schema,
+              depth + 2,
+              at,
+              secret ||
+                isCredentialKey(name) ||
+                (at !== undefined && secretPaths.has(at)),
+              false,
+            );
+          }
+        } else if (
+          isRoot &&
+          (DEFINITION_MAPS as readonly string[]).includes(key)
+        ) {
+          // Reached only through a `$ref`: scanned when one flags them.
+        } else if (NAME_MAPS.has(key) && isObject(child)) {
+          for (const [name, schema] of Object.entries(child)) {
+            scan(
+              schema,
+              depth + 2,
+              undefined,
+              secret || isCredentialKey(name),
+              false,
+            );
+          }
+        } else if (COMBINATORS.has(key)) {
+          scan(child, depth + 1, path, secret, false);
+        } else {
+          scan(child, depth + 1, undefined, secret, false);
+        }
+      }
+    } finally {
+      seen.delete(node);
+    }
+  }
+  scan(root, 0, "", false, true);
+  // Every definition too, not yet as a secret: a credential-named property
+  // inside one flags what it references, whoever references the definition.
+  if (isObject(root)) {
+    for (const map of DEFINITION_MAPS) {
+      const definitions = root[map];
+      if (isObject(definitions)) {
+        for (const definition of Object.values(definitions)) {
+          scan(definition, 1, undefined, false, false);
+        }
+      }
+    }
+  }
+  // A flagged definition is secret throughout: whatever it references is too.
+  while (queue.length > 0) {
+    scan(queue.shift(), 1, undefined, true, false);
+  }
+  return flagged;
+}
+
 /**
  * A JSON Schema, copied secret-free. A host bakes its own values into a
  * schema — `z.string().default(process.env.TOKEN)`, an OpenAPI `example`,
@@ -464,7 +612,10 @@ function secretEquals(
  *   values;
  * - `enum` (the allowed choices) is kept, except under a property that is a
  *   declared secret or has a credential's name (and everything under it,
- *   combinators included), where it is dropped too;
+ *   combinators included), where it is dropped too — and in every root
+ *   definition (`$defs`, `definitions`) such a property reaches through
+ *   `$ref`, transitively ({@link secretDefinitions}). A definition reached
+ *   from both a secret and a non-secret property counts as secret;
  * - every other string is redacted as a detail is (declared secrets by value,
  *   credential shapes), a string equal to a declared secret is replaced
  *   whatever its length, and a number equal to one is dropped;
@@ -482,6 +633,7 @@ function sanitizeSchema(
 ): Record<string, unknown> {
   const redact = textRedactor(secrets);
   const isSecret = secretEquals(secrets);
+  const flagged = secretDefinitions(value, secretPaths);
   const walking = new Set<object>();
   /** A scalar, redacted; `undefined` when it must be dropped. */
   const scalar = (node: unknown): unknown => {
@@ -493,12 +645,17 @@ function sanitizeSchema(
     }
     return node === null || typeof node === "boolean" ? node : undefined;
   };
-  /** Copies a map of names to schemas, each under `pathOf(name)`. */
+  /**
+   * Copies a map of names to schemas, each under `pathOf(name)`, flagged
+   * secret as its parent is, by its name, by its path, or when `flaggedIn`
+   * (a root definition map) names it as reached from a secret.
+   */
   function names(
     node: object,
     depth: number,
     secret: boolean,
     pathOf: (name: string) => string | undefined,
+    flaggedIn?: string,
   ): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [name, schema] of Object.entries(node)) {
@@ -509,7 +666,8 @@ function sanitizeSchema(
         at,
         secret ||
           isCredentialKey(name) ||
-          (at !== undefined && secretPaths.has(at)),
+          (at !== undefined && secretPaths.has(at)) ||
+          (flaggedIn !== undefined && flagged.has(`${flaggedIn}/${name}`)),
       );
       if (sub !== undefined) {
         out[redact(name)] = sub;
@@ -562,7 +720,15 @@ function sanitizeSchema(
             return parent === "" ? name : `${parent}.${name}`;
           });
         } else if (isMap && NAME_MAPS.has(key)) {
-          sub = names(child, depth + 1, secret, () => undefined);
+          sub = names(
+            child,
+            depth + 1,
+            secret,
+            () => undefined,
+            depth === 0 && (DEFINITION_MAPS as readonly string[]).includes(key)
+              ? key
+              : undefined,
+          );
         } else if (COMBINATORS.has(key)) {
           // A branch describes the same value: it keeps the path and flag.
           sub = copy(child, depth + 1, path, secret);
@@ -688,7 +854,7 @@ export function providerRoutes(): AnyRouteDef[] {
       action: "providers.read",
       mode: "jobs",
       summary: "A provider's config as a JSON Schema, for a config form",
-      description: `The provider's config schema as a draft-2020-12 JSON Schema, from its Standard JSON Schema converter (\`~standard.jsonSchema.input({ target: "draft-2020-12" })\`), made secret-free. \`default\`, \`example\`, \`examples\`, \`const\` and every \`x-*\` key are removed **everywhere** — root, nested, \`$defs\`/\`definitions\` and combinators — since a host's own secret baked in as a default looks like any other: a config form gets no pre-filled values. \`enum\` is kept, except under a property that is a declared secret or has a credential's name. Every other string is redacted; a string equal to a declared secret is replaced and a number equal to one dropped. 404 \`PROVIDER_SCHEMA_NOT_FOUND\` when the schema has no such converter (show the provider's facts instead) or it fails; \`GET /providers\`' \`configSchema\` says which beforehand.\n\n${PROVIDERS_NOTE}`,
+      description: `The provider's config schema as a draft-2020-12 JSON Schema, from its Standard JSON Schema converter (\`~standard.jsonSchema.input({ target: "draft-2020-12" })\`), made secret-free. \`default\`, \`example\`, \`examples\`, \`const\` and every \`x-*\` key are removed **everywhere** — root, nested, \`$defs\`/\`definitions\` and combinators — since a host's own secret baked in as a default looks like any other: a config form gets no pre-filled values. \`enum\` is kept, except under a property that is a declared secret or has a credential's name, and in every definition such a property reaches through \`$ref\`, transitively (one reached from both a secret and a non-secret property counts as secret). Every other string is redacted; a string equal to a declared secret is replaced and a number equal to one dropped. 404 \`PROVIDER_SCHEMA_NOT_FOUND\` when the schema has no such converter (show the provider's facts instead) or it fails; \`GET /providers\`' \`configSchema\` says which beforehand.\n\n${PROVIDERS_NOTE}`,
       tags: ["Providers"],
       params: ProviderParams,
       responses: { 200: ProviderSchemaSchema },

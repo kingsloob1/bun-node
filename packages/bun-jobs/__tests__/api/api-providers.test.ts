@@ -1021,6 +1021,126 @@ describe("GET /providers/{id}/schema", () => {
     });
   });
 
+  /** The served schema for a provider whose converter answers `document`. */
+  async function served(
+    document: unknown,
+    config: AcmeConfig = CONFIG,
+  ): Promise<Record<string, any>> {
+    const make = acme({ jsonSchema: () => document });
+    const configured = make(config);
+    const response = await api().call(
+      "GET",
+      path(`${configured.provider.name}@1.0.0~1`, "/schema"),
+    );
+    expect(response.status).toBe(200);
+    return response.body.schema;
+  }
+
+  /** Two host values baked into an enum: neither is the configured secret's. */
+  const HOST_CHOICES = ["tok_live_HOSTENV_1234567", "tok_live_OTHER_HOST_77"];
+
+  it("drops the enum of a definition a secret property reaches through $ref (zod's .meta({ id }))", async () => {
+    // Exactly what zod 4 answers for
+    // `z.object({ region: z.string(), dsn: z.enum([...]).meta({ id: "Choice" }) })`.
+    const schema = await served(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: {
+          region: { type: "string" },
+          dsn: { $ref: "#/$defs/Choice" },
+        },
+        required: ["region", "dsn"],
+        $defs: { Choice: { type: "string", enum: HOST_CHOICES } },
+      },
+      // Configured with the second value: redaction by value hides only it.
+      { ...CONFIG, dsn: HOST_CHOICES[1]! },
+    );
+    expect(schema.$defs).toEqual({ Choice: { type: "string" } });
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("follows a chain of $refs, through definitions and #/definitions with JSON-pointer escapes", async () => {
+    const schema = await served({
+      type: "object",
+      properties: { apiToken: { $ref: "#/$defs/Outer" } },
+      $defs: {
+        Outer: {
+          type: "object",
+          properties: { inner: { $ref: "#/$defs/a~1b~0c" } },
+        },
+        "a/b~c": { allOf: [{ $ref: "#/definitions/Leaf" }] },
+      },
+      definitions: { Leaf: { type: "string", enum: HOST_CHOICES } },
+    });
+    expect(schema.definitions).toEqual({ Leaf: { type: "string" } });
+    expect(schema.$defs["a/b~c"]).toEqual({
+      allOf: [{ $ref: "#/definitions/Leaf" }],
+    });
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("follows a $ref reached through anyOf under a secret", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        dsn: { anyOf: [{ type: "null" }, { $ref: "#/$defs/Choice" }] },
+      },
+      $defs: { Choice: { type: "string", enum: HOST_CHOICES } },
+    });
+    expect(schema.$defs).toEqual({ Choice: { type: "string" } });
+  });
+
+  it("flags a definition a credential-named property inside another definition reaches", async () => {
+    const schema = await served({
+      type: "object",
+      properties: { connection: { $ref: "#/$defs/Connection" } },
+      $defs: {
+        Connection: {
+          type: "object",
+          properties: {
+            host: { type: "string", enum: ["db-a", "db-b"] },
+            password: { $ref: "#/$defs/Choice" },
+          },
+        },
+        Choice: { type: "string", enum: HOST_CHOICES },
+      },
+    });
+    // The non-secret definition keeps its own choices; the one its
+    // `password` reaches loses them.
+    expect(schema.$defs.Connection.properties.host.enum).toEqual([
+      "db-a",
+      "db-b",
+    ]);
+    expect(schema.$defs.Choice).toEqual({ type: "string" });
+  });
+
+  it("keeps the enum of a definition reached only from non-secret properties", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        region: { $ref: "#/$defs/Region" },
+        backup: { anyOf: [{ $ref: "#/$defs/Region" }] },
+      },
+      $defs: { Region: { type: "string", enum: ["eu-west-1", "us-east-1"] } },
+    });
+    expect(schema.$defs).toEqual({
+      Region: { type: "string", enum: ["eu-west-1", "us-east-1"] },
+    });
+  });
+
+  it("fails closed: a definition reached from both a secret and a non-secret property loses its enum", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        region: { $ref: "#/$defs/Choice" },
+        apiToken: { $ref: "#/$defs/Choice" },
+      },
+      $defs: { Choice: { type: "string", enum: HOST_CHOICES } },
+    });
+    expect(schema.$defs).toEqual({ Choice: { type: "string" } });
+  });
+
   it("drops enum under a secret property and everything nested in it, and nowhere else", async () => {
     const nested = {
       type: "object",

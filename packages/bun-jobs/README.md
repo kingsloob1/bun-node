@@ -4980,9 +4980,28 @@ config. None of those is the configured value, so redaction cannot know them.
 So `default`, `example`, `examples`, `const` and every `x-*` key are removed
 **everywhere** in the served schema, and a config form built from it gets no
 pre-filled values. `enum`, the allowed choices, is kept, except under a
-property that is a declared secret or has a credential's name. Every other
+property that is a declared secret or has a credential's name, and in every
+`$defs`/`definitions` entry such a property reaches through `$ref`, however
+indirectly. A definition reached from both a secret and a non-secret property
+counts as secret, so it loses its choices too. Every other
 string is redacted as a detail is; a string equal to a declared secret is
 replaced whatever its length, and a number equal to one is dropped.
+
+```ts
+import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
+
+// The default actions, plus the provider list and "Test connection".
+const actions = JOBS_API_ACTIONS.filter(
+  (action) =>
+    !JOBS_API_OPT_IN_ACTIONS.has(action) ||
+    action === "providers.read" ||
+    action === "providers.validate",
+);
+export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
+// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0~1", … }] }
+// POST /admin/jobs/providers/bun-jobs-provider-acme@1.0.0~1/validate
+//   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
+```
 
 #### Which facts are served
 
@@ -5001,22 +5020,6 @@ passes a fail-safe filter. It drops, whatever the provider meant:
   holds `auth-api:prod`, `session-workers:prod`, `max_tokens=4096`. Rename
   the fact's value, or leave it out;
 - a `host` or `hostname` fact unless `serialize.exposeHosts` is on.
-
-```ts
-import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
-
-// The default actions, plus the provider list and "Test connection".
-const actions = JOBS_API_ACTIONS.filter(
-  (action) =>
-    !JOBS_API_OPT_IN_ACTIONS.has(action) ||
-    action === "providers.read" ||
-    action === "providers.validate",
-);
-export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
-// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0~1", … }] }
-// POST /admin/jobs/providers/bun-jobs-provider-acme@1.0.0~1/validate
-//   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
-```
 
 ### Analytics routes
 
