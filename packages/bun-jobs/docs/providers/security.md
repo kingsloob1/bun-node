@@ -105,8 +105,11 @@ passes before your logger sees it:
    `credential`, `cookie`, …), a bare `Bearer …`, the password in a URL and
    a JSON Web Token. Then:
    - a bare `Basic` credential, in base64 or base64url, **only** when it
-     decodes to a `user:password` pair (it becomes `Basic [REDACTED]`, and
-     prose such as "Basic authentication failed" is left alone);
+     decodes to a `user:password` pair and the base64 is 8 characters or
+     more, not counting its `=` padding (it becomes `Basic [REDACTED]`;
+     prose such as "Basic authentication failed" is left alone, and so is a
+     very short credential, such as `Basic YWI6Y2Q=` for `ab:cd`, which
+     fails open);
    - the values of `X-Amz-Signature=` and `X-Goog-Signature=` (any case: an
      S3 or Cloud Storage signed URL's signature);
    - an Azure SAS `sig=` value inside a query, after `?` or `&` (so `xsig=`,
