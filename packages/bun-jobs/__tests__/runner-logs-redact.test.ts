@@ -20,6 +20,7 @@ import {
   DEFAULT_REDACT_KEYS,
   DEFAULT_REDACT_REPLACEMENT,
 } from "../lib/runner/index";
+import { urlPasswordStep } from "../lib/runner/redact";
 import {
   REDACTION_FAILED_TEXT,
   RunLogCapture,
@@ -232,12 +233,72 @@ describe("redaction: the default rules", () => {
       "x=".repeat(500_000),
       "http://".repeat(140_000),
       "eyJ".repeat(330_000),
+      // A URL scheme may hold letters and dots: each word boundary in the run
+      // used to start a scheme scanned to the run's end (about 2 s for
+      // `"a.".repeat(50_000)`, so minutes here).
+      "a.".repeat(500_000),
+      "eyJ.".repeat(250_000),
+      `${"a.".repeat(400_000)}://u:p@h`,
     ]) {
       const begun = performance.now();
       redact(line);
       // Generous: a quadratic backtrack here takes minutes, not a second.
       expect(performance.now() - begun).toBeLessThan(1_500);
     }
+  });
+
+  it("finds a URL's password exactly where the expression it replaced did", () => {
+    // The expression the linear scan replaced, and its rewrite. A replacement
+    // holding `$` templates checks the scan uses it as it is.
+    const replacement = "[$1$&]";
+    const expression = /\b([a-z][a-z\d+.\-]*:\/\/[^\s:/@]*:)[^\s@/]+@/gi;
+    const reference = (text: string) =>
+      text.replace(expression, `$1${replacement.replaceAll("$", "$$$$")}@`);
+    const scan = urlPasswordStep(replacement);
+
+    // Pieces a scheme, a user, a password and their boundaries are made of.
+    const pieces = [
+      "a",
+      "Z",
+      "9",
+      "+",
+      ".",
+      "-",
+      "_",
+      ":",
+      "/",
+      "@",
+      " ",
+      "\t",
+
+      "é",
+      "://",
+      "http",
+      "u:p@",
+      ":@",
+
+      "x.y",
+    ];
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed / 2_147_483_648;
+    };
+    let matched = 0;
+    for (let index = 0; index < 50_000; index++) {
+      let text = "";
+      const length = Math.floor(random() * 24);
+      for (let piece = 0; piece < length; piece++) {
+        text += pieces[Math.floor(random() * pieces.length)];
+      }
+      const expected = reference(text);
+      if (expected !== text) {
+        matched += 1;
+      }
+      expect(scan(text), JSON.stringify(text)).toBe(expected);
+    }
+    // The corpus exercises the matching path, not only the misses.
+    expect(matched).toBeGreaterThan(500);
   });
 });
 

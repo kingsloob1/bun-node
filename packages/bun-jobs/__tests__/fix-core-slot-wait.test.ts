@@ -1,10 +1,7 @@
-import type { Job } from "../lib/index";
-import { noopLogger } from "@kingsleyweb/bun-common";
-import { heapStats } from "bun:jsc";
-import { afterEach, describe, expect, it } from "bun:test";
-import { BunQueue, BunQueueWorker, MemoryDriver } from "../lib/index";
+import { join } from "node:path";
+import process from "node:process";
+import { describe, expect, it } from "bun:test";
 import { Pulse, waitForAny } from "../lib/shared/wait";
-import { testNamespace, waitFor } from "./helpers";
 
 /**
  * B1: a full worker waits for a slot on one pulse, not on every running
@@ -13,18 +10,11 @@ import { testNamespace, waitFor } from "./helpers";
  * completion for as long as it ran.
  */
 
-const closers: (() => Promise<unknown>)[] = [];
-
-afterEach(async () => {
-  await Promise.allSettled(closers.map((close) => close()));
-  closers.length = 0;
-});
-
-/** Live `Promise` objects after a full collection. */
-function livePromises(): number {
-  Bun.gc(true);
-  return heapStats().objectTypeCounts.Promise ?? 0;
-}
+/** Measures B1's retention in a fresh process; prints `{ before, after, active }`. */
+const RETENTION_FIXTURE = join(
+  import.meta.dir,
+  "fixtures/processes/slot-wait-retention.ts",
+);
 
 describe("Pulse", () => {
   it("ends every subscribed wait on notify, and a timed-out wait unsubscribes", async () => {
@@ -58,73 +48,31 @@ describe("Pulse", () => {
 });
 
 describe("BunQueueWorker: full-slot wait (B1)", () => {
+  // In a process of its own: a live-Promise count is process-wide, and in the
+  // suite it also counted what earlier files left running (see the fixture).
   it("keeps no per-completion reaction on a long job still running", async () => {
-    const driver = new MemoryDriver();
-    const namespace = testNamespace();
-    const queue = new BunQueue<{ long: boolean }>("work", {
-      namespace,
-      driver,
-      logger: noopLogger,
-      defaultJobOptions: { removeOnComplete: true },
+    const proc = Bun.spawn([process.execPath, RETENTION_FIXTURE], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
     });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const { before, after, active } = JSON.parse(
+      stdout.trim().split("\n").at(-1)!,
+    ) as {
+      before: number;
+      after: number;
+      active: number;
+    };
 
-    let releaseLong!: () => void;
-    const longDone = new Promise<void>((resolve) => {
-      releaseLong = resolve;
-    });
-    let completed = 0;
-
-    const worker = new BunQueueWorker<{ long: boolean }>(
-      "work",
-      async (job: Job<{ long: boolean }>) => {
-        if (job.data.long) {
-          await longDone;
-        }
-      },
-      {
-        namespace,
-        driver,
-        logger: noopLogger,
-        concurrency: 2,
-        pollInterval: 10,
-        maxBlock: 20,
-        metrics: { workers: false },
-      },
-    );
-    worker.on("completed", () => {
-      completed += 1;
-    });
-    closers.push(
-      async () => {
-        releaseLong();
-        await worker.close({ force: true });
-      },
-      () => queue.close(),
-    );
-
-    await queue.add("long", { long: true });
-    worker.run().catch(() => {});
-    await waitFor(() => worker.activeCount === 1);
-
-    /** Runs `count` short jobs beside the long one. */
-    async function burst(count: number): Promise<void> {
-      const target = completed + count;
-      await queue.addBulk(
-        Array.from({ length: count }, () => ({
-          name: "short",
-          data: { long: false },
-        })),
-      );
-      await waitFor(() => completed >= target, { timeout: 30_000 });
-    }
-
-    await burst(2_000);
-    const before = livePromises();
-    await burst(10_000);
-    const after = livePromises();
-
-    // The old wait retained two promises per completion here (~20,000).
+    // The old wait (every running job's promise raced on each pass) retained
+    // four promises per completion here: measured 40,001 over this burst.
     expect(after - before).toBeLessThan(2_000);
-    expect(worker.activeCount).toBe(1);
+    expect(active).toBe(1);
   }, 60_000);
 });

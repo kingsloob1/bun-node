@@ -77,7 +77,7 @@ export type AcmeDefect =
   | "status" // cancel() that stops nothing
   | "lifetime" // enforcesLifetime, but never sends it
   | "validate" // validate() that starts a unit
-  | "secrets" // the token, base64-encoded, in a log field
+  | "secrets" // the token, base64-encoded with no scheme, in a log field
   | "redacted" // not a defect: logs the token where the redactor must mask it
   | "mislabeled" // every failure reported as a wrong ProviderError kind
   | "retry-units" // Retry-After's seconds taken for milliseconds
@@ -250,12 +250,13 @@ export function acmeProvider(
         const fetcher = defect === "routing" ? globalThis.fetch : ctx.fetch;
         const headers = { authorization: `Bearer ${config.apiToken}` };
         if (defect === "secrets") {
-          // The token, base64-encoded as a Basic credential: no redactor
-          // recognises it, and the kit's scan decodes it.
+          // The token, base64-encoded with no scheme in front: no redactor
+          // recognises it (a `Basic` credential it now does), and the kit's
+          // scan decodes it.
           ctx.logger.debug("acme call", {
             method,
             path,
-            header: `Basic ${Buffer.from(`acme:${config.apiToken}`).toString("base64")}`,
+            trace: Buffer.from(`acme:${config.apiToken}`).toString("base64"),
           });
         }
         if (defect === "redacted") {

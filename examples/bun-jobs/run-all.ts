@@ -70,13 +70,17 @@ const RUN_ALONE = [
  */
 const SLOW_FIRST = [
   // The longest of the pooled examples, longest first, as measured on memory
-  // (19.6 s, 14.5 s, 13.8 s, 4.3 s). Starting one of them last would leave the
-  // pool waiting on it alone. `02-queues/isolated-processors.ts` headed this
-  // list at 61 s while closing a worker orphaned its runaway child process
-  // (#166); since the fix (#176) it takes about a second and needs no place here.
+  // (25.6 s, 20 s, 14.5 s, 13.8 s, 13.7 s, 4.3 s). Starting one of them last
+  // would leave the pool waiting on it alone. `02-queues/isolated-processors.ts`
+  // headed this list at 61 s while closing a worker orphaned its runaway child
+  // process (#166); since the fix (#176) it takes about a second and needs no
+  // place here. `summon-controller.ts` grew to its time with the late-loss
+  // steps (#227): three crash graces, one after another.
+  "02-queues/summon-controller.ts",
   "10-options/runner-options.ts",
   "10-options/draft-and-process-every.ts",
   "10-options/job-options.ts",
+  "02-queues/custom-provider.ts",
   "05-flow-control/rate-and-concurrency-limits.ts",
 ];
 
