@@ -4,6 +4,9 @@ import type {
   FakePlatform,
 } from "../../../lib/provider/testing/index";
 import type { AcmeDefect } from "./acme";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   afterAll,
   afterEach,
@@ -12,12 +15,14 @@ import {
   it,
   setDefaultTimeout,
 } from "bun:test";
-import { JobsError } from "../../../lib/index";
+import { ConfigError, createDriver, JobsError } from "../../../lib/index";
+import { fakeInternals } from "../../../lib/provider/testing/fake";
 import {
   assertConformance,
   runProviderConformance,
 } from "../../../lib/provider/testing/index";
 import { buildReport } from "../../../lib/provider/testing/report";
+import { SUMMON_MARKER } from "../../../lib/summon/marker";
 import { crossProcessBackends } from "../../helpers/backends";
 import { acmeConfig, acmeFake, acmeProvider, acmeSummoner } from "./acme";
 
@@ -254,37 +259,43 @@ describe("a provider broken in one way fails exactly that group", () => {
       "threw ProviderError(transient)",
     );
     expect(detail("summon.errors.throttled")).toContain(
-      "the controller recorded failed, not unavailable",
+      "the controller then recorded failed, not unavailable",
     );
     expect(detail("summon.errors.throttled")).toContain(
-      "counted it toward the circuit",
+      "the controller then counted it toward the circuit",
     );
     expect(detail("summon.errors.quota")).toContain(
-      "did not count it toward the circuit",
+      "the controller then did not count it toward the circuit",
     );
     expect(detail("summon.errors.auth")).toContain(
-      "did not open the circuit at once",
+      "the controller then did not open the circuit at once",
     );
     expect(detail("summon.errors.misconfigured")).toContain(
-      "did not open the circuit at once",
+      "the controller then did not open the circuit at once",
     );
     expect(detail("summon.errors.conflict")).toContain(
       "recorded unavailable, not failed",
     );
     expect(detail("summon.errors.transient")).toContain(
-      "did not count it toward the circuit",
+      "the controller then did not count it toward the circuit",
     );
   });
 
-  it("retry-units: a retry-after taken as milliseconds fails only the throttled backoff", async () => {
+  it("retry-units: a retry-after taken as milliseconds fails the throttled and quota waits", async () => {
     const report = await acme({ defect: "retry-units" });
     expect(failed(report), report.toMarkdown()).toEqual([
       "summon.errors.throttled",
+      "summon.errors.quota",
     ]);
     expect(
       report.checks.find((check) => check.id === "summon.errors.throttled")
         ?.detail,
-    ).toMatch(/backed off \d+ ms, under the platform's retry-after of 2000 ms/);
+    ).toMatch(
+      /the controller then backed off \d+ ms, under the platform's retry-after of 2000 ms/,
+    );
+    expect(
+      report.checks.find((check) => check.id === "summon.errors.quota")?.detail,
+    ).toMatch(/ProviderError\(quota\) carries retryAfterMs 2, far under/);
     expect(
       report.checks.find((check) => check.id === "summon.errors.throttled")
         ?.detail,
@@ -295,14 +306,19 @@ describe("a provider broken in one way fails exactly that group", () => {
     const report = await acme({ defect: "retry-huge" });
     expect(failed(report), report.toMarkdown()).toEqual([
       "summon.errors.throttled",
+      "summon.errors.quota",
     ]);
-    const detail = report.checks.find(
-      (check) => check.id === "summon.errors.throttled",
-    )?.detail;
-    expect(detail).toContain("over a day");
-    // Clamped, the wait is still at least the platform's: the verdict holds.
-    expect(detail).not.toContain("the controller backed off");
-    expect(detail).not.toContain("the controller recorded");
+    for (const kind of ["throttled", "quota"]) {
+      const detail = report.checks.find(
+        (check) => check.id === `summon.errors.${kind}`,
+      )?.detail;
+      expect(detail, kind).toContain("over a day");
+      // Clamped, the wait is at least the platform's and no longer than the
+      // clamp: the verdict holds (a controller without the clamp fails here).
+      expect(detail, kind).not.toContain("past its clamp");
+      expect(detail, kind).not.toContain("backed off");
+      expect(detail, kind).not.toContain("the controller then recorded");
+    }
   });
 
   it("prose-code: a sentence for a platformCode warns, and the controller's detail falls back to PROVIDER_<KIND>", async () => {
@@ -367,6 +383,59 @@ describe("a provider broken in one way fails exactly that group", () => {
       expect(check.status, check.id).toBe("skip");
       expect(check.detail).toContain("summon.capabilities.scale-has-release");
     }
+  });
+});
+
+describe("what a run leaves behind", () => {
+  it("scale: the scale-down check starts no worker process, and the run leaves nothing on the backend", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-kit-scale-"));
+    cleanups.push(async () => await rm(dir, { recursive: true, force: true }));
+    const config: DriverConfig = { type: "file", root: join(dir, "driver") };
+    const report = await acme({ style: "scale" }, { driver: config });
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    const internals = fakeInternals(platforms.at(-1)!);
+    // One unit handed to a worker process: the handoff's. The scale-down
+    // check's unit stays a unit on the fake.
+    expect(internals.handedOff).toHaveLength(1);
+    expect(await leftovers(config, internals.namespaces)).toEqual([]);
+  });
+
+  it("gives the global timers back", async () => {
+    const before = [
+      globalThis.setTimeout,
+      globalThis.clearTimeout,
+      globalThis.setInterval,
+      globalThis.clearInterval,
+    ];
+    await acme(
+      { defect: "timeouts" },
+      { skip: [{ id: "summon.cas.one-call", reason: "not under test" }] },
+    );
+    expect([
+      globalThis.setTimeout,
+      globalThis.clearTimeout,
+      globalThis.setInterval,
+      globalThis.clearInterval,
+    ]).toEqual(before);
+  });
+
+  it("refuses a backend other processes cannot share, before any check runs", async () => {
+    const platform = await fake();
+    let thrown: unknown;
+    try {
+      await runProviderConformance(acmeProvider(), {
+        config: acmeConfig(platform),
+        platform,
+        driver: { type: "memory" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).message).toContain(
+      "cannot be shared with another process",
+    );
+    expect(fakeInternals(platform).requests).toHaveLength(0);
   });
 });
 
@@ -473,14 +542,54 @@ describe("the report", () => {
  * processes (summon-compute §13.10's gate: SQLite, the file driver, Redis
  * and Postgres, and the other servers when their URLs are set).
  */
+/**
+ * What a kit run left on a backend, by the exact namespaces it recorded
+ * (never a prefix: other runs share the backend): each namespace's queues,
+ * runners, summon marker and worker records.
+ */
+async function leftovers(
+  config: DriverConfig,
+  namespaces: readonly string[],
+): Promise<string[]> {
+  const driver = createDriver(config);
+  await driver.connect();
+  try {
+    const found: string[] = [];
+    for (const ns of namespaces) {
+      const ref = { ns, queue: "work" };
+      const queues = await driver.listQueues(ns);
+      const runners = await driver.listRunners(ns);
+      const marker = await driver.getQueueState?.(ref, SUMMON_MARKER);
+      const workers = (await driver.listWorkers?.(ref, Date.now())) ?? [];
+      if (
+        queues.length > 0 ||
+        runners.length > 0 ||
+        marker != null ||
+        workers.length > 0
+      ) {
+        found.push(
+          `${ns}: ${queues.length} queue(s), ${runners.length} runner(s), marker ${marker == null ? "none" : "left"}, ${workers.length} worker record(s)`,
+        );
+      }
+    }
+    return found;
+  } finally {
+    await driver.close();
+  }
+}
+
 const BACKENDS = await crossProcessBackends({ cleanups });
 for (const backend of BACKENDS) {
   describe.skipIf(!backend.available)(
     `the handoff and the race: ${backend.name}`,
     () => {
-      it("a known-good provider's handoff and compare-and-set pass", async () => {
+      it("a known-good provider's handoff and compare-and-set pass, and leave nothing behind", async () => {
         const report = await acme({}, { driver: backend.config });
         expect(failed(report), report.toMarkdown()).toEqual([]);
+        // Every namespace the run created, by exact name, is gone.
+        const { namespaces } = fakeInternals(platforms.at(-1)!);
+        expect(namespaces).toHaveLength(1 + 1 + 7 + 2);
+        expect(await leftovers(backend.config, namespaces)).toEqual([]);
         for (const id of [
           "summon.handoff.started",
           "summon.handoff.released",

@@ -20,13 +20,16 @@
  * behaves correctly against its own fake; it does not mean the platform
  * behaves as the fake does, nor that bun-jobs has reviewed the provider.
  */
-export { runProviderConformance } from "./conformance";
+export { type ConformanceOptions, runProviderConformance } from "./conformance";
 export {
   type FakeFault,
   type FakePlatform,
   fakePlatform,
+  type FakePlatformOptions,
   type FakePlatformState,
+  type FakeRoute,
   type FakeUnit,
+  type FakeUnitStart,
 } from "./fake";
 export {
   assertConformance,

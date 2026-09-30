@@ -3,6 +3,8 @@ import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
+import { promisify } from "node:util";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import {
@@ -14,6 +16,12 @@ import {
 import { PROVIDER_FETCH_PROBE } from "../../../lib/provider/context";
 import { findSecrets, trackTimers } from "../../../lib/provider/testing/scan";
 import { testNamespace } from "../../helpers";
+
+/** The module `runScript` lives in, for a scratch script to import. */
+const SPAWN_MODULE = join(
+  import.meta.dir,
+  "../../../lib/provider/testing/spawn.ts",
+);
 
 /**
  * The kit's instruments, each with a negative control: the secret scanner,
@@ -82,6 +90,20 @@ describe("the timer tracker", () => {
     }
   });
 
+  it("keeps util.promisify's custom form and the caller's this while it tracks", async () => {
+    const timers = trackTimers();
+    try {
+      const sleep = promisify(setTimeout);
+      expect(await sleep(5, "slept")).toBe("slept");
+      const holder = { setTimeout };
+      const handle = holder.setTimeout(() => {}, 5_000);
+      clearTimeout(handle);
+    } finally {
+      timers.restore();
+    }
+    expect(timers.pending()).toBe(0);
+  });
+
   it("does not count a timer other code creates meanwhile, nor one after restore", () => {
     const timers = trackTimers();
     let foreign: ReturnType<typeof setTimeout> | undefined;
@@ -95,6 +117,54 @@ describe("the timer tracker", () => {
     const after = setTimeout(() => {}, 5_000);
     clearTimeout(after);
     expect(timers.pending()).toBe(0);
+  });
+});
+
+describe("runScript", () => {
+  /** Runs a scratch script calling `runScript` with `body`, and answers its exit and stderr. */
+  async function script(
+    body: string,
+  ): Promise<{ code: number; stderr: string; ms: number }> {
+    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-runscript-"));
+    try {
+      const file = join(dir, "script.ts");
+      await Bun.write(
+        file,
+        `import { runScript } from ${JSON.stringify(SPAWN_MODULE)};\n${body}\n`,
+      );
+      const started = Date.now();
+      const proc = Bun.spawn([process.execPath, file], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const [code, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stderr).text(),
+      ]);
+      return { code, stderr, ms: Date.now() - started };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("ends a main that hangs at its cap, exiting 1 with a message", async () => {
+    const result = await script("runScript(() => new Promise(() => {}), 300);");
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("did not finish within 300ms");
+    expect(result.ms).toBeLessThan(10_000);
+  });
+
+  it("does not hold a main that finishes, nor exit it early (the negative control)", async () => {
+    const done = await script(
+      "runScript(async () => { await Bun.sleep(50); process.exit(0); }, 5_000);",
+    );
+    expect(done.code).toBe(0);
+    expect(done.stderr).toBe("");
+    const failing = await script(
+      'runScript(async () => { throw new Error("boom"); }, 5_000);',
+    );
+    expect(failing.code).toBe(1);
+    expect(failing.stderr).toContain("boom");
   });
 });
 

@@ -118,8 +118,9 @@ function count(
  * });
  * ```
  *
- * @throws {JobsError} (`CONFORMANCE_FAILED`) naming every failed check,
- *   with the report on its `context`.
+ * @throws {JobsError} (`CONFORMANCE_FAILED`) whose message names every
+ *   failed `must` check and carries the rendered report, and whose
+ *   `context.failed` lists their ids.
  */
 export function assertConformance(report: ConformanceReport): void {
   if (report.ok) {

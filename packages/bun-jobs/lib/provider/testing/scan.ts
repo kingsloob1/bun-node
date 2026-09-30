@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Buffer } from "node:buffer";
+import { promisify } from "node:util";
 
 /**
  * Two instruments the conformance kit measures a provider with: a secret
@@ -152,10 +153,13 @@ export interface TimerTracker {
 /**
  * Replaces the global `setTimeout`/`setInterval` and their clears with
  * counting wrappers until `restore()`, so the kit can see a timer a call
- * left behind. Only timers created in the call's async context are counted
- * (an `AsyncLocalStorage` entered by `run`, which follows promise
- * continuations, timer callbacks and the listeners they fire): other code in
- * the process, such as another test's pollers, is not the provider's.
+ * left behind. The swap is brief (the timeouts check, about 2 s) and is
+ * always undone, in a `finally`; the wrappers keep `this` and
+ * `util.promisify.custom`. Only timers created in the call's async context
+ * are counted (an `AsyncLocalStorage` entered by `run`, which follows
+ * promise continuations, timer callbacks and the listeners they fire):
+ * other code in the process, such as another test's pollers, is not the
+ * provider's.
  */
 export function trackTimers(): TimerTracker {
   const call = new AsyncLocalStorage<true>();
@@ -174,50 +178,46 @@ export function trackTimers(): TimerTracker {
       }
     }
   };
+  type Timer = (this: unknown, ...args: unknown[]) => unknown;
+  /** A wrapper keeps `this` and the original's `util.promisify.custom`. */
+  const wrap = (from: unknown, body: Timer): Timer => {
+    const custom = (from as Record<symbol, unknown>)[promisify.custom];
+    if (custom !== undefined) {
+      Object.defineProperty(body, promisify.custom, { value: custom });
+    }
+    return body;
+  };
   const g = globalThis as unknown as Record<string, unknown>;
-  g.setTimeout = (
-    callback: (...args: unknown[]) => void,
-    ms?: number,
-    ...args: unknown[]
-  ): unknown => {
+  g.setTimeout = wrap(original.setTimeout, function (callback, ...rest) {
     let handle: unknown;
     const fire = (...inner: unknown[]): void => {
       live.delete(handle);
-      callback(...inner);
+      (callback as (...a: unknown[]) => void)(...inner);
     };
-    handle = (original.setTimeout as (...a: unknown[]) => unknown)(
-      fire,
-      ms,
-      ...args,
-    );
+    handle = Reflect.apply(original.setTimeout, this, [
+      typeof callback === "function" ? fire : callback,
+      ...rest,
+    ]);
     if (call.getStore() === true) {
       live.add(handle);
     }
     return handle;
-  };
-  g.setInterval = (
-    callback: (...args: unknown[]) => void,
-    ms?: number,
-    ...args: unknown[]
-  ): unknown => {
-    const handle = (original.setInterval as (...a: unknown[]) => unknown)(
-      callback,
-      ms,
-      ...args,
-    );
+  });
+  g.setInterval = wrap(original.setInterval, function (...args) {
+    const handle = Reflect.apply(original.setInterval, this, args);
     if (call.getStore() === true) {
       live.add(handle);
     }
     return handle;
-  };
-  g.clearTimeout = (handle: unknown): void => {
+  });
+  g.clearTimeout = wrap(original.clearTimeout, function (handle) {
     forget(handle);
-    (original.clearTimeout as (h: unknown) => void)(handle);
-  };
-  g.clearInterval = (handle: unknown): void => {
+    return Reflect.apply(original.clearTimeout, this, [handle]);
+  });
+  g.clearInterval = wrap(original.clearInterval, function (handle) {
     forget(handle);
-    (original.clearInterval as (h: unknown) => void)(handle);
-  };
+    return Reflect.apply(original.clearInterval, this, [handle]);
+  });
   return {
     run: (fn) => call.run(true, fn),
     pending: () => live.size,

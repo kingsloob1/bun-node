@@ -127,6 +127,12 @@ export function unitSpawner(
 }
 
 /**
+ * How long a kit script (the fixture worker, a racer) may run at most, in
+ * ms: past the handoff's own budget (30 s to register, 30 s to drain).
+ */
+export const SCRIPT_CAP_MS = 120_000;
+
+/**
  * Runs a script's `main` and exits 1, with the error on stderr, if it
  * rejects. A timer holds the process open until `main` settles: on Bun
  * 1.4.3, a MySQL or MariaDB query issued after a transaction has committed
@@ -134,13 +140,28 @@ export function unitSpawner(
  * top-level `await` exits 0 in the middle of it (the driver's `purge`,
  * `ensureQueue` and the controller's checks all run one). Remove the timer
  * once Bun fixes it: https://github.com/oven-sh/bun/issues/27102 (our
- * reproduction on 1.4.3: #issuecomment-5886217119).
+ * reproduction on 1.4.3: #issuecomment-5886217119). A hard cap
+ * (`capMs`) ends a `main` that hangs.
  */
 export function runScript(
   /** The script's body. It exits the process itself when it is done. */
   main: () => Promise<unknown>,
+  /**
+   * The longest `main` may run, in ms, before the script exits 1 with a
+   * message: a hung script ends here rather than at the kit's `SIGKILL`.
+   * Defaults to {@link SCRIPT_CAP_MS}.
+   */
+  capMs: number = SCRIPT_CAP_MS,
 ): void {
   const open = setInterval(() => {}, 1 << 30);
+  const cap = setTimeout(() => {
+    process.stderr.write(
+      `the conformance kit's script did not finish within ${capMs}ms; exiting\n`,
+    );
+    process.exit(1);
+  }, capMs);
+  // The cap alone never keeps the process alive; the interval above does.
+  cap.unref();
   main()
     .catch((error: unknown) => {
       process.stderr.write(`${String(error)}\n`);
@@ -148,5 +169,6 @@ export function runScript(
     })
     .finally(() => {
       clearInterval(open);
+      clearTimeout(cap);
     });
 }

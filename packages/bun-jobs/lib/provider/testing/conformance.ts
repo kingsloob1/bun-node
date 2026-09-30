@@ -33,7 +33,12 @@ import {
   validateChecks,
 } from "./checks";
 import { fakeInternals } from "./fake";
-import { casChecks, handoffChecks, verdictProbe } from "./handoff";
+import {
+  assertSharedDriver,
+  casChecks,
+  handoffChecks,
+  verdictProbe,
+} from "./handoff";
 import { buildReport } from "./report";
 import { createRun, describeThrown, randomHex } from "./run";
 import { findSecrets } from "./scan";
@@ -242,6 +247,34 @@ function identityChecks(
   );
 }
 
+/** What {@link runProviderConformance} takes beside the provider. */
+export interface ConformanceOptions<TInput = unknown> {
+  /** A config pointing at the fake: its URL, test credentials. Ignored for a `Summoner`. */
+  config?: TInput;
+  /** Configs the schema must reject, each with the dotted path its issue should name. */
+  invalidConfigs?: readonly {
+    /** The config. */
+    config: unknown;
+    /** The path of the issue it should raise, e.g. `"region"`. */
+    path: string;
+  }[];
+  /** The fake platform, from `fakePlatform()`. */
+  platform: FakePlatform;
+  /** Checks to skip, each with a reason printed in the report. */
+  skip?: readonly {
+    /** The check id. */
+    id: string;
+    /** Why, for the report. */
+    reason: string;
+  }[];
+  /**
+   * The backend the handoff and the compare-and-set checks run on: one
+   * several processes share (SQLite, the file driver, Redis, Postgres, …).
+   * Defaults to a SQLite file in a temporary directory, removed after.
+   */
+  driver?: DriverConfig;
+}
+
 /**
  * Runs the summon facet (and the core) of a provider against a fake of its
  * platform, and reports every check in a fixed order (plugins §12.2):
@@ -259,39 +292,24 @@ function identityChecks(
  * Never throws for a failing provider: that is what the report says. Pass
  * it to {@link assertConformance} in a test.
  *
- * @throws {ConfigError} when `provider` is neither a provider nor a
- *   summoner, or `platform` is not from `fakePlatform()`.
+ * The timeouts check briefly replaces the global `setTimeout`,
+ * `setInterval` and their clears with counting wrappers (about 2 s, always
+ * restored): code elsewhere in the process that captured them before still
+ * works, and timers it creates meanwhile are not counted.
+ *
+ * @throws {ConfigError} when `platform` is not from `fakePlatform()`,
+ *   `driver` names a backend other processes cannot share (the memory
+ *   driver), or `provider` is neither a provider nor a summoner; each
+ *   before any check runs.
  */
 export async function runProviderConformance<TInput, TConfig>(
   provider: ComputeProvider<TInput, TConfig, boolean> | Summoner,
-  options: {
-    /** A config pointing at the fake: its URL, test credentials. Ignored for a `Summoner`. */
-    config?: TInput;
-    /** Configs the schema must reject, each with the dotted path its issue should name. */
-    invalidConfigs?: readonly {
-      /** The config. */
-      config: unknown;
-      /** The path of the issue it should raise, e.g. `"region"`. */
-      path: string;
-    }[];
-    /** The fake platform, from `fakePlatform()`. */
-    platform: FakePlatform;
-    /** Checks to skip, each with a reason printed in the report. */
-    skip?: readonly {
-      /** The check id. */
-      id: string;
-      /** Why, for the report. */
-      reason: string;
-    }[];
-    /**
-     * The backend the handoff and the compare-and-set checks run on: one
-     * several processes share (SQLite, the file driver, Redis, Postgres, …).
-     * Defaults to a SQLite file in a temporary directory, removed after.
-     */
-    driver?: DriverConfig;
-  },
+  options: ConformanceOptions<TInput>,
 ): Promise<ConformanceReport> {
   const internals = fakeInternals(options.platform);
+  if (options.driver !== undefined) {
+    await assertSharedDriver(options.driver);
+  }
   const unconfigured = isComputeProvider(provider)
     ? (provider as unknown as ComputeProvider<unknown, unknown>)
     : undefined;

@@ -3249,9 +3249,12 @@ const platform = await fakePlatform({
     return Response.json({ handles: [state.start({ argv: args, token }).handle] }, { status: 201 });
   },
 });
-const report = await runProviderConformance(acme, { config: { url: platform.url, apiToken: "test-token" }, platform });
-assertConformance(report); // throws on a failed `must` check, never on a `should` warning
-await platform.close();
+try {
+  const report = await runProviderConformance(acme, { config: { url: platform.url, apiToken: "test-token" }, platform });
+  assertConformance(report); // throws on a failed `must` check, never on a `should` warning
+} finally {
+  await platform.close();
+}
 ```
 
 The report lists every check by a stable id (`summon.dedupe.same-key-one-unit`)

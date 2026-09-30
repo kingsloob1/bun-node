@@ -13,10 +13,12 @@ import type { SpawnedUnit } from "./spawn";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDriver } from "../../drivers/index";
+import { createDriver, supportsWorkers } from "../../drivers/index";
 import { BunQueue } from "../../queue/BunQueue";
+import { ConfigError } from "../../shared/errors";
 import { SummonController } from "../../summon/controller";
 import { PROVIDER_FETCH_PROBE } from "../context";
+import { VERDICT_POLICY } from "./checks";
 import { RACER, RACER_ENV } from "./racer";
 import { describeThrown, kitLifetime, randomHex } from "./run";
 import { spawnUnit, unitLines, unitSpawner } from "./spawn";
@@ -45,6 +47,9 @@ const HANDOFF_JOBS = 3;
 /** Rounds of the compare-and-set race. */
 const CAS_ROUNDS = 2;
 
+/** Checks each racer runs per round. */
+const CAS_CHECKS = 3;
+
 /** A backend for the end-to-end checks: the given one, or a SQLite file in a temporary directory. */
 async function backend(run: KitRun): Promise<{
   config: DriverConfig;
@@ -60,6 +65,38 @@ async function backend(run: KitRun): Promise<{
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Refuses a backend the end-to-end checks cannot share between processes,
+ * before any check runs: the refusals a `SummonController` would make (not
+ * multi-process, no queue state, no worker records). It builds the driver
+ * without connecting.
+ *
+ * @throws {ConfigError} naming what the driver lacks.
+ */
+export async function assertSharedDriver(config: DriverConfig): Promise<void> {
+  const driver = createDriver(config);
+  try {
+    if (!driver.capabilities.multiProcess) {
+      throw new ConfigError(
+        `runProviderConformance: the ${driver.name} driver cannot be shared with another process, and the handoff and the race run the provider's worker and a second controller in processes of their own. Pass a backend they can share (SQLite, the file driver, Redis, Postgres, …), or none for a temporary SQLite file`,
+        { driver: driver.name },
+      );
+    }
+    if (
+      typeof driver.getQueueState !== "function" ||
+      typeof driver.setQueueState !== "function" ||
+      !supportsWorkers(driver)
+    ) {
+      throw new ConfigError(
+        `runProviderConformance: the ${driver.name} driver has no queue state or worker records, which summoning needs`,
+        { driver: driver.name },
+      );
+    }
+  } finally {
+    await driver.close().catch(() => {});
+  }
 }
 
 /** Resolves after `ms`, on the kit's own clock. */
@@ -102,6 +139,7 @@ export async function handoffChecks(run: KitRun): Promise<void> {
 
   const store = await backend(run);
   const namespace = `conformance-${randomHex(6)}`;
+  run.internals.namespaces.push(namespace);
   const queueName = "work";
   let driver: JobsDriver | undefined;
   let queue: BunQueue<unknown> | undefined;
@@ -163,10 +201,7 @@ export async function handoffChecks(run: KitRun): Promise<void> {
         [PROVIDER_FETCH_PROBE]: run.fetch,
       } as SummonControllerOptions);
     } catch (error) {
-      fail(
-        0,
-        `a SummonController refused the provider: ${describeThrown(error)}${error instanceof Error ? `: ${error.message}` : ""}`,
-      );
+      fail(0, `a SummonController refused the provider: ${run.explain(error)}`);
       return;
     }
     controller.on("summon", (event) => events.push(event));
@@ -301,12 +336,12 @@ export async function handoffChecks(run: KitRun): Promise<void> {
     }
     run.set("summon.handoff.drained", "pass");
     stage = 3;
+    // Nothing more is the handoff's: a unit the scale-down check starts
+    // stays a unit on the fake, with no worker process behind it.
+    run.platform.onStart(undefined);
     await scaleDownCheck(run, driver);
   } catch (error) {
-    fail(
-      stage,
-      `the handoff failed: ${describeThrown(error)}${error instanceof Error ? `: ${error.message}` : ""}`,
-    );
+    fail(stage, `the handoff failed: ${run.explain(error)}`);
   } finally {
     run.platform.onStart(undefined);
     if (controller !== undefined) {
@@ -317,6 +352,9 @@ export async function handoffChecks(run: KitRun): Promise<void> {
     await within(spawner.kill("SIGKILL"), 5_000);
     await queue?.close().catch(() => {});
     await driver?.purge(namespace).catch(() => {});
+    // The direct calls' namespace: nothing should have written there, but
+    // the kit leaves no name of its own behind.
+    await driver?.purge(run.namespace).catch(() => {});
     await driver?.close().catch(() => {});
     await store.cleanup();
   }
@@ -354,6 +392,7 @@ async function scaleDownCheck(run: KitRun, driver: JobsDriver): Promise<void> {
     return;
   }
   const namespace = `conformance-idle-${randomHex(6)}`;
+  run.internals.namespaces.push(namespace);
   const controller = new SummonController({
     driver,
     namespace,
@@ -408,9 +447,10 @@ export async function verdictProbe(run: KitRun): Promise<{
   }
   const probe: VerdictProbe = async () => {
     if (connected !== undefined) {
-      return `the backend for the controller's verdict could not connect: ${describeThrown(connected)}`;
+      return `the backend for the controller's verdict could not connect: ${run.explain(connected)}`;
     }
     const namespace = `conformance-err-${randomHex(6)}`;
+    run.internals.namespaces.push(namespace);
     const queue = new BunQueue("work", {
       namespace,
       driver,
@@ -426,8 +466,14 @@ export async function verdictProbe(run: KitRun): Promise<{
         summoner: run.summoner,
         triggers: { onAdd: false, events: false, poll: false },
         cooldown: 0,
-        backoff: { initial: 100, max: 100 },
-        circuit: { failures: 5, resetAfter: 600_000 },
+        backoff: {
+          initial: VERDICT_POLICY.backoffMs,
+          max: VERDICT_POLICY.backoffMs,
+        },
+        circuit: {
+          failures: VERDICT_POLICY.circuitFailures,
+          resetAfter: VERDICT_POLICY.resetAfterMs,
+        },
         bootBudget: REGISTER_WITHIN_MS,
         maxLifetime: kitLifetime(run.capabilities),
         logger: run.logger,
@@ -447,7 +493,7 @@ export async function verdictProbe(run: KitRun): Promise<{
           : { detail: status.last.detail }),
       };
     } catch (error) {
-      return `the controller's check failed: ${describeThrown(error)}`;
+      return `the controller's check failed: ${run.explain(error)}`;
     } finally {
       await controller?.close().catch(() => {});
       await queue.close().catch(() => {});
@@ -515,6 +561,7 @@ export async function casChecks(run: KitRun): Promise<void> {
     await driver.connect();
     for (let round = 0; round < CAS_ROUNDS; round++) {
       const namespace = `conformance-cas-${randomHex(6)}`;
+      run.internals.namespaces.push(namespace);
       const queue = new BunQueue("work", {
         namespace,
         driver,
@@ -528,7 +575,7 @@ export async function casChecks(run: KitRun): Promise<void> {
           [RACER_ENV.namespace]: namespace,
           [RACER_ENV.queue]: "work",
           [RACER_ENV.startAt]: String(Date.now() + 1_500),
-          [RACER_ENV.checks]: "3",
+          [RACER_ENV.checks]: String(CAS_CHECKS),
           [RACER_ENV.forward]: `http://127.0.0.1:${server.port}`,
           [RACER_ENV.provider]: JSON.stringify({
             kind: run.identity.kind,
@@ -547,6 +594,20 @@ export async function casChecks(run: KitRun): Promise<void> {
           const stderr = (await within(racers[0]!.errors, 1_000)) ?? "";
           failures.push(
             `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${stderr.trim().split("\n").slice(-2).join(" | ")}`}`,
+          );
+          break;
+        }
+        // A racer that died quietly raced nobody: each prints one line per check.
+        const printed = await Promise.all(
+          racers.map(async (racer) => {
+            const lines = await unitLines(racer);
+            return lines.filter((line) => "action" in line).length;
+          }),
+        );
+        const short = printed.findIndex((count) => count !== CAS_CHECKS);
+        if (short !== -1) {
+          failures.push(
+            `round ${round + 1}: racer ${short + 1} reported ${printed[short]} of its ${CAS_CHECKS} checks, so the controllers did not both race`,
           );
           break;
         }
@@ -581,11 +642,7 @@ export async function casChecks(run: KitRun): Promise<void> {
         : failures.join("; "),
     );
   } catch (error) {
-    run.set(
-      id,
-      "fail",
-      `the race failed: ${describeThrown(error)}${error instanceof Error ? `: ${error.message}` : ""}`,
-    );
+    run.set(id, "fail", `the race failed: ${run.explain(error)}`);
   } finally {
     await server.stop(true);
     await driver?.close().catch(() => {});

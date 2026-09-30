@@ -190,9 +190,9 @@ describe("fakePlatform", () => {
       expect(
         ((await response.json()) as { error: { code: string } }).error.code,
       ).toBe(code);
-      if (fault === "throttled") {
-        expect(response.headers.get("retry-after")).toBe("3");
-      }
+      expect(response.headers.get("retry-after")).toBe(
+        fault === "throttled" || fault === "quota" ? "3" : null,
+      );
     }
     platform.inject("capacity-200", { times: 2 });
     for (let index = 0; index < 2; index++) {

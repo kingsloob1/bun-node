@@ -45,8 +45,9 @@ export interface ProviderSetupContext {
  * Internal: the property a `SummonController`'s options carry the conformance
  * kit's `fetch` under, so its calls' `ctx.fetch` is the kit's (summon-compute
  * §13.10 Q-p7). A `Symbol.for` key, so a kit from another copy of the package
- * still reaches it; exported from no entry, so it adds nothing to the public
- * surface. Nothing but the kit sets it.
+ * still reaches it. Internal and not part of the public API: no entry
+ * exports it, and it is reachable only by a deep import into `lib/` (the
+ * `./lib/*` exports pattern). Nothing but the kit sets it.
  */
 export const PROVIDER_FETCH_PROBE: unique symbol = Symbol.for(
   "@kingsleyweb/bun-jobs:provider-fetch-probe",
