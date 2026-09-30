@@ -363,6 +363,12 @@ It never serves:
 only the management API's preflight route redacts and caps its checks'
 `detail`. Write them secret-free either way.
 
+"Summon now" and reset (`queues.summon`) spend money, so that action is
+opt-in and removed by `readOnly`.
+
+Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
+(`toSummonStatusDto`), [`lib/api/config.ts`](../../lib/api/config.ts).
+
 ## The config schema
 
 `GET /providers/:id/schema` serves a provider's config schema as a
@@ -388,12 +394,6 @@ So the route:
 
 Source: [`lib/api/routes/providers.ts`](../../lib/api/routes/providers.ts)
 (`sanitizeSchema`).
-
-"Summon now" and reset (`queues.summon`) spend money, so that action is
-opt-in and removed by `readOnly`.
-
-Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
-(`toSummonStatusDto`), [`lib/api/config.ts`](../../lib/api/config.ts).
 
 ## For provider authors
 
