@@ -1,18 +1,32 @@
 import type { JobsDriver, QueueDemand } from "../drivers/index";
-import type { Logger, LoggerLike } from "../shared/logger";
+import type { ProviderCallContext } from "../provider/context";
+import type {
+  ConfiguredProvider,
+  ProviderIdentity,
+  SummonCapabilities,
+  SummonFacet,
+} from "../provider/define";
+import type { LoggerLike } from "../shared/logger";
 
 /**
  * The public vocabulary of summoning: what a summoner is told and answers,
  * how a queue is summoned for, and what a check reports.
  *
- * **The provider types here are a stand-in.** `ProviderIdentity`,
- * `SummonCapabilities`, `SummonDedupe`, `SummonFacet`, `UnitStatus` and
- * `ProviderCallContext` are the plugin API's (`compute-provider-plugins.md`
- * §6–§7), which has not landed yet. They are declared here with the plan's
- * shapes so `defineSummoner` and `SummonController` can be used today; the
- * plugin API replaces them with its own, unchanged in shape, and this module
- * re-exports those.
+ * The provider types (`ProviderIdentity`, `ProviderApiVersions`,
+ * `SummonCapabilities`, `SummonDedupe`, `SummonFacet`, `UnitStatus`,
+ * `ProviderCallContext`) are the plugin API's, defined in `lib/provider/`
+ * (the `./provider` entry) and re-exported here unchanged, so an import
+ * written against this module keeps working.
  */
+export type { ProviderCallContext } from "../provider/context";
+export type {
+  ProviderApiVersions,
+  ProviderIdentity,
+  SummonCapabilities,
+  SummonDedupe,
+  SummonFacet,
+  UnitStatus,
+} from "../provider/define";
 
 /** Why a check ran. */
 export type SummonReason =
@@ -49,186 +63,15 @@ export type SummonOutcomeKind =
   | "released";
 
 /**
- * The plugin API versions a provider was written against. Stand-in for the
- * plugin API's type of the same name.
- */
-export interface ProviderApiVersions {
-  /** The core version, `"major.minor"`. Required. */
-  core: string;
-  /** The summon facet version, when the provider has a `summon` facet. */
-  summon?: string;
-}
-
-/**
- * Who a provider is. Shown in logs, events, the status route and the UI.
- * Stand-in for the plugin API's type of the same name.
- */
-export interface ProviderIdentity {
-  /**
-   * The provider's unique name: its npm package name, optionally with a
-   * `:variant`, e.g. `"@kingsleyweb/bun-jobs:ecs"`. `defineSummoner` names
-   * its anonymous provider `"custom:" + kind`. Never parsed.
-   */
-  readonly name: string;
-  /** The provider's own version, semver. `"0.0.0"` for a `defineSummoner` one. */
-  readonly version: string;
-  /** A short label for badges and event payloads, e.g. `"ecs"`, `"fly"`. */
-  readonly kind: string;
-  /** A human name for the UI. Defaults to `kind`. */
-  readonly displayName?: string;
-  /** Where its documentation lives. */
-  readonly homepage?: string;
-  /** The plugin API versions it was written against. */
-  readonly apiVersion: ProviderApiVersions;
-}
-
-/** How a platform dedupes a retried call, and the key it accepts. */
-export type SummonDedupe =
-  | {
-      /** A request token the platform remembers: ECS `clientToken`, EC2 `ClientToken`. */
-      kind: "token";
-      /** The longest key it accepts. `request.dedupeKey` is clipped to fit. */
-      maxLength: number;
-      /** The characters it accepts, as a character-class body, e.g. `"A-Za-z0-9-"`. */
-      charset: string;
-      /** What the token is unique within, for the docs and the UI, e.g. `"cluster"`. */
-      scope: string;
-      /** How long the platform remembers it, in ms, when documented (ECS: up to 24 h). */
-      ttlMs?: number;
-      /**
-       * Whether a same-token request with different parameters is an error
-       * (ECS `ConflictException`). When `true`, requests must be pure
-       * functions of the key — which the controller guarantees for everything
-       * it builds (`SummonRequest.demand` and `reason` excepted: never send
-       * those to such a platform).
-       */
-      strict: boolean;
-    }
-  | {
-      /** A name the platform will not create twice: a systemd unit, a Kubernetes Job. */
-      kind: "name";
-      /** The longest name it accepts. */
-      maxLength: number;
-      /** The characters it accepts, as a character-class body. */
-      charset: string;
-    }
-  | {
-      /** No platform dedupe. The marker's compare-and-set is the whole guard. */
-      kind: "none";
-    };
-
-/** What a summon facet declares. The controller reads these instead of knowing platforms by name. */
-export interface SummonCapabilities {
-  /**
-   * How it starts compute: `"launch"` starts N new units (a race can double
-   * up, so the marker is claimed first); `"scale"` sets a count, idempotent,
-   * and needs `release()` to go back to zero; `"wake"` starts one of a fixed
-   * pool of pre-created units, behaving as launch with `maxWorkers` clamped
-   * to `poolSize`.
-   */
-  style: "launch" | "scale" | "wake";
-  /** How the platform deduplicates a retried call. */
-  dedupe: SummonDedupe;
-  /**
-   * How per-attempt values reach the process: `"argv"`, or `"none"` when the
-   * unit's command line is fixed. With `"none"`, attempts are released by
-   * start time (a live worker started at most 5 s before the attempt), not
-   * by id.
-   */
-  passes: "argv" | "none";
-  /** The default in-flight TTL, in ms. `SummonPolicy.bootBudget` overrides it. */
-  bootBudgetMs: number;
-  /** What the platform sends to stop a unit, and how long it waits before killing it. */
-  shutdown: {
-    /** The stop signal: `"SIGTERM"` on most platforms, `"SIGINT"` on Fly, `"none"` for in-invocation. */
-    signal: "SIGTERM" | "SIGINT" | "none";
-    /** The grace after the signal, in ms. Passed to the worker as `--bun-jobs-summon-grace-ms`. */
-    graceMs: number;
-    /** The most the platform allows the grace to be raised to, when known. */
-    graceMaxMs?: number;
-  };
-  /**
-   * The platform's own cap on one unit's life, in ms, or `null` for none
-   * known. A `maxLifetime` above it is a `ConfigError`.
-   */
-  maxLifetimeMs: number | null;
-  /** Whether the facet maps `request.maxLifetimeMs` onto the platform's cap. */
-  enforcesLifetime: boolean;
-  /** The most units one `summon()` may start, when the platform limits it. `count` is clamped to it. */
-  maxCountPerCall?: number;
-  /** `"wake"` only: how many units the pool has. `maxWorkers` above it is clamped, with a `warn`. */
-  poolSize?: number;
-}
-
-/** What every facet call receives. Stand-in for the plugin API's type of the same name. */
-export interface ProviderCallContext {
-  /** Aborted when the call's timeout (`summonTimeout`) passes. Honour it. */
-  readonly signal: AbortSignal;
-  /** A logger bound to the controller's queue and the attempt. */
-  readonly logger: Logger;
-  /** The `fetch` to use for every platform call. The global one. */
-  readonly fetch: typeof fetch;
-  /** The host's clock, epoch ms. */
-  readonly now: () => number;
-}
-
-/** One unit, as the platform reports it. */
-export interface UnitStatus {
-  /** The handle `summon` returned for it. */
-  handle: string;
-  /** Where it is. `"unknown"` when the platform no longer knows the handle. */
-  state: "pending" | "running" | "exited" | "failed" | "unknown";
-  /** The exit code, when it exited and the platform says. */
-  exitCode?: number;
-  /** A short, secret-free platform reason: `"CannotPullContainerError"`, `"OOMKilled"`. */
-  detail?: string;
-}
-
-/** The summon facet: what the controller calls. */
-export interface SummonFacet {
-  /** What it can do. Read once, when the controller is built. */
-  readonly capabilities: SummonCapabilities;
-  /**
-   * Starts compute for one attempt. A result when the platform answered
-   * normally; a throw when it did not, which the controller records as
-   * `failed`.
-   */
-  summon: (
-    request: SummonRequest,
-    context: ProviderCallContext,
-  ) => Promise<SummonResult>;
-  /** Scale style only, and then required: set the platform's count, usually to `0`. */
-  release?: (
-    request: SummonReleaseRequest,
-    context: ProviderCallContext,
-  ) => Promise<void>;
-  /**
-   * What the platform says about units it started, by handle. Optional: asked
-   * once when an attempt is declared lost, to explain it.
-   */
-  status?: (
-    handles: readonly string[],
-    context: ProviderCallContext,
-  ) => Promise<readonly UnitStatus[]>;
-  /** Stops units by handle, best effort. Optional: used on a lost attempt whose unit is still pending. */
-  cancel?: (
-    handles: readonly string[],
-    context: ProviderCallContext,
-  ) => Promise<void>;
-}
-
-/**
  * Something that can start compute for a queue: a configured provider with a
- * `summon` facet. Made by `defineSummoner`, or by a provider plugin once the
- * plugin API lands.
+ * `summon` facet. Made by `defineSummoner`, or by calling a provider from
+ * `defineComputeProvider` with its config. It carries the provider brand, so
+ * a hand-built object literal is refused; a spread of a real one (to wrap
+ * its facet) keeps the brand and is accepted.
  */
-export interface Summoner {
-  /** Who the provider is. */
-  readonly provider: ProviderIdentity;
+export interface Summoner extends ConfiguredProvider {
   /** The summon facet the controller calls. */
   readonly summon: SummonFacet;
-  /** Secret-free facts for the status route and the UI. */
-  describe: () => Readonly<Record<string, string>>;
 }
 
 /** Everything a summoner is told about one attempt. */

@@ -3118,7 +3118,7 @@ Examples:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `summoner` | required | A `Summoner` from `defineSummoner`, or a bare function. |
+| `summoner` | required | A `Summoner` from `defineSummoner`, a provider from `defineComputeProvider` (`@kingsleyweb/bun-jobs/provider`) called with its config, or a bare function. A hand-built object is refused: wrap its function in `defineSummoner`. |
 | `triggers` | on, on, `30_000`, `250` | `onAdd`, `events` (where events cross processes), `poll` (ms or `false`), `debounce` (ms). |
 | `bootBudget` | the summoner's (`180_000`) | How long an attempt counts as a worker on its way. |
 | `maxWorkers` | `1` | The most summoned workers at once. |
@@ -3131,7 +3131,7 @@ Examples:
 | `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
 | `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |
 | `scaleDown` | `300_000` | Scale style: how long nothing is outstanding before the count goes to 0. |
-| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long `close()` waits for `summon` events still publishing. |
+| `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long an attempt waits for a provider whose config validates asynchronously (`ready`), and how long `close()` waits for `summon` events still publishing. |
 | `env` | `{}` | Static environment for every request. Never identity. |
 | `fromSummoned` | `false` | Whether the controller runs in a summoned process or runner child. |
 
