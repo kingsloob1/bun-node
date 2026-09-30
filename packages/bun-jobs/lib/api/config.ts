@@ -568,7 +568,9 @@ export interface JobsApiConfig {
    * Allow-list of actions to expose: **only** the actions named here are
    * enabled, and anything absent is neither routed nor documented. Defaults,
    * when unset, to every action except `JOBS_API_OPT_IN_ACTIONS` (`jobs.add`,
-   * `jobs.update`). It is not a list of extras on top of that default:
+   * `jobs.update`, `queues.summon`, `providers.read`, `providers.validate`
+   * and the remote-configuration ones). It is not a list of extras on top of
+   * that default:
    * `["jobs.add", "jobs.update"]` alone disables every other action, reads
    * included. To add those two to the default, pass `[...JOBS_API_ACTIONS]`
    * (or the default list plus them).

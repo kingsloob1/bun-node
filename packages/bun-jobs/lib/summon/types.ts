@@ -520,13 +520,34 @@ export interface SummonStatus {
    * marker was written by a newer bun-jobs, which this build leaves alone).
    */
   inertReason?: "summoned-process" | "newer-marker";
-  /** The summoner: its identity, its declared capabilities, and its `describe()` facts. */
+  /**
+   * The summoner: its identity, how far its config has got, its declared
+   * capabilities once known, and its `describe()` facts. Always present from
+   * `controller.status()`.
+   */
   summoner?: {
     /** Who the provider is. */
     provider: ProviderIdentity;
-    /** What it declared. */
-    capabilities: SummonCapabilities;
-    /** Secret-free facts from `describe()`. */
+    /**
+     * The configured instance's id in this process, `name@version#<n>`: what
+     * the management API's `/providers/:id/…` routes take. Absent for a copy
+     * of a configured provider that replaced both its facet and `validate`,
+     * which nothing can trace back to an instance.
+     */
+    providerId?: string;
+    /**
+     * Whether the summoner can be called: `"ready"`; `"pending"` while its
+     * provider's asynchronous config validation (`ready`) is still running;
+     * `"failed"` when that validation rejected (the next attempt validates
+     * again, and fails without a call until it passes: its detail is on
+     * `last.detail`), or when the facet it produced was refused for good (a
+     * scale style without `release`, a lifetime over the platform's cap:
+     * every check throws it).
+     */
+    readiness: "ready" | "pending" | "failed";
+    /** What it declared. Only when `readiness` is `"ready"`: unknown before. */
+    capabilities?: SummonCapabilities;
+    /** Secret-free facts from `describe()`. `{}` until the config is known. */
     facts: Readonly<Record<string, string>>;
   };
   /** Attempts in flight. */

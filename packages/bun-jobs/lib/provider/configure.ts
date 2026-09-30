@@ -8,12 +8,14 @@ import type {
   SummonCapabilities,
   SummonFacet,
 } from "./define";
+import type { ProviderReadiness, RegisteredProvider } from "./registry";
 import { JOBS_VERSION } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
 import { createJobsLogger } from "../shared/logger";
 import { providerCallContext } from "./context";
 import { CONFIGURED_PROVIDER } from "./define";
 import { MIN_SECRET_LENGTH, redactingLogger, textRedactor } from "./redact";
+import { nextProviderId, registerConfigured } from "./registry";
 import { negotiate } from "./version";
 
 /**
@@ -54,10 +56,24 @@ interface ProviderState {
    * that config, so kept, and every later settle rejects with it.
    */
   fatal: unknown;
+  /**
+   * Whether the latest validation rejected (and no newer one has started):
+   * what makes an unknown config `"failed"` rather than `"pending"`.
+   */
+  failed: boolean;
+  /** Its entry in the per-process registry, held here so it lives as long as the provider does. */
+  entry: RegisteredProvider | undefined;
 }
 
 /** Configured providers, and the stand-in facets of pending ones, to their state. */
 const STATES = new WeakMap<object, ProviderState>();
+
+/**
+ * States by a configured provider's `validate` function: a spread of a
+ * configured provider copies it, so this finds the instance behind a copy
+ * whose facet was replaced.
+ */
+const VALIDATORS = new WeakMap<object, ProviderState>();
 
 /** Definitions by identity, for the secrets of a configured provider copied by a spread. */
 const DEFINITIONS = new WeakMap<
@@ -300,9 +316,16 @@ function attempt(
   });
   settled = shared;
   state.inFlight = shared;
+  state.failed = false;
   const current = run.then(() => undefined);
-  // `ready` may never be awaited; its rejection must not be unhandled.
-  current.catch(() => {});
+  // `ready` may never be awaited; its rejection must not be unhandled. A
+  // rejection of the latest validation marks the provider failed until the
+  // next one starts.
+  current.catch(() => {
+    if (state.current === current) {
+      state.failed = true;
+    }
+  });
   shared.catch(() => {});
   state.current = current;
   return shared;
@@ -413,6 +436,8 @@ export function configure<TConfig, TInput>(
     current: Promise.resolve(),
     inFlight: undefined,
     fatal: undefined,
+    failed: false,
+    entry: undefined,
   };
 
   const schema = definition.config;
@@ -485,7 +510,48 @@ export function configure<TConfig, TInput>(
     [CONFIGURED_PROVIDER]: true as const,
   });
   STATES.set(configured, state);
+  VALIDATORS.set(validate, state);
+  state.entry = {
+    id: nextProviderId(identity),
+    identity,
+    definition: general,
+    configured,
+    readiness: () => readinessOf(state),
+    secrets: () =>
+      secretValues(general, state.known ? state.config : state.input),
+  };
+  registerConfigured(state.entry);
   return configured;
+}
+
+/** How far a provider's config has got (see {@link RegisteredProvider.readiness}). */
+function readinessOf(state: ProviderState): ProviderReadiness {
+  if (state.known) {
+    return "ready";
+  }
+  return state.fatal !== undefined || state.failed ? "failed" : "pending";
+}
+
+/**
+ * Internal: the registry entry of a configured provider, or of a spread of
+ * one (found through its stand-in facet or its `validate`), or `undefined`
+ * for anything that cannot be traced to an instance.
+ */
+export function registeredProvider(configured: {
+  /** Its summon facet: a pending provider's stand-in leads to its state. */
+  readonly summon?: unknown;
+  /** Its preflight: a spread keeps the instance's own. */
+  readonly validate?: unknown;
+}): RegisteredProvider | undefined {
+  const state =
+    STATES.get(configured) ??
+    (typeof configured.summon === "object" && configured.summon !== null
+      ? STATES.get(configured.summon)
+      : undefined) ??
+    (typeof configured.validate === "function"
+      ? VALIDATORS.get(configured.validate)
+      : undefined);
+  return state?.entry;
 }
 
 /** Internal: how a summoner's facet stands, for the controller (see {@link facetReadiness}). */
@@ -494,6 +560,12 @@ export interface FacetReadiness {
   settled: () => SummonFacet | undefined;
   /** What building the facet threw, for good; `undefined` otherwise. */
   fatal: () => unknown;
+  /**
+   * Whether the config is known to have failed: building the facet threw, or
+   * the latest validation rejected and none newer has started. `false` while
+   * one is in flight.
+   */
+  failed: () => boolean;
   /** Waits for the real facet, joining a validation in flight; rejects with its failure. */
   settle: () => Promise<SummonFacet>;
   /**
@@ -517,6 +589,7 @@ export function facetReadiness(facet: SummonFacet): FacetReadiness {
     return {
       settled: () => facet,
       fatal: () => undefined,
+      failed: () => false,
       settle: async () => facet,
       abandon: () => {},
     };
@@ -530,6 +603,7 @@ export function facetReadiness(facet: SummonFacet): FacetReadiness {
   return {
     settled: () => (state.known ? state.facet : undefined),
     fatal: () => state.fatal,
+    failed: () => readinessOf(state) === "failed",
     settle: () => {
       const validation = settle(state);
       const waited = validation.then((facet) => facet!);

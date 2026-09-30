@@ -13,6 +13,8 @@ import type {
   StoredJobOptions,
   WorkerInfo,
 } from "../drivers/index";
+import type { ProviderIdentity } from "../provider/define";
+import type { RegisteredProvider } from "../provider/registry";
 import type {
   RunnerConfigInfo,
   RunnerConfigValues,
@@ -28,12 +30,15 @@ import type {
 import type { ResolvedJobsApiSerializers } from "./config";
 import type { JobDefaultKey, JobInclude } from "./contract/constants";
 import type {
+  ProviderDto,
   QueueDemandDto,
   SummonCapabilitiesDto,
   SummonCheckDto,
+  SummonProviderDto,
   SummonStatusDto,
 } from "./contract/types";
 import type { EventWire } from "./ws/events";
+import { textRedactor } from "../provider/redact";
 import { explicitKeys } from "../queue/jobDefaults";
 import { normalizeExecutionMode } from "../runner/config";
 import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
@@ -838,6 +843,13 @@ export function toEventDto(
   return options.event ? options.event(dto, event, req) : dto;
 }
 
+/**
+ * The redactor's credential patterns alone (`Bearer …`, `key=value` under a
+ * sensitive key, a URL's password, a JWT): a fact they would change holds a
+ * credential shape, and is not served.
+ */
+const CREDENTIAL_SHAPES = textRedactor([]);
+
 /** Fact keys that name a machine, served only with `exposeHosts`. */
 const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
 
@@ -845,7 +857,8 @@ const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);
  * Whether a summoner's `describe()` fact may be served. The contract says
  * `describe()` is secret-free; this drops what would leak if one were not
  * (plan §9.3): a key with a credential word in it, a value holding a URL
- * with userinfo, whatever its key, and a `host` or `hostname` fact unless
+ * with userinfo or another credential shape the redactor knows (`Bearer …`,
+ * a JWT), whatever its key, and a `host` or `hostname` fact unless
  * `exposeHosts` is on, as a worker's `host` is.
  */
 export function isServableFact(
@@ -862,10 +875,87 @@ export function isServableFact(
   if (isCredentialKey(key)) {
     return false;
   }
-  if (URL_USERINFO.test(value)) {
+  if (URL_USERINFO.test(value) || CREDENTIAL_SHAPES(value) !== value) {
     return false;
   }
   return exposeHosts || !HOST_FACT_KEYS.has(key.toLowerCase());
+}
+
+/** A provider's `describe()` facts, less every one {@link isServableFact} refuses. */
+export function servableFacts(
+  /** The facts. */
+  facts: Readonly<Record<string, string>>,
+  /** Whether hosts are served (`serialize.exposeHosts`). */
+  exposeHosts: boolean,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(facts).filter(([key, value]) =>
+      isServableFact(key, value, exposeHosts),
+    ),
+  );
+}
+
+/** A provider's identity, copied field by field. */
+function toSummonProviderDto(provider: ProviderIdentity): SummonProviderDto {
+  return {
+    name: provider.name,
+    version: provider.version,
+    kind: provider.kind,
+    ...(provider.displayName === undefined
+      ? {}
+      : { displayName: provider.displayName }),
+    ...(provider.homepage === undefined ? {} : { homepage: provider.homepage }),
+    apiVersion: {
+      core: provider.apiVersion.core,
+      ...(provider.apiVersion.summon === undefined
+        ? {}
+        : { summon: provider.apiVersion.summon }),
+    },
+  };
+}
+
+/**
+ * Shapes a configured provider for `GET /providers`: its id, identity and
+ * readiness, its facts under the summon status's filter, and whether it has a
+ * preflight and a JSON Schema for its config. Never its config.
+ */
+export function toProviderDto(
+  entry: RegisteredProvider,
+  options: Pick<ResolvedJobsApiSerializers, "exposeHosts">,
+): ProviderDto {
+  const { definition } = entry;
+  return {
+    id: entry.id,
+    provider: toSummonProviderDto(entry.identity),
+    readiness: entry.readiness(),
+    facts: servableFacts(entry.configured.describe(), options.exposeHosts),
+    preflight: typeof definition.validate === "function",
+    configSchema: hasJsonSchema(definition.config),
+  };
+}
+
+/** Whether a config schema implements Standard JSON Schema (its `~standard.jsonSchema.input`). */
+export function hasJsonSchema(schema: unknown): boolean {
+  return typeof jsonSchemaInput(schema) === "function";
+}
+
+/** A config schema's `~standard.jsonSchema.input`, or `undefined` when it has none. */
+export function jsonSchemaInput(schema: unknown): unknown {
+  if (typeof schema !== "object" && typeof schema !== "function") {
+    return undefined;
+  }
+  if (schema === null) {
+    return undefined;
+  }
+  const standard = (schema as { "~standard"?: unknown })["~standard"];
+  if (typeof standard !== "object" || standard === null) {
+    return undefined;
+  }
+  const converter = (standard as { jsonSchema?: unknown }).jsonSchema;
+  if (typeof converter !== "object" || converter === null) {
+    return undefined;
+  }
+  return (converter as { input?: unknown }).input;
 }
 
 /** A summoner's declared capabilities, copied field by field. */
@@ -938,29 +1028,17 @@ export function toSummonStatusDto(
       ? {}
       : {
           summoner: {
-            provider: {
-              name: provider.name,
-              version: provider.version,
-              kind: provider.kind,
-              ...(provider.displayName === undefined
-                ? {}
-                : { displayName: provider.displayName }),
-              ...(provider.homepage === undefined
-                ? {}
-                : { homepage: provider.homepage }),
-              apiVersion: {
-                core: provider.apiVersion.core,
-                ...(provider.apiVersion.summon === undefined
-                  ? {}
-                  : { summon: provider.apiVersion.summon }),
-              },
-            },
-            capabilities: toSummonCapabilitiesDto(summoner.capabilities),
-            facts: Object.fromEntries(
-              Object.entries(summoner.facts).filter(([key, value]) =>
-                isServableFact(key, value, options.exposeHosts),
-              ),
-            ),
+            provider: toSummonProviderDto(provider),
+            ...(summoner.providerId === undefined
+              ? {}
+              : { providerId: summoner.providerId }),
+            readiness: summoner.readiness,
+            ...(summoner.capabilities === undefined
+              ? {}
+              : {
+                  capabilities: toSummonCapabilitiesDto(summoner.capabilities),
+                }),
+            facts: servableFacts(summoner.facts, options.exposeHosts),
           },
         }),
     pending: status.pending.map((attempt) => ({

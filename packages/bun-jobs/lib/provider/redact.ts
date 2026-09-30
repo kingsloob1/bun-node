@@ -66,6 +66,26 @@ export function textRedactor(
   };
 }
 
+/**
+ * The longest detail stored or served — a marker's `last.detail`, a `summon`
+ * event's, a preflight's: a longer one (a provider passing a response body
+ * as its `platformCode`) is cut to this, ending in `…`.
+ */
+export const DETAIL_MAX = 128;
+
+/** A detail from a provider, redacted by {@link textRedactor} and cut to {@link DETAIL_MAX}. */
+export function redactDetail(
+  /** The detail. */
+  detail: string,
+  /** The provider's declared secret values. */
+  secrets: readonly unknown[],
+): string {
+  const redacted = textRedactor(secrets)(detail);
+  return redacted.length > DETAIL_MAX
+    ? `${redacted.slice(0, DETAIL_MAX - 1)}…`
+    : redacted;
+}
+
 /** Whether a value is a plain object literal, walked as it is. */
 function isPlainObject(value: object): boolean {
   const proto = Object.getPrototypeOf(value) as unknown;

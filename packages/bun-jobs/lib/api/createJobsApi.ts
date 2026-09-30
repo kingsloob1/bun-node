@@ -20,6 +20,7 @@ import { isRouteEnabled, registerRoutes } from "./routes/define";
 import { docsRoutes } from "./routes/docs";
 import { jobRoutes } from "./routes/jobs";
 import { buildMeta, csrfOf, metaRoutes } from "./routes/meta";
+import { providerRoutes } from "./routes/providers";
 import { queueRoutes } from "./routes/queues";
 import { repeatableRoutes } from "./routes/repeatables";
 import { runnerRoutes } from "./routes/runners";
@@ -40,6 +41,7 @@ export function builtInRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
     ...metaRoutes(),
     ...docsRoutes(config),
     ...queueRoutes(config),
+    ...providerRoutes(),
     ...workerRoutes(),
     ...jobRoutes(config),
     ...repeatableRoutes(),

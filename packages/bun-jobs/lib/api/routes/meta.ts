@@ -107,6 +107,8 @@ export const DRIVER_FEATURES = {
   // where the API's mode prunes the routes (`runner`). Whether one answer's
   // figures are exact is that answer's `exact`, never this flag.
   demand: [],
+  // The provider routes: no driver method, the same rule as `demand`.
+  providers: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -214,6 +216,10 @@ export const FEATURE_ROUTES = {
   // The depth endpoint, one queue and the namespace. Neither is pruned for
   // the driver, so only the API's mode turns the flag off, through these.
   demand: ["getQueueDemand", "listQueueDemand"],
+  // The compute provider routes read the process's registry, not the
+  // backend, so only the API's mode turns the flag off, as for `demand`.
+  // Their actions are opt-in, which a flag deliberately ignores.
+  providers: ["listProviders", "validateProvider", "getProviderSchema"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**

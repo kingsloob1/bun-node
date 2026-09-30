@@ -111,13 +111,13 @@ const INERT: Readonly<
     "A newer version of bun-jobs wrote this queue's summon state, so this controller leaves it alone and summons nothing.",
 };
 
+/** A summoner's style, from its capabilities (known once the summoner is ready). */
+type SummonStyle = NonNullable<
+  NonNullable<SummonStatusDto["summoner"]>["capabilities"]
+>["style"];
+
 /** Each summoner style in plain words. */
-const STYLES: Readonly<
-  Record<
-    NonNullable<SummonStatusDto["summoner"]>["capabilities"]["style"],
-    string
-  >
-> = {
+const STYLES: Readonly<Record<SummonStyle, string>> = {
   launch: "Launch: starts new units",
   scale: "Scale: sets a count",
   wake: "Wake: starts one of a fixed pool",
@@ -163,9 +163,7 @@ export function summonInert(reason: SummonStatusDto["inertReason"]): string {
 }
 
 /** A summoner style in words; a raw string for one this build does not know. */
-export function summonStyle(
-  style: NonNullable<SummonStatusDto["summoner"]>["capabilities"]["style"],
-): string {
+export function summonStyle(style: SummonStyle): string {
   return known(STYLES, style) ? STYLES[style] : displayText(style);
 }
 

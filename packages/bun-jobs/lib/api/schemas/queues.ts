@@ -519,6 +519,45 @@ const SummonCapabilitiesSchema = s.named(
   }),
 );
 
+/** Who the provider behind a summoner is. Mirrors `SummonProviderDto`. */
+export const SummonProviderSchema = s.object({
+  name: s.string({
+    description:
+      "The provider's unique name. `custom:<kind>` for one made by `defineSummoner`. Never parse it.",
+  }),
+  version: s.string({
+    description: "The provider's version, semver.",
+  }),
+  kind: s.string({
+    description: "A short label for badges, e.g. `ecs`.",
+  }),
+  displayName: s.optional(
+    s.string({
+      description: "A human name; show `kind` when absent.",
+    }),
+  ),
+  homepage: s.optional(
+    s.string({ description: "Where its documentation lives." }),
+  ),
+  apiVersion: s.object({
+    core: s.string({
+      description: "The core plugin API version, `major.minor`.",
+    }),
+    summon: s.optional(s.string({ description: "The summon facet version." })),
+  }),
+});
+
+/** How far a provider's config has got, described. */
+export const ProviderReadinessSchema = (description: string) =>
+  s.enum(["ready", "pending", "failed"], { description });
+
+/**
+ * The summon status's rule for a `describe()` fact, stated once for every
+ * route that serves facts.
+ */
+export const SERVABLE_FACTS_NOTE =
+  "Dropped whatever the provider says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`) or another credential shape (`Bearer …`, `key=value` under a sensitive key, a JWT), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.";
+
 /** A queue's summon status. Mirrors `SummonStatusDto`. */
 export const SummonStatusSchema = s.named(
   "SummonStatus",
@@ -541,38 +580,19 @@ export const SummonStatusSchema = s.named(
       ),
       summoner: s.optional(
         s.object({
-          provider: s.object({
-            name: s.string({
+          provider: SummonProviderSchema,
+          providerId: s.optional(
+            s.string({
               description:
-                "The provider's unique name. `custom:<kind>` for one made by `defineSummoner`. Never parse it.",
+                "The configured provider's id in the API's process, `name@version#<n>`: what `POST /providers/{id}/validate` (\"Test connection\") and `GET /providers/{id}/schema` take, percent-encoded. Stable for that process's life. Absent only for a summoner nothing can trace to a configured instance.",
             }),
-            version: s.string({
-              description: "The provider's version, semver.",
-            }),
-            kind: s.string({
-              description: "A short label for badges, e.g. `ecs`.",
-            }),
-            displayName: s.optional(
-              s.string({
-                description: "A human name; show `kind` when absent.",
-              }),
-            ),
-            homepage: s.optional(
-              s.string({ description: "Where its documentation lives." }),
-            ),
-            apiVersion: s.object({
-              core: s.string({
-                description: "The core plugin API version, `major.minor`.",
-              }),
-              summon: s.optional(
-                s.string({ description: "The summon facet version." }),
-              ),
-            }),
-          }),
-          capabilities: SummonCapabilitiesSchema,
+          ),
+          readiness: ProviderReadinessSchema(
+            "Whether the summoner can be called: `ready`; `pending` while its provider's asynchronous config check is still running; `failed` when that check rejected (each attempt fails without a call and validates again; the redacted detail is on `last.detail`) or the controller refused the provider for good.",
+          ),
+          capabilities: s.optional(SummonCapabilitiesSchema),
           facts: s.record(s.string(), {
-            description:
-              "Secret-free facts from the summoner's `describe()`. Dropped whatever the summoner says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.",
+            description: `Secret-free facts from the summoner's \`describe()\`, \`{}\` until its config is known. ${SERVABLE_FACTS_NOTE}`,
           }),
         }),
       ),

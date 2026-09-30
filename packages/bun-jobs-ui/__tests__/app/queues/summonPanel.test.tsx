@@ -47,6 +47,8 @@ function statusFixture(
         displayName: "Amazon ECS",
         apiVersion: { core: "0.1", summon: "0.1" },
       },
+      providerId: "@acme/bun-jobs-ecs@1.2.0#1",
+      readiness: "ready",
       capabilities: {
         style: "launch",
         dedupe: { kind: "none" },

@@ -29,6 +29,8 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Queues: "Queues: counts, pausing, draining, cleaning and limits.",
   Jobs: "Jobs: listing, reading, retrying, removing and promoting.",
   Runners: "Runners: status, history, triggering and scheduling.",
+  Providers:
+    "Compute providers: the ones configured in the API's process, a preflight against one's platform (\"Test connection\"), and a config form's JSON Schema. Opt-in: they disclose infrastructure.",
   Workers:
     "Workers: which processes are consuming each queue, pausing, resuming, stopping and starting them, and the configuration overrides they adopt.",
   Analytics:

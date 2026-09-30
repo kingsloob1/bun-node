@@ -246,7 +246,7 @@ checkEqual(
   [
     status.summoner?.provider.name,
     status.summoner?.provider.kind,
-    status.summoner?.capabilities.style,
+    status.summoner?.capabilities?.style,
     status.summoner?.facts,
   ],
   [

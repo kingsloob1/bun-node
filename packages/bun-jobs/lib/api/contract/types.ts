@@ -1241,12 +1241,32 @@ export interface SummonStatusDto {
    * `"newer-marker"` (a newer bun-jobs wrote the queue's summon state).
    */
   inertReason?: "summoned-process" | "newer-marker";
-  /** The summoner: who provides it, what it declares, and its facts. */
+  /**
+   * The summoner: who provides it, how far its config has got, what it
+   * declares, and its facts. Always present today.
+   */
   summoner?: {
     /** Who the provider is. */
     provider: SummonProviderDto;
-    /** What it declares it can do. */
-    capabilities: SummonCapabilitiesDto;
+    /**
+     * The configured provider's id in the API's process,
+     * `name@version#<n>`: what `POST /providers/{id}/validate` ("Test
+     * connection") and `GET /providers/{id}/schema` take, percent-encoded.
+     * Stable for that process's life, meaningless in another. Absent only for
+     * a summoner nothing can trace to a configured instance (a copy of one
+     * that replaced both its facet and its `validate`).
+     */
+    providerId?: string;
+    /**
+     * Whether the summoner can be called: `"ready"`; `"pending"` while its
+     * provider's asynchronous config check is still running; `"failed"` when
+     * that check rejected — each attempt then fails without a call, and
+     * validates again, and the failure's redacted detail is on
+     * `last.detail` — or when the controller refused the provider for good.
+     */
+    readiness: "ready" | "pending" | "failed";
+    /** What it declares it can do. Only when `readiness` is `"ready"`: unknown before. */
+    capabilities?: SummonCapabilitiesDto;
     /**
      * Secret-free facts from the summoner's `describe()`: a cluster, a
      * region, an image. Dropped whatever the summoner says, failing safe: a
@@ -1318,6 +1338,147 @@ export interface SummonCheckDto {
   outcome?: SummonOutcomeKind;
   /** The demand reading it decided on. */
   demand?: QueueDemandDto;
+}
+
+/* ------------------------------------------------------------------ *
+ * Compute providers: the ones configured in the API's process, a
+ * preflight, and a config form's JSON Schema
+ * ------------------------------------------------------------------ */
+
+/**
+ * One compute provider configured in the API's process: an item of
+ * `GET /providers`. Secret-free: the identity, the readiness, and the
+ * `describe()` facts under the summon status's filter.
+ */
+export interface ProviderDto {
+  /**
+   * The instance's id, `name@version#<n>`: the nth instance of that
+   * `name@version` configured in the API's process. Stable for that
+   * process's life, meaningless in another. Percent-encode it in a path.
+   */
+  id: string;
+  /** Who the provider is. */
+  provider: SummonProviderDto;
+  /**
+   * How far its config has got: `"ready"` (validated, facets built),
+   * `"pending"` (an asynchronous schema is still validating it), `"failed"`
+   * (the latest validation rejected, or building its facets threw).
+   */
+  readiness: "ready" | "pending" | "failed";
+  /**
+   * Secret-free facts from its `describe()`, `{}` until its config is known,
+   * filtered as `SummonStatusDto.summoner.facts` is.
+   */
+  facts: Record<string, string>;
+  /**
+   * Whether it defines a preflight, so `POST /providers/{id}/validate`
+   * checks the platform and not the config alone ("Test connection").
+   */
+  preflight: boolean;
+  /**
+   * Whether its config schema implements Standard JSON Schema, so
+   * `GET /providers/{id}/schema` answers one (for a config form).
+   */
+  configSchema: boolean;
+}
+
+/**
+ * `GET /providers` (operation `listProviders`, action `providers.read`): the
+ * compute providers configured in the API's process, oldest first, and the
+ * plugin API versions it speaks. An empty list when none is.
+ */
+export interface ProviderListDto {
+  /** The plugin API versions this bun-jobs speaks (`COMPUTE_PROVIDER_API`), `"major.minor"`. */
+  api: {
+    /** The shared core. */
+    core: string;
+    /** The summon facet. */
+    summon: string;
+  };
+  /** The providers, in the order they were configured. */
+  providers: ProviderDto[];
+}
+
+/** `POST /providers/{id}/validate` body. Optional: `{}` or none uses the defaults. */
+export interface ProviderValidateBody {
+  /**
+   * How long to wait for the preflight, in ms (1,000 to 60,000; default
+   * 15,000). Past it the answer is `ok: false` with an `error` of kind
+   * `"transient"` and detail `"timeout"`, and the preflight's signal aborts.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * What a preflight found: `POST /providers/{id}/validate` (operation
+ * `validateProvider`, action `providers.validate`). Answered with 200
+ * whatever the platform said; `ok` is the verdict.
+ *
+ * - The config did not validate (an asynchronous schema rejected it, or its
+ *   facets could not be built): `error.kind` is `"misconfigured"`, and the
+ *   detail names the invalid paths (`invalid config: region`).
+ * - The preflight threw a `ProviderError`: its kind, and the detail the
+ *   summon status would record (its `platformCode`, else its code).
+ * - It threw anything else: `"transient"`, with the error's code or name.
+ * - It did not answer within `timeoutMs`: `"transient"`, detail `"timeout"`.
+ * - It answered: `checks`, and `ok` unless one of them is `"fail"`.
+ *
+ * Every detail is redacted (declared secrets, credential shapes, URL
+ * userinfo) and cut to 128 characters.
+ */
+export interface ProviderValidationDto {
+  /** The provider's id, as asked. */
+  id: string;
+  /** Whether the preflight passed: it answered, and no check is `"fail"`. */
+  ok: boolean;
+  /** What the preflight answered; `[]` when it threw, timed out, or the provider has none. */
+  checks: {
+    /** A stable id for the check, e.g. `"credentials"`. */
+    id: string;
+    /** Whether it passed; `"warn"` works but something is off. */
+    status: "pass" | "warn" | "fail";
+    /** A short explanation, redacted and cut to 128 characters. */
+    detail?: string;
+  }[];
+  /** Why there are no checks: the preflight did not answer normally. */
+  error?: {
+    /**
+     * How the failure classifies, as a `ProviderError`'s kind: `"auth"` and
+     * `"misconfigured"` are the config's or the credentials' fault,
+     * `"transient"`, `"throttled"` and `"quota"` the platform's for now,
+     * `"conflict"` a provider bug.
+     */
+    kind:
+      | "transient"
+      | "throttled"
+      | "quota"
+      | "auth"
+      | "misconfigured"
+      | "conflict";
+    /** A short, secret-free explanation: a code, `"timeout"`, or the invalid config paths. */
+    detail: string;
+  };
+}
+
+/**
+ * A provider's config as a JSON Schema, for a config form: `GET
+ * /providers/{id}/schema` (operation `getProviderSchema`, action
+ * `providers.read`). Only for a provider whose config schema implements
+ * Standard JSON Schema; otherwise 404 `PROVIDER_SCHEMA_NOT_FOUND`.
+ */
+export interface ProviderSchemaDto {
+  /** The provider's id, as asked. */
+  id: string;
+  /** The JSON Schema dialect, always `"draft-2020-12"`. */
+  target: "draft-2020-12";
+  /**
+   * The config's input JSON Schema, as the schema's
+   * `~standard.jsonSchema.input({ target })` produced it, made secret-free:
+   * every string redacted as a detail is, and `default`, `examples`, `const`
+   * and `enum` dropped from a property that is a declared secret or has a
+   * credential's name.
+   */
+  schema: Record<string, unknown>;
 }
 
 /**
@@ -3523,6 +3684,14 @@ export interface MetaDto {
      * (`false` on a custom driver without `countDemand`), not this flag.
      */
     demand: boolean;
+    /**
+     * The compute provider routes, `GET /providers`, `POST
+     * /providers/{id}/validate` and `GET /providers/{id}/schema`, are served.
+     * They need no driver method, so this is `false` only in `runner` mode.
+     * Whether any provider is configured is `GET /providers`' own answer (an
+     * empty list), not this flag.
+     */
+    providers: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

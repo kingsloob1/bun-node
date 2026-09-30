@@ -3076,7 +3076,7 @@ builds one:
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, and the summoner's provider, capabilities and facts |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, and the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
 | POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset()`, then the `SummonStatusDto` after it |
 
@@ -4528,6 +4528,8 @@ asked about with no target.
 | `queues.defaults` | mutation | off by default |
 | `queues.applyDefaults` | mutation | off by default |
 | `queues.summon` | mutation | off by default |
+| `providers.read` | read | off by default |
+| `providers.validate` | mutation | off by default |
 | `metrics.read` | read | |
 | `workers.list` | read | |
 | `workers.read` | read | |
@@ -4572,8 +4574,10 @@ payloads your handlers trust, `workers.configure` and `runners.configure`,
 which reconfigure a process from outside it, and `queues.defaults` and
 `queues.applyDefaults`, where one write changes the retries, timeout and
 retention of every job every producer adds to a queue, or of its whole
-backlog, and `queues.summon`, which starts compute on a platform and so
-spends money (`JOBS_API_OPT_IN_ACTIONS`). Once
+backlog, `queues.summon`, which starts compute on a platform and so
+spends money, and `providers.read` and `providers.validate`, which disclose
+infrastructure and reach a platform with its credentials
+(`JOBS_API_OPT_IN_ACTIONS`). Once
 you pass it, *only* the actions it names are enabled: `actions: ["jobs.add",
 "jobs.update"]` alone turns those two on and every other action — reads,
 `meta.read` and `docs.read` included — off. To enable the two on top of the
@@ -4657,7 +4661,8 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-and `analytics` beside `features` for what the analytics routes can serve), so
+`providers`, and `analytics` beside `features` for what the analytics routes
+can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
 [Features that need driver support](#features-that-need-driver-support).
@@ -4684,6 +4689,9 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/queues/:queue/summon` | `queues.read` | no |
 | POST | `/queues/:queue/summon` | `queues.summon` | yes |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | yes |
+| GET | `/providers` | `providers.read` | no |
+| POST | `/providers/:id/validate` | `providers.validate` | yes |
+| GET | `/providers/:id/schema` | `providers.read` | no |
 | POST | `/queues/:queue/pause` | `queues.pause` | yes |
 | POST | `/queues/:queue/resume` | `queues.resume` | yes |
 | POST | `/queues/:queue/drain` | `queues.drain` | yes |
@@ -4882,6 +4890,70 @@ run is known, its log is retained, and it simply logged nothing. A run neither
 the history nor the log store has heard of is 404 `RUN_NOT_FOUND`, as `kill`
 answers for one. A backend that cannot read run logs at all has the route
 pruned, so it never answers 501.
+
+### Compute provider routes
+
+Three routes serve the [compute providers](#summoning-a-worker) configured in
+the API's process — every `provider(config)` call, `defineSummoner`'s
+included, whatever `jobs` context the API was given. Both actions are **off
+by default** and must be named in `actions`, because they disclose
+infrastructure (clusters, regions, which accounts are reachable):
+
+| Method | Path | Action | Answers |
+|---|---|---|---|
+| GET | `/providers` | `providers.read` | `ProviderListDto`: each provider's `id`, identity, `readiness`, secret-free `facts`, and whether it has a `preflight` and a `configSchema`; and `api`, the plugin API versions this bun-jobs speaks. `{ providers: [] }` when none is configured |
+| POST | `/providers/:id/validate` | `providers.validate` | `ProviderValidationDto`: "Test connection", the provider's preflight (`ConfiguredProvider.validate()`), bounded by the body's `timeoutMs` (1,000–60,000, default 15,000) |
+| GET | `/providers/:id/schema` | `providers.read` | `ProviderSchemaDto`: the config as a draft-2020-12 JSON Schema, for a config form, when the provider's config schema implements [Standard JSON Schema](https://standardschema.dev); else 404 `PROVIDER_SCHEMA_NOT_FOUND` |
+
+**`:id` is `name@version#<n>`**: the nth instance of that `name@version`
+configured in the API's process, counted from 1. It is stable for that
+process's life and meaningless in another, and it holds `@`, `#` and often
+`/` and `:`, so percent-encode it in a path
+(`encodeURIComponent("@acme/bun-jobs-ecs@1.2.0#1")`). An id no live provider
+has is 404 `PROVIDER_NOT_FOUND`. A queue's summon status names its summoner's
+as `summoner.providerId`, beside `summoner.readiness`: `"ready"`, `"pending"`
+while an asynchronous config check runs (its `capabilities` are absent until
+then), or `"failed"` when it rejected.
+
+**The preflight answers 200 with a verdict.** `ok` is `true` when it answered
+and no check is `"fail"`. When it did not answer normally there are no
+checks, and `error.kind` says whose fault it is, in `ProviderError`'s terms:
+
+| Case | `error.kind` | `error.detail` |
+|---|---|---|
+| The config did not validate (an asynchronous schema rejected it) | `misconfigured` | `invalid config: <paths>` |
+| The facets could not be built from it | `misconfigured` | the error's code |
+| The preflight threw a `ProviderError` | its kind (`auth`, `misconfigured`, `throttled`, `quota`, `transient`, `conflict`) | its `platformCode`, else its code |
+| It threw anything else | `transient` | the error's code or name, never its message |
+| It did not answer within `timeoutMs` | `transient` | `timeout` |
+
+The preflight changes no summon controller's state, and aborts its signal at
+the deadline. It does wait for the config first, so for an asynchronous schema
+whose last validation failed it validates again, as `ready` would.
+
+**Secret-free, all three.** Facts pass the summon status's filter (a
+credential-named key, a URL with userinfo or another credential shape, a host
+without `serialize.exposeHosts`). Every detail — a check's, an error's — is
+redacted (the provider's declared secrets by value, `Bearer …`, `key=value`,
+URL userinfo, JWTs) and cut to 128 characters. The schema's strings are
+redacted the same way, and a property that is a declared secret or has a
+credential's name loses its `default`, `examples`, `const` and `enum`.
+
+```ts
+import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
+
+// The default actions, plus the provider list and "Test connection".
+const actions = JOBS_API_ACTIONS.filter(
+  (action) =>
+    !JOBS_API_OPT_IN_ACTIONS.has(action) ||
+    action === "providers.read" ||
+    action === "providers.validate",
+);
+export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
+// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0#1", … }] }
+// POST /admin/jobs/providers/bun-jobs-provider-acme%401.0.0%231/validate
+//   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
+```
 
 ### Analytics routes
 
@@ -5243,8 +5315,8 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `WORKER_PERSISTENCE_NOT_ALLOWED` | 409 | | `DEFAULTS_CHANGED` | 409 |
 | `CONTROL_CONTENDED` | 409 | | `SUMMON_NOT_CONFIGURED` | 409 |
 | `CONFIG_NOT_ALLOWED` | 409 | | `SUMMON_MARKER_CONTENDED` | 409 |
-| `RUNNER_NOT_CONFIGURABLE` | 409 | | | |
-| `INTERNAL` | 500 | | | |
+| `RUNNER_NOT_CONFIGURABLE` | 409 | | `PROVIDER_NOT_FOUND` | 404 |
+| `INTERNAL` | 500 | | `PROVIDER_SCHEMA_NOT_FOUND` | 404 |
 
 ### Live events
 
@@ -5544,6 +5616,7 @@ cannot" from "you may not":
 | `jobDefaults` | `GET`, `PUT` and `DELETE /queues/:queue/job-defaults` | queue state (`getQueueState`, `setQueueState`); every built-in driver |
 | `jobDefaultsApply` | `POST /queues/:queue/job-defaults/apply` | queue state and `rewritePendingOptions`; every built-in driver |
 | `demand` | `/queues/:queue/demand`, `/demand` | nothing: a driver without `countDemand` is served from a fallback, and says so with `exact: false` in each answer |
+| `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under

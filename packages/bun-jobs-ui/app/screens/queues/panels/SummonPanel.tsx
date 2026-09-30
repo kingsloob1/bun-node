@@ -306,25 +306,30 @@ function Summoner({
               </span>
             ),
           },
-          {
-            key: "style",
-            label: "Style",
-            value: summonStyle(capabilities.style),
-          },
-          {
-            key: "boot",
-            label: "Boot budget",
-            value: formatMs(capabilities.bootBudgetMs),
-            hint: "How long an attempt counts as a worker on its way before it is lost.",
-          },
-          {
-            key: "lifetime",
-            label: "Longest life",
-            value:
-              capabilities.maxLifetimeMs === null
-                ? "No platform limit known"
-                : formatMs(capabilities.maxLifetimeMs),
-          },
+          // Declared once the summoner is ready: unknown before.
+          ...(capabilities === undefined
+            ? []
+            : [
+                {
+                  key: "style",
+                  label: "Style",
+                  value: summonStyle(capabilities.style),
+                },
+                {
+                  key: "boot",
+                  label: "Boot budget",
+                  value: formatMs(capabilities.bootBudgetMs),
+                  hint: "How long an attempt counts as a worker on its way before it is lost.",
+                },
+                {
+                  key: "lifetime",
+                  label: "Longest life",
+                  value:
+                    capabilities.maxLifetimeMs === null
+                      ? "No platform limit known"
+                      : formatMs(capabilities.maxLifetimeMs),
+                },
+              ]),
           ...factEntries.map(([key, value]) => ({
             key: `fact-${key}`,
             label: displayText(key),

@@ -216,6 +216,10 @@ export const MetaSchema = s.named(
           description:
             "`GET /queues/{queue}/demand` and `GET /demand` are served. They need no driver method, so `true` on every backend and `false` only in `runner` mode. Whether an answer's figures are exact is its own `exact` (`false` on a custom driver without `countDemand`), not this flag.",
         }),
+        providers: s.boolean({
+          description:
+            "The compute provider routes, `GET /providers`, `POST /providers/{id}/validate` and `GET /providers/{id}/schema`, are served. They need no driver method, so `false` only in `runner` mode; like every flag it ignores permissions (`providers.read` and `providers.validate` are opt-in: see `/meta/permissions`). Whether any provider is configured is `GET /providers`' own answer, an empty list.",
+        }),
       }),
       events: s.enum(["push", "poll", "local"]),
       publishing: s.nullable(s.boolean()),

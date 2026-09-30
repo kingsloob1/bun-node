@@ -54,6 +54,8 @@ export const API_ERROR_STATUS = {
   RUN_NOT_FOUND: 404,
   REPEATABLE_NOT_FOUND: 404,
   WORKER_NOT_FOUND: 404,
+  PROVIDER_NOT_FOUND: 404,
+  PROVIDER_SCHEMA_NOT_FOUND: 404,
   WORKER_GONE: 410,
   ROUTE_NOT_FOUND: 404,
   INVALID_NAME: 400,
@@ -114,6 +116,9 @@ const TITLES: Record<string, string> = {
   RUN_NOT_FOUND: "Run not found",
   REPEATABLE_NOT_FOUND: "Repeatable job not found",
   WORKER_NOT_FOUND: "Worker not found",
+  PROVIDER_NOT_FOUND: "Compute provider not found in this process",
+  PROVIDER_SCHEMA_NOT_FOUND:
+    "Compute provider has no JSON Schema for its config",
   WORKER_GONE: "Worker is no longer running",
   ROUTE_NOT_FOUND: "Route not found",
   INVALID_NAME: "Invalid name",
