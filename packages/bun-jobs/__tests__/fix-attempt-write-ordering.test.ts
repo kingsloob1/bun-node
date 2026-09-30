@@ -70,6 +70,11 @@ class LateWriteDriver extends MemoryDriver {
    * answers at all — what the worker's bound is there for.
    */
   delay: "deadline" | "hang" | number = "deadline";
+  /**
+   * When the first log write was asked for, or `0` before one is: whether a
+   * child's line was in flight at the deadline turns on it.
+   */
+  logAskedAt = 0;
 
   override async claimJob(
     q: QueueRef,
@@ -126,6 +131,7 @@ class LateWriteDriver extends MemoryDriver {
     line: string,
     keep: number,
   ): Promise<number> {
+    this.logAskedAt ||= Date.now();
     await this.#hold();
     const count = await super.addJobLog(q, id, line, keep);
     this.writes.push({ kind: "log", line, at: Date.now() });
@@ -266,17 +272,43 @@ async function runUntilDone(
 for (const mode of ["child-process", "worker-thread"] as const) {
   describe(`attempt write ordering: ${mode} job.log`, () => {
     it("writes a log line the child asked for before the failure record", async () => {
-      const { driver, queue } = setup(mode, "job-log-timeout");
+      // The deadline runs from dispatch, so it includes the child's cold
+      // start. A child that took longer than TIMEOUT_MS to reach `job.log` —
+      // a loaded machine, a long suite — has no line in flight at the
+      // deadline: the attempt fails with nothing to order, and the line is
+      // never asked for or dropped with the run. Such a round tested nothing,
+      // so it is run again rather than read as a failure.
+      const rounds = 3;
+      for (let round = 1; round <= rounds; round++) {
+        const { driver, queue } = setup(mode, "job-log-timeout");
 
-      await runUntilDead(queue, `${mode} log`);
+        await runUntilDead(queue, `${mode} log`);
 
-      await waitFor(() => driver.writes.length >= 2, {
-        timeout: 5_000,
-        message: () =>
-          `only ${JSON.stringify(driver.writes)} was written for the ${mode} job`,
-      });
+        // Asked for before claim + TIMEOUT_MS is certainly before the
+        // deadline, which starts at dispatch, after the claim.
+        const inFlight =
+          driver.logAskedAt > 0 &&
+          driver.logAskedAt < driver.claimedAt + TIMEOUT_MS;
+        if (!inFlight && round < rounds) {
+          continue;
+        }
+        expect(
+          inFlight,
+          `the ${mode} child had not asked for its line by the deadline in ${rounds} rounds`,
+        ).toBe(true);
 
-      expect(driver.writes.map((write) => write.kind)).toEqual(["log", "fail"]);
+        await waitFor(() => driver.writes.length >= 2, {
+          timeout: 5_000,
+          message: () =>
+            `only ${JSON.stringify(driver.writes)} was written for the ${mode} job`,
+        });
+
+        expect(driver.writes.map((write) => write.kind)).toEqual([
+          "log",
+          "fail",
+        ]);
+        return;
+      }
     }, 30_000);
 
     it("writes a log line the child did not wait for before the completion record", async () => {
