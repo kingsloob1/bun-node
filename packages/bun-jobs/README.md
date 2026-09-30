@@ -103,6 +103,7 @@ reference.
 - [Summoning a worker](#summoning-a-worker)
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
+  - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3225,6 +3226,38 @@ if (response.status === 429) {
   `SIGINT` with 5 s, Fly's default, say) logs one `warn`: a job in flight at
   the stop signal may be killed before it settles. `defineSummoner`'s default
   grace (10 s) never does, and a `signal` of `"none"` has no grace to check.
+
+### Testing a provider: `./provider/testing`
+
+A provider, or a `defineSummoner` summoner, is tested with no cloud
+credentials by the conformance kit: `fakePlatform(routes)` serves a stand-in
+for the platform's API on port 0, and `runProviderConformance(provider,
+{ config, platform })` runs every check against it (identity, config,
+capabilities, routing through `ctx.fetch`, purity, dedupe, concurrency, the
+error kinds, timeouts, scale, status and cancel, lifetime, validate, secrets)
+and ends with a real `SummonController` summoning the kit's own worker
+process, and two controllers in two processes racing for one backlog.
+
+```ts
+import { assertConformance, fakePlatform, runProviderConformance } from "@kingsleyweb/bun-jobs/provider/testing";
+
+const platform = await fakePlatform({
+  "POST /v1/runs": async (request, state) => {
+    const { token, args } = (await request.json()) as { token: string; args: string[] };
+    const earlier = state.recall(token);
+    if (earlier) return Response.json({ deduped: true, handles: earlier.map((unit) => unit.handle) });
+    return Response.json({ handles: [state.start({ argv: args, token }).handle] }, { status: 201 });
+  },
+});
+const report = await runProviderConformance(acme, { config: { url: platform.url, apiToken: "test-token" }, platform });
+assertConformance(report); // throws on a failed `must` check, never on a `should` warning
+await platform.close();
+```
+
+The report lists every check by a stable id (`summon.dedupe.same-key-one-unit`)
+and renders as a Markdown checklist with `report.toMarkdown()`. Passing means
+the provider behaves correctly against its own fake, not that the platform
+behaves as the fake does.
 
 ## BunRunner
 
