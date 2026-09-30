@@ -239,7 +239,7 @@ function SummonState({ status }: { status: SummonStatusDto }) {
               {formatNumber(status.failures)}
             </span>
           ),
-          hint: "Failed or lost attempts in a row; a registration or a reset clears them.",
+          hint: "Failed, unavailable or lost attempts in a row, towards the circuit. A throttled call is not counted, and an auth or misconfiguration error counts enough to open it at once. A registration or a reset clears them.",
         },
         status.backoffUntil !== undefined && {
           key: "backoff",
