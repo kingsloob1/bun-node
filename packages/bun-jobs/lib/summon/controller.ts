@@ -242,8 +242,11 @@ function codeShaped(value: unknown): string | undefined {
  * A short, secret-free name for a thrown value, never its message: a
  * `ProviderError`'s `platformCode`, else its `PROVIDER_<KIND>` code; any other
  * error's code, else its name, else `"error"`. A `platformCode`, code or name
- * is taken only if it is code-shaped (`[A-Za-z0-9_.:-]{1,64}`), so a
- * credential or a response body passed as one never becomes the detail.
+ * is taken only if it is code-shaped (`[A-Za-z0-9_.:-]{1,64}`), so prose, a
+ * URL or a response body passed as one never becomes the detail. The rule
+ * does not catch a code-shaped credential (`sk_live_abc123`), which has no
+ * redaction pattern either: only a declared secret is redacted from it, and
+ * the detail is served to API clients.
  */
 function errorDetail(error: unknown): string {
   if (error instanceof SummonTimeoutError) {

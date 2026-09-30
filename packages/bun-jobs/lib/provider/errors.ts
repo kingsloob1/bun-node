@@ -77,8 +77,13 @@ export class ProviderError extends JobsError {
   /**
    * The platform's own error code, when known (`"ThrottlingException"`,
    * `"CannotPullContainerError"`): the attempt's detail, in logs and the UI.
-   * Short and secret-free: the controller uses it only if it matches
-   * `[A-Za-z0-9_.:-]{1,64}`, and falls back to the `code` otherwise.
+   * The controller uses it only if it matches `[A-Za-z0-9_.:-]{1,64}`, and
+   * falls back to the `code` otherwise.
+   *
+   * **It is shown to API clients, so it must never hold a credential.** A
+   * code-shaped token (`sk_live_abc123`) passes that rule and matches no
+   * redaction pattern, so it would be stored and served verbatim: only a
+   * value at one of the provider's declared `secrets` is redacted from it.
    */
   readonly platformCode?: string;
   /** The platform's HTTP status, when there was one. */
@@ -99,7 +104,11 @@ export class ProviderError extends JobsError {
     kind: ProviderErrorKind,
     /** What else the platform said. */
     options?: {
-      /** The platform's own error code, e.g. `"ThrottlingException"`, for logs and the UI. */
+      /**
+       * The platform's own error code, e.g. `"ThrottlingException"`, for logs
+       * and the UI. Shown to API clients: never a credential (see
+       * {@link ProviderError.platformCode}).
+       */
       platformCode?: string;
       /** The HTTP status the platform answered, when there was one. */
       status?: number;
