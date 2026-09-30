@@ -4,7 +4,7 @@
  *
  * They are listed in `PROJECTS` below: the packages, their nested benchmark,
  * playground and app projects, the standalone `benchmarks/` package, the
- * example projects and these root scripts themselves. Each has its own
+ * example projects, the starter templates and these root scripts themselves. Each has its own
  * `tsconfig.json`, and all of them extend `tsconfig.base.json`, so a file is
  * checked the same way wherever it is checked from.
  *
@@ -37,6 +37,9 @@ const PROJECTS = [
   "examples/bun-nest/tsconfig.json",
   "examples/bun-jobs-ui/tsconfig.json",
   "packages/bun-jobs-ui/__tests__/app/pkg/tsconfig.json",
+  // The repo's view of `templates/compute-provider/`, whose own config is a
+  // plugin author's (no source condition). Needs `bun install` there first.
+  "templates/tsconfig.json",
   "scripts/tsconfig.json",
 ] as const;
 

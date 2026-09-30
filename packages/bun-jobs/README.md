@@ -104,6 +104,7 @@ reference.
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
   - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
+  - [Compute providers](#compute-providers)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3277,6 +3278,27 @@ behaves as the fake does.
 Example: [`02-queues/custom-provider.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/custom-provider.ts), a provider and its fake
 ([`02-queues/helpers/nimbus-platform.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/nimbus-platform.ts))
 conforming, and a copy calling the global `fetch` failing `summon.routing.through-ctx-fetch`.
+
+### Compute providers
+
+A summoner for a platform can be published as a **compute provider**: a
+package made with `defineComputeProvider` from
+`@kingsleyweb/bun-jobs/provider`, with an identity, a config schema that
+declares its secrets, and a summon facet whose capabilities the controller
+reads instead of knowing the platform. Its guides ship in this package, in
+`docs/providers/`:
+
+- [Compute providers](docs/providers/README.md): what a provider is, and
+  which page to read.
+- [Using a compute provider](docs/providers/user-guide.md): installing
+  one, checking compatibility, configuring it, and troubleshooting by error
+  kind.
+- [Writing a compute provider](docs/providers/author-guide.md): step by
+  step, from the starter template.
+- [API reference](docs/providers/reference.md): every export of
+  `./provider`, `./provider/testing` and `./summon`, and every member.
+- [Security](docs/providers/security.md): what a provider can reach, what
+  is redacted, and what never reaches API clients.
 
 ## BunRunner
 
