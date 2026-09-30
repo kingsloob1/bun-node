@@ -4951,6 +4951,14 @@ names its summoner's as `summoner.providerId`, beside `summoner.readiness`:
 `"ready"`, `"pending"` while an asynchronous config check runs (its
 `capabilities` are absent until then), or `"failed"`.
 
+**The list holds providers weakly**, so configuring one never leaks it. A
+provider used as a summoner is kept alive by its queue's controller and is
+always listed. One configured only to show in the list is listed only while
+your code keeps it reachable from something still in use (the jobs context,
+a policy, an export that is read later): a module-level constant that
+nothing reads again can be garbage-collected, and the provider then leaves
+the list.
+
 **`readiness` means two things in two places.** On `GET /providers` it is
 about the provider's config alone: `ready` once it validated and the facets
 were built, `failed` when the latest validation rejected or building the

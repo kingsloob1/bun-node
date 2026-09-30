@@ -353,8 +353,9 @@ One finding of a `validate()` preflight.
 
 - `id`: a stable id, e.g. `"credentials"`, `"cluster-exists"`.
 - `status`: `"pass"`, `"warn"` (it works, but something is off) or `"fail"`.
-- `detail`: optional. A short explanation. bun-jobs does not redact it:
-  write it secret-free.
+- `detail`: optional. A short explanation. `validate()` returns it to the
+  code that called it unredacted; only `POST /providers/:id/validate` redacts
+  and caps it before serving it. Write it secret-free either way.
 
 ### `ProviderError`
 
