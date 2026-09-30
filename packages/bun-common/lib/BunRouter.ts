@@ -411,7 +411,27 @@ export function toNativeRequest(
     // body), so it is ignored rather than silently half-applied. Rebuilt only
     // to drop a fragment, carrying its method, headers, body and signal over.
     const url = withoutFragment(input.url);
-    return url === input.url ? input : new Request(url, input);
+    if (url === input.url) {
+      return input;
+    }
+    // Only a `Request` of the current global's own class can be rebuilt: the
+    // constructor used is that same class, so it accepts its own signal and
+    // body. A foreign one — happy-dom's in a DOM test, or a native one once a
+    // shim replaced the global — passes through as before, fragment and all:
+    // this function is synchronous, so it cannot re-read a foreign body into a
+    // new request. The router still matches on its path alone.
+    if (!(input instanceof Request)) {
+      return input;
+    }
+    // A used request is not rebuilt either. The Fetch spec throws on
+    // rebuilding one; Bun instead gives it an empty body (oven-sh/bun#44307),
+    // which would hand the route a body that looks unread. As-is, it behaves
+    // exactly as a used request without a fragment: `BunRequest` reads a used
+    // body as no body, and the router matches on the path before the `#`.
+    if (input.bodyUsed) {
+      return input;
+    }
+    return new Request(url, input);
   }
 
   // The init form is the only object form carrying a `url`; any other
