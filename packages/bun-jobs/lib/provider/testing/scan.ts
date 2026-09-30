@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Buffer } from "node:buffer";
+import * as timersPromises from "node:timers/promises";
 import { promisify } from "node:util";
 
 /**
@@ -146,8 +147,127 @@ export interface TimerTracker {
   run: <T>(fn: () => T) => T;
   /** Tracked timers that have neither fired nor been cleared. */
   pending: () => number;
-  /** Puts the global timer functions back. */
+  /** Stops tracking; the last tracker to stop puts the global timer functions back. */
   restore: () => void;
+}
+
+/** One tracker's state: its call context and the timers it has seen. */
+interface Tracking {
+  /** Entered by `run`; a timer created inside it is this tracker's. */
+  call: AsyncLocalStorage<true>;
+  /** Its timers still pending. */
+  live: Set<unknown>;
+}
+
+/** The global timer functions the wrappers stand in for. */
+interface TimerGlobals {
+  /** `setTimeout`. */
+  setTimeout: typeof globalThis.setTimeout;
+  /** `clearTimeout`. */
+  clearTimeout: typeof globalThis.clearTimeout;
+  /** `setInterval`. */
+  setInterval: typeof globalThis.setInterval;
+  /** `clearInterval`. */
+  clearInterval: typeof globalThis.clearInterval;
+}
+
+/** The names of the globals swapped. */
+const TIMER_NAMES = [
+  "setTimeout",
+  "clearTimeout",
+  "setInterval",
+  "clearInterval",
+] as const;
+
+/**
+ * The swap shared by every tracker in the process: installed by the first
+ * `trackTimers()`, and the true originals put back by the last `restore()`,
+ * so overlapping trackers (two kit runs at once) never leave a wrapper
+ * behind. `undefined` while none is active.
+ */
+let installed:
+  | {
+      /** The globals as they were before the first tracker. */
+      originals: TimerGlobals;
+      /** The wrappers installed in their place. */
+      wrappers: TimerGlobals;
+      /** The trackers active now. */
+      trackers: Set<Tracking>;
+    }
+  | undefined;
+
+/** Installs the shared wrappers, capturing the true originals. */
+function install(): NonNullable<typeof installed> {
+  const originals: TimerGlobals = {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+  };
+  const trackers = new Set<Tracking>();
+  /** A timer handle created now, added to every tracker whose call it is in. */
+  const note = (handle: unknown): void => {
+    for (const tracking of trackers) {
+      if (tracking.call.getStore() === true) {
+        tracking.live.add(handle);
+      }
+    }
+  };
+  // A clear by the handle itself, or by its number (Bun timers coerce to one).
+  const forget = (handle: unknown): void => {
+    for (const tracking of trackers) {
+      for (const one of tracking.live) {
+        if (one === handle || Number(one) === Number(handle)) {
+          tracking.live.delete(one);
+        }
+      }
+    }
+  };
+  type Timer = (this: unknown, ...args: unknown[]) => unknown;
+  /**
+   * Gives a wrapper `util.promisify`'s custom form, taken from
+   * `node:timers/promises` rather than read off the native timer: on Bun
+   * 1.4.2 and 1.4.3 a warm read site of `timer[promisify.custom]` answers
+   * one timer's form for another (setInterval's async iterator for
+   * setTimeout), https://github.com/oven-sh/bun/issues/44275. Read it off
+   * the timer again once that is fixed.
+   */
+  const promisified = (body: Timer, custom: unknown): Timer => {
+    Object.defineProperty(body, promisify.custom, { value: custom });
+    return body;
+  };
+  const wrappers = {
+    setTimeout: promisified(function (callback, ...rest) {
+      let handle: unknown;
+      const fire = (...inner: unknown[]): void => {
+        for (const tracking of trackers) {
+          tracking.live.delete(handle);
+        }
+        (callback as (...a: unknown[]) => void)(...inner);
+      };
+      handle = Reflect.apply(originals.setTimeout, this, [
+        typeof callback === "function" ? fire : callback,
+        ...rest,
+      ]);
+      note(handle);
+      return handle;
+    }, timersPromises.setTimeout),
+    setInterval: promisified(function (...args) {
+      const handle = Reflect.apply(originals.setInterval, this, args);
+      note(handle);
+      return handle;
+    }, timersPromises.setInterval),
+    clearTimeout: function (this: unknown, handle: unknown) {
+      forget(handle);
+      return Reflect.apply(originals.clearTimeout, this, [handle]);
+    } as Timer,
+    clearInterval: function (this: unknown, handle: unknown) {
+      forget(handle);
+      return Reflect.apply(originals.clearInterval, this, [handle]);
+    } as Timer,
+  } as unknown as TimerGlobals;
+  Object.assign(globalThis, wrappers);
+  return { originals, wrappers, trackers };
 }
 
 /**
@@ -155,74 +275,43 @@ export interface TimerTracker {
  * counting wrappers until `restore()`, so the kit can see a timer a call
  * left behind. The swap is brief (the timeouts check, about 2 s) and is
  * always undone, in a `finally`; the wrappers keep `this` and
- * `util.promisify.custom`. Only timers created in the call's async context
- * are counted (an `AsyncLocalStorage` entered by `run`, which follows
- * promise continuations, timer callbacks and the listeners they fire):
- * other code in the process, such as another test's pollers, is not the
- * provider's.
+ * `util.promisify`'s custom forms. Trackers may overlap (two kit runs at
+ * once): the wrappers are installed once, and the true originals come back
+ * when the last tracker stops, for each global still holding a wrapper (one
+ * something else replaced meanwhile is left as it is). Only timers created
+ * in a tracker's call context are its own (an `AsyncLocalStorage` entered by
+ * `run`, which follows promise continuations, timer callbacks and the
+ * listeners they fire): other code in the process, such as another test's
+ * pollers, is not the provider's.
  */
 export function trackTimers(): TimerTracker {
-  const call = new AsyncLocalStorage<true>();
-  const original = {
-    setTimeout: globalThis.setTimeout,
-    clearTimeout: globalThis.clearTimeout,
-    setInterval: globalThis.setInterval,
-    clearInterval: globalThis.clearInterval,
+  installed ??= install();
+  const swap = installed;
+  const tracking: Tracking = {
+    call: new AsyncLocalStorage<true>(),
+    live: new Set(),
   };
-  const live = new Set<unknown>();
-  // A clear by the handle itself, or by its number (Bun timers coerce to one).
-  const forget = (handle: unknown): void => {
-    for (const one of live) {
-      if (one === handle || Number(one) === Number(handle)) {
-        live.delete(one);
-      }
-    }
-  };
-  type Timer = (this: unknown, ...args: unknown[]) => unknown;
-  /** A wrapper keeps `this` and the original's `util.promisify.custom`. */
-  const wrap = (from: unknown, body: Timer): Timer => {
-    const custom = (from as Record<symbol, unknown>)[promisify.custom];
-    if (custom !== undefined) {
-      Object.defineProperty(body, promisify.custom, { value: custom });
-    }
-    return body;
-  };
-  const g = globalThis as unknown as Record<string, unknown>;
-  g.setTimeout = wrap(original.setTimeout, function (callback, ...rest) {
-    let handle: unknown;
-    const fire = (...inner: unknown[]): void => {
-      live.delete(handle);
-      (callback as (...a: unknown[]) => void)(...inner);
-    };
-    handle = Reflect.apply(original.setTimeout, this, [
-      typeof callback === "function" ? fire : callback,
-      ...rest,
-    ]);
-    if (call.getStore() === true) {
-      live.add(handle);
-    }
-    return handle;
-  });
-  g.setInterval = wrap(original.setInterval, function (...args) {
-    const handle = Reflect.apply(original.setInterval, this, args);
-    if (call.getStore() === true) {
-      live.add(handle);
-    }
-    return handle;
-  });
-  g.clearTimeout = wrap(original.clearTimeout, function (handle) {
-    forget(handle);
-    return Reflect.apply(original.clearTimeout, this, [handle]);
-  });
-  g.clearInterval = wrap(original.clearInterval, function (handle) {
-    forget(handle);
-    return Reflect.apply(original.clearInterval, this, [handle]);
-  });
+  swap.trackers.add(tracking);
+  let stopped = false;
   return {
-    run: (fn) => call.run(true, fn),
-    pending: () => live.size,
+    run: (fn) => tracking.call.run(true, fn),
+    pending: () => tracking.live.size,
     restore: () => {
-      Object.assign(globalThis, original);
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      swap.trackers.delete(tracking);
+      if (swap.trackers.size > 0 || installed !== swap) {
+        return;
+      }
+      installed = undefined;
+      const g = globalThis as unknown as Record<string, unknown>;
+      for (const name of TIMER_NAMES) {
+        if (g[name] === swap.wrappers[name]) {
+          g[name] = swap.originals[name];
+        }
+      }
     },
   };
 }
