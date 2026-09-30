@@ -8,6 +8,7 @@ import type {
 import type { AnyRouteDef, RouteServices } from "./define";
 import { providerErrorFacts } from "../../provider/errors";
 import {
+  encodedForms,
   redactDetail,
   redactingLogger,
   textRedactor,
@@ -431,8 +432,9 @@ async function visibleProviders(
 
 /**
  * Whether a value in a schema is a declared secret's value: a string equal to
- * one (of any length), or a number whose text is one's (`918273` for a secret
- * of `918273` or `"918273"`).
+ * one (of any length) in any of its encoded forms ({@link encodedForms}: as
+ * it is, URL- or form-encoded, regex-escaped), or a number whose text is
+ * one's (`918273` for a secret of `918273` or `"918273"`).
  */
 function secretEquals(
   secrets: readonly unknown[],
@@ -445,7 +447,9 @@ function secretEquals(
           (typeof secret === "number" && Number.isFinite(secret)) ||
           typeof secret === "bigint",
       )
-      .map((secret) => String(secret)),
+      .flatMap((secret) =>
+        typeof secret === "string" ? encodedForms(secret) : [String(secret)],
+      ),
   );
   return (value) => texts.has(String(value));
 }
@@ -459,30 +463,49 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * A local `$ref` to a root definition, `#/$defs/X` or `#/definitions/X`, as
- * `[map, name]` with the JSON-pointer escapes (`~1` for `/`, `~0` for `~`)
- * and any percent-encoding undone; `undefined` for anything else.
+ * Where a `$ref` points in this document: into a root definition
+ * (`#/$defs/X/...` or `#/definitions/X/...`, anything under `X` counting as
+ * `X`), anywhere else in the document (`#`, `#/properties/x`, a plain-name
+ * anchor: the root, failing closed), or `undefined` for a ref to another
+ * document, which has nothing here to copy. Percent-encoding and the
+ * JSON-pointer escapes (`~1` for `/`, `~0` for `~`) are undone per segment.
  */
-function localDefinition(
-  ref: string,
-): [(typeof DEFINITION_MAPS)[number], string] | undefined {
-  let pointer = ref;
+function localTarget(ref: string):
+  | {
+      /** A root definition. */
+      kind: "definition";
+      /** Its map. */
+      map: (typeof DEFINITION_MAPS)[number];
+      /** Its name. */
+      name: string;
+    }
+  | {
+      /** The whole document. */
+      kind: "root";
+    }
+  | undefined {
+  let decoded = ref;
   try {
-    pointer = decodeURIComponent(ref);
+    decoded = decodeURIComponent(ref);
   } catch {
     // Not percent-encoded: read as it is.
   }
-  for (const map of DEFINITION_MAPS) {
-    const prefix = `#/${map}/`;
-    if (pointer.startsWith(prefix)) {
-      const name = pointer.slice(prefix.length);
-      if (name.length === 0 || name.includes("/")) {
-        return undefined;
-      }
-      return [map, name.replaceAll("~1", "/").replaceAll("~0", "~")];
-    }
+  if (!decoded.startsWith("#")) {
+    return undefined;
   }
-  return undefined;
+  const pointer = decoded.slice(1);
+  if (!pointer.startsWith("/")) {
+    return { kind: "root" };
+  }
+  const [first, second] = pointer
+    .slice(1)
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+  const map = DEFINITION_MAPS.find((name) => name === first);
+  if (map !== undefined && second !== undefined && second.length > 0) {
+    return { kind: "definition", map, name: second };
+  }
+  return { kind: "root" };
 }
 
 /**
@@ -491,15 +514,24 @@ function localDefinition(
  * names — through nested properties and combinators, in the root schema or
  * inside any definition — and, transitively,
  * every one those definitions reach in turn, since everything inside a
- * definition a secret uses describes the secret. Answered as
- * `"<map>/<name>"` keys. A `$ref` that resolves to nothing local flags
- * nothing: there is nothing to copy there.
+ * definition a secret uses describes the secret. A pointer into a
+ * definition (`#/$defs/X/properties/y`) flags all of `X`; a pointer anywhere
+ * else in the document (`#`, `#/properties/x`) flags the root, and with it
+ * every enum in the document. Answered as `"<map>/<name>"` keys, and whether
+ * the root is flagged. A `$ref` to another document flags nothing: there is
+ * nothing here to copy.
  */
 function secretDefinitions(
   root: unknown,
   secretPaths: ReadonlySet<string>,
-): ReadonlySet<string> {
+): {
+  /** The flagged root definitions, as `"<map>/<name>"`. */
+  definitions: ReadonlySet<string>;
+  /** Whether a secret points at the root or elsewhere outside the definitions. */
+  root: boolean;
+} {
   const flagged = new Set<string>();
+  let rootFlagged = false;
   const queue: unknown[] = [];
   const seen = new Set<object>();
   /** Walks `node` as {@link sanitizeSchema} does, noting refs reached under a secret. */
@@ -526,14 +558,16 @@ function secretDefinitions(
       }
       for (const [key, child] of Object.entries(node)) {
         if (key === "$ref" && secret && typeof child === "string") {
-          const target = localDefinition(child);
-          if (target !== undefined) {
-            const id = `${target[0]}/${target[1]}`;
+          const target = localTarget(child);
+          if (target?.kind === "root") {
+            rootFlagged = true;
+          } else if (target !== undefined) {
+            const id = `${target.map}/${target.name}`;
             if (!flagged.has(id)) {
               flagged.add(id);
-              const map = isObject(root) ? root[target[0]] : undefined;
-              if (isObject(map) && Object.hasOwn(map, target[1])) {
-                queue.push(map[target[1]]);
+              const map = isObject(root) ? root[target.map] : undefined;
+              if (isObject(map) && Object.hasOwn(map, target.name)) {
+                queue.push(map[target.name]);
               }
             }
           }
@@ -595,7 +629,37 @@ function secretDefinitions(
   while (queue.length > 0) {
     scan(queue.shift(), 1, undefined, true, false);
   }
-  return flagged;
+  return { definitions: flagged, root: rootFlagged };
+}
+
+/** Whether a value is a JSON scalar: a string, number, boolean or `null`. */
+function isScalar(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+/**
+ * An `enum`'s choices, served: `undefined` (the keyword dropped) unless it is
+ * an array of scalars only — an object or array among them is data a host
+ * may have baked a secret into, which redaction by shape cannot see — else
+ * each redacted by `scalar`, a dropped one left out, and `undefined` when
+ * none is left.
+ */
+function enumChoices(
+  value: unknown,
+  scalar: (node: unknown) => unknown,
+): unknown[] | undefined {
+  if (!Array.isArray(value) || !value.every(isScalar)) {
+    return undefined;
+  }
+  const choices = value
+    .map((item) => scalar(item))
+    .filter((item) => item !== undefined);
+  return choices.length > 0 ? choices : undefined;
 }
 
 /**
@@ -614,8 +678,12 @@ function secretDefinitions(
  *   declared secret or has a credential's name (and everything under it,
  *   combinators included), where it is dropped too — and in every root
  *   definition (`$defs`, `definitions`) such a property reaches through
- *   `$ref`, transitively ({@link secretDefinitions}). A definition reached
- *   from both a secret and a non-secret property counts as secret;
+ *   `$ref`, transitively ({@link secretDefinitions}); a pointer into a
+ *   definition flags all of it, and one anywhere else in the document (`#`)
+ *   flags every enum in it. A definition reached from both a secret and a
+ *   non-secret property counts as secret. An enum with any non-scalar
+ *   value (an object, an array) is dropped wherever it is: its values are
+ *   data, not schema;
  * - every other string is redacted as a detail is (declared secrets by value,
  *   credential shapes), a string equal to a declared secret is replaced
  *   whatever its length, and a number equal to one is dropped;
@@ -633,7 +701,8 @@ function sanitizeSchema(
 ): Record<string, unknown> {
   const redact = textRedactor(secrets);
   const isSecret = secretEquals(secrets);
-  const flagged = secretDefinitions(value, secretPaths);
+  const reached = secretDefinitions(value, secretPaths);
+  const flagged = reached.definitions;
   const walking = new Set<object>();
   /** A scalar, redacted; `undefined` when it must be dropped. */
   const scalar = (node: unknown): unknown => {
@@ -708,6 +777,15 @@ function sanitizeSchema(
         ) {
           continue;
         }
+        if (key === "enum") {
+          // Enum values are data, not schema: kept only when every one is a
+          // scalar, each redacted as any scalar is.
+          const choices = enumChoices(child, scalar);
+          if (choices !== undefined) {
+            out.enum = choices;
+          }
+          continue;
+        }
         const isMap =
           typeof child === "object" && child !== null && !Array.isArray(child);
         let sub: unknown;
@@ -746,7 +824,9 @@ function sanitizeSchema(
       walking.delete(node);
     }
   }
-  return copy(value, 0, "", false) as Record<string, unknown>;
+  // A secret pointing at the root makes the whole document secret: every
+  // enum in it is dropped.
+  return copy(value, 0, "", reached.root) as Record<string, unknown>;
 }
 
 /** A provider's config as a JSON Schema, or 404 `PROVIDER_SCHEMA_NOT_FOUND`. */
@@ -854,7 +934,7 @@ export function providerRoutes(): AnyRouteDef[] {
       action: "providers.read",
       mode: "jobs",
       summary: "A provider's config as a JSON Schema, for a config form",
-      description: `The provider's config schema as a draft-2020-12 JSON Schema, from its Standard JSON Schema converter (\`~standard.jsonSchema.input({ target: "draft-2020-12" })\`), made secret-free. \`default\`, \`example\`, \`examples\`, \`const\` and every \`x-*\` key are removed **everywhere** — root, nested, \`$defs\`/\`definitions\` and combinators — since a host's own secret baked in as a default looks like any other: a config form gets no pre-filled values. \`enum\` is kept, except under a property that is a declared secret or has a credential's name, and in every definition such a property reaches through \`$ref\`, transitively (one reached from both a secret and a non-secret property counts as secret). Every other string is redacted; a string equal to a declared secret is replaced and a number equal to one dropped. 404 \`PROVIDER_SCHEMA_NOT_FOUND\` when the schema has no such converter (show the provider's facts instead) or it fails; \`GET /providers\`' \`configSchema\` says which beforehand.\n\n${PROVIDERS_NOTE}`,
+      description: `The provider's config schema as a draft-2020-12 JSON Schema, from its Standard JSON Schema converter (\`~standard.jsonSchema.input({ target: "draft-2020-12" })\`), made secret-free. \`default\`, \`example\`, \`examples\`, \`const\` and every \`x-*\` key are removed **everywhere** — root, nested, \`$defs\`/\`definitions\` and combinators — since a host's own secret baked in as a default looks like any other: a config form gets no pre-filled values. \`enum\` is kept, except under a property that is a declared secret or has a credential's name, and in every definition such a property reaches through \`$ref\`, transitively (one reached from both a secret and a non-secret property counts as secret; a pointer into a definition counts as all of it, and one anywhere else in the document, \`#\` included, drops every enum). Enums with non-scalar values are dropped wherever they are. Every other string is redacted; a string equal to a declared secret is replaced and a number equal to one dropped. 404 \`PROVIDER_SCHEMA_NOT_FOUND\` when the schema has no such converter (show the provider's facts instead) or it fails; \`GET /providers\`' \`configSchema\` says which beforehand.\n\n${PROVIDERS_NOTE}`,
       tags: ["Providers"],
       params: ProviderParams,
       responses: { 200: ProviderSchemaSchema },

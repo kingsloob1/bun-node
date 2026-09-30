@@ -679,17 +679,28 @@ describe("POST /providers/{id}/validate, more", () => {
       version: "1.0.0",
       kind: "build",
       apiVersion: { core: "0.1", summon: "0.1" },
-      config: toStandardSchema<object>(async (input) => ({
-        value: input as object,
+      config: toStandardSchema<{ apiToken: string }>(async (input) => ({
+        value: input as { apiToken: string },
       })),
+      secrets: ["apiToken"],
       validate: async () => [],
-      summon: (): SummonFacet => {
-        throw new TypeError(`cannot read x of ${TOKEN}`);
+      summon: (config): SummonFacet => {
+        throw new TypeError(`cannot read x of ${config.apiToken}`);
       },
     });
-    const configured = held(make({}));
-    await configured.ready.catch(() => {});
+    const configured = held(make({ apiToken: TOKEN }));
+    const rejected = await configured.ready.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
     const id = `${configured.provider.name}@1.0.0~1`;
+    // The kept build error is the redacted copy (#250): same class, no
+    // secret, and the very error `ready` rejected with.
+    const kept = configuredProvider(id)!.buildError();
+    expect(kept).toBeInstanceOf(TypeError);
+    expect(kept).toBe(rejected);
+    expect(String((kept as Error).message)).toContain("cannot read x of");
+    expect(String((kept as Error).message)).not.toContain(TOKEN);
     const h = api();
     expect(await listed(h, id)).toMatchObject({ readiness: "failed" });
     const response = await h.call("POST", path(id, "/validate"));
@@ -1115,6 +1126,92 @@ describe("GET /providers/{id}/schema", () => {
     expect(schema.$defs.Choice).toEqual({ type: "string" });
   });
 
+  it("drops an enum holding any non-scalar value, even under no secret", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        profile: {
+          type: "object",
+          enum: [{ region: "eu", apiToken: HOST_CHOICES[0] }],
+        },
+        mixed: { enum: ["a", ["b"]] },
+        // Negative control: an all-scalar enum on a plain property stays.
+        plain: { enum: ["a", 1, true, null] },
+      },
+    });
+    expect(schema.properties).toEqual({
+      profile: { type: "object" },
+      mixed: {},
+      plain: { enum: ["a", 1, true, null] },
+    });
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("flags a whole definition a pointer into it reaches, escapes decoded", async () => {
+    const schema = await served({
+      type: "object",
+      properties: {
+        dsn: { $ref: "#/$defs/Wr~1ap/properties/inner" },
+        region: { $ref: "#/definitions/Plain/properties/zone" },
+      },
+      $defs: {
+        "Wr/ap": {
+          type: "object",
+          properties: {
+            inner: { type: "string", enum: HOST_CHOICES },
+            other: { type: "string", enum: ["x", "y"] },
+          },
+        },
+      },
+      definitions: {
+        // Negative control: a pointer from a plain property flags nothing.
+        Plain: {
+          type: "object",
+          properties: { zone: { type: "string", enum: ["a", "b"] } },
+        },
+      },
+    });
+    // The whole of Wr/ap, fail closed: the pointed-at enum and its sibling.
+    expect(schema.$defs["Wr/ap"].properties).toEqual({
+      inner: { type: "string" },
+      other: { type: "string" },
+    });
+    expect(schema.definitions.Plain.properties.zone.enum).toEqual(["a", "b"]);
+    expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
+  });
+
+  it("flags the whole document when a secret points at the root or at any other local path", async () => {
+    for (const ref of ["#", "#/properties/region"]) {
+      const schema = await served({
+        type: "string",
+        enum: HOST_CHOICES,
+        properties: {
+          region: { type: "string", enum: ["eu", "us"] },
+          dsn: { $ref: ref },
+        },
+        $defs: { Any: { type: "string", enum: ["p", "q"] } },
+      });
+      expect({ ref, schema }).toEqual({
+        ref,
+        schema: {
+          type: "string",
+          properties: {
+            region: { type: "string" },
+            dsn: { $ref: ref },
+          },
+          $defs: { Any: { type: "string" } },
+        },
+      });
+    }
+    // Negative control: the same pointer from a plain property flags nothing.
+    const plain = await served({
+      type: "string",
+      enum: ["eu", "us"],
+      properties: { backup: { $ref: "#" } },
+    });
+    expect(plain.enum).toEqual(["eu", "us"]);
+  });
+
   it("keeps the enum of a definition reached only from non-secret properties", async () => {
     const schema = await served({
       type: "object",
@@ -1139,6 +1236,44 @@ describe("GET /providers/{id}/schema", () => {
       $defs: { Choice: { type: "string", enum: HOST_CHOICES } },
     });
     expect(schema.$defs).toEqual({ Choice: { type: "string" } });
+  });
+
+  it("replaces a string equal to a declared secret in any of its encoded forms", async () => {
+    // Short (under the 8 characters redaction by value needs), so only exact
+    // equality can catch it; and URL-encoded in the schema, as a form writes it.
+    const short = "k 4/2";
+    const make = acme({
+      jsonSchema: () => ({
+        type: "object",
+        properties: {
+          choice: {
+            type: "string",
+            enum: ["a", encodeURIComponent(short), "k+4%2F2"],
+          },
+        },
+      }),
+    });
+    const configured = make({ ...CONFIG, apiToken: short });
+    const response = await api().call(
+      "GET",
+      path(`${configured.provider.name}@1.0.0~1`, "/schema"),
+    );
+    expect(response.body.schema.properties.choice.enum).toEqual([
+      "a",
+      "[REDACTED]",
+      "[REDACTED]",
+    ]);
+    // Negative control: an instance whose secret is another value keeps them.
+    const other = make(CONFIG);
+    const control = await api().call(
+      "GET",
+      path(`${other.provider.name}@1.0.0~2`, "/schema"),
+    );
+    expect(control.body.schema.properties.choice.enum).toEqual([
+      "a",
+      "k%204%2F2",
+      "k+4%2F2",
+    ]);
   });
 
   it("drops enum under a secret property and everything nested in it, and nowhere else", async () => {

@@ -106,6 +106,7 @@
     "test": "__tests__"
   },
   "files": [
+    "docs",
     "dts",
     "lib"
   ],

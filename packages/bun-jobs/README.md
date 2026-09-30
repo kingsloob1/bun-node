@@ -104,6 +104,7 @@ reference.
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
   - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
+  - [Compute providers](#compute-providers)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3278,6 +3279,27 @@ Example: [`02-queues/custom-provider.ts`](https://github.com/kingsloob1/bun-node
 ([`02-queues/helpers/nimbus-platform.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/nimbus-platform.ts))
 conforming, and a copy calling the global `fetch` failing `summon.routing.through-ctx-fetch`.
 
+### Compute providers
+
+A summoner for a platform can be published as a **compute provider**: a
+package made with `defineComputeProvider` from
+`@kingsleyweb/bun-jobs/provider`, with an identity, a config schema that
+declares its secrets, and a summon facet whose capabilities the controller
+reads instead of knowing the platform. Its guides ship in this package, in
+`docs/providers/`:
+
+- [Compute providers](docs/providers/README.md): what a provider is, and
+  which page to read.
+- [Using a compute provider](docs/providers/user-guide.md): installing
+  one, checking compatibility, configuring it, and troubleshooting by error
+  kind.
+- [Writing a compute provider](docs/providers/author-guide.md): step by
+  step, from the starter template.
+- [API reference](docs/providers/reference.md): every export of
+  `./provider`, `./provider/testing` and `./summon`, and every member.
+- [Security](docs/providers/security.md): what a provider can reach, what
+  is redacted, and what never reaches API clients.
+
 ## BunRunner
 
 A runner runs one handler file, whose default export is a `RunnerHandler`
@@ -4983,7 +5005,11 @@ pre-filled values. `enum`, the allowed choices, is kept, except under a
 property that is a declared secret or has a credential's name, and in every
 `$defs`/`definitions` entry such a property reaches through `$ref`, however
 indirectly. A definition reached from both a secret and a non-secret property
-counts as secret, so it loses its choices too. Every other
+counts as secret, so it loses its choices too; a pointer into a definition
+(`#/$defs/X/properties/y`) counts as all of `X`, and one anywhere else in the
+document (`#`, `#/properties/x`) drops every enum in it. An enum with any
+non-scalar value (an object, an array) is dropped wherever it is: its values
+are data, not schema. Every other
 string is redacted as a detail is; a string equal to a declared secret is
 replaced whatever its length, and a number equal to one is dropped.
 

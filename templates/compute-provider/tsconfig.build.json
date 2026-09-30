@@ -1,0 +1,12 @@
+{
+  // The declarations `scripts/build.ts` emits beside the bundle: `src/` alone.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}
