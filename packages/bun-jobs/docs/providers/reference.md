@@ -52,7 +52,8 @@ validated config the facets receive; `TInput` is what a user passes.
   answering with a promise, the configured provider's `ready` settles later.
   Omitted, the input is passed through unvalidated.
 - `secrets`: optional. Dotted paths into the **validated** config whose values
-  are secrets, e.g. `["apiToken", "credentials.secretAccessKey"]`. Their
+  are secrets, e.g. `["apiToken", "credentials.secretAccessKey"]`. Each must
+  name a leaf string: an object path or a number redacts nothing. Their
   values (strings of 8 characters or more) are redacted from what the
   provider logs through its contexts, and a `describe()` fact holding one is
   dropped. A path that is not there is ignored. See
@@ -108,6 +109,9 @@ THasSummon>`: call it with a config to get a
 [`ConfiguredProvider`](#configuredprovider). The config argument is optional
 when `TInput` admits `undefined`. Calling it validates at once, and throws a
 `ConfigError` for an invalid config when the schema answers synchronously.
+What a synchronous schema or the facet build throws is rethrown as a
+redacted copy (same class and fields, declared secrets and credential
+shapes removed).
 
 - `definition`: the definition it was made from, for the conformance kit and
   tooling.
@@ -126,8 +130,9 @@ accepts.
 - `ready`: a promise that settles once validation has finished. Already
   resolved when the schema answered synchronously. With an asynchronous
   schema, validation **starts when the provider is called**, and `ready`
-  rejects when it fails: with a `ConfigError` carrying the issues, or with
-  what the schema threw. A controller then records a failed attempt and
+  rejects when it fails: with a `ConfigError` carrying the issues, or with a
+  redacted copy of what the schema threw (see
+  [config errors](./security.md#config-errors)). A controller then records a failed attempt and
   validates again at its next one, and `ready` becomes that validation's
   promise.
 - `summon`: optional. The summon facet. With an asynchronous schema it is a
@@ -190,7 +195,8 @@ What the controller calls.
   platform's count, usually to `0`. Required for style `"scale"`.
 - `status`: optional. `(handles, ctx) => Promise<UnitStatus[]>`: what the
   platform says about units it started. Asked once when an attempt is
-  declared lost; the first unit's `detail` becomes the attempt's detail.
+  declared lost; the `detail` of the first unit that has one becomes the
+  attempt's detail.
 - `cancel`: optional. `(handles, ctx) => Promise<void>`: stops units, best
   effort. Called for a lost attempt whose unit is still pending.
 
@@ -279,7 +285,9 @@ What `summon()` answers when the platform answered normally, by `status`:
   up: counts as served), or `"unavailable"` (it declined without an error: no
   capacity, a quota, an inactive function).
 - `handles`: the platform's identifiers for what it started: required for
-  `"started"`, optional for `"deduped"` and `"already-running"`.
+  `"started"`, optional for `"deduped"` and `"already-running"`. Stored,
+  emitted and served **unredacted**: never a credential (a pre-signed URL, a
+  token-bearing id).
 - `reason`: `"unavailable"` only: a short, secret-free reason, served to API
   clients.
 - `retryAfterMs`: `"unavailable"` only, optional: try no sooner than this.
@@ -443,12 +451,33 @@ fake and answers a [`ConformanceReport`](#conformancereport). It never
 throws for a failing provider; pass the report to `assertConformance`.
 
 `provider` is a `ComputeProvider` (configured here with `options.config`,
-and again with every declared secret replaced by a canary), or a `Summoner`
-(from `defineSummoner`, or a provider already configured, whose config checks
-are then skipped). The groups run in a fixed order: identity, config,
+and again with a canary wherever a declared secret path holds a string in
+that config), or a `Summoner` (from `defineSummoner`, or a provider already
+configured, whose config checks are then skipped). The secrets check looks
+for the canaries and for every declared secret's validated value of 8
+characters or more, as the controller redacts it, so a secret the schema
+derives that leaks fails it too; a leak is labelled by its declared path. A
+shorter one is not looked for by value (it is not redacted either), and the
+check's detail appends "; N declared secret(s) under 8 characters are not
+redacted, so not checked by value". A string at a declared path is replaced
+by a canary whatever its length, and the canary is looked for.
+
+The report lists the groups in a fixed order: identity, config,
 capabilities, routing, purity, dedupe, concurrency, errors, timeouts, scale,
 status, lifetime, describe, validate, secrets, the handoff to a real worker
-process, and two controllers in two processes racing for one backlog.
+process, and two controllers in two processes racing for one backlog. They
+do not run in that order.
+
+**Some `must` checks skip, and a skip leaves `ok` true.** A report can be
+`ok` with these not run, so read its skips:
+
+- with no `invalidConfigs` given, `summon.config.rejects-invalid`;
+- when the provider declares no secrets, `summon.secrets.no-leak`;
+- when the provider has no `validate()`, all three validate checks:
+  `summon.validate.healthy`, `summon.validate.auth-fails` and
+  `summon.validate.starts-nothing`;
+- and, when the fake declares no `limits`, the `should` check
+  `summon.capabilities.platform-limits`.
 
 The timeouts group briefly replaces the global timer functions with counting
 wrappers (about 2 s, always restored).
@@ -460,7 +489,8 @@ What `runProviderConformance` takes beside the provider.
 - `config`: optional. A config pointing at the fake. Ignored for a
   `Summoner`.
 - `invalidConfigs`: optional. Configs the schema must reject, each
-  `{ config, path }` with the dotted path its issue should name.
+  `{ config, path }` with the dotted path its issue should name. Without
+  them, the `must` check `summon.config.rejects-invalid` is skipped.
 - `platform`: the fake, from `fakePlatform()`. Give each run a fresh one: the
   kit reads every request it received.
 - `skip`: optional. Checks to skip, each `{ id, reason }`; the reason is
@@ -512,8 +542,11 @@ platform is its routes and its error bodies. A route key is
 What `fakePlatform` takes beside its routes.
 
 - `limits`: optional. The platform's real limits: `maxDurationMs`,
-  `maxRequestBytes`, `tokenMaxLength`. The kit holds the declared
-  capabilities to them.
+  `maxRequestBytes`, `tokenMaxLength`. The `should` check
+  `summon.capabilities.platform-limits` compares `dedupe.maxLength` with
+  `tokenMaxLength` and `maxLifetimeMs` with `maxDurationMs`, and warns on a
+  mismatch; `maxRequestBytes` is not checked. Without `limits`, that check is
+  skipped.
 - `faults`: optional. How the platform answers each fault, by
   [`FakeFault`](#fakefault) (all but `"slow"`): a function of the request and
   `{ retryAfterMs }` answering the platform's own status, body and headers. A
@@ -729,9 +762,9 @@ The payload of a `summon` event, locally and across processes.
 - `outcome`: a [`SummonOutcomeKind`](#summonoutcomekind).
 - `kind`: the summoner's kind.
 - `count`: optional. How many workers it asked for.
-- `handles`: optional. The platform's identifiers, when it returned some.
-  They travel through the backend; the management API withholds them unless
-  `serialize.exposeSummonHandles` is on.
+- `handles`: optional. The platform's identifiers, when it returned some,
+  never redacted. They travel through the backend; the management API
+  withholds them unless `serialize.exposeSummonHandles` is on.
 - `reason`: optional. Why the check that started it ran.
 - `detail`: optional. The attempt's detail. See
   [the security page](./security.md#the-attempts-detail).
@@ -789,7 +822,8 @@ What `status()` answers, and the status route serves.
 - `inert`: whether that controller is inert.
 - `inertReason`: optional. `"summoned-process"` or `"newer-marker"`.
 - `summoner`: optional. `{ provider, capabilities, facts }`: absent while a
-  provider's config is still validating.
+  provider's config is still validating, and after its facet failed to be
+  adopted (its capabilities raised a `ConfigError`).
 - `pending`: the [`PendingSummon`](#pendingsummon)s in flight.
 - `failures`: consecutive failed attempts, as backoff and the circuit read
   them.

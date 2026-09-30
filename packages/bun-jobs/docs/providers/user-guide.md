@@ -153,7 +153,8 @@ suits a mounted secret.
   code; the next attempt validates again. A wait that timed out is
   **abandoned, not cancelled**: the validation keeps running, and if it then
   succeeds, the controller adopts it. Until a controller has a validated
-  config, its status shows no summoner.
+  config, and when the validated facet could not be adopted (its
+  capabilities raised a `ConfigError`), its status shows no summoner.
 
 To see a bad config at startup rather than at the first summon, await
 `ready`. Many providers also have a **preflight**, `validate()`, which asks

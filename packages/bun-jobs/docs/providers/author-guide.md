@@ -188,11 +188,15 @@ export const acmeConfigSchema: StandardSchemaV1<AcmeConfig, ValidAcmeConfig> =
 - **Declare every secret** by its path in the validated config:
   `secrets: ["apiToken"]`. Its value is redacted from everything logged
   through the contexts, and a `describe()` fact holding it is dropped. Only
-  strings of 8 characters or more are redacted by value.
+  strings of 8 characters or more are redacted by value, and a path must
+  name a **leaf string**: a path to an object (`"credentials"`) or to a
+  number redacts nothing.
 - **`describe(config)`** returns facts for the UI: the region, the pool.
   Never a secret.
 - **Issue messages never echo a value.** bun-jobs redacts the declared
-  secrets from them anyway, but say what is wrong, not what was given.
+  secrets from them anyway, but say what is wrong, not what was given. What
+  the schema or the facet build throws is redacted too: `provider(config)`
+  throws, and `ready` rejects with, a redacted copy of it.
 - **Refuse a URL that would send the token in clear text.** The bearer token
   goes on every call, so Acme's `url` must be `https:`; plain `http:` is
   allowed only for `localhost`, `127.0.0.1` and `[::1]`, where a test's fake
@@ -270,8 +274,10 @@ const capabilities: SummonCapabilities = {
   `maxLength` characters of `charset`, so it always fits. With
   `strict: true` the platform refuses the same token with different
   parameters, so everything you send must be a function of the request's
-  `id`. Declare the platform's real limits: the kit checks them against the
-  fake's.
+  `id`. Declare the platform's real limits, and give the fake the same
+  ones: the kit's `summon.capabilities.platform-limits` check compares
+  `maxLength` with the fake's `tokenMaxLength` (and `maxLifetimeMs` with its
+  `maxDurationMs`), as a `should`: a mismatch is a warning.
 - **`passes`**: `"argv"` when the platform takes command-line arguments:
   the attempt's identity reaches the worker that way (step 8). `"none"` when
   the unit's command line is fixed.
@@ -370,6 +376,11 @@ summon: (config) => ({
   already ran, `already-running` when the unit was up, and `unavailable` for
   "no capacity" said with a 200. **Throw a `ProviderError` when it did not**
   (step 7).
+- **Handles are the platform's plain identifiers**, and never hold a
+  credential: not a pre-signed URL, not a token-bearing id. bun-jobs never
+  redacts them: they are stored on the queue's summon state, emitted on the
+  `summon` event, passed back to `status()` and `cancel()`, and served with
+  `serialize.exposeSummonHandles`.
 - **Under a strict token, send only what is a function of the request's
   `id`**: `dedupeKey`, `count`, `argv`, `env`, `maxLifetimeMs`. Never
   `demand` or `reason`, which differ between two readings of the same
@@ -590,8 +601,8 @@ cancel: async (handles, ctx) => {
 ```
 
 - **`status(handles)`** is asked once, when an attempt is declared lost:
-  the first unit's `detail` (`CannotPullContainerError`, `OOMKilled`)
-  becomes the lost event's detail and the attempt's `last.detail`. The event
+  the `detail` of the first unit that has one (`CannotPullContainerError`,
+  `OOMKilled`) becomes the lost event's detail and the attempt's `last.detail`. The event
   waits for it, bounded by `summonTimeout`.
 - **`cancel(handles)`** stops units still pending when their attempt is
   lost, so one cannot start late. Best effort.
@@ -831,8 +842,17 @@ it("passes the conformance kit", async () => {
   failed `must` check, with the report as its message, and never on a
   `should` warning.
 - It needs **no credentials**. It configures your provider with `config`,
-  and again with every declared secret replaced by a canary, then looks for
-  the canaries in everything bun-jobs would log or store.
+  and again with a canary wherever a declared secret path holds a string in
+  that config. Its `summon.secrets.no-leak` check then looks, in everything
+  bun-jobs would log or store, for the canaries **and** for every declared
+  secret's real validated value, so a secret your schema derives (Acme's
+  token read from `apiTokenFile`) that leaks fails it too; a leak names its
+  declared path. The look by value is as the controller redacts, and covers
+  secrets of 8 characters or more, the redactor's floor: a shorter one is
+  not looked for by value (nor redacted), and the check's detail appends
+  "; N declared secret(s) under 8 characters are not redacted, so not
+  checked by value". A string at a declared path of your `config` is still
+  replaced by a canary whatever its length, and the canary is looked for.
 - **`invalidConfigs`** are configs your schema must refuse, each with the
   path its issue should name.
 - **The handoff** starts real worker processes and a real
@@ -843,6 +863,19 @@ it("passes the conformance kit", async () => {
   reason }]`), or when a check they depend on failed. Assert the skips you
   expect, as the template does: a check that stops running is a regression
   too.
+- **Some `must` checks skip silently, and `ok` stays `true`**: give the kit
+  what they need, or the report says less than it seems to.
+  - `summon.config.rejects-invalid` skips without `invalidConfigs`;
+  - `summon.secrets.no-leak` skips when the provider declares no secrets;
+  - `summon.validate.healthy`, `summon.validate.auth-fails` and
+    `summon.validate.starts-nothing` skip when it has no `validate()`;
+  - the `should` check `summon.capabilities.platform-limits` skips when the
+    fake declares no `limits`.
+- **`summon.describe.facts`** warns about exactly the facts the status
+  route drops whatever its settings: a key named like a credential (the
+  same `isCredentialKey` rule) or a value holding a URL with credentials in
+  it. A `host` fact, dropped only while `serialize.exposeHosts` is off, is
+  not warned about.
 - **`report.toMarkdown()`** renders a checklist headed "tested against a
   fake": publish it with the package.
 
@@ -853,7 +886,9 @@ reasons):
 
 - declare every secret; log through `ctx.logger`; call through `ctx.fetch`;
 - never put a credential in `describe()`, a `platformCode`, an
-  `unavailable` reason, a unit's detail, or a check's detail;
+  `unavailable` reason, a unit's detail, a check's detail, or a **handle**
+  (a pre-signed URL, a token-bearing id): handles are never redacted;
+- declare secrets by leaf-string paths, 8 characters or more;
 - take platform codes from a table, as own properties (`Object.hasOwn`);
 - parse `Retry-After` strictly: delay-seconds or an HTTP-date, nothing else;
 - say only the status and the code in an error message;

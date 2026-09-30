@@ -65,9 +65,14 @@ export const provider = defineComputeProvider<Config>({
 
 - A path is dotted, into the **validated** config (what the schema outputs,
   not what the user passed). A path that is not there is ignored.
+- **A path must name a leaf string.** A path to an object
+  (`"credentials"`) or to a number redacts nothing: name each string inside
+  it (`"credentials.secretAccessKey"`).
 - Only **string values of 8 characters or more** are redacted by value. A
   shorter one would take ordinary words with it, so it is not, and nothing
-  warns about it: make sure a real secret is longer.
+  warns about it at run time (only the conformance kit's
+  `summon.secrets.no-leak` detail notes it): make sure a real secret is
+  longer.
 - Before an asynchronous config has validated, the values at the same paths
   of the **input** are what is redacted.
 - The configured provider's `config` still holds the secrets. bun-jobs never
@@ -83,13 +88,25 @@ Every logger a provider is handed (at setup, on every call, and in
 `validate()`) passes every message, field and child binding through two
 passes before your logger sees it:
 
-1. **By value**: each declared secret is replaced wherever it appears, prose
-   included, longest first.
+1. **By value**: each declared secret of 8 characters or more is replaced
+   wherever it appears, prose included, longest first: as it is, and
+   URL-encoded both as `encodeURIComponent` writes it (`a%2Fb` for `a/b`)
+   and as `URLSearchParams` writes it (`+` for a space). A declared secret
+   under 8 characters is not replaced, raw or encoded.
 2. **By shape**, the runner's redactor with its defaults: the value of a
    `key=value`, `key: value` or JSON `"key": …` pair under a sensitive key
    (`password`, `secret`, `token`, `apikey`, `authorization`, `auth`,
-   `credential`, `cookie`, …), a bare `Bearer …`, the password in a URL, and
-   a JSON Web Token.
+   `credential`, `cookie`, …), a bare `Bearer …`, the password in a URL and
+   a JSON Web Token; then a bare `Basic <base64>`, **only** when the base64
+   decodes to a `user:password` pair (it becomes `Basic [REDACTED]`, and
+   prose such as "Basic authentication failed" is left alone); the value of
+   an `X-Amz-Signature=` parameter (any case: an S3 pre-signed URL's
+   signature); and the value of an Azure SAS `sig=` parameter (as a whole
+   key only, so `xsig=` and `signal=` are left alone).
+
+**A URL's userinfo is replaced whole**, in messages and in fields alike,
+whatever it holds: a token alone before the `@` (`https://ghp_…@github.com`),
+a DSN's key.
 
 Then, for fields:
 
@@ -102,12 +119,21 @@ Then, for fields:
   ends with one. `apiKey`,
   `authToken`, `api_key` and `sessiontoken` count; `author`, `keyspace` and
   `tokenizerModel` do not; `monkey` does, which errs the safe way.
-- **A URL's userinfo is replaced whole**, whatever it holds: a token alone
-  before the `@` (`https://ghp_…@github.com`), a DSN's key.
 - **Other shapes are read first**: a `URL` as its text, `Headers`,
   `URLSearchParams` and a `Map` as their entries, a `Set` as its items, any
   other class instance as its own fields. An error's message, stack, `cause`
-  and own fields are walked too, and keep its class.
+  and own fields are walked too, and keep its class. A `RegExp` is logged as
+  its text, redacted. A `Date` is passed as it is.
+- **An object with a `toJSON` method**, other than a `Date`, a `URL` or an
+  error, is logged as what `toJSON` returns, redacted: what `JSON.stringify`
+  would write, so a sink cannot call it and bring a secret back. The call is
+  guarded: a throwing read or call is logged as `[Unreadable]`. The result is
+  walked like any value, so a `toJSON` returning its own object is cut at
+  `[Circular]`, and an endless chain stops at the depth limit as
+  `[REDACTED]`.
+- **Binary data is never logged as bytes**: a `Buffer`, any typed array, an
+  `ArrayBuffer`, a `SharedArrayBuffer` or a `DataView` is logged as
+  `[Binary <n> bytes]`, since a sink could decode the bytes to text.
 - **Anything deeper than 8 levels is replaced**, never passed through, and a
   value that cannot be read (a throwing getter, a revoked proxy) is logged as
   `[Unreadable]`. A log call never throws.
@@ -116,9 +142,10 @@ The controller's own log lines about a provider go through the same
 redaction: a thrown error and its `cause`, an `unavailable` reason, a unit's
 detail.
 
-**What it misses**: a secret that is not declared and appears in prose ("the
-password is hunter2"), and token shapes other than a JWT. Declaring secrets
-is how a provider closes that gap for its own values.
+**What it misses**: a declared secret shorter than 8 characters, and
+anything that is neither at a declared path nor in one of the shapes above
+(a secret in prose, "the password is hunter2", or another token format).
+Declaring secrets is how a provider closes that gap for its own values.
 
 Source: [`lib/provider/redact.ts`](../../lib/provider/redact.ts),
 [`lib/shared/credentialKeys.ts`](../../lib/shared/credentialKeys.ts),
@@ -129,9 +156,23 @@ Source: [`lib/provider/redact.ts`](../../lib/provider/redact.ts),
 A config the schema rejects is a `ConfigError` whose message and `issues`
 carry each issue's **path and message**, with the input's declared secret
 values and the credential shapes above redacted from the messages. The
-values themselves are not included. A schema that throws, rather than
-answering issues, has its error passed on as it was thrown; a controller
-logs it through the redacting logger.
+values themselves are not included.
+
+A schema that **throws** rather than answering issues, and a facet build
+(the definition's `summon`) that throws, are the provider's own code, and
+their error may quote the config. So bun-jobs never passes it on as it is:
+
+- **Synchronously**, `provider(config)` throws a **redacted copy**: the same
+  class and fields, with the declared secrets (raw and URL-encoded, 8
+  characters or more) and the credential shapes above removed from its
+  message, stack, `cause` and fields. The original error is untouched.
+- **Asynchronously**, `ready` rejects with the same redacted copy, and a
+  controller logs and records that. A `ProviderError` keeps its `kind`,
+  `code`, `platformCode`, `status` and `retryAfterMs`, so the controller
+  treats it as it would unredacted.
+
+An invalid config's `ConfigError` is redacted as described above, either
+way.
 
 Source: [`lib/provider/configure.ts`](../../lib/provider/configure.ts)
 (`invalid`).
@@ -151,8 +192,9 @@ filters drop what would leak if it did:
    its key, and, unless `serialize.exposeHosts` is on, when its key is `host`
    or `hostname`.
 
-While a provider's config is still validating, the status route shows no
-summoner at all rather than a provisional one.
+While a provider's config is still validating, and after its facet failed to
+be adopted (its capabilities raised a `ConfigError`), the status route shows
+no summoner at all rather than a provisional one.
 
 Source: [`lib/provider/configure.ts`](../../lib/provider/configure.ts)
 (`describe`), [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
@@ -169,8 +211,9 @@ status route and on the `summon` event. It comes from, in order:
 - `"timeout"` for a call that ran past `summonTimeout`, and
   `"ready timed out"` for a config that did not validate in time;
 - an `unavailable` result's `reason`;
-- for a lost attempt, the first unit's `detail` from the provider's
-  `status()`, or the controller's own `died` or `exited-with-error`.
+- for a lost attempt, the `detail` of the first unit that has one in the
+  provider's `status()` answer, or the controller's own `died` or
+  `exited-with-error`.
 
 The rules, in the order they apply:
 
@@ -185,8 +228,9 @@ The rules, in the order they apply:
   secret's remainder no longer matches its value.
 - **A code-shaped credential is not caught.** `sk_live_abc123` passes the
   code rule and matches no redaction pattern, so it would be stored and served
-  verbatim. Only a value the provider declares in `secrets` is redacted
-  wherever it appears. **So a provider must never put a credential in a
+  verbatim. Only a value the provider declares in `secrets`, of 8 characters
+  or more, is redacted wherever it appears. **So a provider must never put a
+  credential in a
   `platformCode`, an error's `code` or `name`, an `unavailable` reason or a
   unit's detail.**
 
@@ -224,6 +268,19 @@ Source: [`lib/summon/controller.ts`](../../lib/summon/controller.ts)
 (`#retryAfter`, `#noteThrottled`),
 [`lib/provider/errors.ts`](../../lib/provider/errors.ts).
 
+## Handles
+
+The handles `summon()` returns (a task ARN, a run id) are the platform's
+names for what it started, and bun-jobs keeps them exactly as given: they
+are **never redacted**. They are stored raw on the queue's summon state,
+emitted on the `summon` event (which travels through the backend to every
+subscriber), passed back to the provider's `status()` and `cancel()`, and
+served by the management API when `serialize.exposeSummonHandles` is on.
+
+**So a handle must never hold a credential**: not a pre-signed URL, not an
+id with a token in it. Return the platform's plain identifier, and keep
+anything secret in the config.
+
 ## What never reaches API clients
 
 The management API serves a queue's summon status (`queues.read`) and the
@@ -237,7 +294,10 @@ The management API serves a queue's summon status (`queues.read`) and the
 
 It never serves:
 
-- **the config**, or any declared secret's value;
+- **the config**, or the value of a declared secret of **8 characters or
+  more**: it is redacted from every detail and dropped from the facts. A
+  shorter one is not redacted, deliberately: a short value would match
+  ordinary words and ids. Declare secrets that long, which real ones are;
 - **what the provider logs**: log lines go to your logger, redacted;
 - **an error's message or `cause`**: only the detail;
 - **platform handles** (a task ARN carries the AWS account id), unless
@@ -245,7 +305,7 @@ It never serves:
   summoned worker's record. That switch guards the API's edge only: the
   `summon` event carries its handles through the backend, so a
   `JobsNotifier`, a subscribing `BunQueue` or a `serialize.event` hook sees
-  them;
+  them. **Handles are never redacted** (see [Handles](#handles));
 - **a `host` or `hostname` fact**, unless `serialize.exposeHosts` is on.
 
 `ConfiguredProvider.validate()` answers the code that calls it. bun-jobs
@@ -260,7 +320,8 @@ Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
 ## For provider authors
 
 - **Declare every secret** in `secrets`, including one read from a file or
-  exchanged for a token, once it is in the validated config.
+  exchanged for a token, once it is in the validated config. Name each
+  leaf string: an object path redacts nothing.
 - **Log through `ctx.logger`**, never `console`: only it redacts.
 - **Call the platform through `ctx.fetch`**, with `ctx.signal`. The
   conformance kit fails a provider that calls the global `fetch`.
@@ -278,6 +339,9 @@ Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
   test's fake runs. The template's `urlProblem()` does exactly this.
 - **Keep `describe()` to facts**: a region, a pool, a cluster name. Never a
   token, a key, or a URL with credentials in it.
+- **Never put a credential in a handle**: not a pre-signed URL, not a
+  token-bearing id. Handles are stored, emitted and served unredacted (see
+  [Handles](#handles)).
 - **Parse the platform's `Retry-After` strictly**: RFC 9110 delay-seconds
   (digits only: `0x10`, `1e3`, `1.5` and `-3` are not) or an HTTP-date,
   checked by its form before `Date.parse`, which reads `1.5` and `-3` as
@@ -286,10 +350,28 @@ Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
   asked for.
 - **No install scripts, and no cloud SDK.** A provider needs `fetch` and
   WebCrypto.
-- **Run the conformance kit.** Its `summon.secrets.no-leak` check replaces
-  every declared secret with a canary and fails if one appears in anything
-  bun-jobs would log or store; `summon.errors.platform-code` warns about a
-  `platformCode` that is not code-shaped.
+- **Run the conformance kit.** Its `summon.secrets.no-leak` check
+  configures the provider with a canary wherever a declared path holds a
+  string in the config you pass it, and then looks, in everything bun-jobs
+  would log or store, both for those canaries and for every declared
+  secret's real validated value: so a secret the schema derives (a token
+  read from a file, one exchanged for another) that leaks fails it too.
+  Each value is looked for as the controller redacts it, and a leak names
+  its declared path. The look by real value has the redactor's floor: a
+  declared secret of **8 characters or more**. A shorter one is not looked
+  for by value, for the same reason it is not redacted, and the check's
+  detail ends "; N declared secret(s) under 8 characters are not redacted,
+  so not checked by value". A string at a declared path of the config you
+  pass is still replaced by a canary, whatever its length, and the canary
+  is looked for, since the kit chooses that value.
+  `summon.describe.facts` warns about exactly the facts the status route
+  drops whatever its settings: a key `isCredentialKey` matches (the same
+  credential-word rule), or a value holding a URL with credentials in it. A
+  `host` or `hostname` fact, dropped only while `serialize.exposeHosts` is
+  off, is not warned about. And
+  `summon.errors.platform-code` warns about a `platformCode` that is not
+  code-shaped. With no declared secrets, `summon.secrets.no-leak` is
+  skipped, and the report stays `ok`.
 
 ## For users choosing a provider
 
