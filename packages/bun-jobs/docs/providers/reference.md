@@ -822,9 +822,14 @@ What `status()` answers, and the status route serves.
   `status()`).
 - `inert`: whether that controller is inert.
 - `inertReason`: optional. `"summoned-process"` or `"newer-marker"`.
-- `summoner`: optional. `{ provider, capabilities, facts }`: absent while a
-  provider's config is still validating, and after its facet failed to be
-  adopted (its capabilities raised a `ConfigError`).
+- `summoner`: optional; always present from `status()`. `{ provider,
+  providerId?, readiness, capabilities?, facts }`: `providerId` is the
+  configured instance's id in this process, `name@version~<n>`, which the
+  management API's [provider routes](../../README.md#compute-provider-routes)
+  take; `readiness` is `"ready"`, `"pending"` while the provider's config is
+  still validating, or `"failed"` when that validation rejected or the
+  controller refused the facet (its capabilities raised a `ConfigError`);
+  `capabilities` only when ready; `facts` `{}` until the config is known.
 - `pending`: the [`PendingSummon`](#pendingsummon)s in flight.
 - `failures`: consecutive failed attempts, as backoff and the circuit read
   them.

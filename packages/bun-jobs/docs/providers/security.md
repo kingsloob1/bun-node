@@ -208,20 +208,34 @@ filters drop what would leak if it did:
    is a declared secret is dropped, and so is one holding a declared secret
    of 8 characters or more in any of the forms above (raw, URL-encoded or
    escaped for a regular expression).
-2. **When the status route serialises it**: a fact is dropped when its value
-   is not a string, when its **key** names a credential (the word rule above:
-   `apiKey`, `secretArn`, `sessiontoken` go, `keyspace` stays), when its
-   **value** holds a URL with userinfo (`postgres://user:pass@…`), whatever
-   its key, and, unless `serialize.exposeHosts` is on, when its key is `host`
-   or `hostname`.
+2. **When the management API serves it** (a queue's summon status, and
+   `GET /providers`): a fact is dropped when its value is not a string, when
+   its **key** names a credential (the word rule above: `apiKey`,
+   `secretArn`, `sessiontoken` go, `keyspace` stays), when its **value**
+   holds a URL with userinfo (`postgres://user:pass@…`), when its value holds
+   any other credential shape the redactor knows (a value the pattern
+   redactor would change: `Bearer …`, a JWT, or a `word:value` /
+   `word=value` pair whose word contains a sensitive word), whatever its key,
+   and, unless `serialize.exposeHosts` is on, when its key is `host` or
+   `hostname`. The shape rule fails safe, so it drops some honest facts too:
+   `session-workers:prod`, `max_tokens=4096`, an ARN whose resource holds
+   `auth-api:prod`. Choose values that pass (the package README lists
+   [which facts are served](../../README.md#which-facts-are-served)).
 
-While a provider's config is still validating, and after its facet failed to
-be adopted (its capabilities raised a `ConfigError`), the status route shows
-no summoner at all rather than a provisional one.
+A `describe()` that throws is served as no facts, and its failure is logged
+by name and code only, never its message.
+
+The status route shows the summoner at every stage, with its `readiness`:
+`"pending"` while the provider's config is still validating, `"failed"` when
+that validation rejected or the controller refused the facet (its
+capabilities raised a `ConfigError`), and `"ready"`. Its `capabilities` are
+served only once it is ready, never provisional ones, and its facts are `{}`
+until the config is known.
 
 Source: [`lib/provider/configure.ts`](../../lib/provider/configure.ts)
-(`describe`), [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
-(`isServableFact`).
+(`describe`), [`lib/provider/redact.ts`](../../lib/provider/redact.ts)
+(`factProblem`, the rule the kit's `summon.describe.facts` shares),
+[`lib/api/serialize.ts`](../../lib/api/serialize.ts) (`isServableFact`).
 
 ## The attempt's detail
 
@@ -306,13 +320,27 @@ anything secret in the config.
 
 ## What never reaches API clients
 
-The management API serves a queue's summon status (`queues.read`) and the
-`summon` event. From a provider it serves only:
+The management API serves a queue's summon status (`queues.read`), the
+`summon` event, and three [provider routes](../../README.md#compute-provider-routes),
+each behind an action off by default because it discloses infrastructure:
+`GET /providers` (`providers.read`), a preflight, `POST
+/providers/:id/validate` (`providers.validate`, which `readOnly` removes),
+and the config as a JSON Schema, `GET /providers/:id/schema`
+(`providers.read`). `/meta`'s `features.providers` says whether they are
+served. A provider's id there is `name@version~<n>`, its nth configured
+instance in the API's process, and `authorize` is told it as `provider`.
+From a provider the API serves only:
 
 - its identity: `name`, `version`, `kind`, `displayName`, `homepage`,
   `apiVersion`;
 - its declared capabilities;
 - its facts, after both filters;
+- its id and `readiness`, and whether it has a preflight and a JSON Schema
+  for its config;
+- a preflight's verdict: each check's id and status, and every detail
+  redacted (declared secrets, credential shapes) and cut to 128 characters;
+  a failure's kind and a code, never an error's message;
+- its config schema, scrubbed (see [The config schema](#the-config-schema));
 - each attempt's id, times, count, kind and outcome, and the detail above.
 
 It never serves:
@@ -331,8 +359,35 @@ It never serves:
   them. **Handles are never redacted** (see [Handles](#handles));
 - **a `host` or `hostname` fact**, unless `serialize.exposeHosts` is on.
 
-`ConfiguredProvider.validate()` answers the code that calls it. bun-jobs
-does not redact its checks' `detail`, so write them secret-free.
+`ConfiguredProvider.validate()` answers the code that calls it, unredacted:
+only the management API's preflight route redacts and caps its checks'
+`detail`. Write them secret-free either way.
+
+## The config schema
+
+`GET /providers/:id/schema` serves a provider's config schema as a
+draft-2020-12 JSON Schema, when the schema implements Standard JSON Schema.
+A host bakes its own values into a schema wherever its library puts them,
+none of them the configured value, so redaction by value cannot know them.
+So the route:
+
+- removes `default`, `example`, `examples`, `const` and every `x-*` key
+  **everywhere**: root, nested, `$defs`/`definitions` and combinators. A
+  config form built from it gets no pre-filled values;
+- keeps `enum`, the allowed choices, only when every value is a scalar (an
+  enum holding an object or an array is dropped wherever it is), and drops
+  it under a property that is a declared secret or has a credential's name,
+  in every definition such a property reaches through `$ref` (a pointer into
+  a definition counts as all of it; a definition reached from both a secret
+  and a non-secret property counts as secret), and everywhere in the
+  document when such a property's `$ref` points at the root or elsewhere
+  outside the definitions;
+- redacts every other string as a detail is, replaces a string equal to a
+  declared secret in any of its encoded forms whatever its length, and drops
+  a number equal to one.
+
+Source: [`lib/api/routes/providers.ts`](../../lib/api/routes/providers.ts)
+(`sanitizeSchema`).
 
 "Summon now" and reset (`queues.summon`) spend money, so that action is
 opt-in and removed by `readOnly`.
@@ -389,10 +444,11 @@ Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
   pass is still replaced by a canary, whatever its length, and the canary
   is looked for, since the kit chooses that value.
   `summon.describe.facts` warns about exactly the facts the status route
-  drops whatever its settings: a key `isCredentialKey` matches (the same
-  credential-word rule), or a value holding a URL with credentials in it. A
-  `host` or `hostname` fact, dropped only while `serialize.exposeHosts` is
-  off, is not warned about. And
+  drops whatever its settings, by the same rule (`factProblem`): a key
+  `isCredentialKey` matches (the same credential-word rule), a value holding
+  a URL with credentials in it, or a value holding another credential shape
+  the pattern redactor would change. A `host` or `hostname` fact, dropped
+  only while `serialize.exposeHosts` is off, is not warned about. And
   `summon.errors.platform-code` warns about a `platformCode` that is not
   code-shaped. With no declared secrets, `summon.secrets.no-leak` is
   skipped, and the report stays `ok`.

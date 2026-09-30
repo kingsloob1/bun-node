@@ -873,10 +873,12 @@ it("passes the conformance kit", async () => {
   - the `should` check `summon.capabilities.platform-limits` skips when the
     fake declares no `limits`.
 - **`summon.describe.facts`** warns about exactly the facts the status
-  route drops whatever its settings: a key named like a credential (the
-  same `isCredentialKey` rule) or a value holding a URL with credentials in
-  it. A `host` fact, dropped only while `serialize.exposeHosts` is off, is
-  not warned about.
+  route drops whatever its settings, by the very rule the route uses: a key
+  named like a credential (the same `isCredentialKey` rule), a value holding
+  a URL with credentials in it, or a value holding another credential shape
+  the pattern redactor would change (`Bearer …`, a JWT,
+  `session-workers:prod`, `max_tokens=4096`). A `host` fact, dropped only
+  while `serialize.exposeHosts` is off, is not warned about.
 - **`report.toMarkdown()`** renders a checklist headed "tested against a
   fake": publish it with the package.
 
