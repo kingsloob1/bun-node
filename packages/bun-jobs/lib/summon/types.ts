@@ -159,7 +159,11 @@ export type SummonResult =
       status: "unavailable";
       /** A short, secret-free reason, shown on the status route. */
       reason: string;
-      /** Try no sooner than this many ms from now. Overrides the backoff when larger. */
+      /**
+       * Try no sooner than this many ms from now. Overrides the backoff when
+       * larger. Ignored unless a finite number of 0 or more, and clamped to
+       * the larger of `backoff.max` and `circuit.resetAfter`.
+       */
       retryAfterMs?: number;
     };
 
@@ -229,7 +233,11 @@ export interface SummonPolicy {
   };
   /** When to stop summoning altogether after repeated failures. */
   circuit?: {
-    /** Consecutive failed or lost attempts that open it. Defaults to `5`. */
+    /**
+     * Consecutive failed or lost attempts that open it. Defaults to `5`. A
+     * provider's `auth` or `misconfigured` `ProviderError` opens it at once,
+     * and a `throttled` one is not counted.
+     */
     failures?: number;
     /** How long it stays open, in ms, before one trial attempt. Defaults to `900_000`. */
     resetAfter?: number;
@@ -310,7 +318,7 @@ export type SummonSkipReason =
   | "cooldown"
   /** Waiting out the backoff after a failure. */
   | "backoff"
-  /** Too many consecutive failures: the circuit is open. */
+  /** Too many consecutive failures, or a provider's `auth` or `misconfigured` error: the circuit is open. */
   | "circuit-open"
   /** A cost ceiling was reached. */
   | "budget"
@@ -423,7 +431,14 @@ export interface SummonLastOutcome {
   outcome: SummonOutcomeKind;
   /** When, epoch ms. */
   at: number;
-  /** A short, secret-free explanation: an error name, a platform reason. */
+  /**
+   * A short, secret-free explanation: a `ProviderError`'s `platformCode`,
+   * else its `PROVIDER_<KIND>` code; another error's code or name; an
+   * `unavailable` reason; for `lost`, the platform's reason from the
+   * summoner's `status()` when it gave one. Served to API clients: a
+   * provider must never put a credential in it, since only its declared
+   * secrets and the usual credential shapes are redacted.
+   */
   detail?: string;
 }
 

@@ -399,6 +399,19 @@ describe("summon text", () => {
     expect(summonActionsOffered({ local: false }, true)).toBe(false);
   });
 
+  it("says how each outcome counts toward the circuit, as the controller counts it", () => {
+    // Throttled is `unavailable` and not counted; quota and plain
+    // `unavailable` are counted; auth and misconfiguration open it at once.
+    const unavailable = summonOutcome("unavailable").hint;
+    expect(unavailable).toContain("throttled call");
+    expect(unavailable).toContain("except a throttle");
+    const failed = summonOutcome("failed").hint;
+    expect(failed).toContain(
+      "auth or misconfiguration error opens the circuit at once",
+    );
+    expect(failed).toContain("counts only if no worker registers in time");
+  });
+
   it("names every outcome the contract lists", () => {
     for (const outcome of SUMMON_OUTCOMES) {
       expect(summonOutcome(outcome).label).not.toBe(outcome);

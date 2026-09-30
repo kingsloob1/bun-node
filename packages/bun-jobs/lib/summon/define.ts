@@ -48,7 +48,8 @@ export interface DefineSummonerOptions {
   shutdown?: SummonCapabilities["shutdown"];
   /**
    * Starts compute. Returning nothing counts as `{ status: "started",
-   * handles: [] }`; a throw is recorded as `failed`.
+   * handles: [] }`; a throw is recorded as `failed`, unless it is a
+   * `ProviderError`, whose kind says how it counts (see `ProviderErrorKind`).
    */
   invoke: SummonerFunction;
   /** Scale-style only, and then required: sets the count. */

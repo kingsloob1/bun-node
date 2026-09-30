@@ -688,6 +688,63 @@ describe("SummonController and a provider's ready", () => {
     expect(counts.validations).toBe(2);
   });
 
+  it("abandons only the validation a caller waited on: one controller's timeout never abandons another's newer one (PR-p2 round 2, E2)", async () => {
+    const { controller, add } = await setup();
+    // Validation 1 hangs; every later one takes 250 ms and succeeds.
+    const { provider, counts } = asyncProvider({
+      hang: (n) => n === 1,
+      delayOf: () => 250,
+    });
+    await add("a");
+    await add("b");
+    await add("c");
+    const configured = provider({ region: "eu" });
+    const a = controller({
+      summoner: configured,
+      queue: "a",
+      summonTimeout: 100,
+    });
+    const b = controller({
+      summoner: configured,
+      queue: "b",
+      summonTimeout: 200,
+    });
+    const c = controller({
+      summoner: configured,
+      queue: "c",
+      summonTimeout: 5_000,
+    });
+    // b and a both wait on validation 1; a gives up first and abandons it.
+    const bFirst = b.check();
+    expect(await a.check()).toMatchObject({ outcome: "failed" });
+    // c starts validation 2. b's wait on validation 1 then times out: it
+    // must abandon 1 (already abandoned), never c's validation 2.
+    const cFirst = c.check();
+    expect(await bFirst).toMatchObject({ outcome: "failed" });
+    await afterBackoff();
+    // So b's next check joins validation 2 rather than starting a third.
+    expect(await b.check()).toMatchObject({ outcome: "started" });
+    expect(await cFirst).toMatchObject({ outcome: "started" });
+    expect(counts.validations).toBe(2);
+  });
+
+  it("negative control: a caller's timeout still abandons the validation it waited on, so the next attempt starts a fresh one", async () => {
+    const { controller, add } = await setup();
+    const { provider, counts } = asyncProvider({
+      hang: (n) => n === 1,
+      delayOf: () => 5,
+    });
+    await add();
+    const summon = controller({
+      summoner: provider({ region: "eu" }),
+      summonTimeout: 100,
+    });
+    expect(await summon.check()).toMatchObject({ outcome: "failed" });
+    await afterBackoff();
+    expect(await summon.check()).toMatchObject({ outcome: "started" });
+    expect(counts.validations).toBe(2);
+  });
+
   it("bounds the background validation too: a hung first one, no demand, still adopts and releases (round 4 #3)", async () => {
     const { controller } = await setup();
     const { provider, counts } = asyncProvider({
