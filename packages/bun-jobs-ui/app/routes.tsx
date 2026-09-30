@@ -11,6 +11,7 @@ import {
   EventsScreen,
   HttpDocsScreen,
   JobScreen,
+  ProvidersScreen,
   QueueScreen,
   QueuesListScreen,
   RunnerScreen,
@@ -83,6 +84,10 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
         },
         { path: "/workers", element: <WorkersListScreen /> },
       );
+      continue;
+    }
+    if (item.id === "providers") {
+      routes.push({ path: "/providers", element: <ProvidersScreen /> });
       continue;
     }
     if (item.id === "events") {

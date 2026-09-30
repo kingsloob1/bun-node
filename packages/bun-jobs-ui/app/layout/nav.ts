@@ -7,6 +7,7 @@ export type NavId =
   | "overview"
   | "queues"
   | "workers"
+  | "providers"
   | "runners"
   | "events"
   | "docs"
@@ -43,6 +44,8 @@ export interface NavInputs {
  * - Overview — `manage`, mode jobs/both, and `metrics.read` or `queues.list`.
  * - Queues — `manage`, mode jobs/both, `queues.list`.
  * - Workers — `manage`, mode jobs/both, a worker registry (`meta.features.workers`), `workers.list`.
+ * - Providers — `manage`, the provider routes served (`meta.features.providers`,
+ *   off in runner mode), and the opt-in `providers.read`.
  * - Runners — `manage`, mode runner/both, `runners.list`.
  * - Events — `manage`, a socket (`meta.websocket`), `events.connect`.
  * - API docs — `docs`, docs routed (`meta.docs`, the runtime authority), `docs.read`.
@@ -74,6 +77,13 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "workers",
         label: "Workers",
         to: "/workers",
+      });
+    }
+    if (meta.features.providers && can("providers.read")) {
+      items.push({
+        id: "providers",
+        label: "Providers",
+        to: "/providers",
       });
     }
     if (runnerMode && can("runners.list")) {
