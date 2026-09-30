@@ -89,26 +89,35 @@ Every logger a provider is handed (at setup, on every call, and in
 passes before your logger sees it:
 
 1. **By value**: each declared secret of 8 characters or more is replaced
-   wherever it appears, prose included, longest first: as it is, and
-   URL-encoded both as `encodeURIComponent` writes it (`a%2Fb` for `a/b`)
-   and as `URLSearchParams` writes it (`+` for a space). A declared secret
-   under 8 characters is not replaced, raw or encoded.
+   wherever it appears, prose included, longest first, in these forms:
+   - as it is;
+   - URL-encoded, as `encodeURIComponent` writes it (`a%2Fb` for `a/b`) and
+     as form data writes it (`URLSearchParams`, `+` for a space), each also
+     with lower-case percent-escapes (`a%2fb`);
+   - escaped for a regular expression: the usual escape-the-specials form,
+     as a `RegExp`'s `source` shows it, and `RegExp.escape`'s where the
+     runtime has it.
+
+   A declared secret under 8 characters is not redacted, in any form.
 2. **By shape**, the runner's redactor with its defaults: the value of a
    `key=value`, `key: value` or JSON `"key": …` pair under a sensitive key
    (`password`, `secret`, `token`, `apikey`, `authorization`, `auth`,
    `credential`, `cookie`, …), a bare `Bearer …`, the password in a URL and
-   a JSON Web Token; then a bare `Basic <base64>`, **only** when the base64
-   decodes to a `user:password` pair (it becomes `Basic [REDACTED]`, and
-   prose such as "Basic authentication failed" is left alone); the value of
-   an `X-Amz-Signature=` parameter (any case: an S3 pre-signed URL's
-   signature); and the value of an Azure SAS `sig=` parameter (as a whole
-   key only, so `xsig=` and `signal=` are left alone).
+   a JSON Web Token. Then:
+   - a bare `Basic` credential, in base64 or base64url, **only** when it
+     decodes to a `user:password` pair (it becomes `Basic [REDACTED]`, and
+     prose such as "Basic authentication failed" is left alone);
+   - the values of `X-Amz-Signature=` and `X-Goog-Signature=` (any case: an
+     S3 or Cloud Storage signed URL's signature);
+   - an Azure SAS `sig=` value inside a query, after `?` or `&` (so `xsig=`,
+     `signal=` and prose such as "the sig=verified flag" are left alone);
+   - the value of an `x-amz-signature:` header.
 
 **A URL's userinfo is replaced whole**, in messages and in fields alike,
 whatever it holds: a token alone before the `@` (`https://ghp_…@github.com`),
 a DSN's key.
 
-Then, for fields:
+Then, for fields (**object and `Map` keys are redacted like values**):
 
 - **A field named like a credential** has its value replaced whole (an
   absent one stays absent). A name counts when one of its words (split at
@@ -121,22 +130,30 @@ Then, for fields:
   `tokenizerModel` do not; `monkey` does, which errs the safe way.
 - **Other shapes are read first**: a `URL` as its text, `Headers`,
   `URLSearchParams` and a `Map` as their entries, a `Set` as its items, any
-  other class instance as its own fields. An error's message, stack, `cause`
-  and own fields are walked too, and keep its class. A `RegExp` is logged as
-  its text, redacted. A `Date` is passed as it is.
-- **An object with a `toJSON` method**, other than a `Date`, a `URL` or an
-  error, is logged as what `toJSON` returns, redacted: what `JSON.stringify`
-  would write, so a sink cannot call it and bring a secret back. The call is
-  guarded: a throwing read or call is logged as `[Unreadable]`. The result is
-  walked like any value, so a `toJSON` returning its own object is cut at
-  `[Circular]`, and an endless chain stops at the depth limit as
-  `[REDACTED]`.
-- **Binary data is never logged as bytes**: a `Buffer`, any typed array, an
-  `ArrayBuffer`, a `SharedArrayBuffer` or a `DataView` is logged as
-  `[Binary <n> bytes]`, since a sink could decode the bytes to text.
-- **Anything deeper than 8 levels is replaced**, never passed through, and a
-  value that cannot be read (a throwing getter, a revoked proxy) is logged as
-  `[Unreadable]`. A log call never throws.
+  other class instance as its own fields. A `RegExp` or a `String` object is
+  logged as its text, and a `Symbol` as its description, redacted. A `Date`
+  serialised the built-in way is passed as it is.
+- **An object with a `toJSON` method**, other than a `URL` or an error, is
+  logged as what `toJSON` returns, redacted: what `JSON.stringify` would
+  write, so a sink cannot call it and bring a secret back. That includes a
+  `Date` whose `toJSON` or `toISOString` is not the built-in one. The call is
+  guarded, and the result is walked like any value.
+- **An error keeps its class.** Its fields and its `name`, `message`,
+  `stack`, `code` and `cause` become its own redacted properties, and its
+  `toJSON` returns that redacted view, so a `DOMException` stays readable and
+  no `toJSON` on its prototype runs. An error that still cannot be read
+  becomes a plain `Error` with the same name and fields.
+- **Placeholders**, for what cannot or must not be logged as it is:
+  - `[Binary <n> bytes]` for a `Buffer`, any typed array, an `ArrayBuffer`,
+    a `SharedArrayBuffer`, a `DataView`, a `Blob` or a `File`, since a sink
+    could decode the bytes to text;
+  - `[Function]` for a function;
+  - `[Unreadable]` for a throwing getter or `toJSON` (or a revoked proxy);
+  - `[Circular]` for a cycle, a `toJSON` returning its own object included;
+  - `[REDACTED]` past the depth limit (8 levels), so an endless chain is
+    replaced, never passed through.
+
+  A log call never throws.
 
 The controller's own log lines about a provider go through the same
 redaction: a thrown error and its `cause`, an `unavailable` reason, a unit's
@@ -163,9 +180,10 @@ A schema that **throws** rather than answering issues, and a facet build
 their error may quote the config. So bun-jobs never passes it on as it is:
 
 - **Synchronously**, `provider(config)` throws a **redacted copy**: the same
-  class and fields, with the declared secrets (raw and URL-encoded, 8
-  characters or more) and the credential shapes above removed from its
-  message, stack, `cause` and fields. The original error is untouched.
+  class and fields, with the declared secrets (8 characters or more, in
+  every form above) and the credential shapes above removed from its
+  `name`, `message`, `stack`, `code`, `cause` and fields, as an error is
+  redacted in a log line. The original error is untouched.
 - **Asynchronously**, `ready` rejects with the same redacted copy, and a
   controller logs and records that. A `ProviderError` keeps its `kind`,
   `code`, `platformCode`, `status` and `retryAfterMs`, so the controller
@@ -184,7 +202,9 @@ UI: a region, a pool, an app name. It must never return a secret, and two
 filters drop what would leak if it did:
 
 1. **When the configured provider answers `describe()`**: a fact whose value
-   is a declared secret, or contains one of 8 characters or more, is dropped.
+   is a declared secret is dropped, and so is one holding a declared secret
+   of 8 characters or more in any of the forms above (raw, URL-encoded or
+   escaped for a regular expression).
 2. **When the status route serialises it**: a fact is dropped when its value
    is not a string, when its **key** names a credential (the word rule above:
    `apiKey`, `secretArn`, `sessiontoken` go, `keyspace` stays), when its
@@ -358,10 +378,11 @@ Source: [`lib/api/serialize.ts`](../../lib/api/serialize.ts)
   read from a file, one exchanged for another) that leaks fails it too.
   Each value is looked for as the controller redacts it, and a leak names
   its declared path. The look by real value has the redactor's floor: a
-  declared secret of **8 characters or more**. A shorter one is not looked
-  for by value, for the same reason it is not redacted, and the check's
-  detail ends "; N declared secret(s) under 8 characters are not redacted,
-  so not checked by value". A string at a declared path of the config you
+  declared secret of **8 characters or more**. A shorter one, or one that is
+  not a string, is not looked for by value, for the same reason it is not
+  redacted, and the check's detail says so: "; N declared secret(s) under 8
+  characters are not redacted, so not checked by value", and "; N declared
+  secret(s) are not strings, so not checked by value". A string at a declared path of the config you
   pass is still replaced by a canary, whatever its length, and the canary
   is looked for, since the kit chooses that value.
   `summon.describe.facts` warns about exactly the facts the status route

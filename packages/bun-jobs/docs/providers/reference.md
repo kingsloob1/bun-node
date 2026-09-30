@@ -457,9 +457,10 @@ configured, whose config checks are then skipped). The secrets check looks
 for the canaries and for every declared secret's validated value of 8
 characters or more, as the controller redacts it, so a secret the schema
 derives that leaks fails it too; a leak is labelled by its declared path. A
-shorter one is not looked for by value (it is not redacted either), and the
-check's detail appends "; N declared secret(s) under 8 characters are not
-redacted, so not checked by value". A string at a declared path is replaced
+shorter one, or one that is not a string, is not looked for by value (it is
+not redacted either), and the check's detail appends "; N declared
+secret(s) under 8 characters are not redacted, so not checked by value" or
+"; N declared secret(s) are not strings, so not checked by value". A string at a declared path is replaced
 by a canary whatever its length, and the canary is looked for.
 
 The report lists the groups in a fixed order: identity, config,

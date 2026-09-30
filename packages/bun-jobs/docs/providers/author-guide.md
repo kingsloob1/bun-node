@@ -848,10 +848,11 @@ it("passes the conformance kit", async () => {
   secret's real validated value, so a secret your schema derives (Acme's
   token read from `apiTokenFile`) that leaks fails it too; a leak names its
   declared path. The look by value is as the controller redacts, and covers
-  secrets of 8 characters or more, the redactor's floor: a shorter one is
-  not looked for by value (nor redacted), and the check's detail appends
-  "; N declared secret(s) under 8 characters are not redacted, so not
-  checked by value". A string at a declared path of your `config` is still
+  secrets of 8 characters or more, the redactor's floor: a shorter one, or
+  one that is not a string, is not looked for by value (nor redacted), and
+  the check's detail appends "; N declared secret(s) under 8 characters are
+  not redacted, so not checked by value" or "; N declared secret(s) are not
+  strings, so not checked by value". A string at a declared path of your `config` is still
   replaced by a canary whatever its length, and the canary is looked for.
 - **`invalidConfigs`** are configs your schema must refuse, each with the
   path its issue should name.
