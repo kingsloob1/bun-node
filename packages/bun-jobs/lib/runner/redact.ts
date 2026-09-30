@@ -137,9 +137,11 @@ export function urlPasswordStep(
     let copied = 0;
     let from = text.indexOf("://");
     while (from !== -1) {
-      // The run of scheme characters before the `://`. It never reaches back
-      // into an earlier match, which ends in `@`, nor past an earlier `://`,
-      // so each character is walked at most once.
+      // The run of scheme characters before the `://`. What keeps this linear
+      // is that `/` is not a scheme character: the walk stops at the previous
+      // `://` (and so never reaches back into an earlier match), so each
+      // character is walked at most once. A `SCHEME_CHAR` that took `/` or
+      // `:` would make it quadratic again.
       let runStart = from;
       while (runStart > 0 && SCHEME_CHAR.test(text[runStart - 1]!)) {
         runStart -= 1;
