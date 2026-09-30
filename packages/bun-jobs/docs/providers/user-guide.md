@@ -153,8 +153,10 @@ suits a mounted secret.
   code; the next attempt validates again. A wait that timed out is
   **abandoned, not cancelled**: the validation keeps running, and if it then
   succeeds, the controller adopts it. Until a controller has a validated
-  config, and when the validated facet could not be adopted (its
-  capabilities raised a `ConfigError`), its status shows no summoner.
+  config its status shows the summoner with `readiness: "pending"` (or
+  `"failed"` once a validation rejected) and no capabilities; when the
+  validated facet could not be adopted (its capabilities raised a
+  `ConfigError`), `"failed"` for good.
 
 To see a bad config at startup rather than at the first summon, await
 `ready`. Many providers also have a **preflight**, `validate()`, which asks
@@ -186,8 +188,12 @@ The queue's summon status (`GET /queues/:queue/summon`, action
 - **what it declares**: the UI shows its style, boot budget and the longest
   life the platform allows; the status carries every capability;
 - **its facts**: what its `describe()` returns (a region, a pool), with
-  anything that looks like a credential, a URL with a password in it, and a
-  host name (unless `serialize.exposeHosts` is on) dropped;
+  anything that looks like a credential, a URL with a password in it,
+  another credential shape (`Bearer …`, `max_tokens=4096`) and a host name
+  (unless `serialize.exposeHosts` is on) dropped;
+- **its id and readiness**: `summoner.providerId`, `name@version~<n>`, and
+  `summoner.readiness`, `"ready"`, `"pending"` or `"failed"`; its
+  capabilities only once ready;
 - **each attempt**: in flight, the failures, the backoff and circuit, the
   budget, and the last outcome with its **detail**: the platform's error
   code, or `PROVIDER_<KIND>`, or the reason the platform gave.
@@ -195,6 +201,23 @@ The queue's summon status (`GET /queues/:queue/summon`, action
 Platform handles (a task ARN) are shown only with
 `serialize.exposeSummonHandles`. The config, its secrets and the provider's
 log lines are never served.
+
+Three more routes serve the providers themselves, each behind an action off
+by default, since they disclose infrastructure (see
+[Compute provider routes](../../README.md#compute-provider-routes)):
+
+- `GET /providers` (`providers.read`): every provider configured in the
+  API's process, with its id, identity, readiness and facts;
+- `POST /providers/:id/validate` (`providers.validate`): "Test connection",
+  the provider's preflight, bounded by a timeout, its check details
+  redacted and capped. A failure's `kind` tells a bad config
+  (`misconfigured`) or credentials (`auth`) from a platform failing for now;
+- `GET /providers/:id/schema` (`providers.read`): its config as a JSON
+  Schema for a form, with no default values in it.
+
+`/meta`'s `features.providers` says whether they are served, and `authorize`
+is told a provider's id as `provider`, so a host can allow "Test connection"
+on some providers only.
 
 ## 7. Troubleshooting by error kind
 
@@ -270,7 +293,8 @@ kinds, and the kind decides what the controller does. What each looks like:
   config validation failed or has not finished; each attempt fails without a
   call until it is (backoff and circuit apply)`.
 - **Status**: `failed`, with the detail `ready timed out` or the
-  validation error's code (`CONFIG`), and no summoner shown.
+  validation error's code (`CONFIG`), and the summoner shown with
+  `readiness: "pending"` or `"failed"` and no capabilities.
 - **Check**: what the config reads asynchronously (a secret file, a secret
   store) is reachable from this process, and fast enough for
   `summonTimeout`. Await `ready` at startup to see the error itself.

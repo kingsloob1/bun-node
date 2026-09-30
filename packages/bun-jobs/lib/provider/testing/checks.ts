@@ -2,13 +2,14 @@ import type { SummonResult } from "../../summon/types";
 import type { ProviderCallContext } from "../context";
 import type { ProviderCheck, SummonCapabilities } from "../define";
 import type { ProviderErrorKind } from "../errors";
+import type { FactProblem } from "../redact";
 import type { FakePlatform, FakeRequestRecord } from "./fake";
 import type { KitRun } from "./run";
-import { isCredentialKey, URL_USERINFO } from "../../shared/credentialKeys";
 import { SUMMON_ARGS } from "../../summon/args";
 import { CODE_SHAPED } from "../../summon/controller";
 import { dedupeKeyFor } from "../../summon/marker";
 import { ProviderError, providerErrorFacts } from "../errors";
+import { factProblem } from "../redact";
 import { describeThrown, DIRECT_QUEUE, KIT_TIMERS } from "./run";
 import { trackTimers } from "./scan";
 
@@ -214,10 +215,19 @@ export function capabilityChecks(
   }
 }
 
+/** How the describe check words each reason a fact would be dropped. */
+const FACT_PROBLEMS: Readonly<Record<FactProblem, string>> = {
+  "credential-key": "is named like a credential",
+  "url-userinfo": "holds a URL with credentials in it",
+  "credential-shape":
+    "holds a credential shape the redactor knows (Bearer, a JWT, a sensitive word before : or =)",
+};
+
 /**
  * The describe group (should): facts are strings, none named like a
- * credential and none holding a URL with userinfo — what the status route
- * would drop.
+ * credential, none holding a URL with userinfo and none holding another
+ * credential shape the pattern redactor knows — what the status route would
+ * drop, by the same rule ({@link factProblem}).
  */
 export function describeChecks(run: KitRun): void {
   let facts: Readonly<Record<string, string>>;
@@ -237,12 +247,12 @@ export function describeChecks(run: KitRun): void {
     if (typeof value !== "string") {
       problems.push(`${key} is not a string`);
     }
-    // The status route's own rule (`isServableFact`), so the kit warns
-    // about exactly the facts it drops.
-    if (isCredentialKey(key)) {
-      problems.push(`${key} is named like a credential`);
-    } else if (typeof value === "string" && URL_USERINFO.test(value)) {
-      problems.push(`${key} holds a URL with credentials in it`);
+    // The status route's own rule (`factProblem`, which `isServableFact`
+    // calls), so the kit warns about exactly the facts it drops.
+    const problem =
+      typeof value === "string" ? factProblem(key, value) : undefined;
+    if (problem !== undefined) {
+      problems.push(`${key} ${FACT_PROBLEMS[problem]}`);
     }
   }
   run.set(
