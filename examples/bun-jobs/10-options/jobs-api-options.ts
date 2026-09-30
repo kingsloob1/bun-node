@@ -249,6 +249,29 @@ const demandRoutes = (api: { routes: readonly { operationId: string }[] }) =>
     .sort();
 
 /**
+ * The three compute provider routes: the list and a config's JSON Schema
+ * (`providers.read`), and a preflight, "Test connection"
+ * (`providers.validate`, a mutation). In the jobs half, needing no driver
+ * method, so on every backend; both actions are opt-in, so they are in the
+ * counts below that name every action, and in no default one.
+ */
+const PROVIDER_ROUTES = [
+  "getProviderSchema",
+  "listProviders",
+  "validateProvider",
+];
+/** Which of {@link PROVIDER_ROUTES} an API registered, sorted, each marked a mutation or not. */
+const providerRoutes = (api: {
+  routes: readonly { operationId: string; mutation: boolean }[];
+}) =>
+  api.routes
+    .filter((route) => PROVIDER_ROUTES.includes(route.operationId))
+    .map(
+      (route) => `${route.operationId}${route.mutation ? " (mutation)" : ""}`,
+    )
+    .sort();
+
+/**
  * Which of {@link JOB_METHOD_ROUTES} an API registered, in the same one-line
  * shape, with each marked `mutation` or not so a check names what is wrong.
  */
@@ -418,18 +441,24 @@ checkEqual(
 // `getQueueAddedByState` — and a backend that keeps no such counts (the file
 // and Redis drivers) prunes both. Every count below is two lower there. The
 // two demand routes ({@link DEMAND_ROUTES}) are in every count on every
-// backend, runner mode's aside.
+// backend, runner mode's aside, and so are the three provider routes
+// ({@link PROVIDER_ROUTES}) wherever every action is named.
 const bothFeatures = (await both.call("GET", "/meta")).body.features;
 const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  75 + addedByState,
+  78 + addedByState,
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
   [demandRoutes(both.api), bothFeatures.demand],
   [[...DEMAND_ROUTES].sort(), true],
+);
+checkEqual(
+  "so are the three provider routes, the preflight a mutation, and /meta says they are served",
+  [providerRoutes(both.api), bothFeatures.providers],
+  [["getProviderSchema", "listProviders", "validateProvider (mutation)"], true],
 );
 checkEqual(
   "fail, disable and enable are among them, each a mutation",
@@ -491,7 +520,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 59 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 62 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -507,6 +536,16 @@ checkEqual(
     (await runnerOnly.call("GET", "/meta")).body.features.demand,
   ],
   [[...DEMAND_ROUTES].sort(), [], true, false],
+);
+checkEqual(
+  "so do the provider routes: they read this process's providers, not a backend, so only the mode turns features.providers off",
+  [
+    providerRoutes(jobsOnly.api).length,
+    providerRoutes(runnerOnly.api).length,
+    (await jobsOnly.call("GET", "/meta")).body.features.providers,
+    (await runnerOnly.call("GET", "/meta")).body.features.providers,
+  ],
+  [3, 0, true, false],
 );
 checkEqual(
   "the two halves plus the shared routes are the whole API",
@@ -533,11 +572,16 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 36 + addedByState);
+checkEqual("what is left", readOnly.api.routes.length, 38 + addedByState);
 checkEqual(
   "the demand routes among them: reads, so readOnly keeps both",
   demandRoutes(readOnly.api),
   [...DEMAND_ROUTES].sort(),
+);
+checkEqual(
+  "and providers.read's two routes, named here; providers.validate reaches the platform with the provider's credentials, so readOnly removes it",
+  providerRoutes(readOnly.api),
+  ["getProviderSchema", "listProviders"],
 );
 const paused = await readOnly.call("POST", "/queues/mail/pause");
 checkEqual("a mutation answers 404, not 403", paused.status, 404);
@@ -554,7 +598,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("actions: an allow-list, with seven opt-ins absent by default");
+step("actions: an allow-list, with nine opt-ins absent by default");
 
 const byDefault = mount();
 checkEqual(
@@ -567,14 +611,16 @@ checkEqual(
   jobMethodRoutes(byDefault.api),
   [...JOB_METHOD_ROUTES].sort(),
 );
-// The seven write something a host may well want only some callers to: a new
+// Seven write something a host may well want only some callers to: a new
 // or changed job, a queue's job defaults (saving them, and separately
 // rewriting the backlog with them — tuning without a rewrite is a real
 // policy), summoning a worker now or clearing a queue's summon failures —
 // which starts compute, and costs money — and a worker's or a runner's
-// remote configuration.
+// remote configuration. The other two, the compute providers configured in
+// this process and a preflight against one's platform, write nothing, but
+// disclose infrastructure: clusters, regions, which accounts are reachable.
 checkEqual(
-  "the opt-ins: adding and updating jobs, job defaults, and remote config",
+  "the opt-ins: adding and updating jobs, job defaults, summoning, compute providers, and remote config",
   [...JOBS_API_OPT_IN_ACTIONS],
   [
     "jobs.add",
@@ -582,11 +628,13 @@ checkEqual(
     "queues.defaults",
     "queues.applyDefaults",
     "queues.summon",
+    "providers.read",
+    "providers.validate",
     "workers.configure",
     "runners.configure",
   ],
 );
-/** The eleven routes those seven actions authorize. */
+/** The fourteen routes those nine actions authorize. */
 const OPT_IN_ROUTES = [
   "addJob",
   "updateJob",
@@ -595,13 +643,16 @@ const OPT_IN_ROUTES = [
   "applyJobDefaults",
   "summonQueue",
   "resetQueueSummon",
+  "listProviders",
+  "getProviderSchema",
+  "validateProvider",
   "configureWorker",
   "resetWorkerConfig",
   "configureRunner",
   "resetRunnerConfig",
 ];
 check(
-  "so none of their eleven routes is registered",
+  "so none of their fourteen routes is registered",
   OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
   idsOf(byDefault.api),
 );
@@ -637,7 +688,7 @@ checkEqual(
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and all eleven opt-in routes",
+  "while [...JOBS_API_ACTIONS] is the default and all fourteen opt-in routes",
   idsOf(everything.api)
     .filter((id) => !idsOf(byDefault.api).includes(id))
     .sort(),
@@ -665,9 +716,9 @@ checkEqual(
   ].sort(),
 );
 checkEqual(
-  "49 actions in total",
+  "51 actions in total",
   [Object.keys(permissions).length, JOBS_API_ACTIONS.length],
-  [49, 49],
+  [51, 51],
 );
 /** Actions for job defaults, the worker controls, and the clear routes. */
 const controlActions: JobsApiAction[] = [
