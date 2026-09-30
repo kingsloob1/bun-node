@@ -49,6 +49,16 @@ interface ProviderState {
   current: Promise<void>;
   /** The validation in flight, if one is. */
   inFlight: Promise<SummonFacet | undefined> | undefined;
+  /**
+   * The newest validation's number. An older one that settles late (after
+   * it was abandoned) is ignored, so it never overwrites a newer result.
+   */
+  generation: number;
+  /**
+   * What building the facets from a valid config threw: deterministic for
+   * that config, so kept, and every later settle rejects with it.
+   */
+  fatal: unknown;
 }
 
 /** Configured providers, and the stand-in facets of pending ones, to their state. */
@@ -214,9 +224,11 @@ function providerLogger(state: ProviderState) {
   );
 }
 
-/** Builds the facets from a validated config, and records it as known. */
+/**
+ * Builds the facets from a validated config, and records it as known — only
+ * once the build has succeeded.
+ */
 function adopt(state: ProviderState, config: unknown): SummonFacet | undefined {
-  state.config = config;
   const build = state.definition.summon;
   let facet: SummonFacet | undefined;
   if (build !== undefined) {
@@ -234,6 +246,7 @@ function adopt(state: ProviderState, config: unknown): SummonFacet | undefined {
     };
     facet = checkFacet(state.identity, build(config, context));
   }
+  state.config = config;
   state.facet = facet;
   state.known = true;
   return facet;
@@ -244,12 +257,28 @@ function attempt(
   state: ProviderState,
   result: PromiseLike<StandardSchemaV1.Result<unknown>>,
 ): Promise<SummonFacet | undefined> {
+  const generation = ++state.generation;
   const run = (async () => {
     const outcome = await result;
+    if (state.generation !== generation) {
+      // Abandoned (it outlasted a caller's timeout) and superseded: its
+      // answer, late, must not overwrite the newer validation's.
+      throw new ConfigError(
+        `Compute provider ${state.identity.name}: a superseded config validation settled late`,
+        { provider: state.identity.name },
+      );
+    }
     if (outcome.issues !== undefined) {
       throw invalid(state, outcome.issues);
     }
-    return adopt(state, outcome.value);
+    try {
+      return adopt(state, outcome.value);
+    } catch (error) {
+      // A valid config whose facets cannot be built fails the same way
+      // every time: kept, not retried.
+      state.fatal = error;
+      throw error;
+    }
   })();
   const settled = run.finally(() => {
     // Dropped once settled: a success is kept in `state`, a failure is
@@ -267,10 +296,27 @@ function attempt(
   return settled;
 }
 
+/**
+ * Abandons the validation in flight, if it is still `inFlight`: the next
+ * settle starts a fresh one, and this one's late answer is ignored.
+ */
+function abandon(
+  state: ProviderState,
+  inFlight: Promise<SummonFacet | undefined> | undefined,
+): void {
+  if (inFlight !== undefined && state.inFlight === inFlight) {
+    state.inFlight = undefined;
+    state.generation++;
+  }
+}
+
 /** Validates the input again (asynchronous schema only), or joins the validation in flight. */
 function settle(state: ProviderState): Promise<SummonFacet | undefined> {
   if (state.known) {
     return Promise.resolve(state.facet);
+  }
+  if (state.fatal !== undefined) {
+    return Promise.reject(state.fatal);
   }
   if (state.inFlight !== undefined) {
     return state.inFlight;
@@ -353,6 +399,8 @@ export function configure<TConfig, TInput>(
     facet: undefined,
     current: Promise.resolve(),
     inFlight: undefined,
+    generation: 0,
+    fatal: undefined,
   };
 
   const schema = definition.config;
@@ -428,28 +476,42 @@ export function configure<TConfig, TInput>(
   return configured;
 }
 
+/** Internal: how a summoner's facet stands, for the controller (see {@link facetReadiness}). */
+export interface FacetReadiness {
+  /** The real facet, or `undefined` while the config is validating (or failed to build). */
+  settled: () => SummonFacet | undefined;
+  /** What building the facet threw, for good; `undefined` otherwise. */
+  fatal: () => unknown;
+  /** Waits for the real facet, joining a validation in flight; rejects with its failure. */
+  settle: () => Promise<SummonFacet>;
+  /**
+   * Gives up on the validation in flight (a caller's timeout passed): the
+   * next `settle` starts a fresh one, and its late answer is ignored.
+   */
+  abandon: () => void;
+}
+
 /**
  * Internal, for the controller: how a summoner's facet stands. `settled` is
  * the real facet when it can be called now (always, except for the stand-in
  * of a provider whose config is still validating); `settle` waits for it,
  * sharing a validation in flight and retrying one that failed.
  */
-export function facetReadiness(facet: SummonFacet): {
-  /** The real facet, or `undefined` while the config is validating. */
-  settled: () => SummonFacet | undefined;
-  /** Waits for the real facet; rejects with the validation's failure. */
-  settle: () => Promise<SummonFacet>;
-} {
+export function facetReadiness(facet: SummonFacet): FacetReadiness {
   const state = STATES.get(facet);
   if (state === undefined) {
     return {
       settled: () => facet,
+      fatal: () => undefined,
       settle: async () => facet,
+      abandon: () => {},
     };
   }
   return {
     settled: () => (state.known ? state.facet : undefined),
+    fatal: () => state.fatal,
     settle: async () => (await settle(state))!,
+    abandon: () => abandon(state, state.inFlight),
   };
 }
 
@@ -463,8 +525,17 @@ export function providerSecrets(configured: {
   readonly provider: ProviderIdentity;
   /** Its config. */
   readonly config?: unknown;
+  /** Its summon facet: a pending provider's stand-in leads to its live state. */
+  readonly summon?: unknown;
 }): unknown[] {
-  const state = STATES.get(configured);
+  // The live state, through the configured provider or — for a spread taken
+  // before an asynchronous config was validated, whose `config` is a stale
+  // `undefined` — through the stand-in facet it copied.
+  const state =
+    STATES.get(configured) ??
+    (typeof configured.summon === "object" && configured.summon !== null
+      ? STATES.get(configured.summon)
+      : undefined);
   if (state !== undefined) {
     return secretValues(
       state.definition,

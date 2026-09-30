@@ -1,6 +1,6 @@
 import type { LogFields, Logger } from "../shared/logger";
 import { createRedactor, DEFAULT_REDACT_REPLACEMENT } from "../runner/redact";
-import { isCredentialKey } from "../shared/credentialKeys";
+import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
 
 /**
  * Redaction for what a provider logs (plugins §13.3).
@@ -18,6 +18,14 @@ import { isCredentialKey } from "../shared/credentialKeys";
  *    word as one of the name's words, or ending it), has its value replaced
  *    whole: `apiKey`, `authToken` and `sessiontoken` are, `author` is not.
  *
+ * A URL's userinfo is replaced whole, whatever it holds (the status route's
+ * rule): `https://ghp_…@github.com` and a Sentry DSN's key included. A value
+ * the walk would not otherwise read is converted first — a `URL` to its
+ * text, `Headers`, `URLSearchParams` and a `Map` to their entries, a `Set`
+ * to its items, another class instance to its own fields — so both rules
+ * apply to it; an error's own fields follow the name rule too; and anything
+ * deeper than the walk goes is replaced, never passed through.
+ *
  * It is text-level, so it misses what the runner's redactor misses (a secret
  * in prose, token shapes other than a JWT); declaring secrets is how a
  * provider closes that gap for its own values.
@@ -26,11 +34,14 @@ import { isCredentialKey } from "../shared/credentialKeys";
 /** The shortest declared secret redacted by value. */
 export const MIN_SECRET_LENGTH = 8;
 
-/** How deep a field value is walked before it is left as it is. */
+/** How deep a field value is walked; anything deeper is replaced whole. */
 const MAX_DEPTH = 8;
 
 /** The runner's default pattern redactor, compiled once. */
 const PATTERNS = createRedactor(true)!;
+
+/** {@link URL_USERINFO}, global, for replacing every occurrence. */
+const USERINFO = new RegExp(URL_USERINFO.source, "g");
 
 /** A text redactor: the declared secrets by value, then the default patterns. */
 export function textRedactor(
@@ -51,20 +62,75 @@ export function textRedactor(
     for (const value of values) {
       out = out.replaceAll(value, DEFAULT_REDACT_REPLACEMENT);
     }
-    return PATTERNS(out);
+    return PATTERNS(out.replace(USERINFO, `://${DEFAULT_REDACT_REPLACEMENT}@`));
   };
 }
 
-/** Whether a value is a plain object literal (walked), rather than a class instance (left alone). */
+/** Whether a value is a plain object literal, walked as it is. */
 function isPlainObject(value: object): boolean {
   const proto = Object.getPrototypeOf(value) as unknown;
   return proto === Object.prototype || proto === null;
 }
 
+/** Values whose contents cannot hold a readable secret field, passed as they are. */
+function isOpaque(value: object): boolean {
+  return (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  );
+}
+
+/**
+ * A value the walk would not read, in a shape it does: a `URL` as its text,
+ * `Headers`, `URLSearchParams` and a `Map` as their entries (keys as text), a
+ * `Set` as its items, any other class instance as its own enumerable fields.
+ */
+function readable(value: object): unknown {
+  if (value instanceof URL) {
+    return value.href;
+  }
+  if (
+    value instanceof Headers ||
+    value instanceof URLSearchParams ||
+    value instanceof Map
+  ) {
+    const entries: [unknown, unknown][] = [];
+    (value as Map<unknown, unknown>).forEach((item, key) => {
+      entries.push([key, item]);
+    });
+    return Object.fromEntries(
+      entries.map(([key, item]) => [String(key), item]),
+    );
+  }
+  if (value instanceof Set) {
+    return [...value];
+  }
+  return { ...value };
+}
+
+/** A field's value: replaced whole under a credential name, else walked. */
+function redactField(
+  key: string | symbol,
+  value: unknown,
+  redact: (text: string) => string,
+  seen: WeakMap<object, unknown>,
+  depth: number,
+): unknown {
+  return typeof key === "string" &&
+    isCredentialKey(key) &&
+    value !== undefined &&
+    value !== null
+    ? DEFAULT_REDACT_REPLACEMENT
+    : redactValue(value, redact, seen, depth);
+}
+
 /**
  * A copy of `value` with every string redacted: strings, arrays, plain
- * objects and errors (message, stack, cause and own fields) are walked;
- * anything else is returned as it is.
+ * objects and errors (message, stack, cause and own fields) are walked,
+ * other containers converted first (see {@link readable}), and anything
+ * deeper than {@link MAX_DEPTH} replaced whole.
  */
 function redactValue(
   value: unknown,
@@ -75,8 +141,12 @@ function redactValue(
   if (typeof value === "string") {
     return redact(value);
   }
-  if (typeof value !== "object" || value === null || depth > MAX_DEPTH) {
+  if (typeof value !== "object" || value === null || isOpaque(value)) {
     return value;
+  }
+  if (depth > MAX_DEPTH) {
+    // Fails closed: what the walk cannot read is not passed through.
+    return DEFAULT_REDACT_REPLACEMENT;
   }
   if (seen.has(value)) {
     return seen.get(value);
@@ -96,7 +166,8 @@ function redactValue(
     for (const key of Reflect.ownKeys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
       if ("value" in descriptor) {
-        descriptor.value = redactValue(
+        descriptor.value = redactField(
+          key,
           descriptor.value,
           redact,
           seen,
@@ -108,7 +179,10 @@ function redactValue(
     return copy;
   }
   if (!isPlainObject(value)) {
-    return value;
+    const converted = readable(value);
+    const copy = redactValue(converted, redact, seen, depth);
+    seen.set(value, copy);
+    return copy;
   }
   return redactFields(value as LogFields, redact, seen, depth);
 }
@@ -123,10 +197,7 @@ function redactFields(
   const copy: LogFields = {};
   seen.set(fields, copy);
   for (const [key, value] of Object.entries(fields)) {
-    copy[key] =
-      isCredentialKey(key) && value !== undefined && value !== null
-        ? DEFAULT_REDACT_REPLACEMENT
-        : redactValue(value, redact, seen, depth + 1);
+    copy[key] = redactField(key, value, redact, seen, depth + 1);
   }
   return copy;
 }

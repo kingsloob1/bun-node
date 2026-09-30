@@ -36,7 +36,7 @@ import type {
 import type { EventWire } from "./ws/events";
 import { explicitKeys } from "../queue/jobDefaults";
 import { normalizeExecutionMode } from "../runner/config";
-import { isCredentialKey } from "../shared/credentialKeys";
+import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
 import { JOB_INCLUDES } from "./contract/constants";
 
 /**
@@ -837,12 +837,6 @@ export function toEventDto(
   } as EventDto;
   return options.event ? options.event(dto, event, req) : dto;
 }
-
-/**
- * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@` — in a
- * fact's value: a connection string with its password in it.
- */
-const URL_USERINFO = /:\/\/[^/\s]*@/;
 
 /** Fact keys that name a machine, served only with `exposeHosts`. */
 const HOST_FACT_KEYS: ReadonlySet<string> = new Set(["host", "hostname"]);

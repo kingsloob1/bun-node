@@ -1,6 +1,6 @@
 /**
  * Internal: whether a key (a `describe()` fact's, a log field's) names a
- * credential. One rule, shared by the status serializer's fact filter
+ * credential, and whether text holds a URL with credentials in it. One rule, shared by the status serializer's fact filter
  * (`isServableFact`) and a provider's redacting logger, so the two never
  * disagree about which names are secret.
  */
@@ -57,3 +57,10 @@ export function isCredentialKey(key: string): boolean {
     CREDENTIAL_SUFFIX.test(words.join(""))
   );
 }
+
+/**
+ * A URL carrying userinfo — `scheme://user:pass@host`, or any `://…@`, a
+ * token alone included (`https://ghp_…@github.com`, a Sentry DSN): a
+ * connection string with its credential in it.
+ */
+export const URL_USERINFO = /:\/\/[^/\s]*@/;
