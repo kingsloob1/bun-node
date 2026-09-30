@@ -1,0 +1,48 @@
+{
+  "name": "bun-jobs-provider-example",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A starter template for a bun-jobs compute provider: the fictional Acme Compute platform, its fake, and a green conformance test",
+  "keywords": [
+    "bun-jobs-provider",
+    "bun-jobs-provider-summon"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "prepack": "bun scripts/build.ts",
+    "test": "bun test",
+    "check-types": "bun scripts/check-types.ts"
+  },
+  "peerDependencies": {
+    "@kingsleyweb/bun-jobs": ">=2.2.0 <2.3.0"
+  },
+  "devDependencies": {
+    "@kingsleyweb/bun-jobs": "2.2.x",
+    "@types/bun": "^1.4.2",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "@kingsleyweb/bun-common": "file:../../packages/bun-common",
+    "@kingsleyweb/bun-jobs": "file:../../packages/bun-jobs"
+  },
+  "bun-jobs": {
+    "facets": [
+      "summon"
+    ],
+    "apiVersion": {
+      "core": "0.1",
+      "summon": "0.1"
+    }
+  }
+}

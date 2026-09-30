@@ -1,0 +1,18 @@
+{
+  // The repo's view of the starter templates. `compute-provider/tsconfig.json`
+  // is the one a plugin author keeps: it has no custom conditions, so it reads
+  // bun-jobs' built declarations, which the repo does not keep built. This
+  // config checks the same files the way every other project here is checked
+  // (`tsconfig.base.json`, whose `@kingsleyweb/source` condition resolves
+  // bun-jobs to its `lib/` source), and is the one `scripts/typecheck.ts`
+  // lists. It sits outside the template so a copied template carries nothing
+  // that points into this repo. Run `bun install` in `compute-provider/`
+  // first: bun-jobs resolves through its `node_modules`.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "resolveJsonModule": true,
+    "types": ["bun"]
+  },
+  "include": ["./compute-provider/**/*.ts", "eslint.config.mjs"],
+  "exclude": ["./compute-provider/node_modules", "./compute-provider/dist"]
+}

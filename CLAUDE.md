@@ -174,8 +174,49 @@ never the test suite's, so the two can never disturb each other.
 XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
 package existed nothing declared them, and its typecheck passed only where an
 old install had left them in the root `node_modules`. Run `bun install` in each
-of the three bench directories before `scripts/typecheck.ts`, or their projects
-fail on missing modules.
+of the three bench directories, and in `templates/compute-provider/` (below),
+before `scripts/typecheck.ts`, or their projects fail on missing modules.
+
+### The compute-provider template
+
+`templates/compute-provider/` is the starter template for a third-party
+compute provider (`bun-jobs-provider-example`): the fictional Acme Compute
+summon provider, its fake platform, a green conformance test and a consumer
+type check. It is a standalone package like the bench ones — its own
+`package.json` and `bun.lock`, not in `workspaces` — and it is written to be
+**copied out of the repo**, so nothing inside it points back in except
+`package.json`'s `overrides`:
+
+- **Resolution.** It declares `@kingsleyweb/bun-jobs` as a published plugin
+  would (a peer range, a dev dependency), and `overrides` points it and
+  bun-common at `file:../../packages/…`, because neither is on a registry. Bun
+  materialises a `file:` directory as a tree of per-file symlinks, so an edit
+  to a package file is seen at once and a **new** file only after the next
+  `bun install` there.
+- **Types.** Its own `tsconfig.json` is a plugin author's: no source
+  condition, so it would read bun-jobs' built `dts/`, which the repo does not
+  keep. The repo checks the same files through `templates/tsconfig.json`
+  (the base config, source condition), which is what `scripts/typecheck.ts`
+  lists. `bun scripts/check-types.ts` checks the author's view: it packs
+  bun-common and bun-jobs (their `prepack` builds `dts/`), copies the
+  template out, installs and checks it against those tarballs, packs it, and
+  type-checks a consumer under `bundler` and `node16` with `skipLibCheck` off.
+- **Lint.** `templates/eslint.config.mjs` (the packages' config, plus the
+  `scripts/` exemption for the template's own `scripts/`), outside the
+  template so a copy carries none of the repo's lint dependencies.
+- **Gate**, for any change to the provider API (`lib/provider/**`, the
+  summon types it re-exports) or to the template:
+
+  ```bash
+  cd templates/compute-provider
+  bun install && bun test && bun scripts/check-types.ts
+  CI=1 bunx eslint .
+  ```
+
+  plus `bun scripts/typecheck.ts` from the root. The test is the conformance
+  kit against the template's fake (about 5 s, a temporary SQLite file for the
+  handoff); `check-types.ts` about 25 s. The template's README is its quick
+  start, so a change to what a provider must do is a change there too.
 
 ## Typechecking
 
@@ -193,8 +234,9 @@ Run that rather than `bunx tsc --noEmit` in one package — the packages are not
 the only projects. There are also `packages/bun-common/bench`,
 `packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
 `benchmarks/`, each a nested project with its own config because it resolves
-third-party comparators from its own `node_modules`; the examples; and the root
-`scripts/` (`scripts/tsconfig.json`).
+third-party comparators from its own `node_modules`; the examples; the
+compute-provider template (`templates/tsconfig.json`); and the root `scripts/`
+(`scripts/tsconfig.json`).
 
 The root `scripts/` were the last files no project claimed. The root
 `tsconfig.json` includes nothing, so an editor put them in an inferred project,
