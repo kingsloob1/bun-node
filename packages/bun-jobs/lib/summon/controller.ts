@@ -229,7 +229,7 @@ function nonNegativeInt(name: string, value: number): number {
  * identifier, not prose. A value outside it (a credential, a URL, a response
  * body) is refused, and the next choice is taken.
  */
-const CODE_SHAPED = /^[\w.:-]{1,64}$/;
+export const CODE_SHAPED = /^[\w.:-]{1,64}$/;
 
 /** `value` if it is a code-shaped string, else `undefined`. */
 function codeShaped(value: unknown): string | undefined {

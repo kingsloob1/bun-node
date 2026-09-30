@@ -5,9 +5,10 @@ import type { ProviderErrorKind } from "../errors";
 import type { FakePlatform, FakeRequestRecord } from "./fake";
 import type { KitRun } from "./run";
 import { SUMMON_ARGS } from "../../summon/args";
+import { CODE_SHAPED } from "../../summon/controller";
 import { dedupeKeyFor } from "../../summon/marker";
 import { ProviderError, providerErrorFacts } from "../errors";
-import { describeThrown, KIT_TIMERS } from "./run";
+import { describeThrown, DIRECT_QUEUE, KIT_TIMERS } from "./run";
 import { trackTimers } from "./scan";
 
 /**
@@ -668,7 +669,7 @@ export async function scaleChecks(run: KitRun): Promise<void> {
     await run.call(
       async (context) =>
         await release(
-          { namespace: "conformance", queue: "work", target: 0 },
+          { namespace: run.namespace, queue: DIRECT_QUEUE, target: 0 },
           context,
         ),
     );
@@ -703,7 +704,7 @@ export async function scaleChecks(run: KitRun): Promise<void> {
   const released = await run.call(
     async (context) =>
       await release(
-        { namespace: "conformance", queue: "work", target: 0 },
+        { namespace: run.namespace, queue: DIRECT_QUEUE, target: 0 },
         context,
       ),
   );
@@ -797,10 +798,28 @@ export interface ControllerVerdict {
 }
 
 /**
- * A code the controller shows as an attempt's detail as it is: a
- * `platformCode` of anything else is replaced by `PROVIDER_<KIND>`.
+ * The policy the verdict controller runs under (`verdictProbe` in
+ * `handoff.ts`): a backoff of 100 ms, so the platform's retry-after is what a
+ * throttled or quota backoff must honour, and a circuit reset of 10 minutes,
+ * which with the backoff bounds the controller's clamp on a retry-after.
  */
-const CODE_SHAPED = /^[\w.:-]{1,64}$/;
+export const VERDICT_POLICY = {
+  /** `backoff.initial` and `backoff.max`, in ms. */
+  backoffMs: 100,
+  /** `circuit.failures`. */
+  circuitFailures: 5,
+  /** `circuit.resetAfter`, in ms. */
+  resetAfterMs: 600_000,
+} as const;
+
+/** The longest wait the verdict controller may take: the larger of `backoff.max` and `circuit.resetAfter`. */
+const LONGEST_WAIT_MS = Math.max(
+  VERDICT_POLICY.backoffMs,
+  VERDICT_POLICY.resetAfterMs,
+);
+
+/** Slack on a measured backoff, in ms: the check's own duration. */
+const BACKOFF_SLACK_MS = 1_000;
 
 /** The longest wait a provider may sanely ask for, in ms: a day. */
 const MAX_SANE_RETRY_AFTER_MS = 86_400_000;
@@ -818,6 +837,8 @@ export type VerdictProbe = (
 function verdictProblems(
   fault: ProviderErrorKind | "capacity-200",
   verdict: ControllerVerdict,
+  /** The retry-after the provider's error carried, if any. */
+  carried: number | undefined,
 ): string[] {
   const problems: string[] = [];
   const expectOutcome = (outcome: string): void => {
@@ -845,21 +866,31 @@ function verdictProblems(
       );
     }
   };
+  // At least the platform's wait, and never past the clamp.
+  const expectBackoff = (atLeast: boolean): void => {
+    if (atLeast && verdict.backoffMs < RETRY_AFTER_MS - 50) {
+      problems.push(
+        `the controller backed off ${verdict.backoffMs} ms, under the platform's retry-after of ${RETRY_AFTER_MS} ms`,
+      );
+    }
+    if (verdict.backoffMs > LONGEST_WAIT_MS + BACKOFF_SLACK_MS) {
+      problems.push(
+        `the controller backed off ${verdict.backoffMs} ms, past its clamp of ${LONGEST_WAIT_MS} ms (the larger of backoff.max and circuit.resetAfter)`,
+      );
+    }
+  };
   switch (fault) {
     case "throttled":
       expectOutcome("unavailable");
       expectCounted(false);
       expectOpen(false);
-      if (verdict.backoffMs < RETRY_AFTER_MS - 50) {
-        problems.push(
-          `the controller backed off ${verdict.backoffMs} ms, under the platform's retry-after of ${RETRY_AFTER_MS} ms`,
-        );
-      }
+      expectBackoff(true);
       break;
     case "quota":
       expectOutcome("unavailable");
       expectCounted(true);
       expectOpen(false);
+      expectBackoff(carried !== undefined);
       break;
     case "auth":
     case "misconfigured":
@@ -883,12 +914,14 @@ function verdictProblems(
  * The errors group. For each fault the fake injects:
  *
  * - **the provider's answer**: a thrown `ProviderError` (an `instanceof`,
- *   not a look-alike) of that kind, `throttled` carrying `retryAfterMs`; and
+ *   not a look-alike) of that kind, `throttled` carrying `retryAfterMs` (and
+ *   `quota` when it does) between half the platform's wait and a day; and
  *   `unavailable`, returned, for a 200 with no capacity;
  * - **the controller's verdict** on it, from one check of a real
  *   `SummonController` (when `probe` is given): `throttled` is `unavailable`,
- *   not counted, and backs off at least the platform's retry-after; `quota`
- *   is `unavailable` and counted; `auth` and `misconfigured` are `failed` and
+ *   not counted, and backs off at least the platform's retry-after but no
+ *   longer than its clamp; `quota` is `unavailable` and counted, with the
+ *   same bounds when it carried one; `auth` and `misconfigured` are `failed` and
  *   open the circuit at once; `conflict` and `transient` are `failed` and
  *   counted. A plain throw is `transient` to the controller, and fails the
  *   provider's half: it must map the failure.
@@ -939,19 +972,22 @@ export async function errorChecks(
       problems.push(
         `${article(fault)} ${fault} fault threw ProviderError(${outcome.error.kind})`,
       );
-    } else if (fault === "throttled") {
+    } else if (fault === "throttled" || fault === "quota") {
+      // Throttled must carry the platform's wait; quota may, and then sanely.
       const wait = outcome.error.retryAfterMs;
-      if (!(typeof wait === "number" && wait > 0)) {
-        problems.push(
-          "ProviderError(throttled) carries no retryAfterMs though the platform sent one",
-        );
+      if (wait === undefined || wait <= 0) {
+        if (fault === "throttled") {
+          problems.push(
+            "ProviderError(throttled) carries no retryAfterMs though the platform sent one",
+          );
+        }
       } else if (wait < RETRY_AFTER_MS / 2) {
         problems.push(
-          `ProviderError(throttled) carries retryAfterMs ${wait}, far under the platform's ${RETRY_AFTER_MS} ms (a Retry-After is in seconds)`,
+          `ProviderError(${fault}) carries retryAfterMs ${wait}, far under the platform's ${RETRY_AFTER_MS} ms (a Retry-After is in seconds)`,
         );
       } else if (wait > MAX_SANE_RETRY_AFTER_MS) {
         problems.push(
-          `ProviderError(throttled) carries retryAfterMs ${wait}, over a day for a platform that asked ${RETRY_AFTER_MS} ms (the controller clamps it)`,
+          `ProviderError(${fault}) carries retryAfterMs ${wait}, over a day for a platform that asked ${RETRY_AFTER_MS} ms (the controller clamps it)`,
         );
       }
     }
@@ -964,10 +1000,21 @@ export async function errorChecks(
       run.platform.inject(fault, { times: 5, retryAfterMs: RETRY_AFTER_MS });
       const verdict = await probe(fault);
       run.internals.clearFaults();
+      // When the provider's own answer was already wrong, what the
+      // controller then did follows from it: context, not a second fault.
+      const answered = problems.length === 0;
+      const said = (text: string): string =>
+        answered
+          ? text
+          : text.replace(/^the controller /, "the controller then ");
+      const carried =
+        !outcome.ok && outcome.error instanceof ProviderError
+          ? outcome.error.retryAfterMs
+          : undefined;
       if (typeof verdict === "string") {
         problems.push(verdict);
       } else {
-        problems.push(...verdictProblems(fault, verdict));
+        problems.push(...verdictProblems(fault, verdict, carried).map(said));
         // The detail rule: the platform's code when it is code-shaped, else
         // the kind's code. Checked when the provider threw the right kind.
         if (
@@ -982,7 +1029,9 @@ export async function errorChecks(
               : outcome.error.code;
           if (verdict.detail !== expected) {
             problems.push(
-              `the controller's detail was ${JSON.stringify(verdict.detail)}, not ${JSON.stringify(expected)}`,
+              said(
+                `the controller's detail was ${JSON.stringify(verdict.detail)}, not ${JSON.stringify(expected)}`,
+              ),
             );
           }
         }
@@ -1026,43 +1075,50 @@ export async function timeoutChecks(run: KitRun): Promise<void> {
   const abort = new AbortController();
   const context = run.context(abort.signal);
   let abortedAt = 0;
-  const timers = trackTimers();
   let settled: { at: number; rejected: boolean; error?: unknown } | undefined;
   const request = run.request();
-  // The abort timer is created inside the tracked call, so what the abort
-  // makes the provider do (its listeners) is tracked too.
-  const { abortTimer, call } = timers.run(() => ({
-    abortTimer: KIT_TIMERS.setTimeout(() => {
-      abortedAt = Date.now();
-      abort.abort(new Error("the conformance kit's timeout"));
-    }, ABORT_AFTER_MS),
-    call: (async () => await run.facet.summon(request, context))(),
-  }));
-  const watched = call.then(
-    (value) => {
-      run.scanned.push(value);
-      settled = { at: Date.now(), rejected: false };
-    },
-    (error: unknown) => {
-      run.scanned.push(error);
-      settled = { at: Date.now(), rejected: true, error };
-    },
-  );
-  await Promise.race([
-    watched,
-    new Promise<void>((resolve) => {
-      KIT_TIMERS.setTimeout(resolve, ABORT_AFTER_MS + REJECT_WITHIN_MS + 250);
-    }),
-  ]);
-  // Let whatever the rejection scheduled run before counting what is left.
-  await new Promise<void>((resolve) => {
-    KIT_TIMERS.setTimeout(resolve, 100);
-  });
-  const left = timers.pending();
-  timers.restore();
-  KIT_TIMERS.clearTimeout(abortTimer);
-  run.internals.releaseHolds();
-  run.internals.clearFaults();
+  const timers = trackTimers();
+  let left: number;
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The abort timer is created inside the tracked call, so what the abort
+    // makes the provider do (its listeners) is tracked too.
+    const started = timers.run(() => ({
+      abortTimer: KIT_TIMERS.setTimeout(() => {
+        abortedAt = Date.now();
+        abort.abort(new Error("the conformance kit's timeout"));
+      }, ABORT_AFTER_MS),
+      call: (async () => await run.facet.summon(request, context))(),
+    }));
+    abortTimer = started.abortTimer;
+    const watched = started.call.then(
+      (value) => {
+        run.scanned.push(value);
+        settled = { at: Date.now(), rejected: false };
+      },
+      (error: unknown) => {
+        run.scanned.push(error);
+        settled = { at: Date.now(), rejected: true, error };
+      },
+    );
+    await Promise.race([
+      watched,
+      new Promise<void>((resolve) => {
+        KIT_TIMERS.setTimeout(resolve, ABORT_AFTER_MS + REJECT_WITHIN_MS + 250);
+      }),
+    ]);
+    // Let whatever the rejection scheduled run before counting what is left.
+    await new Promise<void>((resolve) => {
+      KIT_TIMERS.setTimeout(resolve, 100);
+    });
+    left = timers.pending();
+  } finally {
+    // The globals are the process's, not the kit's: always given back.
+    timers.restore();
+    KIT_TIMERS.clearTimeout(abortTimer);
+    run.internals.releaseHolds();
+    run.internals.clearFaults();
+  }
 
   const result = settled as
     | { at: number; rejected: boolean; error?: unknown }

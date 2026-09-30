@@ -14,7 +14,7 @@ import { createTestLogger } from "@kingsleyweb/bun-common";
 import { wireRequest } from "../../summon/controller";
 import { attemptId, dedupeKeyFor } from "../../summon/marker";
 import { providerCallContext } from "../context";
-import { redactingLogger } from "../redact";
+import { redactingLogger, textRedactor } from "../redact";
 
 /**
  * The state one conformance run shares between its check groups: the
@@ -31,8 +31,8 @@ export const KIT_TIMERS = {
 /** How long one provider call may take before the kit gives up on it, in ms. */
 export const CALL_DEADLINE_MS = 15_000;
 
-/** The namespace and queue the kit's direct calls name. */
-export const DIRECT = { namespace: "conformance", queue: "work" } as const;
+/** The queue the kit's direct calls name, in the run's own namespace ({@link KitRun.namespace}). */
+export const DIRECT_QUEUE = "work";
 
 /** A worker's longest life the kit asks for when the platform allows it, in ms. */
 export const KIT_LIFETIME_MS = 3_600_000;
@@ -70,6 +70,11 @@ export interface KitRun {
   readonly facet: SummonFacet;
   /** The facet's declared capabilities. */
   readonly capabilities: SummonCapabilities;
+  /**
+   * The namespace the kit's direct calls name: random per run, so two kit
+   * runs never share one, and purged by the handoff with the rest.
+   */
+  readonly namespace: string;
   /** The fake. */
   readonly platform: FakePlatform;
   /** The fake's internals. */
@@ -123,6 +128,11 @@ export interface KitRun {
   wanted: (id: string) => boolean;
   /** Units the fake has started so far. */
   unitCount: () => number;
+  /**
+   * A host-side failure (a controller, a driver, the kit itself) for a
+   * report: its name, code and message, with the run's secrets redacted.
+   */
+  explain: (error: unknown) => string;
 }
 
 /** A random hex string. */
@@ -185,6 +195,8 @@ export function createRun(input: {
   const origin = new URL(input.platform.url).origin;
   const { tag } = input.internals;
   const epoch = randomHex(8);
+  const namespace = `conformance-direct-${randomHex(6)}`;
+  input.internals.namespaces.push(namespace);
   let version = 0;
 
   const kitFetch = Object.assign(
@@ -218,6 +230,7 @@ export function createRun(input: {
     summoner: input.summoner,
     facet,
     capabilities,
+    namespace,
     platform: input.platform,
     internals: input.internals,
     driver: input.driver,
@@ -252,14 +265,13 @@ export function createRun(input: {
     request: (options = {}) => {
       const count = options.count ?? 1;
       const id =
-        options.id ??
-        attemptId(DIRECT.namespace, DIRECT.queue, epoch, ++version);
+        options.id ?? attemptId(namespace, DIRECT_QUEUE, epoch, ++version);
       return {
         ...wireRequest(
           { id, count, target: options.target ?? count },
           {
-            namespace: DIRECT.namespace,
-            queue: DIRECT.queue,
+            namespace,
+            queue: DIRECT_QUEUE,
             kind: input.identity.kind,
             style: capabilities.style,
             dedupeKey: dedupeKeyFor(capabilities.dedupe),
@@ -275,6 +287,13 @@ export function createRun(input: {
     set: input.set,
     wanted: input.wanted,
     unitCount: () => input.internals.unitCount(),
+    explain: (error) => {
+      const what = describeThrown(error);
+      const message = error instanceof Error ? error.message : "";
+      return message === ""
+        ? what
+        : `${what}: ${textRedactor(input.secrets)(message)}`;
+    },
   };
   return run;
 }

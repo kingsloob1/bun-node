@@ -115,7 +115,11 @@ export interface FakePlatform {
     options?: {
       /** How many calls fail this way. Defaults to `1`. */
       times?: number;
-      /** The wait a `"throttled"` (or `"quota"`) answer asks for, in ms. Defaults to `1_000`. */
+      /**
+       * The wait a `"throttled"` or `"quota"` answer asks for, in ms: the
+       * generic rendering sends it as `Retry-After` (whole seconds, rounded
+       * up), and a `faults` renderer is handed it. Defaults to `1_000`.
+       */
       retryAfterMs?: number;
     },
   ) => void;
@@ -148,8 +152,8 @@ export interface FakePlatformOptions {
    * How the platform answers each fault, when its shape matters to the
    * provider: the status, error body and headers the real platform sends.
    * A fault without one gets a generic rendering: `transient` 503,
-   * `throttled` 429 with `Retry-After` (seconds), `quota` 403, `auth` 401,
-   * `misconfigured` 404, `conflict` 409, each with a JSON body
+   * `throttled` 429 and `quota` 403, both with `Retry-After` (seconds),
+   * `auth` 401, `misconfigured` 404, `conflict` 409, each with a JSON body
    * `{ "error": { "code", "message" } }`, and `capacity-200` a 200 with
    * `{ "units": [], "failures": [{ "reason": "capacity" }] }`.
    */
@@ -209,6 +213,13 @@ export interface FakeInternals {
   unit: (handle: string) => FakeUnit | undefined;
   /** How many units are pending or running. */
   liveCount: () => number;
+  /**
+   * Every namespace a kit run on this fake created on a backend, by exact
+   * name: what its tests check was purged.
+   */
+  readonly namespaces: string[];
+  /** The handles of every unit handed to an `onStart` handler, in order. */
+  readonly handedOff: string[];
 }
 
 /** A fake's internals, by the fake. */
@@ -272,7 +283,7 @@ function genericFault(
     {
       status,
       headers:
-        fault === "throttled"
+        fault === "throttled" || fault === "quota"
           ? { "retry-after": String(Math.ceil(retryAfterMs / 1_000)) }
           : {},
     },
@@ -321,6 +332,7 @@ export async function fakePlatform(
   const holds = new Set<() => void>();
   const requests: FakeRequestRecord[] = [];
   const tokens: string[] = [];
+  const handedOff: string[] = [];
   const tag = { header: TAG_HEADER, value: randomHex(12) };
   let starter: ((unit: FakeUnit) => void) | undefined;
   let next = 0;
@@ -364,7 +376,10 @@ export async function fakePlatform(
         list.push(started);
         byToken.set(unit.token, list);
       }
-      starter?.(started);
+      if (starter !== undefined) {
+        handedOff.push(started.handle);
+        starter(started);
+      }
       return byHandle.get(started.handle)!;
     },
     recall: (token) => {
@@ -550,6 +565,8 @@ export async function fakePlatform(
   };
   const platform: FakePlatform = Object.freeze(members);
   INTERNALS.set(platform, {
+    namespaces: [],
+    handedOff,
     requests,
     tokens,
     tag,

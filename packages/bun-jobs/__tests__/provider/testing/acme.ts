@@ -154,7 +154,9 @@ async function failure(
   return new ProviderError(`acme answered ${response.status}`, reported, {
     ...(platformCode === undefined ? {} : { platformCode }),
     status: response.status,
-    ...(reported === "throttled" ? { retryAfterMs } : {}),
+    ...(reported === "throttled" || reported === "quota"
+      ? { retryAfterMs }
+      : {}),
   });
 }
 
