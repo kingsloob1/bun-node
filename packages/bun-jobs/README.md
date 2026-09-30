@@ -5029,6 +5029,9 @@ export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, act
 //   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
 ```
 
+Example:
+[`11-management-api/provider-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/provider-routes.ts).
+
 #### Which facts are served
 
 A `describe()` fact reaches `GET /providers` and a summon status only when it
