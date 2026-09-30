@@ -7,6 +7,7 @@
  * bun playground/index.ts                         # http://localhost:4000/jobs
  * PORT=3000 bun playground/index.ts               # another port
  * PLAYGROUND_DRIVER=sqlite bun playground/index.ts   # survives a restart
+ * PLAYGROUND_DRIVER=memory bun playground/index.ts   # no disk, no summoning
  * PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts   # seed only, then quiet
  * cd playground && bun run dev                    # restart on file changes
  * ```
@@ -25,15 +26,24 @@ import {
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
-import { playgroundBackend, playgroundDriver } from "./backend";
+import {
+  isCrossProcess,
+  playgroundBackend,
+  playgroundDriver,
+  removeTempData,
+} from "./backend";
 import { startMailer } from "./mailer";
 import { startRunners } from "./runners";
 import { startSimulation } from "./simulation";
+import { mountSummoning } from "./summoning";
 
 /** The port to listen on (`PORT`, default 4000). */
 const port = Number(process.env.PORT ?? 4000);
 /** How often the simulation adds a job (`PLAYGROUND_INTERVAL_MS`, default 2000; 0 = never). */
 const intervalMs = Number(process.env.PLAYGROUND_INTERVAL_MS ?? 2_000);
+
+// A `temp` database a killed playground left behind.
+removeTempData("stale");
 
 /**
  * The one driver both contexts share. It is an instance, not a config: with
@@ -95,6 +105,13 @@ const ui = jobsUi({
 });
 
 const app = new BunHttpAdapter();
+// Summoning (`summoning.ts`): its platform's routes go on this adapter, and
+// its providers and controller are configured once the port is known.
+const summoning = mountSummoning(jobs, {
+  app,
+  // What a summoned worker process opens: the same backend, as a config.
+  driver: isCrossProcess() ? playgroundDriver() : undefined,
+});
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app.get("/", (_req, res) => res.redirect(ui.basePath));
@@ -103,6 +120,9 @@ api.websocket?.attach(app);
 
 const server = await app.listen(port, "127.0.0.1");
 const origin = `http://localhost:${server.port}`;
+// The platform's API is called from this process, so by the address it
+// listens on: `localhost` may resolve to `::1`, where nothing listens.
+summoning.start(`http://127.0.0.1:${server.port}`);
 
 console.log(`
 bun-node playground (${playgroundBackend()} driver)
@@ -113,6 +133,9 @@ bun-node playground (${playgroundBackend()} driver)
   Runners       ${origin}${ui.basePath}/runners
   Events        ${origin}${ui.basePath}/events
   API docs      ${origin}${ui.basePath}/docs
+  Providers     ${origin}${ui.basePath}/providers
+  Summoning     ${origin}${ui.basePath}/queues/renders${isCrossProcess() ? "" : "   (off: the memory driver cannot summon)"}
+  Faults        ${origin}/local-compute
   API           ${origin}${api.basePath}/meta
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
@@ -127,12 +150,18 @@ async function shutdown(): Promise<void> {
   stopping = true;
   console.log("\nstopping…");
   await simulation.stop();
+  // Every summoned worker process, before the backend they use closes.
+  await summoning.stop();
   await mailer.stop();
   await stopRunners();
   await api.close();
   await app.close();
   await jobs.close();
+  removeTempData("mine");
   process.exit(0);
 }
+// The last resort: no summoned worker outlives the playground, however it
+// exits.
+process.on("exit", () => summoning.killAll());
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

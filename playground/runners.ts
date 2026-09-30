@@ -65,13 +65,13 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
     // Giving this one a config of its own is what puts `child-process` and
     // `worker-thread` in its Settings… dialog.
     //
-    // What the config reaches depends on the backend: with
-    // `PLAYGROUND_DRIVER=sqlite` (or postgres, redis, mongo) the child opens
-    // the same store this process uses, so a handler could read its queues.
-    // On the default memory driver it builds a `Map` of its own, which is
-    // harmless here — `handlers/work.ts` sleeps, logs and returns, and never
-    // touches the backend — but a handler that enqueued a job would find its
-    // work in a store nobody else can see.
+    // What the config reaches depends on the backend: on the default `temp`
+    // SQLite file, `PLAYGROUND_DRIVER=sqlite` (or postgres, redis, mongo) the
+    // child opens the same store this process uses, so a handler could read
+    // its queues. With `PLAYGROUND_DRIVER=memory` it builds a `Map` of its
+    // own, which is harmless here — `handlers/work.ts` sleeps, logs and
+    // returns, and never touches the backend — but a handler that enqueued a
+    // job would find its work in a store nobody else can see.
     childDriver: playgroundDriver(),
   });
   const reindex = jobs.runner({
