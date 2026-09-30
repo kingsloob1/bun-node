@@ -4980,27 +4980,12 @@ config. None of those is the configured value, so redaction cannot know them.
 So `default`, `example`, `examples`, `const` and every `x-*` key are removed
 **everywhere** in the served schema, and a config form built from it gets no
 pre-filled values. `enum`, the allowed choices, is kept, except under a
-property that is a declared secret or has a credential's name. Every other
+property that is a declared secret or has a credential's name, and in every
+`$defs`/`definitions` entry such a property reaches through `$ref`, however
+indirectly. A definition reached from both a secret and a non-secret property
+counts as secret, so it loses its choices too. Every other
 string is redacted as a detail is; a string equal to a declared secret is
 replaced whatever its length, and a number equal to one is dropped.
-
-#### Which facts are served
-
-A `describe()` fact reaches `GET /providers` and a summon status only when it
-passes a fail-safe filter. It drops, whatever the provider meant:
-
-- a key that has, or ends with, a credential word (`token`, `secret`, `key`,
-  `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`,
-  `bearer`, `private`, `cookie`, `session`): `apiKey`, `secretArn`,
-  `sessiontoken` go, `keyspace` stays;
-- a value holding a URL with userinfo (`postgres://user:pass@…`);
-- a value holding a credential shape the log redactor knows: `Bearer …`, a
-  JWT, or a `word:value` / `word=value` pair whose word contains a sensitive
-  word (`token`, `secret`, `auth`, `session`, `cookie`, `password`, `apikey`,
-  `credential`, …). That catches some honest facts too: an ARN whose resource
-  holds `auth-api:prod`, `session-workers:prod`, `max_tokens=4096`. Rename
-  the fact's value, or leave it out;
-- a `host` or `hostname` fact unless `serialize.exposeHosts` is on.
 
 ```ts
 import { JOBS_API_ACTIONS, JOBS_API_OPT_IN_ACTIONS } from "@kingsleyweb/bun-jobs";
@@ -5020,6 +5005,24 @@ export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, act
 
 Example:
 [`11-management-api/provider-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/provider-routes.ts).
+
+#### Which facts are served
+
+A `describe()` fact reaches `GET /providers` and a summon status only when it
+passes a fail-safe filter. It drops, whatever the provider meant:
+
+- a key that has, or ends with, a credential word (`token`, `secret`, `key`,
+  `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`,
+  `bearer`, `private`, `cookie`, `session`): `apiKey`, `secretArn`,
+  `sessiontoken` go, `keyspace` stays;
+- a value holding a URL with userinfo (`postgres://user:pass@…`);
+- a value holding a credential shape the log redactor knows: `Bearer …`, a
+  JWT, or a `word:value` / `word=value` pair whose word contains a sensitive
+  word (`token`, `secret`, `auth`, `session`, `cookie`, `password`, `apikey`,
+  `credential`, …). That catches some honest facts too: an ARN whose resource
+  holds `auth-api:prod`, `session-workers:prod`, `max_tokens=4096`. Rename
+  the fact's value, or leave it out;
+- a `host` or `hostname` fact unless `serialize.exposeHosts` is on.
 
 ### Analytics routes
 
