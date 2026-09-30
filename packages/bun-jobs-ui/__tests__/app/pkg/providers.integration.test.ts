@@ -107,7 +107,7 @@ function provider(label: string, preflight: () => Promise<unknown>) {
     }),
   });
   configured.push(make({ region: "eu-west-1" }));
-  return `${make.definition.name}@1.0.0#1`;
+  return `${make.definition.name}@1.0.0~1`;
 }
 
 let jobs: BunJobs;

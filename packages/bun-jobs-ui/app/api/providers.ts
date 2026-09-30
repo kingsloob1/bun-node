@@ -15,7 +15,7 @@ import { assertShape } from "./shape";
  * Both actions are opt-in, and a disabled one is not routed at all (404
  * `ROUTE_NOT_FOUND`), the way `queues.summon` is. So the UI gates on the
  * permission first and reads nothing without it. A provider id is
- * `name@version#n`, which needs percent-encoding in a path.
+ * `name@version~n`, which needs percent-encoding in a path.
  */
 
 /** `/providers/:id…`, relative to the API base. */

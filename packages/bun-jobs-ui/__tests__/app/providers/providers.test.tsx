@@ -28,7 +28,7 @@ setupDom();
 /** A provider as `GET /providers` lists it. */
 function provider(overrides: Partial<ProviderDto> = {}): ProviderDto {
   return {
-    id: "@acme/bun-jobs-ecs@1.2.0#1",
+    id: "@acme/bun-jobs-ecs@1.2.0~1",
     provider: {
       name: "@acme/bun-jobs-ecs",
       version: "1.2.0",
@@ -86,7 +86,7 @@ describe("the Providers screen", () => {
         body: list([
           provider(),
           provider({
-            id: "@acme/bun-jobs-fly@0.3.0#1",
+            id: "@acme/bun-jobs-fly@0.3.0~1",
             provider: {
               ...provider().provider,
               name: "@acme/bun-jobs-fly",
@@ -104,9 +104,9 @@ describe("the Providers screen", () => {
     expect(within(ecs).getByTestId("provider-readiness").textContent).toBe(
       "Ready",
     );
-    expect(ecs.textContent).toContain("@acme/bun-jobs-ecs@1.2.0#1");
+    expect(ecs.textContent).toContain("@acme/bun-jobs-ecs@1.2.0~1");
     expect(ecs.textContent).toContain("jobs-prod");
-    const fly = await card("@acme/bun-jobs-fly@0.3.0#1");
+    const fly = await card("@acme/bun-jobs-fly@0.3.0~1");
     expect(within(fly).getByTestId("provider-readiness").textContent).toBe(
       "Pending",
     );

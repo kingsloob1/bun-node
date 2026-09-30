@@ -47,7 +47,7 @@ function statusFixture(
         displayName: "Amazon ECS",
         apiVersion: { core: "0.1", summon: "0.1" },
       },
-      providerId: "@acme/bun-jobs-ecs@1.2.0#1",
+      providerId: "@acme/bun-jobs-ecs@1.2.0~1",
       readiness: "ready",
       capabilities: {
         style: "launch",
@@ -272,7 +272,7 @@ describe("the Summon panel", () => {
 
 describe("the summoner's readiness and Test connection", () => {
   /** The summoner's provider id in the fixture. */
-  const ID = "@acme/bun-jobs-ecs@1.2.0#1";
+  const ID = "@acme/bun-jobs-ecs@1.2.0~1";
 
   /** `GET /providers` listing the summoner's provider, with or without a preflight. */
   function providers(preflight: boolean): MockReply {

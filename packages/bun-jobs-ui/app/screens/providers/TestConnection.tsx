@@ -9,7 +9,7 @@ import { providerCheck, validationSummary } from "./providerText";
 
 /** Props of {@link TestConnection}. */
 export interface TestConnectionProps {
-  /** The provider's id, `name@version#n`. */
+  /** The provider's id, `name@version~n`. */
   providerId: string;
   /** What the button's accessible name says it tests, e.g. the provider's name. */
   label: string;
