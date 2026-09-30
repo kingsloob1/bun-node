@@ -13,7 +13,12 @@ import { ConfigError } from "../shared/errors";
 import { createJobsLogger } from "../shared/logger";
 import { providerCallContext } from "./context";
 import { CONFIGURED_PROVIDER } from "./define";
-import { MIN_SECRET_LENGTH, redactingLogger, textRedactor } from "./redact";
+import {
+  MIN_SECRET_LENGTH,
+  redactingLogger,
+  redactThrown,
+  textRedactor,
+} from "./redact";
 import { negotiate } from "./version";
 
 /**
@@ -22,10 +27,13 @@ import { negotiate } from "./version";
  *
  * - **A synchronous schema** (or none): validated at once. Invalid, it throws
  *   a `ConfigError` carrying the issues; valid, the facets are built now and
- *   `ready` is already resolved.
+ *   `ready` is already resolved. What the schema or the facet build throws
+ *   instead is rethrown as a redacted copy (same class; declared secrets
+ *   and credential shapes gone from message, stack, cause and fields).
  * - **An asynchronous schema**: `provider(config)` returns at once and the
  *   first validation starts. The summon facet is a stand-in until it
- *   succeeds. A validation in flight is shared by everyone waiting on it; a
+ *   succeeds. `ready` rejects with the same redacted copy the synchronous
+ *   path throws. A validation in flight is shared by everyone waiting on it; a
  *   success is kept; a failure is kept only until someone asks again, so a
  *   transient fault (a network call inside the schema) clears on the next
  *   attempt.
@@ -258,7 +266,12 @@ function attempt(
   const run = (async () => {
     let outcome: StandardSchemaV1.Result<unknown>;
     try {
-      outcome = await result;
+      try {
+        outcome = await result;
+      } catch (error) {
+        // The schema's own code threw: redacted, as provider(config) does.
+        throw redactThrown(error, secretValues(state.definition, state.input));
+      }
       if (outcome.issues !== undefined) {
         throw invalid(state, outcome.issues);
       }
@@ -286,9 +299,12 @@ function attempt(
       return adopt(state, outcome.value);
     } catch (error) {
       // A valid config whose facets cannot be built fails the same way
-      // every time: kept, not retried.
-      state.fatal = error;
-      throw error;
+      // every time: kept, not retried — redacted, as provider(config) does.
+      state.fatal = redactThrown(error, [
+        ...secretValues(state.definition, state.input),
+        ...secretValues(state.definition, outcome.value),
+      ]);
+      throw state.fatal;
     }
   })();
   const shared = run.finally(() => {
@@ -416,12 +432,20 @@ export function configure<TConfig, TInput>(
   };
 
   const schema = definition.config;
-  const result:
+  // What the schema or the facet build throws is the provider's own code,
+  // and may quote the config: rethrown with the declared secrets redacted,
+  // those of the input and, once validated, of the config.
+  let result:
     | StandardSchemaV1.Result<unknown>
-    | Promise<StandardSchemaV1.Result<unknown>> =
-    schema === undefined
-      ? { value: input }
-      : schema["~standard"].validate(input);
+    | Promise<StandardSchemaV1.Result<unknown>>;
+  try {
+    result =
+      schema === undefined
+        ? { value: input }
+        : schema["~standard"].validate(input);
+  } catch (error) {
+    throw redactThrown(error, secretValues(general, input));
+  }
   let summon: SummonFacet | undefined;
   if (isPromiseLike<StandardSchemaV1.Result<unknown>>(result)) {
     void attempt(state, result);
@@ -430,7 +454,14 @@ export function configure<TConfig, TInput>(
     if (result.issues !== undefined) {
       throw invalid(state, result.issues);
     }
-    summon = adopt(state, result.value);
+    try {
+      summon = adopt(state, result.value);
+    } catch (error) {
+      throw redactThrown(error, [
+        ...secretValues(general, input),
+        ...secretValues(general, result.value),
+      ]);
+    }
   }
 
   const describe = (): Readonly<Record<string, string>> => {

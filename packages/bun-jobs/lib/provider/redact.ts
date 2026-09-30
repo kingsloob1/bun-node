@@ -10,10 +10,14 @@ import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
  *
  * 1. **exact values**: each declared secret of the current config (strings of
  *    {@link MIN_SECRET_LENGTH} characters or more; a shorter one would take
- *    ordinary words with it) is replaced wherever it appears;
+ *    ordinary words with it) is replaced wherever it appears, as it is and
+ *    URL-encoded (`encodeURIComponent`'s form and a form's, `+` for a
+ *    space);
  * 2. **patterns**: the runner's redactor (`createRedactor` with its
  *    defaults: `key=value` pairs under a sensitive key, `Bearer …`, a URL's
- *    password, a JWT). A field whose *name* is a credential's, by the rule
+ *    password, a JWT), then a bare `Basic <base64>` credential (when it
+ *    decodes to `user:password`), an `X-Amz-Signature=` value and an Azure
+ *    SAS `sig=` value. A field whose *name* is a credential's, by the rule
  *    the status route's fact filter uses (`isCredentialKey`: a credential
  *    word as one of the name's words, or ending it), has its value replaced
  *    whole: `apiKey`, `authToken` and `sessiontoken` are, `author` is not.
@@ -22,12 +26,15 @@ import { isCredentialKey, URL_USERINFO } from "../shared/credentialKeys";
  * rule): `https://ghp_…@github.com` and a Sentry DSN's key included. A value
  * the walk would not otherwise read is converted first — a `URL` to its
  * text, `Headers`, `URLSearchParams` and a `Map` to their entries, a `Set`
- * to its items, another class instance to its own fields — so both rules
- * apply to it; an error's own fields follow the name rule too; and anything
- * deeper than the walk goes is replaced, never passed through.
+ * to its items, an object with a `toJSON` method to what it returns (called
+ * guarded: a throw is `[Unreadable]`), another class instance to its own
+ * fields, a `RegExp` to its text — so both rules apply to it; binary data
+ * (a `Buffer`, a typed array, an `ArrayBuffer`, a `DataView`) is replaced
+ * by `[Binary <n> bytes]`; an error's own fields follow the name rule too;
+ * and anything deeper than the walk goes is replaced, never passed through.
  *
  * It is text-level, so it misses what the runner's redactor misses (a secret
- * in prose, token shapes other than a JWT); declaring secrets is how a
+ * in prose, token shapes other than those above); declaring secrets is how a
  * provider closes that gap for its own values.
  */
 
@@ -43,17 +50,65 @@ const PATTERNS = createRedactor(true)!;
 /** {@link URL_USERINFO}, global, for replacing every occurrence. */
 const USERINFO = new RegExp(URL_USERINFO.source, "g");
 
-/** A text redactor: the declared secrets by value, then the default patterns. */
+/**
+ * A bare `Basic` credential: the scheme, then a run of base64. Replaced only
+ * when the run decodes to `user:password` (see {@link isBasicCredential}),
+ * so prose ("Basic authentication failed") is left alone.
+ */
+const BASIC = /\b(basic\s+)([a-z0-9+/]{8,}={0,2})(?![\w+/=])/gi;
+
+/** Whether a base64 run decodes to a `user:password` pair, as a Basic credential does. */
+function isBasicCredential(run: string): boolean {
+  try {
+    return atob(run).includes(":");
+  } catch {
+    return false;
+  }
+}
+
+/** {@link BASIC}'s replacement: the scheme kept, a real credential replaced. */
+function basicRewrite(match: string, scheme: string, run: string): string {
+  return isBasicCredential(run)
+    ? `${scheme}${DEFAULT_REDACT_REPLACEMENT}`
+    : match;
+}
+
+/**
+ * Query parameters that carry a signature by themselves, value replaced: an
+ * S3 presigned URL's `X-Amz-Signature`, an Azure SAS token's `sig` (only as
+ * a whole key, so `xsig=` and `signal=` are left alone).
+ */
+const SIGNATURES = /(?<![\w.\-])((?:x-amz-signature|sig)=)[^&\s"'#;]+/gi;
+
+/**
+ * A declared secret's forms in a URL: as it is, as `encodeURIComponent`
+ * writes it, and as a form (`URLSearchParams`, `+` for a space) writes it.
+ */
+function encodedForms(secret: string): string[] {
+  return [
+    secret,
+    encodeURIComponent(secret),
+    new URLSearchParams({ s: secret }).toString().slice(2),
+  ];
+}
+
+/**
+ * A text redactor: the declared secrets by value (raw and URL-encoded), then
+ * the default patterns, a URL's userinfo, a bare `Basic` credential and a
+ * signature parameter.
+ */
 export function textRedactor(
   /** The declared secret values; short or non-string ones are ignored. */
   secrets: readonly unknown[],
 ): (text: string) => string {
   const values = [
     ...new Set(
-      secrets.filter(
-        (secret): secret is string =>
-          typeof secret === "string" && secret.length >= MIN_SECRET_LENGTH,
-      ),
+      secrets
+        .filter(
+          (secret): secret is string =>
+            typeof secret === "string" && secret.length >= MIN_SECRET_LENGTH,
+        )
+        .flatMap(encodedForms),
     ),
     // Longest first, so a secret containing another is replaced whole.
   ].sort((a, b) => b.length - a.length);
@@ -62,7 +117,11 @@ export function textRedactor(
     for (const value of values) {
       out = out.replaceAll(value, DEFAULT_REDACT_REPLACEMENT);
     }
-    return PATTERNS(out.replace(USERINFO, `://${DEFAULT_REDACT_REPLACEMENT}@`));
+    const patterned = PATTERNS(
+      out.replace(USERINFO, `://${DEFAULT_REDACT_REPLACEMENT}@`),
+    );
+    const basic = patterned.replace(BASIC, basicRewrite);
+    return basic.replace(SIGNATURES, `$1${DEFAULT_REDACT_REPLACEMENT}`);
   };
 }
 
@@ -72,14 +131,20 @@ function isPlainObject(value: object): boolean {
   return proto === Object.prototype || proto === null;
 }
 
-/** Values whose contents cannot hold a readable secret field, passed as they are. */
-function isOpaque(value: object): boolean {
-  return (
-    value instanceof Date ||
-    value instanceof RegExp ||
+/**
+ * Binary data (a `Buffer`, any typed array, an `ArrayBuffer`, a
+ * `DataView`), as its placeholder: `[Binary <n> bytes]`, never the bytes,
+ * which a sink could decode to text. `undefined` for anything else.
+ */
+function binaryPlaceholder(value: object): string | undefined {
+  if (
+    ArrayBuffer.isView(value) ||
     value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value)
-  );
+    value instanceof SharedArrayBuffer
+  ) {
+    return `[Binary ${value.byteLength} bytes]`;
+  }
+  return undefined;
 }
 
 /** What a value that cannot be read (a throwing getter, a revoked proxy) is logged as. */
@@ -87,6 +152,9 @@ const UNREADABLE = "[Unreadable]";
 
 /** What a reference back to an object already being walked is logged as. */
 const CIRCULAR = "[Circular]";
+
+/** What {@link viaToJSON} answers for an object without a `toJSON` method. */
+const NO_TO_JSON: unique symbol = Symbol("no toJSON");
 
 /** One property of `value`, read without letting a throwing getter escape. */
 function read(value: object, key: PropertyKey): unknown {
@@ -185,7 +253,15 @@ function redactObject(
   seen: WeakMap<object, unknown>,
   depth: number,
 ): unknown {
-  if (isOpaque(value)) {
+  const binary = binaryPlaceholder(value);
+  if (binary !== undefined) {
+    return binary;
+  }
+  if (value instanceof RegExp) {
+    return redact(String(value));
+  }
+  if (value instanceof Date) {
+    // Its text is a time, and a sink serialises it to one.
     return value;
   }
   if (depth > MAX_DEPTH) {
@@ -198,6 +274,12 @@ function redactObject(
   // While an object is being walked, a reference back to it is a cycle, cut
   // at CIRCULAR, so the copy stays serialisable; once walked, a later
   // (acyclic) reference shares its copy.
+  if (!(value instanceof Error) && !(value instanceof URL)) {
+    const serialised = viaToJSON(value, redact, seen, depth);
+    if (serialised !== NO_TO_JSON) {
+      return serialised;
+    }
+  }
   if (Array.isArray(value)) {
     const copy: unknown[] = [];
     seen.set(value, CIRCULAR);
@@ -236,6 +318,38 @@ function redactObject(
   return redactFields(value as LogFields, redact, seen, depth);
 }
 
+/**
+ * An object with a `toJSON` method (a `Date` and a `URL` excepted, handled
+ * on their own), as what it returns, redacted — what `JSON.stringify` would
+ * write, so a sink serialising the copy cannot call it and bring a secret
+ * back. Reading `toJSON` and calling it is provider code, so guarded like a
+ * getter: a throw is {@link UNREADABLE}. The result is walked one level
+ * deeper, with the object marked as being walked, so a `toJSON` returning
+ * its own object is cut at {@link CIRCULAR} and a chain of them ends at the
+ * depth limit. {@link NO_TO_JSON} when there is no such method.
+ */
+function viaToJSON(
+  value: object,
+  redact: (text: string) => string,
+  seen: WeakMap<object, unknown>,
+  depth: number,
+): unknown {
+  let result: unknown;
+  try {
+    const toJSON = (value as { toJSON?: unknown }).toJSON;
+    if (typeof toJSON !== "function") {
+      return NO_TO_JSON;
+    }
+    result = (toJSON as (key: string) => unknown).call(value, "");
+  } catch {
+    return UNREADABLE;
+  }
+  seen.set(value, CIRCULAR);
+  const copy = redactValue(result, redact, seen, depth + 1);
+  seen.set(value, copy);
+  return copy;
+}
+
 /** A copy of a field record with every value redacted, and credential names' values replaced whole. */
 function redactFields(
   fields: LogFields,
@@ -268,6 +382,23 @@ function redactMessage(
   }
   const copy = redactValue(message, redact, new WeakMap(), 0);
   return copy instanceof Error ? copy : UNREADABLE;
+}
+
+/**
+ * Internal: a thrown value with `secrets` redacted from it, for rethrowing
+ * where a provider's own code threw (`provider(config)`'s synchronous
+ * validation and facet build). An error becomes a copy of the same class
+ * with its message, stack, cause and own fields redacted; a string is
+ * redacted; anything else is walked like a log field. The original is
+ * untouched.
+ */
+export function redactThrown(
+  /** What was thrown. */
+  thrown: unknown,
+  /** The declared secret values to redact by value. */
+  secrets: readonly unknown[],
+): unknown {
+  return redactValue(thrown, textRedactor(secrets), new WeakMap(), 0);
 }
 
 /** The levels a `Logger` logs at, `log` included. */
