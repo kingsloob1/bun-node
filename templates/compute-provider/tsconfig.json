@@ -1,0 +1,25 @@
+{
+  // A plugin's own config, as a third party would write it: strict, bundler
+  // resolution, Bun's types, and no custom conditions, so
+  // `@kingsleyweb/bun-jobs` resolves to its published declarations (`dts/`).
+  // Inside the bun-node repo those are not built, so the repo checks these
+  // files through `../tsconfig.json` instead; `scripts/check-types.ts` checks
+  // them with this config against the packed package.
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext"],
+    "moduleDetection": "force",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "types": ["bun"],
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": false
+  },
+  "include": ["src", "test", "scripts"]
+}

@@ -455,11 +455,13 @@ const jobs = new BunJobs({
   driver: config,
   logger,
   summon: {
-    // On demand: the add triggers a check 50 ms after the last add, and a
-    // poll notices the worker registering, kept well behind the add.
+    // On demand: the add triggers a check 50 ms after the last add. No poll:
+    // whichever check comes first claims the attempt and names it, and a poll
+    // tick landing inside those 50 ms would name it `poll`. The tour makes the
+    // checks that see the worker register itself.
     emails: {
       summoner: emailsNimbus,
-      triggers: { poll: 1_000, debounce: 50 },
+      triggers: { poll: false, debounce: 50 },
       bootBudget: 30_000,
     },
     invoices: {
@@ -513,10 +515,24 @@ const emails = jobs.queue("emails");
 for (const to of ["ada", "grace", "edsger"]) {
   await emails.add("quick", { to });
 }
+// The add's own check starts the attempt; only then does the tour check,
+// until the worker is seen registered. Checking any sooner could claim the
+// attempt ahead of the add's check.
+await waitFor(
+  "the add to start an attempt",
+  () => emailEvents.some((event) => event.outcome === "started"),
+  WAIT,
+);
+const emailsController = jobs.summonController("emails");
 await waitFor(
   "the summoned worker to register",
-  () => emailEvents.some((event) => event.outcome === "registered"),
-  WAIT,
+  async () => {
+    if (!emailEvents.some((event) => event.outcome === "registered")) {
+      await emailsController.check();
+    }
+    return emailEvents.some((event) => event.outcome === "registered");
+  },
+  { ...WAIT, interval: 100 },
 );
 show("summon events", emailEvents);
 const attempt = emailEvents[0]!;

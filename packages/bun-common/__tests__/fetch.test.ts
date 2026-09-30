@@ -1,7 +1,7 @@
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
-import { BunRouter } from "../lib/BunRouter";
+import { BunRouter, toNativeRequest } from "../lib/BunRouter";
 
 /**
  * `fetch()` runs a request through the router with no socket bound. These
@@ -381,6 +381,279 @@ describe("BunHttpAdapter.fetch: matches a real socket request", () => {
     );
     expect(results.every((r) => r.status === 200)).toBe(true);
     expect(adapter.isListening).toBe(false);
+  });
+});
+
+/**
+ * A client never sends a URL's fragment: `fetch("http://h/p/a#1/v")` puts
+ * `GET /p/a` on the wire. `new Request(url).url` keeps the fragment (as the
+ * Fetch spec says it must), so `fetch()` has to drop it itself, or a route
+ * matches here that 404s over a socket.
+ */
+describe("fetch: drops the URL fragment, as an HTTP client does", () => {
+  /** Echoes what the pipeline saw, minus the host (which differs). */
+  function build(router: BunRouter): void {
+    for (const path of ["/p/:id", "/p/:id/v"]) {
+      router.get(path, (req, res) => {
+        const native = new URL(req.request.url);
+        res.json({
+          route: path,
+          id: req.params.id,
+          url: req.url,
+          originalUrl: req.originalUrl,
+          path: req.path,
+          hash: req.hash,
+          query: req.query,
+          nativeUrl: native.pathname + native.search + native.hash,
+        });
+      });
+    }
+  }
+
+  /** The three forms a target can take, all of which must drop the fragment. */
+  const forms = {
+    "a string": (target: string) => target,
+    "a { url } object": (target: string) => ({ url: target }),
+    "a Request": (target: string) => new Request(`http://localhost${target}`),
+  } as const;
+
+  const targets = {
+    "a fragment after a param": "/p/a@1#1/v",
+    "a fragment after a query": "/p/x?q=1#frag",
+    "%23 in a param": "/p/a%231",
+    "%23 in a param and the query, then a fragment": "/p/a%231?q=%23#x/v",
+    "an empty fragment": "/p/a#",
+  };
+
+  it("answers exactly what a served request gets, in every input form", async () => {
+    const served = new BunHttpAdapter(0);
+    build(served);
+    await served.listen(0);
+
+    const offline = new BunHttpAdapter(0);
+    build(offline);
+
+    try {
+      for (const [label, target] of Object.entries(targets)) {
+        const overSocket = await fetch(
+          `http://127.0.0.1:${served.listeningPort}${target}`,
+        );
+        const expected = {
+          label,
+          status: overSocket.status,
+          body: await overSocket.text(),
+        };
+
+        for (const [form, make] of Object.entries(forms)) {
+          const response = await offline.fetch(make(target));
+          expect({
+            form,
+            label,
+            status: response.status,
+            body: await response.text(),
+          }).toEqual({ form, ...expected });
+        }
+      }
+    } finally {
+      await served.close();
+    }
+  });
+
+  it("matches the path before the fragment, keeps the query and decodes %23", async () => {
+    const router = new BunRouter();
+    build(router);
+
+    for (const [form, make] of Object.entries(forms)) {
+      const afterParam = await router.fetch(
+        make(targets["a fragment after a param"]),
+      );
+      expect({ form, body: await afterParam.json() }).toMatchObject({
+        form,
+        body: { route: "/p/:id", id: "a@1", url: "/p/a@1", hash: "" },
+      });
+
+      const afterQuery = await router.fetch(
+        make(targets["a fragment after a query"]),
+      );
+      expect({ form, body: await afterQuery.json() }).toMatchObject({
+        form,
+        body: {
+          route: "/p/:id",
+          id: "x",
+          url: "/p/x?q=1",
+          query: { q: "1" },
+          hash: "",
+        },
+      });
+
+      const encoded = await router.fetch(make(targets["%23 in a param"]));
+      expect({ form, body: await encoded.json() }).toMatchObject({
+        form,
+        body: { route: "/p/:id", id: "a#1", url: "/p/a%231", path: "/p/a%231" },
+      });
+    }
+  });
+
+  /**
+   * A `Request` with a fragment is the one input `fetch()` rebuilds, so its
+   * method, headers and body must survive the rebuild — a stream included.
+   */
+  it("a Request with a body and a fragment keeps its method, headers and body", async () => {
+    const router = new BunRouter();
+    router.post("/echo", (req, res) => {
+      res.json({
+        path: req.path,
+        url: req.url,
+        contentType: req.getHeader("content-type"),
+        body: req.body,
+      });
+    });
+
+    const cases = {
+      text: {
+        init: { body: "hello", headers: { "Content-Type": "text/plain" } },
+        contentType: "text/plain",
+        body: "hello",
+      },
+      json: {
+        init: {
+          body: JSON.stringify({ a: 1 }),
+          headers: { "Content-Type": "application/json" },
+        },
+        contentType: "application/json",
+        body: { a: 1 },
+      },
+      stream: {
+        init: {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("stream"));
+              controller.enqueue(new TextEncoder().encode("ed"));
+              controller.close();
+            },
+          }),
+          headers: { "Content-Type": "text/plain" },
+          duplex: "half",
+        },
+        contentType: "text/plain",
+        body: "streamed",
+      },
+    } satisfies Record<
+      string,
+      { init: RequestInit; contentType: string; body: unknown }
+    >;
+
+    for (const [label, { init, contentType, body }] of Object.entries(cases)) {
+      const response = await router.fetch(
+        new Request("http://localhost/echo#frag", { method: "POST", ...init }),
+      );
+      expect({
+        label,
+        status: response.status,
+        body: await response.json(),
+      }).toEqual({
+        label,
+        status: 200,
+        body: { path: "/echo", url: "/echo", contentType, body },
+      });
+    }
+  });
+
+  /**
+   * A request-like that is not this realm's `Request` (happy-dom's, in the
+   * UI's DOM tests) cannot be rebuilt: Bun's constructor rejects its foreign
+   * `signal`. It passes through as before, fragment and all, and the router
+   * still matches on the path alone.
+   */
+  it("passes a foreign request-like with a fragment through, without throwing", async () => {
+    const router = new BunRouter();
+    build(router);
+
+    const foreign = {
+      url: "http://localhost/p/a#1/v",
+      method: "GET",
+      headers: new Headers(),
+      signal: {},
+      bodyUsed: false,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as Request;
+
+    expect(toNativeRequest(foreign)).toBe(foreign);
+    const response = await router.fetch(foreign);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ route: "/p/:id", id: "a" });
+  });
+
+  /**
+   * A used `Request` is never rebuilt: Bun would rebuild it with a silently
+   * empty body (oven-sh/bun#44307) where the Fetch spec throws. So with or
+   * without a fragment it passes through as-is, and a used body reads as no
+   * body (`BunRequest` treats `bodyUsed` so); the router matches on the path
+   * before the fragment. `bodyUsed` in the echo shows it was not rebuilt.
+   */
+  it("passes a used Request through as-is, with or without a fragment", async () => {
+    /** Registers `POST /p/:id` and `POST /p/:id/v`, echoing what they saw. */
+    function register(target: BunRouter): void {
+      for (const path of ["/p/:id", "/p/:id/v"]) {
+        target.post(path, (req, res) => {
+          res.json({
+            route: path,
+            id: req.params.id,
+            body: req.body ?? null,
+            bodyUsed: req.request.bodyUsed,
+          });
+        });
+      }
+    }
+    const router = new BunRouter();
+    register(router);
+    const adapter = new BunHttpAdapter(0);
+    register(adapter);
+
+    for (const [name, target] of [
+      ["BunRouter", router],
+      ["BunHttpAdapter", adapter],
+    ] as const) {
+      for (const url of ["http://localhost/p/a#1/v", "http://localhost/p/a"]) {
+        const used = new Request(url, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: "hello",
+        });
+        await used.text();
+
+        expect(toNativeRequest(used)).toBe(used);
+        const response = await target.fetch(used);
+        expect({
+          name,
+          url,
+          status: response.status,
+          body: await response.json(),
+        }).toEqual({
+          name,
+          url,
+          status: 200,
+          body: { route: "/p/:id", id: "a", body: null, bodyUsed: true },
+        });
+      }
+    }
+  });
+
+  it("the router matches on the path alone when a url carries a fragment", () => {
+    const router = new BunRouter();
+    build(router);
+
+    for (const requestUrl of ["/p/a#1/v", "/p/a#x?y/v", "/p/a?q#1/v"]) {
+      const layers = router.getMatchedLayers({
+        requestHost: "localhost",
+        requestMethod: "GET",
+        requestUrl,
+      });
+      expect({
+        requestUrl,
+        params: layers.map((layer) => layer.matched.params),
+      }).toEqual({ requestUrl, params: [{ id: "a" }] });
+    }
   });
 });
 

@@ -8,6 +8,7 @@ import type {
 import type { AnyRouteDef, RouteServices } from "./define";
 import { providerErrorFacts } from "../../provider/errors";
 import {
+  encodedForms,
   redactDetail,
   redactingLogger,
   textRedactor,
@@ -431,8 +432,9 @@ async function visibleProviders(
 
 /**
  * Whether a value in a schema is a declared secret's value: a string equal to
- * one (of any length), or a number whose text is one's (`918273` for a secret
- * of `918273` or `"918273"`).
+ * one (of any length) in any of its encoded forms ({@link encodedForms}: as
+ * it is, URL- or form-encoded, regex-escaped), or a number whose text is
+ * one's (`918273` for a secret of `918273` or `"918273"`).
  */
 function secretEquals(
   secrets: readonly unknown[],
@@ -445,7 +447,9 @@ function secretEquals(
           (typeof secret === "number" && Number.isFinite(secret)) ||
           typeof secret === "bigint",
       )
-      .map((secret) => String(secret)),
+      .flatMap((secret) =>
+        typeof secret === "string" ? encodedForms(secret) : [String(secret)],
+      ),
   );
   return (value) => texts.has(String(value));
 }

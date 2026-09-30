@@ -4,6 +4,7 @@ import type { ProviderCheck, SummonCapabilities } from "../define";
 import type { ProviderErrorKind } from "../errors";
 import type { FakePlatform, FakeRequestRecord } from "./fake";
 import type { KitRun } from "./run";
+import { isCredentialKey, URL_USERINFO } from "../../shared/credentialKeys";
 import { SUMMON_ARGS } from "../../summon/args";
 import { CODE_SHAPED } from "../../summon/controller";
 import { dedupeKeyFor } from "../../summon/marker";
@@ -213,7 +214,11 @@ export function capabilityChecks(
   }
 }
 
-/** The describe group (should): facts are strings, none named like a credential. */
+/**
+ * The describe group (should): facts are strings, none named like a
+ * credential and none holding a URL with userinfo — what the status route
+ * would drop.
+ */
 export function describeChecks(run: KitRun): void {
   let facts: Readonly<Record<string, string>>;
   try {
@@ -232,8 +237,12 @@ export function describeChecks(run: KitRun): void {
     if (typeof value !== "string") {
       problems.push(`${key} is not a string`);
     }
-    if (/token|secret|key|password/i.test(key)) {
+    // The status route's own rule (`isServableFact`), so the kit warns
+    // about exactly the facts it drops.
+    if (isCredentialKey(key)) {
       problems.push(`${key} is named like a credential`);
+    } else if (typeof value === "string" && URL_USERINFO.test(value)) {
+      problems.push(`${key} holds a URL with credentials in it`);
     }
   }
   run.set(

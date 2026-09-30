@@ -289,6 +289,13 @@ export interface ConformanceOptions<TInput = unknown> {
  * to the fake; the handoff and the race need a backend several processes
  * share, a temporary SQLite file unless `driver` names one.
  *
+ * `summon.secrets.no-leak` looks for the canaries, and for every declared
+ * secret by its validated value, as the controller redacts it: a secret the
+ * schema derives is looked for too, and a leak names its declared path. A
+ * declared secret under {@link MIN_SECRET_LENGTH} characters (the
+ * redactor's floor) is not redacted, so not looked for by value, nor is one
+ * holding something other than a string; the check's detail counts both.
+ *
  * Never throws for a failing provider: that is what the report says. Pass
  * it to {@link assertConformance} in a test.
  *
@@ -385,6 +392,10 @@ export async function runProviderConformance<TInput, TConfig>(
   let secrets: string[] = [];
   /** What each of `secrets` is, for the report: its declared path. */
   let labels: string[] = [];
+  /** How many declared secrets are strings under the redactor's floor, so not looked for by value. */
+  let short = 0;
+  /** How many declared secrets hold something other than a string, so not looked for by value. */
+  let nonString = 0;
   let validate:
     | ((context: ProviderCallContext) => Promise<readonly ProviderCheck[]>)
     | undefined;
@@ -462,8 +473,6 @@ export async function runProviderConformance<TInput, TConfig>(
         : undefined;
     if (canaried?.ok === true) {
       summoner = canaried.summoner;
-      secrets = seeded.canaries;
-      labels = seeded.seededPaths;
       fresh = () =>
         (unconfigured as unknown as (config: unknown) => Summoner)(
           seeded.config,
@@ -474,15 +483,22 @@ export async function runProviderConformance<TInput, TConfig>(
         (unconfigured as unknown as (config: unknown) => Summoner)(
           options.config,
         );
-      ({ secrets, labels } = givenSecrets(summoner));
     }
+    // The canaries, and every declared secret by its validated value (as
+    // the controller and the redactor read it): a secret the schema
+    // derives is not in the given config, so it has no canary.
+    ({ secrets, labels, short, nonString } = givenSecrets(
+      summoner,
+      declared,
+      canaried?.ok === true ? seeded : undefined,
+    ));
     if (declared.length === 0) {
       set("summon.secrets.no-leak", "skip", "the provider declares no secrets");
     } else if (secrets.length === 0) {
       set(
         "summon.secrets.no-leak",
         "skip",
-        "no declared secret held a string the kit could seed or look for",
+        `no declared secret held a string the kit could seed or look for${notes(short, nonString)}`,
       );
     }
     if (definition.validate !== undefined) {
@@ -508,9 +524,15 @@ export async function runProviderConformance<TInput, TConfig>(
       "summon.config.",
       "a configured provider: its config was validated when it was configured",
     );
-    ({ secrets, labels } = givenSecrets(summoner));
+    ({ secrets, labels, short, nonString } = givenSecrets(summoner));
     if (secrets.length === 0) {
-      set("summon.secrets.no-leak", "skip", "the provider declares no secrets");
+      set(
+        "summon.secrets.no-leak",
+        "skip",
+        short === 0 && nonString === 0
+          ? "the provider declares no secrets"
+          : `no declared secret held a string the kit could look for${notes(short, nonString)}`,
+      );
     }
   }
 
@@ -632,24 +654,86 @@ export async function runProviderConformance<TInput, TConfig>(
       "summon.secrets.no-leak",
       found.length === 0 ? "pass" : "fail",
       found.length === 0
-        ? `${secrets.length} secret(s) looked for in ${run.logs.length} log lines and ${run.scanned.length} results, errors and facts`
-        : `declared secret(s) ${found.map((hit) => labels[hit.index]).join(", ")} appeared in what bun-jobs would log or store`,
+        ? `${secrets.length} secret(s) looked for in ${run.logs.length} log lines and ${run.scanned.length} results, errors and facts${notes(short, nonString)}`
+        : `declared secret(s) ${[...new Set(found.map((hit) => labels[hit.index]))].join(", ")} appeared in what bun-jobs would log or store${notes(short, nonString)}`,
     );
   }
   return finish(identity);
 }
 
-/** A configured provider's own secret values the kit can look for, with a label each. */
-function givenSecrets(summoner: Summoner): {
+/** The no-leak detail's notes on declared secrets not looked for by value, or nothing. */
+function notes(short: number, nonString: number): string {
+  return [
+    short === 0
+      ? ""
+      : `; ${short} declared secret(s) under ${MIN_SECRET_LENGTH} characters are not redacted, so not checked by value`,
+    nonString === 0
+      ? ""
+      : `; ${nonString} declared secret(s) are not strings, so not checked by value`,
+  ].join("");
+}
+
+/**
+ * The secret values the kit looks for, each with a label for the report:
+ * the canaries it seeded, and every declared secret's validated value (what
+ * the controller redacts, {@link providerSecrets}) — both only from
+ * {@link MIN_SECRET_LENGTH} characters, the redactor's floor. `short`
+ * counts the declared string secrets under it, `nonString` the declared
+ * paths holding something else (an object, a number; an absent one is not
+ * counted). A label is the declared path, when the paths are known, else
+ * `#1`, `#2`, ….
+ */
+function givenSecrets(
+  /** The configured provider whose declared secrets' values are read. */
+  summoner: Summoner,
+  /** The declared secret paths, in declaration order, for the labels. */
+  paths?: readonly string[],
+  /** What the kit seeded, when its canaried config was accepted. */
+  seeded?: {
+    /** The canary values, in seeding order. */
+    canaries: readonly string[];
+    /** The declared path each canary replaced, by index. */
+    seededPaths: readonly string[];
+  },
+): {
+  /** The values to look for, each once. */
   secrets: string[];
+  /** Each value's label for the report, by index. */
   labels: string[];
+  /** Declared string secrets under the redactor's floor. */
+  short: number;
+  /** Declared secrets holding a value other than a string. */
+  nonString: number;
 } {
-  const secrets = providerSecrets(summoner).filter(
-    (value): value is string =>
-      typeof value === "string" && value.length >= MIN_SECRET_LENGTH,
-  );
-  return {
-    secrets,
-    labels: secrets.map((_, index) => `#${index + 1}`),
+  const secrets: string[] = [];
+  const labels: string[] = [];
+  let short = 0;
+  let nonString = 0;
+  const add = (value: unknown, label: string): void => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (typeof value !== "string") {
+      nonString++;
+      return;
+    }
+    if (value.length === 0) {
+      return;
+    }
+    if (value.length < MIN_SECRET_LENGTH) {
+      short++;
+      return;
+    }
+    if (!secrets.includes(value)) {
+      secrets.push(value);
+      labels.push(label);
+    }
   };
+  seeded?.canaries.forEach((canary, index) => {
+    add(canary, seeded.seededPaths[index]!);
+  });
+  providerSecrets(summoner).forEach((value, index) => {
+    add(value, paths?.[index] ?? `#${index + 1}`);
+  });
+  return { secrets, labels, short, nonString };
 }

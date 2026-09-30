@@ -403,7 +403,10 @@ for (const engine of ENGINES) {
           ...jobs.filter((_, index) => index % 10 !== 0),
         ].map((job) => job.id);
         expect(await drain(driver, q, now + 10)).toEqual(expected);
-      });
+        // Its own timeout: 1,007 jobs claimed one commit at a time took 2.4-3.6 s
+        // on MySQL alone, most of bun's 5 s default, and a full seeded run
+        // once timed out here on MySQL and MariaDB. It checks order, not time.
+      }, 30_000);
 
       it("never half-writes a job a claim takes while the rewrite runs", async () => {
         const { driver, q } = await scope("race");
