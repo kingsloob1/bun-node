@@ -23,6 +23,11 @@
       "types": "./dts/provider/index.d.ts",
       "default": "./lib/provider/index.ts"
     },
+    "./provider/testing": {
+      "@kingsleyweb/source": "./lib/provider/testing/index.ts",
+      "types": "./dts/provider/testing/index.d.ts",
+      "default": "./lib/provider/testing/index.ts"
+    },
     "./summon": {
       "@kingsleyweb/source": "./lib/summon/index.ts",
       "types": "./dts/summon/index.d.ts",
@@ -52,6 +57,11 @@
       "@kingsleyweb/source": "./lib/provider/index.ts",
       "types": "./dts/provider/index.d.ts",
       "default": "./lib/provider/index.ts"
+    },
+    "./lib/provider/testing": {
+      "@kingsleyweb/source": "./lib/provider/testing/index.ts",
+      "types": "./dts/provider/testing/index.d.ts",
+      "default": "./lib/provider/testing/index.ts"
     },
     "./lib/queue": {
       "@kingsleyweb/source": "./lib/queue/index.ts",
