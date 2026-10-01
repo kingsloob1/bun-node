@@ -37,6 +37,10 @@ accepts. It declares:
 
 There is no registry: a provider is an import, passed in where it is used.
 
+One provider ships with bun-jobs: **`localCompute`**, which summons workers
+as child processes on the host the controller runs on. See
+[Summoning on this host](./user-guide.md#summoning-on-this-host-localcompute).
+
 A plain function also works, through `defineSummoner` from
 `@kingsleyweb/bun-jobs/summon`: the same thing without the ceremony, for code
 you own. A provider plugin is for code you publish.

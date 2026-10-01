@@ -75,10 +75,22 @@ export interface KitRun {
    * runs never share one, and purged by the handoff with the rest.
    */
   readonly namespace: string;
-  /** The fake. */
-  readonly platform: FakePlatform;
-  /** The fake's internals. */
-  readonly internals: FakeInternals;
+  /**
+   * The fake, or `undefined` for a provider with no platform API, which
+   * starts its units itself (`localCompute`): see {@link KitRun.selfHosted}.
+   */
+  readonly platform: FakePlatform | undefined;
+  /** The fake's internals, when there is a fake. */
+  readonly internals: FakeInternals | undefined;
+  /**
+   * Whether the provider starts its units itself, with no platform to fake:
+   * units are then known only by the handles `summon` answers and what
+   * `status()` says of them, and the checks that need a platform to inject
+   * a fault into or record a request on are skipped.
+   */
+  readonly selfHosted: boolean;
+  /** Every handle a call answered, in order: a self-hosted run's units, stopped when it ends. */
+  readonly handles: Set<string>;
   /** The backend the handoff and the compare-and-set check run on, when given. */
   readonly driver: DriverConfig | undefined;
   /**
@@ -126,7 +138,7 @@ export interface KitRun {
   ) => void;
   /** Whether a check is to run: it exists and the caller did not skip it. */
   wanted: (id: string) => boolean;
-  /** Units the fake has started so far. */
+  /** Units started so far: the fake's, or for a self-hosted provider the distinct handles answered. */
   unitCount: () => number;
   /**
    * A host-side failure (a controller, a driver, the kit itself) for a
@@ -173,10 +185,10 @@ export function createRun(input: {
   identity: ProviderIdentity;
   /** The configured provider. */
   summoner: Summoner;
-  /** The fake. */
-  platform: FakePlatform;
-  /** Its internals. */
-  internals: FakeInternals;
+  /** The fake, when there is one. */
+  platform: FakePlatform | undefined;
+  /** Its internals, when there is a fake. */
+  internals: FakeInternals | undefined;
   /** The handoff's backend, when given. */
   driver: DriverConfig | undefined;
   /** A fresh configured instance. */
@@ -192,11 +204,15 @@ export function createRun(input: {
   const facet = input.summoner.summon;
   const capabilities = facet.capabilities;
   const scanned: unknown[] = [];
-  const origin = new URL(input.platform.url).origin;
-  const { tag } = input.internals;
+  const handles = new Set<string>();
+  const origin =
+    input.platform === undefined
+      ? undefined
+      : new URL(input.platform.url).origin;
+  const tag = input.internals?.tag;
   const epoch = randomHex(8);
   const namespace = `conformance-direct-${randomHex(6)}`;
-  input.internals.namespaces.push(namespace);
+  input.internals?.namespaces.push(namespace);
   let version = 0;
 
   const kitFetch = Object.assign(
@@ -208,7 +224,7 @@ export function createRun(input: {
         target instanceof Request
           ? new Request(target, init)
           : new Request(String(target), init);
-      if (new URL(request.url).origin === origin) {
+      if (tag !== undefined && new URL(request.url).origin === origin) {
         const headers = new Headers(request.headers);
         headers.set(tag.header, tag.value);
         return await fetch(new Request(request, { headers }));
@@ -233,6 +249,8 @@ export function createRun(input: {
     namespace,
     platform: input.platform,
     internals: input.internals,
+    selfHosted: input.platform === undefined,
+    handles,
     driver: input.driver,
     fresh: input.fresh,
     secrets: input.secrets,
@@ -254,6 +272,9 @@ export function createRun(input: {
       try {
         const value = await Promise.race([fn(context(abort.signal)), deadline]);
         scanned.push(value);
+        for (const handle of answeredHandles(value)) {
+          handles.add(handle);
+        }
         return { ok: true, value };
       } catch (error) {
         scanned.push(error);
@@ -286,7 +307,7 @@ export function createRun(input: {
     },
     set: input.set,
     wanted: input.wanted,
-    unitCount: () => input.internals.unitCount(),
+    unitCount: () => input.internals?.unitCount() ?? handles.size,
     explain: (error) => {
       const what = describeThrown(error);
       const message = error instanceof Error ? error.message : "";
@@ -296,6 +317,37 @@ export function createRun(input: {
     },
   };
   return run;
+}
+
+/**
+ * The fake and its internals, for a check group that never runs
+ * self-hosted (its checks are skipped there).
+ *
+ * @throws {Error} on a self-hosted run: a kit bug, never a provider's.
+ */
+export function fakeOf(run: KitRun): {
+  /** The fake. */
+  platform: FakePlatform;
+  /** Its internals. */
+  internals: FakeInternals;
+} {
+  if (run.platform === undefined || run.internals === undefined) {
+    throw new Error(
+      "the conformance kit ran a platform check with no platform",
+    );
+  }
+  return { platform: run.platform, internals: run.internals };
+}
+
+/** The handles a call's value carries, when it is a `SummonResult` with some. */
+function answeredHandles(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || !("status" in value)) {
+    return [];
+  }
+  const handles = (value as { handles?: unknown }).handles;
+  return Array.isArray(handles)
+    ? handles.filter((handle): handle is string => typeof handle === "string")
+    : [];
 }
 
 /** A short, secret-free name for what a call threw. */

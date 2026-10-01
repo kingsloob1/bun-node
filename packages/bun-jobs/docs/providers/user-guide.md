@@ -306,3 +306,135 @@ kinds, and the kind decides what the controller does. What each looks like:
 - **Check**: what the config reads asynchronously (a secret file, a secret
   store) is reachable from this process, and fast enough for
   `summonTimeout`. Await `ready` at startup to see the error itself.
+
+## Summoning on this host: `localCompute`
+
+`localCompute` is the provider bun-jobs ships for the machine the queue's
+controller already runs on: each worker it summons is a **child process**
+of that process, started with `Bun.spawn`. No platform, no credential and
+nothing to install: a VM with spare cores, a single server, or your laptop.
+It is written on the same plugin API as any provider, and passes the same
+conformance kit.
+
+```ts
+import { BunJobs } from "@kingsleyweb/bun-jobs";
+import { localCompute } from "@kingsleyweb/bun-jobs/provider";
+
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "sql", url: "sqlite:///var/lib/shop/jobs.db" },
+  summon: {
+    emails: {
+      summoner: localCompute({
+        entry: new URL("./email-worker.ts", import.meta.url),
+        maxUnits: 2,
+      }),
+      maxWorkers: 2,
+      jobsPerWorker: 100,
+    },
+  },
+});
+```
+
+**The entry is a worker script of its own.** A child process cannot import
+the host's processor, so it runs a file that builds the worker from its
+summon arguments and hands it to `runSummoned`, which exits once the queue
+is idle:
+
+```ts
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+
+const summon = summonedFromArgs();
+const jobs = new BunJobs({
+  namespace: summon?.namespace ?? "shop",
+  driver: { type: "sql", url: "sqlite:///var/lib/shop/jobs.db" },
+});
+const worker = jobs.worker(
+  summon?.queue ?? "emails",
+  async (job) => {
+    await job.log(`sending ${job.id}`);
+  },
+  { summon },
+);
+await runSummoned(worker, { idleFor: 30_000 });
+```
+
+`entry` is an absolute path, a `file:` URL (`new URL("./w.ts",
+import.meta.url)`, or `import.meta.resolve("./w.ts")`), or a path relative
+to `cwd`, which defaults to the host's working directory. The summon
+arguments (`--bun-jobs-summon-*=`) come last on the command line, after any
+`args` you give.
+
+**The driver must be one processes share**: SQLite, the file driver, Redis,
+Postgres, MySQL, MariaDB or MongoDB. The controller refuses the memory
+driver, and a child could not see the host's memory anyway.
+
+**The environment is an allowlist**, with the same options as the
+child-process worker target. A unit gets the variables a process needs
+(`PATH`, `HOME`, `TMPDIR`, the locale, `TZ`, `NODE_ENV`, the CA paths, …:
+`CHILD_BASE_ENV`), copied from the host's live `process.env`, and not its
+secrets. Name more with `passEnv: ["DATABASE_URL"]`, give values with
+`env: { REGION: "eu" }` (or the summon policy's `env`), remove one with
+`env: { TZ: undefined }`, or pass everything with `env: "inherit"`. Under
+the allowlist a unit starts with `--no-env-file`, so a `.env` in its working
+directory cannot bring the secrets back. The allowlist bounds what bun-jobs
+passes; a job's own code that spawns a process passes what it likes, and a
+unit running as the host's user can still read the host's startup
+environment from `/proc` on Linux.
+
+**Capacity.** `maxUnits` (by default the CPU count) caps the units one
+configured `localCompute` runs at once, across every queue it summons for.
+A summon starts what fits; with nothing free it answers `unavailable`
+(`max-units`), which the controller backs off from and counts like a quota
+error. Keep the policies' `maxWorkers` within it.
+
+**Stopping.** A unit stops itself: `runSummoned` exits on idle, at the
+policy's `maxLifetime`, or on the stop signal. Behind that, bun-jobs kills a
+unit with `SIGKILL` at its lifetime plus the grace (`shutdown.graceMs`,
+default 10 s), and `cancel()` sends the stop signal (`shutdown.signal`,
+`SIGTERM`) and then `SIGKILL` after the grace.
+
+**No orphans.** When the host exits, every unit is killed. When the host is
+sent `SIGINT`, `SIGTERM` or `SIGHUP`, every unit gets its stop signal and,
+after its grace, `SIGKILL`; if nothing else listens for the signal, the host
+waits for its units and then ends by the signal as it would have. Only a
+host killed with `SIGKILL` cannot clean up: its units then end on their own,
+at their idle exit or their lifetime.
+
+**What `status()` shows.** A unit is `running` while its process lives, and
+`exited` with code `0` once it ends cleanly. A crash is `failed`, with its
+exit code and its last stderr line as the detail (the attempt's `lost`
+detail, on the status route and in the UI): `fatal: cannot open
+libvk.so.1`, or `max-lifetime` when the backstop killed it.
+
+**Output.** By default a unit's stdout and stderr go to the host's, line by
+line. `output: "ignore"` drops them, `output: { file: "units.log" }` appends
+them to a file, and `output: { logger }` logs each line (stdout at `info`,
+stderr at `warn`) bound with the unit's handle.
+
+**Resource limits, with a cgroup** (Linux). `cgroup` names an existing
+cgroup directory each unit starts in, so its `memory.max`, `pids.max` and
+`cpu.max` bind the unit and everything it starts. bun-jobs neither creates
+nor configures it. No root is needed in a subtree systemd delegates to your
+user: measured on Ubuntu with cgroup v2, an unprivileged host started units
+in one, and a unit that allocated past its 64 MiB `memory.max` was killed
+(`failed`, exit code 137):
+
+```bash
+dir=/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/bun-jobs
+mkdir -p "$dir"
+echo $((512 * 1024 * 1024)) > "$dir/memory.max"
+echo 64 > "$dir/pids.max"
+```
+
+A cgroup outside that subtree fails to join with `EACCES`, and a missing one
+with `ENOENT`: both are `misconfigured`, which opens the circuit at once.
+`validate()` starts `bun --version` in it, so "Test connection" says which.
+
+**Preflight.** `validate()` checks the `cwd`, that the entry is a readable
+file, that `bun` starts (in the cgroup, when one is set), the capacity, and
+always warns that a unit is not a sandbox.
+
+**It is not a sandbox.** A unit runs as the host's user, with its files and
+its network; only the environment is narrowed, and a cgroup bounds resources,
+not access. Summon only code you would run in the host itself.
