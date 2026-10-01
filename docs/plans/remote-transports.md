@@ -1984,6 +1984,12 @@ an inbound HTTP path, with health, live progress and heartbeats wherever the
 path streams, and an honest `degraded` where it does not, so it is a release
 point; each later sub-phase adds its binding on top of what shipped.
 
+**As PRs** (sliced 2026-10-01, not yet approved): 2a is twelve PRs and 2b
+three, reconciled with the code at `2973212` and with the gateway's 2r, in
+[`worker-runtimes.md` §11, "Phase 2 as PRs"](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r).
+2a becomes ~39 d there (`lambdaExecute` leaves it; the MAC seam, the execute
+facet's DTO and the record's `remote` block are costed).
+
 **The execute stability gate** (`compute-provider-plugins.md` §10.4) covers
 more than it did: the facet is proven transport-agnostic only when at least
 one session-shape transport written outside the bun-jobs session passes the

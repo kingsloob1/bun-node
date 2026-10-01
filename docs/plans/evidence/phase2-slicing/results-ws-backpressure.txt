@@ -1,0 +1,6 @@
+RESULT A send loop: frame 211 B, sent 19235, queued(-1) 4878, dropped(0) 10 (stopped after 10), buffered at first -1 61 B, at first 0 1048616 B
+RESULT A after resume: client received 24113 of 24123 send() calls (sent+queued = 24113); drain events 1; lost 0 of the sent+queued
+RESULT B bufferedAmount right after 4,000 x 1 KiB sends: 42040 B
+RESULT B samples (ms:bytes, every 150 ms): 14:42040 165:42040 316:42040 466:42040 617:42040 768:42040 919:42040 1070:42040 1221:42040 1372:42040
+RESULT B server unblocked at +1450 ms; client bufferedAmount reached 0 at +1452 ms; server had all 4,000 at +1455 ms
+RESULT env: bun 5f554969bc8ab2159583cdf5ff26f5277ca35e91

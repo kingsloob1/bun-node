@@ -1293,6 +1293,14 @@ passes the full gate alone and leaves the package coherent.
 
 ### 10.2 Part 1: the gateway, sub-phase 2r (after 2b)
 
+**Sliced further on 2026-10-01** with 2a and 2b, and reconciled with the
+code at `2973212`, in
+[`worker-runtimes.md` §11, "Phase 2 as PRs"](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r):
+PR-g1 splits into PR-g1a (the listener and the claim gate, a claim-loop
+change) and PR-g1b (the dialler); PR-g4 also depends on PR-g2, whose router
+carries its route; `requireIsolation` lands with whichever of PR-g2 and PR-i5
+is second. The table below is the design as written on 2026-09-29.
+
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
 | **PR-g1** reverse listener | the reversed target, executor registry, capacity-gated claiming, `dialWebSocket`, backoff, `resumeAt`, make-before-break drain. **Moved from 2d** | 2a, 2b | ~4.5 d (of which ~4 d from 2d) |
@@ -1316,6 +1324,9 @@ before the PRs that change what they read.
 ---
 
 ## 11. Where it slots in the phase order
+
+Restated as of `2973212` (2026-10-01: 1.5p merged, PR-i0 in progress) in
+[`worker-runtimes.md` §11, "Phase 2 as PRs"](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r).
 
 As of `8d3df4d`: Phases 0 and 1 are merged, 1.5a and 1.5b are merged, and
 1.5p is being implemented (SC §13.10).

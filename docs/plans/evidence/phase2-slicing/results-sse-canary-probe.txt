@@ -1,0 +1,11 @@
+RESULT direct#1: headers 1 ms, first byte 1 ms, progress at 101/201/301 ms, result 301 ms, gaps 100/100 ms -> probe says streams
+RESULT passthrough#1: headers 0 ms, first byte 0 ms, progress at 100/201/301 ms, result 301 ms, gaps 100/100 ms -> probe says streams
+RESULT piped#1: headers 1 ms, first byte 1 ms, progress at 101/201/301 ms, result 301 ms, gaps 100/100 ms -> probe says streams
+RESULT buffering#1: headers 301 ms, first byte 301 ms, progress at 301/301/301 ms, result 301 ms, gaps 0/0 ms -> probe says BUFFERED
+RESULT blocks64k#1: headers 301 ms, first byte 301 ms, progress at 301/301/301 ms, result 301 ms, gaps 0/0 ms -> probe says BUFFERED
+RESULT direct#2: headers 0 ms, first byte 0 ms, progress at 100/200/301 ms, result 301 ms, gaps 100/100 ms -> probe says streams
+RESULT passthrough#2: headers 0 ms, first byte 0 ms, progress at 100/200/300 ms, result 300 ms, gaps 100/100 ms -> probe says streams
+RESULT piped#2: headers 0 ms, first byte 0 ms, progress at 100/201/301 ms, result 301 ms, gaps 100/100 ms -> probe says streams
+RESULT buffering#2: headers 301 ms, first byte 301 ms, progress at 301/301/301 ms, result 301 ms, gaps 0/0 ms -> probe says BUFFERED
+RESULT blocks64k#2: headers 301 ms, first byte 301 ms, progress at 301/301/301 ms, result 301 ms, gaps 0/0 ms -> probe says BUFFERED
+RESULT env: bun 5f554969bc8ab2159583cdf5ff26f5277ca35e91
