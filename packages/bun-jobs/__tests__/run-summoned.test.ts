@@ -29,6 +29,24 @@ const FIXTURE = join(
   "run-summoned.ts",
 );
 
+/**
+ * Whether a job-control stop works for a child of this process: a `sleep` in
+ * this process group is sent SIGTSTP and must show as stopped. The kernel
+ * discards SIGTSTP sent to a process in an orphaned process group, which is
+ * what `bun test` is in when launched detached (`setsid` with no job-control
+ * shell or `timeout` between): there the Ctrl-Z test cannot pass, whatever the
+ * code does, so it is skipped rather than failed.
+ */
+const JOB_CONTROL_PROBE =
+  process.platform === "win32"
+    ? ""
+    : Bun.spawnSync([
+        "sh",
+        "-c",
+        'sleep 5 & p=$!; kill -TSTP "$p"; sleep 0.3; ps -o stat= -p "$p"; kill -KILL "$p"',
+      ]).stdout.toString();
+const JOB_CONTROL_STOPS = JOB_CONTROL_PROBE.trim().startsWith("T");
+
 /** How far past a bound a loaded machine may run. */
 const SLACK = 2_000;
 
@@ -391,31 +409,37 @@ describe("runSummoned, in a real process", () => {
     expect((await exitOf(fixture)).code).toBe(0);
   }, 30_000);
 
-  it("by default leaves SIGTSTP alone, so Ctrl-Z still suspends the process", async () => {
-    const fixture = start({});
-    await fixture.waitFor((line) => line.event === "ready");
-    fixture.signal("SIGTSTP");
-    let stat = "";
-    const until = Date.now() + 5_000;
-    while (!stat.startsWith("T") && Date.now() < until) {
-      await Bun.sleep(50);
-      const ps = Bun.spawnSync([
-        "ps",
-        "-o",
-        "stat=",
-        "-p",
-        String(fixture.proc.pid),
-      ]);
-      stat = ps.stdout.toString().trim();
-    }
-    // Stopped by the kernel, not paused by the worker.
-    expect(stat.startsWith("T")).toBe(true);
-    expect(fixture.lines.some((line) => line.event === "paused")).toBe(false);
+  // Skipped where this process group is orphaned (a detached launch): the
+  // kernel discards SIGTSTP there, so the process could never stop.
+  it.skipIf(!JOB_CONTROL_STOPS)(
+    "by default leaves SIGTSTP alone, so Ctrl-Z still suspends the process",
+    async () => {
+      const fixture = start({});
+      await fixture.waitFor((line) => line.event === "ready");
+      fixture.signal("SIGTSTP");
+      let stat = "";
+      const until = Date.now() + 5_000;
+      while (!stat.startsWith("T") && Date.now() < until) {
+        await Bun.sleep(50);
+        const ps = Bun.spawnSync([
+          "ps",
+          "-o",
+          "stat=",
+          "-p",
+          String(fixture.proc.pid),
+        ]);
+        stat = ps.stdout.toString().trim();
+      }
+      // Stopped by the kernel, not paused by the worker.
+      expect(stat.startsWith("T")).toBe(true);
+      expect(fixture.lines.some((line) => line.event === "paused")).toBe(false);
 
-    fixture.signal("SIGCONT");
-    fixture.signal("SIGTERM");
-    expect((await exitOf(fixture)).code).toBe(0);
-  }, 30_000);
+      fixture.signal("SIGCONT");
+      fixture.signal("SIGTERM");
+      expect((await exitOf(fixture)).code).toBe(0);
+    },
+    30_000,
+  );
 
   it("stops at the deadline minus shutdownBuffer", async () => {
     // Idle would never end it: `idleFor` is a minute.
