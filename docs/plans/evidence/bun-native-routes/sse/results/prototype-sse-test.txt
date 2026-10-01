@@ -1,0 +1,6 @@
+bun test v1.4.3-canary.1 (5f554969b)
+
+ 10 pass
+ 0 fail
+ 22 expect() calls
+Ran 10 tests across 1 file. [1.58s]

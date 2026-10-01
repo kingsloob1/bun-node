@@ -1,0 +1,8 @@
+patched=false                                              
+  @Sse observable errors before first event                no response within 3s
+  @Sse handler throws synchronously                        no response within 3s
+  @Sse one event then silent, watched 16s                  status=200 type=text/event-stream @12004ms [17ms:"id: 1\ndata: first"] end=error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()@12004ms
+patched=true                                               
+  @Sse observable errors before first event                status=500 type=application/json @12ms [] end=done@12ms
+  @Sse handler throws synchronously                        status=500 type=application/json @12ms [] end=done@12ms
+  @Sse one event then silent, watched 16s                  status=200 type=text/event-stream @16012ms still open after 16s

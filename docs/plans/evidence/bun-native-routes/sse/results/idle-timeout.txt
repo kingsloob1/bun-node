@@ -1,0 +1,11 @@
+idleTimeout default (10 s), watched 30 s                   
+  raw Bun.serve, silent after one comment                  cut at 12.0s: error: The socket connection was closed unexpectedly. For mo (1 blocks)
+  raw Bun.serve, server.timeout(req, 0)                    survived 30s (1 blocks)
+  bun-common adapter, silent after one comment             cut at 12.0s: error: The socket connection was closed unexpectedly. For mo (1 blocks)
+  bun-common adapter, ': ping' every 5 s                   survived 30s (7 blocks)
+  bun-common adapter, ': ping' every 9 s                   survived 30s (4 blocks)
+  bun-common adapter, req.server.timeout(req.request, 0)   survived 30s (1 blocks)
+  bun-common adapter, req.socket.setTimeout(0) (Node idiom) cut at 12.0s: error: The socket connection was closed unexpectedly. For mo (1 blocks)
+  bun-common adapter, handler never writes                 fetch failed at 12.0s: The socket connection was closed unexpectedly. For
+  bun-nest @Sse(), one event then silent                   cut at 12.0s: error: The socket connection was closed unexpectedly. For mo (1 blocks)
+  prototype sse() helper, no heartbeat, silent             survived 30s (1 blocks)

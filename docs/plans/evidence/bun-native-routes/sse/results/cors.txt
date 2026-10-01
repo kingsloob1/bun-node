@@ -1,0 +1,2 @@
+cors() + /write                                            acao=https://app.example acac=true vary=Origin [6ms:"data: w"] end=done@6ms
+cors() + /helper                                           acao=https://app.example acac=true vary=Origin [1ms:"data: h"] end=done@1ms

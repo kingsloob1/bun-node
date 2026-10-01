@@ -1,0 +1,7 @@
+stalled client; producer offers 64 MiB of 1 KiB events for 4 s
+raw-push      offered  64.0 MiB, stopped by limit                  server RSS +68.1 MiB
+raw-pull      offered   4.1 MiB, stopped by time                   server RSS +-1.3 MiB
+common-write  offered  64.0 MiB, stopped by limit                  server RSS +80.0 MiB
+proto-await   offered   4.1 MiB, stopped by time                   server RSS +3.2 MiB
+proto-nowait  offered  12.1 MiB, stopped by write() returned false server RSS +19.1 MiB
+nest-sse      offered  64.0 MiB, stopped by limit                  server RSS +35.3 MiB
