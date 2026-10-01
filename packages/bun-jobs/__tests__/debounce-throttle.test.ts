@@ -543,6 +543,49 @@ for (const backend of backends) {
         expect(settled?.jobId).toBe(job.id);
         expect(settled?.ready).toBe(true);
       });
+
+      it("makes a throttled add in the gap wait for the window's job, never open a second", async () => {
+        const options = { throttle: { id: "burst-gap", ttl: 10_000 } };
+        let second: ReturnType<BunQueue<Doc>["add"]> | undefined;
+        const { queue } = await setupWithGap(async () => {
+          // Another producer arrives while the first add has opened the
+          // window but not yet written its job: it must not open its own.
+          // Not awaited here, since it waits for the job this add writes next.
+          second = queue.add("digest", { version: 2 }, options);
+          await Bun.sleep(20);
+        });
+
+        const first = await queue.add("digest", { version: 1 }, options);
+        const late = await second!;
+
+        expect(late.id).toBe(first.id);
+        expect(late.wasAdded).toBe(false);
+        expect(await everyJob(queue)).toHaveLength(1);
+      });
+
+      it("confirms a throttle pointer only once its job exists", async () => {
+        let inTheGap: { jobId: string; ready?: boolean } | undefined;
+        const { driver, queue } = await setupWithGap(async () => {
+          inTheGap = (
+            await driver.getQueueState!(queue.ref, `${THROTTLE_PREFIX}staged`)
+          )?.value as typeof inTheGap;
+        });
+
+        const job = await queue.add(
+          "digest",
+          { version: 1 },
+          { throttle: { id: "staged", ttl: 10_000 } },
+        );
+
+        expect(inTheGap?.jobId).toBe(job.id);
+        expect(inTheGap?.ready).toBeUndefined();
+
+        const settled = (
+          await driver.getQueueState!(queue.ref, `${THROTTLE_PREFIX}staged`)
+        )?.value as typeof inTheGap;
+        expect(settled?.jobId).toBe(job.id);
+        expect(settled?.ready).toBe(true);
+      });
     });
 
     it("refuses combinations that cannot work", async () => {
