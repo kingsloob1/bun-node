@@ -46,6 +46,7 @@ import {
 } from "@kingsleyweb/bun-common";
 import { readHistoryPage } from "../drivers/runHistory";
 import { collationKeysForRuns } from "../drivers/sql/sql-driver";
+import { childEnvWithheldMessage } from "../shared/childEnv";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, RunnerStoppedError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
@@ -75,7 +76,7 @@ import { InProcessExecutor } from "./executors/in-process";
 import { SpawnExecutor } from "./executors/spawn";
 import { WorkerExecutor } from "./executors/worker";
 import { resolveRunnerOptions } from "./options";
-import { RunLogCapture } from "./runLogCapture";
+import { outputCutNotice, RunLogCapture } from "./runLogCapture";
 
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
@@ -1797,6 +1798,15 @@ export class BunRunner<
           this.safeEmit("output", record, stream, chunk);
         },
         onOutputEnd: (stream) => capture?.endOutput(stream),
+        // Into the store only, like the `captureBytes` notice: it describes
+        // the log, so it is not a `log` event the handler sent.
+        onOutputLimit: (maxBuffer) =>
+          capture?.line(outputCutNotice(maxBuffer), { level: "warn" }),
+        onEnvWithheld: (withheld) =>
+          this.#logger.debug(childEnvWithheldMessage(withheld), {
+            runId,
+            withheld,
+          }),
         // Into the store only: the public `output` event stays what its JSDoc
         // says, a child writing to a piped stream.
         onConsole: (stream, text) => capture?.output(stream, text),

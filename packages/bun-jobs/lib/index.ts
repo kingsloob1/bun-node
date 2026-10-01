@@ -771,6 +771,7 @@ export {
   type RunnerStatus,
   type RunOutcome,
   type SerializableContext,
+  type SpawnCgroupOptions,
   SpawnExecutor,
   type SpawnOptions,
   type StoredRunnerConfig,
@@ -801,6 +802,7 @@ export type {
   JobChannelRequest,
   JobChannelValueReply,
 } from "./runner/protocol";
+export { CHILD_BASE_ENV, type ChildEnv } from "./shared/childEnv";
 export {
   type ConnectionInput,
   type ConnectionOptions,
@@ -840,6 +842,7 @@ export {
   JobTimeoutError,
   LockLostError,
   LockUnavailableError,
+  OutputLimitError,
   QueueClosedError,
   QueueFullError,
   RunKilledError,

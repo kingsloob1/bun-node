@@ -64,6 +64,22 @@ export interface ExecutorEvents {
    */
   onOutputEnd?: (stream: "stdout" | "stderr") => void;
   /**
+   * A child's piped output passed its `maxBuffer`, and the rest of it is
+   * being dropped. Called at most once per run, and whether or not the run
+   * has already been decided: the excess can be read after the child has
+   * reported its result and exited, and a log cut then must still say so.
+   * Optional; only `child-process` calls it.
+   */
+  onOutputLimit?: (maxBuffer: number, bytes: number) => void;
+  /**
+   * A child was started under the environment allowlist, and this many of
+   * the host's variables were not passed to it (never which ones). Called
+   * once per spawn, only when the count is above zero, never with
+   * `env: "inherit"`. Optional; only `child-process` calls it, and its
+   * callers log it at `debug`.
+   */
+  onEnvWithheld?: (withheld: number) => void;
+  /**
    * The handler wrote to the console in a realm it shares: an `in-process`
    * run's `console`, or a `worker-thread` run's. Called once per console call with
    * its formatted text, ending in a newline. Only fired when the run was

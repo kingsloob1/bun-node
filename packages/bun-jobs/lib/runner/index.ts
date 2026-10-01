@@ -97,6 +97,7 @@ export {
   type RunnerStatus,
   type RunProgress,
   type SharedRunnerInfo,
+  type SpawnCgroupOptions,
   type SpawnOptions,
   type TriggerOutcome,
   type TruncatedRunResult,

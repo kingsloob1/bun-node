@@ -7,5 +7,6 @@
 # passed only because the child took ~56ms to import bun-common's barrel, and
 # it broke the moment that import was fixed.
 #
-# The entry path arrives as $1 and is deliberately ignored.
+# Its arguments (`--no-env-file` under the default environment allowlist, then
+# the entry path) are deliberately ignored.
 exec sleep 30

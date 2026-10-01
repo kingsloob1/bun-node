@@ -180,6 +180,43 @@ export class ChildExitError extends JobsError {
 }
 
 /**
+ * A child wrote more to its piped `stdout` and `stderr` than its `maxBuffer`
+ * allows: killed for it, or — when the excess was read only after the child
+ * had exited on its own — failed for it all the same.
+ */
+export class OutputLimitError extends JobsError {
+  /**
+   * The limit, how much the child had written when it was crossed, and
+   * whether it was still running to be killed.
+   */
+  declare readonly context: {
+    maxBuffer: number;
+    bytes: number;
+    killed: boolean;
+  } & Record<string, unknown>;
+
+  constructor(
+    /** The limit, in bytes. */
+    maxBuffer: number,
+    /** The bytes the child had written, counting the chunk that crossed it. */
+    bytes: number,
+    /**
+     * Whether the child was still running, and so was killed. `false` when
+     * its pipe was read past the limit only after it had exited.
+     */
+    killed: boolean,
+    /** Extra detail, safe to log. May not set `maxBuffer`, `bytes` or `killed`. */
+    context?: ErrorContext<"maxBuffer" | "bytes" | "killed">,
+  ) {
+    super(
+      `Child wrote ${bytes} bytes of output, over its maxBuffer of ${maxBuffer}, ${killed ? "and was killed" : "before it exited"}`,
+      "OUTPUT_LIMIT",
+      { ...context, maxBuffer, bytes, killed },
+    );
+  }
+}
+
+/**
  * Why a parent in a flow was buried: one of its children failed for good, and
  * was not marked `ignoreFailure`. Names the child, and carries its message.
  */

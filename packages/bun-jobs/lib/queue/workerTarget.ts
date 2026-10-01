@@ -22,8 +22,11 @@ import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
 import { legacyExecutionModeHint } from "../runner/config";
 import { toHandler } from "../runner/executors/executor";
 import { SpawnExecutor } from "../runner/executors/spawn";
+import { checkSpawnOptions } from "../runner/executors/spawnHardening";
 import { WorkerExecutor } from "../runner/executors/worker";
 import { JOB_CHANNEL } from "../runner/protocol";
+import { outputCutNotice } from "../runner/runLogCapture";
+import { childEnvWithheldMessage } from "../shared/childEnv";
 import {
   DEFAULT_CLOSE_TIMEOUT,
   DEFAULT_KILL_TIMEOUT,
@@ -107,7 +110,17 @@ export interface InProcessTarget {
   kind: "in-process";
 }
 
-/** A fresh Web `Worker` per attempt, in this process. */
+/**
+ * A fresh Web `Worker` per attempt, in this process.
+ *
+ * **Not a security boundary, nor a resource one.** The thread shares this
+ * process: its memory and its limits, its file descriptors, its user and
+ * files, and the whole `process.env` (a `Worker` is given no allowlist, on
+ * purpose). Bun accepts a `Worker`'s `resourceLimits` and does not enforce
+ * them. It isolates a processor that blocks its thread, not one that is
+ * hostile; for code you do not trust use `"child-process"` with its `env`
+ * allowlist, `uid`/`gid` and `cgroup`.
+ */
 export interface WorkerThreadTarget {
   /** Marks the variant: a fresh `Worker` per attempt, in this process. */
   kind: "worker-thread";
@@ -152,6 +165,13 @@ export interface ChildProcessTarget {
    * Options for each child: `cwd`, `env`, `args` and the rest. The runner's
    * {@link SpawnOptions}, unchanged. `cwd` is also where a relative processor
    * file is resolved from.
+   *
+   * A child gets an environment **allowlist** by default, not this process's
+   * `process.env`: the base set (`CHILD_BASE_ENV`), `spawn.passEnv` and
+   * `spawn.env`; `spawn.env: "inherit"` passes everything. The hardening
+   * options `uid`/`gid`, `cgroup` and `maxBuffer` are checked against this
+   * host when the worker is constructed. `stdout` and `stderr` default to
+   * `"inherit"` here, so `maxBuffer` needs one of them set to `"pipe"`.
    */
   spawn?: SpawnOptions;
 }
@@ -547,6 +567,20 @@ function toLocalTarget(target: unknown): LocalWorkerTarget {
     }
   }
 
+  if (kind === "child-process") {
+    const { spawn } = target as ChildProcessTarget;
+    // The streams default to `"inherit"` here (`#executorFor`), which
+    // `maxBuffer` cannot count.
+    checkSpawnOptions(
+      spawn,
+      {
+        stdout: spawn?.stdout ?? "inherit",
+        stderr: spawn?.stderr ?? "inherit",
+      },
+      'target { kind: "child-process" } spawn.',
+    );
+  }
+
   // A copy, so a caller changing its object later cannot change a running
   // worker's tuning under it.
   return { ...(target as LocalWorkerTarget) };
@@ -775,6 +809,18 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           write.call(context.logger, message, fields);
         },
         onOutput: () => {},
+        // A job has no run log; its attempt's logger is where the cut is said.
+        onEnvWithheld: (withheld) => {
+          context.logger.debug(childEnvWithheldMessage(withheld), {
+            withheld,
+          });
+        },
+        onOutputLimit: (maxBuffer, bytes) => {
+          context.logger.warn(outputCutNotice(maxBuffer), {
+            maxBuffer,
+            bytes,
+          });
+        },
         onPid: () => {},
       },
     });

@@ -15,12 +15,15 @@ import type {
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createDeferred, serializeError } from "@kingsleyweb/bun-common";
+import { buildChildEnv, countWithheld } from "../../shared/childEnv";
 import {
   ChildExitError,
   JobTimeoutError,
+  OutputLimitError,
   RunKilledError,
 } from "../../shared/errors";
 import { CHILD_ENV } from "../protocol";
+import { closeChildCgroup, openChildCgroup } from "./spawnHardening";
 
 /**
  * Runs the handler in a child process.
@@ -95,66 +98,130 @@ export class SpawnExecutor implements Executor {
       outcome.resolve(result);
     };
 
-    child = Bun.spawn(
-      [
-        this.options.execPath ?? process.execPath,
-        SpawnExecutor.entry,
-        ...(this.options.args ?? []),
-      ],
-      {
-        cwd: this.options.cwd,
-        env: {
-          ...process.env,
-          ...this.options.env,
-          [CHILD_ENV.marker]: "1",
-          // From the executor itself, so `BUN_JOBS_MODE` can never disagree
-          // with the `RunRecord.mode` of the run it started.
-          [CHILD_ENV.mode]: this.mode,
-          [CHILD_ENV.namespace]: context.namespace,
-          [CHILD_ENV.runnerId]: context.runnerId,
-          [CHILD_ENV.runId]: context.runId,
-          [CHILD_ENV.file]: context.file,
-        },
-        stdin: "ignore",
-        stdout: this.options.stdout,
-        stderr: this.options.stderr,
-        serialization: "json",
-        ipc: (message: ChildToParent) => {
-          this.#onMessage(message, options, {
-            onReady: () => {
-              ready = true;
-              send({ t: "start", runId: context.runId, ctx: context });
-            },
-            onResult: (result) => {
-              // A timeout or a kill already decided how this run ended; a
-              // child that unwinds afterwards does not undo that.
-              reported ??= result;
-            },
-          });
-        },
-        onExit: (_proc, exitCode) => {
-          // `onExit`'s third argument is the signal *number*; the
-          // subprocess carries the name, which is what a reader wants.
-          const signal = child.signalCode ?? null;
+    // Built now, from the live `process.env`, and always passed: `Bun.spawn`
+    // with no `env` would hand the child the environment this process
+    // *started* with. The allowlist is the default; see `SpawnOptions.env`.
+    const inherit = this.options.env === "inherit";
 
-          settle({
-            ...(reported ?? {
-              status: "failed",
-              error: serializeError(
-                new ChildExitError(exitCode, signal, {
-                  runId: context.runId,
-                }),
-              ),
-            }),
-            exitCode,
-            signal,
-            pid: child.pid,
-          });
+    /** This run's own cgroup, when `cgroup` asks for one. */
+    let cgroup: string | undefined;
+    /** Set when the child's output went over `maxBuffer`. */
+    let overflowed = false;
+
+    /**
+     * Ends a run whose child never started — its cgroup could not be made,
+     * or the spawn itself failed — as a failed run rather than a throw, so a
+     * caller sees it the way it sees any other failure.
+     */
+    const failToStart = (error: unknown): ExecutorHandle => {
+      const release = cgroup ? closeChildCgroup(cgroup) : Promise.resolve();
+      for (const name of ["stdout", "stderr"] as const) {
+        if (this.options[name] === "pipe") {
+          options.events.onOutputEnd?.(name);
+        }
+      }
+      return {
+        done: release.then(() => ({
+          status: "failed",
+          error: serializeError(error),
+        })),
+        stop: () => {},
+        send: () => false,
+      };
+    };
+
+    try {
+      if (this.options.cgroup) {
+        cgroup = openChildCgroup(this.options.cgroup, context.runId);
+      }
+    } catch (error) {
+      return failToStart(error);
+    }
+
+    try {
+      child = Bun.spawn(
+        [
+          this.options.execPath ?? process.execPath,
+          // Under the allowlist, Bun must not load a `.env` from the child's
+          // cwd: measured on 1.4.3, a child given only `PATH` still read every
+          // variable in it. A flag before the entry, so it reaches Bun.
+          ...(inherit ? [] : ["--no-env-file"]),
+          SpawnExecutor.entry,
+          ...(this.options.args ?? []),
+        ],
+        {
+          cwd: this.options.cwd,
+          ...(this.options.uid === undefined ? {} : { uid: this.options.uid }),
+          ...(this.options.gid === undefined ? {} : { gid: this.options.gid }),
+          ...(cgroup === undefined ? {} : { cgroup }),
+          env: {
+            ...buildChildEnv(this.options),
+            [CHILD_ENV.marker]: "1",
+            // From the executor itself, so `BUN_JOBS_MODE` can never disagree
+            // with the `RunRecord.mode` of the run it started.
+            [CHILD_ENV.mode]: this.mode,
+            [CHILD_ENV.namespace]: context.namespace,
+            [CHILD_ENV.runnerId]: context.runnerId,
+            [CHILD_ENV.runId]: context.runId,
+            [CHILD_ENV.file]: context.file,
+          },
+          stdin: "ignore",
+          stdout: this.options.stdout,
+          stderr: this.options.stderr,
+          serialization: "json",
+          ipc: (message: ChildToParent) => {
+            this.#onMessage(message, options, {
+              onReady: () => {
+                ready = true;
+                send({ t: "start", runId: context.runId, ctx: context });
+              },
+              onResult: (result) => {
+                // A timeout or a kill already decided how this run ended; a
+                // child that unwinds afterwards does not undo that.
+                reported ??= result;
+              },
+            });
+          },
+          onExit: (_proc, exitCode) => {
+            // `onExit`'s third argument is the signal *number*; the
+            // subprocess carries the name, which is what a reader wants.
+            const signal = child.signalCode ?? null;
+            const outcome: RunOutcome = {
+              ...(reported ?? {
+                status: "failed",
+                error: serializeError(
+                  new ChildExitError(exitCode, signal, {
+                    runId: context.runId,
+                  }),
+                ),
+              }),
+              exitCode,
+              signal,
+              pid: child.pid,
+            };
+
+            if (cgroup === undefined) {
+              settle(outcome);
+              return;
+            }
+            // The run is over only once what it left in its cgroup is gone:
+            // a process it started and did not wait for is killed here.
+            void closeChildCgroup(cgroup).then(() => settle(outcome));
+          },
         },
-      },
-    );
+      );
+    } catch (error) {
+      return failToStart(error);
+    }
 
     options.events.onPid(child.pid);
+
+    // What the allowlist kept from this child, as a count: the one hint a
+    // handler that reads `undefined` for a variable it used to inherit gets.
+    const withheld = countWithheld(this.options);
+    if (withheld > 0) {
+      options.events.onEnvWithheld?.(withheld);
+    }
 
     if (!options.waitToExit) {
       child.unref();
@@ -231,7 +298,32 @@ export class SpawnExecutor implements Executor {
         : undefined;
     timeoutTimer?.unref?.();
 
-    this.#pipe(child, options);
+    this.#pipe(child, options, (outputBytes) => {
+      // Said first, and however the run ends: a run that already succeeded
+      // when the excess was read keeps its success, and this is then the
+      // only sign that its log was cut. `#pipe` calls this once per run.
+      options.events.onOutputLimit?.(this.options.maxBuffer!, outputBytes);
+      // Over `maxBuffer`: the child is killed outright, and the run fails
+      // with the limit — unless something else already decided how it ended.
+      if (overflowed || settled) {
+        return;
+      }
+      overflowed = true;
+      // The pipe can still be read after the child has exited on its own;
+      // then there is nothing to kill, and the message must not say so.
+      const running = child.exitCode === null && child.signalCode === null;
+      reported ??= {
+        status: "failed",
+        error: serializeError(
+          new OutputLimitError(this.options.maxBuffer!, outputBytes, running, {
+            runId: context.runId,
+          }),
+        ),
+      };
+      if (running) {
+        child.kill("SIGKILL");
+      }
+    });
 
     return {
       done: outcome.promise,
@@ -284,11 +376,41 @@ export class SpawnExecutor implements Executor {
     }
   }
 
-  /** Tees a piped stream to the parent's own stdio and the `output` event. */
+  /**
+   * Tees a piped stream to the parent's own stdio and the `output` event.
+   *
+   * With `maxBuffer`, output is forwarded a whole line at a time and counted
+   * across both streams; the chunk that crosses the limit is cut after its
+   * last newline that fits, nothing after it is forwarded, and `onOverflow`
+   * is called once with the bytes written so far. Cutting only at a newline
+   * keeps every stored line whole, so redaction — which matches within a
+   * line — never sees half a secret it would have caught in full.
+   */
   #pipe<TArgs>(
     child: Subprocess<any, any, any>,
     options: ExecutorStartOptions<TArgs>,
+    onOverflow: (bytes: number) => void,
   ): void {
+    const limit = this.options.maxBuffer;
+    /** Bytes read from both streams so far. */
+    let total = 0;
+    /** Set once over the limit: from then on nothing is forwarded. */
+    let over = false;
+
+    /** Hands text on to the `output` event and this process's own stream. */
+    const emit = (name: "stdout" | "stderr", text: string): void => {
+      if (text.length === 0) {
+        return;
+      }
+      options.events.onOutput(name, text);
+      // Keep the child's output visible: piping it must not swallow it.
+      if (name === "stdout") {
+        process.stdout.write(text);
+      } else {
+        process.stderr.write(text);
+      }
+    };
+
     const forward = (
       stream: ReadableStream<Uint8Array> | number | undefined | null,
       name: "stdout" | "stderr",
@@ -302,16 +424,48 @@ export class SpawnExecutor implements Executor {
 
       void (async () => {
         const decoder = new TextDecoder();
+        /** With a limit: the text after this stream's last newline. */
+        let pending = "";
         try {
           for await (const chunk of stream) {
-            const text = decoder.decode(chunk, { stream: true });
-            options.events.onOutput(name, text);
-            // Keep the child's output visible: piping it must not swallow it.
-            if (name === "stdout") {
-              process.stdout.write(text);
-            } else {
-              process.stderr.write(text);
+            if (limit === undefined) {
+              emit(name, decoder.decode(chunk, { stream: true }));
+              continue;
             }
+            if (over) {
+              // Drained, so the child is never blocked on a full pipe while
+              // it is being killed, but no longer forwarded.
+              continue;
+            }
+            total += chunk.byteLength;
+            if (total <= limit) {
+              const text = pending + decoder.decode(chunk, { stream: true });
+              const end = text.lastIndexOf("\n") + 1;
+              emit(name, text.slice(0, end));
+              pending = text.slice(end);
+              continue;
+            }
+            // The part of this chunk that fits, cut after its last newline.
+            // A newline byte is never inside a UTF-8 sequence, so the cut is
+            // on a character boundary.
+            const fits = chunk.byteLength - (total - limit);
+            const newline = chunk.subarray(0, fits).lastIndexOf(0x0a);
+            if (newline >= 0) {
+              emit(
+                name,
+                pending +
+                  decoder.decode(chunk.subarray(0, newline + 1), {
+                    stream: true,
+                  }),
+              );
+            }
+            pending = "";
+            over = true;
+            onOverflow(total);
+          }
+          if (limit !== undefined && !over) {
+            // The stream's last, unterminated line: whole, since it fitted.
+            emit(name, pending + decoder.decode());
           }
         } catch {
           // The stream ends when the child does; nothing to report.

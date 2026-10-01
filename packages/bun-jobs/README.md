@@ -97,6 +97,7 @@ reference.
 - [Who ran a job: worker attribution](#who-ran-a-job-worker-attribution)
 - [Jobs added in a range, and sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
 - [Where attempts run: `target`](#where-attempts-run-target)
+  - [Hardening a child process](#hardening-a-child-process)
   - [One file, many job names: `defineProcessors`](#one-file-many-job-names-defineprocessors)
   - [A custom target](#a-custom-target)
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
@@ -2687,9 +2688,16 @@ decides only where the **processor call** runs:
   processor runs this way; a processor **file** is imported once and then
   called the same way.
 - `"worker-thread"` runs each attempt in a fresh `Worker`: a separate
-  JavaScript context in the same process, which can be terminated.
+  JavaScript context in the same process, which can be terminated. **It is
+  not a security boundary**, nor a resource one: the thread shares the
+  process's memory, file descriptors, user, files and whole `process.env`,
+  and Bun does not enforce a `Worker`'s `resourceLimits`. It protects the
+  claim loop from a processor that blocks its thread, not the host from a
+  hostile one.
 - `"child-process"` runs each attempt in a child process. This is the only
-  target where a processor that ignores its signal is certain to be killed.
+  target where a processor that ignores its signal is certain to be killed,
+  and the one to [harden](#hardening-a-child-process) for code you do not
+  trust: it gets an environment allowlist by default.
 - `{ kind, … }` is one of those three with its tuning, below.
 - a `WorkerTargetFactory` is anything else — see
   [A custom target](#a-custom-target).
@@ -2712,7 +2720,7 @@ export default defineProcessor<{ path: string }, { width: number }>(async (job, 
 export const worker = new BunQueueWorker("images", new URL("./processors/resize.ts", import.meta.url), {
   namespace,
   driver,
-  target: { kind: "child-process", closeTimeout: 2_000, spawn: { env: { SHARP_CONCURRENCY: "1" } } },
+  target: { kind: "child-process", closeTimeout: 2_000, spawn: { env: { SHARP_CONCURRENCY: "1" } } }, // over the allowlist
 });
 ```
 
@@ -2735,6 +2743,156 @@ the attempt sees its target's own spelling: `BUN_JOBS_MODE` is
 `target` is not remotely configurable: changing where code runs is a rebuild.
 The worker's heartbeat record reports it, as
 [`target`](#reading-a-queue-search-totals-workers-and-throughput).
+
+**Upgrading: a `child-process` target no longer inherits `process.env`, and nothing fails
+when it reads what it used to.** A variable it read from the parent without
+naming it, such as `process.env.DATABASE_URL`, is now `undefined`, with no
+error at spawn. By default the child gets only `CHILD_BASE_ENV` —
+`PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`,
+`LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`, `FORCE_COLOR`, `NODE_ENV`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows
+`SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA` and
+`LOCALAPPDATA` — plus the protocol's `BUN_JOBS_*`. It is also started with
+`--no-env-file`, so a `.env` in its cwd is no longer loaded either. The fix is
+`spawn: { passEnv: ["DATABASE_URL"] }` for the names it needs, or `spawn: { env: "inherit" }`
+for the old behaviour. Each spawn logs at `debug` how many host variables
+were withheld (a count, never names). See
+[Hardening a child process](#hardening-a-child-process).
+
+### Hardening a child process
+
+A `child-process` attempt (and a runner's `"child-process"` run) is a process
+of its own, so it can be given less than its parent has. Four `spawn` options
+do that, all native to `Bun.spawn` and none needing Docker. The same options
+apply to a runner's `spawn`.
+
+```ts
+export const worker = new BunQueueWorker("thumbnails", new URL("./processors/thumb.ts", import.meta.url), {
+  namespace,
+  driver,
+  target: {
+    kind: "child-process",
+    spawn: {
+      passEnv: ["AWS_REGION"],          // copied from this process, by name
+      env: { NODE_ENV: "production" },  // literal values
+      uid: 65534,                       // needs root, or CAP_SETUID + CAP_SETGID
+      gid: 65534,
+      cgroup: { parent: "/sys/fs/cgroup/<delegated>/jobs", limits: { memory: "256mb", pids: 128, cpus: 1 } },
+      stdout: "pipe",
+      maxBuffer: 1024 * 1024,           // bytes of piped output before the child is killed
+    },
+  },
+});
+```
+
+**The environment is an allowlist by default.** A child no longer receives
+`...process.env`. It gets:
+
+1. `CHILD_BASE_ENV`, copied from this process's live `process.env` where set:
+   `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`,
+   `LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`, `FORCE_COLOR`, `NODE_ENV`,
+   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and Windows'
+   `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA` and
+   `LOCALAPPDATA`. Each says how a process runs (finding tools, a temporary
+   directory, locale, time zone, colour, trusted certificates), and none
+   carries a credential. The proxy variables are left out because their URL
+   can hold a password;
+2. the names in `passEnv`, read from the live `process.env` at each spawn;
+3. the literal values in `env`, where `undefined` removes a base variable;
+4. the runner protocol's `BUN_JOBS_*` variables (`CHILD_ENV`), last, so they
+   cannot be overridden.
+
+The child is also started with `--no-env-file`, because Bun otherwise loads a
+`.env` from its `cwd` and would hand the secrets straight back. A custom
+`execPath` therefore receives that flag before the entry file, and must pass
+its arguments on to Bun. The flag stops `.env` loading only: a `bunfig.toml`
+`preload` still runs in the child, from its `cwd` and from the global bunfig
+under the copied `HOME`, which is the project's own code rather than the
+job's. `env: "inherit"` restores the whole live
+`process.env` and Bun's `.env` loading, the behaviour before the allowlist.
+`passEnv` beside it is a `ConfigError`.
+
+A processor that builds its own driver from the environment
+(`process.env.DATABASE_URL`), or relies on Bun's `DATABASE_URL`/`REDIS_URL`
+defaults, now needs that name in `passEnv`. A runner's handler does not need
+it for `ctx.driverConfig`, which crosses in the run's context.
+
+**What the allowlist does not do.** It bounds the environment of the child
+bun-jobs starts, nothing more. The child still runs as this process's user,
+so it can read whatever that user can: a config file, `~/.ssh`, and on Linux
+the parent's own `/proc/<ppid>/environ`, which holds every variable the
+parent *started* with (measured: an allowlisted child read a secret there).
+Running the child as another user with `uid`/`gid` closes that one (measured
+too). A process the processor starts gets whatever the processor passes it.
+For a boundary around files and the network as well, run the worker itself
+in a container.
+
+**`uid` and `gid`** run the child as another user. Changing them needs
+`CAP_SETUID` and `CAP_SETGID` (root in practice), so without them a different
+id is a `ConfigError` when the worker or runner is constructed, rather than
+`EPERM` at the first attempt. `uid` needs `gid` beside it: measured on Bun
+1.4.3, a child given only a `uid` keeps its parent's group, which for a root
+parent is group 0. With `gid`, the child's supplementary groups are dropped.
+POSIX only.
+
+Construction cannot tell whether that user may run the `bun` binary and read
+the entry file. One that cannot fails each attempt with `EACCES` (measured
+with `bun` under a home directory of mode `750`), as a failed attempt rather
+than a thrown error. The child also keeps the base set's `HOME` and `TMPDIR`,
+which another user may not be able to write, so set them in `env` beside
+`uid`/`gid`: `env: { HOME: "/tmp/jobs", TMPDIR: "/tmp/jobs" }`.
+
+**`cgroup`** gives each child a cgroup of its own, `<parent>/bun-jobs-<runId>-…`,
+created just before it starts and removed after it exits: the processes still
+in it are killed first through `cgroup.kill`, and any cgroup the job made
+inside it is removed with it. Its `limits` are written into it: `memory`
+(`memory.max`, with swap set to `0`), `pids` (`pids.max`) and `cpus`
+(`cpu.max`). A child over its memory limit is OOM-killed, not the worker; the
+attempt fails and the worker carries on.
+
+**A cgroup is a resource and cleanup boundary, and a security boundary only
+together with `uid`/`gid` set to another user.** A job running as the
+worker's user can write the delegated tree as well as the worker can, so it
+can move itself or a process it started into a sibling cgroup, out of its
+limits and out of the cleanup (measured in review: a `sleep` and the job
+itself moved out, then 160 MB allocated under a 64 MB limit). It holds
+against a job that is buggy, not one that is hostile, unless the job runs as
+a user that cannot write the tree. It needs Linux, cgroup v2 and a `parent`
+this process can write whose `cgroup.subtree_control` enables the
+controllers the limits use. No root is needed under systemd:
+
+```sh
+systemd-run --user --scope -p Delegate=yes bun worker.ts
+# in worker.ts, before constructing the worker: move this process into a leaf
+# (cgroup v2 allows no process in a cgroup whose children have controllers),
+# then enable the controllers for the children, and create `parent` with them.
+#   mkdir <scope>/self && echo <worker pid> > <scope>/self/cgroup.procs
+#   echo "+memory +pids +cpu" > <scope>/cgroup.subtree_control
+#   mkdir <scope>/jobs && echo "+memory +pids +cpu" > <scope>/jobs/cgroup.subtree_control
+```
+
+Every one of these is checked at construction: off Linux, a `parent` that is
+not a cgroup v2 directory or not writable, or a controller a limit needs and
+`parent` does not enable, is a `ConfigError` saying which. Measured: a cgroup
+that cannot be joined fails the spawn with `ENOENT` or `EACCES`, and Bun
+ignores the option entirely off Linux, so a limit asked for is never silently
+dropped.
+
+**`maxBuffer`** bounds the bytes a child may write to its piped `stdout` and
+`stderr` together. Past it the child is killed with `SIGKILL` and the attempt
+fails with `OutputLimitError` (`code: "OUTPUT_LIMIT"`). The output forwarded
+is cut after the last whole line that fits, so every stored log line is whole
+and [redaction](#secrets-are-redacted) sees it whole. The run's log then gets
+one `warn` line on its `log` stream, `[bun-jobs] output cut at maxBuffer (N
+bytes): the rest of this run's stdout and stderr was dropped`, and so does a
+run that had already succeeded when the excess was read: its child's result
+and exit can arrive before the last of its output, and the run keeps its
+success, but its log never ends silently short. A queue target, which keeps
+no run log, writes the same line to the attempt's logger. It counts piped streams
+only, so one of `stdout` and `stderr` must be `"pipe"` (a target's default is
+`"inherit"`; a runner's is `"pipe"` while `captureLogs` is on), and not what
+crosses the IPC channel: `ctx.log`, progress and messages. Unbounded by
+default: what run-log capture *stores* is already bounded by `captureLogs`.
 
 ### One file, many job names: `defineProcessors`
 
@@ -3347,9 +3505,24 @@ Examples:
 | `metrics` | `MetricsOptions` | everything on | What this runner records for [analytics](#analytics): its runs by outcome and their durations, each run in the bucket it finished in. `runners: false` stops the series and `durations: false` the durations, whatever the driver; `resolution` and `secondRetentionMs` reach only a driver built here from a config. The lifetime `stats()` counters are kept either way. See [The `metrics` option](#the-metrics-option). |
 | `control` | `boolean \| "auto"` | `"auto"` | Subscribe to `control` events, so a change made through `BunRunnerManager.controller()` applies within the driver's event latency instead of at the next `syncInterval`. `"auto"` listens where it is cheap — on a driver whose events are pushed (Redis) or held in this process (memory) — and not on one that polls (SQL, MongoDB, the file driver), where a subscription is a query every few dozen milliseconds per runner on the file driver, and on SQL and MongoDB one more channel in the namespace's shared poll (one query per `pollInterval` per namespace, however many subscribe). `true` subscribes on every backend, `false` on none. The sync adopts every change either way, so this decides latency, never whether remote control works. |
 | `allowedOverrides` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"child-process"` and `"worker-thread"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
-| `spawn` | `SpawnOptions` | | For `"child-process"`: `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). |
-| `worker` | `WorkerOptions` | | For `"worker-thread"`: `smol`, `name`, `env`, `argv`. |
+| `spawn` | `SpawnOptions` | | For `"child-process"`: `cwd`, `env` (an allowlist by default, or `"inherit"`), `passEnv`, `uid`/`gid`, `cgroup`, `maxBuffer`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). See [Hardening a child process](#hardening-a-child-process). |
+| `worker` | `WorkerOptions` | | For `"worker-thread"`: `smol`, `name`, `env` (over the whole `process.env`: a thread is not a boundary), `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
+
+**Upgrading: a `child-process` run no longer inherits `process.env`, and nothing fails
+when it reads what it used to.** A variable it read from the parent without
+naming it, such as `process.env.DATABASE_URL`, is now `undefined`, with no
+error at spawn. By default the child gets only `CHILD_BASE_ENV` —
+`PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`,
+`LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`, `FORCE_COLOR`, `NODE_ENV`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows
+`SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA` and
+`LOCALAPPDATA` — plus the protocol's `BUN_JOBS_*`. It is also started with
+`--no-env-file`, so a `.env` in its cwd is no longer loaded either. The fix is
+`spawn: { passEnv: ["DATABASE_URL"] }` for the names it needs, or `spawn: { env: "inherit" }`
+for the old behaviour. Each spawn logs at `debug` how many host variables
+were withheld (a count, never names). See
+[Hardening a child process](#hardening-a-child-process).
 
 **Upgrading: two runner defaults changed.**
 
@@ -6924,6 +7097,7 @@ so a caller can add to them but never overwrite them.
 | `UnrecoverableJobError` | `UNRECOVERABLE_JOB` | Thrown by your processor: the job goes to `dead` now. |
 | `ChildFailedError` | `CHILD_FAILED` | A flow child failed for good and buried its parent (`child` as `queue:id`). |
 | `ChildExitError` | `CHILD_EXIT` | A child process exited without reporting a result (`exitCode`, `signalCode`). |
+| `OutputLimitError` | `OUTPUT_LIMIT` | A child wrote more to its piped stdout and stderr than its [`maxBuffer`](#hardening-a-child-process) allows (`maxBuffer`, `bytes`, and `killed`: whether it was still running to be killed). |
 | `RunKilledError` | `RUN_KILLED` | A run was stopped on request (`reason`). |
 | `InvalidHandlerError` | `INVALID_HANDLER` | A handler or processor file has no usable default export. |
 | `RunnerStoppedError` | `RUNNER_STOPPED` | A runner was triggered manually after `stop()`. |
