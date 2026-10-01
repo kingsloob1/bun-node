@@ -19,6 +19,8 @@ import {
 
 const FENCE = "h7f3-4211-1789:1790000000400";
 const JOB = "01JB7Q2M8ZRT9V";
+/** The job's queue, as `cancel` and `status` name it. */
+const QUEUE = { ns: "shop", queue: "media" };
 const CAPACITY = { inFlight: 1, max: 8, accepting: true };
 
 /** The plan's examples, one per op, by family. */
@@ -116,7 +118,7 @@ const ENVELOPES: Record<string, Record<string, unknown>> = {
     v: 1,
     op: "cancel",
     id: "can_1",
-    jobs: [{ job: JOB, attempt: 1 }],
+    jobs: [{ queue: QUEUE, job: JOB, attempt: 1 }],
     reason: "timeout",
     at: 1790000000999,
   },
@@ -124,7 +126,7 @@ const ENVELOPES: Record<string, Record<string, unknown>> = {
     v: 1,
     op: "cancel-result",
     id: "can_1",
-    jobs: [{ job: JOB, attempt: 1, cancelled: true }],
+    jobs: [{ queue: QUEUE, job: JOB, attempt: 1, cancelled: true }],
   },
   ping: { v: 1, op: "ping", id: "p17", at: 1790000020000 },
   pong: { v: 1, op: "pong", id: "p17", capacity: CAPACITY, at: 1790000020003 },
@@ -145,7 +147,7 @@ const ENVELOPES: Record<string, Record<string, unknown>> = {
     v: 1,
     op: "status",
     id: "st_1",
-    jobs: [{ job: JOB, attempt: 1 }],
+    jobs: [{ queue: QUEUE, job: JOB, attempt: 1 }],
   },
   "status-result": {
     v: 1,
@@ -153,6 +155,7 @@ const ENVELOPES: Record<string, Record<string, unknown>> = {
     id: "st_1",
     jobs: [
       {
+        queue: QUEUE,
         job: JOB,
         attempt: 1,
         state: "done",
@@ -163,7 +166,7 @@ const ENVELOPES: Record<string, Record<string, unknown>> = {
           fence: FENCE,
         },
       },
-      { job: "01JB7Q2M8ZRT9X", attempt: 2, state: "unknown" },
+      { queue: QUEUE, job: "01JB7Q2M8ZRT9X", attempt: 2, state: "unknown" },
     ],
   },
 };
@@ -309,15 +312,20 @@ const MESSAGES: Record<string, Record<string, unknown>> = {
   },
   cancel: {
     op: "cancel",
-    jobs: [{ job: JOB, attempt: 1 }],
+    jobs: [{ queue: QUEUE, job: JOB, attempt: 1 }],
     reason: "timeout",
     at: 1790000003111,
   },
-  status: { op: "status", jobs: [{ job: JOB, attempt: 1 }], at: 1 },
+  status: {
+    op: "status",
+    jobs: [{ queue: QUEUE, job: JOB, attempt: 1 }],
+    at: 1,
+  },
   "status-result": {
     op: "status-result",
     jobs: [
       {
+        queue: QUEUE,
         job: JOB,
         attempt: 1,
         state: "done",
@@ -700,5 +708,48 @@ describe("negative cases", () => {
       },
       "problem.status",
     );
+  });
+});
+
+describe("cancel and status name the queue", () => {
+  it("a ref, a cancel answer or a status answer without its queue is refused", () => {
+    const { queue: _queue, ...bare } = (
+      ENVELOPES.cancel!.jobs as Record<string, unknown>[]
+    )[0]!;
+    refuses(
+      parseRemoteRequest,
+      { ...ENVELOPES.cancel, jobs: [bare] },
+      "jobs.0.queue",
+    );
+    refuses(
+      parseRemoteRequest,
+      { ...ENVELOPES.status, jobs: [bare] },
+      "jobs.0.queue",
+    );
+    refuses(
+      parseRemoteResponse,
+      { ...ENVELOPES["cancel-result"], jobs: [{ ...bare, cancelled: true }] },
+      "jobs.0.queue",
+    );
+    refuses(
+      parseRemoteResponse,
+      { ...ENVELOPES["status-result"], jobs: [{ ...bare, state: "unknown" }] },
+      "jobs.0.queue",
+    );
+  });
+
+  it("a queue without its namespace or name is refused", () => {
+    for (const [queue, path] of [
+      [{ queue: "media" }, "jobs.0.queue.ns"],
+      [{ ns: "shop" }, "jobs.0.queue.queue"],
+      [{ ns: "", queue: "media" }, "jobs.0.queue.ns"],
+      ["shop:media", "jobs.0.queue"],
+    ] as const) {
+      refuses(
+        parseRemoteRequest,
+        { ...ENVELOPES.cancel, jobs: [{ queue, job: "j", attempt: 1 }] },
+        path,
+      );
+    }
   });
 });

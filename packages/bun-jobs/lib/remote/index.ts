@@ -11,6 +11,7 @@
  * it as it is. `__tests__/remote/remote-bundle.test.ts` holds it to that.
  */
 
+export { RemoteMessageTooLargeError } from "../shared/errors";
 export {
   REMOTE_HEADERS,
   REMOTE_OPS,
@@ -24,6 +25,20 @@ export type {
   RemoteProblemCode,
   WorkerProtocolFeature,
 } from "./constants";
+export { REMOTE_CANARY_JOB } from "./executor/canary";
+export { createRemoteExecutor } from "./executor/executor";
+export { createRemoteExecutorStore } from "./executor/store";
+export type {
+  RemoteContext,
+  RemoteExecutor,
+  RemoteExecutorHealthOptions,
+  RemoteExecutorOptions,
+  RemoteExecutorRecord,
+  RemoteExecutorStore,
+  RemoteExecutorStoreOptions,
+  RemoteJob,
+  RemoteJobHandler,
+} from "./executor/types";
 export { createRemoteNonceCache } from "./nonce";
 export type { RemoteNonceCacheOptions, RemoteNonceStore } from "./nonce";
 export { REMOTE_ID_PATTERN, signEnvelope, verifyEnvelope } from "./signing";
@@ -59,6 +74,7 @@ export type {
   RemoteJobRef,
   RemoteOutcome,
   RemoteOutcomeLog,
+  RemoteQueueRef,
   RemoteRejectedOutcome,
   RemoteResultOutcome,
   RemoteRetainedOutcome,

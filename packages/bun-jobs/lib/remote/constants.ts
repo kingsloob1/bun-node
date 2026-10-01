@@ -115,6 +115,12 @@ export type WorkerProtocolFeature = (typeof WORKER_PROTOCOL_FEATURES)[number];
  * - `BUSY`, `DRAINING`: not now; neither burns an attempt.
  * - `DUPLICATE_RUNNING`: the same attempt is running on another instance.
  * - `TOO_LARGE`: a body above the receiver's `maxBodyBytes`.
+ * - `VALIDATION`: an authentic message that is not valid JSON or does not
+ *   match its `op`'s schema (HTTP 400, with `issues`). The management API's
+ *   code for the same failure, so every bun-jobs problem reads alike.
+ * - `INTERNAL`: the receiver itself failed to answer (HTTP 500), never a
+ *   job's failure; the management API's code for the same thing. A gateway
+ *   treats it as a transport error.
  * - `SEQUENCE_GAP`, `FRAME_TOO_LARGE`: a session frame out of sequence, or
  *   above the session's `maxMessageBytes`; the session closes and resumes.
  * - `ATTEMPT_UNKNOWN`: a `status` for an attempt the executor never had, or
@@ -133,6 +139,8 @@ export const REMOTE_PROBLEM_CODES = [
   "DRAINING",
   "DUPLICATE_RUNNING",
   "TOO_LARGE",
+  "VALIDATION",
+  "INTERNAL",
   "SEQUENCE_GAP",
   "FRAME_TOO_LARGE",
   "ATTEMPT_UNKNOWN",
