@@ -15,7 +15,7 @@ import type {
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createDeferred, serializeError } from "@kingsleyweb/bun-common";
-import { buildChildEnv } from "../../shared/childEnv";
+import { buildChildEnv, countWithheld } from "../../shared/childEnv";
 import {
   ChildExitError,
   JobTimeoutError,
@@ -215,6 +215,13 @@ export class SpawnExecutor implements Executor {
     }
 
     options.events.onPid(child.pid);
+
+    // What the allowlist kept from this child, as a count: the one hint a
+    // handler that reads `undefined` for a variable it used to inherit gets.
+    const withheld = countWithheld(this.options);
+    if (withheld > 0) {
+      options.events.onEnvWithheld?.(withheld);
+    }
 
     if (!options.waitToExit) {
       child.unref();

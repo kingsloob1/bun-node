@@ -1,3 +1,4 @@
+import type { LogEvent } from "@kingsleyweb/bun-common";
 import type {
   BunRunnerOptions,
   RunRecord,
@@ -7,7 +8,7 @@ import type {
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
-import { noopLogger } from "@kingsleyweb/bun-common";
+import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as lib from "../lib/index";
 import {
@@ -356,6 +357,126 @@ describe("child-process environment: in this process", () => {
     process.env.ISO0_HOST_SECRET = "host-secret";
     const env = await targetEnv("worker-thread");
     expect(env.ISO0_HOST_SECRET).toBe("host-secret");
+  }, 30_000);
+});
+
+describe("child-process environment: what was withheld, at debug", () => {
+  const SECRET_NAME = "ISO0_WITHHELD_SECRET";
+  const SECRET_VALUE = "withheld-value-7f3a";
+  const runners: BunRunner<any, any>[] = [];
+  const closers: (() => Promise<unknown>)[] = [];
+
+  afterEach(async () => {
+    delete process.env[SECRET_NAME];
+    await Promise.allSettled(runners.map((r) => r.stop({ force: true })));
+    runners.length = 0;
+    for (const close of closers.splice(0).reverse()) {
+      await close().catch(() => undefined);
+    }
+  });
+
+  /** The debug lines about withheld variables. */
+  function withheld(events: LogEvent[]): LogEvent[] {
+    return events.filter(
+      (event) =>
+        event.level === "debug" &&
+        event.message.startsWith("child env allowlist withheld"),
+    );
+  }
+
+  /** Runs `env-report` once through a runner logging to a test logger. */
+  async function runLogged(spawn: SpawnOptions) {
+    const logs = createTestLogger();
+    const runner = new BunRunner({
+      id: "env-logged",
+      namespace: testNamespace(),
+      file: handler("env-report"),
+      executionMode: "child-process",
+      driver: new MemoryDriver(),
+      waitToExit: false,
+      logger: logs.logger,
+      spawn,
+    } as BunRunnerOptions<any>);
+    runners.push(runner);
+    const done = new Promise<void>((resolve) => {
+      runner.once("finished", () => resolve());
+      runner.once("failed", () => resolve());
+    });
+    await runner.start();
+    await runner.trigger();
+    await done;
+    return logs.events;
+  }
+
+  /** Expected count: every own string variable the child was not given. */
+  function hostCount(passed: readonly string[] = []): number {
+    const given = new Set([...lib.CHILD_BASE_ENV, ...passed]);
+    return Object.entries(process.env).filter(
+      ([name, value]) => typeof value === "string" && !given.has(name),
+    ).length;
+  }
+
+  it("logs how many host variables a runner's child did not get, and nothing else", async () => {
+    process.env[SECRET_NAME] = SECRET_VALUE;
+    const expected = hostCount(["HOME"]);
+    // `passEnv` naming a base variable changes nothing; one it names is not
+    // counted as withheld.
+    const events = await runLogged({ passEnv: ["HOME"] });
+    const lines = withheld(events);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.message).toBe(
+      `child env allowlist withheld ${expected} host variables (pass them with passEnv, or env: "inherit")`,
+    );
+    expect(lines[0]!.fields).toMatchObject({ withheld: expected });
+    // A count only: neither the secret's name nor its value is anywhere in
+    // the record, nor in anything else logged.
+    const all = JSON.stringify(events);
+    expect(all).not.toContain(SECRET_NAME);
+    expect(all).not.toContain(SECRET_VALUE);
+  }, 30_000);
+
+  it('logs nothing about withheld variables with env: "inherit" (the control)', async () => {
+    process.env[SECRET_NAME] = SECRET_VALUE;
+    expect(withheld(await runLogged({ env: "inherit" }))).toEqual([]);
+  }, 30_000);
+
+  it("logs the count for a queue's child-process target too", async () => {
+    process.env[SECRET_NAME] = SECRET_VALUE;
+    const logs = createTestLogger();
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const queue = new BunQueue("env-logged", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    const worker = new BunQueueWorker("env-logged", handler("job-env-report"), {
+      namespace,
+      driver,
+      logger: logs.logger,
+      pollInterval: 5,
+      target: "child-process",
+      waitToExit: false,
+    });
+    closers.push(
+      () => queue.close(),
+      () => worker.close({ force: true }),
+    );
+    void worker.run();
+    const job = await queue.add("env", {}, { removeOnComplete: false });
+    await waitFor(
+      async () => (await queue.getJob(job.id))?.state === "completed",
+      { timeout: 20_000, message: "the job never completed" },
+    );
+    const lines = withheld(logs.events);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.message).toMatch(
+      /^child env allowlist withheld \d+ host variables? \(pass them with passEnv, or env: "inherit"\)$/,
+    );
+    const all = JSON.stringify(logs.events);
+    expect(all).not.toContain(SECRET_NAME);
+    expect(all).not.toContain(SECRET_VALUE);
   }, 30_000);
 });
 

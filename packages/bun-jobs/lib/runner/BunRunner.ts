@@ -46,6 +46,7 @@ import {
 } from "@kingsleyweb/bun-common";
 import { readHistoryPage } from "../drivers/runHistory";
 import { collationKeysForRuns } from "../drivers/sql/sql-driver";
+import { childEnvWithheldMessage } from "../shared/childEnv";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, RunnerStoppedError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
@@ -1801,6 +1802,11 @@ export class BunRunner<
         // the log, so it is not a `log` event the handler sent.
         onOutputLimit: (maxBuffer) =>
           capture?.line(outputCutNotice(maxBuffer), { level: "warn" }),
+        onEnvWithheld: (withheld) =>
+          this.#logger.debug(childEnvWithheldMessage(withheld), {
+            runId,
+            withheld,
+          }),
         // Into the store only: the public `output` event stays what its JSDoc
         // says, a child writing to a piped stream.
         onConsole: (stream, text) => capture?.output(stream, text),

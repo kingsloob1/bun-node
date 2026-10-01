@@ -198,6 +198,37 @@ export function buildChildEnv(
   return out;
 }
 
+/**
+ * How many of `source`'s variables a child under `policy` does not get from
+ * it: every set variable outside {@link CHILD_BASE_ENV} and `passEnv`. `0`
+ * with `env: "inherit"`. A count, never names: what it reports is meant for a
+ * log, and a variable's name can say as much as its value.
+ */
+export function countWithheld(
+  policy: ChildEnvPolicy = {},
+  source: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  if (policy.env === "inherit") {
+    return 0;
+  }
+  const given = new Set([...CHILD_BASE_ENV, ...(policy.passEnv ?? [])]);
+  let withheld = 0;
+  for (const [name, value] of Object.entries(source)) {
+    if (typeof value === "string" && !given.has(name)) {
+      withheld++;
+    }
+  }
+  return withheld;
+}
+
+/**
+ * The `debug` line logged when a child is started under the allowlist and
+ * variables were withheld from it: the count, and how to pass them.
+ */
+export function childEnvWithheldMessage(withheld: number): string {
+  return `child env allowlist withheld ${withheld} host ${withheld === 1 ? "variable" : "variables"} (pass them with passEnv, or env: "inherit")`;
+}
+
 /** A value, briefly, for a message. */
 function describe(value: unknown): string {
   if (typeof value === "string") {

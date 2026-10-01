@@ -2744,6 +2744,21 @@ the attempt sees its target's own spelling: `BUN_JOBS_MODE` is
 The worker's heartbeat record reports it, as
 [`target`](#reading-a-queue-search-totals-workers-and-throughput).
 
+**Upgrading: a `child-process` target no longer inherits `process.env`, and nothing fails
+when it reads what it used to.** A variable it read from the parent without
+naming it, such as `process.env.DATABASE_URL`, is now `undefined`, with no
+error at spawn. By default the child gets only `CHILD_BASE_ENV` —
+`PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`,
+`LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`, `FORCE_COLOR`, `NODE_ENV`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows
+`SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA` and
+`LOCALAPPDATA` — plus the protocol's `BUN_JOBS_*`. It is also started with
+`--no-env-file`, so a `.env` in its cwd is no longer loaded either. The fix is
+`spawn: { passEnv: ["DATABASE_URL"] }` for the names it needs, or `spawn: { env: "inherit" }`
+for the old behaviour. Each spawn logs at `debug` how many host variables
+were withheld (a count, never names). See
+[Hardening a child process](#hardening-a-child-process).
+
 ### Hardening a child process
 
 A `child-process` attempt (and a runner's `"child-process"` run) is a process
@@ -3494,10 +3509,19 @@ Examples:
 | `worker` | `WorkerOptions` | | For `"worker-thread"`: `smol`, `name`, `env` (over the whole `process.env`: a thread is not a boundary), `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
 
-**Upgrading: a `child-process` run no longer inherits `process.env`.** It
-gets an allowlist instead, and Bun's `.env` loading is off in the child. A
-handler that read a secret from its environment needs the name in
-`spawn.passEnv`, or `spawn.env: "inherit"` for the old behaviour. See
+**Upgrading: a `child-process` run no longer inherits `process.env`, and nothing fails
+when it reads what it used to.** A variable it read from the parent without
+naming it, such as `process.env.DATABASE_URL`, is now `undefined`, with no
+error at spawn. By default the child gets only `CHILD_BASE_ENV` —
+`PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`,
+`LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`, `FORCE_COLOR`, `NODE_ENV`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows
+`SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA` and
+`LOCALAPPDATA` — plus the protocol's `BUN_JOBS_*`. It is also started with
+`--no-env-file`, so a `.env` in its cwd is no longer loaded either. The fix is
+`spawn: { passEnv: ["DATABASE_URL"] }` for the names it needs, or `spawn: { env: "inherit" }`
+for the old behaviour. Each spawn logs at `debug` how many host variables
+were withheld (a count, never names). See
 [Hardening a child process](#hardening-a-child-process).
 
 **Upgrading: two runner defaults changed.**

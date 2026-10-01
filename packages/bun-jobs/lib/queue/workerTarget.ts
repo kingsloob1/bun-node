@@ -26,6 +26,7 @@ import { checkSpawnOptions } from "../runner/executors/spawnHardening";
 import { WorkerExecutor } from "../runner/executors/worker";
 import { JOB_CHANNEL } from "../runner/protocol";
 import { outputCutNotice } from "../runner/runLogCapture";
+import { childEnvWithheldMessage } from "../shared/childEnv";
 import {
   DEFAULT_CLOSE_TIMEOUT,
   DEFAULT_KILL_TIMEOUT,
@@ -809,6 +810,11 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
         },
         onOutput: () => {},
         // A job has no run log; its attempt's logger is where the cut is said.
+        onEnvWithheld: (withheld) => {
+          context.logger.debug(childEnvWithheldMessage(withheld), {
+            withheld,
+          });
+        },
         onOutputLimit: (maxBuffer, bytes) => {
           context.logger.warn(outputCutNotice(maxBuffer), {
             maxBuffer,
