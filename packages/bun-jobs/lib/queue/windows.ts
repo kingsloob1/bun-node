@@ -123,6 +123,20 @@ export interface ThrottlePointer {
   jobId: string;
   /** When the window closes, in epoch milliseconds. */
   until: number;
+  /**
+   * When the pointer was written, in epoch milliseconds. Absent on a pointer
+   * written before this field existed, which is read as long past.
+   */
+  at?: number;
+  /**
+   * Whether {@link jobId} names a job that has actually been written, as for
+   * {@link DebouncePointer.ready}: the window is opened *before* its job is
+   * added, and a second producer that found the window open but its job not
+   * there yet used to open a window of its own, leaving two jobs in one
+   * window. Set by a second compare-and-set once the job is there; absent on
+   * a pointer written before this field existed, which is read as confirmed.
+   */
+  ready?: boolean;
 }
 
 /** What one sweep did, and where the next should resume. */
@@ -155,6 +169,19 @@ export const WINDOW_PENDING_MS = 30_000;
  */
 export function debounceIsPending(
   pointer: DebouncePointer,
+  now: number,
+): boolean {
+  return pointer.ready !== true && now - (pointer.at ?? 0) <= WINDOW_PENDING_MS;
+}
+
+/**
+ * Whether a throttle pointer's job may still be on its way to the backend:
+ * the same rule as {@link debounceIsPending}. Internal: a throttled add uses it
+ * to wait for the job of a window another producer has just opened, rather
+ * than opening a second window beside it.
+ */
+export function throttleIsPending(
+  pointer: ThrottlePointer,
   now: number,
 ): boolean {
   return pointer.ready !== true && now - (pointer.at ?? 0) <= WINDOW_PENDING_MS;

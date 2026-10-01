@@ -62,7 +62,7 @@ import type {
   UntypedJobName,
   UpdateDataOf,
 } from "./types";
-import type { DebouncePointer } from "./windows";
+import type { DebouncePointer, ThrottlePointer } from "./windows";
 import { deserializeError, sleep } from "@kingsleyweb/bun-common";
 import {
   JOB_DEFAULT_KEYS,
@@ -146,6 +146,7 @@ import {
   setReservedState,
   sweepWindows,
   THROTTLE_PREFIX,
+  throttleIsPending,
 } from "./windows";
 
 /**
@@ -2550,6 +2551,17 @@ export class BunQueue<
           await this.#publish("throttled", { id: existing.id });
           return view;
         }
+
+        // The window is open but its job is not there: another producer opened
+        // it a moment ago and has not finished writing the job. Opening a
+        // window of our own now is what let a burst of producers on a slow
+        // backend add two jobs in one window, so wait a beat and read again,
+        // as a debounce does. A confirmed window whose job has gone (it ran
+        // and was removed) falls through as it always did.
+        if (throttleIsPending({ ...current, until: current.until! }, now)) {
+          await sleep(WINDOW_RETRY_MS, { unref: true }).catch(() => undefined);
+          continue;
+        }
       }
 
       // The pointer name keeps its literal prefix — `sweepWindows` finds it by
@@ -2560,7 +2572,7 @@ export class BunQueue<
         this.ref,
         pointerName,
         kind === "throttle"
-          ? { jobId, until: now + ttl }
+          ? ({ jobId, until: now + ttl, at: now } satisfies ThrottlePointer)
           : ({ jobId, at: now } satisfies DebouncePointer),
         pointer?.version ?? null,
       );
@@ -2589,23 +2601,28 @@ export class BunQueue<
         override,
       );
 
-      if (kind === "debounce") {
-        // The job exists now, so confirm the pointer that named it before it
-        // did. This is what gives everyone else's compare-and-set something to
-        // catch: until the version moves, a sweep or a second producer that
-        // read the unconfirmed pointer would judge it by a job that was not
-        // there yet, and delete or replace a live window. One extra write per
-        // window *opened* — never per debounced add, which is the path that
-        // repeats. A pointer somebody else has already moved fails the
-        // compare-and-set and is left as theirs.
-        await setReservedState(
-          driver,
-          this.ref,
-          pointerName,
-          { jobId, at: now, ready: true } satisfies DebouncePointer,
-          moved,
-        );
-      }
+      // The job exists now, so confirm the pointer that named it before it
+      // did. This is what gives everyone else's compare-and-set something to
+      // catch: until the version moves, a sweep or a second producer that
+      // read the unconfirmed pointer would judge it by a job that was not
+      // there yet, and delete or replace a live window. One extra write per
+      // window *opened* — never per debounced or throttled add, which is the
+      // path that repeats. A pointer somebody else has already moved fails the
+      // compare-and-set and is left as theirs.
+      await setReservedState(
+        driver,
+        this.ref,
+        pointerName,
+        kind === "throttle"
+          ? ({
+              jobId,
+              until: now + ttl,
+              at: now,
+              ready: true,
+            } satisfies ThrottlePointer)
+          : ({ jobId, at: now, ready: true } satisfies DebouncePointer),
+        moved,
+      );
 
       return added;
     }
