@@ -21,17 +21,20 @@
  *   empty body, as on `@nestjs/platform-express`.
  * - A returned `StreamableFile` is streamed, its `type`, `disposition` and
  *   `length` filling in any header the handler did not set.
- * - One thing behaves differently from `@nestjs/platform-express` today:
- *   - `@Sse()` fails: Nest listens for `close` on `req.socket`, and
- *     `BunRequest`'s socket shim has no `once()`.
- * - `@Render(path)` serves the file at `path` as-is; there is no template
- *   engine behind it.
+ * - `@Sse()` streams Nest's own event stream, over a socket and through
+ *   `adapter.fetch()` alike: one `id:`/`data:` frame per event, ending when
+ *   the Observable completes. When the client disconnects, the socket shim's
+ *   `close` reaches Nest, which unsubscribes.
+ * - `@Render(path)` differs from `@nestjs/platform-express`: it serves the
+ *   file at `path` as-is, with no template engine behind it.
  */
 import type {
   BunRequest,
   BunResponse,
   JsonValue,
 } from "@kingsleyweb/bun-common";
+import type { MessageEvent } from "@nestjs/common";
+import type { Observable } from "rxjs";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,11 +71,14 @@ import {
   Req,
   Res,
   Search,
+  Sse,
   StreamableFile,
   Unlock,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { show, step, title } from "../shared/console";
+import { finalize, interval, map, Subject, take, takeUntil } from "rxjs";
+import { checkEqual, summary } from "../shared/check";
+import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
 /** A scratch directory for the page `@Render` serves. */
@@ -308,14 +314,56 @@ class ResponsesController {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/** Whether the endless stream's Observable has been unsubscribed. */
+let endlessUnsubscribed = false;
+
+/**
+ * Emits as the example closes, ending a stream that is still open. Only a
+ * failure leaves one open, and it must fail the run rather than hang it.
+ */
+const closing = new Subject<void>();
+
+/** Server-sent events: Nest's `@Sse()`, over an rxjs Observable. */
+@Controller("events")
+class EventsController {
+  /** Three events a few milliseconds apart, then the Observable completes. */
+  @Sse("ticks")
+  ticks(): Observable<MessageEvent> {
+    return interval(5).pipe(
+      take(3),
+      map((n) => ({ data: { tick: n + 1 } })),
+    );
+  }
+
+  /** Never completes: only the client disconnecting ends it. */
+  @Sse("endless")
+  endless(): Observable<MessageEvent> {
+    endlessUnsubscribed = false;
+    return interval(5).pipe(
+      takeUntil(closing),
+      map((n) => ({ data: `beat ${n + 1}` })),
+      finalize(() => {
+        endlessUnsubscribed = true;
+      }),
+    );
+  }
+}
+
 @Module({
-  controllers: [VerbsController, InputsController, ResponsesController],
+  controllers: [
+    VerbsController,
+    InputsController,
+    ResponsesController,
+    EventsController,
+  ],
 })
 class AppModule {}
 
 title("Controllers and routing on BunHttpAdapter");
 
-const app = await NestFactory.create(AppModule, new BunHttpAdapter(), {
+const adapter = new BunHttpAdapter();
+const app = await NestFactory.create(AppModule, adapter, {
   logger: false,
   abortOnError: false,
 });
@@ -459,7 +507,166 @@ show("@Render", {
 });
 
 /* ------------------------------------------------------------------ */
+step("Server-sent events: @Sse()");
+
+/** What reading an event stream observed. */
+interface EventStream {
+  /** The HTTP status; `0` when no response arrived in time. */
+  status: number;
+  /** The `Content-Type` header, or `null`. */
+  contentType: string | null;
+  /** Every byte of the body read, as text. */
+  body: string;
+  /**
+   * How reading stopped: the server `ended` the stream, the caller's `until`
+   * was met (`stopped`), or the deadline passed first (`timed out`).
+   */
+  outcome: "ended" | "stopped" | "timed out";
+}
+
+/**
+ * Sends a request and reads its event stream until the server ends it,
+ * `until` holds for the body so far, or `timeout` milliseconds pass. Every
+ * wait has that deadline, so a stream that never ends fails a check rather
+ * than hanging the example.
+ */
+async function readEventStream(
+  send: (signal: AbortSignal) => Promise<Response>,
+  options: {
+    /** Stop reading once the body so far satisfies this. */
+    until?: (body: string) => boolean;
+    /** The deadline, in milliseconds. Defaults to `5000`. */
+    timeout?: number;
+  } = {},
+): Promise<{
+  /** What was read. */
+  read: EventStream;
+  /** Hangs up: aborts the request, closing the connection. */
+  abort: () => void;
+}> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timed out">((resolve) => {
+    timer = setTimeout(resolve, options.timeout ?? 5000, "timed out");
+  });
+  const read: EventStream = {
+    status: 0,
+    contentType: null,
+    body: "",
+    outcome: "timed out",
+  };
+
+  try {
+    const response = await Promise.race([send(controller.signal), deadline]);
+    if (response === "timed out") {
+      abort();
+      return { read, abort };
+    }
+    read.status = response.status;
+    read.contentType = response.headers.get("content-type");
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const chunk = await Promise.race([reader.read(), deadline]);
+      if (chunk === "timed out") {
+        abort();
+        await reader.cancel().catch(() => {});
+        return { read, abort };
+      }
+      if (chunk.done) {
+        read.outcome = "ended";
+        return { read, abort };
+      }
+      read.body += decoder.decode(chunk.value, { stream: true });
+      if (options.until?.(read.body)) {
+        read.outcome = "stopped";
+        return { read, abort };
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Nest writes one blank line when the stream opens, then one frame per event:
+// an `id:` it numbers from 1, a `data:` line (an object is sent as JSON) and a
+// blank line. No `event:` line unless the message sets a `type`.
+const TICKS =
+  "\n" +
+  'id: 1\ndata: {"tick":1}\n\n' +
+  'id: 2\ndata: {"tick":2}\n\n' +
+  'id: 3\ndata: {"tick":3}\n\n';
+
+const { read: served } = await readEventStream((signal) =>
+  fetch(`${url}/events/ticks`, { signal }),
+);
+show("served @Sse()", served);
+checkEqual(
+  "served: 200 with text/event-stream",
+  [served.status, served.contentType],
+  [200, "text/event-stream"],
+);
+checkEqual("served: exactly three frames, in order", served.body, TICKS);
+checkEqual(
+  "served: the stream ends when the Observable completes",
+  served.outcome,
+  "ended",
+);
+
+// `adapter.fetch()` runs the same request through the adapter's pipeline with
+// no socket involved, and the stream is the same.
+const { read: socketFree } = await readEventStream((signal) =>
+  adapter.fetch("/events/ticks", { signal }),
+);
+show("adapter.fetch() @Sse()", socketFree);
+checkEqual(
+  "adapter.fetch(): 200 with text/event-stream",
+  [socketFree.status, socketFree.contentType],
+  [200, "text/event-stream"],
+);
+checkEqual(
+  "adapter.fetch(): exactly three frames, in order",
+  socketFree.body,
+  TICKS,
+);
+checkEqual(
+  "adapter.fetch(): the stream ends when the Observable completes",
+  socketFree.outcome,
+  "ended",
+);
+
+// An endless stream: read its first frame, then hang up. The disconnect
+// reaches Nest as `close` on `req.socket`, and Nest unsubscribes.
+const { read: endless, abort: hangUp } = await readEventStream(
+  (signal) => fetch(`${url}/events/endless`, { signal }),
+  { until: (body) => body.includes("data: beat 1\n\n") },
+);
+checkEqual(
+  "served, endless: the first frame arrives and the stream stays open",
+  [endless.outcome, endlessUnsubscribed],
+  ["stopped", false],
+);
+hangUp();
+const unsubscribed = await waitFor(
+  "the endless Observable to be unsubscribed",
+  () => endlessUnsubscribed,
+  { timeout: 5000 },
+).then(
+  () => true,
+  () => false,
+);
+checkEqual(
+  "served, endless: hanging up unsubscribes the Observable",
+  unsubscribed,
+  true,
+);
+
+/* ------------------------------------------------------------------ */
 step("Close");
+closing.next();
 await app.close();
 await rm(scratch, { recursive: true, force: true });
 show("closed");
+summary();
