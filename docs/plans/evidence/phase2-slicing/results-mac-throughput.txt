@@ -1,0 +1,16 @@
+RESULT A subtle sign seq 150B: 10.83 us/op, 92297 ops/s
+RESULT B subtle sign 64-in-flight 150B: 2.52 us/op, 397353 ops/s
+RESULT C node createHmac 150B: 0.94 us/op, 1059262 ops/s
+RESULT D frame encode+verify subtle 150B: 27.29 us/op, 36647 ops/s
+RESULT E frame encode+verify node 150B: 4.77 us/op, 209779 ops/s
+RESULT A subtle sign seq 1200B: 12.48 us/op, 80132 ops/s
+RESULT B subtle sign 64-in-flight 1200B: 2.45 us/op, 407634 ops/s
+RESULT C node createHmac 1200B: 1.63 us/op, 612780 ops/s
+RESULT D frame encode+verify subtle 1200B: 30.19 us/op, 33125 ops/s
+RESULT E frame encode+verify node 1200B: 7.57 us/op, 132134 ops/s
+RESULT A subtle sign seq 16384B: 24.19 us/op, 41340 ops/s
+RESULT B subtle sign 64-in-flight 16384B: 3.76 us/op, 266071 ops/s
+RESULT C node createHmac 16384B: 12.84 us/op, 77902 ops/s
+RESULT D frame encode+verify subtle 16384B: 66.77 us/op, 14977 ops/s
+RESULT E frame encode+verify node 16384B: 42.11 us/op, 23746 ops/s
+RESULT env: bun 5f554969bc8ab2159583cdf5ff26f5277ca35e91 linux/x64

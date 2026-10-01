@@ -1,0 +1,4 @@
+RESULT in-flight 1: wall 11.47 us/op, cpu 18.65 us/op, cpu/wall 1.63
+RESULT in-flight 8: wall 2.62 us/op, cpu 9.15 us/op, cpu/wall 3.49
+RESULT in-flight 64: wall 2.42 us/op, cpu 10.23 us/op, cpu/wall 4.24
+RESULT in-flight 512: wall 2.44 us/op, cpu 10.85 us/op, cpu/wall 4.45
