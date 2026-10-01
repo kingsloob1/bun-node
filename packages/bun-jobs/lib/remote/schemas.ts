@@ -72,7 +72,13 @@ export const RemoteErrorSchema = open({
 
 export const RemoteOutcomeLogSchema = open({ at: instant(), line: s.string() });
 
-export const RemoteJobRefSchema = open({ job: jobId(), attempt: ordinal() });
+export const RemoteQueueRefSchema = open({ ns: ident(), queue: ident() });
+
+export const RemoteJobRefSchema = open({
+  queue: RemoteQueueRefSchema,
+  job: jobId(),
+  attempt: ordinal(),
+});
 
 export const RemoteJobParentSchema = open({ queue: ident(), id: jobId() });
 
@@ -151,6 +157,7 @@ export const RemoteRetainedOutcomeSchema = s.union(
 );
 
 export const RemoteAttemptStatusSchema = open({
+  queue: RemoteQueueRefSchema,
   job: jobId(),
   attempt: ordinal(),
   state: s.enum(["running", "done", "unknown"]),
@@ -165,6 +172,7 @@ export const RemoteCancelReasonSchema = s.enum([
 ]);
 
 export const RemoteCancelledJobSchema = open({
+  queue: RemoteQueueRefSchema,
   job: jobId(),
   attempt: ordinal(),
   cancelled: s.boolean(),

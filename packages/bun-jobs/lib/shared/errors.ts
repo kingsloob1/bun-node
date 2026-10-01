@@ -472,3 +472,43 @@ export class ProtocolError extends JobsError {
     });
   }
 }
+
+/**
+ * A remote-worker message is larger than its receiver accepts: an envelope
+ * above the remote's `maxBodyBytes`, refused before any of it is acted on.
+ *
+ * Its `code` is the protocol's problem code, `TOO_LARGE`, so the error and the
+ * HTTP 413 problem that carries it are one string. Not retryable: the same
+ * bytes are just as large on the next attempt, so it is reported at the first
+ * one, naming the size and the cap.
+ */
+export class RemoteMessageTooLargeError extends JobsError {
+  /** The message's size in bytes, or `null` when reading stopped at the cap before the end. */
+  readonly bytes: number | null;
+  /** The cap it exceeded, in bytes. */
+  readonly max: number;
+  /** The size and the cap, plus any detail the throwing site added. */
+  declare readonly context: { bytes: number | null; max: number } & Record<
+    string,
+    unknown
+  >;
+
+  constructor(
+    /** The message's size in bytes, or `null` when only "more than `max`" is known. */
+    bytes: number | null,
+    /** The cap, in bytes. */
+    max: number,
+    /** Extra detail, safe to log. May not set `bytes` or `max`. */
+    context?: ErrorContext<"bytes" | "max">,
+  ) {
+    super(
+      bytes === null
+        ? `The message is larger than the ${max}-byte limit`
+        : `The message is ${bytes} bytes, above the ${max}-byte limit`,
+      "TOO_LARGE",
+      { ...context, bytes, max },
+    );
+    this.bytes = bytes;
+    this.max = max;
+  }
+}
