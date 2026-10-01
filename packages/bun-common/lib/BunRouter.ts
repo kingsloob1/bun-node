@@ -22,10 +22,16 @@ import path, { join } from "node:path";
 import process from "node:process";
 import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
-import { BunResponse as BunResponseClass } from "./BunResponse";
+import {
+  BunResponse as BunResponseClass,
+  destroyResponseStream,
+} from "./BunResponse";
 import { resolveLogger } from "./logging";
+import { isNodeReadableStream } from "./utils/general";
 import {
   isArray,
+  isAsyncGeneratorFunction,
+  isAsyncIterable,
   isError,
   isFunction,
   isNull,
@@ -359,6 +365,39 @@ export type FetchInput =
   | Request
   | (RequestInit & { url: string | URL });
 
+/**
+ * Whether `next(arg)` passes an error: anything but nothing, `"skip"`,
+ * `"route"` and `"router"`.
+ */
+function isPipelineError(arg: unknown): boolean {
+  return (
+    !isUndefined(arg) &&
+    !isNull(arg) &&
+    arg !== "skip" &&
+    arg !== "route" &&
+    arg !== "router"
+  );
+}
+
+/**
+ * Whether `response` streams its body: a `write()` stream (long-lived), or a
+ * sent `ReadableStream`, Node `Readable`, async iterable or `async function*`.
+ * Such a response is returned while its handler still runs (see
+ * {@link BunRouter.handle}).
+ */
+function isStreamingResponse(response: BunResponse): boolean {
+  if (response.isLongLived) {
+    return true;
+  }
+  const body = response.getBody();
+  return (
+    body instanceof ReadableStream ||
+    isAsyncIterable(body) ||
+    isNodeReadableStream(body) ||
+    isAsyncGeneratorFunction(body)
+  );
+}
+
 /** Origin used when {@link BunRouter.fetch} is given a bare path. */
 const FETCH_DEFAULT_ORIGIN = "http://localhost";
 
@@ -366,10 +405,13 @@ const FETCH_DEFAULT_ORIGIN = "http://localhost";
  * A stand-in for the `Bun.serve` server that {@link BunRouter.fetch} passes to
  * `BunRequest`. There is no socket, so there is no peer address, and an
  * upgrade cannot succeed — reporting that honestly is better than pretending.
+ * Nor is there an idle timeout, so exempting a request from it
+ * (`req.socket.setTimeout(0)`) is a no-op that succeeds, as it does served.
  */
-const fetchStubServer: Pick<BunServer, "requestIP" | "upgrade"> = {
+const fetchStubServer: Pick<BunServer, "requestIP" | "upgrade" | "timeout"> = {
   requestIP: () => null,
   upgrade: () => false,
+  timeout: () => {},
 };
 
 export const FETCH_STUB_SERVER = fetchStubServer as Parameters<
@@ -4624,9 +4666,69 @@ export class BunRouter<
    *   response nor calls `next()` leaves the request **hanging** until its
    *   timeout fires — it is not auto-responded, does not fall through, and is
    *   not turned into a 404. A handler's return value is ignored;
-   * - an unhandled error is re-thrown for the adapter's final error handler.
+   * - an unhandled error is re-thrown for the adapter's final error handler;
+   * - an error after the headers were sent still runs the error handlers,
+   *   which see `res.headersSent === true`. If none handles it, it is logged
+   *   (outside `NODE_ENV=test`) and a `write()` stream is destroyed, so the
+   *   client sees a cut connection, as Express's finalhandler destroys the
+   *   socket; it is not re-thrown, since nothing can answer it any more.
+   *
+   * It resolves as soon as the response is a **stream** (a `write()` stream,
+   * or a sent `ReadableStream`, Node `Readable` or async iterable), even while
+   * the handler that produced it is still running — on Node the headers go
+   * out at `write()`/`flushHeaders()`, so a handler that awaits its own
+   * stream must not hold it back. The rest of the pipeline keeps running, and
+   * its errors are handled as above. A buffered response is returned when the
+   * pipeline finishes, as before.
    */
-  override async handle(options: {
+  override handle(options: {
+    requestHost: string;
+    requestMethod: string;
+    requestUrl: string;
+    request: BunRequest;
+    response: BunResponse;
+  }): Promise<matchedRoute | true | undefined> {
+    const walk = this.#walk(options);
+    // A pipeline that settled synchronously pays for nothing more.
+    if (Bun.peek.status(walk) !== "pending") {
+      return walk;
+    }
+    const { response } = options;
+    return Promise.race([
+      walk,
+      response
+        .getNativeResponse(0)
+        .then((): Promise<matchedRoute | true | undefined> | true =>
+          isStreamingResponse(response) ? true : walk,
+        ),
+    ]);
+  }
+
+  /**
+   * An error nothing handled once the headers were sent: logged, as
+   * finalhandler logs it, and a `write()` stream destroyed — the client must
+   * not take a truncated stream for a complete one.
+   */
+  #unhandledAfterHeaders(
+    error: unknown,
+    request: BunRequest,
+    response: BunResponse,
+  ): void {
+    if (Bun.env.NODE_ENV !== "test") {
+      this.logger.error(
+        "Unhandled error after the response's headers were sent",
+        {
+          error,
+          method: request.method,
+          path: request.path,
+        },
+      );
+    }
+    destroyResponseStream(response);
+  }
+
+  /** The pipeline walk behind {@link handle}. */
+  async #walk(options: {
     requestHost: string;
     requestMethod: string;
     requestUrl: string;
@@ -4654,7 +4756,9 @@ export class BunRouter<
     let paramsBoundToRoute = -1;
 
     for (let index = 0; index < layers.length; index++) {
-      if (response.headersSent) {
+      // Once the headers are out, only an error keeps the pipeline going: its
+      // handlers still run, as in Express.
+      if (response.headersSent && !hasError) {
         break;
       }
 
@@ -4756,8 +4860,12 @@ export class BunRouter<
         continue;
       }
 
-      // 2. The layer produced the response itself.
-      if (response.headersSent) {
+      // 2. The headers are out — this layer produced the response, or an
+      //    error handler ran after they were. Only `next(err)` continues (to
+      //    the next error handler); an error handler that did anything else
+      //    handled the error, as Express leaves it to that handler.
+      if (response.headersSent && !(nextCalled && isPipelineError(nextArg))) {
+        hasError = false;
         break;
       }
 
@@ -4815,6 +4923,9 @@ export class BunRouter<
     }
 
     if (response.headersSent) {
+      if (hasError) {
+        this.#unhandledAfterHeaders(currentError, request, response);
+      }
       return matchedRoute ?? true;
     }
 

@@ -352,46 +352,19 @@ export class BunHttpAdapter<
     });
     let routeUsed: matchedRoute | true | undefined;
 
-    const pipeline = this.instance.handle({
-      requestHost: req.host,
-      requestMethod: req.method,
-      response: res,
-      request: req,
-      requestUrl: req.originalUrl,
-    });
-
-    // A handler that opens a long-lived stream and awaits its end — NestJS's
-    // `@Sse()` resolves only once the observable completes or the client
-    // leaves — would otherwise hold the headers back until then. On Node they
-    // go out as soon as `writeHead`/`flushHeaders` runs, so the stream's
-    // response is returned the moment it exists, the pipeline still running.
-    if (Bun.peek.status(pipeline) === "pending") {
-      const streamed = await Promise.race([
-        pipeline.then(
-          () => undefined,
-          () => undefined,
-        ),
-        res
-          .getNativeResponse(0)
-          .then((response) => (res.isLongLived ? response : undefined)),
-      ]);
-      if (streamed) {
-        pipeline.catch((error: unknown) => {
-          // Headers are gone, so nothing but the stream's end can answer it,
-          // as Express's finalhandler does once headers were sent.
-          this.logger.error(
-            "Error after a streaming response started",
-            error instanceof Error ? error.stack : String(error),
-          );
-          // `end()` on a response that has already ended does nothing.
-          void res.end();
-        });
-        return streamed;
-      }
-    }
-
+    // `handle()` resolves as soon as the response is a stream, while the
+    // handler is still running — NestJS's `@Sse()` resolves only once the
+    // observable completes or the client leaves, and must not hold the
+    // headers back until then. An error after that point is handled inside
+    // the pipeline (error handlers, then the stream is cut), never thrown.
     try {
-      routeUsed = await pipeline;
+      routeUsed = await this.instance.handle({
+        requestHost: req.host,
+        requestMethod: req.method,
+        response: res,
+        request: req,
+        requestUrl: req.originalUrl,
+      });
     } catch (e) {
       const err: object = isObject(e) ? e : new Error(String(e));
 

@@ -729,14 +729,20 @@ interface SocketEmitMethod {
 export interface BunRequestSocket {
   /** Whether `setKeepAlive(true)` has been called. Starts `false`. */
   keepAlive: boolean;
-  /** Records keep-alive (read by long-lived responses). Returns the socket. */
+  /**
+   * Records keep-alive, as {@link keepAlive}. It sends nothing and does not
+   * commit the response (`headersSent` is unaffected). Returns the socket.
+   */
   setKeepAlive: (enable?: boolean) => BunRequestSocket;
   /** Accepted for compatibility; Bun manages Nagle itself. Returns the socket. */
   setNoDelay: (noDelay?: boolean) => BunRequestSocket;
   /**
-   * Accepted for compatibility; Bun owns the idle timeout, so no `timeout`
-   * event is ever emitted. A `callback` is registered as a `timeout`
-   * listener, as Node does. Returns the socket.
+   * `setTimeout(0)` — Node's "no timeout" — exempts the request from
+   * `Bun.serve`'s `idleTimeout` (`server.timeout(request, 0)`), so a quiet
+   * stream is not cut; a no-op without a server. Any other value is accepted
+   * and ignored: Bun owns the idle timeout, so no `timeout` event is ever
+   * emitted. A `callback` is registered as a `timeout` listener, as Node
+   * does. Returns the socket.
    */
   setTimeout: (timeout: number, callback?: () => void) => BunRequestSocket;
   /** Adds a listener (`close` fires once, when the client disconnects). */
@@ -1585,7 +1591,15 @@ export class BunRequest<
         return obj;
       },
       setNoDelay: () => obj,
-      setTimeout(_timeout, callback) {
+      setTimeout(timeout, callback) {
+        // Node's idiom for "never time out", which NestJS's `SseStream` and
+        // `initLongLivedConnection` call; Bun's equivalent is per request.
+        // The socket-free stub has a no-op `timeout`; a hand-built request
+        // may have no server at all.
+        if (timeout === 0) {
+          const server = that.#server as Partial<BunServer> | undefined;
+          server?.timeout?.(that.request, 0);
+        }
         if (callback) {
           events().once("timeout", callback);
         }
