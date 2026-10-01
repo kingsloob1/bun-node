@@ -535,21 +535,34 @@ export interface SpawnOptions {
    * `ConfigError` when the runner or worker is constructed, not a failure at
    * the first spawn. Requires {@link SpawnOptions.gid}: Bun keeps this
    * process's group otherwise, which for a root parent is group 0.
+   *
+   * Construction cannot tell whether that user may run the `bun` binary and
+   * read the entry file: one that cannot fails each run with `EACCES`
+   * (measured with a `bun` under a `750` home directory). The child also
+   * keeps the base set's `HOME` and `TMPDIR`, which it may not be able to
+   * write as another user, so set them in {@link SpawnOptions.env} too.
    */
   uid?: number;
   /**
    * The group id the child runs as (`setgid(2)`); with the privilege to
-   * change it, the child's supplementary groups are reduced to this one.
-   * POSIX only, and a `ConfigError` without `CAP_SETGID`, as `uid` is.
+   * change it, the child's supplementary groups are dropped (measured:
+   * `process.getgroups()` is `[]` in the child). POSIX only, and a
+   * `ConfigError` without `CAP_SETGID`, as `uid` is.
    */
   gid?: number;
   /**
    * Runs each child in a cgroup of its own, created under
-   * {@link SpawnCgroupOptions.parent} with the given limits, and removed —
-   * every process left in it killed first — when the child exits. Linux
+   * {@link SpawnCgroupOptions.parent} with the given limits, and removed
+   * when the child exits, with the processes still in it killed first. Linux
    * cgroup v2 only. The parent must be a delegated subtree this process can
    * write; nothing here needs root. Checked when the runner or worker is
    * constructed. Absent by default: no cgroup of its own.
+   *
+   * A resource and cleanup boundary for a cooperative job, and a security
+   * boundary **only together with `uid`/`gid` set to another user**. A job
+   * running as this process's user can write the delegated tree too, so it
+   * can move itself or a process it started into another cgroup, out of its
+   * limits and out of the cleanup.
    */
   cgroup?: SpawnCgroupOptions;
   /**
@@ -557,8 +570,11 @@ export interface SpawnOptions {
    * together. Past it the child is killed (`SIGKILL`) and the run fails with
    * an `OutputLimitError`; the output kept is cut at the last whole line
    * that fits, so a stored log line is never half a line and redaction sees
-   * every line whole. Counts only piped streams, so it needs `stdout` or
-   * `stderr` to be `"pipe"` (a `ConfigError` otherwise). Unbounded by
+   * every line whole, and the run's log gets one `warn` line saying where
+   * and why it was cut — also when the excess is read only after the run
+   * succeeded, which keeps its success. Counts only piped streams, so it needs `stdout` or
+   * `stderr` to be `"pipe"` (a `ConfigError` otherwise), and not what
+   * crosses the IPC channel: `ctx.log`, progress and messages. Unbounded by
    * default: what run-log capture *stores* is bounded by `captureLogs`.
    */
   maxBuffer?: number;
@@ -569,6 +585,10 @@ export interface SpawnOptions {
    * runner's entry file as its first argument — after `--no-env-file`, under
    * the default environment allowlist — so a wrapper script must pass its
    * arguments on to Bun (`exec bun "$@"`).
+   *
+   * `--no-env-file` stops `.env` loading only: a `bunfig.toml` `preload`
+   * still runs in the child, from its `cwd` and from the global bunfig the
+   * copied `HOME` points at. That is the project's own code, not the job's.
    */
   execPath?: string;
   /**
@@ -588,11 +608,19 @@ export interface SpawnOptions {
 /**
  * A per-child cgroup: {@link SpawnOptions.cgroup}.
  *
- * Each child gets a cgroup of its own, `<parent>/bun-jobs-<runId>`, created
- * just before it starts (Bun's `cgroup` spawn option joins it before the
- * child's first instruction) and removed after it exits, with any process
- * still in it — a grandchild the job left behind — killed first through
- * `cgroup.kill`.
+ * Each child gets a cgroup of its own, `<parent>/bun-jobs-<runId>-…`,
+ * created just before it starts (Bun's `cgroup` spawn option joins it before
+ * the child's first instruction) and removed after it exits: any process
+ * still in it — a grandchild the job left behind — is killed first through
+ * `cgroup.kill`, and any cgroup the job made inside it is removed with it.
+ *
+ * **A resource and cleanup boundary, not a security one on its own.** A job
+ * running as the worker's user can write the delegated tree as well as the
+ * worker can, so it can move itself or an orphan into a sibling cgroup,
+ * escaping both its limits and the cleanup (measured by the reviewer: a
+ * `sleep` and the job itself moved out, then 160 MB allocated under a 64 MB
+ * limit). With `uid`/`gid` set to another user it cannot write the tree, and
+ * the cgroup holds.
  *
  * `parent` has to be a cgroup v2 directory this process may create
  * directories in, whose `cgroup.subtree_control` enables every controller a
@@ -618,8 +646,8 @@ export interface SpawnCgroupOptions {
     /**
      * `memory.max`: bytes, or a size such as `"256mb"`. Swap is set to `0`
      * beside it where the kernel offers `memory.swap.max`, so the limit is
-     * not stretched by swapping. Past it the kernel's OOM killer kills the
-     * child alone, not the worker.
+     * not stretched by swapping. Past it the kernel's OOM killer kills a
+     * process in the child's cgroup, not the worker.
      */
     memory?: number | string;
     /** `pids.max`: the most processes and threads at once, Bun's own threads included. */

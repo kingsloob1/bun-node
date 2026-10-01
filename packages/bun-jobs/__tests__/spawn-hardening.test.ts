@@ -1,6 +1,5 @@
 import type {
   BunRunnerOptions,
-  OutputLimitError,
   RunLogPage,
   RunRecord,
   SpawnOptions,
@@ -17,6 +16,7 @@ import {
   BunRunner,
   ConfigError,
   MemoryDriver,
+  OutputLimitError,
   runnerKey,
   SpawnExecutor,
 } from "../lib/index";
@@ -80,6 +80,8 @@ interface ProbeReport {
   signal?: string | null;
   /** The cgroups left under the parent afterwards. */
   leftover?: string[] | null;
+  /** From the trigger to the run's outcome, in milliseconds. */
+  elapsedMs?: number;
   /** A refusal at construction. */
   thrown?: { name: string; message: string };
 }
@@ -404,6 +406,28 @@ describe("cgroup", () => {
   );
 
   it.skipIf(!hasDelegation)(
+    "removes a cgroup the job nested sub-cgroups in, promptly (needs a delegated cgroup)",
+    async () => {
+      // A job running as the worker's user may write its own cgroup, and a
+      // cgroup with a child directory cannot be removed until the child is.
+      // Cleanup used to retry the top directory alone until its 2 s budget
+      // ran out, and leave the whole group behind.
+      const report = await probe(
+        DELEGATE,
+        { cgroup: {} },
+        "subcgroup",
+        null,
+        true,
+      );
+      expect(report.error).toBeUndefined();
+      expect(report.result.sub).toMatch(/\/bun-jobs-[^/]+\/sub\/deeper$/);
+      expect(report.leftover).toEqual([]);
+      expect(report.elapsedMs as number).toBeLessThan(1_500);
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasDelegation)(
     "kills a child over its memory limit alone, and the run fails (needs a delegated cgroup)",
     async () => {
       const killed = await probe(
@@ -484,18 +508,41 @@ describe("maxBuffer", () => {
     );
   }
 
-  /** One line the `noisy` fixture writes, after redaction. */
-  const LINE = /^\d{6} password=\[REDACTED\] x{100}$/;
+  /** The marker a run's log ends with once its output passed `maxBuffer`. */
+  const cutMarker = (maxBuffer: number): string =>
+    `[bun-jobs] output cut at maxBuffer (${maxBuffer} bytes): the rest of this run's stdout and stderr was dropped`;
+
+  /** The marker lines in a run's log. */
+  async function markers(
+    driver: MemoryDriver,
+    runner: BunRunner<any, any>,
+    runId: string,
+  ): Promise<{ text: string; level?: string }[]> {
+    const { lines } = await readLog(driver, runner, runId);
+    const cut = lines.filter((line) =>
+      line.text.includes("output cut at maxBuffer"),
+    );
+    return cut.map((line) => ({ text: line.text, level: line.level }));
+  }
+
+  /** One line `noisy` writes with `{ width: 50, fill: "é" }`, after redaction. */
+  const WIDE_LINE = /^\d{6} password=\[REDACTED\] é{50}$/;
 
   it("kills a child over it, keeps only whole lines, and fails the run", async () => {
+    // 5,060 is not a multiple of the 125-byte line, so the limit falls 60
+    // bytes into line 41 — inside its filler of two-byte `é`s — and only the
+    // cut after the last newline keeps the stored lines whole. A cut at the
+    // byte limit itself would store half a line (and half a character).
     const { runner, driver } = makeRunner("noisy", {
-      spawn: { maxBuffer: 5_000 },
+      spawn: { maxBuffer: 5_060 },
     });
     const started = Date.now();
     // 60 lines of 125 bytes (7,500), then a 20 s wait: a run that ends
     // quickly was ended by the limit, not by finishing.
     const { record, error } = await runOnce(runner, {
       lines: 60,
+      width: 50,
+      fill: "é",
       holdMs: 20_000,
     });
 
@@ -503,21 +550,36 @@ describe("maxBuffer", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error?.name).toBe("OutputLimitError");
     expect((error as OutputLimitError).code).toBe("OUTPUT_LIMIT");
+    expect(error?.message).toMatch(
+      /over its maxBuffer of 5060, and was killed$/,
+    );
     expect(record.signal).toBe("SIGKILL");
     expect(Date.now() - started).toBeLessThan(15_000);
 
     const stdout = (await readLog(driver, runner, record.runId)).lines.filter(
       (line) => line.stream === "stdout",
     );
-    expect(stdout.length).toBeGreaterThan(0);
-    // Every stored line is whole, and redacted whole.
+    // Every stored line is whole, and redacted whole: the 40 that fit.
     for (const line of stdout) {
-      expect(line.text).toMatch(LINE);
+      expect(line.text).toMatch(WIDE_LINE);
     }
-    // Counted as the child wrote them (125 bytes with the newline), not as
-    // stored: redaction makes a stored line longer.
-    expect(stdout.length * 125).toBeLessThanOrEqual(5_000);
+    expect(stdout).toHaveLength(40);
+    // And the log says where it was cut: once, beside the error.
+    expect(await markers(driver, runner, record.runId)).toEqual([
+      { text: cutMarker(5_060), level: "warn" },
+    ]);
   }, 30_000);
+
+  it("says the child was killed only when it was", () => {
+    // The pipe can be read past the limit after the child exited on its own.
+    const killed = new OutputLimitError(5_000, 7_500, true);
+    const exited = new OutputLimitError(5_000, 7_500, false);
+    expect(killed.message).toMatch(/and was killed$/);
+    expect(killed.context.killed).toBe(true);
+    expect(exited.message).not.toMatch(/killed/);
+    expect(exited.message).toMatch(/before it exited$/);
+    expect(exited.context.killed).toBe(false);
+  });
 
   it("leaves a child under it alone (the control)", async () => {
     const { runner, driver } = makeRunner("noisy", {
@@ -530,6 +592,27 @@ describe("maxBuffer", () => {
       (line) => line.stream === "stdout",
     );
     expect(stdout).toHaveLength(50);
+    expect(await markers(driver, runner, record.runId)).toEqual([]);
+  }, 30_000);
+
+  it("marks the cut when the excess is read after the run succeeded", async () => {
+    // `late-noise` reports done and exits before a grandchild holding its
+    // stdout writes 60 lines (7,500 bytes): the run is a success before the
+    // limit is crossed. Before the marker, nothing said the log was cut.
+    const { runner, driver } = makeRunner("late-noise", {
+      spawn: { maxBuffer: 5_000 },
+    });
+    const { record, result } = await runOnce(runner, { lines: 60 });
+
+    expect(record.status).toBe("success");
+    expect(result).toBe("finished early");
+    const stdout = (await readLog(driver, runner, record.runId)).lines.filter(
+      (line) => line.stream === "stdout",
+    );
+    expect(stdout.length).toBeLessThanOrEqual(40);
+    expect(await markers(driver, runner, record.runId)).toEqual([
+      { text: cutMarker(5_000), level: "warn" },
+    ]);
   }, 30_000);
 
   it("fails a queue job whose child-process target goes over it", async () => {

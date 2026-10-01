@@ -274,6 +274,14 @@ describe("child-process environment: in this process", () => {
     expect((await runnerEnv({})).ISO0_HOST_SECRET).toBeUndefined();
   }, 30_000);
 
+  it("copies only variables from passEnv, never an inherited property", async () => {
+    // `process.env.toString` is `Object.prototype.toString`: a name lookup
+    // that does not check it is a set variable copies a function.
+    const env = await runnerEnv({ passEnv: ["toString", "constructor"] });
+    expect(Object.hasOwn(env, "toString")).toBe(false);
+    expect(Object.hasOwn(env, "constructor")).toBe(false);
+  }, 30_000);
+
   it("removes a base variable given as undefined in env", async () => {
     const env = await runnerEnv({ env: { HOME: undefined, ISO0_X: "x" } });
     expect(env.HOME).toBeUndefined();

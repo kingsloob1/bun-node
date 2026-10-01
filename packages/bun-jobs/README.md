@@ -2790,7 +2790,10 @@ export const worker = new BunQueueWorker("thumbnails", new URL("./processors/thu
 The child is also started with `--no-env-file`, because Bun otherwise loads a
 `.env` from its `cwd` and would hand the secrets straight back. A custom
 `execPath` therefore receives that flag before the entry file, and must pass
-its arguments on to Bun. `env: "inherit"` restores the whole live
+its arguments on to Bun. The flag stops `.env` loading only: a `bunfig.toml`
+`preload` still runs in the child, from its `cwd` and from the global bunfig
+under the copied `HOME`, which is the project's own code rather than the
+job's. `env: "inherit"` restores the whole live
 `process.env` and Bun's `.env` loading, the behaviour before the allowlist.
 `passEnv` beside it is a `ConfigError`.
 
@@ -2814,14 +2817,32 @@ in a container.
 id is a `ConfigError` when the worker or runner is constructed, rather than
 `EPERM` at the first attempt. `uid` needs `gid` beside it: measured on Bun
 1.4.3, a child given only a `uid` keeps its parent's group, which for a root
-parent is group 0. POSIX only.
+parent is group 0. With `gid`, the child's supplementary groups are dropped.
+POSIX only.
+
+Construction cannot tell whether that user may run the `bun` binary and read
+the entry file. One that cannot fails each attempt with `EACCES` (measured
+with `bun` under a home directory of mode `750`), as a failed attempt rather
+than a thrown error. The child also keeps the base set's `HOME` and `TMPDIR`,
+which another user may not be able to write, so set them in `env` beside
+`uid`/`gid`: `env: { HOME: "/tmp/jobs", TMPDIR: "/tmp/jobs" }`.
 
 **`cgroup`** gives each child a cgroup of its own, `<parent>/bun-jobs-<runId>-…`,
-created just before it starts and removed after it exits, every process left
-in it killed first through `cgroup.kill`. Its `limits` are written into it:
-`memory` (`memory.max`, with swap set to `0`), `pids` (`pids.max`) and `cpus`
-(`cpu.max`). A child over its memory limit is OOM-killed alone; the attempt
-fails and the worker carries on. It needs Linux, cgroup v2 and a `parent`
+created just before it starts and removed after it exits: the processes still
+in it are killed first through `cgroup.kill`, and any cgroup the job made
+inside it is removed with it. Its `limits` are written into it: `memory`
+(`memory.max`, with swap set to `0`), `pids` (`pids.max`) and `cpus`
+(`cpu.max`). A child over its memory limit is OOM-killed, not the worker; the
+attempt fails and the worker carries on.
+
+**A cgroup is a resource and cleanup boundary, and a security boundary only
+together with `uid`/`gid` set to another user.** A job running as the
+worker's user can write the delegated tree as well as the worker can, so it
+can move itself or a process it started into a sibling cgroup, out of its
+limits and out of the cleanup (measured in review: a `sleep` and the job
+itself moved out, then 160 MB allocated under a 64 MB limit). It holds
+against a job that is buggy, not one that is hostile, unless the job runs as
+a user that cannot write the tree. It needs Linux, cgroup v2 and a `parent`
 this process can write whose `cgroup.subtree_control` enables the
 controllers the limits use. No root is needed under systemd:
 
@@ -2846,9 +2867,16 @@ dropped.
 `stderr` together. Past it the child is killed with `SIGKILL` and the attempt
 fails with `OutputLimitError` (`code: "OUTPUT_LIMIT"`). The output forwarded
 is cut after the last whole line that fits, so every stored log line is whole
-and [redaction](#secrets-are-redacted) sees it whole. It counts piped streams
+and [redaction](#secrets-are-redacted) sees it whole. The run's log then gets
+one `warn` line on its `log` stream, `[bun-jobs] output cut at maxBuffer (N
+bytes): the rest of this run's stdout and stderr was dropped`, and so does a
+run that had already succeeded when the excess was read: its child's result
+and exit can arrive before the last of its output, and the run keeps its
+success, but its log never ends silently short. A queue target, which keeps
+no run log, writes the same line to the attempt's logger. It counts piped streams
 only, so one of `stdout` and `stderr` must be `"pipe"` (a target's default is
-`"inherit"`; a runner's is `"pipe"` while `captureLogs` is on). Unbounded by
+`"inherit"`; a runner's is `"pipe"` while `captureLogs` is on), and not what
+crosses the IPC channel: `ctx.log`, progress and messages. Unbounded by
 default: what run-log capture *stores* is already bounded by `captureLogs`.
 
 ### One file, many job names: `defineProcessors`
@@ -7045,6 +7073,7 @@ so a caller can add to them but never overwrite them.
 | `UnrecoverableJobError` | `UNRECOVERABLE_JOB` | Thrown by your processor: the job goes to `dead` now. |
 | `ChildFailedError` | `CHILD_FAILED` | A flow child failed for good and buried its parent (`child` as `queue:id`). |
 | `ChildExitError` | `CHILD_EXIT` | A child process exited without reporting a result (`exitCode`, `signalCode`). |
+| `OutputLimitError` | `OUTPUT_LIMIT` | A child wrote more to its piped stdout and stderr than its [`maxBuffer`](#hardening-a-child-process) allows (`maxBuffer`, `bytes`, and `killed`: whether it was still running to be killed). |
 | `RunKilledError` | `RUN_KILLED` | A run was stopped on request (`reason`). |
 | `InvalidHandlerError` | `INVALID_HANDLER` | A handler or processor file has no usable default export. |
 | `RunnerStoppedError` | `RUNNER_STOPPED` | A runner was triggered manually after `stop()`. |

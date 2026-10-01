@@ -173,7 +173,7 @@ export function buildChildEnv(
 
   if (policy.env === "inherit") {
     for (const [name, value] of Object.entries(source)) {
-      if (value !== undefined) {
+      if (typeof value === "string") {
         out[name] = value;
       }
     }
@@ -181,8 +181,10 @@ export function buildChildEnv(
   }
 
   for (const name of [...CHILD_BASE_ENV, ...(policy.passEnv ?? [])]) {
-    const value = source[name];
-    if (value !== undefined) {
+    // Own string values only: `process.env.toString` is a function inherited
+    // from `Object.prototype`, not a variable.
+    const value = Object.hasOwn(source, name) ? source[name] : undefined;
+    if (typeof value === "string") {
       out[name] = value;
     }
   }

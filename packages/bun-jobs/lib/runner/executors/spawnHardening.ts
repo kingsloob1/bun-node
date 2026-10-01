@@ -1,9 +1,11 @@
+import type { Dirent } from "node:fs";
 import type { SpawnCgroupOptions, SpawnOptions } from "../types";
 import {
   accessSync,
   constants,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmdirSync,
   writeFileSync,
@@ -316,13 +318,16 @@ const CGROUP_REMOVE_BUDGET = 2_000;
 
 /**
  * Kills whatever is left in a child's cgroup — a process the job started and
- * did not wait for — and removes it. Bounded: a cgroup that will not go is
- * left behind (an empty directory, harmless) rather than holding the run's
+ * did not wait for — and removes it, with any cgroups the job created inside
+ * it. Bounded: a cgroup that will not go within the budget (an older kernel
+ * with no `cgroup.kill`, a process stuck in uninterruptible sleep) is left
+ * behind, still holding whatever it holds, rather than holding the run's
  * outcome. Resolves `true` when it was removed. Never rejects.
  */
 export async function closeChildCgroup(path: string): Promise<boolean> {
   try {
-    // `cgroup.kill` (Linux 5.14+) SIGKILLs every process in the cgroup.
+    // `cgroup.kill` (Linux 5.14+) SIGKILLs every process in the cgroup and in
+    // every cgroup below it.
     if (existsSync(join(path, "cgroup.kill"))) {
       writeFileSync(join(path, "cgroup.kill"), "1");
     }
@@ -331,7 +336,9 @@ export async function closeChildCgroup(path: string): Promise<boolean> {
   }
   const deadline = Date.now() + CGROUP_REMOVE_BUDGET;
   for (;;) {
-    if (rmdirQuietly(path)) {
+    // Depth first: a job running as this user may have made cgroups inside
+    // its own, and a cgroup with a child cannot be removed.
+    if (removeCgroupTree(path)) {
       return true;
     }
     if (Date.now() >= deadline) {
@@ -340,6 +347,23 @@ export async function closeChildCgroup(path: string): Promise<boolean> {
     // EBUSY while the killed processes are still being reaped.
     await sleep(10);
   }
+}
+
+/** Removes a cgroup and every cgroup below it, deepest first; `true` when it is gone. */
+function removeCgroupTree(path: string): boolean {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(path, { withFileTypes: true });
+  } catch (error) {
+    return (error as { code?: string }).code === "ENOENT";
+  }
+  for (const entry of entries) {
+    // A cgroup's own files are never directories; its children always are.
+    if (entry.isDirectory()) {
+      removeCgroupTree(join(path, entry.name));
+    }
+  }
+  return rmdirQuietly(path);
 }
 
 /** Removes an empty cgroup directory; `true` when it is gone. */

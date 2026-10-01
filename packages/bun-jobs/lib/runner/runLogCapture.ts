@@ -113,6 +113,16 @@ interface StreamState {
 const DRAIN_POLL_MS = 5;
 
 /**
+ * The line a run's log ends with when its child's piped output passed
+ * `spawn.maxBuffer`: where the output stops, and why, rather than a log that
+ * just ends. Stored on the `log` stream at `warn`, like the `captureBytes`
+ * ceiling's notice.
+ */
+export function outputCutNotice(maxBuffer: number): string {
+  return `[bun-jobs] output cut at maxBuffer (${maxBuffer} bytes): the rest of this run's stdout and stderr was dropped`;
+}
+
+/**
  * What a line becomes when redaction itself fails. Failing closed: a line that
  * could not be checked for secrets is not stored as it was.
  */

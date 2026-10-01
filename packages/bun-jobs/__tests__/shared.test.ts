@@ -23,6 +23,7 @@ import {
   newId,
   newToken,
   NotSupportedError,
+  OutputLimitError,
   parseToken,
   ProtocolError,
   QueueClosedError,
@@ -52,6 +53,7 @@ describe("errors", () => {
       [new JobTimeoutError(500), "JOB_TIMEOUT"],
       [new UnrecoverableJobError("never"), "UNRECOVERABLE_JOB"],
       [new ChildExitError(1, null), "CHILD_EXIT"],
+      [new OutputLimitError(1024, 2048, true), "OUTPUT_LIMIT"],
       [new DriverError("redis", "claimJob", new Error("conn")), "DRIVER_ERROR"],
       [new SerializationError("job.data"), "SERIALIZATION"],
     ];

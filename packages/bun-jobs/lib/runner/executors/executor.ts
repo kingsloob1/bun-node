@@ -64,6 +64,14 @@ export interface ExecutorEvents {
    */
   onOutputEnd?: (stream: "stdout" | "stderr") => void;
   /**
+   * A child's piped output passed its `maxBuffer`, and the rest of it is
+   * being dropped. Called at most once per run, and whether or not the run
+   * has already been decided: the excess can be read after the child has
+   * reported its result and exited, and a log cut then must still say so.
+   * Optional; only `child-process` calls it.
+   */
+  onOutputLimit?: (maxBuffer: number, bytes: number) => void;
+  /**
    * The handler wrote to the console in a realm it shares: an `in-process`
    * run's `console`, or a `worker-thread` run's. Called once per console call with
    * its formatted text, ending in a newline. Only fired when the run was

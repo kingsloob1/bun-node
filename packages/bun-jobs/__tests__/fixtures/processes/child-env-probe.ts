@@ -87,8 +87,11 @@ try {
   });
 
   await runner.start();
+  const triggered = Date.now();
   await runner.trigger({ args });
   report = await outcome;
+  // From the trigger to the run's outcome: what a slow cleanup would show.
+  report.elapsedMs = Date.now() - triggered;
   report.leftover = leftover();
   await runner.stop({ force: true });
 } catch (error) {

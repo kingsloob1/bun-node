@@ -8,6 +8,12 @@ interface NoisyArgs {
   width?: number;
   /** How long to wait after writing, in milliseconds. */
   holdMs?: number;
+  /**
+   * The filler character, repeated `width` times. Defaults to `"x"`; a
+   * multi-byte one (`"é"`, two bytes in UTF-8) puts a character boundary
+   * that is not a byte boundary next to wherever an output limit cuts.
+   */
+  fill?: string;
 }
 
 /**
@@ -26,10 +32,11 @@ export default async function noisy(input: {
     lines,
     width = 100,
     holdMs = 0,
+    fill = "x",
   } = input.data ?? input.args ?? { lines: 0 };
   for (let i = 0; i < lines; i++) {
     process.stdout.write(
-      `${String(i).padStart(6, "0")} password=hunter2 ${"x".repeat(width)}\n`,
+      `${String(i).padStart(6, "0")} password=hunter2 ${fill.repeat(width)}\n`,
     );
   }
   await Bun.sleep(holdMs);

@@ -292,21 +292,30 @@ export class SpawnExecutor implements Executor {
     timeoutTimer?.unref?.();
 
     this.#pipe(child, options, (outputBytes) => {
+      // Said first, and however the run ends: a run that already succeeded
+      // when the excess was read keeps its success, and this is then the
+      // only sign that its log was cut. `#pipe` calls this once per run.
+      options.events.onOutputLimit?.(this.options.maxBuffer!, outputBytes);
       // Over `maxBuffer`: the child is killed outright, and the run fails
       // with the limit — unless something else already decided how it ended.
       if (overflowed || settled) {
         return;
       }
       overflowed = true;
+      // The pipe can still be read after the child has exited on its own;
+      // then there is nothing to kill, and the message must not say so.
+      const running = child.exitCode === null && child.signalCode === null;
       reported ??= {
         status: "failed",
         error: serializeError(
-          new OutputLimitError(this.options.maxBuffer!, outputBytes, {
+          new OutputLimitError(this.options.maxBuffer!, outputBytes, running, {
             runId: context.runId,
           }),
         ),
       };
-      child.kill("SIGKILL");
+      if (running) {
+        child.kill("SIGKILL");
+      }
     });
 
     return {
