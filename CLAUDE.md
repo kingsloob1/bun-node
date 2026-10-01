@@ -151,6 +151,14 @@ passing it as a `SQL` option: **Bun honours it as an option and ignores it in a
 URL**, so `new SQL(url)` on the configured MySQL URL fails with
 `ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED` while the driver connects fine.
 Probing that URL by hand is therefore misleading — it looks broken and is not.
+It also raises MariaDB's and MySQL's `max_connections` to at least
+`MAX_CONNECTIONS` (1000; `--max-connections=N` overrides it) and Postgres's to
+`POSTGRES_MAX_CONNECTIONS` (700; `--postgres-max-connections=N`), and never
+lowers one, because one 16-worker `bun test --parallel` run peaks at about 180
+connections per server against their defaults of 151 and 100. Postgres's
+`ALTER SYSTEM` applies only on a restart, which drops open connections, so
+the script prints the restart command and restarts only with
+`--restart-postgres`.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
 depend on bun-common). The `eslint.config.mjs` `TS2742`/`TS2883` portability
