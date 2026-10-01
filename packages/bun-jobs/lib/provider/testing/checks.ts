@@ -10,7 +10,7 @@ import { CODE_SHAPED } from "../../summon/controller";
 import { dedupeKeyFor } from "../../summon/marker";
 import { ProviderError, providerErrorFacts } from "../errors";
 import { factProblem } from "../redact";
-import { describeThrown, DIRECT_QUEUE, KIT_TIMERS } from "./run";
+import { describeThrown, DIRECT_QUEUE, fakeOf, KIT_TIMERS } from "./run";
 import { trackTimers } from "./scan";
 
 /**
@@ -280,7 +280,7 @@ export async function validateChecks(
     return;
   }
   const before = run.unitCount();
-  run.internals.clearFaults();
+  run.internals?.clearFaults();
   const healthy = await run.call(async (context) => await validate(context));
   if (!healthy.ok) {
     run.set(
@@ -299,9 +299,15 @@ export async function validateChecks(
     );
   }
 
-  run.platform.inject("auth", { times: 5 });
+  if (run.selfHosted) {
+    // Nothing to inject `auth` into, and units started outside a call
+    // cannot be counted: both checks are skipped (see `conformance.ts`).
+    return;
+  }
+  const fake = fakeOf(run);
+  fake.platform.inject("auth", { times: 5 });
   const rejected = await run.call(async (context) => await validate(context));
-  run.internals.clearFaults();
+  fake.internals.clearFaults();
   run.set(
     "summon.validate.auth-fails",
     !rejected.ok || rejected.value.some((check) => check.status === "fail")
@@ -321,7 +327,7 @@ export async function validateChecks(
 
 /** The requests the fake received from index `from` on. */
 function requestsSince(run: KitRun, from: number): FakeRequestRecord[] {
-  return run.internals.requests.slice(from);
+  return fakeOf(run).internals.requests.slice(from);
 }
 
 /** A result's handles, or `[]`. */
@@ -350,12 +356,15 @@ export async function dedupeChecks(run: KitRun): Promise<void> {
   const request = run.request({ id });
   const key = dedupeKeyFor(dedupe)(id);
 
-  const tokensBefore = run.internals.tokens.length;
+  // A self-hosted provider has no platform to send a token to: the key's
+  // check is skipped there, and only the unit count is read.
+  const tokens = run.internals?.tokens ?? [];
+  const tokensBefore = tokens.length;
   const unitsBefore = run.unitCount();
   const first = await run.call(
     async (context) => await run.facet.summon(request, context),
   );
-  const sent = run.internals.tokens.slice(tokensBefore);
+  const sent = tokens.slice(tokensBefore);
   if (!first.ok) {
     run.set(
       "summon.dedupe.token-is-key",
@@ -421,11 +430,12 @@ function comparable(record: FakeRequestRecord): string {
 /** The purity group: one request twice gives byte-identical platform requests. */
 export async function purityChecks(run: KitRun): Promise<void> {
   const request = run.request();
-  const from = run.internals.requests.length;
+  const { internals } = fakeOf(run);
+  const from = internals.requests.length;
   const first = await run.call(
     async (context) => await run.facet.summon(request, context),
   );
-  const middle = run.internals.requests.length;
+  const middle = internals.requests.length;
   const second = await run.call(
     async (context) => await run.facet.summon(request, context),
   );
@@ -510,7 +520,9 @@ export async function concurrencyChecks(run: KitRun): Promise<void> {
         const request = requests[index]!;
         const result = (outcome as { value: SummonResult }).value;
         for (const handle of handlesOf(result)) {
-          const unit = run.internals.unit(handle);
+          // A self-hosted provider's units carry no recorded argv: the
+          // handoff is what proves its arguments reach the unit.
+          const unit = run.internals?.unit(handle);
           const carried = unit?.argv.find((arg) =>
             arg.startsWith(`${SUMMON_ARGS.id}=`),
           );
@@ -645,12 +657,24 @@ export async function statusChecks(run: KitRun): Promise<void> {
     );
     return;
   }
+  if (run.selfHosted && status === undefined) {
+    run.set(
+      "summon.status.cancel-stops-pending",
+      "skip",
+      "a self-hosted provider without status(): nothing can say whether its unit stopped",
+    );
+    return;
+  }
   const cancelled = await run.call(
     async (context) => await cancel(handles, context),
   );
-  const still = handles.filter(
-    (handle) => run.internals.unit(handle)?.state !== "exited",
-  );
+  // Self-hosted, there is no fake to read: status() is the only witness,
+  // read below.
+  const internals = run.internals;
+  const still =
+    internals === undefined
+      ? []
+      : handles.filter((handle) => internals.unit(handle)?.state !== "exited");
   let reported: string | undefined;
   if (cancelled.ok && still.length === 0 && status !== undefined) {
     const answer = await run.call(
@@ -681,7 +705,8 @@ export async function statusChecks(run: KitRun): Promise<void> {
 /** The scale group: a target set twice is one count; release sets zero. */
 export async function scaleChecks(run: KitRun): Promise<void> {
   const { release } = run.facet;
-  const live = (): number => run.internals.liveCount();
+  const { internals } = fakeOf(run);
+  const live = (): number => internals.liveCount();
   // Start from zero, so the count read afterwards is this group's.
   const before = live();
   if (before > 0 && release !== undefined) {
@@ -740,6 +765,7 @@ export async function scaleChecks(run: KitRun): Promise<void> {
 
 /** The lifetime group: with `enforcesLifetime`, the request carries `maxLifetimeMs`. */
 export async function lifetimeChecks(run: KitRun): Promise<void> {
+  const fake = fakeOf(run);
   if (!run.capabilities.enforcesLifetime) {
     run.set("summon.lifetime.enforced", "skip", "enforcesLifetime is false");
     return;
@@ -747,7 +773,7 @@ export async function lifetimeChecks(run: KitRun): Promise<void> {
   // A figure no other field would carry by chance.
   const cap = run.capabilities.maxLifetimeMs;
   const lifetime = cap === null ? 5_432_000 : Math.min(5_432_000, cap);
-  const from = run.internals.requests.length;
+  const from = fake.internals.requests.length;
   const outcome = await run.call(
     async (context) =>
       await run.facet.summon(run.request({ maxLifetimeMs: lifetime }), context),
@@ -950,6 +976,7 @@ export async function errorChecks(
   probe: VerdictProbe | undefined,
   probeSkipped?: string,
 ): Promise<void> {
+  const fake = fakeOf(run);
   /** Every ProviderError the group's faults produced, for the platform-code check. */
   const thrown: ProviderError[] = [];
   for (const fault of ERROR_FAULTS) {
@@ -957,13 +984,13 @@ export async function errorChecks(
     if (!run.wanted(id)) {
       continue;
     }
-    run.internals.clearFaults();
-    run.platform.inject(fault, { times: 5, retryAfterMs: RETRY_AFTER_MS });
+    fake.internals.clearFaults();
+    fake.platform.inject(fault, { times: 5, retryAfterMs: RETRY_AFTER_MS });
     const outcome = await run.call(
       async (context) => await run.facet.summon(run.request(), context),
     );
-    const consumed = run.internals.pendingFaults() < 5;
-    run.internals.clearFaults();
+    const consumed = fake.internals.pendingFaults() < 5;
+    fake.internals.clearFaults();
     const problems: string[] = [];
     if (!consumed) {
       problems.push("the provider made no platform request");
@@ -1016,9 +1043,9 @@ export async function errorChecks(
 
     let verdictNote: string | undefined;
     if (consumed && probe !== undefined) {
-      run.platform.inject(fault, { times: 5, retryAfterMs: RETRY_AFTER_MS });
+      fake.platform.inject(fault, { times: 5, retryAfterMs: RETRY_AFTER_MS });
       const verdict = await probe(fault);
-      run.internals.clearFaults();
+      fake.internals.clearFaults();
       // When the provider's own answer was already wrong, what the
       // controller then did follows from it: context, not a second fault.
       const answered = problems.length === 0;
@@ -1087,10 +1114,87 @@ const ABORT_AFTER_MS = 500;
 /** How long after the abort a call may take to reject, in ms. */
 const REJECT_WITHIN_MS = 1_000;
 
+/**
+ * The timeouts group for a self-hosted provider, which has no platform to
+ * be slow: a call whose signal has already aborted rejects promptly and
+ * starts nothing, and a call that answers leaves no timer behind.
+ */
+async function selfHostedTimeoutChecks(run: KitRun): Promise<void> {
+  const abort = new AbortController();
+  abort.abort(new Error("the conformance kit's timeout"));
+  const before = run.unitCount();
+  const started = Date.now();
+  const aborted = await Promise.race([
+    run.facet.summon(run.request(), run.context(abort.signal)).then(
+      (value) => ({ rejected: false as const, value }),
+      (error: unknown) => ({ rejected: true as const, error }),
+    ),
+    new Promise<undefined>((resolve) => {
+      KIT_TIMERS.setTimeout(resolve, REJECT_WITHIN_MS, undefined);
+    }),
+  ]);
+  if (aborted !== undefined) {
+    run.scanned.push(aborted.rejected ? aborted.error : aborted.value);
+    if (!aborted.rejected) {
+      for (const handle of handlesOf(aborted.value)) {
+        run.handles.add(handle);
+      }
+    }
+  }
+  run.set(
+    "summon.timeouts.rejects-on-abort",
+    aborted?.rejected === true && run.unitCount() === before ? "pass" : "fail",
+    aborted === undefined
+      ? `still pending ${REJECT_WITHIN_MS} ms after a call whose ctx.signal had already aborted`
+      : !aborted.rejected
+        ? `answered ${aborted.value.status} when ctx.signal had already aborted, instead of rejecting`
+        : run.unitCount() === before
+          ? `rejected in ${Date.now() - started} ms`
+          : "rejected, but started a unit first",
+  );
+
+  const timers = trackTimers();
+  let left: number;
+  try {
+    const outcome = await timers.run(
+      async () =>
+        await run.call(
+          async (context) => await run.facet.summon(run.request(), context),
+        ),
+    );
+    if (!outcome.ok) {
+      run.set(
+        "summon.timeouts.no-timer-left",
+        "fail",
+        `summon threw ${describeThrown(outcome.error)}`,
+      );
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      KIT_TIMERS.setTimeout(resolve, 100);
+    });
+    left = timers.pending();
+  } finally {
+    timers.restore();
+  }
+  run.set(
+    "summon.timeouts.no-timer-left",
+    left === 0 ? "pass" : "fail",
+    left === 0
+      ? undefined
+      : `${left} timer(s) the call created were still pending after it settled`,
+  );
+}
+
 /** The timeouts group: a slow platform, an aborted signal, a prompt rejection, no timer left. */
 export async function timeoutChecks(run: KitRun): Promise<void> {
-  run.internals.clearFaults();
-  run.platform.inject("slow", { times: 5 });
+  if (run.selfHosted) {
+    await selfHostedTimeoutChecks(run);
+    return;
+  }
+  const fake = fakeOf(run);
+  fake.internals.clearFaults();
+  fake.platform.inject("slow", { times: 5 });
   const abort = new AbortController();
   const context = run.context(abort.signal);
   let abortedAt = 0;
@@ -1135,8 +1239,8 @@ export async function timeoutChecks(run: KitRun): Promise<void> {
     // The globals are the process's, not the kit's: always given back.
     timers.restore();
     KIT_TIMERS.clearTimeout(abortTimer);
-    run.internals.releaseHolds();
-    run.internals.clearFaults();
+    fake.internals.releaseHolds();
+    fake.internals.clearFaults();
   }
 
   const result = settled as

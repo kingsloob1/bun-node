@@ -881,6 +881,13 @@ it("passes the conformance kit", async () => {
   while `serialize.exposeHosts` is off, is not warned about.
 - **`report.toMarkdown()`** renders a checklist headed "tested against a
   fake": publish it with the package.
+- **A provider with no platform API**, one that starts processes itself on
+  the host (as `localCompute` does), has nothing to fake: leave `platform`
+  out and configure it to start `CONFORMANCE_WORKER`. The kit then follows
+  units through the handles `summon` answers and `status()`, skips each
+  check that reads a fake (routing, purity, the dedupe token, errors,
+  lifetime, two of validate's), and still runs the handoff and the race.
+  See [Self-hosted providers](./reference.md#self-hosted-providers).
 
 ## 12. Security obligations
 

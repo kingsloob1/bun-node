@@ -16,6 +16,7 @@
  * ({@link COMPUTE_PROVIDER_API}): any `0.x` minor may change it.
  */
 export type { QueueDemand } from "../drivers/index";
+export { CHILD_BASE_ENV } from "../shared/childEnv";
 export { ConfigError, JobsError } from "../shared/errors";
 export type {
   SummonReason,
@@ -48,3 +49,18 @@ export {
   type StandardSchemaV1,
   toStandardSchema,
 } from "@kingsleyweb/bun-common";
+
+// The first-party local provider, written against this entry alone (the
+// first-party rule): its module imports this one and calls
+// `defineComputeProvider` as it loads, so it must be this entry's last
+// module request, after `./define` and `./version` have loaded. Sorted with
+// the others it would load first, and fail. A test imports this entry
+// first in a fresh process to hold it.
+/* eslint-disable perfectionist/sort-exports */
+export {
+  localCompute,
+  type LocalComputeConfig,
+  type LocalComputeOptions,
+  type LocalComputeOutput,
+} from "../providers/local";
+/* eslint-enable perfectionist/sort-exports */
