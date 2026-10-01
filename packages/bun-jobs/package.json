@@ -28,6 +28,11 @@
       "types": "./dts/provider/testing/index.d.ts",
       "default": "./lib/provider/testing/index.ts"
     },
+    "./remote": {
+      "@kingsleyweb/source": "./lib/remote/index.ts",
+      "types": "./dts/remote/index.d.ts",
+      "default": "./lib/remote/index.ts"
+    },
     "./summon": {
       "@kingsleyweb/source": "./lib/summon/index.ts",
       "types": "./dts/summon/index.d.ts",
@@ -67,6 +72,11 @@
       "@kingsleyweb/source": "./lib/queue/index.ts",
       "types": "./dts/queue/index.d.ts",
       "default": "./lib/queue/index.ts"
+    },
+    "./lib/remote": {
+      "@kingsleyweb/source": "./lib/remote/index.ts",
+      "types": "./dts/remote/index.d.ts",
+      "default": "./lib/remote/index.ts"
     },
     "./lib/runner": {
       "@kingsleyweb/source": "./lib/runner/index.ts",
