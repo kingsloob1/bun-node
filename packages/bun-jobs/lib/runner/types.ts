@@ -9,6 +9,7 @@ import type {
   RunSource,
   RunStatus,
 } from "../drivers/index";
+import type { ChildEnv } from "../shared/childEnv";
 import type { LogFields, Logger, LoggerLike } from "../shared/logger";
 import type { RunProgress } from "../shared/progress";
 import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
@@ -500,11 +501,75 @@ export interface RunHandle {
 export interface SpawnOptions {
   /** Working directory for the child. Defaults to the parent's. */
   cwd?: string;
-  /** Extra environment variables for the child. */
-  env?: Record<string, string>;
+  /**
+   * The child's environment. Defaults to `{}`: an **allowlist**, so a child
+   * no longer sees the host's secrets.
+   *
+   * - An object: these literal values, over `CHILD_BASE_ENV` (`PATH`, `HOME`,
+   *   `TMPDIR`, locale, `TZ`, `NODE_ENV`, …, copied from this process's live
+   *   `process.env`) and the names in {@link SpawnOptions.passEnv}. A value
+   *   of `undefined` removes a variable the base set would have copied.
+   * - `"inherit"`: this process's whole live `process.env`, the behaviour
+   *   before the allowlist.
+   *
+   * The runner protocol's `BUN_JOBS_*` variables (`CHILD_ENV`) are set last
+   * either way and cannot be overridden. Under the allowlist the child is
+   * also started with `--no-env-file`, so Bun does not load a `.env` from its
+   * `cwd` and hand the secrets back; `"inherit"` keeps Bun's loading.
+   *
+   * This bounds the environment of the child bun-jobs starts, nothing more:
+   * the child can still read files this process can (see `uid`/`gid`), and a
+   * process it starts itself gets whatever the child passes it.
+   */
+  env?: ChildEnv;
+  /**
+   * Names of variables to copy from this process's live `process.env` at each
+   * spawn, beyond the base set: `["DATABASE_URL", "AWS_REGION"]`. A name that
+   * is not set is skipped. A `ConfigError` with `env: "inherit"`, which
+   * already passes everything.
+   */
+  passEnv?: readonly string[];
+  /**
+   * The user id the child runs as (`setuid(2)`). POSIX only. Changing it
+   * needs `CAP_SETUID` (root, in practice), so without it a different id is a
+   * `ConfigError` when the runner or worker is constructed, not a failure at
+   * the first spawn. Requires {@link SpawnOptions.gid}: Bun keeps this
+   * process's group otherwise, which for a root parent is group 0.
+   */
+  uid?: number;
+  /**
+   * The group id the child runs as (`setgid(2)`); with the privilege to
+   * change it, the child's supplementary groups are reduced to this one.
+   * POSIX only, and a `ConfigError` without `CAP_SETGID`, as `uid` is.
+   */
+  gid?: number;
+  /**
+   * Runs each child in a cgroup of its own, created under
+   * {@link SpawnCgroupOptions.parent} with the given limits, and removed —
+   * every process left in it killed first — when the child exits. Linux
+   * cgroup v2 only. The parent must be a delegated subtree this process can
+   * write; nothing here needs root. Checked when the runner or worker is
+   * constructed. Absent by default: no cgroup of its own.
+   */
+  cgroup?: SpawnCgroupOptions;
+  /**
+   * The most bytes a child may write to its piped `stdout` and `stderr`
+   * together. Past it the child is killed (`SIGKILL`) and the run fails with
+   * an `OutputLimitError`; the output kept is cut at the last whole line
+   * that fits, so a stored log line is never half a line and redaction sees
+   * every line whole. Counts only piped streams, so it needs `stdout` or
+   * `stderr` to be `"pipe"` (a `ConfigError` otherwise). Unbounded by
+   * default: what run-log capture *stores* is bounded by `captureLogs`.
+   */
+  maxBuffer?: number;
   /** Extra arguments appended to the child's command line. */
   args?: string[];
-  /** Executable to run. Defaults to the current `bun` binary. */
+  /**
+   * Executable to run. Defaults to the current `bun` binary. It is given the
+   * runner's entry file as its first argument — after `--no-env-file`, under
+   * the default environment allowlist — so a wrapper script must pass its
+   * arguments on to Bun (`exec bun "$@"`).
+   */
   execPath?: string;
   /**
    * Where the child's stdout goes. Defaults to `"pipe"` while
@@ -520,13 +585,70 @@ export interface SpawnOptions {
   startTimeout?: number;
 }
 
-/** Options accepted by {@link BunRunnerOptions.worker}. */
+/**
+ * A per-child cgroup: {@link SpawnOptions.cgroup}.
+ *
+ * Each child gets a cgroup of its own, `<parent>/bun-jobs-<runId>`, created
+ * just before it starts (Bun's `cgroup` spawn option joins it before the
+ * child's first instruction) and removed after it exits, with any process
+ * still in it — a grandchild the job left behind — killed first through
+ * `cgroup.kill`.
+ *
+ * `parent` has to be a cgroup v2 directory this process may create
+ * directories in, whose `cgroup.subtree_control` enables every controller a
+ * limit uses (`memory`, `pids`, `cpu`). Under systemd, without root: run the
+ * worker in a `systemd-run --user --scope -p Delegate=yes` scope, move the
+ * worker's own process into a leaf cgroup of it (cgroup v2 allows no process
+ * in a cgroup whose children have controllers), enable the controllers in
+ * the scope's `cgroup.subtree_control`, create `parent` and enable them in
+ * its own `cgroup.subtree_control` too.
+ */
+export interface SpawnCgroupOptions {
+  /**
+   * The cgroup v2 directory each child's cgroup is created in: an absolute
+   * path under `/sys/fs/cgroup`. Required.
+   */
+  parent: string;
+  /**
+   * Limits for each child's cgroup, each needing its controller enabled in
+   * `parent`'s `cgroup.subtree_control`. None by default: the cgroup then
+   * only groups and accounts for the child's processes.
+   */
+  limits?: {
+    /**
+     * `memory.max`: bytes, or a size such as `"256mb"`. Swap is set to `0`
+     * beside it where the kernel offers `memory.swap.max`, so the limit is
+     * not stretched by swapping. Past it the kernel's OOM killer kills the
+     * child alone, not the worker.
+     */
+    memory?: number | string;
+    /** `pids.max`: the most processes and threads at once, Bun's own threads included. */
+    pids?: number;
+    /** `cpu.max`, as a number of CPUs: `0.5` is half of one. */
+    cpus?: number;
+  };
+}
+
+/**
+ * Options accepted by {@link BunRunnerOptions.worker}.
+ *
+ * **A `Worker` is not a security boundary.** It is a thread of this process:
+ * it shares the process's memory limits, file descriptors, user and files,
+ * and Bun accepts `resourceLimits` without enforcing them. Use
+ * `child-process` (with its `env` allowlist, `uid`/`gid` and `cgroup`) for
+ * code you do not trust.
+ */
 export interface WorkerOptions {
   /** Runs the worker in low-memory mode. */
   smol?: boolean;
   /** Name shown in diagnostics. */
   name?: string;
-  /** Extra environment variables for the worker. */
+  /**
+   * Extra environment variables for the worker, over this process's whole
+   * live `process.env`. There is no allowlist here, deliberately: a thread
+   * shares the process, so hiding variables from it would promise a boundary
+   * that is not there.
+   */
   env?: Record<string, string>;
   /** Arguments exposed to the worker as `process.argv`. */
   argv?: string[];

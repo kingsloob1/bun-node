@@ -29,6 +29,7 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { normalizeSchedule } from "../shared/schedule";
 import { isExecutionMode, legacyExecutionModeHint } from "./config";
+import { checkSpawnOptions } from "./executors/spawnHardening";
 import { createRedactor } from "./redact";
 
 /**
@@ -229,6 +230,14 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
   // change is invisible except that the output is also stored. An explicit
   // `"inherit"` or `"ignore"` still wins, and that stream is not captured.
   const childStdio = captureLogs.enabled ? "pipe" : "inherit";
+
+  // Checked whatever the mode, since a controller may switch the runner to
+  // `child-process` later; against the streams' defaults, which `maxBuffer`
+  // depends on.
+  checkSpawnOptions(options.spawn, {
+    stdout: options.spawn?.stdout ?? childStdio,
+    stderr: options.spawn?.stderr ?? childStdio,
+  });
 
   if (options.maxConcurrency !== undefined && options.maxConcurrency < 1) {
     throw new ConfigError("maxConcurrency must be at least 1", {
