@@ -66,15 +66,24 @@ export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return difference === 0;
 }
 
-/** Imported keys are cached by their bytes, at most this many. */
-const KEY_CACHE_SIZE = 32;
+/** Imported keys are cached, at most this many. */
+export const KEY_CACHE_SIZE = 32;
 
-/** WebCrypto keys already imported, by the key bytes as hex; oldest first. */
+/**
+ * WebCrypto keys already imported, oldest first, by the SHA-256 of the key
+ * bytes in hex: a one-way id, so the module never holds a secret as a map
+ * key, and a key rotated out leaves only its digest behind until it is
+ * evicted. Bounded by {@link KEY_CACHE_SIZE}.
+ */
 const keyCache = new Map<string, Promise<CryptoKey>>();
 
 /** The imported HMAC key for some bytes, from the cache when it is there. */
-function importKey(key: Uint8Array): Promise<CryptoKey> {
-  const id = toHex(key);
+async function importKey(key: Uint8Array): Promise<CryptoKey> {
+  const id = toHex(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", key as Uint8Array<ArrayBuffer>),
+    ),
+  );
   let found = keyCache.get(id);
   if (found === undefined) {
     found = crypto.subtle.importKey(
@@ -103,3 +112,8 @@ export const subtleHmacSha256: HmacSha256 = async (key, message) =>
       message as Uint8Array<ArrayBuffer>,
     ),
   );
+
+/** The cache's ids, oldest first: for tests, which check what it holds. */
+export function cachedKeyIds(): string[] {
+  return [...keyCache.keys()];
+}

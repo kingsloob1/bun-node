@@ -30,6 +30,7 @@ export { REMOTE_ID_PATTERN, signEnvelope, verifyEnvelope } from "./signing";
 export type {
   RemoteBody,
   RemoteSecret,
+  RemoteSignatureDirection,
   SignEnvelopeOptions,
   VerifyEnvelopeOptions,
   VerifyEnvelopeResult,

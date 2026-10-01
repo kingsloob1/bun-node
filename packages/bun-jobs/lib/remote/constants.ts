@@ -26,7 +26,11 @@ export const WORKER_PROTOCOL_VERSION = 1 as const;
 export const REMOTE_HEADERS = Object.freeze({
   /** The protocol version the sender chose: the highest both sides speak. */
   protocol: "bun-jobs-protocol",
-  /** `t=<unix seconds>,v1=<hex HMAC-SHA256>`, over `t "." rawBody`. */
+  /**
+   * `t=<unix seconds>,v1=<hex HMAC-SHA256>`, over `t "." d "." rawBody`
+   * (`d` is `q` for a request, `r` for a response), or `t ".q." id` for a
+   * bodyless request.
+   */
   signature: "bun-jobs-signature",
   /** The envelope's own id: unique per request, transport retries included. */
   id: "bun-jobs-id",

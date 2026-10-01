@@ -1,10 +1,13 @@
 import { REMOTE_OPS } from "@kingsleyweb/bun-jobs/remote";
 import { describe, expect, it } from "bun:test";
 import {
-  parseRemoteEnvelope,
   parseRemoteMessage,
+  parseRemoteRequest,
+  parseRemoteResponse,
   REMOTE_ENVELOPE_SCHEMAS,
   REMOTE_MESSAGE_SCHEMAS,
+  REMOTE_REQUEST_SCHEMAS,
+  REMOTE_RESPONSE_SCHEMAS,
 } from "../../lib/remote/schemas";
 
 /**
@@ -343,7 +346,33 @@ const MESSAGES: Record<string, Record<string, unknown>> = {
   },
 };
 
+/** The envelopes a gateway sends (requests) and a remote answers (responses). */
+const REQUEST_OPS = ["invoke", "cancel", "ping", "health", "status"];
+const REQUESTS = Object.fromEntries(
+  Object.entries(ENVELOPES).filter(([op]) => REQUEST_OPS.includes(op)),
+);
+const RESPONSES = Object.fromEntries(
+  Object.entries(ENVELOPES).filter(([op]) => !REQUEST_OPS.includes(op)),
+);
+
 describe("coverage", () => {
+  it("splits the envelopes into requests and responses, every one in exactly one", () => {
+    const requests = Object.keys(REMOTE_REQUEST_SCHEMAS).sort();
+    const responses = Object.keys(REMOTE_RESPONSE_SCHEMAS).sort();
+    expect(requests).toEqual([...REQUEST_OPS].sort());
+    expect(responses).toEqual([
+      "cancel-result",
+      "handshake",
+      "health-result",
+      "invoke-result",
+      "pong",
+      "status-result",
+    ]);
+    expect([...requests, ...responses].sort()).toEqual(
+      Object.keys(REMOTE_ENVELOPE_SCHEMAS).sort(),
+    );
+  });
+
   it("has a schema for every op, envelope or message, and nothing else", () => {
     const covered = new Set([
       ...Object.keys(REMOTE_ENVELOPE_SCHEMAS),
@@ -369,7 +398,8 @@ describe("coverage", () => {
 });
 
 describe.each([
-  ["envelope", ENVELOPES, parseRemoteEnvelope],
+  ["request", REQUESTS, parseRemoteRequest],
+  ["response", RESPONSES, parseRemoteResponse],
   ["message", MESSAGES, parseRemoteMessage],
 ] as const)("every %s", (_family, examples, parse) => {
   for (const [op, example] of Object.entries(examples)) {
@@ -423,7 +453,10 @@ describe.each([
 
 /** Refused, at a path: one negative case. */
 function refuses(
-  parse: typeof parseRemoteEnvelope | typeof parseRemoteMessage,
+  parse:
+    | typeof parseRemoteRequest
+    | typeof parseRemoteResponse
+    | typeof parseRemoteMessage,
   value: unknown,
   path: string,
 ): void {
@@ -444,35 +477,55 @@ describe("negative cases", () => {
 
   it("an op that is not this family's is UNSUPPORTED, at `op`", () => {
     for (const op of ["nope", "hello", 42, undefined]) {
-      refuses(parseRemoteEnvelope, { ...invoke, op }, "op");
+      refuses(parseRemoteRequest, { ...invoke, op }, "op");
     }
     for (const op of ["handshake", "invoke-result", "cancel-result"]) {
       refuses(parseRemoteMessage, { op }, "op");
     }
-    refuses(parseRemoteEnvelope, null, "op");
-    refuses(parseRemoteEnvelope, [invoke], "op");
+    refuses(parseRemoteRequest, null, "op");
+    refuses(parseRemoteRequest, [invoke], "op");
+  });
+
+  it("a server accepts only its own direction: a response is not a request, nor the reverse", () => {
+    // A captured, validly signed `invoke-result` sent back at the executor
+    // must not parse as something it would act on.
+    for (const [op, response] of Object.entries(RESPONSES)) {
+      expect({ op, ok: parseRemoteRequest(response).ok }).toEqual({
+        op,
+        ok: false,
+      });
+      refuses(parseRemoteRequest, response, "op");
+    }
+    for (const [op, request] of Object.entries(REQUESTS)) {
+      expect({ op, ok: parseRemoteResponse(request).ok }).toEqual({
+        op,
+        ok: false,
+      });
+      refuses(parseRemoteResponse, request, "op");
+    }
   });
 
   it("an op named after Object.prototype is not an op", () => {
-    refuses(parseRemoteEnvelope, { op: "constructor" }, "op");
+    refuses(parseRemoteRequest, { op: "constructor" }, "op");
+    refuses(parseRemoteResponse, { op: "toString" }, "op");
     refuses(parseRemoteMessage, { op: "__proto__" }, "op");
   });
 
   it("a protocol version other than 1", () => {
-    refuses(parseRemoteEnvelope, { ...invoke, v: 2 }, "v");
-    refuses(parseRemoteEnvelope, { ...invoke, v: "1" }, "v");
+    refuses(parseRemoteRequest, { ...invoke, v: 2 }, "v");
+    refuses(parseRemoteRequest, { ...invoke, v: "1" }, "v");
   });
 
   it("an invoke with no jobs, or without its worker", () => {
-    refuses(parseRemoteEnvelope, { ...invoke, jobs: [] }, "jobs");
+    refuses(parseRemoteRequest, { ...invoke, jobs: [] }, "jobs");
     const { worker: _worker, ...noWorker } = invoke;
-    refuses(parseRemoteEnvelope, noWorker, "worker");
+    refuses(parseRemoteRequest, noWorker, "worker");
     // A session invoke may leave the worker out: the hello named it.
     expect(parseRemoteMessage({ ...noWorker, op: "invoke" }).ok).toBe(true);
   });
 
   it("an invoke of a kind not yet designed", () => {
-    refuses(parseRemoteEnvelope, { ...invoke, kind: "run" }, "kind");
+    refuses(parseRemoteRequest, { ...invoke, kind: "run" }, "kind");
   });
 
   it("a job without its idempotency key, fence or delivery", () => {
@@ -484,27 +537,23 @@ describe("negative cases", () => {
       "data",
     ]) {
       const { [key]: _gone, ...rest } = job;
-      refuses(
-        parseRemoteEnvelope,
-        { ...invoke, jobs: [rest] },
-        `jobs.0.${key}`,
-      );
+      refuses(parseRemoteRequest, { ...invoke, jobs: [rest] }, `jobs.0.${key}`);
     }
   });
 
   it("a zero or fractional attempt or delivery", () => {
-    refuses(parseRemoteEnvelope, withJob({ attempt: 0 }), "jobs.0.attempt");
-    refuses(parseRemoteEnvelope, withJob({ delivery: 1.5 }), "jobs.0.delivery");
+    refuses(parseRemoteRequest, withJob({ attempt: 0 }), "jobs.0.attempt");
+    refuses(parseRemoteRequest, withJob({ delivery: 1.5 }), "jobs.0.delivery");
   });
 
   it("a job id longer than the queue allows", () => {
-    refuses(parseRemoteEnvelope, withJob({ id: "x".repeat(192) }), "jobs.0.id");
-    expect(parseRemoteEnvelope(withJob({ id: "x".repeat(191) })).ok).toBe(true);
+    refuses(parseRemoteRequest, withJob({ id: "x".repeat(192) }), "jobs.0.id");
+    expect(parseRemoteRequest(withJob({ id: "x".repeat(191) })).ok).toBe(true);
   });
 
   it("a negative or fractional instant", () => {
-    refuses(parseRemoteEnvelope, { ...invoke, now: -1 }, "now");
-    refuses(parseRemoteEnvelope, { ...invoke, deadlineAt: 1.5 }, "deadlineAt");
+    refuses(parseRemoteRequest, { ...invoke, now: -1 }, "now");
+    refuses(parseRemoteRequest, { ...invoke, deadlineAt: 1.5 }, "deadlineAt");
   });
 
   it("an outcome with no op, or keyed by id rather than job", () => {
@@ -514,8 +563,8 @@ describe("negative cases", () => {
       ...ENVELOPES["invoke-result"],
       outcomes: [{ id: JOB, status: "completed", result: {} }],
     };
-    refuses(parseRemoteEnvelope, legacy, "outcomes.0.op");
-    refuses(parseRemoteEnvelope, legacy, "outcomes.0.job");
+    refuses(parseRemoteResponse, legacy, "outcomes.0.op");
+    refuses(parseRemoteResponse, legacy, "outcomes.0.job");
   });
 
   it("a completed result that says it failed, and a failure with no error", () => {
@@ -573,7 +622,7 @@ describe("negative cases", () => {
 
   it("a health check that neither passed nor failed", () => {
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       {
         ...ENVELOPES["health-result"],
         checks: [{ id: "gpu", status: "maybe" }],
@@ -588,12 +637,12 @@ describe("negative cases", () => {
       unknown
     >;
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       { ...ENVELOPES["status-result"], jobs: [{ ...entry, state: "lost" }] },
       "jobs.0.state",
     );
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       {
         ...ENVELOPES["status-result"],
         jobs: [{ ...entry, outcome: { op: "rejected", code: "BUSY" } }],
@@ -603,9 +652,9 @@ describe("negative cases", () => {
   });
 
   it("a cancel with no jobs, or for a reason that does not exist", () => {
-    refuses(parseRemoteEnvelope, { ...ENVELOPES.cancel, jobs: [] }, "jobs");
+    refuses(parseRemoteRequest, { ...ENVELOPES.cancel, jobs: [] }, "jobs");
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteRequest,
       { ...ENVELOPES.cancel, reason: "bored" },
       "reason",
     );
@@ -613,24 +662,24 @@ describe("negative cases", () => {
 
   it("a handshake that lists no protocol, or a secret hash that is not one", () => {
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       { ...ENVELOPES.handshake, protocols: [] },
       "protocols",
     );
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       { ...ENVELOPES.handshake, secretHash: "b2ed9921…916c" },
       "secretHash",
     );
     refuses(
-      parseRemoteEnvelope,
+      parseRemoteResponse,
       { ...ENVELOPES.handshake, maxBatch: 0 },
       "maxBatch",
     );
   });
 
   it("the public handshake: only protocols, maxBatch, maxDurationMs and now", () => {
-    const result = parseRemoteEnvelope({
+    const result = parseRemoteResponse({
       v: 1,
       op: "handshake",
       protocols: [1],

@@ -2,24 +2,38 @@
  * Signing and verifying an HTTP envelope (`worker-runtimes.md` §5.6).
  *
  * ```
- * payload   = t "." raw          a request or response with a body
- * payload   = t "." id           a bodyless request (GET, HEAD)
+ * payload   = t "." d "." raw    a request (d = "q") or a response (d = "r") with a body
+ * payload   = t "." "q" "." id   a bodyless request (GET, HEAD)
  * signature = hex(HMAC-SHA256(secret, payload))
  * header    = "t=" t ",v1=" signature
  * ```
  *
- * `t` is Unix seconds, in decimal; `raw` the exact body bytes; `id` the
- * `bun-jobs-id` header's value, which the bodyless form brings under the MAC.
+ * `t` is Unix seconds, in decimal; `d` the direction, one ASCII letter; `raw`
+ * the exact body bytes; `id` the `bun-jobs-id` header's value, which the
+ * bodyless form brings under the MAC. Every separator is ASCII `.`.
  *
- * **Which form, decided by the caller, never guessed from the bytes.** The
- * body is passed as `null` for a bodyless request, which on HTTP is exactly a
- * `GET` or `HEAD`; every other method, `POST` included, is signed over its
- * body, even an empty one (`t "."`). The two forms cannot sign the same
- * bytes: an `id` is one to 200 characters of {@link REMOTE_ID_PATTERN}, never
- * empty, so `t "." id` is never an empty body's `t "."`; and a body consisting
- * of nothing but such a token (which no JSON envelope is) is refused by both
- * the signer (`ConfigError`) and the verifier (`SIGNATURE_INVALID`), so a
- * `GET`'s signature cannot be replayed as a `POST` whose body is its id.
+ * **The direction is in the MAC.** One secret signs both ways, so without it
+ * a signed response (an `invoke-result`) captured on the wire and sent back
+ * to the remote would verify as a request. The signer and the verifier each
+ * say which they handle (`direction: "request" | "response"`): a remote's
+ * server verifies requests and signs responses, the gateway the reverse, and
+ * a signature made for one is `SIGNATURE_INVALID` as the other.
+ *
+ * **Bodyless or not is decided by the caller, never guessed from the bytes.**
+ * The body is passed as `null` for a bodyless request, which on HTTP is
+ * exactly a `GET` or `HEAD`; every other method, `POST` included, is signed
+ * over its body, even an empty one (`t ".q."`). Only a request can be
+ * bodyless. The two forms cannot sign the same bytes: an `id` is one to 200
+ * characters of {@link REMOTE_ID_PATTERN}, never empty, so `t ".q." id` is
+ * never an empty body's `t ".q."`; and a body consisting of nothing but such a
+ * token (which no JSON envelope is) is refused by both the signer
+ * (`ConfigError`) and the verifier (`SIGNATURE_INVALID`), so a `GET`'s
+ * signature cannot be replayed as a `POST` whose body is its id.
+ *
+ * **The bodyless form binds no method and no path.** That is sound while the
+ * only signed bodyless request is the handshake `GET`, whose path is fixed.
+ * If a later `GET` carries a path or query parameter that means something,
+ * the method and the path must be bound into its payload then.
  *
  * The same scheme signs a request and its response, in both directions. A
  * verifier checks, in order: that the header parses, and for a bodyless
@@ -59,6 +73,12 @@ export type RemoteSecret = string | readonly string[];
 export type RemoteBody = string | Uint8Array | ArrayBuffer;
 
 /**
+ * Which way a signed message travels: a `request` goes from the gateway to a
+ * remote, a `response` back. Signed into the payload as `q` or `r`.
+ */
+export type RemoteSignatureDirection = "request" | "response";
+
+/**
  * What a bodyless request's `bun-jobs-id` must be: 1 to 200 of letters,
  * digits, `_`, `.`, `:`, `~` and `-`. No `{`, no whitespace, so it can never
  * be mistaken for a JSON body.
@@ -67,6 +87,11 @@ export const REMOTE_ID_PATTERN = /^[\w.:~-]{1,200}$/;
 
 /** Options for {@link signEnvelope}. */
 export interface SignEnvelopeOptions {
+  /**
+   * Whether this is a request (the gateway signing what it sends) or a
+   * response (a remote signing its answer). Required: it is in the payload.
+   */
+  direction: RemoteSignatureDirection;
   /** The secret, or a rotation list whose first key signs. */
   secret: RemoteSecret;
   /** The signing clock, epoch ms. Default `Date.now()`. */
@@ -81,6 +106,12 @@ export interface SignEnvelopeOptions {
 
 /** Options for {@link verifyEnvelope}. */
 export interface VerifyEnvelopeOptions {
+  /**
+   * What this verifier accepts: `request` on a remote's server, `response` on
+   * the gateway. A signature made for the other direction is
+   * `SIGNATURE_INVALID`. Required: it is in the payload.
+   */
+  direction: RemoteSignatureDirection;
   /** The secret, or a rotation list any of whose keys verifies. */
   secret: RemoteSecret;
   /** The verifying clock, epoch ms. Default `Date.now()`. */
@@ -205,9 +236,30 @@ function isIdToken(body: Uint8Array): boolean {
   return body.length > 0 && body.length <= 200 && body.every(isIdByte);
 }
 
-/** `t "." raw`, as bytes. */
-function payloadOf(t: string, body: Uint8Array): Uint8Array {
-  const prefix = utf8(`${t}.`);
+/** The label a direction is signed as. */
+const LABELS: Readonly<Record<RemoteSignatureDirection, string>> = {
+  request: "q",
+  response: "r",
+};
+
+/** The label for a direction, after checking it is one, and that a bodyless message is a request. */
+function labelOf(direction: unknown, bodyless: boolean): string {
+  if (direction !== "request" && direction !== "response") {
+    throw new ConfigError('direction must be "request" or "response"', {
+      direction,
+    });
+  }
+  if (bodyless && direction !== "request") {
+    throw new ConfigError(
+      "Only a request can be bodyless: a response is always signed over its body",
+    );
+  }
+  return LABELS[direction];
+}
+
+/** `t "." label "." raw`, as bytes. */
+function payloadOf(t: string, label: string, body: Uint8Array): Uint8Array {
+  const prefix = utf8(`${t}.${label}.`);
   const out = new Uint8Array(prefix.length + body.length);
   out.set(prefix);
   out.set(body, prefix.length);
@@ -263,6 +315,7 @@ export async function signEnvelopeWith(
   body: RemoteBody | null,
   options: SignEnvelopeOptions,
 ): Promise<string> {
+  const label = labelOf(options.direction, body === null);
   const [key] = keysOf(options.secret);
   const t = String(Math.floor(clockOf(options.now) / 1000));
   let signed: Uint8Array;
@@ -282,7 +335,7 @@ export async function signEnvelopeWith(
       );
     }
   }
-  const signature = await mac(key!, payloadOf(t, signed));
+  const signature = await mac(key!, payloadOf(t, label, signed));
   return `t=${t},v1=${toHex(signature)}`;
 }
 
@@ -293,6 +346,7 @@ export async function verifyEnvelopeWith(
   header: string | null | undefined,
   options: VerifyEnvelopeOptions,
 ): Promise<VerifyEnvelopeResult> {
+  const label = labelOf(options.direction, body === null);
   const keys = keysOf(options.secret);
   const now = clockOf(options.now);
   const windowMs = options.windowMs ?? REMOTE_SIGNATURE_WINDOW_MS;
@@ -341,7 +395,7 @@ export async function verifyEnvelopeWith(
       };
     }
   }
-  const payload = payloadOf(parsed.t, signed);
+  const payload = payloadOf(parsed.t, label, signed);
   let keyIndex = -1;
   /** The MAC under the first key: the nonce, whichever key verified. */
   let nonce = "";
@@ -399,10 +453,12 @@ export async function verifyEnvelopeWith(
 
 /**
  * Signs an envelope's raw body and returns the `bun-jobs-signature` header
- * value, `t=<unix seconds>,v1=<hex>`. Sign the exact bytes sent: a string is
- * signed as its UTF-8, so send that same string. For a bodyless request (a
- * `GET` or `HEAD`) pass `null` and the request's `bun-jobs-id` as `id`: the
- * payload is then `t "." id`. With a rotation list, the first key signs.
+ * value, `t=<unix seconds>,v1=<hex>`, over `t "." d "." raw` where `d` is
+ * `q` for a request and `r` for a response. Sign the exact bytes sent: a
+ * string is signed as its UTF-8, so send that same string. For a bodyless
+ * request (a `GET` or `HEAD`) pass `null` and the request's `bun-jobs-id` as
+ * `id`: the payload is then `t ".q." id`. With a rotation list, the first key
+ * signs.
  */
 export function signEnvelope(
   body: RemoteBody | null,
@@ -413,9 +469,10 @@ export function signEnvelope(
 
 /**
  * Verifies a `bun-jobs-signature` header against the raw body received —
- * before parsing it, and never against a re-serialised object. For a `GET`
- * or `HEAD`, pass `null` and the received `bun-jobs-id` as `id`; for every
- * other method pass the body, even an empty one. Resolves a
+ * before parsing it, and never against a re-serialised object. `direction`
+ * says what this side accepts: `request` on a remote, `response` on the
+ * gateway. For a `GET` or `HEAD`, pass `null` and the received `bun-jobs-id`
+ * as `id`; for every other method pass the body, even an empty one. Resolves a
  * result rather than throwing for a refused envelope, carrying the problem
  * code and the `401` to answer with; throws `ConfigError` only for unusable
  * options.

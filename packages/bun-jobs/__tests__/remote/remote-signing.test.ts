@@ -9,6 +9,10 @@ import {
 import { describe, expect, it } from "bun:test";
 import { nodeHmacSha256 } from "../../lib/remote/host/mac";
 import { constantTimeEqual, subtleHmacSha256 } from "../../lib/remote/mac";
+import {
+  parseRemoteRequest,
+  parseRemoteResponse,
+} from "../../lib/remote/schemas";
 import { signEnvelopeWith, verifyEnvelopeWith } from "../../lib/remote/signing";
 import { ConfigError } from "../../lib/shared/errors";
 
@@ -39,30 +43,47 @@ describe("known-answer vectors", () => {
   // shared by both MAC implementations cannot hide here.
   const vectors: {
     name: string;
+    direction: "request" | "response";
     body: string | null;
     id?: string;
     hex: string;
   }[] = [
     {
-      name: "a ping envelope",
+      name: 'a ping request: `t "." "q" "." raw`',
+      direction: "request",
       body: BODY,
-      hex: "897f3c0ec02c9498f706649bd74361ffb652c3e05dfdb7b91959caf586867d22",
+      hex: "6ad1c8bb8c1c9898c2d9ec7fff64bcb11743f7ee4bfc52c94097c845e5ba1bc6",
     },
     {
-      name: 'an empty POST body: `t "."` alone',
+      name: 'a pong response: `t "." "r" "." raw`',
+      direction: "response",
+      body: '{"v":1,"op":"pong","id":"p1"}',
+      hex: "be41aee1cc5a9588ca5de71d36cd9a87b9f6fcd202c4d0c44bff06589ddabde3",
+    },
+    {
+      name: "a handshake response",
+      direction: "response",
+      body: '{"v":1,"op":"handshake","protocols":[1],"maxBatch":1,"maxDurationMs":1000,"now":1790000000000}',
+      hex: "28ed18587f39e18f275221fb1f759b715ef555c581bae728e7e38017838c5a03",
+    },
+    {
+      name: 'an empty POST body: `t "." "q" "."`',
+      direction: "request",
       body: "",
-      hex: "a8174e7074496eaafd6db7b2e40ea0df564ecf8db5d9e3c95f94e3e88f428aff",
+      hex: "bb1c8e32d1fd7bc01c2be25d2d316bf4ed3c92fd8682cb18ce4eb4eaed963e96",
     },
     {
-      name: 'a bodyless request (the handshake GET): `t "." id`',
+      name: 'a bodyless request (the handshake GET): `t "." "q" "." id`',
+      direction: "request",
       body: null,
       id: "hs_01JB7Q2M9S0P",
-      hex: "d4d0c3a3238da640d418d84ad970fd5e567ee40a24709eb86fb3452eca07159d",
+      hex: "0c85726054aa8ecc8bb3429cc22035eed8a3e0ebed7904cd091f5d92ff5874b4",
     },
     {
-      name: "a body outside ASCII, signed as its UTF-8",
+      name: "a request body outside ASCII, signed as its UTF-8",
+      direction: "request",
       body: '{"name":"café ☕"}',
-      hex: "b835fabfe50deb16f36af04fa8f95fc2758708c505e568e70ebae3b637e90180",
+      hex: "f1862bfc6939dfac47683c66b7556d065513f7a94c37d4f71053ce49eb54f83c",
     },
   ];
 
@@ -74,6 +95,7 @@ describe("known-answer vectors", () => {
       it(`${mac.name}: ${vector.name}`, async () => {
         expect(
           await signEnvelopeWith(mac.fn, vector.body, {
+            direction: vector.direction,
             secret: SECRET,
             now: T0,
             id: vector.id,
@@ -84,13 +106,18 @@ describe("known-answer vectors", () => {
   }
 
   it("the public signEnvelope is the crypto.subtle one", async () => {
-    expect(await signEnvelope(BODY, { secret: SECRET, now: T0 })).toBe(
-      `t=1790000000,v1=${vectors[0]!.hex}`,
-    );
+    expect(
+      await signEnvelope(BODY, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
+    ).toBe(`t=1790000000,v1=${vectors[0]!.hex}`);
   });
 
   it("one flipped body byte gives another signature (the control)", async () => {
     const header = await signEnvelope(flip(BODY, 10), {
+      direction: "request",
       secret: SECRET,
       now: T0,
     });
@@ -99,44 +126,67 @@ describe("known-answer vectors", () => {
 
   it("signs a string, its bytes and its ArrayBuffer identically", async () => {
     const unicode = vectors.find((vector) =>
-      vector.name.startsWith("a body outside"),
+      vector.name.startsWith("a request body outside"),
     )!;
     const bytes = new TextEncoder().encode(unicode.body!);
     const signed = await Promise.all([
-      signEnvelope(unicode.body!, { secret: SECRET, now: T0 }),
-      signEnvelope(bytes, { secret: SECRET, now: T0 }),
-      signEnvelope(bytes.slice().buffer, { secret: SECRET, now: T0 }),
+      signEnvelope(unicode.body!, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
+      signEnvelope(bytes, { direction: "request", secret: SECRET, now: T0 }),
+      signEnvelope(bytes.slice().buffer, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ]);
     expect(new Set(signed).size).toBe(1);
   });
 
   it("truncates the clock to whole seconds", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 + 999 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0 + 999,
+    });
     expect(header.startsWith("t=1790000000,v1=")).toBe(true);
   });
 });
 
 describe("round trips", () => {
   it("verifies what it signed, naming the key and the timestamp", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     expect(header).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
     expect(
-      await verifyEnvelope(BODY, header, { secret: SECRET, now: T0 }),
+      await verifyEnvelope(BODY, header, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toEqual({ ok: true, timestamp: 1_790_000_000, keyIndex: 0 });
   });
 
   it("crosses the seam both ways: node:crypto signs, crypto.subtle verifies, and back", async () => {
     const byNode = await signEnvelopeWith(nodeHmacSha256, BODY, {
+      direction: "request",
       secret: SECRET,
       now: T0,
     });
     const bySubtle = await signEnvelopeWith(subtleHmacSha256, BODY, {
+      direction: "request",
       secret: SECRET,
       now: T0,
     });
     expect(
       (
         await verifyEnvelopeWith(subtleHmacSha256, BODY, byNode, {
+          direction: "request",
           secret: SECRET,
           now: T0,
         })
@@ -145,6 +195,7 @@ describe("round trips", () => {
     expect(
       (
         await verifyEnvelopeWith(nodeHmacSha256, BODY, bySubtle, {
+          direction: "request",
           secret: SECRET,
           now: T0,
         })
@@ -153,29 +204,53 @@ describe("round trips", () => {
   });
 
   it("verifies the raw bytes received, as bytes", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const received = new TextEncoder().encode(BODY);
     expect(
-      (await verifyEnvelope(received, header, { secret: SECRET, now: T0 })).ok,
+      (
+        await verifyEnvelope(received, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+        })
+      ).ok,
     ).toBe(true);
   });
 
   it("refuses a re-serialised body: the bytes, not the object, are signed", async () => {
     const sent = '{ "v": 1, "op": "ping", "id": "p1" }';
-    const header = await signEnvelope(sent, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(sent, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const reserialised = JSON.stringify(JSON.parse(sent));
     expect(reserialised).toBe(BODY);
     expect(
-      (await verifyEnvelope(reserialised, header, { secret: SECRET, now: T0 }))
-        .ok,
+      (
+        await verifyEnvelope(reserialised, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+        })
+      ).ok,
     ).toBe(false);
   });
 
   it("ignores an element of a scheme it does not know (a future v2)", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     expect(
       (
         await verifyEnvelope(BODY, `${header},v2=whatever`, {
+          direction: "request",
           secret: SECRET,
           now: T0,
         })
@@ -184,12 +259,17 @@ describe("round trips", () => {
   });
 
   it("accepts any one matching v1 among several", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const [t, v1] = header.split(",");
     const other = `v1=${"0".repeat(64)}`;
     expect(
       (
         await verifyEnvelope(BODY, `${t},${other},${v1}`, {
+          direction: "request",
           secret: SECRET,
           now: T0,
         })
@@ -200,10 +280,15 @@ describe("round trips", () => {
 
 describe("tampering", () => {
   it("a changed body byte is SIGNATURE_INVALID", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     for (const at of [0, 10, BODY.length - 1]) {
       expect(
         await verifyEnvelope(flip(BODY, at), header, {
+          direction: "request",
           secret: SECRET,
           now: T0,
         }),
@@ -212,19 +297,32 @@ describe("tampering", () => {
   });
 
   it("a changed envelope id (the body's nonce) is SIGNATURE_INVALID", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const otherId = BODY.replace('"p1"', '"p2"');
     expect(
-      await verifyEnvelope(otherId, header, { secret: SECRET, now: T0 }),
+      await verifyEnvelope(otherId, header, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
   });
 
   it("a changed timestamp is SIGNATURE_INVALID, not a timestamp failure", async () => {
     // Moved inside the window, so only the MAC can catch it.
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     for (const t of [1_789_999_999, 1_790_000_001, 1_790_000_060]) {
       expect(
         await verifyEnvelope(BODY, withT(header, t), {
+          direction: "request",
           secret: SECRET,
           now: T0,
         }),
@@ -233,9 +331,14 @@ describe("tampering", () => {
   });
 
   it("a changed MAC digit is SIGNATURE_INVALID", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     expect(
       await verifyEnvelope(BODY, flip(header, header.length - 1), {
+        direction: "request",
         secret: SECRET,
         now: T0,
       }),
@@ -243,16 +346,29 @@ describe("tampering", () => {
   });
 
   it("the wrong key is SIGNATURE_INVALID", async () => {
-    const header = await signEnvelope(BODY, { secret: "another", now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "another",
+      now: T0,
+    });
     expect(
-      await verifyEnvelope(BODY, header, { secret: SECRET, now: T0 }),
+      await verifyEnvelope(BODY, header, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
   });
 
   it("checks the MAC before the clock: a forged stale request is INVALID, never TIMESTAMP", async () => {
-    const header = await signEnvelope(BODY, { secret: "another", now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "another",
+      now: T0,
+    });
     expect(
       await verifyEnvelope(BODY, header, {
+        direction: "request",
         secret: SECRET,
         now: T0 + 3_600_000,
       }),
@@ -260,7 +376,11 @@ describe("tampering", () => {
   });
 
   it("no header, or one that does not parse, is SIGNATURE_MISSING", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const v1 = header.split(",")[1]!;
     const malformed = [
       null,
@@ -281,7 +401,11 @@ describe("tampering", () => {
     for (const bad of malformed) {
       expect({
         bad,
-        result: await verifyEnvelope(BODY, bad, { secret: SECRET, now: T0 }),
+        result: await verifyEnvelope(BODY, bad, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+        }),
       }).toMatchObject({
         bad,
         result: { ok: false, code: "SIGNATURE_MISSING", status: 401 },
@@ -306,9 +430,17 @@ describe("the replay window, both ways", () => {
   });
 
   it("accepts the window's edge on both sides and refuses a millisecond past it", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const at = async (now: number) =>
-      verifyEnvelope(BODY, header, { secret: SECRET, now });
+      verifyEnvelope(BODY, header, {
+        direction: "request",
+        secret: SECRET,
+        now,
+      });
     expect((await at(T0 + W)).ok).toBe(true);
     expect((await at(T0 - W)).ok).toBe(true);
     expect(await at(T0 + W + 1)).toMatchObject({
@@ -328,17 +460,30 @@ describe("the replay window, both ways", () => {
 
   it("refuses a request dated a year ahead (the one-sided check's hole)", async () => {
     const future = await signEnvelope(BODY, {
+      direction: "request",
       secret: SECRET,
       now: T0 + 365 * 86_400_000,
     });
     expect(
-      await verifyEnvelope(BODY, future, { secret: SECRET, now: T0 }),
+      await verifyEnvelope(BODY, future, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_TIMESTAMP" });
   });
 
   it("can be narrowed", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
-    const options = { secret: SECRET, windowMs: 60_000 };
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    const options = {
+      direction: "request" as const,
+      secret: SECRET,
+      windowMs: 60_000,
+    };
     expect(
       (await verifyEnvelope(BODY, header, { ...options, now: T0 + 60_000 })).ok,
     ).toBe(true);
@@ -348,10 +493,19 @@ describe("the replay window, both ways", () => {
   });
 
   it("cannot be widened, or be empty", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     for (const windowMs of [W + 1, 0, -1, 1.5, Number.NaN]) {
       await expect(
-        verifyEnvelope(BODY, header, { secret: SECRET, now: T0, windowMs }),
+        verifyEnvelope(BODY, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+          windowMs,
+        }),
       ).rejects.toBeInstanceOf(ConfigError);
     }
   });
@@ -360,8 +514,17 @@ describe("the replay window, both ways", () => {
 describe("the nonce cache", () => {
   it("refuses the same signed request twice", async () => {
     const nonces = createRemoteNonceCache();
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
-    const options = { secret: SECRET, now: T0, nonces };
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    const options = {
+      direction: "request" as const,
+      secret: SECRET,
+      now: T0,
+      nonces,
+    };
     expect((await verifyEnvelope(BODY, header, options)).ok).toBe(true);
     expect(await verifyEnvelope(BODY, header, options)).toMatchObject({
       ok: false,
@@ -371,10 +534,20 @@ describe("the nonce cache", () => {
   });
 
   it("without a cache, the same request verifies twice (the control)", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     for (let i = 0; i < 2; i++) {
       expect(
-        (await verifyEnvelope(BODY, header, { secret: SECRET, now: T0 })).ok,
+        (
+          await verifyEnvelope(BODY, header, {
+            direction: "request",
+            secret: SECRET,
+            now: T0,
+          })
+        ).ok,
       ).toBe(true);
     }
   });
@@ -383,10 +556,15 @@ describe("the nonce cache", () => {
     const nonces = createRemoteNonceCache();
     const retry = BODY.replace('"p1"', '"p1-retry"');
     for (const body of [BODY, retry]) {
-      const header = await signEnvelope(body, { secret: SECRET, now: T0 });
+      const header = await signEnvelope(body, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      });
       expect(
         (
           await verifyEnvelope(body, header, {
+            direction: "request",
             secret: SECRET,
             now: T0,
             nonces,
@@ -398,9 +576,18 @@ describe("the nonce cache", () => {
 
   it("refuses a replay however its header is rearranged", async () => {
     const nonces = createRemoteNonceCache();
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     const [t, v1] = header.split(",");
-    const options = { secret: SECRET, now: T0 + 1_000, nonces };
+    const options = {
+      direction: "request" as const,
+      secret: SECRET,
+      now: T0 + 1_000,
+      nonces,
+    };
     expect((await verifyEnvelope(BODY, header, options)).ok).toBe(true);
     for (const variant of [
       `${v1},${t}`,
@@ -420,10 +607,23 @@ describe("the nonce cache", () => {
     // header that verifies under the other key: the nonce must not depend on
     // which key matched.
     const nonces = createRemoteNonceCache();
-    const byNew = await signEnvelope(BODY, { secret: "new", now: T0 });
-    const byOld = await signEnvelope(BODY, { secret: "old", now: T0 });
+    const byNew = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "new",
+      now: T0,
+    });
+    const byOld = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "old",
+      now: T0,
+    });
     const both = `${byNew},${byOld.split(",")[1]}`;
-    const options = { secret: ["new", "old"], now: T0, nonces };
+    const options = {
+      direction: "request" as const,
+      secret: ["new", "old"],
+      now: T0,
+      nonces,
+    };
     expect(await verifyEnvelope(BODY, both, options)).toMatchObject({
       ok: true,
       keyIndex: 0,
@@ -442,21 +642,41 @@ describe("the nonce cache", () => {
         return true;
       },
     };
-    const good = await signEnvelope(BODY, { secret: SECRET, now: T0 });
-    const forged = await signEnvelope(BODY, { secret: "x", now: T0 });
+    const good = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    const forged = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "x",
+      now: T0,
+    });
     await verifyEnvelope(BODY, forged, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       nonces: spy,
     });
     await verifyEnvelope(BODY, good, {
+      direction: "request",
       secret: SECRET,
       now: T0 + 400_000,
       nonces: spy,
     });
-    await verifyEnvelope(BODY, null, { secret: SECRET, now: T0, nonces: spy });
+    await verifyEnvelope(BODY, null, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+      nonces: spy,
+    });
     expect(calls).toEqual([]);
-    await verifyEnvelope(BODY, good, { secret: SECRET, now: T0, nonces: spy });
+    await verifyEnvelope(BODY, good, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+      nonces: spy,
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -468,8 +688,13 @@ describe("the nonce cache", () => {
         return true;
       },
     };
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     await verifyEnvelope(BODY, header, {
+      direction: "request",
       secret: SECRET,
       now: T0 + 5,
       nonces: spy,
@@ -481,22 +706,37 @@ describe("the nonce cache", () => {
 
   it("past the window, a replay is refused by the clock even once forgotten", async () => {
     const nonces = createRemoteNonceCache({ max: 1 });
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     expect(
-      (await verifyEnvelope(BODY, header, { secret: SECRET, now: T0, nonces }))
-        .ok,
+      (
+        await verifyEnvelope(BODY, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+          nonces,
+        })
+      ).ok,
     ).toBe(true);
     // Another request pushes the first out of a one-entry cache...
     const other = BODY.replace("p1", "p9");
     const later = T0 + REMOTE_SIGNATURE_WINDOW_MS + 1_000;
     await verifyEnvelope(
       other,
-      await signEnvelope(other, { secret: SECRET, now: later }),
-      { secret: SECRET, now: later, nonces },
+      await signEnvelope(other, {
+        direction: "request",
+        secret: SECRET,
+        now: later,
+      }),
+      { direction: "request", secret: SECRET, now: later, nonces },
     );
     // ...and the first, replayed now, fails on its timestamp.
     expect(
       await verifyEnvelope(BODY, header, {
+        direction: "request",
         secret: SECRET,
         now: later,
         nonces,
@@ -514,8 +754,17 @@ describe("the nonce cache", () => {
         return true;
       },
     };
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
-    const options = { secret: SECRET, now: T0, nonces: store };
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    const options = {
+      direction: "request" as const,
+      secret: SECRET,
+      now: T0,
+      nonces: store,
+    };
     expect((await verifyEnvelope(BODY, header, options)).ok).toBe(true);
     expect((await verifyEnvelope(BODY, header, options)).ok).toBe(false);
   });
@@ -561,18 +810,37 @@ describe("the nonce cache", () => {
 describe("key rotation", () => {
   it("signs with the first key of a list", async () => {
     const header = await signEnvelope(BODY, {
+      direction: "request",
       secret: ["new", "old"],
       now: T0,
     });
-    expect(header).toBe(await signEnvelope(BODY, { secret: "new", now: T0 }));
+    expect(header).toBe(
+      await signEnvelope(BODY, {
+        direction: "request",
+        secret: "new",
+        now: T0,
+      }),
+    );
   });
 
   it("accepts the old key while it is listed, saying which key matched, then refuses it", async () => {
-    const byOld = await signEnvelope(BODY, { secret: "old", now: T0 });
-    const byNew = await signEnvelope(BODY, { secret: "new", now: T0 });
+    const byOld = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "old",
+      now: T0,
+    });
+    const byNew = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "new",
+      now: T0,
+    });
 
     // During the rotation: both listed, the new one first.
-    const during = { secret: ["new", "old"], now: T0 };
+    const during = {
+      direction: "request" as const,
+      secret: ["new", "old"],
+      now: T0,
+    };
     expect(await verifyEnvelope(BODY, byOld, during)).toMatchObject({
       ok: true,
       keyIndex: 1,
@@ -583,7 +851,7 @@ describe("key rotation", () => {
     });
 
     // After it: the old key removed.
-    const after = { secret: ["new"], now: T0 };
+    const after = { direction: "request" as const, secret: ["new"], now: T0 };
     expect(await verifyEnvelope(BODY, byOld, after)).toMatchObject({
       ok: false,
       code: "SIGNATURE_INVALID",
@@ -592,24 +860,40 @@ describe("key rotation", () => {
   });
 
   it("a verifier still on the old key alone refuses the new one (the control)", async () => {
-    const byNew = await signEnvelope(BODY, { secret: "new", now: T0 });
+    const byNew = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "new",
+      now: T0,
+    });
     expect(
-      await verifyEnvelope(BODY, byNew, { secret: "old", now: T0 }),
+      await verifyEnvelope(BODY, byNew, {
+        direction: "request",
+        secret: "old",
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
   });
 
   it("refuses an unusable secret or clock", async () => {
-    const header = await signEnvelope(BODY, { secret: SECRET, now: T0 });
+    const header = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     for (const secret of ["", [], ["ok", ""], [42 as unknown as string]]) {
-      await expect(signEnvelope(BODY, { secret, now: T0 })).rejects.toThrow(
-        ConfigError,
-      );
       await expect(
-        verifyEnvelope(BODY, header, { secret, now: T0 }),
+        signEnvelope(BODY, { direction: "request", secret, now: T0 }),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        verifyEnvelope(BODY, header, { direction: "request", secret, now: T0 }),
       ).rejects.toThrow(ConfigError);
     }
     await expect(
-      signEnvelope(BODY, { secret: SECRET, now: Number.NaN }),
+      signEnvelope(BODY, {
+        direction: "request",
+        secret: SECRET,
+        now: Number.NaN,
+      }),
     ).rejects.toThrow(ConfigError);
   });
 });
@@ -622,10 +906,12 @@ describe("the MAC seam", () => {
       return nodeHmacSha256(key, message);
     };
     const header = await signEnvelopeWith(counting, BODY, {
+      direction: "request",
       secret: SECRET,
       now: T0,
     });
     await verifyEnvelopeWith(counting, BODY, header, {
+      direction: "request",
       secret: ["other", SECRET],
       now: T0,
     });
@@ -639,23 +925,36 @@ describe('bodyless requests: `t "." id`', () => {
 
   it("round-trips a GET, the id carried by the header", async () => {
     const header = await signEnvelope(null, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: ID,
     });
     expect(
-      await verifyEnvelope(null, header, { secret: SECRET, now: T0, id: ID }),
+      await verifyEnvelope(null, header, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+        id: ID,
+      }),
     ).toEqual({ ok: true, timestamp: 1_790_000_000, keyIndex: 0 });
   });
 
   it("refuses a GET's replay", async () => {
     const nonces = createRemoteNonceCache();
     const header = await signEnvelope(null, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: ID,
     });
-    const options = { secret: SECRET, now: T0 + 1_000, id: ID, nonces };
+    const options = {
+      direction: "request" as const,
+      secret: SECRET,
+      now: T0 + 1_000,
+      id: ID,
+      nonces,
+    };
     expect((await verifyEnvelope(null, header, options)).ok).toBe(true);
     expect(await verifyEnvelope(null, header, options)).toMatchObject({
       ok: false,
@@ -667,9 +966,15 @@ describe('bodyless requests: `t "." id`', () => {
   it("passes two GETs signed in the same second with different ids", async () => {
     const nonces = createRemoteNonceCache();
     for (const id of ["hs_a", "hs_b"]) {
-      const header = await signEnvelope(null, { secret: SECRET, now: T0, id });
+      const header = await signEnvelope(null, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+        id,
+      });
       expect(
         await verifyEnvelope(null, header, {
+          direction: "request",
           secret: SECRET,
           now: T0,
           id,
@@ -681,19 +986,26 @@ describe('bodyless requests: `t "." id`', () => {
 
   it("refuses a changed id: the id is under the MAC", async () => {
     const header = await signEnvelope(null, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: ID,
     });
     for (const id of ["hs_01JB7Q2M9S0Q", `${ID}x`, ID.slice(1)]) {
       expect(
-        await verifyEnvelope(null, header, { secret: SECRET, now: T0, id }),
+        await verifyEnvelope(null, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+          id,
+        }),
       ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
     }
   });
 
   it("is SIGNATURE_MISSING without an id, or with one outside the grammar", async () => {
     const header = await signEnvelope(null, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: ID,
@@ -707,7 +1019,12 @@ describe('bodyless requests: `t "." id`', () => {
       "x".repeat(201),
     ]) {
       expect(
-        await verifyEnvelope(null, header, { secret: SECRET, now: T0, id }),
+        await verifyEnvelope(null, header, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+          id,
+        }),
       ).toMatchObject({ ok: false, code: "SIGNATURE_MISSING", status: 401 });
     }
   });
@@ -715,56 +1032,219 @@ describe('bodyless requests: `t "." id`', () => {
   it("will not sign a bodyless request without a usable id", async () => {
     for (const id of [undefined, "", "a b"]) {
       await expect(
-        signEnvelope(null, { secret: SECRET, now: T0, id }),
+        signEnvelope(null, {
+          direction: "request",
+          secret: SECRET,
+          now: T0,
+          id,
+        }),
       ).rejects.toThrow(ConfigError);
     }
   });
 
   it("an empty-body POST and a GET with the same t do not verify each other", async () => {
-    const get = await signEnvelope(null, { secret: SECRET, now: T0, id: ID });
-    const post = await signEnvelope("", { secret: SECRET, now: T0 });
+    const get = await signEnvelope(null, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+      id: ID,
+    });
+    const post = await signEnvelope("", {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
     expect(get).not.toBe(post);
     expect(
-      await verifyEnvelope("", get, { secret: SECRET, now: T0 }),
+      await verifyEnvelope("", get, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
     expect(
-      await verifyEnvelope(null, post, { secret: SECRET, now: T0, id: ID }),
+      await verifyEnvelope(null, post, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+        id: ID,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
   });
 
   it("a GET's signature replayed as a POST whose body is the id is refused", async () => {
     // `t "." id` and `t "." raw` are the same bytes when raw is the id: a
     // body that is a bare id token is refused, so the two forms never meet.
-    const get = await signEnvelope(null, { secret: SECRET, now: T0, id: ID });
+    const get = await signEnvelope(null, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+      id: ID,
+    });
     expect(
-      await verifyEnvelope(ID, get, { secret: SECRET, now: T0 }),
+      await verifyEnvelope(ID, get, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
-    await expect(signEnvelope(ID, { secret: SECRET, now: T0 })).rejects.toThrow(
-      ConfigError,
-    );
+    await expect(
+      signEnvelope(ID, { direction: "request", secret: SECRET, now: T0 }),
+    ).rejects.toThrow(ConfigError);
   });
 
   it("an id passed with a body is not part of the payload", async () => {
     const header = await signEnvelope(BODY, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: "x",
     });
-    expect(header).toBe(await signEnvelope(BODY, { secret: SECRET, now: T0 }));
+    expect(header).toBe(
+      await signEnvelope(BODY, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
+    );
   });
 
   it("the window applies to a GET too", async () => {
     const header = await signEnvelope(null, {
+      direction: "request",
       secret: SECRET,
       now: T0,
       id: ID,
     });
     expect(
       await verifyEnvelope(null, header, {
+        direction: "request",
         secret: SECRET,
         now: T0 - REMOTE_SIGNATURE_WINDOW_MS - 1,
         id: ID,
       }),
     ).toMatchObject({ ok: false, code: "SIGNATURE_TIMESTAMP" });
+  });
+});
+
+describe("direction: a signature is a request's or a response's, never both", () => {
+  const RESPONSE =
+    '{"v":1,"op":"invoke-result","id":"inv_1","now":1790000000000,"outcomes":[]}';
+  const ID = "hs_01JB7Q2M9S0P";
+
+  it("round-trips each direction", async () => {
+    for (const direction of ["request", "response"] as const) {
+      const header = await signEnvelope(BODY, {
+        direction,
+        secret: SECRET,
+        now: T0,
+      });
+      expect(
+        (
+          await verifyEnvelope(BODY, header, {
+            direction,
+            secret: SECRET,
+            now: T0,
+          })
+        ).ok,
+      ).toBe(true);
+    }
+  });
+
+  it("refuses a signed response reflected at a request verifier (the executor)", async () => {
+    const response = await signEnvelope(RESPONSE, {
+      direction: "response",
+      secret: SECRET,
+      now: T0,
+    });
+    expect(
+      await verifyEnvelope(RESPONSE, response, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
+    ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID", status: 401 });
+    // And the body would not parse as a request either.
+    expect(parseRemoteRequest(JSON.parse(RESPONSE)).ok).toBe(false);
+    expect(parseRemoteResponse(JSON.parse(RESPONSE)).ok).toBe(true);
+  });
+
+  it("refuses a request at a response verifier (the gateway)", async () => {
+    const request = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    expect(
+      await verifyEnvelope(BODY, request, {
+        direction: "response",
+        secret: SECRET,
+        now: T0,
+      }),
+    ).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
+  });
+
+  it("a payload without the label would let the reflection through (the control)", async () => {
+    // The same MAC with the direction label cut out of every payload: the
+    // reflected response now verifies as a request, so the label, and
+    // nothing else, is what refuses it above.
+    const unlabelled: HmacSha256 = (key, message) =>
+      nodeHmacSha256(
+        key,
+        new TextEncoder().encode(
+          new TextDecoder().decode(message).replace(/^(\d+)\.[qr]\./, "$1."),
+        ),
+      );
+    const response = await signEnvelopeWith(unlabelled, RESPONSE, {
+      direction: "response",
+      secret: SECRET,
+      now: T0,
+    });
+    expect(
+      await verifyEnvelopeWith(unlabelled, RESPONSE, response, {
+        direction: "request",
+        secret: SECRET,
+        now: T0,
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("is required: a missing or unknown direction is a ConfigError", async () => {
+    for (const direction of [undefined, "both", "q"]) {
+      const options = { direction, secret: SECRET, now: T0 } as unknown as {
+        direction: "request";
+        secret: string;
+        now: number;
+      };
+      await expect(signEnvelope(BODY, options)).rejects.toThrow(ConfigError);
+      await expect(verifyEnvelope(BODY, "t=1,v1=00", options)).rejects.toThrow(
+        ConfigError,
+      );
+    }
+  });
+
+  it("a bodyless signature is a request's alone", async () => {
+    await expect(
+      signEnvelope(null, {
+        direction: "response",
+        secret: SECRET,
+        now: T0,
+        id: ID,
+      }),
+    ).rejects.toThrow(ConfigError);
+    const get = await signEnvelope(null, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+      id: ID,
+    });
+    await expect(
+      verifyEnvelope(null, get, {
+        direction: "response",
+        secret: SECRET,
+        now: T0,
+        id: ID,
+      }),
+    ).rejects.toThrow(ConfigError);
   });
 });

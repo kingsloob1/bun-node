@@ -487,8 +487,34 @@ export const REMOTE_MESSAGE_SCHEMAS = Object.freeze({
   problem: ProblemMessageSchema,
 });
 
+/**
+ * The envelopes a gateway sends: what a remote's server accepts. The
+ * handshake has no request envelope (it is a bodyless `GET`).
+ */
+export const REMOTE_REQUEST_SCHEMAS = Object.freeze({
+  invoke: InvokeEnvelopeSchema,
+  cancel: CancelEnvelopeSchema,
+  ping: PingEnvelopeSchema,
+  health: HealthEnvelopeSchema,
+  status: StatusEnvelopeSchema,
+});
+
+/** The envelopes a remote answers with: what the gateway accepts. */
+export const REMOTE_RESPONSE_SCHEMAS = Object.freeze({
+  handshake: HandshakeEnvelopeSchema,
+  "invoke-result": InvokeResultEnvelopeSchema,
+  "cancel-result": CancelResultEnvelopeSchema,
+  pong: PongEnvelopeSchema,
+  "health-result": HealthResultEnvelopeSchema,
+  "status-result": StatusResultEnvelopeSchema,
+});
+
 /** An envelope `op`. */
 export type RemoteEnvelopeOp = keyof typeof REMOTE_ENVELOPE_SCHEMAS;
+/** A request envelope's `op`. */
+export type RemoteRequestOp = keyof typeof REMOTE_REQUEST_SCHEMAS;
+/** A response envelope's `op`. */
+export type RemoteResponseOp = keyof typeof REMOTE_RESPONSE_SCHEMAS;
 /** A session message `op`. */
 export type RemoteMessageOp = keyof typeof REMOTE_MESSAGE_SCHEMAS;
 
@@ -542,30 +568,45 @@ function opOf(value: unknown): string | undefined {
     : undefined;
 }
 
-/**
- * Validates a parsed HTTP envelope by its `op`. An `op` that is not an
- * envelope's is reported as an issue at `op`, so the caller can answer
- * `UNSUPPORTED_OP` rather than a generic validation failure.
- */
-export function parseRemoteEnvelope(
+/** Validates `value` with the schema its `op` names in `table`, or refuses it at `op`. */
+function parseBy<Table extends Readonly<Record<string, Schema<any, any>>>>(
+  table: Table,
   value: unknown,
-): RemoteParseResult<
-  Infer<(typeof REMOTE_ENVELOPE_SCHEMAS)[RemoteEnvelopeOp]>
-> {
+): RemoteParseResult<Infer<Table[keyof Table]>> {
   const op = opOf(value);
-  if (op === undefined || !Object.hasOwn(REMOTE_ENVELOPE_SCHEMAS, op)) {
+  if (op === undefined || !Object.hasOwn(table, op)) {
     return { ok: false, issues: [{ path: "op", message: "Unsupported op" }] };
   }
-  return run(REMOTE_ENVELOPE_SCHEMAS[op as RemoteEnvelopeOp], value);
+  return run(table[op as keyof Table] as Schema<unknown, any>, value);
 }
 
-/** Validates a parsed session message by its `op`; see {@link parseRemoteEnvelope}. */
+/**
+ * Validates a parsed request envelope by its `op`: what a remote's server
+ * accepts. A response's `op` is refused at `op`, exactly like an unknown one,
+ * so a captured response sent back at the server is never acted on, and the
+ * caller can answer `UNSUPPORTED_OP`.
+ */
+export function parseRemoteRequest(
+  value: unknown,
+): RemoteParseResult<Infer<(typeof REMOTE_REQUEST_SCHEMAS)[RemoteRequestOp]>> {
+  return parseBy(REMOTE_REQUEST_SCHEMAS, value);
+}
+
+/**
+ * Validates a parsed response envelope by its `op`: what the gateway
+ * accepts. A request's `op` is refused at `op`.
+ */
+export function parseRemoteResponse(
+  value: unknown,
+): RemoteParseResult<
+  Infer<(typeof REMOTE_RESPONSE_SCHEMAS)[RemoteResponseOp]>
+> {
+  return parseBy(REMOTE_RESPONSE_SCHEMAS, value);
+}
+
+/** Validates a parsed session message by its `op`; an unknown one is refused at `op`. */
 export function parseRemoteMessage(
   value: unknown,
 ): RemoteParseResult<Infer<(typeof REMOTE_MESSAGE_SCHEMAS)[RemoteMessageOp]>> {
-  const op = opOf(value);
-  if (op === undefined || !Object.hasOwn(REMOTE_MESSAGE_SCHEMAS, op)) {
-    return { ok: false, issues: [{ path: "op", message: "Unsupported op" }] };
-  }
-  return run(REMOTE_MESSAGE_SCHEMAS[op as RemoteMessageOp], value);
+  return parseBy(REMOTE_MESSAGE_SCHEMAS, value);
 }

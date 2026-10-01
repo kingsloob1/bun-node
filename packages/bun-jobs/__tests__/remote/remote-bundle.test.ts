@@ -158,11 +158,13 @@ describe("bundling for the browser", () => {
       expect(loaded.WORKER_PROTOCOL_VERSION).toBe(1);
       expect(loaded.REMOTE_HEADERS.signature).toBe("bun-jobs-signature");
       const header = await loaded.signEnvelope("{}", {
+        direction: "request",
         secret: "k",
         now: 1_790_000_000_000,
       });
       expect(
         await loaded.verifyEnvelope("{}", header, {
+          direction: "request",
           secret: "k",
           now: 1_790_000_000_000,
           nonces: loaded.createRemoteNonceCache(),
