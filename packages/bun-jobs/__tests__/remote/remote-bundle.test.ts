@@ -8,9 +8,9 @@ import { describe, expect, it } from "bun:test";
 /**
  * `@kingsleyweb/bun-jobs/remote` is browser-safe: an executor in a V8
  * isolate (Cloudflare Workers, Deno Deploy) bundles it with no driver, no
- * bun-common and no `node:*` or `bun:*` module. The schemas module is held
- * to the same rule, because the reference executor (PR-2a3) reaches it from
- * this entry. `host/` is the one place `node:crypto` is allowed, and nothing
+ * bun-common and no `node:*` or `bun:*` module. That includes the reference
+ * executor (`executor/`), which the entry exports, and the schemas it
+ * validates with. `host/` is the one place `node:crypto` is allowed, and nothing
  * the entry reaches imports it.
  */
 
@@ -31,6 +31,12 @@ const ALLOWED = new Set(
     "remote/signing.ts",
     "remote/schemas.ts",
     "remote/types.ts",
+    "remote/executor/attempt.ts",
+    "remote/executor/canary.ts",
+    "remote/executor/executor.ts",
+    "remote/executor/http.ts",
+    "remote/executor/store.ts",
+    "remote/executor/types.ts",
     "api/schema/builder.ts",
     "api/schema/validate.ts",
     "api/schema/coerce.ts",
@@ -96,6 +102,10 @@ describe("the remote entry's import graph", () => {
       "./schemas",
       "./signing",
       "./types",
+      "./executor/canary",
+      "./executor/executor",
+      "./executor/store",
+      "./executor/types",
       "../api/schema/builder",
       "../api/contract/constants",
       "../api/contract/types",
@@ -103,6 +113,45 @@ describe("the remote entry's import graph", () => {
     ]);
     for (const file of files) {
       const source = await Bun.file(join(REMOTE, file)).text();
+      for (const specifier of specifiersOf(source)) {
+        expect({ file, specifier, allowed: allowed.has(specifier) }).toEqual({
+          file,
+          specifier,
+          allowed: true,
+        });
+      }
+    }
+  });
+
+  it("the executor's files name only browser-safe modules too", async () => {
+    const dir = join(REMOTE, "executor/");
+    const files = (await readdir(dir)).filter((file) => file.endsWith(".ts"));
+    expect(files.sort()).toEqual([
+      "attempt.ts",
+      "canary.ts",
+      "executor.ts",
+      "http.ts",
+      "store.ts",
+      "types.ts",
+    ]);
+    const allowed = new Set([
+      "./attempt",
+      "./canary",
+      "./http",
+      "./store",
+      "./types",
+      "../constants",
+      "../mac",
+      "../nonce",
+      "../schemas",
+      "../signing",
+      "../types",
+      "../../api/contract/constants",
+      "../../api/contract/types",
+      "../../shared/errors",
+    ]);
+    for (const file of files) {
+      const source = await Bun.file(join(dir, file)).text();
       for (const specifier of specifiersOf(source)) {
         expect({ file, specifier, allowed: allowed.has(specifier) }).toEqual({
           file,
@@ -130,8 +179,9 @@ describe("bundling for the browser", () => {
       plugins: [confine(resolved)],
     });
     expect(result.success).toBe(true);
-    // The schemas pull the builder in; nothing reaches host/.
+    // The schemas pull the builder in, the entry the executor; nothing reaches host/.
     expect(new Set(resolved)).toContain("api/schema/builder.ts");
+    expect(new Set(resolved)).toContain("remote/executor/executor.ts");
     expect([...resolved].some((path) => path.includes("host/"))).toBe(false);
 
     const entry = result.outputs.find((output) =>
@@ -170,6 +220,72 @@ describe("bundling for the browser", () => {
           nonces: loaded.createRemoteNonceCache(),
         }),
       ).toEqual({ ok: true, timestamp: 1_790_000_000, keyIndex: 0 });
+
+      // The bundled executor answers a signed ping and a signed invoke.
+      const secret = "k".repeat(32);
+      const executor = loaded.createRemoteExecutor({
+        secret,
+        handlers: { double: (job) => (job.data as number) * 2 },
+      });
+      const ping = JSON.stringify({ v: 1, op: "ping", id: "p1" });
+      const pong = await executor(
+        new Request("http://executor/", {
+          method: "POST",
+          body: ping,
+          headers: {
+            "bun-jobs-signature": await loaded.signEnvelope(ping, {
+              direction: "request",
+              secret,
+            }),
+          },
+        }),
+      );
+      expect(pong.status).toBe(200);
+      const pongBody = await pong.text();
+      expect(JSON.parse(pongBody)).toMatchObject({ op: "pong", id: "p1" });
+      expect(
+        await loaded.verifyEnvelope(
+          pongBody,
+          pong.headers.get("bun-jobs-signature"),
+          { direction: "response", secret },
+        ),
+      ).toMatchObject({ ok: true });
+      const invoke = JSON.stringify({
+        v: 1,
+        op: "invoke",
+        id: "i1",
+        now: 1,
+        deadlineAt: 10_001,
+        namespace: "ns",
+        queue: "q",
+        worker: { id: "w", key: "k" },
+        jobs: [
+          {
+            id: "j",
+            name: "double",
+            data: 21,
+            attempt: 1,
+            idempotencyKey: "ns:q:j:1",
+            fence: "t:1",
+            delivery: 1,
+          },
+        ],
+      });
+      const result = await executor(
+        new Request("http://executor/", {
+          method: "POST",
+          body: invoke,
+          headers: {
+            "bun-jobs-signature": await loaded.signEnvelope(invoke, {
+              direction: "request",
+              secret,
+            }),
+          },
+        }),
+      );
+      expect(await result.json()).toMatchObject({
+        outcomes: [{ job: "j", status: "completed", result: 42 }],
+      });
 
       const parsed = (await import(join(dir, "schemas.mjs"))) as {
         parseRemoteMessage: (value: unknown) => { ok: boolean };

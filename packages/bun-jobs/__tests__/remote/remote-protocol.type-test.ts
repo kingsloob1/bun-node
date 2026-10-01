@@ -33,6 +33,15 @@ type Matches<Schema, Type> = DeepEqual<Infer<Schema>, Type>;
 
 /* --- shared pieces ----------------------------------------------------- */
 
+export type QueueRefOk = Expect<
+  Matches<typeof S.RemoteQueueRefSchema, T.RemoteQueueRef>
+>;
+export type JobRefOk = Expect<
+  Matches<typeof S.RemoteJobRefSchema, T.RemoteJobRef>
+>;
+export type CancelledJobOk = Expect<
+  Matches<typeof S.RemoteCancelledJobSchema, T.RemoteCancelledJob>
+>;
 export type WorkerRefOk = Expect<
   Matches<typeof S.RemoteWorkerRefSchema, T.RemoteWorkerRef>
 >;
