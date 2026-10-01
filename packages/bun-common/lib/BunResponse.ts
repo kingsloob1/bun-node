@@ -391,6 +391,25 @@ type ResEventName = keyof BunResponseEvents;
 /** The listener signature for a given {@link BunResponse} event. */
 type ResListener<E extends ResEventName> = BunResponseEvents[E];
 
+/** Set by {@link BunResponse}'s static block; see {@link destroyResponseStream}. */
+let destroyStream: (res: BunResponse) => boolean;
+
+/**
+ * Destroys `res`'s long-lived stream (one opened by `write()` or
+ * `flushHeaders()`), as Node's `res.destroy()` does to the socket: the chunks
+ * already written are delivered, then the stream errors, so the client sees
+ * a cut connection, never a complete response. `false`, doing nothing, when
+ * there is no such stream or it has already ended.
+ *
+ * Used by `BunRouter.handle()` for an error nothing handled after the headers
+ * went out, as Express's finalhandler destroys the socket.
+ *
+ * @internal
+ */
+export function destroyResponseStream(res: BunResponse): boolean {
+  return destroyStream(res);
+}
+
 export class BunResponse<
   /**
    * The `custom` data of a WebSocket this response upgrades to. `unknown`
@@ -473,6 +492,13 @@ export class BunResponse<
 
   /** True once the stream's controller has been closed (closing is once-only). */
   #streamClosed = false;
+
+  /**
+   * Set when the stream is destroyed (see {@link destroyResponseStream}):
+   * the chunks already written are delivered, then the stream errors, so the
+   * client sees a cut connection rather than a complete response.
+   */
+  #streamDestroyed = false;
 
   /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
   #etagEnabled: boolean;
@@ -604,7 +630,7 @@ export class BunResponse<
    */
   get #ended(): boolean {
     return this._isLongLived
-      ? this.#streamEnding
+      ? this.#streamEnding || this.#streamDestroyed
       : this.#nativeResponse !== undefined;
   }
 
@@ -1351,11 +1377,25 @@ export class BunResponse<
             // busy-polling.
             if (
               (this.#readableStreamEventMap?.size ?? 0) === 0 &&
-              !this.#streamEnding
+              !this.#streamEnding &&
+              !this.#streamDestroyed
             ) {
               this.#streamWriteNotifier = createDeferred<void>();
               await this.#streamWriteNotifier.promise;
               this.#streamWriteNotifier = undefined;
+            }
+
+            if (this.#streamDestroyed) {
+              // What was written goes out first; the error waits for the
+              // next pull, which comes once the reader has taken it.
+              // Erroring now would discard chunks still queued.
+              if ((this.#readableStreamEventMap?.size ?? 0) > 0) {
+                this.#flushPendingChunks(controller);
+              } else {
+                await this.#beforeError();
+                this.#errorController(controller);
+              }
+              return;
             }
 
             this.#flushPendingChunks(controller);
@@ -1438,6 +1478,72 @@ export class BunResponse<
     } catch {
       // Already cancelled or errored by the client.
     }
+  }
+
+  /**
+   * Errors `controller` once, which the client sees as a cut connection, and
+   * emits `close` (Node's `destroy()` emits no `finish`). With no reason, so
+   * Bun does not print one: the router has already logged the error.
+   */
+  #errorController(controller: ReadableStreamDefaultController): void {
+    if (this.#streamClosed) {
+      return;
+    }
+    this.#streamClosed = true;
+    try {
+      controller.error();
+    } catch {
+      // Already cancelled by the client.
+    }
+    this.#readableStreamCloseResolve?.();
+    this.#readableStreamClosePromise = undefined;
+    this.#readableStreamCloseResolve = undefined;
+    this.emitClose();
+  }
+
+  /** See {@link destroyResponseStream}. */
+  #destroyStream(): boolean {
+    if (
+      !this._isLongLived ||
+      this.#readableStream === undefined ||
+      this.#streamClosed ||
+      this.#streamDestroyed
+    ) {
+      return false;
+    }
+    this.#streamDestroyed = true;
+
+    // A parked pull wakes and errors (after flushing what was written).
+    const notifier = this.#streamWriteNotifier;
+    if (notifier) {
+      notifier.resolve();
+      return true;
+    }
+    // An idle controller with nothing queued is errored now; otherwise the
+    // next pull does it, once the reader has taken what is queued.
+    const controller = this.#readableStreamController;
+    if (
+      controller &&
+      (this.#readableStreamEventMap?.size ?? 0) === 0 &&
+      (controller.desiredSize ?? 0) > 0
+    ) {
+      void this.#beforeError().then(() => this.#errorController(controller));
+    }
+    return true;
+  }
+
+  /**
+   * One macrotask, so Bun writes what it has read from the stream before the
+   * error. A stream errored in the same tick as its first chunk was read is
+   * answered by Bun with a connection reset — headers and chunk lost
+   * (measured: 50 of 50 resets; 50 of 50 delivered after `setImmediate`).
+   */
+  #beforeError(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  static {
+    destroyStream = (res) => res.#destroyStream();
   }
 
   /**
@@ -1635,8 +1741,26 @@ export class BunResponse<
     return this.#nativeResponse;
   }
 
+  /**
+   * Whether the response has been committed, as Node's `headersSent`: a body
+   * was produced, a stream was opened (`write`/`flushHeaders`), or a WebSocket
+   * upgrade was accepted. `req.socket.setKeepAlive(true)` does not count — on
+   * Node it never sends anything, and counting it made an exception filter's
+   * answer to a failed `@Sse()` route go nowhere.
+   */
   get headersSent() {
-    return !!this.upgradeToWsData || !!this.response || !!this.isLongLived;
+    return !!this.upgradeToWsData || !!this.response || this._isLongLived;
+  }
+
+  /**
+   * Whether the response has ended, as Node's `writableEnded`: a body was
+   * produced, or a stream was asked to end (`end()`). `false` while a stream
+   * is open; a later {@link write} is refused.
+   */
+  get writableEnded(): boolean {
+    return this._isLongLived
+      ? this.#streamEnding
+      : this.#nativeResponse !== undefined;
   }
 
   setHeader(name: string, value: string | string[], replace = true) {

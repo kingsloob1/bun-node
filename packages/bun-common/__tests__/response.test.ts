@@ -898,7 +898,10 @@ describe("BunResponse: keep-alive detection", () => {
     res.req.socket.setKeepAlive(true);
     expect(res.req.isKeepAlive).toBe(true);
     expect(res.isLongLived).toBe(true);
-    expect(res.headersSent).toBe(true);
+    // Keep-alive sends nothing, so the headers are not sent: as on Node, and
+    // so an exception filter can still answer a failed `@Sse()` route (it
+    // used to be `true`, and the filter's 500 went nowhere).
+    expect(res.headersSent).toBe(false);
   });
 
   it("setKeepAlive(false) leaves the response short-lived", async () => {
