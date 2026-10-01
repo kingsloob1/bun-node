@@ -1,7 +1,14 @@
-import type { Runner } from "../setup-databases";
+import type {
+  PostgresLimitContext,
+  PostgresLimitIo,
+  PostgresLimitState,
+  Runner,
+} from "../setup-databases";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
+  applyPostgresLimit,
   describeLimit,
+  describePostgresLimit,
   dockerRunArgv,
   limitStatement,
   MARIADB_LIMIT_FILE,
@@ -14,7 +21,14 @@ import {
   parseArgs,
   parseMaxConnections,
   planConnectionLimit,
+  planPostgresLimit,
   PLANS,
+  POSTGRES_MAX_CONNECTIONS,
+  POSTGRES_MAX_CONNECTIONS_CEILING,
+  postgresAdminArgv,
+  postgresLimitStatement,
+  postgresMaxConnectionsArg,
+  postgresRestartArgv,
   runLimitSteps,
   UsageError,
 } from "../setup-databases";
@@ -149,7 +163,7 @@ describe("containers", () => {
     expect(argv.at(-1)).toBe(`--max-connections=${MAX_CONNECTIONS}`);
   });
 
-  it.each(["redis", "postgres", "mongodb"] as const)(
+  it.each(["redis", "mongodb"] as const)(
     "%s gets no --max-connections and ends at its image",
     (service) => {
       const spec = PLANS[service].container(options());
@@ -186,7 +200,7 @@ describe("containers", () => {
     expect(maxConnectionsArg(["--max-connections-x=5"])).toBeNull();
   });
 
-  it("only MariaDB and MySQL have their limit managed", () => {
+  it("MariaDB and MySQL are raised live; Postgres has its own path", () => {
     expect(PLANS.mariadb.managesConnectionLimit).toBe(true);
     expect(PLANS.mysql.managesConnectionLimit).toBe(true);
     expect(PLANS.postgres.managesConnectionLimit).toBeUndefined();
@@ -322,5 +336,411 @@ describe("runLimitSteps", () => {
     expect(await runLimitSteps(steps, false, runner)).toBe(false);
     expect(calls).toHaveLength(1);
     expect(logs.join("\n")).toContain("denied");
+  });
+});
+
+describe("--postgres-max-connections and --restart-postgres", () => {
+  it("defaults to the measured 700, and no restart, when absent", () => {
+    // One 16-worker parallel run peaked at 182 Postgres connections.
+    expect(POSTGRES_MAX_CONNECTIONS).toBe(700);
+    const options = parseArgs([]);
+    expect(options.postgresMaxConnections).toBe(POSTGRES_MAX_CONNECTIONS);
+    expect(options.restartPostgres).toBe(false);
+  });
+
+  it("takes a valid value, separately from --max-connections", () => {
+    const options = parseArgs([
+      "--postgres-max-connections=800",
+      "--max-connections=900",
+      "--restart-postgres",
+    ]);
+    expect(options.postgresMaxConnections).toBe(800);
+    expect(options.maxConnections).toBe(900);
+    expect(options.restartPostgres).toBe(true);
+  });
+
+  it.each(["abc", "", "1e3", "-1", "0", "700.5"])(
+    "refuses a value that is not a positive whole number: %p",
+    (raw) => {
+      expect(() => parseArgs([`--postgres-max-connections=${raw}`])).toThrow(
+        `--postgres-max-connections must be a positive whole number, not "${raw}"`,
+      );
+    },
+  );
+
+  it("refuses more than the sane ceiling, below Postgres's own", () => {
+    expect(POSTGRES_MAX_CONNECTIONS_CEILING).toBeLessThan(262_143);
+    expect(
+      parseArgs([
+        `--postgres-max-connections=${POSTGRES_MAX_CONNECTIONS_CEILING}`,
+      ]).postgresMaxConnections,
+    ).toBe(POSTGRES_MAX_CONNECTIONS_CEILING);
+    expect(() =>
+      parseArgs([
+        `--postgres-max-connections=${POSTGRES_MAX_CONNECTIONS_CEILING + 1}`,
+      ]),
+    ).toThrow(`at most ${POSTGRES_MAX_CONNECTIONS_CEILING}`);
+  });
+});
+
+describe("planPostgresLimit", () => {
+  /** A state with nothing pending. */
+  const now = (current: number): PostgresLimitState => ({
+    current,
+    pendingRestart: false,
+    pendingValue: null,
+  });
+
+  it("raises a server below the target", () => {
+    expect(planPostgresLimit(now(100), 700)).toEqual({
+      action: "raise",
+      current: 100,
+      target: 700,
+    });
+  });
+
+  it("leaves a server at the target alone", () => {
+    expect(planPostgresLimit(now(700), 700).action).toBe("keep");
+  });
+
+  it("never lowers a server above the target", () => {
+    expect(planPostgresLimit(now(2000), 700)).toEqual({
+      action: "keep",
+      current: 2000,
+      target: 700,
+    });
+  });
+
+  it("reports a sufficient value waiting for a restart, and does not set it again", () => {
+    expect(
+      planPostgresLimit(
+        { current: 100, pendingRestart: true, pendingValue: 700 },
+        700,
+      ),
+    ).toEqual({ action: "pending", current: 100, pending: 700, target: 700 });
+    // Pending, value unreadable (not a superuser): still not set again.
+    expect(
+      planPostgresLimit(
+        { current: 100, pendingRestart: true, pendingValue: null },
+        700,
+      ).action,
+    ).toBe("pending");
+  });
+
+  it("raises again when the pending value is known to fall short", () => {
+    expect(
+      planPostgresLimit(
+        { current: 100, pendingRestart: true, pendingValue: 300 },
+        700,
+      ).action,
+    ).toBe("raise");
+  });
+
+  it("calls an unreadable server unknown", () => {
+    expect(planPostgresLimit(null, 700).action).toBe("unknown");
+  });
+
+  it("describes each plan", () => {
+    expect(describePostgresLimit(planPostgresLimit(now(300), 700))).toBe(
+      "max_connections is 300, below 700: setting it to 700 with ALTER SYSTEM",
+    );
+    expect(describePostgresLimit(planPostgresLimit(now(700), 700))).toBe(
+      "max_connections is 700, at least 700: left alone",
+    );
+    expect(
+      describePostgresLimit(
+        planPostgresLimit(
+          { current: 300, pendingRestart: true, pendingValue: 800 },
+          700,
+        ),
+      ),
+    ).toContain("800 is already set and waiting for a restart");
+  });
+});
+
+describe("Postgres commands", () => {
+  it("a new container starts with -c max_connections, after the image", () => {
+    const spec = PLANS.postgres.container(
+      parseArgs(["--postgres-max-connections=750"]),
+    );
+    const argv = dockerRunArgv(spec);
+    expect(argv.slice(argv.indexOf(spec.image))).toEqual([
+      spec.image,
+      "-c",
+      "max_connections=750",
+    ]);
+    expect(
+      dockerRunArgv(PLANS.postgres.container(parseArgs([]))).slice(-2),
+    ).toEqual(["-c", `max_connections=${POSTGRES_MAX_CONNECTIONS}`]);
+  });
+
+  it("raises a container as POSTGRES_USER, which the image makes superuser", () => {
+    const options = parseArgs([]);
+    const spec = PLANS.postgres.container(options);
+    expect(PLANS.postgres.containerRootUrl?.(options)).toBe(
+      `postgres://${spec.env.POSTGRES_USER}:${spec.env.POSTGRES_PASSWORD}@127.0.0.1:5432/${spec.env.POSTGRES_DB}`,
+    );
+  });
+
+  it("reads what a container's command line pins", () => {
+    expect(postgresMaxConnectionsArg(["postgres"])).toBeNull();
+    expect(postgresMaxConnectionsArg(null)).toBeNull();
+    expect(postgresMaxConnectionsArg(["-c", "max_connections=700"])).toBe(700);
+    expect(postgresMaxConnectionsArg(["-cmax_connections=300"])).toBe(300);
+    expect(
+      postgresMaxConnectionsArg([
+        "-c",
+        "shared_buffers=1GB",
+        "--max_connections=200",
+        "-c",
+        "max_connections=500",
+      ]),
+    ).toBe(500);
+    expect(postgresMaxConnectionsArg(["max_connections=9"])).toBeNull();
+  });
+
+  it("runs ALTER SYSTEM natively as the postgres OS user", () => {
+    const statement = postgresLimitStatement(700);
+    expect(statement).toBe("ALTER SYSTEM SET max_connections = 700;");
+    expect(
+      postgresAdminArgv({ needsSudo: true, manager: "apt" }, statement),
+    ).toEqual([
+      "sudo",
+      "-u",
+      "postgres",
+      "psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-c",
+      statement,
+    ]);
+    // As root there is no sudo to strip: runuser, not a bare "-u".
+    expect(
+      postgresAdminArgv({ needsSudo: false, manager: "apt" }, statement)[0],
+    ).toBe("runuser");
+    expect(
+      postgresAdminArgv({ needsSudo: false, manager: "brew" }, statement),
+    ).toEqual([
+      "psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-d",
+      "postgres",
+      "-c",
+      statement,
+    ]);
+  });
+
+  it("knows each way to restart it", () => {
+    const linux = { needsSudo: true, manager: "apt" as const, systemd: true };
+    expect(
+      postgresRestartArgv(
+        "container",
+        linux,
+        "postgresql",
+        "bun-jobs-postgres",
+      ),
+    ).toEqual(["docker", "restart", "bun-jobs-postgres"]);
+    expect(postgresRestartArgv("native", linux, "postgresql", "x")).toEqual([
+      "sudo",
+      "systemctl",
+      "restart",
+      "postgresql",
+    ]);
+    expect(
+      postgresRestartArgv(
+        "native",
+        { needsSudo: false, manager: "brew", systemd: false },
+        "postgresql@16",
+        "x",
+      ),
+    ).toEqual(["brew", "services", "restart", "postgresql@16"]);
+    expect(
+      postgresRestartArgv(
+        "native",
+        { needsSudo: true, manager: "apt", systemd: false },
+        "postgresql",
+        "x",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("applyPostgresLimit", () => {
+  let logs: string[];
+  let spy: ReturnType<typeof spyOn<Console, "log">>;
+
+  beforeEach(() => {
+    logs = [];
+    spy = spyOn(console, "log").mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+  });
+  afterEach(() => spy.mockRestore());
+
+  /** Fakes for every effect, recording what was asked of each. */
+  const fakes = (
+    after: PostgresLimitState | null = {
+      current: 700,
+      pendingRestart: false,
+      pendingValue: null,
+    },
+  ) => {
+    const commands: string[][] = [];
+    const statements: string[] = [];
+    let waits = 0;
+    let reads = 0;
+    const io: PostgresLimitIo = {
+      runner: async (argv) => {
+        commands.push(argv);
+        return { code: 0, stdout: "", stderr: "", ok: true };
+      },
+      execSuperuser: async (statement) => {
+        statements.push(statement);
+        return null;
+      },
+      waitReady: async () => {
+        waits++;
+        return true;
+      },
+      readState: async () => {
+        reads++;
+        return after;
+      },
+    };
+    return {
+      io,
+      commands,
+      statements,
+      waits: () => waits,
+      reads: () => reads,
+    };
+  };
+
+  /** A context for this machine's case: this script's container. */
+  const ctx = (
+    overrides: Partial<PostgresLimitContext> = {},
+  ): PostgresLimitContext => ({
+    host: "container",
+    platform: { needsSudo: true, manager: "apt", systemd: true },
+    unit: "postgresql",
+    containerName: "bun-jobs-postgres",
+    containerExists: true,
+    containerPin: null,
+    dryRun: false,
+    restart: false,
+    ...overrides,
+  });
+
+  const raise = planPostgresLimit(
+    { current: 100, pendingRestart: false, pendingValue: null },
+    700,
+  );
+
+  it("without --restart-postgres: sets it, prints the notice and the command, restarts nothing", async () => {
+    const f = fakes();
+    const note = await applyPostgresLimit(raise, ctx(), f.io);
+    expect(f.statements).toEqual(["ALTER SYSTEM SET max_connections = 700;"]);
+    expect(f.commands).toEqual([]);
+    expect(f.waits()).toBe(0);
+    const out = logs.join("\n");
+    expect(out).toContain(
+      "max_connections set to 700; restart Postgres to apply it (it drops open connections)",
+    );
+    expect(out).toContain("docker restart bun-jobs-postgres");
+    expect(note).toBe("max_connections 100, 700 after a restart");
+  });
+
+  it("natively, without the flag: ALTER SYSTEM through sudo psql and the systemctl command printed", async () => {
+    const f = fakes();
+    await applyPostgresLimit(raise, ctx({ host: "native" }), f.io);
+    expect(f.commands).toEqual([
+      postgresAdminArgv(
+        { needsSudo: true, manager: "apt" },
+        "ALTER SYSTEM SET max_connections = 700;",
+      ),
+    ]);
+    expect(f.statements).toEqual([]);
+    expect(logs.join("\n")).toContain("sudo systemctl restart postgresql");
+  });
+
+  it("with --restart-postgres: sets it, restarts, waits, and confirms", async () => {
+    const f = fakes();
+    const note = await applyPostgresLimit(raise, ctx({ restart: true }), f.io);
+    expect(f.statements).toHaveLength(1);
+    expect(f.commands).toEqual([["docker", "restart", "bun-jobs-postgres"]]);
+    expect(f.waits()).toBe(1);
+    expect(f.reads()).toBe(1);
+    expect(note).toBe("max_connections 100 → 700");
+  });
+
+  it("with the flag, says so when the restart did not apply it", async () => {
+    const f = fakes({ current: 100, pendingRestart: true, pendingValue: 700 });
+    const note = await applyPostgresLimit(raise, ctx({ restart: true }), f.io);
+    expect(note).toContain("restart did not apply it");
+    expect(logs.join("\n")).toContain(
+      "max_connections is 100 after the restart",
+    );
+  });
+
+  it("a pending value is not set again; the flag applies it", async () => {
+    const pending = planPostgresLimit(
+      { current: 100, pendingRestart: true, pendingValue: 700 },
+      700,
+    );
+    const quiet = fakes();
+    await applyPostgresLimit(pending, ctx(), quiet.io);
+    expect(quiet.statements).toEqual([]);
+    expect(quiet.commands).toEqual([]);
+
+    const restart = fakes();
+    await applyPostgresLimit(pending, ctx({ restart: true }), restart.io);
+    expect(restart.statements).toEqual([]);
+    expect(restart.commands).toEqual([
+      ["docker", "restart", "bun-jobs-postgres"],
+    ]);
+  });
+
+  it("a kept value changes nothing, flag or not", async () => {
+    const f = fakes();
+    const keep = planPostgresLimit(
+      { current: 700, pendingRestart: false, pendingValue: null },
+      700,
+    );
+    expect(await applyPostgresLimit(keep, ctx({ restart: true }), f.io)).toBe(
+      "max_connections 700",
+    );
+    expect(f.statements).toEqual([]);
+    expect(f.commands).toEqual([]);
+  });
+
+  it("a dry run prints the plan and runs nothing, even with the flag", async () => {
+    for (const host of ["container", "native"] as const) {
+      const f = fakes();
+      await applyPostgresLimit(
+        raise,
+        ctx({ host, dryRun: true, restart: true }),
+        f.io,
+      );
+      expect(f.statements).toEqual([]);
+      expect(f.commands).toEqual([]);
+      expect(f.waits()).toBe(0);
+    }
+    expect(logs.join("\n")).toContain(
+      "ALTER SYSTEM SET max_connections = 700;",
+    );
+    expect(logs.join("\n")).toContain("$ docker restart bun-jobs-postgres");
+  });
+
+  it("refuses to fight a container whose command line pins a lower value", async () => {
+    const f = fakes();
+    const note = await applyPostgresLimit(
+      raise,
+      ctx({ containerPin: 300, restart: true }),
+      f.io,
+    );
+    expect(f.statements).toEqual([]);
+    expect(f.commands).toEqual([]);
+    expect(note).toContain("pinned by the container's command line");
   });
 });

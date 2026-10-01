@@ -58,6 +58,30 @@ export const MAX_CONNECTIONS = 1000;
  */
 export const MAX_CONNECTIONS_CEILING = 100_000;
 
+/**
+ * The `max_connections` Postgres is given unless `--postgres-max-connections`
+ * says otherwise; change it here. One 16-worker `bun test --parallel` run of
+ * bun-jobs peaked at 182 Postgres connections against the default of 100, so
+ * this leaves room for several concurrent runs plus the server's other users.
+ * Lower than {@link MAX_CONNECTIONS} because every Postgres connection is a
+ * process with its own memory, where MariaDB's and MySQL's are threads.
+ *
+ * Unlike MariaDB and MySQL, Postgres applies a new value only on a restart,
+ * which this script never does unless `--restart-postgres` asks for it.
+ */
+export const POSTGRES_MAX_CONNECTIONS = 700;
+
+/**
+ * The highest `--postgres-max-connections` this script accepts. Postgres
+ * itself accepts up to 262,143, but it reserves shared memory and semaphores
+ * for every slot when it starts, and a value the machine cannot back makes it
+ * refuse to start. Set through `ALTER SYSTEM`, that value sits in
+ * `postgresql.auto.conf`, so the server stays down until someone edits the
+ * file by hand. 10,000 is far above what a test machine needs and below where
+ * that becomes likely; past it, a connection pooler is the answer.
+ */
+export const POSTGRES_MAX_CONNECTIONS_CEILING = 10_000;
+
 /** A command line this script cannot act on; `main` prints it and exits 1. */
 export class UsageError extends Error {
   override name = "UsageError";
@@ -86,24 +110,41 @@ interface Options {
    * {@link MAX_CONNECTIONS}; a server already above it is left alone.
    */
   maxConnections: number;
+  /**
+   * The `max_connections` Postgres should have at least. Defaults to
+   * {@link POSTGRES_MAX_CONNECTIONS}; a server already above it is left alone.
+   * A raise applies only after a restart.
+   */
+  postgresMaxConnections: number;
+  /**
+   * Restart Postgres when its `max_connections` was raised (or a raise is
+   * pending), then wait for it and confirm the value. Off by default, because
+   * a restart drops every open connection on a shared server.
+   */
+  restartPostgres: boolean;
 }
 
 /**
- * Reads `--max-connections`' value: a whole number from 1 to
- * {@link MAX_CONNECTIONS_CEILING}, written in plain digits. Throws a
- * {@link UsageError} for anything else, so `1e3`, `500.5` and `-1` are refused
- * rather than reinterpreted.
+ * Reads a connection limit's value: a whole number from 1 to `ceiling`,
+ * written in plain digits. Throws a {@link UsageError} naming `flag` for
+ * anything else, so `1e3`, `500.5` and `-1` are refused rather than
+ * reinterpreted. The defaults are `--max-connections`'.
  */
-export function parseMaxConnections(raw: string): number {
+export function parseMaxConnections(
+  raw: string,
+  flag = "--max-connections",
+  ceiling = MAX_CONNECTIONS_CEILING,
+  why = "the most MariaDB and MySQL accept",
+): number {
   const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new UsageError(
-      `--max-connections must be a positive whole number, not "${raw}"`,
+      `${flag} must be a positive whole number, not "${raw}"`,
     );
   }
-  if (value > MAX_CONNECTIONS_CEILING) {
+  if (value > ceiling) {
     throw new UsageError(
-      `--max-connections must be at most ${MAX_CONNECTIONS_CEILING}, the most MariaDB and MySQL accept, not ${value}`,
+      `${flag} must be at most ${ceiling}, ${why}, not ${value}`,
     );
   }
   return value;
@@ -124,6 +165,8 @@ export function parseArgs(argv: string[]): Options {
     database: "bun_jobs_test",
     user: "bunjobs",
     maxConnections: MAX_CONNECTIONS,
+    postgresMaxConnections: POSTGRES_MAX_CONNECTIONS,
+    restartPostgres: false,
   };
 
   for (const arg of argv) {
@@ -165,6 +208,15 @@ export function parseArgs(argv: string[]): Options {
       options.maxConnections = parseMaxConnections(
         arg.slice("--max-connections=".length),
       );
+    } else if (arg.startsWith("--postgres-max-connections=")) {
+      options.postgresMaxConnections = parseMaxConnections(
+        arg.slice("--postgres-max-connections=".length),
+        "--postgres-max-connections",
+        POSTGRES_MAX_CONNECTIONS_CEILING,
+        "past which a server that cannot reserve the memory refuses to start",
+      );
+    } else if (arg === "--restart-postgres") {
+      options.restartPostgres = true;
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -199,6 +251,14 @@ Options
                     The max_connections MariaDB and MySQL should have at
                     least. A server already at or above it is left alone;
                     one below is raised. (default: ${MAX_CONNECTIONS})
+  --postgres-max-connections=N
+                    The same for Postgres. A raise is written with ALTER
+                    SYSTEM and applies only after a restart. At most
+                    ${POSTGRES_MAX_CONNECTIONS_CEILING}. (default: ${POSTGRES_MAX_CONNECTIONS})
+  --restart-postgres
+                    Restart Postgres to apply a raised max_connections,
+                    then confirm it. Off by default: a restart drops every
+                    open connection.
 
 Running it twice is safe: an installed server is not reinstalled, and
 configuration runs only when a connection with the expected credentials
@@ -731,13 +791,14 @@ interface ServicePlan {
   manualHint?: string;
   /**
    * Whether this script keeps the server's `max_connections` at or above
-   * `--max-connections` (MariaDB and MySQL). Postgres needs a restart to
-   * change it, so its value is only reported.
+   * `--max-connections` live (MariaDB and MySQL). Postgres is handled apart,
+   * by `ensurePostgresLimit`, because its value applies only on a restart.
    */
   managesConnectionLimit?: boolean;
   /**
-   * The root account of the container this script creates, which can raise
-   * `max_connections` on a container that already exists below the target.
+   * The root (for Postgres, superuser) account of the container this script
+   * creates, which can raise `max_connections` on a container that already
+   * exists below the target.
    */
   containerRootUrl?: (options: Options) => string;
   /**
@@ -832,25 +893,19 @@ async function openSql(
 }
 
 /**
- * A server's current `max_connections`, read over `url` — the suites' own
- * connection, which needs no privilege for this — or `null` when the server
- * cannot be reached or the answer is not a number.
+ * A MariaDB or MySQL server's current `max_connections`, read over `url` — the
+ * suites' own connection, which needs no privilege for this — or `null` when
+ * the server cannot be reached or the answer is not a number. Postgres has
+ * its own reader, `readPostgresLimit`.
  */
-async function readMaxConnections(
-  service: Service,
-  url: string,
-): Promise<number | null> {
+async function readMaxConnections(url: string): Promise<number | null> {
   try {
     const sql = await openSql(url);
     try {
-      // Postgres answers `SHOW` with a string; MariaDB and MySQL a number.
-      const rows: Array<Record<string, unknown>> =
-        service === "postgres"
-          ? await sql.unsafe("SHOW max_connections")
-          : await sql.unsafe("SELECT @@GLOBAL.max_connections AS n");
-      const value = Number(
-        service === "postgres" ? rows[0]?.max_connections : rows[0]?.n,
+      const rows: Array<Record<string, unknown>> = await sql.unsafe(
+        "SELECT @@GLOBAL.max_connections AS n",
       );
+      const value = Number(rows[0]?.n);
       return Number.isFinite(value) ? value : null;
     } finally {
       await sql.close();
@@ -1034,15 +1089,21 @@ export async function runLimitSteps(
   return true;
 }
 
-/** Raises a container's `max_connections` live, through its root account. */
+/**
+ * Runs one admin statement over `rootUrl`, resolving its error message or
+ * `null`. `simple` sends it over the simple query protocol, which Postgres's
+ * `ALTER SYSTEM` needs: it refuses to run inside a transaction block, and an
+ * extended-protocol message can count as one.
+ */
 async function raiseOverSql(
   rootUrl: string,
   statement: string,
+  simple = false,
 ): Promise<string | null> {
   try {
     const sql = await openSql(rootUrl);
     try {
-      await sql.unsafe(statement);
+      await (simple ? sql.unsafe(statement).simple() : sql.unsafe(statement));
     } finally {
       await sql.close();
     }
@@ -1071,7 +1132,7 @@ async function ensureConnectionLimit(
   containerExists: boolean,
 ): Promise<string> {
   const target = options.maxConnections;
-  const current = await readMaxConnections(plan.service, plan.url(options));
+  const current = await readMaxConnections(plan.url(options));
   const decision = planConnectionLimit(current, target);
   const name = plan.container(options).name;
 
@@ -1210,6 +1271,405 @@ async function warnUnpinnedLimit(
   );
 }
 
+/* ------------------------------------------------------------------ *
+ * Connection limit (Postgres)
+ * ------------------------------------------------------------------ */
+
+/** What Postgres reports about its `max_connections`. */
+export interface PostgresLimitState {
+  /** The value in effect now (`SHOW max_connections`). */
+  current: number;
+  /** Whether a changed value is waiting for a restart (`pg_settings`). */
+  pendingRestart: boolean;
+  /**
+   * The value waiting for the restart, from `pg_file_settings`, or `null` when
+   * none is pending or the view is not readable (it needs a superuser or
+   * `pg_read_all_settings`).
+   */
+  pendingValue: number | null;
+}
+
+/** What to do about Postgres's `max_connections`. */
+export type PostgresLimitPlan =
+  /** At or above the target: left alone, never lowered. */
+  | { action: "keep"; current: number; target: number }
+  /** A value at least the target is set and waits for a restart: not set again. */
+  | {
+      action: "pending";
+      current: number;
+      pending: number | null;
+      target: number;
+    }
+  /** Below the target with nothing sufficient pending: `ALTER SYSTEM`. */
+  | { action: "raise"; current: number; target: number }
+  /** Not readable, usually because the server does not exist yet. */
+  | { action: "unknown"; current: null; target: number };
+
+/**
+ * Decides what to do about Postgres's `max_connections`. Only ever raises;
+ * a value already set but waiting for a restart is reported, not set again,
+ * unless it is known to be below the target.
+ */
+export function planPostgresLimit(
+  state: PostgresLimitState | null,
+  target: number,
+): PostgresLimitPlan {
+  if (state === null) {
+    return { action: "unknown", current: null, target };
+  }
+  const { current, pendingRestart, pendingValue } = state;
+  if (current >= target) {
+    return { action: "keep", current, target };
+  }
+  if (pendingRestart && (pendingValue === null || pendingValue >= target)) {
+    return { action: "pending", current, pending: pendingValue, target };
+  }
+  return { action: "raise", current, target };
+}
+
+/** One line describing a {@link PostgresLimitPlan}, for the log. */
+export function describePostgresLimit(plan: PostgresLimitPlan): string {
+  switch (plan.action) {
+    case "keep":
+      return `max_connections is ${plan.current}, at least ${plan.target}: left alone`;
+    case "pending":
+      return `max_connections is ${plan.current}, and ${plan.pending ?? "a new value"} is already set and waiting for a restart: not set again`;
+    case "raise":
+      return `max_connections is ${plan.current}, below ${plan.target}: setting it to ${plan.target} with ALTER SYSTEM`;
+    case "unknown":
+      return `max_connections not readable yet: setting it to ${plan.target}`;
+  }
+}
+
+/** The statement that sets Postgres's `max_connections` for the next start. */
+export function postgresLimitStatement(target: number): string {
+  return `ALTER SYSTEM SET max_connections = ${target};`;
+}
+
+/**
+ * How this script runs a statement as Postgres's superuser on a native
+ * install: a fresh install trusts local connections from the `postgres` OS
+ * user, so `psql` runs as that user (`sudo -u postgres`, or `runuser` when
+ * already root); Homebrew's cluster belongs to the current user already.
+ */
+export function postgresAdminArgv(
+  platform: Pick<Platform, "needsSudo" | "manager">,
+  statement: string,
+): string[] {
+  const psql = ["psql", "-v", "ON_ERROR_STOP=1", "-c", statement];
+  if (platform.manager === "brew") {
+    return ["psql", "-v", "ON_ERROR_STOP=1", "-d", "postgres", "-c", statement];
+  }
+  return platform.needsSudo
+    ? ["sudo", "-u", "postgres", ...psql]
+    : ["runuser", "-u", "postgres", "--", ...psql];
+}
+
+/**
+ * The command that restarts Postgres, or `null` when this machine has no way
+ * this script knows.
+ */
+export function postgresRestartArgv(
+  host: LimitHost,
+  platform: Pick<Platform, "needsSudo" | "manager" | "systemd">,
+  unit: string,
+  containerName: string,
+): string[] | null {
+  if (host === "container") {
+    return ["docker", "restart", containerName];
+  }
+  if (platform.manager === "brew") {
+    return ["brew", "services", "restart", unit];
+  }
+  return platform.systemd
+    ? elevate(platform, ["systemctl", "restart", unit])
+    : null;
+}
+
+/**
+ * The `max_connections` a Postgres container's command line sets, or `null`.
+ * A command-line setting outranks `postgresql.auto.conf`, so while one is
+ * there `ALTER SYSTEM` cannot raise it. Reads `-c max_connections=N`,
+ * `-cmax_connections=N` and `--max_connections=N` (or `--max-connections`);
+ * the last one wins, as it does for Postgres.
+ */
+export function postgresMaxConnectionsArg(
+  cmd: readonly string[] | null,
+): number | null {
+  let found: number | null = null;
+  const list = cmd ?? [];
+  for (let i = 0; i < list.length; i++) {
+    let arg = list[i] ?? "";
+    if (arg === "-c") {
+      arg = list[++i] ?? "";
+    } else if (arg.startsWith("-c")) {
+      arg = arg.slice(2);
+    } else if (arg.startsWith("--")) {
+      arg = arg.slice(2);
+    } else {
+      continue;
+    }
+    const match = /^max[-_]connections=(\d+)$/.exec(arg);
+    if (match) {
+      found = Number(match[1]);
+    }
+  }
+  return found;
+}
+
+/** Where Postgres is and what this run may do to it. */
+export interface PostgresLimitContext {
+  /** Whether it is a native install or this script's container. */
+  host: LimitHost;
+  /** How this machine runs commands. */
+  platform: Pick<Platform, "needsSudo" | "manager" | "systemd">;
+  /** Its service unit, for a native restart. */
+  unit: string;
+  /** Its container's name, for a container restart. */
+  containerName: string;
+  /** Whether that container exists already. */
+  containerExists: boolean;
+  /** What the container's command line pins `max_connections` to, if anything. */
+  containerPin: number | null;
+  /** Print the plan, change nothing. */
+  dryRun: boolean;
+  /** Whether `--restart-postgres` was given. */
+  restart: boolean;
+}
+
+/** What {@link applyPostgresLimit} does its work through; tests pass fakes. */
+export interface PostgresLimitIo {
+  /** Runs a command: native `psql`, or a restart. */
+  runner: Runner;
+  /** Runs a statement as the container's superuser; resolves an error or `null`. */
+  execSuperuser: (statement: string) => Promise<string | null>;
+  /** Waits until the suites' credentials connect again. */
+  waitReady: () => Promise<boolean>;
+  /** Reads the server's limit again. */
+  readState: () => Promise<PostgresLimitState | null>;
+}
+
+/**
+ * Carries out a {@link PostgresLimitPlan} and returns a note for the summary.
+ * Sets the value with `ALTER SYSTEM`, as the container's superuser or through
+ * the native `psql` admin path, and then restarts **only** when
+ * `--restart-postgres` asked: otherwise it says so and prints the command,
+ * because a restart drops every open connection on a shared server. After a
+ * restart it waits for the server and re-reads the value to confirm it.
+ */
+export async function applyPostgresLimit(
+  plan: PostgresLimitPlan,
+  ctx: PostgresLimitContext,
+  io: PostgresLimitIo,
+): Promise<string> {
+  const { target } = plan;
+
+  if (plan.action === "keep") {
+    log.skip(describePostgresLimit(plan));
+    return `max_connections ${plan.current}`;
+  }
+
+  if (plan.action === "unknown") {
+    if (!ctx.dryRun) {
+      log.warn("could not read max_connections, so it was left as it is");
+      return "max_connections not readable, left alone";
+    }
+    log.skip(describePostgresLimit(plan));
+    if (ctx.host === "container") {
+      log.skip(
+        ctx.containerExists
+          ? `max_connections is read once container ${ctx.containerName} is running, and raised to ${target} if it is below`
+          : `the container is created with -c max_connections=${target}`,
+      );
+      return ctx.containerExists
+        ? "max_connections checked once started"
+        : `max_connections ${target} once created`;
+    }
+  } else {
+    log.warn(describePostgresLimit(plan));
+  }
+
+  // A container started with `-c max_connections=N` keeps N whatever
+  // postgresql.auto.conf says, so ALTER SYSTEM and a restart would change
+  // nothing. Only recreating the container moves it.
+  if (
+    ctx.host === "container" &&
+    ctx.containerPin !== null &&
+    ctx.containerPin < target
+  ) {
+    log.bad(
+      `container ${ctx.containerName} was created with -c max_connections=${ctx.containerPin}, which outranks ALTER SYSTEM; recreate it with -c max_connections=${target} (keep its data with --volumes-from)`,
+    );
+    return `max_connections ${plan.current ?? "unknown"} (pinned by the container's command line)`;
+  }
+
+  if (plan.action !== "pending") {
+    const statement = postgresLimitStatement(target);
+    if (ctx.host === "container") {
+      log.cmd([`(as superuser, over 127.0.0.1:5432)`, statement]);
+      if (!ctx.dryRun) {
+        const error = await io.execSuperuser(statement);
+        if (error) {
+          log.bad(`could not set it as the superuser: ${error}`);
+          return `max_connections ${plan.current} (raise failed)`;
+        }
+      }
+    } else {
+      const argv = postgresAdminArgv(ctx.platform, statement);
+      log.cmd(argv);
+      if (!ctx.dryRun) {
+        const result = await io.runner(argv);
+        if (!result.ok) {
+          log.bad(tail(result.stderr, 2) || "ALTER SYSTEM failed");
+          return `max_connections ${plan.current} (raise failed)`;
+        }
+      }
+    }
+  }
+
+  const applied = plan.action === "pending" ? (plan.pending ?? target) : target;
+  const from = plan.current === null ? "" : `${plan.current} → `;
+  const restartArgv = postgresRestartArgv(
+    ctx.host,
+    ctx.platform,
+    ctx.unit,
+    ctx.containerName,
+  );
+
+  if (!ctx.restart) {
+    log.warn(
+      `max_connections set to ${applied}; restart Postgres to apply it (it drops open connections)`,
+    );
+    log.warn(
+      restartArgv
+        ? `to apply it now: ${restartArgv.join(" ")}  (or rerun with --restart-postgres)`
+        : "restart Postgres however this machine runs it",
+    );
+    return `max_connections ${plan.current ?? "unknown"}, ${applied} after a restart`;
+  }
+
+  if (!restartArgv) {
+    log.bad("no known way to restart Postgres here; restart it yourself");
+    return `max_connections ${plan.current ?? "unknown"}, ${applied} after a restart`;
+  }
+
+  log.cmd(restartArgv);
+  if (ctx.dryRun) {
+    log.skip("then wait for it to accept connections and re-read the value");
+    return `max_connections ${from}${applied} after the restart`;
+  }
+
+  const restarted = await io.runner(restartArgv);
+  if (!restarted.ok) {
+    log.bad(tail(restarted.stderr, 2) || "the restart failed");
+    return `max_connections ${plan.current ?? "unknown"} (restart failed)`;
+  }
+  if (!(await io.waitReady())) {
+    log.bad("Postgres did not accept connections again after the restart");
+    return "max_connections unknown (not back after the restart)";
+  }
+  const after = await io.readState();
+  if (after === null || after.current < target) {
+    log.bad(
+      `max_connections is ${after?.current ?? "unreadable"} after the restart, not ${target}`,
+    );
+    return `max_connections ${after?.current ?? "unknown"} (restart did not apply it)`;
+  }
+  log.did(`restarted Postgres; max_connections is now ${after.current}`);
+  return `max_connections ${from}${after.current}`;
+}
+
+/**
+ * Reads Postgres's `max_connections` over the suites' URL: the value in effect,
+ * whether a change waits for a restart, and (when readable) that change.
+ */
+async function readPostgresLimit(
+  url: string,
+): Promise<PostgresLimitState | null> {
+  try {
+    const sql = await openSql(url);
+    try {
+      // `SHOW` answers with a string. Neither query needs a privilege.
+      const shown: Array<Record<string, unknown>> = await sql.unsafe(
+        "SHOW max_connections",
+      );
+      const current = Number(shown[0]?.max_connections);
+      if (!Number.isFinite(current)) {
+        return null;
+      }
+      const rows: Array<Record<string, unknown>> = await sql.unsafe(
+        "SELECT pending_restart FROM pg_settings WHERE name = 'max_connections'",
+      );
+      const pendingRestart = rows[0]?.pending_restart === true;
+      let pendingValue: number | null = null;
+      if (pendingRestart) {
+        try {
+          // The last valid entry across the files is the one a restart applies.
+          const pending: Array<Record<string, unknown>> = await sql.unsafe(
+            "SELECT setting FROM pg_file_settings WHERE name = 'max_connections' AND error IS NULL ORDER BY seqno DESC LIMIT 1",
+          );
+          const value = Number(pending[0]?.setting);
+          pendingValue = Number.isFinite(value) ? value : null;
+        } catch {
+          // Not a superuser: report the pending change without its value.
+        }
+      }
+      return { current, pendingRestart, pendingValue };
+    } finally {
+      await sql.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Brings Postgres's `max_connections` up to the target; see {@link applyPostgresLimit}. */
+async function ensurePostgresLimit(
+  plan: ServicePlan,
+  host: LimitHost,
+  platform: Platform,
+  options: Options,
+  containerExists: boolean,
+): Promise<string> {
+  const target = options.postgresMaxConnections;
+  const name = plan.container(options).name;
+  const state = await readPostgresLimit(plan.url(options));
+  const decision = planPostgresLimit(state, target);
+
+  if (host === "native" && !has("psql") && !options.dryRun) {
+    if (decision.action === "raise") {
+      log.bad("psql is missing, so max_connections cannot be raised");
+      return `max_connections ${decision.current} (not raised)`;
+    }
+  }
+
+  const containerPin =
+    host === "container" && containerExists && platform.docker
+      ? postgresMaxConnectionsArg(await containerCmd(name))
+      : null;
+  const superuserUrl = plan.containerRootUrl?.(options) ?? plan.url(options);
+
+  return await applyPostgresLimit(
+    decision,
+    {
+      host,
+      platform,
+      unit: plan.unit(platform),
+      containerName: name,
+      containerExists,
+      containerPin,
+      dryRun: options.dryRun,
+      restart: options.restartPostgres,
+    },
+    {
+      runner: run,
+      execSuperuser: (statement) => raiseOverSql(superuserUrl, statement, true),
+      waitReady: () => waitForConfigured(plan, options),
+      readState: () => readPostgresLimit(plan.url(options)),
+    },
+  );
+}
+
 /** Every server, in the order they are set up. */
 export const PLANS: Record<Service, ServicePlan> = {
   redis: {
@@ -1277,7 +1737,12 @@ export const PLANS: Record<Service, ServicePlan> = {
         POSTGRES_PASSWORD: options.password,
         POSTGRES_DB: options.database,
       },
+      // The image passes arguments starting with `-` to `postgres`.
+      args: ["-c", `max_connections=${options.postgresMaxConnections}`],
     }),
+    // The image makes POSTGRES_USER its superuser, so the suites' own account
+    // is the one that can ALTER SYSTEM in this script's container.
+    containerRootUrl: (options) => PLANS.postgres.url(options),
     // The only check that means anything: connect as the user, to the database.
     configured: async (options) =>
       (await portOpen(5432)) &&
@@ -1304,26 +1769,7 @@ export const PLANS: Record<Service, ServicePlan> = {
 
       for (const statement of statements) {
         // A fresh install trusts local connections from the postgres user.
-        const argv =
-          platform.manager === "brew"
-            ? [
-                "psql",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-d",
-                "postgres",
-                "-c",
-                statement,
-              ]
-            : elevate(platform, [
-                "-u",
-                "postgres",
-                "psql",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-c",
-                statement,
-              ]);
+        const argv = postgresAdminArgv(platform, statement);
 
         log.cmd(["psql", "-c", `${statement.slice(0, 58)}...`]);
 
@@ -1611,8 +2057,9 @@ interface Outcome {
 
 /**
  * The connection-limit part of a server's setup: MariaDB and MySQL are
- * brought up to the target, Postgres's value is reported, and the rest have
- * none. Returns a note for the summary, or `""`.
+ * brought up to `--max-connections` live, Postgres to
+ * `--postgres-max-connections` on its next restart, and the rest have none.
+ * Returns a note for the summary, or `""`.
  */
 async function connectionLimit(
   plan: ServicePlan,
@@ -1632,14 +2079,13 @@ async function connectionLimit(
   }
 
   if (plan.service === "postgres") {
-    const current = await readMaxConnections("postgres", plan.url(options));
-    if (current === null) {
-      return "";
-    }
-    log.skip(
-      `max_connections is ${current} (reported only: changing it needs a restart)`,
+    return await ensurePostgresLimit(
+      plan,
+      host,
+      platform,
+      options,
+      containerExists,
     );
-    return `max_connections ${current}, not managed`;
   }
 
   return "";
@@ -1876,6 +2322,7 @@ async function main(): Promise<void> {
         platform.manager ?? "no package manager",
         platform.docker ? "docker available" : "no docker",
         `max_connections >= ${options.maxConnections}`,
+        `postgres >= ${options.postgresMaxConnections}${options.restartPostgres ? " (restarts it)" : ""}`,
         options.dryRun ? "dry run" : "",
       ]
         .filter(Boolean)
