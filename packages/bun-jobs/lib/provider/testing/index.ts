@@ -20,6 +20,8 @@
  * behaves correctly against its own fake; it does not mean the platform
  * behaves as the fake does, nor that bun-jobs has reviewed the provider.
  */
+import { FIXTURE_WORKER } from "./worker";
+
 export { type ConformanceOptions, runProviderConformance } from "./conformance";
 export {
   type FakeFault,
@@ -36,3 +38,14 @@ export {
   type ConformanceCheck,
   type ConformanceReport,
 } from "./report";
+
+/**
+ * The kit's fixture worker, an absolute path: the script a self-hosted
+ * provider (one with no platform API, run with no `platform`) must be
+ * configured to start for the handoff check, e.g.
+ * `runProviderConformance(localCompute, { config: { entry: CONFORMANCE_WORKER } })`.
+ * It reads its summon arguments from `argv` and its test settings from the
+ * environment the kit passes as the policy's `env`; with none, it runs on
+ * the memory driver and exits once idle (about a third of a second).
+ */
+export const CONFORMANCE_WORKER: string = FIXTURE_WORKER;
