@@ -680,6 +680,59 @@ describe("the nonce cache", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("pins the order MAC, timestamp, nonce against a store that never forgets", async () => {
+    // A KV or a Durable Object behind `RemoteNonceStore` does not purge
+    // expired entries eagerly, as the built-in cache does, so a nonce
+    // consumed by a refused request would stay consumed.
+    const held = new Set<string>();
+    const answers: boolean[] = [];
+    const store: RemoteNonceStore = {
+      remember(nonce) {
+        const answer = !held.has(nonce);
+        held.add(nonce);
+        answers.push(answer);
+        return answer;
+      },
+    };
+    const verify = (header: string, now: number) =>
+      verifyEnvelope(BODY, header, {
+        direction: "request",
+        secret: SECRET,
+        now,
+        nonces: store,
+      });
+    const good = await signEnvelope(BODY, {
+      direction: "request",
+      secret: SECRET,
+      now: T0,
+    });
+    const badMac = await signEnvelope(BODY, {
+      direction: "request",
+      secret: "not-the-secret",
+      now: T0,
+    });
+
+    // A bad MAC, and an authentic one too old or too far ahead: no call.
+    expect(await verify(badMac, T0)).toMatchObject({
+      code: "SIGNATURE_INVALID",
+    });
+    expect(await verify(good, T0 + 301_000)).toMatchObject({
+      code: "SIGNATURE_TIMESTAMP",
+    });
+    expect(await verify(good, T0 - 301_000)).toMatchObject({
+      code: "SIGNATURE_TIMESTAMP",
+    });
+    expect(answers).toEqual([]);
+
+    // So the same request, once in its window, is still new: one call.
+    expect(await verify(good, T0)).toMatchObject({ ok: true });
+    expect(answers).toEqual([true]);
+
+    // Its replay asks again and is told "seen".
+    expect(await verify(good, T0 + 1000)).toMatchObject({ code: "REPLAYED" });
+    expect(answers).toEqual([true, false]);
+  });
+
   it("holds each nonce until the window can no longer accept its timestamp", async () => {
     const seen: { expiresAt: number; now: number }[] = [];
     const spy: RemoteNonceStore = {

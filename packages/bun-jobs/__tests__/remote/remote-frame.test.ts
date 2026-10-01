@@ -1,4 +1,5 @@
 import type { HmacSha256 } from "../../lib/remote/mac";
+import type { RemoteNonceStore } from "../../lib/remote/nonce";
 import type {
   DecodeTextFrameOptions,
   FrameMessage,
@@ -690,6 +691,104 @@ describe("admitHello: the handshake's replay window and nonce cache", () => {
         >,
       }),
     ).rejects.toThrow(ConfigError);
+  });
+
+  /**
+   * A nonce store that never forgets and records every call: what a KV or a
+   * Durable Object behind `RemoteNonceStore` looks like. The built-in cache
+   * drops expired entries at once, which hides the order of the checks; this
+   * one does not, so a nonce consumed by a refused hello stays consumed.
+   */
+  function spyStore() {
+    const held = new Set<string>();
+    const calls: {
+      nonce: string;
+      expiresAt: number;
+      now: number;
+      answered: boolean;
+    }[] = [];
+    const store: RemoteNonceStore = {
+      remember(nonce, expiresAt, now) {
+        const answered = !held.has(nonce);
+        held.add(nonce);
+        calls.push({ nonce, expiresAt, now, answered });
+        return answered;
+      },
+    };
+    return { store, calls };
+  }
+
+  describe("the order of the checks, against a store that never forgets", () => {
+    it("does not touch the store for a hello outside the window, either way", async () => {
+      const { store, calls } = spyStore();
+      for (const seconds of [-301, -100_000, 301, 100_000]) {
+        expect(
+          await admitHello(hello({ t: T0 / 1000 + seconds }), {
+            now: T0,
+            nonces: store,
+          }),
+        ).toMatchObject({ ok: false, code: "SIGNATURE_TIMESTAMP" });
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it("does not touch the store for a malformed hello", async () => {
+      const { store, calls } = spyStore();
+      for (const bad of [
+        hello({ t: "1790000000" }),
+        hello({ t: -1 }),
+        hello({ nonce: "short" }),
+        hello({ nonce: undefined }),
+        hello({ op: "welcome" }),
+      ]) {
+        expect(await admitHello(bad, { now: T0, nonces: store })).toMatchObject(
+          { ok: false, code: "malformed" },
+        );
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it("remembers a fresh hello's nonce exactly once, until its window closes", async () => {
+      const { store, calls } = spyStore();
+      const fresh = hello();
+      expect(await admitHello(fresh, { now: T0 + 5, nonces: store })).toEqual({
+        ok: true,
+      });
+      expect(calls).toEqual([
+        {
+          nonce: fresh.nonce as string,
+          expiresAt: T0 + 300_001,
+          now: T0 + 5,
+          answered: true,
+        },
+      ]);
+    });
+
+    it("refuses its replay because the store answers seen", async () => {
+      const { store, calls } = spyStore();
+      const fresh = hello();
+      await admitHello(fresh, { now: T0, nonces: store });
+      expect(
+        await admitHello(fresh, { now: T0 + 1000, nonces: store }),
+      ).toMatchObject({ ok: false, code: "REPLAYED" });
+      // `remember` is the check and the record in one atomic call, so the
+      // replay asks again and is told "seen".
+      expect(calls.map((call) => call.answered)).toEqual([true, false]);
+    });
+
+    it("a refused stale hello leaves its nonce free for a fresh one", async () => {
+      const { store } = spyStore();
+      const nonce = createFrameNonce();
+      expect(
+        await admitHello(hello({ nonce, t: T0 / 1000 - 1000 }), {
+          now: T0,
+          nonces: store,
+        }),
+      ).toMatchObject({ code: "SIGNATURE_TIMESTAMP" });
+      expect(
+        await admitHello(hello({ nonce }), { now: T0, nonces: store }),
+      ).toEqual({ ok: true });
+    });
   });
 
   it("refuses a hello without a usable t or nonce, and anything not a hello", async () => {
