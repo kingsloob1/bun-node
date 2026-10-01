@@ -248,4 +248,26 @@ describe("this package's optional peers", () => {
     ) as { browser?: boolean } | undefined;
     expect(contract?.browser).toBe(true);
   });
+
+  // An executor in a V8 isolate imports the remote protocol, so both of its
+  // spellings are checked with no ambient Node or Bun types.
+  it("checks the remote protocol entry as browser-safe, under both spellings", () => {
+    for (const spelling of [
+      "@kingsleyweb/bun-jobs/remote",
+      "@kingsleyweb/bun-jobs/lib/remote",
+    ]) {
+      const entry = checkConfig.entries?.find(
+        (e) => e.spelling === spelling,
+      ) as { browser?: boolean } | undefined;
+      expect({ spelling, browser: entry?.browser }).toEqual({
+        spelling,
+        browser: true,
+      });
+    }
+    expect(manifest.exports["./remote"]).toEqual({
+      "@kingsleyweb/source": "./lib/remote/index.ts",
+      types: "./dts/remote/index.d.ts",
+      default: "./lib/remote/index.ts",
+    });
+  });
 });
