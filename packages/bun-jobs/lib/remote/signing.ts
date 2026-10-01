@@ -177,8 +177,8 @@ const ELEMENT_NAME = /^[a-z][a-z0-9]*$/;
 /** A `v1` element: 32 bytes of hex. */
 const V1 = /^[\da-f]{64}$/i;
 
-/** The keys of a secret, as bytes, after checking it is usable. */
-function keysOf(secret: RemoteSecret): Uint8Array[] {
+/** The keys of a secret, as bytes, after checking it is usable. Internal; the frame codec shares it. */
+export function keysOf(secret: RemoteSecret): Uint8Array[] {
   const list: readonly unknown[] =
     typeof secret === "string" ? [secret] : (secret as readonly unknown[]);
   if (!Array.isArray(list) || list.length === 0) {

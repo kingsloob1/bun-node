@@ -1,0 +1,171 @@
+{
+  "description": "Text frame test vectors for the bun-jobs remote-worker protocol, version 1 (remote-transports.md §4.3.1, §4.4.1). Every MAC is HMAC-SHA256 keyed with the UTF-8 bytes of `secret`.",
+  "generatedBy": "packages/bun-jobs/scripts/generate-frame-vectors.ts",
+  "secret": "bun-jobs-test-secret",
+  "frameFormat": "\"BJ1\" SP seq SP ack SP mac SP json",
+  "macInputFormat": "\"BJ1\" LF sid LF dir LF seq LF ack LF json",
+  "accept": [
+    {
+      "name": "hello, from a dialling gateway: sid \"-\", seq 0",
+      "sid": "-",
+      "dir": "g",
+      "seq": 0,
+      "ack": 0,
+      "json": "{\"op\":\"hello\",\"v\":1,\"protocols\":[1],\"role\":\"gateway\",\"nonce\":\"q3JtZ2FfZ3c0bE1uUXpXRA\",\"t\":1790000000,\"at\":1790000000000}",
+      "macInput": "BJ1\n-\ng\n0\n0\n{\"op\":\"hello\",\"v\":1,\"protocols\":[1],\"role\":\"gateway\",\"nonce\":\"q3JtZ2FfZ3c0bE1uUXpXRA\",\"t\":1790000000,\"at\":1790000000000}",
+      "macHex": "0b6e7c8416cc53240ee8bd1e01779f4edf48c9820cb32b0618868d443780ca27",
+      "mac": "C258hBbMUyQO6L0eAXefTt9IyYIMsysGGIaNRDeAyic",
+      "frame": "BJ1 0 0 C258hBbMUyQO6L0eAXefTt9IyYIMsysGGIaNRDeAyic {\"op\":\"hello\",\"v\":1,\"protocols\":[1],\"role\":\"gateway\",\"nonce\":\"q3JtZ2FfZ3c0bE1uUXpXRA\",\"t\":1790000000,\"at\":1790000000000}"
+    },
+    {
+      "name": "welcome, from the executor: sid is the hello's nonce, seq 0",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA",
+      "dir": "e",
+      "seq": 0,
+      "ack": 0,
+      "json": "{\"op\":\"welcome\",\"v\":1,\"protocol\":1,\"role\":\"executor\",\"nonce\":\"Ym9iX2V4ZWN1dG9yX25vbg\",\"names\":[\"resize-image\"],\"maxBatch\":25,\"maxDurationMs\":3300000,\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"now\":1790000000123,\"at\":1790000000123}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA\ne\n0\n0\n{\"op\":\"welcome\",\"v\":1,\"protocol\":1,\"role\":\"executor\",\"nonce\":\"Ym9iX2V4ZWN1dG9yX25vbg\",\"names\":[\"resize-image\"],\"maxBatch\":25,\"maxDurationMs\":3300000,\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"now\":1790000000123,\"at\":1790000000123}",
+      "macHex": "44e3fe9c919a9b6b86371ff6078ccc149fb4c6a639ccbb56b66d98a3e68e8457",
+      "mac": "ROP-nJGam2uGNx_2B4zMFJ-0xqY5zLtWtm2Yo-aOhFc",
+      "frame": "BJ1 0 0 ROP-nJGam2uGNx_2B4zMFJ-0xqY5zLtWtm2Yo-aOhFc {\"op\":\"welcome\",\"v\":1,\"protocol\":1,\"role\":\"executor\",\"nonce\":\"Ym9iX2V4ZWN1dG9yX25vbg\",\"names\":[\"resize-image\"],\"maxBatch\":25,\"maxDurationMs\":3300000,\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"now\":1790000000123,\"at\":1790000000123}"
+    },
+    {
+      "name": "invoke, gateway to executor: the session's first sequenced frame",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "g",
+      "seq": 1,
+      "ack": 0,
+      "json": "{\"op\":\"invoke\",\"v\":1,\"id\":\"inv_01JB7Q2M9S0P\",\"kind\":\"job\",\"now\":1790000000456,\"deadlineAt\":1790000025456,\"namespace\":\"shop\",\"queue\":\"media\",\"jobs\":[{\"id\":\"01JB7Q2M8ZRT9V\",\"name\":\"resize-image\",\"data\":{\"url\":\"https://example.com/a.png\"},\"attempt\":1,\"maxAttempts\":3,\"timeoutMs\":20000,\"idempotencyKey\":\"shop:media:01JB7Q2M8ZRT9V:1\",\"fence\":\"h7f3-4211-1789:1790000000400\",\"delivery\":1}],\"at\":1790000000456}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg\ng\n1\n0\n{\"op\":\"invoke\",\"v\":1,\"id\":\"inv_01JB7Q2M9S0P\",\"kind\":\"job\",\"now\":1790000000456,\"deadlineAt\":1790000025456,\"namespace\":\"shop\",\"queue\":\"media\",\"jobs\":[{\"id\":\"01JB7Q2M8ZRT9V\",\"name\":\"resize-image\",\"data\":{\"url\":\"https://example.com/a.png\"},\"attempt\":1,\"maxAttempts\":3,\"timeoutMs\":20000,\"idempotencyKey\":\"shop:media:01JB7Q2M8ZRT9V:1\",\"fence\":\"h7f3-4211-1789:1790000000400\",\"delivery\":1}],\"at\":1790000000456}",
+      "macHex": "4a575a7785adc3f53123fa57cac366c01303c1e81c99721fe73a477a40fcfd26",
+      "mac": "Sldad4Wtw_UxI_pXysNmwBMDwegcmXIf5zpHekD8_SY",
+      "frame": "BJ1 1 0 Sldad4Wtw_UxI_pXysNmwBMDwegcmXIf5zpHekD8_SY {\"op\":\"invoke\",\"v\":1,\"id\":\"inv_01JB7Q2M9S0P\",\"kind\":\"job\",\"now\":1790000000456,\"deadlineAt\":1790000025456,\"namespace\":\"shop\",\"queue\":\"media\",\"jobs\":[{\"id\":\"01JB7Q2M8ZRT9V\",\"name\":\"resize-image\",\"data\":{\"url\":\"https://example.com/a.png\"},\"attempt\":1,\"maxAttempts\":3,\"timeoutMs\":20000,\"idempotencyKey\":\"shop:media:01JB7Q2M8ZRT9V:1\",\"fence\":\"h7f3-4211-1789:1790000000400\",\"delivery\":1}],\"at\":1790000000456}"
+    },
+    {
+      "name": "accepted, executor to gateway: seq 1, acknowledging the invoke",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "seq": 1,
+      "ack": 1,
+      "json": "{\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg\ne\n1\n1\n{\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "macHex": "bd28a8a893c8723fa8a325ce01f04abdca75721ae3847e32f218eace1d93ff7b",
+      "mac": "vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s",
+      "frame": "BJ1 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}"
+    },
+    {
+      "name": "a bare ack, gateway to executor: seq 0, MAC'd in the session",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "g",
+      "seq": 0,
+      "ack": 1,
+      "json": "{\"op\":\"ack\"}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg\ng\n0\n1\n{\"op\":\"ack\"}",
+      "macHex": "bc8aacaa4d21196de45b3600a505e64c913b4b030938d4e576fa35db63b0c00c",
+      "mac": "vIqsqk0hGW3kWzYApQXmTJE7SwMJONTldvo122OwwAw",
+      "frame": "BJ1 0 1 vIqsqk0hGW3kWzYApQXmTJE7SwMJONTldvo122OwwAw {\"op\":\"ack\"}"
+    },
+    {
+      "name": "a log line outside ASCII: the JSON is MAC'd as UTF-8",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "seq": 2,
+      "ack": 1,
+      "json": "{\"op\":\"log\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"level\":\"info\",\"message\":\"café ☕ — 100 %\",\"at\":1790000001201}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg\ne\n2\n1\n{\"op\":\"log\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"level\":\"info\",\"message\":\"café ☕ — 100 %\",\"at\":1790000001201}",
+      "macHex": "1e0279a8b8b0f9baefb5857d563a7049072ebd480a8e331b7dd71f3774e4eb1a",
+      "mac": "HgJ5qLiw-brvtYV9VjpwSQcuvUgKjjMbfdcfN3Tk6xo",
+      "frame": "BJ1 2 1 HgJ5qLiw-brvtYV9VjpwSQcuvUgKjjMbfdcfN3Tk6xo {\"op\":\"log\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"level\":\"info\",\"message\":\"café ☕ — 100 %\",\"at\":1790000001201}"
+    },
+    {
+      "name": "the largest seq and ack: 2^53 - 1, in decimal",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "seq": 9007199254740991,
+      "ack": 9007199254740991,
+      "json": "{\"op\":\"heartbeat\",\"running\":[],\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"at\":1790000010470}",
+      "macInput": "BJ1\nq3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg\ne\n9007199254740991\n9007199254740991\n{\"op\":\"heartbeat\",\"running\":[],\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"at\":1790000010470}",
+      "macHex": "743de5009fbf906b05c54b18bd189d17e51d05368c08285d6142957c521b29ea",
+      "mac": "dD3lAJ-_kGsFxUsYvRidF-UdBTaMCChdYUKVfFIbKeo",
+      "frame": "BJ1 9007199254740991 9007199254740991 dD3lAJ-_kGsFxUsYvRidF-UdBTaMCChdYUKVfFIbKeo {\"op\":\"heartbeat\",\"running\":[],\"capacity\":{\"inFlight\":0,\"max\":8,\"accepting\":true},\"at\":1790000010470}"
+    },
+    {
+      "name": "http-stream: sid is the invoke envelope's id, dir e, seq from 1",
+      "sid": "inv_01JB7Q2M9S0P",
+      "dir": "e",
+      "seq": 1,
+      "ack": 0,
+      "json": "{\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "macInput": "BJ1\ninv_01JB7Q2M9S0P\ne\n1\n0\n{\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "macHex": "ec822dd914b20239eaa97dbaefebfbdbbf34d0ad0db77303bac57be382ee0ef2",
+      "mac": "7IIt2RSyAjnqqX267-v727800K0Nt3MDusV744LuDvI",
+      "frame": "BJ1 1 0 7IIt2RSyAjnqqX267-v727800K0Nt3MDusV744LuDvI {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "sse": "id: 1\nevent: accepted\ndata: BJ1 1 0 7IIt2RSyAjnqqX267-v727800K0Nt3MDusV744LuDvI {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}\n\n"
+    }
+  ],
+  "reject": [
+    {
+      "name": "reflected: the executor's accepted, checked as if the gateway had sent it",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "g",
+      "frame": "BJ1 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "mac"
+    },
+    {
+      "name": "another session: the same frame, checked under the http-stream sid",
+      "sid": "inv_01JB7Q2M9S0P",
+      "dir": "e",
+      "frame": "BJ1 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "mac"
+    },
+    {
+      "name": "seq changed from 1 to 2, MAC kept",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ1 2 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "mac"
+    },
+    {
+      "name": "ack changed from 1 to 0, MAC kept",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ1 1 0 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "mac"
+    },
+    {
+      "name": "one byte of the JSON changed",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ1 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000471}",
+      "reason": "mac"
+    },
+    {
+      "name": "a leading zero in seq",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ1 01 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "malformed"
+    },
+    {
+      "name": "the MAC padded with =",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ1 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s= {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "malformed"
+    },
+    {
+      "name": "another protocol version's magic",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "e",
+      "frame": "BJ2 1 1 vSioqJPIcj-ooyXOAfBKvcp1chrjhH4y8hjqzh2T_3s {\"op\":\"accepted\",\"job\":\"01JB7Q2M8ZRT9V\",\"attempt\":1,\"fence\":\"h7f3-4211-1789:1790000000400\",\"duplicate\":false,\"at\":1790000000470}",
+      "reason": "malformed"
+    },
+    {
+      "name": "a hello checked as a session frame: its sid is -, not the session's",
+      "sid": "q3JtZ2FfZ3c0bE1uUXpXRA.Ym9iX2V4ZWN1dG9yX25vbg",
+      "dir": "g",
+      "frame": "BJ1 0 0 C258hBbMUyQO6L0eAXefTt9IyYIMsysGGIaNRDeAyic {\"op\":\"hello\",\"v\":1,\"protocols\":[1],\"role\":\"gateway\",\"nonce\":\"q3JtZ2FfZ3c0bE1uUXpXRA\",\"t\":1790000000,\"at\":1790000000000}",
+      "reason": "mac"
+    }
+  ]
+}
