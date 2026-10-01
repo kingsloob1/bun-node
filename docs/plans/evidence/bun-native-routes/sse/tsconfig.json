@@ -1,0 +1,10 @@
+{
+  // Spikes for docs/plans/bun-native-routes.md §16 (server-sent events):
+  // throwaway probes of what bun-common's and bun-nest's adapters, and
+  // Bun.serve under them, do with a long-lived `text/event-stream` response.
+  // Run one at a time with `bun <file>.ts`. Deliberately not in
+  // scripts/typecheck.ts — a spike records what one Bun version did.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}

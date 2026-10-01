@@ -1,0 +1,4 @@
+raw h2, no Connection header                               "data: e1\n\ndata: e2\n\ndata: e3\n\n\n[http_version=2 code=200]"
+raw h2, Connection: keep-alive                             "data: e1\n\ndata: e2\n\ndata: e3\n\n\n[http_version=2 code=200]"
+raw same server, --http1.1                                 "data: e1\n\ndata: e2\n\ndata: e3\n\n\n[http_version=1.1 code=200]"
+bun-common adapter h2, res.write + Connection header       "data: e1\n\ndata: e2\n\ndata: e3\n\n\n[http_version=2 code=200]"

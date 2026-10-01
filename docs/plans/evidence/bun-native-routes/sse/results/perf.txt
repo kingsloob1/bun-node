@@ -1,0 +1,50 @@
+r1 raw           n=100   m=1000    957651 ev/s   -16.3 KiB/conn idle    42.8 KiB/conn after  load 17.95
+r1 raw-hwm       n=100   m=1000   2475964 ev/s   -11.7 KiB/conn idle    53.2 KiB/conn after  load 17.95
+r1 raw-direct    n=100   m=1000   1070973 ev/s   -17.2 KiB/conn idle    15.2 KiB/conn after  load 17.95
+r1 common-write  n=100   m=1000    499776 ev/s     2.2 KiB/conn idle   524.8 KiB/conn after  load 17.95
+r1 common-proto  n=100   m=1000   1986197 ev/s    -0.2 KiB/conn idle   183.4 KiB/conn after  load 17.95
+r1 nest-sse      n=100   m=1000    201125 ev/s    34.1 KiB/conn idle   622.1 KiB/conn after  load 17.95
+r1 raw           n=1000  m=100    535372 ev/s     2.0 KiB/conn idle    10.5 KiB/conn after  load 16.99
+r1 raw-hwm       n=1000  m=100   1962710 ev/s     6.6 KiB/conn idle    18.8 KiB/conn after  load 16.99
+r1 raw-direct    n=1000  m=100    617214 ev/s     3.3 KiB/conn idle     6.7 KiB/conn after  load 16.99
+r1 common-write  n=1000  m=100    315831 ev/s    14.6 KiB/conn idle    84.9 KiB/conn after  load 16.99
+r1 common-proto  n=1000  m=100   1743294 ev/s    17.2 KiB/conn idle    37.3 KiB/conn after  load 16.99
+r1 nest-sse      n=1000  m=100    136189 ev/s    29.6 KiB/conn idle   117.1 KiB/conn after  load 16.99
+r2 raw           n=100   m=1000    868472 ev/s    -5.5 KiB/conn idle    58.7 KiB/conn after  load 15.95
+r2 raw-hwm       n=100   m=1000   1858554 ev/s   -16.4 KiB/conn idle    49.0 KiB/conn after  load 15.95
+r2 raw-direct    n=100   m=1000    798813 ev/s    -8.5 KiB/conn idle    23.0 KiB/conn after  load 15.95
+r2 common-write  n=100   m=1000    468102 ev/s     5.3 KiB/conn idle   422.9 KiB/conn after  load 15.95
+r2 common-proto  n=100   m=1000   1893701 ev/s     3.6 KiB/conn idle   188.1 KiB/conn after  load 15.95
+r2 nest-sse      n=100   m=1000    197025 ev/s    32.8 KiB/conn idle   622.9 KiB/conn after  load 15.95
+r2 raw           n=1000  m=100    542076 ev/s     2.5 KiB/conn idle    11.2 KiB/conn after  load 15.95
+r2 raw-hwm       n=1000  m=100   2082509 ev/s     5.6 KiB/conn idle    17.9 KiB/conn after  load 15.95
+r2 raw-direct    n=1000  m=100    572008 ev/s     1.8 KiB/conn idle     5.5 KiB/conn after  load 15.07
+r2 common-write  n=1000  m=100    338955 ev/s    14.6 KiB/conn idle    85.5 KiB/conn after  load 15.07
+r2 common-proto  n=1000  m=100   1581690 ev/s    17.1 KiB/conn idle    37.3 KiB/conn after  load 15.07
+r2 nest-sse      n=1000  m=100    137041 ev/s    29.7 KiB/conn idle   114.3 KiB/conn after  load 15.07
+r3 raw           n=100   m=1000    907195 ev/s   -15.8 KiB/conn idle    46.3 KiB/conn after  load 15.07
+r3 raw-hwm       n=100   m=1000   2533756 ev/s   -16.2 KiB/conn idle    46.1 KiB/conn after  load 15.07
+r3 raw-direct    n=100   m=1000    887764 ev/s   -13.6 KiB/conn idle    15.0 KiB/conn after  load 15.07
+r3 common-write  n=100   m=1000    477927 ev/s     9.6 KiB/conn idle   422.5 KiB/conn after  load 14.51
+r3 common-proto  n=100   m=1000   1913324 ev/s     8.2 KiB/conn idle   194.3 KiB/conn after  load 14.51
+r3 nest-sse      n=100   m=1000    204595 ev/s    17.1 KiB/conn idle   601.4 KiB/conn after  load 14.51
+r3 raw           n=1000  m=100    548953 ev/s     2.0 KiB/conn idle    11.0 KiB/conn after  load 14.51
+r3 raw-hwm       n=1000  m=100   2145869 ev/s     5.5 KiB/conn idle    17.6 KiB/conn after  load 14.51
+r3 raw-direct    n=1000  m=100    486846 ev/s     2.5 KiB/conn idle     5.8 KiB/conn after  load 14.51
+r3 common-write  n=1000  m=100    317228 ev/s    14.2 KiB/conn idle    84.7 KiB/conn after  load 14.51
+r3 common-proto  n=1000  m=100   1491255 ev/s    16.7 KiB/conn idle    36.7 KiB/conn after  load 13.83
+r3 nest-sse      n=1000  m=100    137715 ev/s    29.6 KiB/conn idle   115.0 KiB/conn after  load 13.83
+
+median of rounds
+raw           n=100   m=1000    907195 ev/s  idle -15.8 KiB/conn  after 46.3 KiB/conn
+raw-hwm       n=100   m=1000   2475964 ev/s  idle -16.2 KiB/conn  after 49.0 KiB/conn
+raw-direct    n=100   m=1000    887764 ev/s  idle -13.6 KiB/conn  after 15.2 KiB/conn
+common-write  n=100   m=1000    477927 ev/s  idle 5.3 KiB/conn  after 422.9 KiB/conn
+common-proto  n=100   m=1000   1913324 ev/s  idle 3.6 KiB/conn  after 188.1 KiB/conn
+nest-sse      n=100   m=1000    201125 ev/s  idle 32.8 KiB/conn  after 622.1 KiB/conn
+raw           n=1000  m=100    542076 ev/s  idle 2.0 KiB/conn  after 11.0 KiB/conn
+raw-hwm       n=1000  m=100   2082509 ev/s  idle 5.6 KiB/conn  after 17.9 KiB/conn
+raw-direct    n=1000  m=100    572008 ev/s  idle 2.5 KiB/conn  after 5.8 KiB/conn
+common-write  n=1000  m=100    317228 ev/s  idle 14.6 KiB/conn  after 84.9 KiB/conn
+common-proto  n=1000  m=100   1581690 ev/s  idle 17.1 KiB/conn  after 37.3 KiB/conn
+nest-sse      n=1000  m=100    137041 ev/s  idle 29.6 KiB/conn  after 115.0 KiB/conn

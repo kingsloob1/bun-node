@@ -1,0 +1,13 @@
+N1 served @Sse, 3 events 200ms apart                       status=200 type=text/event-stream headers@10ms [209ms:"event: tick\nid: 1\ndata: {\"n\":0}" 408ms:"event: tick\nid: 2\ndata: {\"n\":1}" 610ms:"event: tick\nid: 3\ndata: {\"n\":2}"] end=done@610ms
+N1 … headers                                               {"cache-control":"private, no-cache, no-store, must-revalidate, max-age=0, no-transform","connection":"keep-alive","content-type":"text/event-stream","date":"Thu, 01 Oct 2026 06:13:37 GMT","expire":"0","pragma":"no-cache","transfer-encoding":"chunked","x-accel-buffering":"no"}
+N2 multiline data, id, retry, empty and 0 data             status=200 type=text/event-stream headers@3ms [3ms:"id: 7\nretry: 1500\ndata: a\ndata: b\ndata: c" 3ms:"id: 1" 3ms:"id: 2"] end=done@3ms
+N3 observable errors before first event                    fetch failed @24002ms: The socket connection was closed unexpectedly. For
+N4 observable errors after one event                       status=200 type=text/event-stream headers@2ms [2ms:"id: 1\ndata: e1" 53ms:"event: error\nid: 2\ndata: after"] end=done@53ms
+N5 controller throws synchronously                         fetch failed @23951ms: The socket connection was closed unexpectedly. For
+N6 Last-Event-ID via @Headers()                            status=200 type=text/event-stream headers@3ms [3ms:"id: 1\ndata: from 41"] end=done@3ms
+N7 @Res() imperative stream                                status=200 type=text/event-stream headers@1ms [1ms:": open" 203ms:"data: i1" 403ms:"data: i2" 603ms:"data: i3"] end=done@603ms
+N8 client aborts after 2 events                            [102ms:"id: 1\ndata: n1" 202ms:"id: 2\ndata: n2"] end=max 2@202ms server: unsubscribed@203
+N9 app.close() with a stream open                          [103ms:"id: 1\ndata: n1" 203ms:"id: 2\ndata: n2"] end=error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()@259ms close()@253ms took 6ms; server: unsubscribed@256
+N10 adapter.fetch() (no socket), @Sse ticks                status=200 headers@3ms [203ms:"event: tick\nid: 1\ndata: {\"n\":0}" 403ms:"event: tick\nid: 2\ndata: {\"n\":1}" 603ms:"event: tick\nid: 3\ndata: {\"n\":2}"] end=done@603ms
+N10 adapter.fetch() (no socket), @Res() stream             status=200 headers@0ms [1ms:": open" 203ms:"data: i1" 403ms:"data: i2" 604ms:"data: i3"] end=done@604ms
+warn: Bun.serve() timed out a request after 10 seconds. Pass `idleTimeout` to configure.

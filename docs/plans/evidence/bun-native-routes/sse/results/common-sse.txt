@@ -1,0 +1,21 @@
+A served, write-and-return                                 status=200 ce=null headers@207ms [207ms:"data: e1" 406ms:"data: e2" 607ms:"data: e3"] end=done@607ms
+B served, handler awaits the stream                        status=200 ce=null headers@601ms [602ms:"data: e1" 602ms:"data: e2" 602ms:"data: e3"] end=done@602ms
+C served, flushHeaders() then first write at 500ms         status=200 ce=null headers@501ms [501ms:"data: e1" 1001ms:"data: e2"] end=done@1001ms
+C2 served, ': open' comment at once, first event at 500ms  status=200 ce=null headers@1ms [1ms:": open" 501ms:"data: e1" 1001ms:"data: e2"] end=done@1001ms
+D1 router.fetch(), write-and-return                        headers@201ms [201ms:"data: e1" 401ms:"data: e2" 602ms:"data: e3"] end=done@602ms
+D2 adapter.fetch(), write-and-return                       headers@201ms [201ms:"data: e1" 401ms:"data: e2" 601ms:"data: e3"] end=done@601ms
+D3 adapter.fetch(), handler awaits                         headers@602ms [602ms:"data: e1" 602ms:"data: e2" 602ms:"data: e3"] end=done@602ms
+D4 router.fetch(), handler awaits                          headers@601ms [601ms:"data: e1" 601ms:"data: e2" 601ms:"data: e3"] end=done@601ms
+E1 requestTimeout 300, stream of 5 x 200ms                 status=200 ce=null headers@201ms [201ms:"data: e1" 402ms:"data: e2" 602ms:"data: e3" 802ms:"data: e4" 1004ms:"data: e5"] end=done@1004ms
+E2 requestTimeout 300, first write at 500ms (not flushed)  status=500 ce=null headers@302ms [] end=done@302ms
+F compression(), Accept-Encoding gzip                      status=200 ce=gzip headers@206ms [206ms:"data: e1" 404ms:"data: e2" 606ms:"data: e3"] end=done@606ms
+G client aborts after 2 events: client                     [101ms:"data: e1" 201ms:"data: e2"] end=max 2@201ms
+G … server saw                                             req.signal abort@201, res close@202, req.socket close@202, res finish@204, write#6 after abort returned false
+H adapter.close() 350ms after headers: client              [101ms:"data: e1" 201ms:"data: e2" 301ms:"data: e3" 401ms:"data: e4"] end=error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()@453ms close() called @451ms, took 2ms
+H … server saw                                             req.signal abort@451, res close@451
+I1 write then throw (sync), error handler registered       status=200 ce=null headers@1ms [1ms:"data: e1"] end=timeout@1501ms
+I2 write then next(err), error handler registered          status=200 ce=null headers@1ms [1ms:"data: e1"] end=timeout@1501ms
+I3 write then throw, no error handler                      status=200 ce=null headers@1ms [1ms:"data: e1"] end=timeout@1502ms
+I4 async handler: write, await, throw                      status=200 ce=null headers@101ms [101ms:"data: e1"] end=timeout@1602ms
+I … error handler invocations across I1, I2, I4            0
+J Last-Event-ID via req.get()                              status=200 ce=null headers@1ms [1ms:"data: resume-from 41"] end=done@1ms
