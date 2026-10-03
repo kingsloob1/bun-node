@@ -446,6 +446,7 @@ export class BunHttpAdapter<
       response: res,
       request: req,
       requestUrl: req.originalUrl,
+      requestPath: req.path,
       timeout: this.requestTimeout,
     };
 

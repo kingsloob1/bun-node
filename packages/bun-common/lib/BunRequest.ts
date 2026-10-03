@@ -469,8 +469,17 @@ interface ParsedBodyResult {
   multipart: MultiPartParseResult | undefined;
 }
 
-/** Marks the body task in `ready()`'s list while a `deferBody` read is pending. */
-const DEFERRED_BODY_TASK: unique symbol = Symbol("deferred body");
+/** {@link BunRequest}'s scheduled init tasks (its `#scheduled` bitmask). */
+const INIT_QUERY = 1;
+const INIT_BODY = 2;
+const INIT_BODY_DEFERRED = 4;
+const INIT_COOKIES = 8;
+
+/**
+ * The body of every request that has none: zero-length, so nothing can be
+ * written to it, and shared rather than allocated per request.
+ */
+const EMPTY_BODY_BUFFER = Buffer.alloc(0);
 
 /** What `#configuredCookieSecrets` returns when no secret is configured; never mutated. */
 const EMPTY_SECRETS: string[] = [];
@@ -1145,23 +1154,16 @@ export class BunRequest<
   }
 
   /**
-   * Init tasks, lazily allocated only when body/cookie/query parsing runs:
-   * the parsed query, the body parse (settled, no value) and the cookies.
-   * A task that finished while the request was built is held as its value;
-   * only a body that is still being read is a promise.
+   * What the options scheduled while the request was built, for
+   * {@link ready} to report: {@link INIT_QUERY}, {@link INIT_BODY},
+   * {@link INIT_BODY_DEFERRED}, {@link INIT_COOKIES}. A bitmask rather than a
+   * list of results: every task but a body read finishes in the constructor,
+   * and its result is on the request, so nothing is allocated to hold it.
    */
-  #initTasks:
-    | (
-        | TQuery
-        | BunRequestCookies
-        | Promise<void>
-        | undefined
-        | typeof DEFERRED_BODY_TASK
-      )[]
-    | undefined = undefined;
+  #scheduled = 0;
 
   /**
-   * The one {@link #initTasks} entry that can be pending — the body read,
+   * The one scheduled task that can be pending — the body read,
    * which never rejects (a failure settles the body as errored) — or
    * `undefined` when initialisation finished synchronously.
    */
@@ -1219,6 +1221,8 @@ export class BunRequest<
    * view, cast in and out as `_body` is.
    */
   #query: Record<string, unknown> | undefined = undefined;
+  /** {@link method}, once read: the adapter, the router and responses all read it. */
+  #method: string | undefined = undefined;
   public _route: BunRequestInterface["route"] | undefined = undefined;
   private _contentType:
     | "json"
@@ -1651,16 +1655,22 @@ export class BunRequest<
       this.#writableOptions().parseBody = true;
     }
 
+    // Unset `parseCookies`/`parseQuery` mean `true` and are read that way
+    // below (`!== false`), so the common options object, which leaves them
+    // out, is never copied.
+    const { parseCookies, parseQuery } = this.options;
     if (
-      !isBoolean(this.options.parseCookies) &&
-      !isObject(this.options.parseCookies)
+      parseCookies !== undefined &&
+      !isBoolean(parseCookies) &&
+      !isObject(parseCookies)
     ) {
       this.#writableOptions().parseCookies = true;
     }
 
     if (
-      !isBoolean(this.options.parseQuery) &&
-      !isObject(this.options.parseQuery)
+      parseQuery !== undefined &&
+      !isBoolean(parseQuery) &&
+      !isObject(parseQuery)
     ) {
       this.#writableOptions().parseQuery = true;
     }
@@ -1673,25 +1683,34 @@ export class BunRequest<
     // The query and cookie parses are synchronous, and so is the body's when
     // the request has none: each finishes here, and only a body still to be
     // read leaves a promise for `init()` to await.
-    if (this.options?.parseQuery) {
-      (this.#initTasks ??= []).push(this.parseQuery());
+    let scheduled = 0;
+    if (this.options.parseQuery !== false) {
+      scheduled |= INIT_QUERY;
+      // No query string: `req.query` is created on first read, empty, with
+      // the parser's own prototype (see the getter) — nothing to parse or
+      // allocate now. A custom `decode` still runs, as it may expect a call.
+      if (
+        this.splitRequestUrl().search.length > 1 ||
+        typeof this.#configuredQueryOpts()?.decode === "function"
+      ) {
+        this.parseQuery();
+      }
     }
 
-    if (this.options?.parseBody) {
+    if (this.options.parseBody) {
+      scheduled |= INIT_BODY;
       const absent = this.#finishAbsentBody();
       if (!absent) {
         this.#resolvedBodyConfig();
       }
       if (absent) {
-        (this.#initTasks ??= []).push(undefined);
+        // Finished: nothing to read.
       } else if (this.options.deferBody === true) {
         // Read on first need (see `deferBody`); `ready()` reads it too.
         this.#bodyDeferred = true;
-        (this.#initTasks ??= []).push(DEFERRED_BODY_TASK);
+        scheduled |= INIT_BODY_DEFERRED;
       } else {
-        const bodyTask = this.#readInitialBody();
-        this.#initPending = bodyTask;
-        (this.#initTasks ??= []).push(bodyTask);
+        this.#initPending = this.#readInitialBody();
       }
     }
 
@@ -1701,14 +1720,18 @@ export class BunRequest<
       this.secret = cookieSecrets[0];
     }
 
-    if (this.options?.parseCookies) {
-      (this.#initTasks ??= []).push(
+    if (this.options.parseCookies !== false) {
+      scheduled |= INIT_COOKIES;
+      // No `Cookie` header: `req.cookies` and `req.signedCookies` are empty,
+      // and their getters create them on first read.
+      if (this.headersObj.get("cookie") !== null) {
         this.parseCookies({
           forceUpdateRequest: true,
           secret: cookieSecrets.length ? cookieSecrets : undefined,
-        }),
-      );
+        });
+      }
     }
+    this.#scheduled = scheduled;
   }
 
   /**
@@ -1737,7 +1760,7 @@ export class BunRequest<
     ) {
       return false;
     }
-    this._buffer = Buffer.alloc(0);
+    this._buffer = EMPTY_BODY_BUFFER;
     this.#bodyParsed = true;
     this._body = undefined;
     this.#bodyState = "ended";
@@ -1905,15 +1928,29 @@ export class BunRequest<
   async ready(): Promise<
     PromiseSettledResult<TQuery | BunRequestCookies | void>[]
   > {
+    const scheduled = this.#scheduled;
     // Avoid the `Promise.allSettled` allocation when nothing was scheduled.
-    if (!this.#initTasks || this.#initTasks.length === 0) {
+    if (scheduled === 0) {
       return [];
     }
-    return await Promise.allSettled(
-      this.#initTasks.map((task) =>
-        task === DEFERRED_BODY_TASK ? this.readDeferredBody() : task,
-      ),
-    );
+    // In the order they ran: the query, the body (still being read, or read
+    // on first need with `deferBody`), the cookies.
+    const tasks: (TQuery | BunRequestCookies | Promise<void> | undefined)[] =
+      [];
+    if (scheduled & INIT_QUERY) {
+      tasks.push(this.query);
+    }
+    if (scheduled & INIT_BODY) {
+      tasks.push(
+        scheduled & INIT_BODY_DEFERRED
+          ? this.readDeferredBody()
+          : this.#initPending,
+      );
+    }
+    if (scheduled & INIT_COOKIES) {
+      tasks.push({ cookies: this.cookies, signedCookies: this.signedCookies });
+    }
+    return await Promise.allSettled(tasks);
   }
 
   /* ---------------------------------------------------------------- *
@@ -2168,9 +2205,19 @@ export class BunRequest<
     this.#params = value as Record<string, string>;
   }
 
-  /** Parsed query string — lazily allocated on first access. */
+  /**
+   * Parsed query string — lazily allocated on first access: for a request
+   * with no query string, empty with the query parser's own prototype (what
+   * parsing `""` gives), or a plain `{}` when query parsing is off.
+   */
   get query(): TQuery {
-    return (this.#query ??= {}) as TQuery;
+    return (this.#query ??=
+      this.options.parseQuery === false
+        ? {}
+        : (Object.create(EMPTY_QUERY_PROTOTYPE) as Record<
+            string,
+            unknown
+          >)) as TQuery;
   }
 
   set query(value: TQuery) {
@@ -4043,8 +4090,9 @@ export class BunRequest<
     return this.splitRequestUrl().hash;
   }
 
-  get method() {
-    return this.request.method.toUpperCase();
+  /** The request method, upper-cased; read once from the native request. */
+  get method(): string {
+    return (this.#method ??= this.request.method.toUpperCase());
   }
 
   get host() {
@@ -4171,7 +4219,8 @@ export class BunRequest<
 
   get originalUrl() {
     const { path, search, hash } = this.splitRequestUrl();
-    return `${path}${search}${hash}`;
+    // The common case — no query, no fragment — is the path itself.
+    return search === "" && hash === "" ? path : `${path}${search}${hash}`;
   }
 
   get headersDistinct() {
