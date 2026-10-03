@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { signCookie } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
-import { BunRouter } from "../lib/BunRouter";
+import { BunResponse } from "../lib/BunResponse";
+import { BunRouter, RequestPipelineOptions } from "../lib/BunRouter";
 import { testServer } from "./helpers";
 
 /**
@@ -450,5 +451,50 @@ describe("a request's Headers are built on first read", () => {
     );
     req.body = { set: true };
     expect(req.body).toEqual({ set: true });
+  });
+});
+
+describe("RequestPipelineOptions: the host and target read on demand", () => {
+  it("reads as the request's host and originalUrl, and takes assignments", () => {
+    const req = build("http://u:p@h:8/a?b#c");
+    let hostReads = 0;
+    const host = Object.getOwnPropertyDescriptor(BunRequest.prototype, "host")!;
+    Object.defineProperty(req, "host", {
+      get() {
+        hostReads++;
+        return host.get!.call(req);
+      },
+    });
+    const options = new RequestPipelineOptions(
+      req,
+      new BunResponse(req),
+      "GET",
+      req.path,
+      0,
+    );
+    expect(hostReads).toBe(0);
+    expect([
+      options.requestHost,
+      options.requestUrl,
+      options.requestPath,
+    ]).toEqual(["h:8", "/a?b#c", "/a"]);
+    expect(hostReads).toBe(1);
+    options.requestHost = "other";
+    options.requestUrl = "/x";
+    expect([options.requestHost, options.requestUrl]).toEqual(["other", "/x"]);
+  });
+
+  it("host-scoped routes still match through the adapters", async () => {
+    const app = new BunHttpAdapter(0);
+    app.get("/h", (req, res) => res.send(`any ${req.hostname}`));
+    const scoped = new BunRouter({ host: ":sub.example.com" });
+    scoped.get("/s", (req, res) => {
+      res.send(`sub ${String((req.params as Record<string, string>).sub)}`);
+    });
+    app.use(scoped);
+    expect(await (await app.fetch("http://api.example.com/s")).text()).toBe(
+      "sub api",
+    );
+    expect(await (await app.fetch("http://h/h")).text()).toBe("any h");
   });
 });

@@ -202,7 +202,10 @@ wildcard is exposed as both the positional key and the name.
   hooks)` runs a request and finishes it through `hooks` (`respond`,
   `stream`, `error`, `lateError`) inside that same promise; the adapters and
   `fetch()` serve through it. `dispatch()` is the same without hooks, and
-  `handle()` its `async` form.
+  `handle()` its `async` form. The adapters pass a `RequestPipelineOptions`,
+  whose `requestHost` and `requestUrl` read the request's `host` and
+  `originalUrl` only when a host-scoped route (or specificity ordering) asks:
+  most requests never slice the host out of the URL.
 - An error raised after the response started still runs the error handlers,
   which see `res.headersSent` as `true`. If none handles it, a streamed
   response is cut off (`res.destroy(err)`) and the error is logged, as

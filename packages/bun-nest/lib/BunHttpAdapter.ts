@@ -64,6 +64,7 @@ import {
   mergeBunRequestOptions,
   normalizeEtagOption,
   omit,
+  RequestPipelineOptions,
   set,
   toFetchResponse,
   toNativeRequest,
@@ -415,15 +416,14 @@ export class BunHttpAdapter<
       etag: this.etagEnabled,
     });
     const router = this.instance;
-    const options = {
-      requestHost: req.host,
-      requestMethod: req.method,
-      response: res,
-      request: req,
-      requestUrl: req.originalUrl,
-      requestPath: req.path,
-      timeout: this.requestTimeout,
-    };
+    // The host and the full target are read only if a route needs them.
+    const options = new RequestPipelineOptions(
+      req,
+      res,
+      req.method,
+      req.path,
+      this.requestTimeout,
+    );
 
     // A handler that opens a long-lived stream and awaits its end — NestJS's
     // `@Sse()` resolves only once the observable completes or the client

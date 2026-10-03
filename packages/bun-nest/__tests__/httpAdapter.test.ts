@@ -631,7 +631,7 @@ describe("BunHttpAdapter: a Content-Encoding refused while the request is built"
     const adapter = new BunHttpAdapter(0, {
       request: { parseBody: { inflate: false } },
     });
-    adapter.useBodyParser("json", false);
+    adapter.useBodyParser("json", false, {});
     const state = { routed: false };
     adapter.post("/echo", (_req, res) => {
       state.routed = true;

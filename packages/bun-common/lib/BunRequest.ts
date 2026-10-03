@@ -469,6 +469,44 @@ interface ParsedBodyResult {
   multipart: MultiPartParseResult | undefined;
 }
 
+/**
+ * A request URL split into its parts (see `BunRequest#splitRequestUrl`). The
+ * host is sliced, and any userinfo dropped, on first read: a request routed
+ * without a host-scoped route never needs it.
+ */
+class RequestUrlSplit {
+  /** {@link host}, once read. */
+  #host: string | undefined = undefined;
+
+  constructor(
+    /** The absolute request URL the positions index. */
+    private readonly url: string,
+    /** Where the authority (userinfo and host) starts. */
+    private readonly hostStart: number,
+    /** Where the authority ends: the path's first character. */
+    private readonly authorityEnd: number,
+    /** The pathname, `/` when the URL has none. */
+    readonly path: string,
+    /** The query string with its `?`, or `""`. */
+    readonly search: string,
+    /** The fragment with its `#`, or `""`. */
+    readonly hash: string,
+  ) {}
+
+  /** The authority without any userinfo: `host[:port]`. */
+  get host(): string {
+    if (this.#host !== undefined) {
+      return this.#host;
+    }
+    const { url, hostStart, authorityEnd } = this;
+    const at = url.lastIndexOf("@", authorityEnd - 1);
+    return (this.#host = url.slice(
+      at >= hostStart ? at + 1 : hostStart,
+      authorityEnd,
+    ));
+  }
+}
+
 /** {@link BunRequest}'s scheduled init tasks (its `#scheduled` bitmask). */
 const INIT_QUERY = 1;
 const INIT_BODY = 2;
@@ -1143,13 +1181,10 @@ export class BunRequest<
   }
 
   /**
-   * Memoized `{ host, path, search, hash }` split of the request URL (no
-   * `new URL`). `path` is the pathname only; `search`/`hash` keep their
-   * leading `?`/`#` (or are `""` when absent), matching WHATWG `URL`.
+   * Memoized split of the request URL (no `new URL`); see
+   * {@link RequestUrlSplit}.
    */
-  #urlSplit:
-    | { host: string; path: string; search: string; hash: string }
-    | undefined = undefined;
+  #urlSplit: RequestUrlSplit | undefined = undefined;
 
   public get maxHeadersCount(): number {
     const holder = this.#state;
@@ -4134,25 +4169,39 @@ export class BunRequest<
   }
 
   /**
-   * Splits the absolute request URL into `{ host, path, search, hash }` by a
-   * single string scan, avoiding a `new URL()` for the hot routing reads
-   * (`host`, `path`, `originalUrl`). `path` is the pathname only (Express-style
+   * Splits the absolute request URL into its path, search and hash with
+   * native `indexOf`s, avoiding a `new URL()` for the hot routing reads
+   * (`path`, `originalUrl`). `path` is the pathname only (Express-style
    * `req.path` — not normalized); `search` and `hash` keep their leading
    * `?`/`#` (or are `""` when absent), matching WHATWG `URL.search`/`URL.hash`.
+   * The host is sliced only when read (see {@link RequestUrlSplit}).
    */
-  private splitRequestUrl(): {
-    host: string;
-    path: string;
-    search: string;
-    hash: string;
-  } {
-    if (this.#urlSplit) {
-      return this.#urlSplit;
+  private splitRequestUrl(): RequestUrlSplit {
+    const cached = this.#urlSplit;
+    if (cached !== undefined) {
+      return cached;
     }
 
     const url = this.request.url;
-    const schemeEnd = url.indexOf("://");
-    const hostStart = schemeEnd === -1 ? 0 : schemeEnd + 3;
+    // `http://` and `https://` — every URL Bun gives a served or built
+    // request — by their colon; anything else by searching for the scheme.
+    let hostStart: number;
+    if (
+      url.charCodeAt(4) === 58 &&
+      url.charCodeAt(5) === 47 &&
+      url.charCodeAt(6) === 47
+    ) {
+      hostStart = 7;
+    } else if (
+      url.charCodeAt(5) === 58 &&
+      url.charCodeAt(6) === 47 &&
+      url.charCodeAt(7) === 47
+    ) {
+      hostStart = 8;
+    } else {
+      const schemeEnd = url.indexOf("://");
+      hostStart = schemeEnd === -1 ? 0 : schemeEnd + 3;
+    }
 
     // Native `indexOf`s, not a per-character loop (30 ns for a short host
     // against under 3 per `indexOf`). '#' ends everything; a '?' at or past
@@ -4172,9 +4221,6 @@ export class BunRequest<
 
     // Positions are read on the URL itself, never on a slice of it: JSC's
     // slices are views, and searching one copies it out first.
-    const at = url.lastIndexOf("@", authorityEnd - 1);
-    // Any userinfo is dropped.
-    const host = url.slice(at >= hostStart ? at + 1 : hostStart, authorityEnd);
     // A bare `?query`/`#hash` implies pathname "/".
     const path =
       url.charCodeAt(authorityEnd) === 47
@@ -4184,8 +4230,16 @@ export class BunRequest<
     const search = queryStart === -1 ? "" : url.slice(queryStart, searchEnd);
     const hash = hashStart === -1 ? "" : url.slice(hashStart);
 
-    this.#urlSplit = { host, path, search, hash };
-    return this.#urlSplit;
+    const split = new RequestUrlSplit(
+      url,
+      hostStart,
+      authorityEnd,
+      path,
+      search,
+      hash,
+    );
+    this.#urlSplit = split;
+    return split;
   }
 
   get path() {
