@@ -5262,7 +5262,7 @@ export class BunRouter<
     });
     state.async = pipeline;
     const { response } = state.options;
-    response.onceResponded((native) => {
+    response.whenResponded((native) => {
       const serve = state.serve;
       if (serve !== undefined && !pipeline.settled && response.isStreamOpen) {
         pipeline.settled = true;

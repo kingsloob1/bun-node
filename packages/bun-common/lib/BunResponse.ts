@@ -640,7 +640,35 @@ export class BunResponse<
    * of its own, not in the lazy {@link BunResponseState}: every asynchronous
    * pipeline subscribes, and building that holder costs more than the wait.
    */
-  #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
+  #responseWaiters:
+    | ((response: Response) => void)
+    | ((response: Response) => void)[]
+    | undefined = undefined;
+
+  /** Adds a waiter to {@link #responseWaiters}: a lone one is held without an array. */
+  #addResponseWaiter(waiter: (response: Response) => void): void {
+    const waiters = this.#responseWaiters;
+    if (waiters === undefined) {
+      this.#responseWaiters = waiter;
+    } else if (typeof waiters === "function") {
+      this.#responseWaiters = [waiters, waiter];
+    } else {
+      waiters.push(waiter);
+    }
+  }
+
+  /** Removes a waiter not yet called from {@link #responseWaiters}. */
+  #removeResponseWaiter(waiter: (response: Response) => void): void {
+    const waiters = this.#responseWaiters;
+    if (waiters === waiter) {
+      this.#responseWaiters = undefined;
+    } else if (Array.isArray(waiters)) {
+      const index = waiters.indexOf(waiter);
+      if (index !== -1) {
+        waiters.splice(index, 1);
+      }
+    }
+  }
 
   private options: Writable<ResponseInit> = {};
   /**
@@ -1251,8 +1279,12 @@ export class BunResponse<
     if (value && this.#responseWaiters !== undefined) {
       const waiters = this.#responseWaiters;
       this.#responseWaiters = undefined;
-      for (const waiter of waiters) {
-        waiter(value);
+      if (typeof waiters === "function") {
+        waiters(value);
+      } else {
+        for (const waiter of waiters) {
+          waiter(value);
+        }
       }
     }
 
@@ -2305,14 +2337,11 @@ export class BunResponse<
         resolve(response);
       };
 
-      (this.#responseWaiters ??= []).push(waiter);
+      this.#addResponseWaiter(waiter);
 
       if (enableTimeout) {
         timer = setTimeout(() => {
-          const index = this.#responseWaiters?.indexOf(waiter) ?? -1;
-          if (index !== -1) {
-            this.#responseWaiters?.splice(index, 1);
-          }
+          this.#removeResponseWaiter(waiter);
           reject(new Error("Request Timedout"));
         }, Number(timeout));
       }
@@ -2327,19 +2356,26 @@ export class BunResponse<
    * against something else can drop it cleanly.
    */
   public onceResponded(listener: (response: Response) => void): () => void {
+    if (this.whenResponded(listener)) {
+      return () => {};
+    }
+    return () => this.#removeResponseWaiter(listener);
+  }
+
+  /**
+   * {@link onceResponded} for a listener that is never removed: calls it at
+   * once (and returns `true`) if a response exists, else holds it until one
+   * is produced (`false`). No unsubscribe function is built — the router's
+   * asynchronous pipelines, which always keep theirs, subscribe this way.
+   */
+  public whenResponded(listener: (response: Response) => void): boolean {
     const existing = this.#nativeResponse;
     if (existing) {
       listener(existing);
-      return () => {};
+      return true;
     }
-    (this.#responseWaiters ??= []).push(listener);
-    return () => {
-      const waiters = this.#responseWaiters;
-      const index = waiters === undefined ? -1 : waiters.indexOf(listener);
-      if (index !== -1) {
-        waiters!.splice(index, 1);
-      }
-    };
+    this.#addResponseWaiter(listener);
+    return false;
   }
 
   /**
@@ -2372,22 +2408,24 @@ export class BunResponse<
   }
 
   setHeader(name: string, value: string | string[], replace = true) {
-    if (replace) {
-      this.headersObj.delete(name);
-    }
-
-    if (isArray(value)) {
-      value.forEach((val) => {
-        this.headersObj.append(name, val);
-      });
-    } else {
+    const headers = this.headersObj;
+    if (!isArray(value)) {
+      // `Headers#set` replaces every existing value itself: no `delete`
+      // first, which is another native call (~50 ns) per header set.
       if (replace) {
-        this.headersObj.set(name, value);
+        headers.set(name, value);
       } else {
-        this.headersObj.append(name, value);
+        headers.append(name, value);
       }
+      return this;
     }
 
+    if (replace) {
+      headers.delete(name);
+    }
+    for (const entry of value) {
+      headers.append(name, entry);
+    }
     return this;
   }
 
