@@ -1,0 +1,8 @@
+BUN_OPTIONS=''
+new Request                257           446          1056
+elysia2                   1049          2487          5009
+bun-common                4001         10202         11871
+BUN_OPTIONS='--smol'
+new Request                241           529          1167
+elysia2                    941          2061          5350
+bun-common                3571          8996         11926

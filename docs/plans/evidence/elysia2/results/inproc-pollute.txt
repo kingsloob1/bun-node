@@ -1,0 +1,63 @@
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=0, best of 5, ns/request
+target                  static         param
+new Request                344           280
+raw                        654           729
+elysia2                    980          1141
+bun-common                3125          3274
+bun-common-lean           2717          2547
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=0, best of 5, ns/request
+target                  static         param
+new Request                333           269
+raw                        688           738
+elysia2                    852          1207
+bun-common                3020          3214
+bun-common-lean           2393          2323
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=0, best of 5, ns/request
+target                  static         param
+new Request                327           243
+raw                        669           768
+elysia2                   1010          1225
+bun-common                3367          3402
+bun-common-lean           2622          2551
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=262144, best of 5, ns/request
+target                  static         param
+new Request               4853          4836
+raw                       5231          5240
+elysia2                   5346          6131
+bun-common                7508          7625
+bun-common-lean           7279          7023
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=262144, best of 5, ns/request
+target                  static         param
+new Request               4648          4654
+raw                       5219          5118
+elysia2                   5502          6030
+bun-common                9427          8152
+bun-common-lean           7293          7276
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=262144, best of 5, ns/request
+target                  static         param
+new Request               4721          4656
+raw                       5611          5136
+elysia2                   5367          5725
+bun-common                8534          8291
+bun-common-lean           8004          7233
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=1048576, best of 5, ns/request
+target                  static         param
+new Request              24847         24825
+raw                      25258         26422
+elysia2                  26928         27450
+bun-common               31757         31670
+bun-common-lean          30202         28699
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=1048576, best of 5, ns/request
+target                  static         param
+new Request              24238         24432
+raw                      26973         26583
+elysia2                  26665         28007
+bun-common               34096         31817
+bun-common-lean          31749         30904
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=20000, POLLUTE=1048576, best of 5, ns/request
+target                  static         param
+new Request              28163         27558
+raw                      28529         29738
+elysia2                  30335         29975
+bun-common               33727         34599
+bun-common-lean          31948         33592

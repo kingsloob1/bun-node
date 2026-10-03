@@ -1,0 +1,24 @@
+BATCH=32
+Bun 1.4.2, scenario static; ns/request (pipelined client + server, one thread), median of 3 x 1s
+
+  raw: new Response('ok')                        64076 ns   +0   [60257, 64076, 67448]
+  raw: + req.url                                 62201 ns   -1876   [62201, 61557, 64564]
+  raw: + req.method                              60445 ns   -3631   [64121, 59430, 60445]
+  raw: + req.headers                             62754 ns   -1323   [69121, 59457, 62754]
+  raw: + req.headers.get('host')                 62155 ns   -1921   [68294, 59745, 62155]
+  raw: + req.signal                              62285 ns   -1791   [57091, 66144, 62285]
+  raw: + req.body                                61270 ns   -2806   [59741, 66390, 61270]
+  raw: Promise.resolve(new Response('ok'))       61381 ns   -2695   [57500, 65510, 61381]
+  elysia2                                        68696 ns   +4620   [68696, 72826, 64234]
+  bun-common                                     70384 ns   +6307   [70384, 74485, 62845]
+  bun-common-lean                                65197 ns   +1121   [65197, 65312, 65038]
+
+BATCH=128
+Bun 1.4.2, scenario static; ns/request (pipelined client + server, one thread), median of 3 x 1s
+
+  raw: new Response('ok')                        37226 ns   +0   [36782, 37226, 39402]
+  raw: + req.headers                             38008 ns   +782   [36664, 38008, 40634]
+  raw: + req.body                                38075 ns   +849   [36836, 38167, 38075]
+  elysia2                                        37161 ns   -66   [37161, 39203, 36752]
+  bun-common                                     40966 ns   +3740   [42911, 40966, 40695]
+  bun-common-lean                                39723 ns   +2497   [39723, 41771, 39081]

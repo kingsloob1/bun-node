@@ -1,0 +1,61 @@
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production; ns/op, best of 5 x 100000
+
+A. per-request objects (context.mjs vs BunRequest/BunResponse)
+  Elysia-style Context (request, set{headers,status,cookie}, path)        58 ns
+  new BunRequest(native, lean)                                           180 ns
+  BunRequest.init(native, adapter defaults; no body)                     894 ns
+  new BunResponse(req)                                                   117 ns
+  request.signal (first read on a fresh Request)                         693 ns
+    floor: new Request(url)                                              285 ns
+
+B. path from the URL (fetch.mjs extractPath vs BunRequest getters)
+  Elysia extractPath: indexOf x2 + slice                                  63 ns
+  native.url alone                                                        26 ns
+  new BunRequest(lean) + host + method + originalUrl                     427 ns
+  new BunRequest(lean) alone                                             142 ns
+  native.method.toUpperCase()                                             35 ns
+
+C. route lookup, 1,000 /r<i>/:id routes + /static (base.mjs ~map + memoirist vs getMatchedLayers)
+  Elysia static: map[method][path]                                        27 ns
+  Elysia dynamic: memoirist.find('/r999/7')                              157 ns
+  Elysia dynamic: memoirist.find(fresh id)                               311 ns
+  bun-common getMatchedLayers('/static') (cache hit)                     140 ns
+  bun-common getMatchedLayers('/r999/7') (cache hit)                     143 ns
+  bun-common getMatchedLayers(fresh id) (miss, cache filling)           3932 ns
+  bun-common getMatchedLayers(fresh id), routeCacheMax: 0               1902 ns
+  bun-common getMatchedLayers('/r999/7'), routeCacheMax: 0               971 ns
+  template key `${method} ${path}` + Map.get (cache hit shape)            22 ns
+
+D. producing the Response (web-standard/handler.mjs mapCompactResponse vs BunResponse)
+  new Response('ok')                        (Elysia compact string)      270 ns
+  new BunResponse + send('ok') + settledResponse                         562 ns
+  new BunResponse + status(200).send('ok')                               667 ns
+  new BunResponse + set('x-a','1').send('ok')   (any header)            1256 ns
+  new Response('ok', {headers: {x-a: '1'}})  (Elysia set.headers)        770 ns
+  Response.json(obj)                         (Elysia compact object)     622 ns
+  new BunResponse + json(obj)                                            961 ns
+  new Response(JSON.stringify(obj), {headers: Headers})                 1330 ns
+
+E. pipeline: per-layer cost (compiled beforeHandle chain vs #runPipeline)
+  bun-common dispatch: 0 use() + route (new BunResponse incl.)          1122 ns
+  bun-common dispatch: 1 use() + route (new BunResponse incl.)          1220 ns
+  bun-common dispatch: 3 use() + route (new BunResponse incl.)          1285 ns
+  bun-common dispatch: 10 use() + route (new BunResponse incl.)         1793 ns
+  Elysia-style inline chain: 3 hooks + handler + new Response            277 ns
+
+F. an async handler, whole request (compiled async tail vs #waitLayer + awaitPipelineOrStream)
+  Elysia 2 fetch: () => 'ok'                                            1000 ns
+  Elysia 2 fetch: async () => { await null; return 'ok' }               1471 ns
+  bun-common (lean): (q,s) => s.send('ok')                              2757 ns
+  bun-common (lean): async (q,s) => { s.send('ok') }                    3566 ns
+  bun-common (lean): async (q,s) => { await null; s.send('ok') }        5067 ns
+  bun-common (lean): async mw { await null; next() } + send             5663 ns
+
+G. reading a small JSON body (web-standard parse.json vs alternatives)
+    floor: new Request(POST, body)                                      1050 ns
+  await request.json()                     (Elysia)                     1527 ns
+  await request.text() + JSON.parse                                     1622 ns
+  await request.arrayBuffer() + TextDecoder + JSON.parse                2835 ns
+  await request.bytes() + Buffer.from + toString + JSON.parse           2234 ns
+  headers.get('content-type') + get('content-length')  (hb())           1763 ns
+  BunRequest.init(POST json, adapter defaults)                         10034 ns
