@@ -232,6 +232,14 @@ type check. It is a standalone package like the bench ones — its own
   handoff); `check-types.ts` about 25 s. The template's README is its quick
   start, so a change to what a provider must do is a change there too.
 
+## Bun bugs
+
+Bun behaviour that bun-node works around is documented in
+[`docs/bun-bugs/`](docs/bun-bugs/README.md): one report and one minimal,
+Bun-only reproduction per bug. A reproduction exits 1 while the bug is
+present, so after raising the Bun floor, run them to see which workaround can
+go. When you work around a new one, add it there (the README says how).
+
 ## Typechecking
 
 **One base config, extended everywhere.** `tsconfig.base.json` at the repo

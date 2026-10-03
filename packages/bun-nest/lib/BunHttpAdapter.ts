@@ -59,9 +59,9 @@ import {
   mergeBunRequestOptions,
   omit,
   set,
+  toFetchResponse,
   toNativeRequest,
   waitUntil,
-  withoutHeadBody,
 } from "@kingsleyweb/bun-common";
 import {
   InternalServerErrorException,
@@ -594,14 +594,14 @@ export class BunHttpAdapter<
       );
     } catch (error) {
       // The same final error handling `Bun.serve`'s `error` callback runs.
-      return withoutHeadBody(
+      return toFetchResponse(
         await this.handleRequestError(error),
         nativeRequest.method,
       );
     }
 
     // A served HEAD response carries no body: Bun drops it on the wire.
-    return withoutHeadBody(
+    return toFetchResponse(
       response ??
         new Response(null, { status: 101, statusText: "Switching Protocols" }),
       nativeRequest.method,

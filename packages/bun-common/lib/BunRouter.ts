@@ -22,7 +22,10 @@ import path, { join } from "node:path";
 import process from "node:process";
 import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
-import { BunResponse as BunResponseClass } from "./BunResponse";
+import {
+  BunResponse as BunResponseClass,
+  toFetchResponse,
+} from "./BunResponse";
 import { resolveLogger } from "./logging";
 import {
   isArray,
@@ -471,22 +474,6 @@ export function toNativeRequest(
 function withoutFragment(url: string): string {
   const hashStart = url.indexOf("#");
   return hashStart === -1 ? url : url.slice(0, hashStart);
-}
-
-/**
- * `response` as a server sends it in answer to `method`: without a body for
- * `HEAD`, which `Bun.serve` drops on the wire. Socket-free `fetch()` applies
- * it so it answers as a served request does.
- */
-export function withoutHeadBody(response: Response, method: string): Response {
-  if (method.toUpperCase() !== "HEAD" || response.body === null) {
-    return response;
-  }
-  return new Response(null, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
 }
 
 /** One matched route, while {@link BunRouter.getMatchedLayers} builds layers. */
@@ -4438,13 +4425,13 @@ export class BunRouter<
     });
 
     if (handled) {
-      return withoutHeadBody(
+      return toFetchResponse(
         response.settledResponse ?? (await response.getNativeResponse(0)),
         request.method,
       );
     }
     if (response.settledResponse) {
-      return withoutHeadBody(response.settledResponse, request.method);
+      return toFetchResponse(response.settledResponse, request.method);
     }
 
     // Nothing matched, exactly as the adapter reports when no route claims a
