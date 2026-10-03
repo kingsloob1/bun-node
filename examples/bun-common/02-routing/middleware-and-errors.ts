@@ -15,10 +15,18 @@
  * - `next("route")` skips the rest of the current route's callbacks;
  *   `next("router")` leaves a mounted sub-router, or abandons the pipeline
  *   when called from the router's own routes.
- * - `next()` may be called later — from a timer or an I/O callback — as
- *   Express allows: the pipeline waits for it. Only a callback that never
- *   responds nor calls `next()` hangs, until the adapter's request timeout
- *   fails it with `Request Timedout` (a 500 from the final handling).
+ * - A layer is done when it calls `next()` or produces a complete response.
+ *   `next()` may be called later — from a timer or an I/O callback — as
+ *   Express allows: the pipeline waits for it. A callback that never responds
+ *   nor calls `next()`, or an async handler that never settles, hangs until
+ *   the adapter's request timeout fails it with `Request Timedout` (a 500
+ *   from the final handling). An open stream is never timed out.
+ * - An open stream (`res.write()`) is not a complete response: `next()` still
+ *   hands it to the next layer, which may write more or `end()` it, and a
+ *   `next(err)` — even from a timer — reaches the error handlers.
+ * - An async handler that responds and keeps awaiting does not hold its
+ *   response back; a rejection after that is logged ("Error from a handler
+ *   after it had moved on").
  * - An error raised after the response started (`res.write()`, then a throw or
  *   `next(err)`) still runs the error handlers, which see `res.headersSent`
  *   as `true` and may still `res.end()` the stream. If none handles it, the
@@ -38,7 +46,7 @@ import {
   createTestLogger,
 } from "@kingsleyweb/bun-common";
 import { check, checkEqual, summary } from "../shared/check";
-import { show, step, title } from "../shared/console";
+import { show, step, title, waitFor } from "../shared/console";
 
 title("Middleware and errors");
 
@@ -359,6 +367,21 @@ checkEqual("a request that never finishes is a 500", forgot.status, 500);
 check("…once the 200ms timeout ran out", waited >= 190, waited);
 checkEqual("…and the error handlers never saw it", sawTimeout, []);
 
+// An async handler that never settles is timed out the same way — which is
+// what a stuck Nest controller (always async) relies on.
+adapter.get("/never-settles", async () => {
+  await new Promise<never>(() => {});
+});
+const asyncStarted = performance.now();
+const neverSettles = await adapter.fetch("/never-settles");
+const asyncWaited = performance.now() - asyncStarted;
+checkEqual(
+  "an async handler that never settles is a 500 too",
+  neverSettles.status,
+  500,
+);
+check("…once the timeout ran out", asyncWaited >= 190, asyncWaited);
+
 const unhandledOnAdapter = new BunHttpAdapter();
 unhandledOnAdapter.get("/x", () => {
   throw Object.assign(new Error("secret detail"), { status: 503 });
@@ -462,5 +485,92 @@ check(
   afterEvents.map((event) => event.message),
 );
 await streaming.close();
+
+/* ------------------------------------------------------------------ */
+step("After res.write(), next() and next(err) still move on");
+
+const open = new BunHttpAdapter(0);
+const { logger: openLogger, events: openEvents } = createTestLogger();
+open.setLogger(openLogger);
+const openSeen: { message: string; headersSent: boolean }[] = [];
+open.get(
+  "/sync",
+  (_req, res, next) => {
+    res.write("one;");
+    next();
+  },
+  (_req, res) => {
+    void res.end("two");
+  },
+);
+open.get(
+  "/timer",
+  (_req, res, next) => {
+    res.write("one;");
+    setTimeout(next, 10);
+  },
+  (_req, res) => {
+    void res.end("two");
+  },
+);
+open.get("/late-error", (_req, res, next) => {
+  res.write("one;");
+  setTimeout(() => next(new Error("late")), 10);
+});
+open.get("/sent-then-rejects", async (_req, res) => {
+  res.send("sent at once");
+  await Bun.sleep(300);
+  throw new Error("after the response");
+});
+open.use(((error, _req, res, _next) => {
+  openSeen.push({
+    message: (error as Error).message,
+    headersSent: res.headersSent,
+  });
+  void res.end(`|handled: ${(error as Error).message}`);
+}) satisfies RouterErrorMiddlewareHandler);
+await open.listen(0);
+
+for (const path of ["/sync", "/timer"]) {
+  checkEqual(
+    `${path}: write(); next() — the next handler ends it`,
+    [
+      await (await open.fetch(path)).text(),
+      await (await fetch(`${open.url}${path}`)).text(),
+    ],
+    ["one;two", "one;two"],
+  );
+}
+checkEqual(
+  "a later next(err) on an open stream reaches the error handler",
+  await (await fetch(`${open.url}/late-error`)).text(),
+  "one;|handled: late",
+);
+checkEqual("…which saw headersSent: true", openSeen.splice(0), [
+  { message: "late", headersSent: true },
+]);
+
+const sentFrom = performance.now();
+const sentThen = await fetch(`${open.url}/sent-then-rejects`);
+const sentBody = await sentThen.text();
+const sentAfter = performance.now() - sentFrom;
+checkEqual("send() then keep awaiting: the response", sentBody, "sent at once");
+check("…arrives before the handler resolves", sentAfter < 250, sentAfter);
+/** Whether the handler's late rejection has been logged yet. */
+function lateRejectionLogged(): boolean {
+  return openEvents.some(
+    (event) => event.message === "Error from a handler after it had moved on",
+  );
+}
+await waitFor("the late rejection to be logged", lateRejectionLogged);
+check(
+  "…and its later rejection is logged",
+  openEvents.some(
+    (event) =>
+      event.message === "Error from a handler after it had moved on" &&
+      event.error?.message === "after the response",
+  ),
+);
+await open.close();
 
 summary();
