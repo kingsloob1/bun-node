@@ -647,9 +647,11 @@ export function get(
 /**
  * Sets `key` on `target` as a non-enumerable (but writable, configurable)
  * property: readable as usual, and left out of `Object.keys`, JSON and
- * `console`/`Bun.inspect` output. Used to let the request ride on an error
- * without every logger printing all of it. A frozen or sealed target is left
- * as it is.
+ * Node's `util.inspect`. Used to let the request ride on an error without
+ * every logger printing all of it. Bun's `console`/`Bun.inspect` leave it out
+ * of an `Error` but, unlike Node, print it on a plain object or class
+ * instance (docs/bun-bugs/inspect-shows-non-enumerable-properties.md). A
+ * frozen or sealed target is left as it is.
  */
 export function defineHidden(
   target: object,
