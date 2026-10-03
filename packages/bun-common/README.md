@@ -841,6 +841,14 @@ is built) or in `useBodyParser` options (applied only to a body not yet read):
 | `decompressionFastPathLimit` | `number` | 32 MiB (`DEFAULT_DECOMPRESS_FAST_PATH_LIMIT`) | Worst-case memory one layer may use in Bun's faster, uncapped decoder. A layer above it goes through `node:zlib`, which stops at the body limit; `br`, `dcb` and `dcz` always do. `0` disables the fast path and `Infinity` always uses it. |
 | `compressionDictionaries` | `Uint8Array[] \| (hash, encoding) => Uint8Array \| undefined` | none | Dictionaries for `dcb` and `dcz`, indexed by SHA-256, or a resolver. Without it those codings are refused with 415. |
 
+An invalid option (an unknown coding, a `maxContentCodings` that is not a
+non-negative integer, a `compressionDictionaries` of the wrong shape) throws
+where it is configured: the adapter's constructor and `setRequestOpts()`
+(which then keeps its previous options), and `requestParsing()`. A request
+resolves its `parseBody` config only when it has a body, so a bodiless request
+never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
+options built elsewhere.
+
 How a failure is answered:
 
 | Status | When |

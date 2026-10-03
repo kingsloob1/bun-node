@@ -6,6 +6,7 @@ import type {
   ParseQueryOption,
 } from "./BunRequest";
 import type { RouterHandler } from "./types/general";
+import { validateParseBodyOption } from "./BunRequest";
 
 /**
  * What {@link requestParsing} sets for the requests it sees. Every field is
@@ -59,11 +60,14 @@ export interface RequestParsingOptions {
  * In NestJS it is ordinary functional middleware:
  * `consumer.apply(requestParsing({ ... })).forRoutes("upload")`.
  *
- * @throws TypeError at creation, for an option of the wrong type.
+ * @throws TypeError at creation, for an option of the wrong type, and
+ * RangeError or TypeError for an invalid `parseBody` size or decoding option.
  */
 export function requestParsing(options: RequestParsingOptions): RouterHandler {
   validateOptions(options);
   const { parseQuery, parseCookies, parseBody } = options;
+  // Sizes and decoding options fail here, at creation, not per request.
+  validateParseBodyOption(parseBody);
 
   return (req, _res, next) => {
     const request = req as BunRequest;

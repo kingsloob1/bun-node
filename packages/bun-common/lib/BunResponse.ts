@@ -468,6 +468,69 @@ type ResEventName = keyof BunResponseEvents;
 /** The listener signature for a given {@link BunResponse} event. */
 type ResListener<E extends ResEventName> = BunResponseEvents[E];
 
+/**
+ * BunResponse's rarely-used state (see its `#state`): one object,
+ * allocated only when one of these fields is first written.
+ */
+class BunResponseState<customWebsocketDataType = unknown> {
+  /** Backs BunResponse's `_upgradeToWsData`; see its documentation there. */
+  _upgradeToWsData: WebSocketClientData<customWebsocketDataType> | undefined =
+    undefined;
+
+  /** Backs BunResponse's `_upgradeToWsHeaders`; see its documentation there. */
+  _upgradeToWsHeaders: Headers | undefined = undefined;
+  /** Backs BunResponse's `_webSocketUpgradeHeaders`; see its documentation there. */
+  _webSocketUpgradeHeaders: Headers | undefined = undefined;
+  /** Backs BunResponse's `_webSocketUpgradeData`; see its documentation there. */
+  _webSocketUpgradeData:
+    | Partial<WebSocketClientData<customWebsocketDataType>>
+    | undefined = undefined;
+
+  /** Backs BunResponse's `#responseWaiters`; see its documentation there. */
+  responseWaiters: ((response: Response) => void)[] | undefined = undefined;
+  /** Backs BunResponse's `_isLongLived`; see its documentation there. */
+  _isLongLived: boolean = false;
+  /** Backs BunResponse's `#readableStream`; see its documentation there. */
+  readableStream: ReadableStream | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamController`; see its documentation there. */
+  readableStreamController: ReadableStreamDefaultController | undefined =
+    undefined;
+
+  /** Backs BunResponse's `#readableStreamClosePromise`; see its documentation there. */
+  readableStreamClosePromise: Promise<undefined> | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamCloseResolve`; see its documentation there. */
+  readableStreamCloseResolve: (() => void) | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamEventMap`; see its documentation there. */
+  readableStreamEventMap:
+    | Map<string, string | ArrayBufferView | ArrayBufferLike>
+    | undefined = undefined;
+
+  /** Backs BunResponse's `#streamWriteNotifier`; see its documentation there. */
+  streamWriteNotifier: Deferred<void> | undefined = undefined;
+  /** Backs BunResponse's `#streamEnding`; see its documentation there. */
+  streamEnding: boolean = false;
+  /** Backs BunResponse's `#streamClosed`; see its documentation there. */
+  streamClosed: boolean = false;
+  /** Backs BunResponse's `#destroyedWith`; see its documentation there. */
+  destroyedWith: unknown = undefined;
+  /** Backs BunResponse's `#destroyed`; see its documentation there. */
+  destroyed: boolean = false;
+  /** Backs BunResponse's `#streamEndWaiters`; see its documentation there. */
+  streamEndWaiters: (() => void)[] | undefined = undefined;
+  /** Backs BunResponse's `#emitter`; see its documentation there. */
+  emitter: EventEmitter | undefined = undefined;
+  /** Backs BunResponse's `#finishEmitted`; see its documentation there. */
+  finishEmitted: boolean = false;
+  /** Backs BunResponse's `#closeEmitted`; see its documentation there. */
+  closeEmitted: boolean = false;
+  /** Backs BunResponse's `#streamedChunks`; see its documentation there. */
+  streamedChunks: BunResponseChunk[] | undefined = undefined;
+  /** Backs BunResponse's `#responseTransforms`; see its documentation there. */
+  responseTransforms: BunResponseTransform[] | undefined = undefined;
+  /** Backs BunResponse's `#transformBody`; see its documentation there. */
+  transformBody: BunResponseTransformBody | undefined = undefined;
+}
+
 export class BunResponse<
   /**
    * The `custom` data of a WebSocket this response upgrades to. `unknown`
@@ -476,24 +539,70 @@ export class BunResponse<
    */
   customWebsocketDataType = unknown,
 > implements TypedEmitter<BunResponseEvents> {
-  private _upgradeToWsData:
+  /**
+   * Rarely-used state, created on first write. Each field moved here is an
+   * accessor that reads its default until then, so a request or response that
+   * never touches it pays no per-field initialisation (about 6 ns each).
+   */
+  #state: BunResponseState<customWebsocketDataType> | undefined = undefined;
+
+  private get _upgradeToWsData():
     | WebSocketClientData<customWebsocketDataType>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._upgradeToWsData;
+  }
+
+  private set _upgradeToWsData(
+    value: WebSocketClientData<customWebsocketDataType> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._upgradeToWsData = value;
+  }
 
   /**
    * Headers for the `101` of a WebSocket upgrade, as {@link upgradeToWebsocket}
    * merged them; `undefined` when no layer had any, so the upgrade sends
    * exactly Bun's default.
    */
-  private _upgradeToWsHeaders: Headers | undefined = undefined;
+  private get _upgradeToWsHeaders(): Headers | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._upgradeToWsHeaders;
+  }
+
+  private set _upgradeToWsHeaders(value: Headers | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._upgradeToWsHeaders =
+      value;
+  }
 
   /** Per-request `101` headers — see {@link webSocketUpgradeHeaders}. */
-  private _webSocketUpgradeHeaders: Headers | undefined = undefined;
+  private get _webSocketUpgradeHeaders(): Headers | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._webSocketUpgradeHeaders;
+  }
+
+  private set _webSocketUpgradeHeaders(value: Headers | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._webSocketUpgradeHeaders =
+      value;
+  }
 
   /** Per-request `ws.data` values — see {@link webSocketUpgradeData}. */
-  private _webSocketUpgradeData:
+  private get _webSocketUpgradeData():
     | Partial<WebSocketClientData<customWebsocketDataType>>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._webSocketUpgradeData;
+  }
+
+  private set _webSocketUpgradeData(
+    value: Partial<WebSocketClientData<customWebsocketDataType>> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._webSocketUpgradeData =
+      value;
+  }
 
   /**
    * Where router-wide upgrade defaults (`webSocketUpgradeHeaders`,
@@ -511,7 +620,16 @@ export class BunResponse<
    * Resolvers awaiting the native `Response` (see {@link getNativeResponse}).
    * Allocated on the first waiter — a response nobody awaits costs no array.
    */
-  #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
+  get #responseWaiters(): ((response: Response) => void)[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.responseWaiters;
+  }
+
+  set #responseWaiters(value: ((response: Response) => void)[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).responseWaiters = value;
+  }
+
   private options: Writable<ResponseInit> = {};
   /**
    * The headers set so far; `undefined` until the first write (see
@@ -584,21 +702,80 @@ export class BunResponse<
     return { status, statusText };
   }
 
-  private _isLongLived = false;
-  #readableStream: ReadableStream | undefined = undefined;
-  #readableStreamController: ReadableStreamDefaultController | undefined =
-    undefined;
+  private get _isLongLived(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder._isLongLived;
+  }
 
-  #readableStreamClosePromise: Promise<undefined> | undefined = undefined;
-  #readableStreamCloseResolve: (() => void) | undefined = undefined;
+  private set _isLongLived(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._isLongLived = value;
+  }
+
+  get #readableStream(): ReadableStream | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStream;
+  }
+
+  set #readableStream(value: ReadableStream | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStream = value;
+  }
+
+  get #readableStreamController(): ReadableStreamDefaultController | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamController;
+  }
+
+  set #readableStreamController(
+    value: ReadableStreamDefaultController | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamController =
+      value;
+  }
+
+  get #readableStreamClosePromise(): Promise<undefined> | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamClosePromise;
+  }
+
+  set #readableStreamClosePromise(value: Promise<undefined> | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamClosePromise =
+      value;
+  }
+
+  get #readableStreamCloseResolve(): (() => void) | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamCloseResolve;
+  }
+
+  set #readableStreamCloseResolve(value: (() => void) | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamCloseResolve =
+      value;
+  }
+
   /**
    * Chunks written but not yet enqueued on {@link readableStream}, keyed by an
    * arrival-ordered token. Values are text or binary (`Buffer`, typed array,
    * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
    */
-  #readableStreamEventMap:
+  get #readableStreamEventMap():
     | Map<string, string | ArrayBufferView | ArrayBufferLike>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamEventMap;
+  }
+
+  set #readableStreamEventMap(
+    value: Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamEventMap =
+      value;
+  }
 
   /** The pending-chunk map, created on the first buffered write. */
   get #pendingChunks(): Map<
@@ -609,32 +786,81 @@ export class BunResponse<
   }
 
   /** Notifies a parked stream `pull` that data is available to enqueue. */
-  #streamWriteNotifier: Deferred<void> | undefined = undefined;
+  get #streamWriteNotifier(): Deferred<void> | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamWriteNotifier;
+  }
+
+  set #streamWriteNotifier(value: Deferred<void> | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamWriteNotifier =
+      value;
+  }
 
   /**
    * Set once the stream has been asked to end. The pending chunks are still
    * flushed first: by the parked `pull` when one is waiting, immediately when
    * the controller is idle, or by the first `pull` when nothing has read yet.
    */
-  #streamEnding = false;
+  get #streamEnding(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.streamEnding;
+  }
+
+  set #streamEnding(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamEnding = value;
+  }
 
   /** True once the stream's controller has been closed (closing is once-only). */
-  #streamClosed = false;
+  get #streamClosed(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.streamClosed;
+  }
+
+  set #streamClosed(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamClosed = value;
+  }
 
   /**
    * Why {@link destroy} ended the stream, once it has; `undefined` otherwise.
    * A `pull` that runs later errors the stream with it.
    */
-  #destroyedWith: unknown = undefined;
+  get #destroyedWith(): unknown {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.destroyedWith;
+  }
+
+  set #destroyedWith(value: unknown) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).destroyedWith = value;
+  }
 
   /** True once {@link destroy} has run. */
-  #destroyed = false;
+  get #destroyed(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.destroyed;
+  }
+
+  set #destroyed(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).destroyed = value;
+  }
 
   /**
    * Called once when a streamed response ends — `end()`, the client leaving
    * or {@link destroy}. See {@link onceStreamEnded}.
    */
-  #streamEndWaiters: (() => void)[] | undefined = undefined;
+  get #streamEndWaiters(): (() => void)[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamEndWaiters;
+  }
+
+  set #streamEndWaiters(value: (() => void)[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamEndWaiters = value;
+  }
 
   /**
    * How {@link send} tags a body with an `ETag` — see {@link etag}. Starts as
@@ -648,9 +874,35 @@ export class BunResponse<
    * only when the first listener is registered, so a response nobody listens
    * to costs nothing.
    */
-  #emitter: EventEmitter | undefined = undefined;
-  #finishEmitted = false;
-  #closeEmitted = false;
+  get #emitter(): EventEmitter | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.emitter;
+  }
+
+  set #emitter(value: EventEmitter | undefined) {
+    (this.#state ??= new BunResponseState<customWebsocketDataType>()).emitter =
+      value;
+  }
+
+  get #finishEmitted(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.finishEmitted;
+  }
+
+  set #finishEmitted(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).finishEmitted = value;
+  }
+
+  get #closeEmitted(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.closeEmitted;
+  }
+
+  set #closeEmitted(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).closeEmitted = value;
+  }
 
   /**
    * The response body, captured for inspection — see {@link getBody}. Holds
@@ -664,21 +916,46 @@ export class BunResponse<
    * by {@link getBody}. Never a body the caller passed to `send`, which is
    * never mutated. `undefined` until the first streamed chunk.
    */
-  #streamedChunks: BunResponseChunk[] | undefined = undefined;
+  get #streamedChunks(): BunResponseChunk[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamedChunks;
+  }
+
+  set #streamedChunks(value: BunResponseChunk[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamedChunks = value;
+  }
 
   /**
    * Transforms run on the native `Response` as it is produced, in
    * registration order — see {@link addResponseTransform}. `undefined` until
    * the first is added, so a response without one pays a single check.
    */
-  #responseTransforms: BunResponseTransform[] | undefined = undefined;
+  get #responseTransforms(): BunResponseTransform[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.responseTransforms;
+  }
+
+  set #responseTransforms(value: BunResponseTransform[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).responseTransforms =
+      value;
+  }
 
   /**
    * The buffered body of the `Response` about to be produced, when `send`'s
    * captured body is not it (serialised JSON text, a `sendFile` slice).
    * Recorded only while a transform is registered; cleared once read.
    */
-  #transformBody: BunResponseTransformBody | undefined = undefined;
+  get #transformBody(): BunResponseTransformBody | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.transformBody;
+  }
+
+  set #transformBody(value: BunResponseTransformBody | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).transformBody = value;
+  }
 
   constructor(
     /** The {@link BunRequest} this response is paired with (one per request). */
