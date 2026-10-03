@@ -174,4 +174,48 @@ checkEqual(
 );
 await nestParser.app.close();
 
+/* ------------------------------------------------------------------ */
+step("Invalid JSON is a 400, whichever reads the body");
+
+// Served too: Nest registers its own error handler on the adapter, so its
+// exception layer answers the parse error with a 400 of its own shape.
+const served = await build(false, true);
+await served.app.listen(0);
+const servedBroken = await fetch(`${served.adapter.url}/small`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: '{"pad":',
+});
+checkEqual(
+  "served invalid JSON: 400 from Nest's exception layer",
+  [
+    servedBroken.status,
+    ((await servedBroken.json()) as { statusCode: number }).statusCode,
+  ],
+  [400, 400],
+);
+await served.app.close();
+
+/** A POST of a JSON body that does not parse. */
+const brokenJson: RequestInit = {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: '{"pad":',
+};
+for (const [label, deferBody, bodyParser, path] of [
+  [
+    "Nest's default body parser, the body read while the request is built",
+    false,
+    true,
+    "/small",
+  ],
+  ["deferBody, read by requestParsing() on /upload", true, false, "/upload"],
+  ["deferBody, read by Nest's body parser", true, true, "/small"],
+] as const) {
+  const { app, adapter } = await build(deferBody, bodyParser);
+  const offline = await adapter.fetch(path, brokenJson);
+  checkEqual(`${label}: 400`, offline.status, 400);
+  await app.close();
+}
+
 summary();
