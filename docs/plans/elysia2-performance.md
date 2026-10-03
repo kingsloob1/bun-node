@@ -950,7 +950,7 @@ each target registers the same route):
 
 | PR | Change | Files | Effort | Evidence | Target, threshold |
 |---|---|---|---|---|---|
-| **B1** | Route-cache admission by recent hit ratio (§4.2) | `utils/routeIndex.ts` `FifoCache` (or a wrapper), `BunRouter.getMatchedLayers` | S | [M] `micro2.ts` L, `inproc-variants.txt` | `param-random` **≥ +7%** (bun-common and bun-nest); cached scenarios ±5% |
+| **B1** ✅ landed — `wrk` param-random +8.5% bun-common, +7.5% bun-nest; cached ±5% ([`wrk-B1.md`](evidence/elysia2/results/wrk-B1.md)) | Route-cache admission by recent hit ratio (§4.2) | `utils/routeIndex.ts` `FifoCache` (or a wrapper), `BunRouter.getMatchedLayers` | S | [M] `micro2.ts` L, `inproc-variants.txt` | `param-random` **≥ +7%** (bun-common and bun-nest); cached scenarios ±5% |
 | **B2** | Cheaper uncached match: per-route layer templates, first-segment candidates, `%`-only decode (§4.2) | `BunRouter.ts` `getMatchedLayers`, `matchRoute`, `decodeParam`; `utils/routeIndex.ts` `candidates` | L | [M] `miss-breakdown.txt` | `param-random` **≥ +5%** over B1; uncached lookup ≤ 1.0 µs in `miss-breakdown.ts` |
 
 ### Phase C — bun-common pipeline and response

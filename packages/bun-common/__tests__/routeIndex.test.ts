@@ -3,7 +3,13 @@ import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
-import { FifoCache, RouteCandidateIndex } from "../lib/utils/routeIndex";
+import {
+  ADMISSION_MIN_HIT_RATIO,
+  ADMISSION_SAMPLE,
+  ADMISSION_WINDOW,
+  FifoCache,
+  RouteCandidateIndex,
+} from "../lib/utils/routeIndex";
 
 /** A small seeded PRNG (mulberry32), so a failure names a reproducible seed. */
 function prng(seed: number) {
@@ -464,5 +470,108 @@ describe("BunRouter: the route cache and hosts", () => {
       });
     // A cache hit returns the very same array.
     expect(match("a.example.com")).toBe(match("b.example.com"));
+  });
+});
+
+describe("FifoCache admission", () => {
+  /** Runs one full window of lookups, `hits` of them on stored keys. */
+  function window(cache: FifoCache<number>, hits: number, tag: string) {
+    for (let i = 0; i < ADMISSION_WINDOW; i++) {
+      if (i < hits) {
+        cache.get("hot");
+      } else {
+        cache.get(`${tag}${i}`);
+      }
+    }
+  }
+
+  it("is off by default: every key is stored, however low the hit ratio", () => {
+    const cache = new FifoCache<number>(100_000);
+    window(cache, 0, "miss");
+    expect(cache.admitting).toBe(true);
+    for (let i = 0; i < 1000; i++) {
+      cache.set(`k${i}`, i);
+    }
+    expect(cache.size).toBe(1000);
+  });
+
+  it("stores one new key in ADMISSION_SAMPLE after a window under the ratio", () => {
+    const cache = new FifoCache<number>(100_000, { admission: true });
+    expect(cache.admitting).toBe(true);
+    window(cache, 0, "miss");
+    expect(cache.admitting).toBe(false);
+    for (let i = 0; i < ADMISSION_SAMPLE * 10; i++) {
+      cache.set(`k${i}`, i);
+    }
+    expect(cache.size).toBe(10);
+    // Replacing a stored key is never throttled.
+    cache.set("k0", -1);
+    expect(cache.get("k0")).toBe(-1);
+  });
+
+  it("keeps admitting at or above the ratio", () => {
+    const cache = new FifoCache<number>(100_000, { admission: true });
+    cache.set("hot", 1);
+    window(cache, ADMISSION_WINDOW * ADMISSION_MIN_HIT_RATIO, "miss");
+    expect(cache.admitting).toBe(true);
+    window(cache, ADMISSION_WINDOW * ADMISSION_MIN_HIT_RATIO - 1, "miss");
+    expect(cache.admitting).toBe(false);
+  });
+
+  it("turns full admission back on when a working set returns", () => {
+    const cache = new FifoCache<number>(100_000, { admission: true });
+    window(cache, 0, "miss");
+    expect(cache.admitting).toBe(false);
+    // A working set of 100 keys, looked up over and over: the sampled ones
+    // start hitting, more get sampled in, and the ratio climbs back.
+    let rounds = 0;
+    while (!cache.admitting && rounds < 1000) {
+      for (let i = 0; i < 100; i++) {
+        const key = `ws${i}`;
+        if (cache.get(key) === undefined) {
+          cache.set(key, i);
+        }
+      }
+      rounds++;
+    }
+    expect(cache.admitting).toBe(true);
+    expect(rounds).toBeLessThan(1000);
+  });
+
+  it("clear() starts admission afresh", () => {
+    const cache = new FifoCache<number>(100_000, { admission: true });
+    window(cache, 0, "miss");
+    expect(cache.admitting).toBe(false);
+    cache.clear();
+    expect(cache.admitting).toBe(true);
+  });
+});
+
+describe("BunRouter route cache admission", () => {
+  it("matches exactly the same with admission throttled, and stops filling on one-off paths", async () => {
+    const router = new BunRouter();
+    for (let i = 0; i < 50; i++) {
+      router.get(`/r${i}/:id`, (req, res) => {
+        res.send(`r${i}:${req.params.id}`);
+      });
+    }
+    router.get("/static", (_req, res) => res.send("static"));
+    // One-off paths: a fresh id per request.
+    for (let i = 0; i < ADMISSION_WINDOW * 2; i++) {
+      const response = await router.fetch(`/r${i % 50}/${1_000_000 + i}`);
+      expect(await response.text()).toBe(`r${i % 50}:${1_000_000 + i}`);
+    }
+    const cache = (
+      router as unknown as { routeCacheLayers: FifoCache<unknown> }
+    ).routeCacheLayers;
+    expect(cache.admitting).toBe(false);
+    // Under full admission all 8,192 would be held.
+    expect(cache.size).toBeLessThan(
+      ADMISSION_WINDOW + ADMISSION_WINDOW / ADMISSION_SAMPLE + 1,
+    );
+    // Repeated and fresh paths, and a 404, still answer exactly.
+    expect(await (await router.fetch("/static")).text()).toBe("static");
+    expect(await (await router.fetch("/r7/abc")).text()).toBe("r7:abc");
+    expect((await router.fetch("/nope")).status).toBe(404);
   });
 });

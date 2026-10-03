@@ -281,7 +281,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `caseSensitive` | `boolean` | `false` | Case-sensitive path and host matching. A mounting router's setting wins over a sub-router's. |
 | `host` | `string` | none | Default host pattern for every route (`"api.example.com"`, `":tenant.example.com"`, `"*.example.com"`). A literal host is also the origin `fetch()` resolves bare paths against. |
 | `routeSpecificity` | `boolean \| (a, b) => number` | `false` | How competing route handlers are ordered (see above). |
-| `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Maximum entries in the matched-pipeline cache before FIFO eviction. `0` disables the cache. |
+| `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Maximum entries in the matched-pipeline cache before FIFO eviction. `0` disables the cache. The cache stops filling while it is not paying: when fewer than a quarter of the last 4,096 lookups hit (a fresh id in every path), it stores only one new path in 64, until a returning working set lifts the ratio again. What is matched never depends on it. |
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
