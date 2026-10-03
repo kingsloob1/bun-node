@@ -1,0 +1,13 @@
+same GET / {}
+  {"body":"<undefined>","buffer":0,"parsed":true,"complete":true,"query":{},"cookies":{},"signed":{},"tooLarge":false,"decodeErr":"undefined","bodyUsed":false,"settled":[["fulfilled",{}],["fulfilled",null],["fulfilled",{"cookies":{},"signedCookies":{}}]],"events":["end"]}
+same GET /a?x=1&y[z]=2&arr=1&arr=2 {"cookie":"a=1; j=j:{\"k\":1}; s=s:v.bad"}
+  {"body":"<undefined>","buffer":0,"parsed":true,"complete":true,"query":{"x":"1","y":{"z":"2"},"arr":["1","2"]},"cookies":{"a":"1","j":{"k":1}},"signed":{"s":false},"tooLarge":false,"decodeErr":"undefined","bodyUsed":false,"settled":[["fulfilled",{"x":"1","y":{"z":"2"},"arr":["1","2"]}],["fulfilled",null],["fulfilled",{"signedCookies":{"s":false},"cookies":{"a":"1","j":{"k":1}}}]],"events":["end"]}
+same DELETE /d {"content-type":"application/json"}
+  {"body":{},"buffer":0,"parsed":true,"complete":true,"query":{},"cookies":{},"signed":{},"tooLarge":false,"decodeErr":"undefined","bodyUsed":false,"settled":[["fulfilled",{}],["fulfilled",null],["fulfilled",{"cookies":{},"signedCookies":{}}]],"events":["end"]}
+same POST /p {"content-encoding":"gzip"}
+  {"body":"<undefined>","parsed":false,"complete":false,"query":{},"cookies":{},"signed":{},"tooLarge":false,"decodeErr":"Error: invalid compressed request body","bodyUsed":false,"settled":[["fulfilled",{}],["fulfilled",null],["fulfilled",{"cookies":{},"signedCookies":{}}]],"events":["error"]}
+same POST /p {"content-type":"text/plain"}
+  {"body":"","buffer":0,"parsed":true,"complete":true,"query":{},"cookies":{},"signed":{},"tooLarge":false,"decodeErr":"undefined","bodyUsed":false,"settled":[["fulfilled",{}],["fulfilled",null],["fulfilled",{"cookies":{},"signedCookies":{}}]],"events":["end"]}
+same HEAD /h?q {}
+  {"body":"<undefined>","buffer":0,"parsed":true,"complete":true,"query":{"q":""},"cookies":{},"signed":{},"tooLarge":false,"decodeErr":"undefined","bodyUsed":false,"settled":[["fulfilled",{"q":""}],["fulfilled",null],["fulfilled",{"cookies":{},"signedCookies":{}}]],"events":["end"]}
+6 cases, 0 differences
