@@ -447,8 +447,17 @@ export function toNativeRequest(
     ? { ...initForm, ...init }
     : init;
 
-  // `Request` accepts a string or another `Request`, not a `URL`.
-  const url = withoutFragment(new URL(String(target), origin).href);
+  // `Request` accepts a string or another `Request`, not a `URL`. A bare path
+  // is appended to the origin rather than resolved against it: resolved,
+  // `//x` would be a protocol-relative URL naming the host `x` (or, for `//`,
+  // no host at all), while on the wire it is a path, as Bun serves it.
+  const text = String(target);
+  const url = withoutFragment(
+    (typeof target === "string" && text.startsWith("/")
+      ? new URL(new URL(origin).origin + text)
+      : new URL(text, origin)
+    ).href,
+  );
   return new Request(url, options);
 }
 

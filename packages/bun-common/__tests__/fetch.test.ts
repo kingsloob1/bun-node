@@ -816,3 +816,28 @@ describe("BunHttpAdapter.fetch: no error handler (finalhandler fallback)", () =>
     expect(await head.text()).toBe("");
   });
 });
+
+describe("fetch: a bare path starting with // is a path, not a host", () => {
+  it("toNativeRequest keeps // paths on the origin, as a served request has them", () => {
+    // A raw `GET //x/y` reaches Bun.serve as `http://<host>//x/y`; resolving
+    // the string as a URL would read `x` as a host (and throw for `//`).
+    expect(toNativeRequest("//").url).toBe("http://localhost//");
+    expect(toNativeRequest("//x/y").url).toBe("http://localhost//x/y");
+    expect(toNativeRequest("//a/../b").url).toBe("http://localhost//b");
+    expect(toNativeRequest("/a?q=1#frag").url).toBe("http://localhost/a?q=1");
+    // An absolute URL is still taken as one.
+    expect(toNativeRequest("http://example.com//p").url).toBe(
+      "http://example.com//p",
+    );
+  });
+
+  it("routes a // path like a served request", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.use((req, res) => {
+      res.send(`path:${req.path}`);
+    });
+    const res = await adapter.fetch("//x/y");
+    expect(await res.text()).toBe("path://x/y");
+    expect((await adapter.fetch("//")).status).toBe(200);
+  });
+});
