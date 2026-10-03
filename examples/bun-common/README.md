@@ -34,7 +34,7 @@ with no socket at all.
 
 | File | Shows |
 |---|---|
-| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `withoutHeadBody` |
+| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` (no HEAD body, the wire's implicit text `Content-Type`) |
 | [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout, errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off) |
 | [`sub-routers.ts`](./02-routing/sub-routers.ts) | mounting routers, typed mount params, a validator at the mount, compile-time mount mismatches, `group`, `domain` |
 | [`typed-routes.ts`](./02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator; `ExtractRouteParams`, `TypedRouteHandler` |
@@ -56,8 +56,8 @@ with no socket at all.
 |---|---|
 | [`reading-a-request.ts`](./04-request/reading-a-request.ts) | every request property: url parts, params, query parsing options, headers, ip/host/protocol, freshness, ranges, content negotiation |
 | [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies, per-request option setters that leave the adapter's options alone |
-| [`per-route-parsing.ts`](./04-request/per-route-parsing.ts) | `requestParsing()` per route — query, cookie (`decode`, `cookieSecret`) and body options, errors through `next(err)`, `TypeError` on bad options; the adapter's `deferBody` letting a route raise its body cap; `hasDeferredBody`, `readDeferredBody()`, `applyParseBodyOptions()`, `setCookieOptions()`, `configuredCookieSecrets`. See the package README's [Per-route parsing](../../packages/bun-common/README.md#per-route-parsing-requestparsing) |
-| [`cookies.ts`](./04-request/cookies.ts) | parsing cookies, signed cookies and secrets, JSON cookies |
+| [`per-route-parsing.ts`](./04-request/per-route-parsing.ts) | `requestParsing()` per route — `parseQuery` (picoquery options), `parseCookies` (`{ secret, decode }`) and `parseBody`, errors through `next(err)`, `TypeError` on bad options; the adapter's `deferBody` letting a route raise its body cap; `hasDeferredBody`, `readDeferredBody()`, `applyParseBodyOptions()`, `setCookieOptions()`, `configuredCookieSecrets`. See the package README's [Per-route parsing](../../packages/bun-common/README.md#per-route-parsing-requestparsing) |
+| [`cookies.ts`](./04-request/cookies.ts) | parsing cookies, signed cookies and secrets (`request: { parseCookies: { secret } }`), JSON cookies |
 
 ### 05 — The response
 
@@ -128,8 +128,8 @@ every option.
 |---|---|
 | [`router-options.ts`](./12-options/router-options.ts) | every `BunRouter` option and public method |
 | [`http-adapter-options.ts`](./12-options/http-adapter-options.ts) | every `BunHttpAdapter` option and public method |
-| [`request-options.ts`](./12-options/request-options.ts) | every request property, body-parsing and query option |
-| [`response-options.ts`](./12-options/response-options.ts) | every response method and option |
+| [`request-options.ts`](./12-options/request-options.ts) | every request property, body-parsing, query and cookie option: `parseQuery` and `parseCookies` as `boolean` or options (`{ secret, decode }`), and the deprecated `parseQueryOpts`/`cookieParseOptions`/`cookieSecret` still honoured, with the object form winning |
+| [`response-options.ts`](./12-options/response-options.ts) | every response method and option; the default `text/plain;charset=utf-8` and `application/json;charset=utf-8` types, and text/JSON sent with no header built without a Headers object yet carrying the type served, on HEAD and through `adapter.fetch()` (Bun behaviour: [docs/bun-bugs](../../docs/bun-bugs/README.md)) |
 | [`validate-options.ts`](./12-options/validate-options.ts) | every validation option, execution order, `ValidationError`, `toStandardSchema` |
 | [`cors-options.ts`](./12-options/cors-options.ts) | every CORS field and value form, delegates, `enableCors` |
 | [`static-options.ts`](./12-options/static-options.ts) | every static-file option, caching, 304s, traversal, ranges, `precompressed` and `compression` |

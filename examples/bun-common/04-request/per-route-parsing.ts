@@ -9,8 +9,9 @@
  * - The adapter's `request` options apply to every request.
  *   `requestParsing(options)` changes them for the routes it is mounted on,
  *   and parses that request again before calling `next()`, as body-parser and
- *   cookie-parser do: `parseQuery`, `parseQueryOpts`, `parseCookies`,
- *   `cookieParseOptions`, `cookieSecret`, `parseBody`. Only that request
+ *   cookie-parser do: `parseQuery` (`false`, `true` or picoquery options),
+ *   `parseCookies` (`false`, `true` or `{ secret, decode }`) and `parseBody`
+ *   (`false`, `true` or a `ParseBodyConfig`). Only that request
  *   changes; the adapter's options and other requests never do.
  * - A body over the route's cap, or with an encoding it refuses, goes to
  *   `next(err)` as a 413, 415 or 400, so error handlers see it. A wrongly
@@ -66,15 +67,18 @@ const secretB = "old-secret";
 const app = new BunHttpAdapter(0);
 const before = structuredClone(app.requestOpts);
 
-app.use("/flat", requestParsing({ parseQueryOpts: { nesting: false } }));
+app.use("/flat", requestParsing({ parseQuery: { nesting: false } }));
 app.use("/no-query", requestParsing({ parseQuery: false }));
 app.use("/no-cookies", requestParsing({ parseCookies: false }));
 app.use(
   "/raw-cookies",
   // Keep values exactly as sent: the default decoder percent-decodes them.
-  requestParsing({ cookieParseOptions: { decode: (value) => value } }),
+  requestParsing({ parseCookies: { decode: (value) => value } }),
 );
-app.use("/account", requestParsing({ cookieSecret: [secretA, secretB] }));
+app.use(
+  "/account",
+  requestParsing({ parseCookies: { secret: [secretA, secretB] } }),
+);
 app.all("/*", (req, res) => {
   res.json({
     query: req.query,
@@ -99,7 +103,7 @@ checkEqual("default: a[b]=1 nests", (await look("/default?a[b]=1")).query, {
   a: { b: "1" },
 });
 checkEqual(
-  "parseQueryOpts { nesting: false }: kept flat",
+  "parseQuery: { nesting: false }: kept flat",
   (await look("/flat?a[b]=1")).query,
   { "a[b]": "1" },
 );
@@ -119,7 +123,7 @@ checkEqual(
   { name: "Jörg" },
 );
 checkEqual(
-  "cookieParseOptions.decode: applied (it used to be ignored)",
+  "parseCookies: { decode }: applied (it used to be ignored)",
   (await look("/raw-cookies", "name=J%C3%B6rg")).cookies,
   { name: "J%C3%B6rg" },
 );
@@ -129,7 +133,7 @@ const signedWithOld = `s:${signCookie("alice", secretB)}`;
 const cookie = `user=${encodeURIComponent(signedWithOld)}`;
 const account = await look("/account", cookie);
 checkEqual(
-  "cookieSecret: a cookie signed with any of the secrets verifies",
+  "parseCookies: { secret }: a cookie signed with any of the secrets verifies",
   account.signedCookies,
   { user: "alice" },
 );
@@ -337,9 +341,19 @@ step("Wrongly typed options fail when the middleware is created");
 
 const wrong: [string, unknown][] = [
   ["parseQuery: 'yes'", { parseQuery: "yes" }],
-  ["cookieSecret: [1]", { cookieSecret: [1] }],
+  ["parseCookies: { secret: [1] }", { parseCookies: { secret: [1] } }],
   ["parseBody: '1mb'", { parseBody: "1mb" }],
-  ["parseQueryOpts: null", { parseQueryOpts: null }],
+  ["parseQuery: null", { parseQuery: null }],
+  // The adapter's deprecated names are not requestParsing() options at all.
+  [
+    "parseQueryOpts (use parseQuery: {…})",
+    { parseQueryOpts: { nesting: false } },
+  ],
+  ["cookieSecret (use parseCookies: { secret })", { cookieSecret: "s" }],
+  [
+    "cookieParseOptions (use parseCookies: { decode })",
+    { cookieParseOptions: {} },
+  ],
 ];
 for (const [label, options] of wrong) {
   let error: unknown;

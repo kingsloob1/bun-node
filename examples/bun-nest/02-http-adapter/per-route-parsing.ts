@@ -83,7 +83,7 @@ class AppModule implements NestModule {
       .apply(requestParsing({ parseQuery: false, parseCookies: false }))
       .forRoutes("webhooks");
     consumer
-      .apply(requestParsing({ parseQueryOpts: { nesting: false } }))
+      .apply(requestParsing({ parseQuery: { nesting: false } }))
       .forRoutes("flat");
   }
 }

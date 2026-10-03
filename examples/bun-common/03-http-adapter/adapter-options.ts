@@ -13,7 +13,10 @@ import { join } from "node:path";
  *   says otherwise; `0`, the default, waits forever.
  * - `request` is **merged over** the default
  *   `{ parseBody: true, parseCookies: true }`, so a partial object such as
- *   `{ cookieSecret }` keeps parsing on; set a flag to `false` to turn it off.
+ *   `{ parseQuery: { nesting: false } }` keeps body and cookie parsing on; set
+ *   a flag to `false` to turn it off. `parseBody`, `parseQuery` and
+ *   `parseCookies` each take `true`, `false` or their options
+ *   (`parseCookies: { secret, decode }`).
  *   `parseBody: true` is uncapped; the object form caps bodies (100kb by
  *   default, 10mb for multipart and raw) and answers 413 before any
  *   middleware runs.
@@ -63,9 +66,8 @@ step("request: body, cookie and query parsing, and the payload guard");
 const parsing = new BunHttpAdapter(0, {
   request: {
     parseBody: { maxContentLength: "1kb", contentTypes: "all" },
-    parseCookies: true,
-    parseQuery: true,
-    parseQueryOpts: DEFAULT_PARSE_QUERY_OPTS,
+    parseCookies: { decode: (value) => decodeURIComponent(value) },
+    parseQuery: { ...DEFAULT_PARSE_QUERY_OPTS },
   },
 });
 let handlerRan = false;

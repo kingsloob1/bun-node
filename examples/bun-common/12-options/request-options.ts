@@ -14,10 +14,12 @@
  *   is needed.
  * - `init()` returns the request itself — not a promise — when no parsing was
  *   scheduled, and a promise otherwise.
- * - `parseQueryOpts` accepts picoquery's own options plus `decode` and
- *   `decodeURIComponent`. It **replaces** `DEFAULT_PARSE_QUERY_OPTS` rather
- *   than merging into it — spread the defaults in to keep bracket nesting
- *   (picoquery's own default nesting syntax reads dots only).
+ * - `parseQuery`, like `parseBody`, is `boolean | options`: an object turns
+ *   parsing on with picoquery's own options plus `decode` and
+ *   `decodeURIComponent`. `parseCookies` is `boolean | { secret, decode }`.
+ * - `parseQueryOpts`, `cookieParseOptions` and `cookieSecret` are deprecated:
+ *   still honoured where the object form leaves the field out, and the
+ *   object form wins.
  * - `parseXmlOpts`, `parseMultiPartFormDataOpts` and `allowedContentTypes` are
  *   deprecated in favour of `parseBody.contentTypes`, but still honoured.
  * - Checks marked `Known issue` assert what the library documents where it
@@ -144,7 +146,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("parseQuery and parseQueryOpts");
+step("parseQuery: boolean or parser options");
 
 checkEqual("DEFAULT_PARSE_QUERY_OPTS", DEFAULT_PARSE_QUERY_OPTS, {
   nesting: true,
@@ -176,7 +178,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nesting: false } },
+      { parseQuery: { nesting: false } },
     )
   ).query,
   {
@@ -190,7 +192,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nestingSyntax: "dot" } },
+      { parseQuery: { nestingSyntax: "dot" } },
     )
   ).query,
   {
@@ -204,7 +206,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nestingSyntax: "index" } },
+      { parseQuery: { nestingSyntax: "index" } },
     )
   ).query,
   {
@@ -218,7 +220,7 @@ checkEqual(
     await make(
       "http://localhost/?tag=p&tag=q",
       {},
-      { parseQueryOpts: { arrayRepeat: false } },
+      { parseQuery: { arrayRepeat: false } },
     )
   ).query,
   {
@@ -231,7 +233,7 @@ checkEqual(
     await make(
       "http://localhost/?tag[]=p&tag[]=q",
       {},
-      { parseQueryOpts: { arrayRepeat: true, arrayRepeatSyntax: "bracket" } },
+      { parseQuery: { arrayRepeat: true, arrayRepeatSyntax: "bracket" } },
     )
   ).query,
   {
@@ -244,7 +246,7 @@ checkEqual(
     await make(
       "http://localhost/?a=1;b=2",
       {},
-      { parseQueryOpts: { delimiter: ";" } },
+      { parseQuery: { delimiter: ";" } },
     )
   ).query,
   {
@@ -259,7 +261,7 @@ checkEqual(
       "http://localhost/?n=5&s=x",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           valueDeserializer: (value) => {
             return /^\d+$/.test(value) ? Number(value) : value;
           },
@@ -276,7 +278,7 @@ checkEqual(
       "http://localhost/?Page=2",
       {},
       {
-        parseQueryOpts: { keyDeserializer: (key) => key.toLowerCase() },
+        parseQuery: { keyDeserializer: (key) => key.toLowerCase() },
       },
     )
   ).query,
@@ -303,7 +305,7 @@ checkEqual(
       "http://localhost/?q=a%26b",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decodeURIComponent: true,
         },
@@ -322,7 +324,7 @@ checkEqual(
       "http://localhost/?a=1~b=2",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decode: (q) => q.replace(/~/g, "&"),
         },
@@ -341,7 +343,7 @@ checkEqual(
       "http://localhost/?ids%5B0%5D=1",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decode: () => {
             throw new Error("boom");
@@ -351,6 +353,32 @@ checkEqual(
     )
   ).query,
   { ids: ["1"] },
+);
+
+checkEqual(
+  "deprecated parseQueryOpts still works",
+  (
+    await make(
+      "http://localhost/?a.b=1",
+      {},
+      { parseQueryOpts: { nesting: false } },
+    )
+  ).query,
+  { "a.b": "1" },
+);
+checkEqual(
+  "…and an object parseQuery wins over it",
+  (
+    await make(
+      "http://localhost/?a.b=1",
+      {},
+      {
+        parseQuery: { ...DEFAULT_PARSE_QUERY_OPTS },
+        parseQueryOpts: { nesting: false },
+      },
+    )
+  ).query,
+  { a: { b: "1" } },
 );
 
 const reparsed = await make(
@@ -372,7 +400,7 @@ checkEqual(
 checkEqual("…and assigns req.query", reparsed.query, { a: { b: "1" } });
 
 /* ------------------------------------------------------------------ */
-step("parseCookies, cookieParseOptions and secrets");
+step("parseCookies: boolean or { secret, decode }");
 
 const SECRET = "tour secret";
 const signedValue = `s:${signCookie("user-42", SECRET)}`;
@@ -383,7 +411,7 @@ const withCookies = await make(
   { headers: { Cookie: cookieHeader } },
   {
     // Applied to each raw value; this one is the default's percent-decoding.
-    cookieParseOptions: { decode: (value) => decodeURIComponent(value) },
+    parseCookies: { decode: (value) => decodeURIComponent(value) },
   },
 );
 checkEqual(
@@ -396,7 +424,31 @@ checkEqual(
   },
 );
 checkEqual(
-  "cookieParseOptions.decode is applied: an identity decoder keeps raw values",
+  "parseCookies: { decode } is applied: an identity decoder keeps raw values",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      { parseCookies: { decode: (value) => value } },
+    )
+  ).cookies,
+  { name: "J%C3%B6rg" },
+);
+const signedAtInit = await make(
+  "http://localhost/",
+  { headers: { Cookie: cookieHeader } },
+  { parseCookies: { secret: ["newer", SECRET] } },
+);
+checkEqual(
+  "parseCookies: { secret } verifies at init, against every secret",
+  signedAtInit.signedCookies,
+  { session: "user-42" },
+);
+checkEqual("…and req.secret is the first", signedAtInit.secret, "newer");
+
+// The deprecated spellings, still honoured where the object leaves a gap.
+checkEqual(
+  "deprecated cookieParseOptions.decode still works",
   (
     await make(
       "http://localhost/",
@@ -405,6 +457,41 @@ checkEqual(
     )
   ).cookies,
   { name: "J%C3%B6rg" },
+);
+checkEqual(
+  "…and parseCookies: { decode } wins over it",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      {
+        parseCookies: { decode: (value) => decodeURIComponent(value) },
+        cookieParseOptions: { decode: (value) => value },
+      },
+    )
+  ).cookies,
+  { name: "Jörg" },
+);
+checkEqual(
+  "deprecated cookieSecret still works",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: cookieHeader } },
+      { cookieSecret: SECRET },
+    )
+  ).signedCookies,
+  { session: "user-42" },
+);
+const secretWins = await make(
+  "http://localhost/",
+  { headers: { Cookie: cookieHeader } },
+  { parseCookies: { secret: "a different secret" }, cookieSecret: SECRET },
+);
+checkEqual(
+  "…and parseCookies: { secret } wins over it",
+  { secret: secretWins.secret, signed: secretWins.signedCookies },
+  { secret: "a different secret", signed: { session: false } },
 );
 checkEqual(
   "parseCookies: false leaves cookies empty",

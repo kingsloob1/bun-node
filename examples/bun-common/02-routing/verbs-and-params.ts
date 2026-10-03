@@ -17,20 +17,20 @@
  *   its own, as in Express: the served response carries the GET's status and
  *   headers (`Content-Length` included) and no body, and so does `fetch()`.
  *   Matching keeps registration order, so a HEAD handler registered first
- *   wins.
+ *   wins. `toFetchResponse()` is what `fetch()` applies to match the wire;
+ *   the Bun behaviours behind it are in
+ *   [docs/bun-bugs](../../../docs/bun-bugs/README.md).
  * - Param values are percent-decoded; `*name` publishes both `params.name`
  *   and the positional key `params[0]`.
  */
-import type {
-  BunRequest,
-  BunResponse,
-  RouterVerb,
-  RouterVerbMethod,
-} from "@kingsleyweb/bun-common";
+import type { RouterVerb, RouterVerbMethod } from "@kingsleyweb/bun-common";
 import {
   BunHttpAdapter,
+  BunRequest,
+  BunResponse,
   BunRouter,
-  withoutHeadBody,
+  FETCH_STUB_SERVER,
+  toFetchResponse,
 } from "@kingsleyweb/bun-common";
 import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -329,18 +329,40 @@ checkEqual(
   404,
 );
 
-// What fetch() does to a HEAD answer, exported for a fetch() of your own.
+// What fetch() does to a handler's Response, exported for a fetch() of your
+// own: `toFetchResponse(response, method)` answers as a served request's
+// client sees it — no body for HEAD, and the Content-Type Bun writes on the
+// wire for a text body sent without headers (see docs/bun-bugs/README.md:
+// `new Response(string).headers` has none until Bun serves it).
 const full = new Response("a body", { headers: { "X-Kept": "yes" } });
-const headless = withoutHeadBody(full, "HEAD");
+const headless = toFetchResponse(full, "HEAD");
 checkEqual(
-  "withoutHeadBody(response, 'HEAD') keeps the headers, drops the body",
+  "toFetchResponse(response, 'HEAD') keeps the headers, drops the body",
   { kept: headless.headers.get("X-Kept"), body: await headless.text() },
   { kept: "yes", body: "" },
 );
 checkEqual(
-  "…and returns any other method's response as it is",
-  withoutHeadBody(full, "GET") === full,
+  "…and returns a GET response as it is",
+  toFetchResponse(full, "GET") === full,
   true,
+);
+const textRequest = BunRequest.init(
+  new Request("http://localhost/"),
+  FETCH_STUB_SERVER,
+  { parseBody: true },
+) as BunRequest;
+const textResponse = new BunResponse(textRequest);
+textResponse.send("plain text, no headers set");
+const bare = await textResponse.getNativeResponse(0);
+checkEqual(
+  "send(text) with no header set: the Response has no Content-Type yet",
+  bare.headers.has("Content-Type"),
+  false,
+);
+checkEqual(
+  "…toFetchResponse() adds the one Bun writes on the wire",
+  toFetchResponse(bare, "GET").headers.get("Content-Type"),
+  "text/plain;charset=utf-8",
 );
 
 summary();

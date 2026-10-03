@@ -14,6 +14,11 @@
  * - The files `sendFile()` serves are written to a temporary directory and
  *   removed at the end. `sendFile(path)` resolves `path` under `root`.
  * - `res.cookie()`'s `maxAge` is milliseconds; the header gets seconds.
+ * - A text body is `text/plain;charset=utf-8` and JSON is
+ *   `application/json;charset=utf-8`. With no header set, `send(text)` and
+ *   `json(value)` build the Response without a Headers object — text then has
+ *   no `Content-Type` on the Response itself, which Bun writes on the wire
+ *   and `fetch()` adds (see [docs/bun-bugs](../../../docs/bun-bugs/README.md)).
  * - Checks marked `Known issue` assert what the library documents where it
  *   currently does something else; they fail until the library is fixed.
  */
@@ -25,8 +30,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
+  BunHttpAdapter,
   BunRequest,
   BunResponse,
+  compression,
   etag,
   FETCH_STUB_SERVER,
   signCookie,
@@ -275,7 +282,11 @@ checkEqual("vary('*')", navRes.get("Vary"), "*");
 /* ------------------------------------------------------------------ */
 step("send(): body types and their Content-Type");
 
-/** Sends `body` on a new response and answers type and text. */
+/**
+ * Sends `body` on a new response and answers its type and text. With no
+ * header set, a text body is built without a Headers object (see the next
+ * step), so the type then comes from `getHeader()`, as a served client gets it.
+ */
 async function sent(
   body: Parameters<BunResponse["send"]>[0],
   setup?: (res: BunResponse) => void,
@@ -283,22 +294,42 @@ async function sent(
   const res = await makeRes();
   setup?.(res);
   const response = await native(res.send(body));
-  return [response.headers.get("Content-Type"), await response.text()];
+  // A body type of its own (Blob, FormData, …) is on the Response itself.
+  const type =
+    response.headers.get("Content-Type") ?? res.getHeader("Content-Type");
+  return [typeof type === "string" ? type : null, await response.text()];
 }
 
-checkEqual("string: text/plain", await sent("hi"), ["text/plain", "hi"]);
+checkEqual("string: text/plain;charset=utf-8", await sent("hi"), [
+  "text/plain;charset=utf-8",
+  "hi",
+]);
 checkEqual(
   "string with a Content-Type already set keeps it",
   await sent("<b/>", (res) => res.type("text/html")),
   ["text/html", "<b/>"],
 );
 checkEqual("object: JSON", await sent({ a: 1 }), [
-  "application/json",
+  "application/json;charset=utf-8",
   '{"a":1}',
 ]);
-checkEqual("array: JSON", await sent([1, 2]), ["application/json", "[1,2]"]);
+checkEqual("array: JSON", await sent([1, 2]), [
+  "application/json;charset=utf-8",
+  "[1,2]",
+]);
 // A number is sent as its string (Express 5 would send it as JSON).
-checkEqual("number: its string", await sent(42), ["text/plain", "42"]);
+checkEqual("number: its string", await sent(42), [
+  "text/plain;charset=utf-8",
+  "42",
+]);
+checkEqual(
+  "the same types with another header set first",
+  [
+    (await sent("hi", (res) => res.set("X-A", "1")))[0],
+    (await sent({ a: 1 }, (res) => res.set("X-A", "1")))[0],
+  ],
+  ["text/plain;charset=utf-8", "application/json;charset=utf-8"],
+);
 checkEqual(
   "null and undefined: empty",
   [(await sent(null))[1], (await sent(undefined))[1]],
@@ -444,7 +475,7 @@ checkEqual(
     await jsonNative.json(),
     jsonRes.getBody(),
   ],
-  ["application/json", { ok: true }, { ok: true }],
+  ["application/json;charset=utf-8", { ok: true }, { ok: true }],
 );
 
 const statusOnly = await makeRes();
@@ -506,6 +537,86 @@ checkEqual(
   [sentBody, sentArray.getBody() === sentBody],
   [[1, 2], true],
 );
+
+/* ------------------------------------------------------------------ */
+step("Text and JSON sent with no header: no Headers object, same type");
+
+const bareText = await makeRes();
+bareText.getHeader("X-Anything"); // reading a header first changes nothing
+bareText.send("plain");
+const bareTextNative = await native(bareText);
+checkEqual(
+  "send(text): the Response itself has no Content-Type",
+  bareTextNative.headers.has("Content-Type"),
+  false,
+);
+checkEqual(
+  "…but getHeader() reports it after the send",
+  bareText.getHeader("Content-Type"),
+  "text/plain;charset=utf-8",
+);
+const bareJson = await makeRes();
+bareJson.json({ a: 1 });
+checkEqual(
+  "json(value): the Response carries the JSON type",
+  (await native(bareJson)).headers.get("Content-Type"),
+  "application/json;charset=utf-8",
+);
+const plainJsonp = await makeRes();
+plainJsonp.jsonp({ a: 1 });
+checkEqual(
+  "jsonp() without a callback: the JSON type",
+  (await native(plainJsonp)).headers.get("Content-Type"),
+  "application/json;charset=utf-8",
+);
+const withHeader = await makeRes();
+withHeader.set("X-A", "1").send("plain");
+checkEqual(
+  "a header set first: the full path, the same type on the Response",
+  (await native(withHeader)).headers.get("Content-Type"),
+  "text/plain;charset=utf-8",
+);
+const withEtag = await makeRes();
+withEtag.setEtag().send("plain");
+const withEtagNative = await native(withEtag);
+checkEqual(
+  "setEtag(): the full path too",
+  [
+    withEtagNative.headers.get("Content-Type"),
+    withEtagNative.headers.has("ETag"),
+  ],
+  ["text/plain;charset=utf-8", true],
+);
+
+// What a client gets: the same type whichever path built the Response.
+const typed = new BunHttpAdapter(0);
+typed.get("/text", (_req, res) => res.send("plain"));
+typed.get("/json", (_req, res) => res.json({ a: 1 }));
+typed.get("/header", (_req, res) => res.set("X-A", "1").send("plain"));
+typed.get("/compressed", compression({ threshold: 0 }), (_req, res) => {
+  res.send("plain ".repeat(50));
+});
+await typed.listen(0);
+for (const [path, type] of [
+  ["/text", "text/plain;charset=utf-8"],
+  ["/json", "application/json;charset=utf-8"],
+  ["/header", "text/plain;charset=utf-8"],
+  ["/compressed", "text/plain;charset=utf-8"],
+] as const) {
+  const served = await fetch(`${typed.url}${path}`);
+  const servedHead = await fetch(`${typed.url}${path}`, { method: "HEAD" });
+  const fetched = await typed.fetch(path);
+  checkEqual(
+    `${path}: served, served HEAD and adapter.fetch() all carry it`,
+    [
+      served.headers.get("Content-Type"),
+      servedHead.headers.get("Content-Type"),
+      fetched.headers.get("Content-Type"),
+    ],
+    [type, type, type],
+  );
+}
+await typed.close();
 
 /* ------------------------------------------------------------------ */
 step("getNativeResponse(), settledResponse, getBody()");
@@ -649,7 +760,7 @@ checkEqual("a full media type key", await formatted("text/html", true), [
   true,
 ]);
 checkEqual("an extension key", await formatted("application/json", true), [
-  "application/json",
+  "application/json;charset=utf-8",
   '{"as":"json"}',
   "Accept",
   true,

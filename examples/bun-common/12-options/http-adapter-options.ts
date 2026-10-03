@@ -201,7 +201,9 @@ checkEqual(
   (await runtime.fetch("/body", postJson({ text: "x".repeat(500) }))).status,
   200,
 );
-const partial = new BunHttpAdapter(0, { request: { cookieSecret: "k" } });
+const partial = new BunHttpAdapter(0, {
+  request: { parseCookies: { secret: "k" } },
+});
 partial.post("/body", (req, res) => res.json({ body: req.body ?? null }));
 checkEqual(
   "a partial request option keeps body parsing on",

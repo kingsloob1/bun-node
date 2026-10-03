@@ -12,7 +12,8 @@
  * Worth knowing before reading it:
  *
  * - Cookies are parsed while the request is built, before any middleware
- *   runs. The adapter's `request: { cookieSecret }` option makes that parse
+ *   runs. The adapter's `request: { parseCookies: { secret } }` option
+ *   (`cookieSecret`, deprecated, still works) makes that parse
  *   verify signed cookies — `cookieParser(secret)` on every request — and
  *   sets `req.secret`, which `res.cookie(..., { signed: true })` signs with.
  * - Without it there is no secret at that point, and a signed cookie is
@@ -124,11 +125,13 @@ show(
 );
 
 /* ------------------------------------------------------------------ */
-step("cookieSecret: verified while the request is built, as cookieParser()");
+step(
+  "parseCookies: { secret }: verified while the request is built, as cookieParser()",
+);
 
 const app = new BunHttpAdapter(0, {
   // Newest first: "new secret" signs; SECRET still verifies (rotation).
-  request: { cookieSecret: ["new secret", SECRET] },
+  request: { parseCookies: { secret: ["new secret", SECRET] } },
 });
 app.get("/profile", (req, res) => {
   res.cookie("visited", "yes", { signed: true });
