@@ -1060,17 +1060,24 @@ export class BunHttpAdapter<
       return this;
     }
 
-    const middlewareHandler: RouterMiddlewareHandler = async (req, _, next) => {
+    const parse = async (req: BunRequest, next: NextFunction) => {
       const buffer = await req.handleBodyParsing(true, options, parser);
-      // A request this parser skipped (another type, or no body) keeps any
-      // `rawBody` an earlier parser set.
+      // A request this parser skipped (another type) keeps any `rawBody` an
+      // earlier parser set.
       if (rawBody && buffer !== undefined) {
         req.rawBody = buffer;
       }
-
-      if (next) {
+      next();
+    };
+    // A request with no body is passed on synchronously, before its type,
+    // encoding or size is looked at, as body-parser's `read()` does — so the
+    // pipeline never waits on a promise for it, and `rawBody` stays unset.
+    const middlewareHandler: RouterMiddlewareHandler = (req, _, next) => {
+      if (!req.hasBody) {
         next();
+        return;
       }
+      return parse(req, next);
     };
 
     // On the instance requests actually run through (see `setInstance`).

@@ -580,6 +580,10 @@ Example:
 |---|---|
 | `useBodyParser(kind, rawBody, options)` | Registers one body parser (`"json"`, `"urlencoded"`, `"text"` or `"raw"`), once per kind. `options` follows body-parser: `type`, `limit` (over it: 413), `inflate` (`false`: 415), plus the [body-decoding](#body-decoding) options. `rawBody: true` keeps the bytes on `req.rawBody`. |
 | `registerParserMiddleware(prefix?, rawBody?)` | Registers a parser for every body type, optionally under a prefix. |
+
+Either parser passes a request with no body (`req.hasBody` false) on
+synchronously, before its type, encoding or size, as body-parser's `read()`
+does, and sets no `rawBody` for it.
 | `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
 | `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`; see [Static files](#static-files). |
 | `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
@@ -604,7 +608,7 @@ lazily, so a request that only routes pays for nothing else.
 | Routing | `method`, `params`, `query`, `route` (the matched route while a route handler runs) |
 | Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` |
 | Headers | `headers`, `headersDistinct`, `rawHeaders`, `get(name, default?)`, `getHeader`, `getHeaders`, `getHeaderNames`, `hasHeader` |
-| Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
+| Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `hasBody` (a `Content-Length`, `Transfer-Encoding` or body stream — type-is's test, plus in-process bodies), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
 | Caching | `fresh`, `stale`, `range(size, { combine })` (`-1` unsatisfiable, `-2` malformed) |
 | Cookies | `cookies`, `signedCookies`, `secret` |
 

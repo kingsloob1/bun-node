@@ -943,7 +943,7 @@ each target registers the same route):
 
 | PR | Change | Files | Effort | Evidence | Target, threshold |
 |---|---|---|---|---|---|
-| **A1** | Bodiless request: the parser middleware calls `next()` synchronously (N1) | bun-nest `BunHttpAdapter.ts` `registerBodyParser` (:808-846); a bun-common `req.hasNoBody` (or reuse of `#finishAbsentBody`'s result) exposed for it | S | [M] `inproc-variants.txt`, [S] body-parser read.js:50-55 | bun-nest `static`, `param`, `middleware`, `routes-1000`, `param-random` **≥ +8%** each; `json` unchanged ±5% |
+| **A1** ✅ landed — `wrk` static +23%, param +9/+15%, middleware +9.5%, routes-1000 +7.9/+11.5%, param-random +14%, json −2/−3% ([`wrk-A1.md`](evidence/elysia2/results/wrk-A1.md)) | Bodiless request: the parser middleware calls `next()` synchronously (N1) | bun-nest `BunHttpAdapter.ts` `registerBodyParser` (:808-846); a bun-common `req.hasNoBody` (or reuse of `#finishAbsentBody`'s result) exposed for it | S | [M] `inproc-variants.txt`, [S] body-parser read.js:50-55 | bun-nest `static`, `param`, `middleware`, `routes-1000`, `param-random` **≥ +8%** each; `json` unchanged ±5% |
 | **A2** | One wait per asynchronous pipeline; no second wait in the adapters (§4.4, N2, N3) | bun-common `BunRouter.ts` `waitForLayer`/`#waitLayer`/`#watchLateRejection`/`dispatch`, `awaitPipelineOrStream`; `BunResponse.ts` single-slot settle listener; both adapters' `#routeRequest`/`#awaitPipeline` | M | [M] `micro.ts` F, `micro2.ts` K, `nest-breakdown.txt` | bun-nest GETs **≥ +5%**; bun-common `async` **≥ +10%**; bun-common sync scenarios ±5% |
 
 ### Phase B — bun-common routing
