@@ -26,22 +26,30 @@
  *   `ETag`, and wins over a Nest route on the same path. It exists only on
  *   the socket, so `adapter.fetch()` reaches Nest instead.
  */
+import type { BunRequest } from "@kingsleyweb/bun-common";
 import type {
   CanActivate,
+  MessageEvent,
   MiddlewareConsumer,
   NestMiddleware,
   NestModule,
+  RawBodyRequest,
 } from "@nestjs/common";
+import type { Observable } from "rxjs";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import {
   Controller,
   Get,
   Header,
+  HttpCode,
   Injectable,
   Module,
   Post,
+  Req,
+  Sse,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { interval, map, take } from "rxjs";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import "reflect-metadata";
@@ -139,6 +147,52 @@ class AppModule implements NestModule {
         next();
       })
       .forRoutes("*");
+  }
+}
+
+/** Awaits before passing on, as a middleware reading a session store would. */
+@Injectable()
+class AsyncMiddleware implements NestMiddleware {
+  async use(req: { seenBy?: string[] }, _res: unknown, next: () => void) {
+    await Bun.sleep(2);
+    req.seenBy = ["AsyncMiddleware"];
+    next();
+  }
+}
+
+@Controller("async")
+class AsyncController {
+  @Get("chain")
+  async chain(@Req() req: { seenBy?: string[] }) {
+    await Bun.sleep(2);
+    return [...(req.seenBy ?? []), "async controller"].join(",");
+  }
+
+  /** Three events 100ms apart: the first must not wait for the last. */
+  @Sse("ticks")
+  ticks(): Observable<MessageEvent> {
+    return interval(100).pipe(
+      take(3),
+      map((n) => ({ data: { tick: n } })),
+    );
+  }
+
+  @Get("raw")
+  rawGet(@Req() req: RawBodyRequest<BunRequest>) {
+    return { rawBody: req.rawBody === undefined ? "undefined" : "set" };
+  }
+
+  @Post("raw")
+  @HttpCode(200)
+  rawPost(@Req() req: RawBodyRequest<BunRequest>) {
+    return { rawBody: req.rawBody?.toString() ?? null };
+  }
+}
+
+@Module({ controllers: [AsyncController] })
+class AsyncModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(AsyncMiddleware).forRoutes("async/chain");
   }
 }
 
@@ -271,4 +325,77 @@ checkEqual(
 );
 
 await app.close();
+
+/* ------------------------------------------------------------------ */
+step("Async middleware and controllers, an early stream, rawBody");
+
+const asyncAdapter = new BunHttpAdapter();
+const asyncApp = await NestFactory.create(AsyncModule, asyncAdapter, {
+  logger: false,
+  rawBody: true,
+});
+await asyncApp.listen(0);
+const asyncBase = `http://127.0.0.1:${asyncAdapter.listeningPort}`;
+
+const chainServed = await fetch(`${asyncBase}/async/chain`);
+const chainOffline = await asyncAdapter.fetch("/async/chain");
+checkEqual(
+  "async middleware then an async controller, served and through fetch()",
+  [await chainServed.text(), await chainOffline.text()],
+  ["AsyncMiddleware,async controller", "AsyncMiddleware,async controller"],
+);
+
+/** The first SSE chunk of `response`, and how long after `startedAt` it came. */
+async function firstEvent(response: Response, startedAt: number) {
+  const reader = response.body!.getReader();
+  let received = "";
+  // Nest may open the stream with a comment line before the first event.
+  while (!received.includes('"tick":')) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      break;
+    }
+    received += new TextDecoder().decode(chunk.value);
+  }
+  const after = performance.now() - startedAt;
+  await reader.cancel();
+  return { tick0: received.includes('"tick":0'), early: after < 250 };
+}
+const sseServedAt = performance.now();
+const sseServed = await firstEvent(
+  await fetch(`${asyncBase}/async/ticks`),
+  sseServedAt,
+);
+const sseOfflineAt = performance.now();
+const sseOffline = await firstEvent(
+  await asyncAdapter.fetch("/async/ticks"),
+  sseOfflineAt,
+);
+checkEqual(
+  "@Sse(): the first event arrives before the last is emitted (~300ms), both ways",
+  [sseServed, sseOffline],
+  [
+    { tick0: true, early: true },
+    { tick0: true, early: true },
+  ],
+);
+
+checkEqual(
+  "rawBody: true — a GET has no rawBody (the body parser passed it on)",
+  await (await asyncAdapter.fetch("/async/raw")).json(),
+  { rawBody: "undefined" },
+);
+checkEqual(
+  "…a POST has its exact bytes",
+  await (
+    await asyncAdapter.fetch("/async/raw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"n": 1}',
+    })
+  ).json(),
+  { rawBody: '{"n": 1}' },
+);
+await asyncApp.close();
+
 summary();
