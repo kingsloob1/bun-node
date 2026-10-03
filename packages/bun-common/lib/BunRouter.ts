@@ -697,6 +697,12 @@ export class BunRouter<
    */
   #candidateIndex = new RouteCandidateIndex();
 
+  /**
+   * Whether any route was registered with a host pattern, so a matched
+   * pipeline can depend on the request's host and the cache key carries it.
+   */
+  #hostScoped = false;
+
   /** Allocates a fresh group id for the next `use(subRouter)` mount. */
   #nextRouterGroupId = 1;
   /**
@@ -956,6 +962,9 @@ export class BunRouter<
     // treat them as route handlers, not `use` middleware.
     route.isEndpoint = isEndpoint;
     route.wildcardNames = wildcardNames;
+    if (route.hostRegexp) {
+      this.#hostScoped = true;
+    }
     routes.push(route);
     // Only a route handler can be named — see `setName`.
     this.#lastRoute = isEndpoint ? route : null;
@@ -4368,6 +4377,12 @@ export class BunRouter<
     return pathEnd === -1 ? requestUrl : requestUrl.slice(0, pathEnd);
   }
 
+  /**
+   * A readable form of the signature the matched-pipeline cache is keyed on:
+   * host, path (query and fragment dropped) and method. The cache itself uses
+   * a shorter key carrying the same parts (the host only when some route is
+   * host-scoped).
+   */
   getCacheKey(options: RouteMatchMethodOptionType) {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
     return `host:${options.requestHost || "none"}:path:${requestPath}:method:${options.requestMethod}`;
@@ -4636,7 +4651,17 @@ export class BunRouter<
     const cache = this.routeCacheLayers;
     // `routeCacheMax: 0` disables the cache outright — skip building the key so
     // a disabled cache costs nothing, not even its string concatenation.
-    const cacheKey = cache !== undefined ? this.getCacheKey(options) : "";
+    // The cache's own key: method and path, and the host only when some
+    // route is host-scoped (no other route's match depends on it). Neither
+    // a method nor a host contains a space, so the parts cannot run together.
+    // `getCacheKey()` is the readable form of the same signature.
+    let cacheKey = "";
+    if (cache !== undefined) {
+      const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+      cacheKey = this.#hostScoped
+        ? `${options.requestMethod} ${options.requestHost || "none"} ${requestPath}`
+        : `${options.requestMethod} ${requestPath}`;
+    }
 
     if (cache !== undefined) {
       // Fast path: a single `Map.get`, no allocation, no bookkeeping.

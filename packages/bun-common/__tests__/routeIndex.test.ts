@@ -437,3 +437,32 @@ describe("FifoCache", () => {
     expect(cache.size).toBe(50_000);
   });
 });
+
+describe("BunRouter: the route cache and hosts", () => {
+  it("keeps host-scoped pipelines apart once a route names a host", async () => {
+    const router = new BunRouter();
+    router.domain("api.example.com", (api) => {
+      api.get("/who", (_req, res) => res.send("api"));
+    });
+    router.get("/who", (_req, res) => res.send("any"));
+    for (let round = 0; round < 3; round++) {
+      const api = await router.fetch("http://api.example.com/who");
+      const www = await router.fetch("http://www.example.com/who");
+      expect(await api.text()).toBe("api");
+      expect(await www.text()).toBe("any");
+    }
+  });
+
+  it("shares one entry across hosts when no route is host-scoped", () => {
+    const router = new BunRouter();
+    router.get("/who", (_req, res) => res.send("any"));
+    const match = (host: string) =>
+      router.getMatchedLayers({
+        requestHost: host,
+        requestMethod: "GET",
+        requestUrl: "/who",
+      });
+    // A cache hit returns the very same array.
+    expect(match("a.example.com")).toBe(match("b.example.com"));
+  });
+});
