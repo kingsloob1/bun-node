@@ -48,6 +48,7 @@ import {
 import { resolveLogger } from "./logging";
 import { createServeStaticHandler } from "./serveStatic";
 import {
+  defineHidden,
   each,
   get,
   isFunction,
@@ -209,7 +210,7 @@ function carryRequest(error: unknown, req: BunRequest): unknown {
     return error;
   }
   const carrier: object = isObject(error) ? error : new Error(String(error));
-  set(carrier, "req", req);
+  defineHidden(carrier, "req", req);
   return carrier;
 }
 
@@ -431,7 +432,7 @@ export class BunHttpAdapter<
     // body.
     const decodingError = req.bodyDecodingError;
     if (decodingError) {
-      set(decodingError, "req", req);
+      defineHidden(decodingError, "req", req);
       throw decodingError;
     }
 
@@ -709,9 +710,11 @@ export class BunHttpAdapter<
    * The response for an error nothing handled: the standalone
    * {@link finalErrorResponse} (Express's `finalhandler`), for `req`'s method.
    *
-   * The error is logged through {@link logger} at `error` level, with its
-   * status, method and path as fields, except under `NODE_ENV=test`, as
-   * Express's default error logging does.
+   * The error is logged through {@link logger} — at `warn` for a 4xx, `error`
+   * otherwise — with its status, method and path as fields, except under
+   * `NODE_ENV=test`, as Express's default error logging does. The request
+   * rides on the error as a non-enumerable `req`, so a logger does not print
+   * it.
    */
   protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
     return finalErrorResponse(error, {
@@ -721,7 +724,14 @@ export class BunHttpAdapter<
         Bun.env.NODE_ENV === "test"
           ? undefined
           : (message, err, context) => {
-              this.logger.error(message, { error: err, ...context });
+              // A client error (4xx) is the client's doing: a warning, not
+              // an error, as pino-http and friends log it.
+              const fields = { error: err, ...context };
+              if (context.status < 500) {
+                this.logger.warn(message, fields);
+              } else {
+                this.logger.error(message, fields);
+              }
             },
     });
   }

@@ -22,7 +22,13 @@ import {
   BunRouter as BunRouterClass,
   isRequestTimeoutError,
 } from "./BunRouter";
-import { get, isArray, isFunction, isObject, set } from "./utils/native";
+import {
+  defineHidden,
+  get,
+  isArray,
+  isFunction,
+  isObject,
+} from "./utils/native";
 import {
   mergeUpgradeHeaders,
   routeUpgradeHook,
@@ -755,7 +761,7 @@ export class BunWebSocket<
           // Anything can be thrown; wrap a primitive so the request can ride
           // along to the `error` callback.
           const err = isObject(e) ? e : new Error(String(e));
-          set(err, "req", req);
+          defineHidden(err, "req", req);
           throw err;
         }
 

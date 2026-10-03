@@ -2905,13 +2905,26 @@ export class BunRequest<
     return false;
   }
 
-  private handleJsonBodyParsing(data: string): boolean {
+  /**
+   * Parses a JSON body into `req.body`. A body sent without a content type is
+   * only tried as JSON (`false` when it is not, so another kind can be
+   * tried); one declared JSON that does not parse is refused with a 400, as
+   * body-parser's `json()` does (`type: "entity.parse.failed"`, the text in
+   * `body`), and recorded as {@link bodyDecodingError}.
+   */
+  private handleJsonBodyParsing(data: string, declared = false): boolean {
     try {
       this._body = JSON.parse(data, this.getParserOpts("json")?.reviver);
       this._contentType = "json";
       return true;
-    } catch {
-      // return false;
+    } catch (error) {
+      if (declared) {
+        throw this.#refuseBody(
+          httpError(400, (error as Error).message),
+          "entity.parse.failed",
+          data,
+        );
+      }
     }
     return false;
   }
@@ -3198,6 +3211,20 @@ export class BunRequest<
   /** Builds, and records as {@link bodyDecodingError}, a refused `Content-Encoding`. */
   #refuseEncoding(statusCode: 400 | 415, message: string): BunHttpClientError {
     const error = httpError(statusCode, message);
+    this.#bodyDecodingError = error;
+    return error;
+  }
+
+  /**
+   * Records a body refused after it was decoded — one that does not parse as
+   * its declared type — with body-parser's `type` and `body` fields.
+   */
+  #refuseBody(
+    error: BunHttpClientError,
+    type: string,
+    body: string,
+  ): BunHttpClientError {
+    Object.assign(error, { type, body });
     this.#bodyDecodingError = error;
     return error;
   }
@@ -3685,7 +3712,7 @@ export class BunRequest<
           }
 
           case "json": {
-            this.handleJsonBodyParsing(buffer.toString());
+            this.handleJsonBodyParsing(buffer.toString(), true);
             break;
           }
 
@@ -3878,9 +3905,10 @@ export class BunRequest<
 
   /**
    * The HTTP error a body read was refused with because its
-   * `Content-Encoding` could not be decoded: `415` with `inflate: false` or
-   * for an unsupported coding, `400` for a corrupt stream. `undefined` while
-   * no read hit one.
+   * `Content-Encoding` could not be decoded — `415` with `inflate: false` or
+   * for an unsupported coding, `400` for a corrupt stream — or because a body
+   * declared JSON does not parse (`400`, `type: "entity.parse.failed"`, as
+   * body-parser). `undefined` while no read hit one.
    *
    * Adapters read it after `init`, next to {@link isPayloadTooLarge}: a body
    * parsed while the request was built is read before any middleware, so the
