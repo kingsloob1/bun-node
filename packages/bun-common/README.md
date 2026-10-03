@@ -182,10 +182,18 @@ wildcard is exposed as both the positional key and the name.
 - `next("route")` skips the rest of the current route's callbacks.
 - `next("router")` leaves the current mounted sub-router. From the router's
   own routes it abandons the pipeline.
-- `next()` is the only way forward, and it may be called later, from a timer
-  or an I/O callback, as Express allows: the pipeline waits for it. A callback
-  that never responds nor calls `next()` leaves the request **hanging** until
-  the adapter's request timeout fires, and its return value is ignored.
+- A layer is finished when it calls `next()` or sends a complete response.
+  Until then the pipeline waits for it, as Express does:
+  - `next()` may be called later, from a timer or an I/O callback;
+  - an async handler is not awaited for its own sake: its `next()` or its
+    response moves the pipeline on even while its promise is pending, and a
+    response it sends goes out at once (a rejection after that is logged);
+  - a **stream** (`res.write()`) keeps its layer open: `next()` hands the
+    stream to the next layer, which may write to it or end it, and the
+    stream's response goes out as soon as it opens.
+
+  A layer that never finishes leaves the request **hanging** until the
+  adapter's request timeout fires. A return value is ignored.
 - An error raised after the response started still runs the error handlers,
   which see `res.headersSent` as `true`. If none handles it, a streamed
   response is cut off (`res.destroy(err)`) and the error is logged, as
@@ -424,7 +432,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `requestTimeout` (1st argument) | `number` | `0` | Milliseconds to wait for a response once the pipeline has run. `0` means no timeout. Also settable with `setTimeout(ms, cb)`. |
+| `requestTimeout` (1st argument) | `number` | `0` | Milliseconds a request may wait on a layer that has not finished — a callback that has not called `next()` or responded yet, or an async handler that has not settled — before it fails with `Request Timedout` (a `500`, through the final handling). An open stream is never timed out. `0` means no timeout. Also settable with `setTimeout(ms, cb)`. |
 | `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ parseQuery: { nesting: false } }` alone keeps body and cookie parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
 | `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | [Router options](#router-options), merged over those defaults. **The adapter is case-sensitive by default**, unlike a bare `BunRouter`. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |

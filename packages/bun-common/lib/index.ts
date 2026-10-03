@@ -390,6 +390,7 @@ export type {
   ValidationShape,
 } from "./types/routeTyping";
 export {
+  awaitPipelineOrStream,
   BunRouter,
   type CachedRouteMatch,
   DEFAULT_ROUTE_CACHE_MAX,

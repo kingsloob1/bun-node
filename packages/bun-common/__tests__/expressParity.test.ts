@@ -191,3 +191,163 @@ describe("Express parity: errors after the response started", () => {
     expect(await response.text()).toBe("partial;recovered:boom");
   });
 });
+
+describe("Express parity: a layer ends with next() or a complete response", () => {
+  it("hands a stream on with next(): the next handler can end it", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.get(
+      "/sync",
+      (_req, res, next) => {
+        res.write("one;");
+        next();
+      },
+      (_req, res) => {
+        void res.end("two");
+      },
+    );
+    adapter.get(
+      "/late",
+      (_req, res, next) => {
+        res.write("one;");
+        setTimeout(next, 10);
+      },
+      (_req, res) => {
+        void res.end("two");
+      },
+    );
+    expect(await (await adapter.fetch("/sync")).text()).toBe("one;two");
+    expect(await (await adapter.fetch("/late")).text()).toBe("one;two");
+  });
+
+  it("runs the error handlers for a next(err) called later on an open stream", async () => {
+    const adapter = new BunHttpAdapter(500);
+    const seen: boolean[] = [];
+    adapter.get("/late-err", (_req, res, next) => {
+      res.write("one;");
+      setTimeout(() => next(new Error("late")), 20);
+    });
+    adapter.use(((_err, _req, res, _next) => {
+      seen.push(res.headersSent);
+      void res.end("handled");
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect(await (await adapter.fetch("/late-err")).text()).toBe("one;handled");
+    expect(seen).toEqual([true]);
+  });
+
+  it("sends a stream's headers before the async handler that writes it resolves", async () => {
+    const adapter = new BunHttpAdapter(0);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    adapter.get("/stream", async (_req, res) => {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.write("data: first\n\n");
+      await held;
+      void res.end("data: last\n\n");
+    });
+    const server = await adapter.listen(0);
+    try {
+      const response = await fetch(`${server.url}stream`);
+      expect(response.headers.get("content-type")).toBe("text/event-stream");
+      const reader = response.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(first).toBe("data: first\n\n");
+      release();
+      let rest = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rest += new TextDecoder().decode(value);
+      }
+      expect(rest).toBe("data: last\n\n");
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("answers as soon as an async handler responds, without waiting for the rest of it", async () => {
+    const adapter = new BunHttpAdapter(0);
+    let finished = false;
+    adapter.get("/early", async (_req, res) => {
+      res.send("early");
+      await Bun.sleep(300);
+      finished = true;
+    });
+    const started = performance.now();
+    const response = await adapter.fetch("/early");
+    expect(await response.text()).toBe("early");
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(finished).toBe(false);
+  });
+
+  it("times out an async handler that never settles", async () => {
+    const adapter = new BunHttpAdapter(100);
+    adapter.get("/stuck", async () => {
+      await new Promise(() => {});
+    });
+    const started = performance.now();
+    const response = await adapter.fetch("/stuck");
+    expect(response.status).toBe(500);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("does not time out a stream that is still open", async () => {
+    const adapter = new BunHttpAdapter(50);
+    adapter.get("/slow-stream", (_req, res) => {
+      res.write("a;");
+      setTimeout(() => void res.end("b"), 150);
+    });
+    expect(await (await adapter.fetch("/slow-stream")).text()).toBe("a;b");
+  });
+
+  it("logs a rejection that arrives after the handler moved on", async () => {
+    const adapter = new BunHttpAdapter(0);
+    const { logger, events } = createTestLogger();
+    adapter.setLogger(logger);
+    adapter.get("/after", async (_req, res) => {
+      res.send("ok");
+      await Promise.resolve();
+      throw new Error("too late");
+    });
+    expect(await (await adapter.fetch("/after")).text()).toBe("ok");
+    await Bun.sleep(5);
+    expect(
+      events.some(
+        (event) =>
+          event.message === "Error from a handler after it had moved on" &&
+          event.error?.message === "too late",
+      ),
+    ).toBe(true);
+  });
+
+  it("ends the pipeline when the client leaves an open stream", async () => {
+    const adapter = new BunHttpAdapter(0);
+    let closedSeen = false;
+    adapter.get("/forever", (_req, res) => {
+      res.write("x");
+      res.on("close", () => {
+        closedSeen = true;
+      });
+    });
+    const server = await adapter.listen(0);
+    try {
+      const controller = new AbortController();
+      const response = await fetch(`${server.url}forever`, {
+        signal: controller.signal,
+      });
+      await response.body!.getReader().read();
+      controller.abort();
+      const deadline = Date.now() + 500;
+      while (Date.now() < deadline) {
+        if (closedSeen) {
+          break;
+        }
+        await Bun.sleep(10);
+      }
+      expect(closedSeen).toBe(true);
+    } finally {
+      await adapter.close();
+    }
+  });
+});

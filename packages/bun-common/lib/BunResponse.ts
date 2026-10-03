@@ -595,6 +595,12 @@ export class BunResponse<
   /** True once {@link destroy} has run. */
   #destroyed = false;
 
+  /**
+   * Called once when a streamed response ends — `end()`, the client leaving
+   * or {@link destroy}. See {@link onceStreamEnded}.
+   */
+  #streamEndWaiters: (() => void)[] | undefined = undefined;
+
   /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
   #etagEnabled: boolean;
 
@@ -1493,6 +1499,55 @@ export class BunResponse<
     this.#readableStream = undefined;
     // A streaming response finishes when its stream ends.
     this.emitFinish();
+    this.#notifyStreamEnded();
+  }
+
+  /** Calls (once) everything waiting for the stream to end. */
+  #notifyStreamEnded(): void {
+    const waiters = this.#streamEndWaiters;
+    if (waiters !== undefined) {
+      this.#streamEndWaiters = undefined;
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
+  }
+
+  /**
+   * `true` while a streamed response (`write()`, `flushHeaders()`) is open:
+   * it has started and not yet ended, been destroyed or lost its client.
+   */
+  get isStreamOpen(): boolean {
+    return this._isLongLived && !this.#streamEnding && !this.#destroyed;
+  }
+
+  /**
+   * Whether the response has ended, as Node's `writableEnded`: a body was
+   * produced (`send`, `json`, `end`, `redirect`, …) or a streamed response
+   * was asked to end.
+   */
+  get writableEnded(): boolean {
+    return this.#ended;
+  }
+
+  /**
+   * Calls `listener` once, when the open stream ends (`end()`, the client
+   * leaving, {@link destroy}) — at once if no stream is open. Returns a
+   * function that unsubscribes a listener not yet called.
+   */
+  onceStreamEnded(listener: () => void): () => void {
+    if (!this.isStreamOpen) {
+      listener();
+      return () => {};
+    }
+    (this.#streamEndWaiters ??= []).push(listener);
+    return () => {
+      const waiters = this.#streamEndWaiters;
+      const index = waiters === undefined ? -1 : waiters.indexOf(listener);
+      if (index !== -1) {
+        waiters!.splice(index, 1);
+      }
+    };
   }
 
   /**
@@ -1647,6 +1702,7 @@ export class BunResponse<
       }
     }
     this.emitClose();
+    this.#notifyStreamEnded();
     return this;
   }
 

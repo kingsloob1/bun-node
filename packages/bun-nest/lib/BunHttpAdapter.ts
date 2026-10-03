@@ -41,6 +41,7 @@ import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import {
+  awaitPipelineOrStream,
   BunRequest,
   BunResponse,
   BunRouter,
@@ -438,38 +439,26 @@ export class BunHttpAdapter<
     // `@Sse()` resolves only once the observable completes or the client
     // leaves — would otherwise hold the headers back until then. On Node they
     // go out as soon as `writeHead`/`flushHeaders` runs, so the stream's
-    // response is returned the moment it exists, the pipeline still running.
-    if (Bun.peek.status(pipeline) === "pending") {
-      const streamed = await Promise.race([
-        pipeline.then(
-          () => undefined,
-          () => undefined,
-        ),
-        res
-          .getNativeResponse(0)
-          .then((response) => (res.isLongLived ? response : undefined)),
-      ]);
-      if (streamed) {
-        pipeline.catch((error: unknown) => {
-          // Headers are gone, so nothing but the stream's end can answer it,
-          // as Express's finalhandler does once headers were sent.
-          this.logger.error(
-            "Error after a streaming response started",
-            error instanceof Error ? error.stack : String(error),
-          );
-          // `end()` on a response that has already ended does nothing.
-          void res.end();
-        });
-        return streamed;
-      }
-    }
-
-    let routeUsed: matchedRoute | true | undefined;
+    // response is returned the moment it opens, the pipeline still running.
+    let outcome: Awaited<ReturnType<typeof awaitPipelineOrStream>>;
     try {
-      routeUsed = await pipeline;
+      outcome = await awaitPipelineOrStream(pipeline, res, (error) => {
+        // Headers are gone, so nothing but the stream's end can answer it,
+        // as Express's finalhandler does once headers were sent.
+        this.logger.error(
+          "Error after a streaming response started",
+          error instanceof Error ? error.stack : String(error),
+        );
+        // `end()` on a response that has already ended does nothing.
+        void res.end();
+      });
     } catch (error) {
       throw carryRequest(error, req);
     }
+    if (outcome.stream !== undefined) {
+      return outcome.stream;
+    }
+    const routeUsed = outcome.routeUsed;
     return this.#respond(req, res, routeUsed, nativeRequest, server);
   }
 

@@ -580,37 +580,152 @@ export function isRequestTimeoutError(error: unknown): boolean {
   );
 }
 
+/** How a layer the pipeline was waiting on came to an end. */
+type LayerWait =
+  | { kind: "next" }
+  | { kind: "responded" }
+  | { kind: "ended" }
+  | { kind: "timeout" }
+  | { kind: "settled"; value: unknown }
+  | { kind: "threw"; error: unknown };
+
 /**
- * Waits for a layer that returned without finishing: until `next` is called
- * (`register` is handed the function that wakes the wait), the response is
- * produced, or `timeout` ms pass (`0`/unset: no limit).
+ * Whether a layer is done with the request: it called `next()`, or produced
+ * a complete response. An open stream is not done — a later `next()` still
+ * moves the pipeline on, as in Express.
  */
-function parkPipeline(
+function layerFinished(step: LayerStep, response: BunResponse): boolean {
+  return step.nextCalled || (response.headersSent && !response.isStreamOpen);
+}
+
+/**
+ * Waits for a pipeline that went asynchronous, but no longer than until its
+ * response opens a stream: resolves `{ routeUsed }` when the pipeline
+ * finishes first, or `{ stream }` (the streamed `Response`) the moment a
+ * stream opens — the pipeline keeps running behind it (a later `next()`, the
+ * stream's end), as the headers of a stream must go out before it ends. A
+ * pipeline error after that is passed to `onLateError`. Rejects with the
+ * pipeline's error otherwise.
+ *
+ * The adapters, `fetch()` and `BunWebSocket` all serve a request this way.
+ */
+export function awaitPipelineOrStream(
+  pipeline: Promise<matchedRoute | true | undefined>,
   response: BunResponse,
-  register: (resume: () => void) => void,
+  onLateError: (error: unknown) => void,
+): Promise<
+  | { routeUsed: matchedRoute | true | undefined; stream?: undefined }
+  | { stream: Response; routeUsed?: undefined }
+> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let unsubscribe: (() => void) | undefined;
+    pipeline.then(
+      (routeUsed) => {
+        if (!done) {
+          done = true;
+          unsubscribe?.();
+          resolve({ routeUsed });
+        }
+      },
+      (error: unknown) => {
+        if (done) {
+          onLateError(error);
+          return;
+        }
+        done = true;
+        unsubscribe?.();
+        reject(error);
+      },
+    );
+    if (done) {
+      return;
+    }
+    unsubscribe = response.onceResponded((native) => {
+      if (!done && response.isStreamOpen) {
+        done = true;
+        resolve({ stream: native });
+      }
+    });
+    if (done) {
+      unsubscribe();
+    }
+  });
+}
+
+/** Whether a streamed response has ended (it started, and is no longer open). */
+function streamEnded(response: BunResponse): boolean {
+  return response.headersSent && !response.isStreamOpen;
+}
+
+/**
+ * Waits for a layer that returned without finishing (see {@link
+ * layerFinished}): for its `next()`, its promise (`pending`) to settle, a
+ * complete response, its open stream to end, or — while nothing has been
+ * sent — `timeout` ms (`0`/unset: no limit).
+ */
+function waitForLayer(
+  response: BunResponse,
+  step: LayerStep,
+  pending: PromiseLike<unknown> | undefined,
   timeout: number | undefined,
-): Promise<"next" | "responded" | "timeout"> {
+): Promise<LayerWait> {
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe: (() => void) | undefined;
-    let settled = false;
-    const finish = (outcome: "next" | "responded" | "timeout") => {
-      if (settled) {
+    let done = false;
+    const finish = (outcome: LayerWait) => {
+      if (done) {
         return;
       }
-      settled = true;
+      done = true;
       if (timer !== undefined) {
         clearTimeout(timer);
       }
       unsubscribe?.();
+      step.wake = undefined;
       resolve(outcome);
     };
-    register(() => finish("next"));
-    unsubscribe = response.onceResponded(() => finish("responded"));
-    if (settled) {
-      unsubscribe();
-    } else if (timeout !== undefined && timeout > 0) {
-      timer = setTimeout(finish, timeout, "timeout");
+    // A stream that opens is watched until it ends; a complete response
+    // ends the wait.
+    const watchStream = () => {
+      unsubscribe = response.onceStreamEnded(() => finish({ kind: "ended" }));
+    };
+    step.wake = () => finish({ kind: "next" });
+    if (pending !== undefined) {
+      pending.then(
+        (value) => finish({ kind: "settled", value }),
+        (error: unknown) => finish({ kind: "threw", error }),
+      );
+    }
+    if (done) {
+      return;
+    }
+    if (response.isStreamOpen) {
+      watchStream();
+      return;
+    }
+    if (response.headersSent) {
+      finish({ kind: "responded" });
+      return;
+    }
+    unsubscribe = response.onceResponded(() => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (response.isStreamOpen) {
+        watchStream();
+      } else {
+        finish({ kind: "responded" });
+      }
+    });
+    if (!done && timeout !== undefined && timeout > 0) {
+      timer = setTimeout(() => {
+        if (!response.headersSent) {
+          finish({ kind: "timeout" });
+        }
+      }, timeout);
     }
   });
 }
@@ -4416,13 +4531,25 @@ export class BunRouter<
       created instanceof BunRequestClass ? created : await created;
     const response = new BunResponseClass(request);
 
-    const handled = await this.handle({
-      requestHost: request.host,
-      requestMethod: request.method,
-      requestUrl: request.originalUrl,
-      request,
+    const routed = await awaitPipelineOrStream(
+      this.handle({
+        requestHost: request.host,
+        requestMethod: request.method,
+        requestUrl: request.originalUrl,
+        request,
+        response,
+      }),
       response,
-    });
+      (error) => {
+        this.logger.error("Error after a streamed response started", {
+          error,
+        });
+      },
+    );
+    if (routed.stream !== undefined) {
+      return toFetchResponse(routed.stream, request.method);
+    }
+    const handled = routed.routeUsed;
 
     if (handled) {
       return toFetchResponse(
@@ -4880,9 +5007,10 @@ export class BunRouter<
     const { request, response } = state.options;
 
     for (; state.index < layers.length; state.index++) {
-      // A sent response ends the pipeline — unless an error is pending, which
-      // the error handlers still see, as in Express.
-      if (response.headersSent && !state.hasError) {
+      // A complete response ends the pipeline — unless an error is pending,
+      // which the error handlers still see, as in Express. An open stream
+      // does not: the layer that called next() handed it on.
+      if (response.headersSent && !state.hasError && !response.isStreamOpen) {
         break;
       }
 
@@ -4979,33 +5107,28 @@ export class BunRouter<
         continue;
       }
 
-      // A genuinely async handler: the rest of the pipeline continues from
-      // its promise. A synchronous one resolves the layer without a hop.
+      // A genuinely async handler: unless it already finished (called next()
+      // or sent a complete response before returning its promise), the rest
+      // of the pipeline waits for it — or for its next(), or a response,
+      // whichever comes first, as Express does not wait on the promise.
       if (
         invoked != null &&
         typeof (invoked as { then?: unknown }).then === "function"
       ) {
-        return Promise.resolve(invoked as PromiseLike<unknown>).then(
-          (returned) => {
-            step.returned = returned;
-            return this.#afterLayer(state, step);
-          },
-          (error: unknown) => {
-            if (this.#settleLayer(state, step, true, error)) {
-              return this.#finishPipeline(state);
-            }
-            state.index++;
-            return this.#runPipeline(state);
-          },
-        );
-      }
-      step.returned = invoked;
-
-      // The layer has not finished: it neither responded nor called next().
-      // Park until it does one or the other, as Express waits for a `next`
-      // handed to a callback.
-      if (!step.nextCalled && !response.headersSent) {
-        return this.#parkLayer(state, step);
+        const pending = invoked as PromiseLike<unknown>;
+        if (layerFinished(step, response)) {
+          this.#watchLateRejection(state, pending);
+        } else {
+          return this.#waitLayer(state, step, pending);
+        }
+      } else {
+        step.returned = invoked;
+        // The layer has not finished: park until it calls next(), responds,
+        // or its stream ends, as Express waits for a `next` handed to a
+        // callback.
+        if (!layerFinished(step, response)) {
+          return this.#waitLayer(state, step, undefined);
+        }
       }
 
       if (this.#settleLayer(state, step, false, undefined)) {
@@ -5016,39 +5139,69 @@ export class BunRouter<
     return this.#finishPipeline(state);
   }
 
-  /** After an async layer settled without throwing: park it, or move on. */
-  #afterLayer(state: PipelineState, step: LayerStep): PipelineResult {
-    if (!step.nextCalled && !state.options.response.headersSent) {
-      return this.#parkLayer(state, step);
-    }
-    if (this.#settleLayer(state, step, false, undefined)) {
-      return this.#finishPipeline(state);
-    }
-    state.index++;
-    return this.#runPipeline(state);
+  /**
+   * Waits for an unfinished layer (see {@link waitForLayer}) and moves on as
+   * if it had finished then.
+   */
+  #waitLayer(
+    state: PipelineState,
+    step: LayerStep,
+    pending: PromiseLike<unknown> | undefined,
+  ): Promise<PipelineOutcome> {
+    const { response, timeout } = state.options;
+    return waitForLayer(response, step, pending, timeout).then(
+      (outcome): PipelineResult => {
+        switch (outcome.kind) {
+          case "timeout":
+            throw createRequestTimeoutError();
+          case "threw":
+            if (this.#settleLayer(state, step, true, outcome.error)) {
+              return this.#finishPipeline(state);
+            }
+            state.index++;
+            return this.#runPipeline(state);
+          case "settled":
+            step.returned = outcome.value;
+            // Resolved without finishing: keep waiting for next(), a
+            // response or the stream's end, as for a synchronous layer.
+            if (!layerFinished(step, response) && !streamEnded(response)) {
+              return this.#waitLayer(state, step, undefined);
+            }
+            break;
+          default:
+            // next(), a complete response, or the stream ended: a promise
+            // still pending is watched for a late rejection.
+            if (pending !== undefined) {
+              this.#watchLateRejection(state, pending);
+            }
+        }
+        if (this.#settleLayer(state, step, false, undefined)) {
+          return this.#finishPipeline(state);
+        }
+        state.index++;
+        return this.#runPipeline(state);
+      },
+    );
   }
 
   /**
-   * Waits for a layer that returned without finishing — for its `next()`, a
-   * response, or the `timeout` — then moves on as if it had finished then.
+   * A layer's promise that is still pending after the pipeline moved on (it
+   * called next() or responded first): a later rejection cannot enter the
+   * pipeline any more, so it is logged, and an open stream is cut off as for
+   * any error after the response started.
    */
-  #parkLayer(state: PipelineState, step: LayerStep): Promise<PipelineOutcome> {
-    return parkPipeline(
-      state.options.response,
-      (resume) => {
-        step.wake = resume;
-      },
-      state.options.timeout,
-    ).then((outcome) => {
-      step.wake = undefined;
-      if (outcome === "timeout") {
-        throw createRequestTimeoutError();
+  #watchLateRejection(
+    state: PipelineState,
+    pending: PromiseLike<unknown>,
+  ): void {
+    pending.then(undefined, (error: unknown) => {
+      this.logger.error("Error from a handler after it had moved on", {
+        error,
+      });
+      const { response } = state.options;
+      if (response.isStreamOpen) {
+        response.destroy(error);
       }
-      if (this.#settleLayer(state, step, false, undefined)) {
-        return this.#finishPipeline(state);
-      }
-      state.index++;
-      return this.#runPipeline(state);
     });
   }
 
@@ -5100,7 +5253,14 @@ export class BunRouter<
 
     // 2. The layer produced the response itself (and raised no error). An
     //    error handler that responds has handled its error.
-    if (response.headersSent && !nextError) {
+    //    An open stream handed on with next() keeps the pipeline going
+    //    (the next layer may write to it or end it, as in Express), so it
+    //    falls through to the next() cases below.
+    if (
+      response.headersSent &&
+      !nextError &&
+      !(nextCalled && response.isStreamOpen)
+    ) {
       if (layer.isErrorHandler) {
         state.hasError = false;
       }
