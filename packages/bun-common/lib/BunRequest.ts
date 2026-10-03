@@ -414,6 +414,21 @@ const EMPTY_QUERY_PROTOTYPE: object | null = Object.getPrototypeOf(
   parseQueryString("", {}),
 );
 
+/** What a body parse resolves with: the body, its bytes and how it was read. */
+interface ParsedBodyResult {
+  /** The parsed body (`req.body`). */
+  body: DefaultRequestBody;
+  /** The raw (decoded) bytes, when the body was read. */
+  buffer: Buffer | undefined;
+  /** The kind the body was parsed as. */
+  contentType: BunRequest["_contentType"];
+  /** The multipart parse, for a multipart body. */
+  multipart: MultiPartParseResult | undefined;
+}
+
+/** Marks the body task in `ready()`'s list while a `deferBody` read is pending. */
+const DEFERRED_BODY_TASK: unique symbol = Symbol("deferred body");
+
 /** What `#configuredCookieSecrets` returns when no secret is configured; never mutated. */
 const EMPTY_SECRETS: string[] = [];
 
@@ -826,7 +841,13 @@ export class BunRequest<
    * only a body that is still being read is a promise.
    */
   #initTasks:
-    | (TQuery | BunRequestCookies | Promise<void> | undefined)[]
+    | (
+        | TQuery
+        | BunRequestCookies
+        | Promise<void>
+        | undefined
+        | typeof DEFERRED_BODY_TASK
+      )[]
     | undefined = undefined;
 
   /** Whether any of {@link #initTasks} is still a pending promise. */
@@ -834,6 +855,12 @@ export class BunRequest<
 
   /** Whether {@link options} is this request's own copy (see #writableOptions). */
   #ownsOptions = false;
+
+  /**
+   * `true` while a body left unread by `deferBody` has not been claimed by a
+   * read yet. The first read of any kind claims it (see #parseBody).
+   */
+  #bodyDeferred = false;
 
   /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
@@ -1121,6 +1148,21 @@ export class BunRequest<
        * cookies stay in `req.cookies` until `parseCookies({ secret })` runs.
        */
       cookieSecret?: string | string[];
+      /**
+       * Read the body on first need rather than while the request is built.
+       * Defaults to `false`: a body is read, capped and parsed before any
+       * middleware runs, so an oversized one is refused with 413 up front.
+       *
+       * With `true`, a request that has a body is routed unread. It is read,
+       * with the request's options *at that moment*, by whichever comes first:
+       * a {@link requestParsing} middleware (which may raise or lower the
+       * cap for its route), a body-parser middleware, {@link ready}, an
+       * explicit {@link parseBody}, or the router just before the first route
+       * handler runs. A read that fails (413, 415, 400) enters the pipeline as
+       * an error at that point, as body-parser's `next(err)` does. A request
+       * without a body is unaffected.
+       */
+      deferBody?: boolean;
     } = {
       parseBody: true,
       parseCookies: true,
@@ -1170,6 +1212,10 @@ export class BunRequest<
     if (this.options?.parseBody) {
       if (this.#finishAbsentBody()) {
         (this.#initTasks ??= []).push(undefined);
+      } else if (this.options.deferBody === true) {
+        // Read on first need (see `deferBody`); `ready()` reads it too.
+        this.#bodyDeferred = true;
+        (this.#initTasks ??= []).push(DEFERRED_BODY_TASK);
       } else {
         this.#initPending = true;
         (this.#initTasks ??= []).push(
@@ -1302,7 +1348,11 @@ export class BunRequest<
     if (!this.#initTasks || this.#initTasks.length === 0) {
       return [];
     }
-    return await Promise.allSettled(this.#initTasks);
+    return await Promise.allSettled(
+      this.#initTasks.map((task) =>
+        task === DEFERRED_BODY_TASK ? this.readDeferredBody() : task,
+      ),
+    );
   }
 
   /* ---------------------------------------------------------------- *
@@ -2681,6 +2731,105 @@ export class BunRequest<
   }
 
   /**
+   * `true` while the body is left unread by `deferBody` and body parsing is
+   * on: a read is still to come. The router reads it (see
+   * {@link readDeferredBody}) before the first route handler runs.
+   */
+  get hasDeferredBody(): boolean {
+    return this.#bodyDeferred && !!this.options.parseBody;
+  }
+
+  /**
+   * Reads and parses a body left unread by `deferBody`, with the request's
+   * current options, and resolves once it is parsed; rejects as
+   * {@link parseBody} does (413 sets {@link isPayloadTooLarge}). Returns
+   * `undefined` when there is nothing deferred to read.
+   */
+  readDeferredBody(): Promise<void> | undefined {
+    if (!this.hasDeferredBody) {
+      return undefined;
+    }
+    return this.parseBody().then(() => undefined);
+  }
+
+  /**
+   * Replaces this request's body options and brings the body in line with
+   * them — what {@link requestParsing} does for its route:
+   *
+   * - `false`: nothing more is parsed. A deferred body stays unread; one
+   *   already parsed is dropped (`req.body` is `undefined`; the raw bytes stay
+   *   in {@link buffer}).
+   * - `true` or a {@link ParseBodyConfig}: a deferred body is read now, under
+   *   the new cap; one already read is checked against the new cap (413 when
+   *   it is over, before anything is parsed) and parsed again.
+   *
+   * Rejects with the parse's error (`PayloadTooLargeError`, a 415/400 for an
+   * encoding). Affects this request only.
+   */
+  async applyParseBodyOptions(parseBody: ParseBodyOption): Promise<void> {
+    this.setParseBodyOptions(parseBody);
+    if (!parseBody) {
+      if (this.isBodyParsed) {
+        this._body = undefined;
+        this._contentType = undefined;
+      }
+      return;
+    }
+    if (this.#bodyDeferred) {
+      await this.parseBody();
+      return;
+    }
+    const buffer = this._buffer;
+    if (buffer === undefined) {
+      // Never read (parsing was off when the request was built): read now.
+      if (!this.request.bodyUsed) {
+        await this.parseBody(true);
+      }
+      return;
+    }
+    const contentType = this.getHeader("Content-Type");
+    const limit = this.resolveContentLimit(
+      contentType ? this.detectParserKind(contentType) : undefined,
+    );
+    if (limit !== undefined && buffer.length > limit) {
+      this.#payloadTooLarge = { limit, length: buffer.length };
+      throw new PayloadTooLargeError(limit, buffer.length);
+    }
+    this._body = undefined;
+    this._contentType = undefined;
+    await this.parseBody(true);
+  }
+
+  /**
+   * Replaces this request's cookie parsing options — the parser's
+   * `cookieParseOptions` and the `cookieSecret` signed cookies verify with —
+   * for this request only. Call {@link parseCookies} (with
+   * `forceUpdateRequest: true`) to apply them to `req.cookies`.
+   */
+  public setCookieOptions(options: {
+    /** Options for the cookie parser; `undefined` leaves them as they are. */
+    parseOptions?: CookieParseOptions;
+    /** Secret(s) for signed cookies; `undefined` leaves them as they are. */
+    secret?: string | string[];
+  }): this {
+    const own = this.#writableOptions();
+    if (options.parseOptions !== undefined) {
+      own.cookieParseOptions = options.parseOptions;
+    }
+    if (options.secret !== undefined) {
+      own.cookieSecret = options.secret;
+      const secrets = this.#configuredCookieSecrets();
+      this.secret = secrets.length ? secrets[0] : undefined;
+    }
+    return this;
+  }
+
+  /** The configured cookie secrets, as `parseCookies` verifies with them. */
+  get configuredCookieSecrets(): readonly string[] {
+    return this.#configuredCookieSecrets();
+  }
+
+  /**
    * Applies `parseBody` options (via {@link setParseBodyOptions}) and then
    * parses the body with them in a single call. `fresh` forces a re-parse of an
    * already-parsed body (its cached buffer is reused — the size cap is only
@@ -2853,7 +3002,27 @@ export class BunRequest<
   }
 
   /** {@link parseBody}, with an optional byte cap overriding `parseBody`'s. */
-  async #parseBody(fresh: boolean, limitOverride: number | undefined) {
+  async #parseBody(
+    fresh: boolean,
+    limitOverride: number | undefined,
+  ): Promise<ParsedBodyResult> {
+    // The first read of a deferred body claims it, and settles the body
+    // state (`complete`, the `data`/`end`/`error` events) as the build-time
+    // read does.
+    if (this.#bodyDeferred) {
+      this.#bodyDeferred = false;
+      try {
+        const parsed = await this.#parseBody(fresh, limitOverride);
+        this.#bodyState = "ended";
+        this.#flushBodyEvents();
+        return parsed;
+      } catch (error) {
+        this.#bodyState = "errored";
+        this.#bodyError = error;
+        this.#flushBodyEvents();
+        throw error;
+      }
+    }
     if (!fresh && this.isBodyParsed) {
       return {
         body: this._body,

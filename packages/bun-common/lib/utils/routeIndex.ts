@@ -25,6 +25,9 @@ const WHOLE_PARAM = /^:\w+$/;
 // eslint-disable-next-line no-control-regex
 const NON_ASCII = /[^\u0000-\u007F]/;
 
+/** An empty, never-mutated list of route indices. */
+const NO_ROUTES: readonly number[] = [];
+
 /** Segment kinds: a literal, a whole-segment param, or anything else. */
 const STATIC = 0;
 const PARAM = 1;
@@ -100,8 +103,7 @@ function compileRoute(route: Route): CompiledRoute {
 }
 
 /**
- * Whether `route` can never match the request path `segments`
- * (`lowered` is the same list lower-cased).
+ * Whether `route` can never match the request path `segments`.
  *
  * Deliberately weak: only a literal-versus-literal mismatch at an aligned
  * segment, or an impossible segment count for a pattern of literals and
@@ -109,11 +111,7 @@ function compileRoute(route: Route): CompiledRoute {
  * (a wildcard, a regex, an optional param) stops the comparison and keeps the
  * route, because from there segments may no longer line up.
  */
-function isDisjoint(
-  route: CompiledRoute,
-  segments: string[],
-  lowered: string[],
-): boolean {
+function isDisjoint(route: CompiledRoute, segments: string[]): boolean {
   const { kinds } = route;
   const count = Math.min(kinds.length, segments.length);
   for (let i = 0; i < count; i++) {
@@ -123,16 +121,17 @@ function isDisjoint(
     }
     if (kind === STATIC) {
       const expected = route.values[i];
+      const segment = segments[i];
       if (route.caseSensitive) {
-        if (expected !== segments[i]) {
+        if (expected !== segment) {
           return true;
         }
-      } else if (expected !== lowered[i]) {
+      } else if (expected !== segment && expected !== segment.toLowerCase()) {
         // A regex with the `i` flag (and no `u`) folds ASCII letters only
         // against ASCII letters, which lower-casing reproduces exactly. With
         // non-ASCII text on either side the two can disagree (`σ` and `ς`
         // fold together), so such a segment never rules the route out.
-        if (route.nonAscii[i] || NON_ASCII.test(segments[i])) {
+        if (route.nonAscii[i] || NON_ASCII.test(segment)) {
           continue;
         }
         return true;
@@ -217,9 +216,12 @@ export class RouteCandidateIndex {
       this.#build(routes);
     }
     const segments = splitRequestPath(requestPath);
-    const lowered = segments.map((segment) => segment.toLowerCase());
+    // Only the first segment is looked up; the rest are lower-cased only
+    // where a case-insensitive literal is compared (see isDisjoint).
     const bucket =
-      (lowered.length > 0 ? this.#buckets.get(lowered[0]) : undefined) ?? [];
+      (segments.length > 0
+        ? this.#buckets.get(segments[0].toLowerCase())
+        : undefined) ?? NO_ROUTES;
     const everywhere = this.#everywhere;
     const compiled = this.#compiled;
 
@@ -232,7 +234,7 @@ export class RouteCandidateIndex {
         (i < bucket.length && bucket[i] < everywhere[j])
           ? bucket[i++]
           : everywhere[j++];
-      if (!isDisjoint(compiled[index], segments, lowered)) {
+      if (!isDisjoint(compiled[index], segments)) {
         out.push(index);
       }
     }

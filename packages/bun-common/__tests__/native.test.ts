@@ -461,6 +461,21 @@ describe("native: cookies", () => {
     expect(parseCookie("")).toEqual({});
   });
 
+  it("applies a custom decode as the cookie package does", () => {
+    const upper = (value: string) => value.toUpperCase();
+    // Raw values reach the decoder (no percent-decoding first), quotes are
+    // stripped, the first occurrence wins, a pair without "=" is skipped.
+    expect(
+      parseCookie(' a = x%20y ; b="q"; a=second; junk; c=', { decode: upper }),
+    ).toEqual({ a: "X%20Y", b: "Q", c: "" });
+    // A decoder that throws keeps the raw value.
+    expect(
+      parseCookie("a=%zz; b=1", {
+        decode: (value) => decodeURIComponent(value),
+      }),
+    ).toEqual({ a: "%zz", b: "1" });
+  });
+
   it("serialises cookies via Bun's native Cookie", () => {
     // Bun.Cookie applies `Path=/` and `SameSite=Lax` defaults.
     const serialized = serializeCookie("token", "abc", {

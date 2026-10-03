@@ -489,6 +489,24 @@ export function withoutHeadBody(response: Response, method: string): Response {
   });
 }
 
+/** One matched route, while {@link BunRouter.getMatchedLayers} builds layers. */
+interface MatchedEntry {
+  /** The route's position in `routes()`. */
+  routeIndex: number;
+  /** The route. */
+  route: Route;
+  /** What it matched. */
+  matched: matchedRoute;
+  /** The captured value that would not decode, when one did not. */
+  decodeFailure: string | undefined;
+  /** The part of the path the route's mount matched (`req.baseUrl`). */
+  baseUrl: string;
+  /** Whether it is a verb/`all` route handler (not middleware). */
+  isRouteHandler: boolean;
+  /** 0 for the router's own routes; a mounted sub-router's id otherwise. */
+  routerId: number;
+}
+
 /** What {@link BunRouter.handle} and {@link BunRouter.dispatch} take. */
 export interface PipelineOptions {
   /** The request's host, as routes with a `host` pattern match it. */
@@ -4635,62 +4653,63 @@ export class BunRouter<
     // without running their regexes. Indices stay those of `routes()`.
     const candidates = this.#candidateIndex.candidates(routes, requestPath);
 
-    // 1. Match every candidate, preserving registration order.
-    const entries = candidates
-      .map((routeIndex) => {
-        const route = routes[routeIndex];
-        let matched: matchedRoute | false;
-        // Set when the route matched but a captured value would not decode.
-        let decodeFailure: string | undefined;
-        try {
-          matched = this.matchRoute(
-            route,
-            options.requestHost,
-            options.requestMethod,
-            requestPath,
-          );
-        } catch (error) {
-          if (!(error instanceof ParamDecodeFailure)) {
-            throw error;
-          }
-          // Express 5: the layer whose params cannot be decoded is not run;
-          // a 400 `URIError` enters the pipeline at its position instead, so
-          // earlier layers still run and error handlers after it see it.
-          decodeFailure = error.value;
-          matched = {
-            host: route.host,
-            method: route.method,
-            path: route.path,
-            callbacks: route.callbacks,
-            params: {},
-            subdomains: {},
-          } as matchedRoute;
-        }
-
-        if (matched === false) {
-          return undefined;
-        }
-
-        const tagged = route as RouteWithGroup;
-        return {
-          routeIndex,
+    // 1. Match every candidate, preserving registration order. A plain loop:
+    //    this is the whole cost of a cache miss.
+    const entries: MatchedEntry[] = [];
+    for (let c = 0; c < candidates.length; c++) {
+      const routeIndex = candidates[c];
+      const route = routes[routeIndex];
+      let matched: matchedRoute | false;
+      // Set when the route matched but a captured value would not decode.
+      let decodeFailure: string | undefined;
+      try {
+        matched = this.matchRoute(
           route,
-          matched,
-          decodeFailure,
-          baseUrl: matchBaseUrl(tagged, requestPath),
-          // Verb routes and `all` are route handlers; `use`/`useMethod`
-          // middleware is not. The `isEndpoint` tag is the sole source of
-          // truth, so method-scoped middleware (`useMethod`) is never treated
-          // as a route handler even though it carries an HTTP method. A route
-          // that failed to decode is neither: it only raises its error, from
-          // its registration slot.
-          isRouteHandler:
-            tagged.isEndpoint === true && decodeFailure === undefined,
-          // 0 = this router's own routes; > 0 = a mounted sub-router.
-          routerId: tagged.routerGroupId ?? 0,
-        };
-      })
-      .filter((entry) => !!entry);
+          options.requestHost,
+          options.requestMethod,
+          requestPath,
+        );
+      } catch (error) {
+        if (!(error instanceof ParamDecodeFailure)) {
+          throw error;
+        }
+        // Express 5: the layer whose params cannot be decoded is not run;
+        // a 400 `URIError` enters the pipeline at its position instead, so
+        // earlier layers still run and error handlers after it see it.
+        decodeFailure = error.value;
+        matched = {
+          host: route.host,
+          method: route.method,
+          path: route.path,
+          callbacks: route.callbacks,
+          params: {},
+          subdomains: {},
+        } as matchedRoute;
+      }
+
+      if (matched === false) {
+        continue;
+      }
+
+      const tagged = route as RouteWithGroup;
+      entries.push({
+        routeIndex,
+        route,
+        matched,
+        decodeFailure,
+        baseUrl: matchBaseUrl(tagged, requestPath),
+        // Verb routes and `all` are route handlers; `use`/`useMethod`
+        // middleware is not. The `isEndpoint` tag is the sole source of
+        // truth, so method-scoped middleware (`useMethod`) is never treated
+        // as a route handler even though it carries an HTTP method. A route
+        // that failed to decode is neither: it only raises its error, from
+        // its registration slot.
+        isRouteHandler:
+          tagged.isEndpoint === true && decodeFailure === undefined,
+        // 0 = this router's own routes; > 0 = a mounted sub-router.
+        routerId: tagged.routerGroupId ?? 0,
+      });
+    }
 
     // 2. Order the matched route handlers (verb methods + `all`). Middleware
     //    registered via `use` always keeps its registration order; route
@@ -4870,6 +4889,23 @@ export class BunRouter<
       // error; error handlers run only when there is one.
       if (state.hasError !== layer.isErrorHandler) {
         continue;
+      }
+
+      // A body left unread by `deferBody` is read before the first route
+      // handler, with the options any middleware set for the request; a read
+      // that fails enters error mode here, as body-parser's next(err) does.
+      if (layer.isRouteHandler && request.hasDeferredBody === true) {
+        const reading = request.readDeferredBody();
+        if (reading !== undefined) {
+          return reading.then(
+            () => this.#runPipeline(state),
+            (error: unknown) => {
+              state.hasError = true;
+              state.currentError = error;
+              return this.#runPipeline(state);
+            },
+          );
+        }
       }
 
       if (layer.isRouteHandler) {

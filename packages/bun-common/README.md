@@ -31,6 +31,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [BunHttpAdapter](#bunhttpadapter)
     - [Adapter options](#adapter-options)
     - [Listening and closing](#listening-and-closing)
+    - [Native static routes](#native-static-routes-serverroutes)
     - [Not-found and error handlers](#not-found-and-error-handlers)
     - [Testing without a socket](#testing-without-a-socket)
     - [Adapter helpers](#adapter-helpers)
@@ -39,6 +40,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Request options](#request-options)
     - [Query parsing](#query-parsing)
     - [Body parsing](#body-parsing)
+    - [Per-route parsing](#per-route-parsing-requestparsing)
     - [Content negotiation](#content-negotiation)
     - [Request cookies](#request-cookies)
   - [Body decoding](#body-decoding)
@@ -309,9 +311,15 @@ named. A duplicate name also throws.
 
 Matched pipelines are cached per host, path and method. The cache key is the
 **resolved** path, so a route carrying an id needs one entry per distinct id.
-Set `routeCacheMax` above the number of distinct live paths, or set it to `0`.
-A value between the two means every request misses *and* pays for eviction.
-`clearRouteCache()` empties the cache.
+A miss is cheap: routes are indexed by their first path segment, so a miss
+runs only the regexes of routes that can match (those sharing the path's
+first segment, plus param-first routes and global middleware), in
+registration order. When the cache is full the oldest entry is evicted in
+constant time. Measured in process on a 1,000-route table, a miss costs
+about 3 µs with the cache off and 5 µs with it on (a cache hit, about
+0.2 µs), against 93 µs and 99 µs before the index. So a `routeCacheMax`
+below the number of distinct live paths no longer costs much, and `0` (no
+cache) is reasonable for very high-cardinality traffic. `clearRouteCache()` empties the cache.
 
 `RouteClass`, `routeModulePath` and `toNativeRequest` are also exported, for
 advanced integration.
@@ -609,8 +617,9 @@ so do their `contentTypes` maps; a boolean on either side replaces the other.
 | `parseCookies` | `boolean` | `true` | Parses `Cookie` into `req.cookies`. |
 | `parseQuery` | `boolean` | `true` | Parses the query string into `req.query`. |
 | `parseQueryOpts` | `QueryParserOpts` | `DEFAULT_PARSE_QUERY_OPTS` | picoquery options, merged over the defaults. |
-| `cookieParseOptions` | `CookieParseOptions` | none | Cookie parser options. |
+| `cookieParseOptions` | `CookieParseOptions` | none | Cookie parser options: `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). |
 | `cookieSecret` | `string \| string[]` | none | Secret(s) for signed cookies, as `cookieParser(secret)`. `req.secret` is the first entry, and every entry verifies (rotation). See [Request cookies](#request-cookies). |
+| `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -673,6 +682,66 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 
 Example:
 [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts).
+
+#### Per-route parsing (`requestParsing`)
+
+The adapter's `request` options apply to every request. `requestParsing()`
+is middleware that changes them for the routes it is mounted on, and parses
+that request again with them before calling `next()`, as body-parser and
+cookie-parser do. It takes the same option names:
+
+| Option | Effect on the request |
+|---|---|
+| `parseQuery` | `false` empties `req.query`; `true` parses it again |
+| `parseQueryOpts` | parses the query again with these picoquery options |
+| `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again |
+| `cookieParseOptions`, `cookieSecret` | parses the cookies again with them; `req.secret` becomes the first secret |
+| `parseBody` | `false` parses nothing more; `true` or a `ParseBodyConfig` parses the body under these caps and allowlist |
+
+Only that request changes: the adapter's options, and other requests, never
+do. A body over the route's cap, or with an encoding it refuses, goes to
+`next(err)` as a 413, 415 or 400, so error handlers see it.
+
+The body is the one part that depends on **when it was read**. By default it
+is read, capped and parsed while the request is built, before any middleware
+runs, so an oversized body is refused before routing. A route can then only
+**tighten** the rules (a lower cap is checked against the bytes already
+read). To let a route **raise** its cap, set the adapter's `deferBody`: a
+request with a body is routed unread, and read on first need, under the
+options in force at that moment:
+
+```ts
+import { BunHttpAdapter, requestParsing } from "@kingsleyweb/bun-common";
+
+const app = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: "100kb" }, deferBody: true },
+});
+
+// 20mb here, 100kb everywhere else.
+app.use("/upload", requestParsing({ parseBody: { maxContentLength: "20mb" } }));
+// Signed cookies verified here only; no query parsing for webhooks.
+app.use("/account", requestParsing({ cookieSecret: ["new", "old"] }));
+app.use("/webhooks", requestParsing({ parseQuery: false, parseCookies: false }));
+
+app.post("/upload", (req, res) => res.json({ received: true }));
+```
+
+With `deferBody`, the first of these reads the body: a `requestParsing`
+middleware, a body-parser middleware (`useBodyParser`,
+`registerParserMiddleware`, whose `limit` then applies to the read),
+`await req.ready()`, `req.parseBody()`, or the router itself just before the
+first **route handler** runs. Middleware before that point sees
+`req.body === undefined` and `req.hasDeferredBody === true`. A request
+without a body is never deferred and stays synchronous.
+
+The trade-off: with `deferBody`, an oversized body is refused when it is read
+(after the middleware before it has run) rather than before routing.
+
+The same building blocks are available on the request, for this request only:
+`req.applyParseBodyOptions(parseBody)` (what the middleware's `parseBody`
+does), `req.readDeferredBody()`, `req.setCookieOptions({ parseOptions,
+secret })` then `req.parseCookies({ forceUpdateRequest: true })`, and
+`req.setQueryParserOptions(opts)` then `req.parseQuery()`.
 
 #### Content negotiation
 
