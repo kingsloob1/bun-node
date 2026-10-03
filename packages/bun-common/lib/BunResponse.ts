@@ -486,8 +486,6 @@ class BunResponseState<customWebsocketDataType = unknown> {
     | Partial<WebSocketClientData<customWebsocketDataType>>
     | undefined = undefined;
 
-  /** Backs BunResponse's `#responseWaiters`; see its documentation there. */
-  responseWaiters: ((response: Response) => void)[] | undefined = undefined;
   /** Backs BunResponse's `_isLongLived`; see its documentation there. */
   _isLongLived: boolean = false;
   /** Backs BunResponse's `#readableStream`; see its documentation there. */
@@ -617,18 +615,12 @@ export class BunResponse<
 
   #nativeResponse: Response | undefined = undefined;
   /**
-   * Resolvers awaiting the native `Response` (see {@link getNativeResponse}).
-   * Allocated on the first waiter — a response nobody awaits costs no array.
+   * Listeners awaiting the native `Response` ({@link getNativeResponse},
+   * {@link onceResponded}); the array is allocated on the first one. A field
+   * of its own, not in the lazy {@link BunResponseState}: every asynchronous
+   * pipeline subscribes, and building that holder costs more than the wait.
    */
-  get #responseWaiters(): ((response: Response) => void)[] | undefined {
-    const holder = this.#state;
-    return holder === undefined ? undefined : holder.responseWaiters;
-  }
-
-  set #responseWaiters(value: ((response: Response) => void)[] | undefined) {
-    (this.#state ??=
-      new BunResponseState<customWebsocketDataType>()).responseWaiters = value;
-  }
+  #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
 
   private options: Writable<ResponseInit> = {};
   /**

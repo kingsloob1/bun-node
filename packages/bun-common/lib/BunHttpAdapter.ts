@@ -2,7 +2,7 @@ import type { WebSocketHandler } from "bun";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { EtagOption } from "./BunResponse";
-import type { FetchInput } from "./BunRouter";
+import type { FetchInput, ServeHooks } from "./BunRouter";
 import type {
   CorsOptions as BunCorsOptions,
   CorsOptionsDelegate,
@@ -449,34 +449,55 @@ export class BunHttpAdapter<
       timeout: this.requestTimeout,
     };
 
-    let routed: ReturnType<BunRouter["dispatch"]>;
+    // A stream's response goes out as soon as it opens (the pipeline keeps
+    // running behind it); anything else once the pipeline is done.
+    if (router.handle === BunRouter.prototype.handle) {
+      return router.serveRequest(options, this.#serveHooks);
+    }
+    // A router whose `handle` was overridden is run through the override.
+    let routed: ReturnType<typeof awaitPipelineOrStream>;
     try {
-      // A router whose `handle` was overridden is run through the override.
-      routed =
-        router.handle === BunRouter.prototype.handle
-          ? router.dispatch(options)
-          : router.handle(options);
+      routed = awaitPipelineOrStream(router.handle(options), res, (error) => {
+        this.#serveHooks.lateError(options, error);
+      });
     } catch (error) {
       throw carryRequest(error, req);
     }
-    if (routed instanceof Promise) {
-      // A stream's response goes out as soon as it opens (the pipeline keeps
-      // running behind it); anything else once the pipeline is done.
-      return awaitPipelineOrStream(routed, res, (error) => {
-        this.logger.error("Error after a streamed response started", {
-          error,
-        });
-      }).then(
-        (outcome) =>
-          outcome.stream ??
-          this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
-        (error: unknown) => {
-          throw carryRequest(error, req);
-        },
-      );
-    }
-    return this.#respond(req, res, routed, nativeRequest, server);
+    return routed.then(
+      (outcome) =>
+        outcome.stream ??
+        this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
+      (error: unknown) => {
+        throw carryRequest(error, req);
+      },
+    );
   }
+
+  /**
+   * How the router finishes a served request (see
+   * {@link BunRouter.serveRequest}): one object for every request, so a
+   * request pays for no closures, and an asynchronous one for no promise but
+   * the pipeline's. Each hook reads the request from the pipeline options.
+   */
+  readonly #serveHooks: ServeHooks<Response | undefined> = {
+    respond: (options, routeUsed) => {
+      const req = options.request;
+      return this.#respond(
+        req,
+        options.response as BunResponse<customWebsocketDataType>,
+        routeUsed,
+        req.request,
+        req.server as BunServer<WebSocketClientData<customWebsocketDataType>>,
+      );
+    },
+    stream: (_options, stream) => stream,
+    error: (options, error) => carryRequest(error, options.request),
+    lateError: (_options, error) => {
+      this.logger.error("Error after a streamed response started", {
+        error,
+      });
+    },
+  };
 
   /** Produces the response once the router is done with the request. */
   #respond(

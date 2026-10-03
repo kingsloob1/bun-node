@@ -621,8 +621,15 @@ matched route.
   `handle()`'s `timeout` (the adapters pass their request timeout) fails a
   wait with `Request Timedout` while nothing has been sent, answered without
   the request (`isRequestTimeoutError`). `dispatch()` returns synchronously
-  when no layer had to wait; callers serve through `awaitPipelineOrStream`,
-  which returns a stream's `Response` as soon as it opens.
+  when no layer had to wait. A pipeline that parks (`#park`) gets **one**
+  promise for all its waits (`#ensureAsync`); a wake from `next()`, a
+  response or a stream's end resumes a microtask later — never inside the
+  call that woke it, so `res.send(); next(err)` in one tick still reaches
+  the error handlers. The adapters and `fetch()` serve through
+  `serveRequest(options, hooks)`, which finishes the request (its `Response`,
+  or a stream's as soon as it opens) inside that same promise;
+  `awaitPipelineOrStream` remains for a router whose `handle()` is
+  overridden.
 - An error after the response started still runs the error handlers; one
   none handles destroys a streamed response (`res.destroy`) and is logged.
 - A route without its own HEAD handler answers `HEAD` with its GET one;
