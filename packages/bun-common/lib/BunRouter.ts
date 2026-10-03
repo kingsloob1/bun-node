@@ -118,7 +118,9 @@ class ParamDecodeFailure {
  * {@link ParamDecodeFailure} rather than a bare `URIError`.
  */
 function decodeParam(value: string): string {
-  if (value.length === 0) {
+  // `decodeURIComponent` changes nothing but `%` escapes, and only a `%` can
+  // make it throw: without one the value is already decoded.
+  if (!value.includes("%")) {
     return value;
   }
 

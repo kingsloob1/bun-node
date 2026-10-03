@@ -66,6 +66,39 @@ export function splitRequestPath(path: string): string[] {
   return splitPattern(path);
 }
 
+/** No segments: the bounds of `"/"` and `""`. */
+const NO_BOUNDS: readonly number[] = Object.freeze([]);
+
+/**
+ * A request path's segments as positions rather than strings — the same
+ * segments {@link splitRequestPath} gives, without allocating one: segment
+ * `i` is `path.slice(bounds[i], bounds[i + 1] - 1)`, and there are
+ * `bounds.length - 1` of them (none for `"/"` or `""`). One trailing slash is
+ * dropped, as there.
+ */
+export function requestPathBounds(path: string): readonly number[] {
+  let end = path.length;
+  if (end > 1 && path.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  if (end === 0 || (end === 1 && path.charCodeAt(0) === 47)) {
+    return NO_BOUNDS;
+  }
+  // As splitPattern: the first character (the leading "/") is not part of
+  // the first segment.
+  const bounds: number[] = [];
+  let start = 1;
+  for (;;) {
+    bounds.push(start);
+    const slash = path.indexOf("/", start);
+    if (slash === -1 || slash >= end) {
+      bounds.push(end + 1);
+      return bounds;
+    }
+    start = slash + 1;
+  }
+}
+
 /** The kind of one pattern segment. */
 function segmentKind(segment: string): number {
   if (WHOLE_PARAM.test(segment)) {
@@ -111,9 +144,14 @@ function compileRoute(route: Route): CompiledRoute {
  * (a wildcard, a regex, an optional param) stops the comparison and keeps the
  * route, because from there segments may no longer line up.
  */
-function isDisjoint(route: CompiledRoute, segments: string[]): boolean {
+function isDisjoint(
+  route: CompiledRoute,
+  path: string,
+  bounds: readonly number[],
+): boolean {
   const { kinds } = route;
-  const count = Math.min(kinds.length, segments.length);
+  const segmentCount = bounds.length === 0 ? 0 : bounds.length - 1;
+  const count = Math.min(kinds.length, segmentCount);
   for (let i = 0; i < count; i++) {
     const kind = kinds[i];
     if (kind === UNKNOWN) {
@@ -121,21 +159,28 @@ function isDisjoint(route: CompiledRoute, segments: string[]): boolean {
     }
     if (kind === STATIC) {
       const expected = route.values[i];
-      const segment = segments[i];
+      const start = bounds[i];
+      const length = bounds[i + 1] - 1 - start;
+      // Compared in place: no slice unless a case-insensitive literal has to
+      // be lower-cased.
+      if (length === expected.length && path.startsWith(expected, start)) {
+        continue;
+      }
       if (route.caseSensitive) {
-        if (expected !== segment) {
-          return true;
-        }
-      } else if (expected !== segment && expected !== segment.toLowerCase()) {
-        // A regex with the `i` flag (and no `u`) folds ASCII letters only
-        // against ASCII letters, which lower-casing reproduces exactly. With
-        // non-ASCII text on either side the two can disagree (`σ` and `ς`
-        // fold together), so such a segment never rules the route out.
-        if (route.nonAscii[i] || NON_ASCII.test(segment)) {
-          continue;
-        }
         return true;
       }
+      const segment = path.slice(start, start + length);
+      if (expected === segment.toLowerCase()) {
+        continue;
+      }
+      // A regex with the `i` flag (and no `u`) folds ASCII letters only
+      // against ASCII letters, which lower-casing reproduces exactly. With
+      // non-ASCII text on either side the two can disagree (`σ` and `ς`
+      // fold together), so such a segment never rules the route out.
+      if (route.nonAscii[i] || NON_ASCII.test(segment)) {
+        continue;
+      }
+      return true;
     }
   }
   if (!route.plain) {
@@ -143,8 +188,8 @@ function isDisjoint(route: CompiledRoute, segments: string[]): boolean {
   }
   // A prefix needs at least its own segments; an exact pattern, exactly them.
   return route.prefix
-    ? kinds.length > segments.length
-    : kinds.length !== segments.length;
+    ? kinds.length > segmentCount
+    : kinds.length !== segmentCount;
 }
 
 /**
@@ -215,12 +260,15 @@ export class RouteCandidateIndex {
     if (routes !== this.#table || routes.length !== this.#builtLength) {
       this.#build(routes);
     }
-    const segments = splitRequestPath(requestPath);
-    // Only the first segment is looked up; the rest are lower-cased only
-    // where a case-insensitive literal is compared (see isDisjoint).
+    // Positions, not strings: only the first segment is sliced (for the
+    // bucket), and the rest only where a case-insensitive literal has to be
+    // lower-cased (see isDisjoint).
+    const bounds = requestPathBounds(requestPath);
     const bucket =
-      (segments.length > 0
-        ? this.#buckets.get(segments[0].toLowerCase())
+      (bounds.length > 0
+        ? this.#buckets.get(
+            requestPath.slice(bounds[0], bounds[1] - 1).toLowerCase(),
+          )
         : undefined) ?? NO_ROUTES;
     const everywhere = this.#everywhere;
     const compiled = this.#compiled;
@@ -234,7 +282,7 @@ export class RouteCandidateIndex {
         (i < bucket.length && bucket[i] < everywhere[j])
           ? bucket[i++]
           : everywhere[j++];
-      if (!isDisjoint(compiled[index], segments)) {
+      if (!isDisjoint(compiled[index], requestPath, bounds)) {
         out.push(index);
       }
     }
