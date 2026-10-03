@@ -473,6 +473,84 @@ function withoutFragment(url: string): string {
   return hashStart === -1 ? url : url.slice(0, hashStart);
 }
 
+/**
+ * `response` as a server sends it in answer to `method`: without a body for
+ * `HEAD`, which `Bun.serve` drops on the wire. Socket-free `fetch()` applies
+ * it so it answers as a served request does.
+ */
+export function withoutHeadBody(response: Response, method: string): Response {
+  if (method.toUpperCase() !== "HEAD" || response.body === null) {
+    return response;
+  }
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/** Errors {@link BunRouter.handle} raised for a parked pipeline's timeout. */
+const requestTimeoutErrors = new WeakSet<object>();
+
+/**
+ * The error a parked pipeline fails with when its `timeout` runs out — the
+ * same `Request Timedout` the adapters' response wait has always raised.
+ */
+function createRequestTimeoutError(): Error {
+  const error = new Error("Request Timedout");
+  requestTimeoutErrors.add(error);
+  return error;
+}
+
+/**
+ * Whether `error` is a parked pipeline's timeout (see
+ * {@link BunRouter.handle}'s `timeout`). The adapters hand it to their final
+ * error handling as they handle a timed-out response wait: without the
+ * request, so it is answered as `finalhandler` would.
+ */
+export function isRequestTimeoutError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    requestTimeoutErrors.has(error)
+  );
+}
+
+/**
+ * Waits for a layer that returned without finishing: until `next` is called
+ * (`register` is handed the function that wakes the wait), the response is
+ * produced, or `timeout` ms pass (`0`/unset: no limit).
+ */
+function parkPipeline(
+  response: BunResponse,
+  register: (resume: () => void) => void,
+  timeout: number | undefined,
+): Promise<"next" | "responded" | "timeout"> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let settled = false;
+    const finish = (outcome: "next" | "responded" | "timeout") => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      unsubscribe?.();
+      resolve(outcome);
+    };
+    register(() => finish("next"));
+    unsubscribe = response.onceResponded(() => finish("responded"));
+    if (settled) {
+      unsubscribe();
+    } else if (timeout !== undefined && timeout > 0) {
+      timer = setTimeout(finish, timeout, "timeout");
+    }
+  });
+}
+
 export class BunRouter<
   /**
    * Path this router is mounted at, when it is used as a sub-router. Declared
@@ -4267,11 +4345,14 @@ export class BunRouter<
       response,
     });
 
-    if (response.settledResponse) {
-      return response.settledResponse;
-    }
     if (handled) {
-      return response.getNativeResponse(0);
+      return withoutHeadBody(
+        response.settledResponse ?? (await response.getNativeResponse(0)),
+        request.method,
+      );
+    }
+    if (response.settledResponse) {
+      return withoutHeadBody(response.settledResponse, request.method);
     }
 
     // Nothing matched, exactly as the adapter reports when no route claims a
@@ -4323,14 +4404,22 @@ export class BunRouter<
     }
 
     // 1. Method — a string compare, so it rejects non-matching routes first.
+    //    As in Express, a route without a HEAD handler of its own answers HEAD
+    //    with its GET one (the server then drops the body).
     const routeMethod = route.method;
     if (routeMethod) {
       const method = requestMethod.toUpperCase();
       if (isArray(routeMethod)) {
-        if (!routeMethod.includes(method)) {
+        if (
+          !routeMethod.includes(method) &&
+          !(method === "HEAD" && routeMethod.includes("GET"))
+        ) {
           return false;
         }
-      } else if (method !== routeMethod) {
+      } else if (
+        method !== routeMethod &&
+        !(method === "HEAD" && routeMethod === "GET")
+      ) {
         return false;
       }
     }
@@ -4640,11 +4729,16 @@ export class BunRouter<
    * - `next('router')` exits the current mounted sub-router and hands off to
    *   the next matching router (a sibling mount, or the parent's own routes);
    *   from the router's own routes it abandons the whole pipeline;
-   * - `next()` is the **only** way to advance the pipeline (Express/Fastify
-   *   semantics): a middleware or verb/`all` handler that neither sends a
-   *   response nor calls `next()` leaves the request **hanging** until its
-   *   timeout fires — it is not auto-responded, does not fall through, and is
-   *   not turned into a 404. A handler's return value is ignored;
+   * - `next()` is the **only** way to advance the pipeline, and it may be
+   *   called later — from a timer or an I/O callback — as Express allows: a
+   *   layer that returns without responding or calling `next()` parks the
+   *   pipeline until it does either. One that never does leaves the request
+   *   hanging until `timeout` (when given) fails it with `Request Timedout`.
+   *   A handler's return value is ignored;
+   * - an error raised after the response started still runs the error
+   *   handlers, as in Express; one none of them handles destroys a streamed
+   *   response mid-body (Express's finalhandler destroys the socket) and is
+   *   logged, since the status line has already gone out;
    * - an unhandled error is re-thrown for the adapter's final error handler.
    */
   override async handle(options: {
@@ -4653,6 +4747,13 @@ export class BunRouter<
     requestUrl: string;
     request: BunRequest;
     response: BunResponse;
+    /**
+     * How long, in ms, a parked pipeline (a layer that neither responded nor
+     * called `next()` yet) may wait before failing with `Request Timedout`.
+     * `0` or unset waits for as long as it takes. The adapters pass their
+     * request timeout.
+     */
+    timeout?: number;
   }): Promise<matchedRoute | true | undefined> {
     const { request, response } = options;
     const layers = this.getMatchedLayers(options);
@@ -4663,9 +4764,6 @@ export class BunRouter<
     let hasError = false;
     let currentError: unknown;
     let matchedRoute: matchedRoute | undefined;
-    // Set when a layer stops without responding or calling next() — the
-    // request is then left hanging (see case 7 below).
-    let hung = false;
     // Ids of mounted sub-routers exited via next('router'); lazily allocated
     // since next('router') is rare — no cost on the common path.
     let exitedRouters: Set<number> | undefined;
@@ -4675,7 +4773,9 @@ export class BunRouter<
     let paramsBoundToRoute = -1;
 
     for (let index = 0; index < layers.length; index++) {
-      if (response.headersSent) {
+      // A sent response ends the pipeline — unless an error is pending, which
+      // the error handlers still see, as in Express.
+      if (response.headersSent && !hasError) {
         break;
       }
 
@@ -4716,12 +4816,15 @@ export class BunRouter<
 
       let nextCalled = false;
       let nextArg: Parameters<NextFunction>[0];
+      // Set while the pipeline is parked on this layer; a late next() wakes it.
+      let wake: (() => void) | undefined;
       const next: NextFunction = (arg) => {
         if (nextCalled) {
           return;
         }
         nextCalled = true;
         nextArg = arg;
+        wake?.();
       };
 
       // Express sets both on entering each layer: `baseUrl` to the layer's
@@ -4756,6 +4859,23 @@ export class BunRouter<
         thrownError = error;
       }
 
+      // The layer has not finished: it neither responded nor called next().
+      // Park until it does one or the other, as Express waits for a `next`
+      // handed to a callback.
+      if (!didThrow && !nextCalled && !response.headersSent) {
+        const outcome = await parkPipeline(
+          response,
+          (resume) => {
+            wake = resume;
+          },
+          options.timeout,
+        );
+        wake = undefined;
+        if (outcome === "timeout") {
+          throw createRequestTimeoutError();
+        }
+      }
+
       if (this.localOptions?.debug) {
         this.logger.debug("pipeline layer executed", {
           state: layer.isErrorHandler
@@ -4777,8 +4897,21 @@ export class BunRouter<
         continue;
       }
 
-      // 2. The layer produced the response itself.
-      if (response.headersSent) {
+      // next(err): anything but nothing, `null`, or a control string.
+      const nextError =
+        nextCalled &&
+        !isUndefined(nextArg) &&
+        !isNull(nextArg) &&
+        nextArg !== "skip" &&
+        nextArg !== "route" &&
+        nextArg !== "router";
+
+      // 2. The layer produced the response itself (and raised no error). An
+      //    error handler that responds has handled its error.
+      if (response.headersSent && !nextError) {
+        if (layer.isErrorHandler) {
+          hasError = false;
+        }
         break;
       }
 
@@ -4809,12 +4942,7 @@ export class BunRouter<
       }
 
       // 5. next(err) — an explicit error; hand off to error handlers.
-      if (
-        nextCalled &&
-        !isUndefined(nextArg) &&
-        !isNull(nextArg) &&
-        nextArg !== "skip"
-      ) {
+      if (nextError) {
         hasError = true;
         currentError = isError(nextArg) ? nextArg : new Error(String(nextArg));
         continue;
@@ -4823,31 +4951,24 @@ export class BunRouter<
       // 6. next() / next('skip') — clear any active error and continue.
       if (nextCalled) {
         hasError = false;
-        continue;
       }
-
-      // 7. The handler neither sent a response nor called next(). Express /
-      //    Fastify semantics: `next()` is the *only* way to advance the
-      //    pipeline, so the request is left hanging — no auto-response, no
-      //    fall-through, no 404. It resolves only when the request timeout
-      //    fires. The handler's return value is intentionally ignored.
-      hung = true;
-      break;
     }
 
     if (response.headersSent) {
+      if (hasError) {
+        // No error handler took it, and the status line is gone: as Express's
+        // finalhandler, cut a streamed response off rather than let it hang
+        // open, and log what happened.
+        this.logger.error("Unhandled error after the response was sent", {
+          error: currentError,
+        });
+        response.destroy(currentError);
+      }
       return matchedRoute ?? true;
     }
 
     if (hasError) {
       this.throwError(currentError);
-    }
-
-    if (hung) {
-      // A handler stopped without responding or calling next(). Return a
-      // truthy result so the adapter keeps awaiting the (never-produced)
-      // response instead of 404ing — the request hangs until it times out.
-      return matchedRoute ?? true;
     }
 
     // The pipeline ran to exhaustion via next() (or nothing matched): the

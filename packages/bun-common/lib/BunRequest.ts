@@ -66,7 +66,6 @@ import {
   parseXmlToObject,
   rangeParser,
   resolveContentEncodingAllowlist,
-  set,
   ucwords,
   UnknownCompressionDictionaryError,
   values,
@@ -821,6 +820,9 @@ export class BunRequest<
   /** Whether any of {@link #initTasks} is still a pending promise. */
   #initPending = false;
 
+  /** Whether {@link options} is this request's own copy (see #writableOptions). */
+  #ownsOptions = false;
+
   /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
    * `TBody` view can be cast in and out without narrowing the storage.
@@ -1120,31 +1122,25 @@ export class BunRequest<
     this.#server = server;
     this.headersObj = request.headers as Headers;
 
-    // Normalize options with direct assignment — `set()`'s path parsing is
-    // wasted work for these known, fixed property names. `parseBody` may be a
-    // boolean or a config object; anything else falls back to `true`.
+    // Normalize invalid options. The object is the caller's — an adapter
+    // hands the same one to every request — so it is copied before the first
+    // write (see #writableOptions) and, in the common case, never written.
+    // `parseBody` may be a boolean or a config object; anything else falls
+    // back to `true`.
     if (
       !isBoolean(this.options.parseBody) &&
       !isObject(this.options.parseBody)
     ) {
-      this.options.parseBody = true;
+      this.#writableOptions().parseBody = true;
     }
 
     if (!isBoolean(this.options.parseCookies)) {
-      this.options.parseCookies = true;
+      this.#writableOptions().parseCookies = true;
     }
 
     if (!isBoolean(this.options.parseQuery)) {
-      this.options.parseQuery = true;
+      this.#writableOptions().parseQuery = true;
     }
-
-    if (!isObject(this.legacyOptions.parseMultiPartFormDataOpts)) {
-      this.legacyOptions.parseMultiPartFormDataOpts = {};
-    }
-
-    this.options.parseQueryOpts = withDefaultQueryOpts(
-      this.options.parseQueryOpts,
-    );
 
     // Resolve the `parseBody` config (size caps + per-content-type allowlist),
     // honouring the deprecated `allowedContentTypes` as a fallback.
@@ -1230,6 +1226,21 @@ export class BunRequest<
     this._body = undefined;
     this.#bodyState = "ended";
     return true;
+  }
+
+  /**
+   * The options, made this request's own first: the object given to the
+   * constructor is shared (an adapter passes one to every request), so the
+   * first write copies it, and every later write goes to the copy. Without
+   * this a setter tailoring one request — `setParseBodyOptions(true)` on an
+   * upload route — changed every request after it.
+   */
+  #writableOptions(): NonNullable<ConstructorParameters<typeof BunRequest>[2]> {
+    if (!this.#ownsOptions) {
+      this.options = { ...this.options };
+      this.#ownsOptions = true;
+    }
+    return this.options;
   }
 
   /** The `cookieSecret` option as a list of non-empty secrets; `[]` when unset. */
@@ -2649,7 +2660,7 @@ export class BunRequest<
    * to re-parse), or use {@link parseBodyWithOptions} which does both.
    */
   public setParseBodyOptions(parseBody: ParseBodyOption) {
-    this.options.parseBody = parseBody;
+    this.#writableOptions().parseBody = parseBody;
     this.normalizeParseBodyOptions();
     return this;
   }
@@ -2670,12 +2681,12 @@ export class BunRequest<
   }
 
   public setMultipartParserOptions(opts: MultiPartOptions) {
-    set(this.options, "parseMultiPartFormDataOpts", opts);
+    this.#writableOptions().parseMultiPartFormDataOpts = opts;
     return this;
   }
 
   public setXmlParserOptions(opts: ParseXmlOptions) {
-    set(this.options, "parseXmlOpts", opts);
+    this.#writableOptions().parseXmlOpts = opts;
     return this;
   }
 
@@ -2684,7 +2695,7 @@ export class BunRequest<
    * Pass `undefined` to remove the restriction and parse every supported kind.
    */
   public setAllowedContentTypes(types: ContentParserType[] | undefined) {
-    this.legacyOptions.allowedContentTypes = types;
+    this.#writableOptions().allowedContentTypes = types;
     if (isArray(types)) {
       const allowed = new Set(
         types.filter((kind) => VALID_PARSER_KINDS.has(kind)),
@@ -2698,7 +2709,7 @@ export class BunRequest<
 
   /** Replaces `parseQueryOpts`; merged over the defaults when parsing. */
   public setQueryParserOptions(opts: QueryParserOpts) {
-    set(this.options, "parseQueryOpts", opts);
+    this.#writableOptions().parseQueryOpts = opts;
     return this;
   }
 
@@ -2957,8 +2968,9 @@ export class BunRequest<
           case "multipart": {
             await this.getMultiParts(
               this.getParserOpts("multipart") ??
-                this.legacyOptions.parseMultiPartFormDataOpts ??
-                {},
+                (isObject(this.legacyOptions.parseMultiPartFormDataOpts)
+                  ? this.legacyOptions.parseMultiPartFormDataOpts
+                  : {}),
             );
             break;
           }

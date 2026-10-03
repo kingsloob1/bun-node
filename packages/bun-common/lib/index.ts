@@ -390,6 +390,7 @@ export {
   DEFAULT_ROUTE_CACHE_MAX,
   FETCH_STUB_SERVER,
   type FetchInput,
+  isRequestTimeoutError,
   type matchedRoute,
   RouteClass,
   type RouteConstructorOption,
@@ -397,6 +398,7 @@ export {
   routeModulePath,
   toNativeRequest,
   type UnmountedRouter,
+  withoutHeadBody,
 } from "./BunRouter";
 export {
   BunHttpAdapter,

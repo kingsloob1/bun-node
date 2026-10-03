@@ -17,7 +17,10 @@ import { BunResponse } from "./BunResponse";
 // A value import (not just a type): an instance built without a `router`
 // creates a private one on first use. `BunRouter.ts` imports this module only
 // as a type, so there is no runtime cycle.
-import { BunRouter as BunRouterClass } from "./BunRouter";
+import {
+  BunRouter as BunRouterClass,
+  isRequestTimeoutError,
+} from "./BunRouter";
 import { get, isArray, isFunction, isObject, set } from "./utils/native";
 import {
   mergeUpgradeHeaders,
@@ -727,8 +730,14 @@ export class BunWebSocket<
             response: res,
             request: req,
             requestUrl: req.originalUrl,
+            timeout: createOpts?.responseTimeout ?? 0,
           });
         } catch (e) {
+          // A pipeline parked past the response timeout goes to the `error`
+          // callback as a timed-out response wait always did.
+          if (isRequestTimeoutError(e)) {
+            throw e;
+          }
           // Anything can be thrown; wrap a primitive so the request can ride
           // along to the `error` callback.
           const err = isObject(e) ? e : new Error(String(e));

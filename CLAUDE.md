@@ -604,6 +604,15 @@ matched route.
   resumes normal processing; `next(err)` keeps propagating.
 - `next('route')` skips the rest of the current route's callbacks;
   `next('router')` abandons the router.
+- A layer that neither responds nor calls `next()` **parks** the pipeline
+  until it does (Express allows a `next` called from a callback); `handle()`'s
+  `timeout` option (the adapters pass their request timeout) fails a pipeline
+  parked too long with `Request Timedout`, answered without the request as a
+  timed-out response wait always was (`isRequestTimeoutError`).
+- An error after the response started still runs the error handlers; one
+  none handles destroys a streamed response (`res.destroy`) and is logged.
+- A route without its own HEAD handler answers `HEAD` with its GET one;
+  socket-free `fetch()` drops the body as `Bun.serve` does (`withoutHeadBody`).
 - An unhandled error is re-thrown for the adapter's final error handler
   (`setErrorHandler` / `Bun.serve` `error()` callback).
 - `use(path, ...)` registers middleware with `group: path` so

@@ -474,6 +474,15 @@ export class BunResponse<
   /** True once the stream's controller has been closed (closing is once-only). */
   #streamClosed = false;
 
+  /**
+   * Why {@link destroy} ended the stream, once it has; `undefined` otherwise.
+   * A `pull` that runs later errors the stream with it.
+   */
+  #destroyedWith: unknown = undefined;
+
+  /** True once {@link destroy} has run. */
+  #destroyed = false;
+
   /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
   #etagEnabled: boolean;
 
@@ -1346,6 +1355,10 @@ export class BunResponse<
         {
           pull: async (controller) => {
             this.#readableStreamController = controller;
+            if (this.#destroyed) {
+              this.#errorController(controller);
+              return;
+            }
 
             // Park until a write (or the end) notifies us instead of
             // busy-polling.
@@ -1358,6 +1371,10 @@ export class BunResponse<
               this.#streamWriteNotifier = undefined;
             }
 
+            if (this.#destroyed) {
+              this.#errorController(controller);
+              return;
+            }
             this.#flushPendingChunks(controller);
             if (this.#streamEnding) {
               this.#closeController(controller);
@@ -1425,6 +1442,54 @@ export class BunResponse<
       );
       pending.delete(key);
     }
+  }
+
+  /** Errors `controller` with the {@link destroy} reason, once. */
+  #errorController(controller: ReadableStreamDefaultController): void {
+    if (this.#streamClosed) {
+      return;
+    }
+    this.#streamClosed = true;
+    try {
+      controller.error(this.#destroyedWith);
+    } catch {
+      // Already cancelled or errored by the client.
+    }
+  }
+
+  /**
+   * Ends the response abruptly, as Node's `res.destroy(error)`: a streamed
+   * response that is still open is cut off mid-body (the client sees the
+   * connection end without the body's end), nothing more can be written,
+   * and `close` is emitted — never `finish`. A response already complete is
+   * left as it is. `error` defaults to an `Error` saying so.
+   *
+   * It is what Express's finalhandler does to an error that arrives after
+   * the headers went out, and what {@link BunRouter.handle} does in its place.
+   */
+  destroy(error?: unknown): this {
+    if (this.#destroyed) {
+      return this;
+    }
+    this.#destroyed = true;
+    this.#destroyedWith = error ?? new Error("The response was destroyed");
+    if (this._isLongLived && !this.#streamClosed) {
+      // Nothing more may be written; a parked `pull` wakes and errors.
+      this.#streamEnding = true;
+      const notifier = this.#streamWriteNotifier;
+      if (notifier) {
+        notifier.resolve();
+      } else if (this.#readableStreamController) {
+        this.#errorController(this.#readableStreamController);
+      }
+    }
+    this.emitClose();
+    return this;
+  }
+
+  /** Whether {@link destroy} has run, as Node's `writable.destroyed`. */
+  get destroyed(): boolean {
+    return this.#destroyed;
   }
 
   /** Closes `controller` once; a stream already cancelled is ignored. */
@@ -1619,6 +1684,29 @@ export class BunResponse<
         }, Number(timeout));
       }
     });
+  }
+
+  /**
+   * Calls `listener` once, with the native `Response`, when one is produced —
+   * at once (synchronously) if it already has been. Returns a function that
+   * unsubscribes a listener not yet called. Unlike {@link getNativeResponse}
+   * it allocates no promise and starts no timer, so a caller racing it
+   * against something else can drop it cleanly.
+   */
+  public onceResponded(listener: (response: Response) => void): () => void {
+    const existing = this.#nativeResponse;
+    if (existing) {
+      listener(existing);
+      return () => {};
+    }
+    (this.#responseWaiters ??= []).push(listener);
+    return () => {
+      const waiters = this.#responseWaiters;
+      const index = waiters === undefined ? -1 : waiters.indexOf(listener);
+      if (index !== -1) {
+        waiters!.splice(index, 1);
+      }
+    };
   }
 
   /**
