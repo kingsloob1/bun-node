@@ -842,12 +842,24 @@ is built) or in `useBodyParser` options (applied only to a body not yet read):
 | `compressionDictionaries` | `Uint8Array[] \| (hash, encoding) => Uint8Array \| undefined` | none | Dictionaries for `dcb` and `dcz`, indexed by SHA-256, or a resolver. Without it those codings are refused with 415. |
 
 An invalid option (an unknown coding, a `maxContentCodings` that is not a
-non-negative integer, a `compressionDictionaries` of the wrong shape) throws
-where it is configured: the adapter's constructor and `setRequestOpts()`
+non-negative integer or `Infinity`, a `compressionDictionaries` of the wrong
+shape, a `maxContentLength` — top-level or per type — that is not a
+non-negative size such as `1024` or `"100kb"`) throws where it is configured: the adapter's constructor and `setRequestOpts()`
 (which then keeps its previous options), and `requestParsing()`. A request
 resolves its `parseBody` config only when it has a body, so a bodiless request
 never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
-options built elsewhere.
+options built elsewhere. (A `maxContentLength` that did not parse used to be
+ignored silently, leaving the per-kind default cap in force.)
+
+**How the body is read.** When nothing has to be enforced while the body
+streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
+the request reads it in one native `arrayBuffer()` call and parses it
+synchronously: for a small JSON body, about a third less time in the request
+wrapper than before. Otherwise (no declared length under a cap, a chunked
+body) it streams under the cap and stops at the first byte past it. Either way
+the decoded length is checked against the cap afterwards, which also catches an
+in-process `Request` whose `Content-Length` understates its body. Multipart
+bodies, and a subclass overriding `parseBody()`, go through `parseBody()`.
 
 How a failure is answered:
 
