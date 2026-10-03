@@ -214,6 +214,30 @@ step("constructor: request");
     theme: "dark",
   });
 
+  // A body read in one call and parsed at once: a Nest controller sees the
+  // same over a socket and through adapter.fetch(), 413 included.
+  const bodied = new BunHttpAdapter(0, {
+    request: { parseBody: { maxContentLength: 64 } },
+  });
+  const bodiedApp = await NestFactory.create(TourModule, bodied, {
+    logger: false,
+  });
+  await bodiedApp.listen(0);
+  for (const [label, body, status] of [
+    ["a small JSON body", { a: 1 }, 200],
+    ["a JSON body over the 64-byte cap", { pad: "x".repeat(100) }, 413],
+  ] as const) {
+    const served = await fetch(`${bodied.url}/raw`, postJson(body));
+    const offline = await bodied.fetch("/raw", postJson(body));
+    checkEqual(
+      `${label}: ${status}, served and through fetch() alike`,
+      [served.status, await served.text()],
+      [offline.status, await offline.text()],
+    );
+    checkEqual(`…${label}: the status`, served.status, status);
+  }
+  await bodiedApp.close();
+
   // A bad decoding option fails where it is configured, before Nest starts.
   const badParseBody = { encodings: ["gzip", "lzma"] } as never;
   await checkRejects(
