@@ -27,7 +27,7 @@ import { parseArgs } from "node:util";
 const { values } = parseArgs({
   options: {
     targets: { type: "string", default: "raw-routes,elysia,elysia2,bun-common,bun-nest" },
-    scenarios: { type: "string", default: "static,param,middleware,routes-1000,param-random,json" },
+    scenarios: { type: "string", default: "static,param,middleware,routes-1000,param-random,json,async,headers" },
     rounds: { type: "string", default: "3" },
     duration: { type: "string", default: "5" },
     warmup: { type: "string", default: "2" },
@@ -60,6 +60,8 @@ const SCENARIOS: Record<string, Scenario> = {
       `math.randomseed(os.time())\nrequest = function()\n  return wrk.format("GET", "/r${ROUTES - 1}/" .. math.random(10000000, 99999999))\nend\n`,
     ),
   },
+  "async": { path: "/async" },
+  "headers": { path: "/headers" },
   "json": {
     path: "/json",
     script: lua(
