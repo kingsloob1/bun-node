@@ -25,6 +25,13 @@
  *   `maxContentCodings` and `compressionDictionaries` (for `dcb`/`dcz`); they
  *   apply to the parse the adapter runs while building the request, before
  *   any middleware.
+ * - An invalid decoding option — an unknown coding in `encodings`, a negative
+ *   `maxContentCodings`, a `compressionDictionaries` of the wrong shape —
+ *   throws where it is configured: the adapter's constructor,
+ *   `setRequestOpts()` (which then keeps its previous options) and
+ *   `requestParsing()`. A bodiless request never resolves `parseBody`, so
+ *   nothing would catch it later. `validateParseBodyOption()` runs the same
+ *   check on options built elsewhere, such as from a config file.
  * - A kind left out of a `contentTypes` allowlist is not parsed: `req.body`
  *   is the raw `Buffer`, and the `Content-Type` header is kept.
  * - A media type no parser knows (`application/x-ndjson`, say) is kept as a
@@ -49,6 +56,7 @@ import type {
   BunRequestOptions,
   DefaultRequestBody,
   JsonValue,
+  ParseBodyOption,
   RouterErrorMiddlewareHandler,
 } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
@@ -67,6 +75,8 @@ import {
   dictionaryCompressedHeader,
   parseXmlToObject,
   PayloadTooLargeError,
+  requestParsing,
+  validateParseBodyOption,
 } from "@kingsleyweb/bun-common";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -705,6 +715,108 @@ check(
   Bun.deepEquals(shared.requestOpts, sharedBefore, true),
   { before: sharedBefore, after: shared.requestOpts },
 );
+
+/* ------------------------------------------------------------------ */
+step("Invalid decoding options fail where they are configured");
+
+/** Runs `configure` and answers the error's name, or `"ok"`. */
+function outcome(configure: () => unknown): string {
+  try {
+    configure();
+    return "ok";
+  } catch (error) {
+    return (error as Error).name;
+  }
+}
+
+/** Each invalid `parseBody` and the error it is refused with. */
+const invalidParseBody: [string, unknown, string][] = [
+  [
+    "an unknown coding in encodings",
+    { encodings: ["gzip", "lzma"] },
+    "RangeError",
+  ],
+  ["a negative maxContentCodings", { maxContentCodings: -1 }, "RangeError"],
+  [
+    "compressionDictionaries as a string",
+    { compressionDictionaries: "dictionary.bin" },
+    "TypeError",
+  ],
+  [
+    "compressionDictionaries holding strings",
+    { compressionDictionaries: ["not bytes"] },
+    "TypeError",
+  ],
+];
+for (const [label, value, expected] of invalidParseBody) {
+  const parseBody = value as ParseBodyOption;
+  checkEqual(
+    `${label}: the adapter constructor, setRequestOpts(), requestParsing() and validateParseBodyOption() all throw ${expected}`,
+    [
+      outcome(() => new BunHttpAdapter(0, { request: { parseBody } })),
+      outcome(() => new BunHttpAdapter(0).setRequestOpts({ parseBody })),
+      outcome(() => requestParsing({ parseBody })),
+      outcome(() => validateParseBodyOption(parseBody)),
+    ],
+    [expected, expected, expected, expected],
+  );
+}
+
+const kept = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: 16 } },
+});
+adapters.push(kept);
+kept.post("/echo", (req, res) => res.json({ body: describeBody(req) }));
+const keptBefore = structuredClone(kept.requestOpts);
+checkEqual(
+  "setRequestOpts() with a bad coding throws",
+  outcome(() =>
+    kept.setRequestOpts({
+      parseBody: { maxContentLength: "1mb", encodings: ["gzip", "lzma"] },
+    } as Partial<BunRequestOptions>),
+  ),
+  "RangeError",
+);
+checkEqual("…and keeps its previous options", kept.requestOpts, keptBefore);
+checkEqual(
+  "…so the old 16-byte cap still answers 413",
+  (
+    await kept.fetch("/echo", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: "x".repeat(64),
+    })
+  ).status,
+  413,
+);
+
+for (const [label, parseBody] of [
+  ["true", true],
+  ["false", false],
+  ["undefined (the adapter default)", undefined],
+  [
+    "caps, every coding and a coding limit",
+    {
+      maxContentLength: "1mb",
+      encodings: ["gzip", "deflate", "br", "zstd"],
+      maxContentCodings: 2,
+    },
+  ],
+  [
+    "dictionaries as bytes",
+    { compressionDictionaries: [new TextEncoder().encode("a dictionary")] },
+  ],
+  [
+    "dictionaries from a resolver",
+    { compressionDictionaries: () => undefined },
+  ],
+] as [string, ParseBodyOption | undefined][]) {
+  checkEqual(
+    `validateParseBodyOption(${label}) accepts it`,
+    outcome(() => validateParseBodyOption(parseBody)),
+    "ok",
+  );
+}
 
 /* ------------------------------------------------------------------ */
 step("Cleaning up");
