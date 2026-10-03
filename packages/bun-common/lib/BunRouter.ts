@@ -564,6 +564,12 @@ export interface ServeHooks<R> {
   lateError: (options: PipelineOptions, error: unknown) => void;
 }
 
+/**
+ * One route-cache entry: the matched pipeline for each method seen on its
+ * path (a null-prototype record, so any method name is a safe key).
+ */
+type CachedPipelines = Record<string, MatchedLayer[]>;
+
 /** Returned by `#run` when the pipeline parked on an unfinished layer. */
 const PARKED: unique symbol = Symbol("parked");
 
@@ -804,7 +810,7 @@ export class BunRouter<
    * {@link setRoute}/{@link clearRouteCache}. `undefined` when
    * `routeCacheMax` is `0`.
    */
-  private routeCacheLayers: FifoCache<MatchedLayer[]> | undefined;
+  private routeCacheLayers: FifoCache<CachedPipelines> | undefined;
 
   /**
    * Narrows a cache miss to the routes that can match the request's path, so
@@ -913,7 +919,7 @@ export class BunRouter<
     }
     this.routeCacheLayers =
       this.routeCacheMax > 0
-        ? new FifoCache<MatchedLayer[]>(this.routeCacheMax, {
+        ? new FifoCache<CachedPipelines>(this.routeCacheMax, {
             // One-off paths (a fresh id per request) would fill it with
             // entries never read again; see FifoCache's admission.
             admission: true,
@@ -4794,29 +4800,33 @@ export class BunRouter<
    */
   getMatchedLayers(options: RouteMatchMethodOptionType): MatchedLayer[] {
     const cache = this.routeCacheLayers;
-    // `routeCacheMax: 0` disables the cache outright — skip building the key so
-    // a disabled cache costs nothing, not even its string concatenation.
-    // The cache's own key: method and path, and the host only when some
-    // route is host-scoped (no other route's match depends on it). Neither
-    // a method nor a host contains a space, so the parts cannot run together.
-    // `getCacheKey()` is the readable form of the same signature.
     // The path, split once for the key and the match alike — or as the
     // caller passed it.
     const requestPath =
       options.requestPath ??
       (this.getRequestPathFromRequestURL(options.requestUrl) || "/");
-    let cacheKey = "";
+    // The cache is keyed by the path — with the host only when some route is
+    // host-scoped (no other route's match depends on it) — and holds one
+    // pipeline per method under it. The path is used as it is: a key built by
+    // concatenation is a new string to flatten and hash on every lookup,
+    // which cost more than the rest of a hit. `getCacheKey()` is the readable
+    // form of the same signature. `routeCacheMax: 0` disables the cache
+    // outright, and none of this runs.
+    const method = options.requestMethod;
+    let cacheKey = requestPath;
+    let entry: CachedPipelines | undefined;
     if (cache !== undefined) {
-      cacheKey = this.#hostScoped
-        ? `${options.requestMethod} ${options.requestHost || "none"} ${requestPath}`
-        : `${options.requestMethod} ${requestPath}`;
-    }
-
-    if (cache !== undefined) {
-      // Fast path: a single `Map.get`, no allocation, no bookkeeping.
-      const cached = cache.get(cacheKey);
-      if (cached !== undefined) {
-        return cached;
+      if (this.#hostScoped) {
+        // A host holds no space, so the parts cannot run together.
+        cacheKey = `${options.requestHost || "none"} ${requestPath}`;
+      }
+      entry = cache.get(cacheKey);
+      if (entry !== undefined) {
+        // Fast path: a `Map.get` and a property read, no allocation.
+        const cached = entry[method];
+        if (cached !== undefined) {
+          return cached;
+        }
       }
     }
 
@@ -4960,7 +4970,15 @@ export class BunRouter<
 
     // 5. Cache, evicting the oldest entry when full. Skipped entirely when the
     //    cache is disabled (`routeCacheMax: 0`).
-    cache?.set(cacheKey, layers);
+    if (cache !== undefined) {
+      if (entry !== undefined) {
+        entry[method] = layers;
+      } else {
+        const created: CachedPipelines = Object.create(null);
+        created[method] = layers;
+        cache.set(cacheKey, created);
+      }
+    }
 
     return layers;
   }

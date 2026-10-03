@@ -802,6 +802,15 @@ any object with `headers`.
 as cookie-parser does. Signed (`s:`) cookies move to `req.signedCookies` once
 a secret verifies them, and a tampered one becomes `false`.
 
+The `Cookie` header is read and parsed the first time `req.cookies`,
+`req.signedCookies` or `req.parseCookies()` is touched, with the options the
+request was built with — so a route that never looks at cookies never pays for
+them. The result is what parsing while the request is built gives: an
+assignment to either property replaces it, and an explicit
+`parseCookies()` without `forceUpdateRequest` still leaves it on the request.
+Two things differ only in timing: a custom `decode` that throws does so at that
+first touch, inside the pipeline; and the header read is the one in place then.
+
 The `parseCookies: { secret }` request option does what
 `cookieParser(secret)` does, on every request. It sets `req.secret` to its first entry while the request is
 built, and verifies signed cookies against every entry. `res.cookie(name,

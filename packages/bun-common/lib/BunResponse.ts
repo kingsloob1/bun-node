@@ -2335,8 +2335,19 @@ export class BunResponse<
     return this.#nativeResponse;
   }
 
-  get headersSent() {
-    return !!this.upgradeToWsData || !!this.response || !!this.isLongLived;
+  get headersSent(): boolean {
+    // The pipeline reads this several times per layer: the produced response
+    // first (one field), then the rarely-set upgrade and stream state straight
+    // from the holder, rather than through three accessors.
+    if (this.#nativeResponse !== undefined) {
+      return true;
+    }
+    const holder = this.#state;
+    return (
+      (holder !== undefined &&
+        (!!holder._upgradeToWsData || holder._isLongLived)) ||
+      this.req.isKeepAlive
+    );
   }
 
   setHeader(name: string, value: string | string[], replace = true) {

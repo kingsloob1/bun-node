@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { signCookie } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
 import { BunRouter } from "../lib/BunRouter";
@@ -227,4 +228,81 @@ describe("the request URL split (host, path, search, hash)", () => {
       ]).toEqual([host, path, search, hash, originalUrl]);
     });
   }
+});
+
+describe("cookies are parsed on first touch, as if while the request was built", () => {
+  const SIGNED = `sid=s:${signCookie("abc", "k1")}; theme=dark`;
+
+  /** A request whose `Cookie` header reads are counted. */
+  function counted(cookie: string | null) {
+    const reads: string[] = [];
+    const headers = new Headers(cookie === null ? {} : { cookie });
+    const spy = new Proxy(headers, {
+      get(target, key) {
+        if (key === "get") {
+          return (name: string) => {
+            reads.push(name.toLowerCase());
+            return target.get(name);
+          };
+        }
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const request = {
+      url: "http://h/",
+      method: "GET",
+      body: null,
+      bodyUsed: false,
+      headers: spy,
+      signal: new AbortController().signal,
+    } as unknown as Request;
+    const req = new BunRequest(request, testServer, {
+      parseBody: false,
+      parseCookies: { secret: ["k1", "k2"] },
+    });
+    return { req, reads };
+  }
+
+  it("never reads the Cookie header for a request that does not touch cookies", () => {
+    const { req, reads } = counted(SIGNED);
+    expect(req.secret).toBe("k1");
+    expect(reads).not.toContain("cookie");
+    expect(req.signedCookies).toEqual({ sid: "abc" });
+    expect(req.cookies).toEqual({ theme: "dark" });
+    expect(reads.filter((name) => name === "cookie")).toEqual(["cookie"]);
+  });
+
+  it("an assignment replaces the scheduled parse's result, not the reverse", () => {
+    const { req } = counted(SIGNED);
+    req.signedCookies = { replaced: true };
+    expect(req.signedCookies).toEqual({ replaced: true });
+    // The other half still holds the scheduled parse.
+    expect(req.cookies).toEqual({ theme: "dark" });
+  });
+
+  it("an explicit parseCookies() without force leaves the scheduled result on the request", () => {
+    const { req } = counted(SIGNED);
+    const other = req.parseCookies({ secret: "wrong" });
+    // Its own answer uses its secret: the signed cookie does not verify.
+    expect(other.signedCookies).toEqual({ sid: false });
+    // The request keeps what the options' secrets gave.
+    expect(req.signedCookies).toEqual({ sid: "abc" });
+  });
+
+  it("is reported by ready() as parsed", async () => {
+    const { req } = counted(SIGNED);
+    const settled = (await req.ready()) as PromiseFulfilledResult<unknown>[];
+    expect(settled.at(-1)?.value).toEqual({
+      cookies: { theme: "dark" },
+      signedCookies: { sid: "abc" },
+    });
+  });
+
+  it("no header: empty, with nothing parsed", () => {
+    const { req, reads } = counted(null);
+    expect(req.cookies).toEqual({});
+    expect(req.signedCookies).toEqual({});
+    expect(reads.filter((name) => name === "cookie")).toEqual(["cookie"]);
+  });
 });
