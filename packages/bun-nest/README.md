@@ -148,7 +148,7 @@ class under a second name. Its constructor is
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
 | `etag` | `boolean` | `false` | Compute an `ETag` for every response, so a matching `If-None-Match` is answered `304`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
-| `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. |
+| `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. `routes` serves constants (a health check, `robots.txt`) natively, ahead of Nest: every method, no middleware, guards or interceptors; see bun-common's [Native static routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#native-static-routes-serverroutes). |
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 
 ```ts
