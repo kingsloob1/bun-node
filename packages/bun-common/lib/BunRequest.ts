@@ -4029,40 +4029,32 @@ export class BunRequest<
     const schemeEnd = url.indexOf("://");
     const hostStart = schemeEnd === -1 ? 0 : schemeEnd + 3;
 
-    let authorityEnd = url.length;
-    for (let i = hostStart; i < url.length; i++) {
-      const code = url.charCodeAt(i);
-      // First of '/' (47), '?' (63), '#' (35) ends the authority.
-      if (code === 47 || code === 63 || code === 35) {
-        authorityEnd = i;
-        break;
-      }
-    }
-
-    let host = url.slice(hostStart, authorityEnd);
-    const at = host.lastIndexOf("@");
-    if (at !== -1) {
-      host = host.slice(at + 1); // drop any userinfo
-    }
-
-    // Locate the query ('?') and fragment ('#') boundaries. `indexOf` scans in
-    // native code, so this is markedly cheaper than a per-character JS loop
-    // over what may be a long path. '#' always ends the query, so a '?' at or
-    // beyond the fragment start belongs to the fragment, not the query.
-    const hashStart = url.indexOf("#", authorityEnd);
+    // Native `indexOf`s, not a per-character loop (30 ns for a short host
+    // against under 3 per `indexOf`). '#' ends everything; a '?' at or past
+    // it belongs to the fragment.
+    const hashStart = url.indexOf("#", hostStart);
     const searchEnd = hashStart === -1 ? url.length : hashStart;
-
-    let queryStart = url.indexOf("?", authorityEnd);
-    if (queryStart === -1 || queryStart >= searchEnd) {
+    let queryStart = url.indexOf("?", hostStart);
+    if (queryStart >= searchEnd) {
       queryStart = -1;
     }
-
+    // The authority ends at the first '/', '?' or '#' after it.
     const pathEnd = queryStart === -1 ? searchEnd : queryStart;
-
-    let path = url.slice(authorityEnd, pathEnd);
-    if (path.charCodeAt(0) !== 47) {
-      path = `/${path}`; // a bare `?query`/`#hash` implies pathname "/"
+    let authorityEnd = url.indexOf("/", hostStart);
+    if (authorityEnd === -1 || authorityEnd > pathEnd) {
+      authorityEnd = pathEnd;
     }
+
+    // Positions are read on the URL itself, never on a slice of it: JSC's
+    // slices are views, and searching one copies it out first.
+    const at = url.lastIndexOf("@", authorityEnd - 1);
+    // Any userinfo is dropped.
+    const host = url.slice(at >= hostStart ? at + 1 : hostStart, authorityEnd);
+    // A bare `?query`/`#hash` implies pathname "/".
+    const path =
+      url.charCodeAt(authorityEnd) === 47
+        ? url.slice(authorityEnd, pathEnd)
+        : `/${url.slice(authorityEnd, pathEnd)}`;
 
     const search = queryStart === -1 ? "" : url.slice(queryStart, searchEnd);
     const hash = hashStart === -1 ? "" : url.slice(hashStart);

@@ -24,6 +24,7 @@ import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
 import {
   BunResponse as BunResponseClass,
+  markSocketFree,
   toFetchResponse,
 } from "./BunResponse";
 import { resolveLogger } from "./logging";
@@ -4532,11 +4533,13 @@ export class BunRouter<
    */
   async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
     const host = this.localOptions?.host;
-    const nativeRequest = toNativeRequest(
-      input,
-      init,
-      // A host *pattern* is not an origin; only a literal hostname is.
-      host && LITERAL_HOST_RE.test(host) ? `http://${host}` : undefined,
+    const nativeRequest = markSocketFree(
+      toNativeRequest(
+        input,
+        init,
+        // A host *pattern* is not an origin; only a literal hostname is.
+        host && LITERAL_HOST_RE.test(host) ? `http://${host}` : undefined,
+      ),
     );
 
     const created = BunRequestClass.init(nativeRequest, FETCH_STUB_SERVER, {

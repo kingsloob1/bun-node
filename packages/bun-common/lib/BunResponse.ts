@@ -413,9 +413,24 @@ const NO_HEADERS = new Headers();
 /**
  * Text responses sent with no `Headers` object, whose `Content-Type` Bun adds
  * only on the wire. A socket-free `fetch()` adds it to them (see
- * {@link toFetchResponse}) so it answers as a served request does.
+ * {@link toFetchResponse}) so it answers as a served request does. Only a
+ * socket-free request's are recorded (see {@link markSocketFree}): a served
+ * one never needs it, and the `WeakSet.add` cost ~115 ns per response.
  */
 const IMPLICIT_TEXT_RESPONSES = new WeakSet<Response>();
+
+/** Set on a native `Request` that is answered without a socket. */
+const SOCKET_FREE: unique symbol = Symbol("bun-common socket-free request");
+
+/**
+ * Marks a native `Request` as answered without a socket — by a `fetch()` —
+ * so the response to it records what {@link toFetchResponse} needs. Call it
+ * on the request before it is handled; returns the request.
+ */
+export function markSocketFree(request: Request): Request {
+  (request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] = true;
+  return request;
+}
 
 /**
  * `response` as a served request's client would see it, for a socket-free
@@ -1479,9 +1494,15 @@ export class BunResponse<
       const code = this.options.status;
       if (code !== 204 && code !== 205 && code !== 304) {
         this.#implicitContentType = TEXT_CONTENT_TYPE;
-        IMPLICIT_TEXT_RESPONSES.add(
-          (this.response = new Response(text, this.#initWithoutHeaders())),
-        );
+        const response = new Response(text, this.#initWithoutHeaders());
+        if (
+          (this.req.request as Request & { [SOCKET_FREE]?: true })[
+            SOCKET_FREE
+          ] === true
+        ) {
+          IMPLICIT_TEXT_RESPONSES.add(response);
+        }
+        this.response = response;
         return this;
       }
     }
