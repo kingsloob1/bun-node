@@ -191,10 +191,10 @@ export class BunHttpAdapter<
     options?: {
       /**
        * Request-parsing options forwarded to every {@link BunRequest}
-       * (body/cookie/query parsing, size caps, `cookieSecret`, etc.), merged
-       * over `{ parseBody: true, parseCookies: true }` with
-       * `mergeBunRequestOptions` — so `{ cookieSecret }` alone keeps body
-       * parsing on. Set a default explicitly to turn it off
+       * (body/cookie/query parsing, size caps, the cookie secret, etc.),
+       * merged over `{ parseBody: true, parseCookies: true }` with
+       * `mergeBunRequestOptions` — so `{ parseCookies: { secret } }` alone
+       * keeps body parsing on. Set a default explicitly to turn it off
        * (`{ parseBody: false }`).
        */
       request?: Partial<BunRequestOptions>;

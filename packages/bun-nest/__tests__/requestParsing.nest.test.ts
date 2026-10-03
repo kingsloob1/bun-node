@@ -59,7 +59,7 @@ class AppModule {
       .apply(requestParsing({ parseBody: { maxContentLength: "8kb" } }))
       .forRoutes("upload");
     consumer
-      .apply(requestParsing({ parseQueryOpts: { nesting: false } }))
+      .apply(requestParsing({ parseQuery: { nesting: false } }))
       .forRoutes("flat");
     consumer
       .apply(requestParsing({ parseCookies: false }))

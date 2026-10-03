@@ -425,7 +425,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `requestTimeout` (1st argument) | `number` | `0` | Milliseconds to wait for a response once the pipeline has run. `0` means no timeout. Also settable with `setTimeout(ms, cb)`. |
-| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ cookieSecret }` alone keeps body parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
+| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ parseQuery: { nesting: false } }` alone keeps body and cookie parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
 | `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | [Router options](#router-options), merged over those defaults. **The adapter is case-sensitive by default**, unlike a bare `BunRouter`. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
 | `etag` | `boolean` | `false` | Adds an `ETag` to every response (opt-in: hashing every body has a cost). |
@@ -608,17 +608,18 @@ Examples:
 
 Given as the adapter's `request` option, merged over
 `DEFAULT_ADAPTER_REQUEST_OPTIONS` by `mergeBunRequestOptions(options, base?)`.
-A key left `undefined` keeps the default. `parseBody` objects merge too, and
-so do their `contentTypes` maps; a boolean on either side replaces the other.
+A key left `undefined` keeps the default. `parseBody`, `parseQuery` and
+`parseCookies` objects merge too, and so do `parseBody`'s `contentTypes` maps;
+a boolean on either side replaces the other.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `parseBody` | `boolean \| ParseBodyConfig` | `true` | `true` parses every body with **no size cap**, and `false` parses none. An object enables caps and a per-type allowlist. |
-| `parseCookies` | `boolean` | `true` | Parses `Cookie` into `req.cookies`. |
-| `parseQuery` | `boolean` | `true` | Parses the query string into `req.query`. |
-| `parseQueryOpts` | `QueryParserOpts` | `DEFAULT_PARSE_QUERY_OPTS` | picoquery options, merged over the defaults. |
-| `cookieParseOptions` | `CookieParseOptions` | none | Cookie parser options: `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). |
-| `cookieSecret` | `string \| string[]` | none | Secret(s) for signed cookies, as `cookieParser(secret)`. `req.secret` is the first entry, and every entry verifies (rotation). See [Request cookies](#request-cookies). |
+| `parseCookies` | `boolean \| ParseCookiesConfig` | `true` | Parses `Cookie` into `req.cookies`/`req.signedCookies`. An object turns it on with `{ secret, decode }`: `secret` (a string, or an array for rotation) verifies signed cookies as `cookieParser(secret)` and its first entry is `req.secret`; `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). See [Request cookies](#request-cookies). |
+| `parseQuery` | `boolean \| QueryParserOpts` | `true` | Parses the query string into `req.query`. An object turns it on with those picoquery options, merged over the defaults. See [Query parsing](#query-parsing). |
+| `parseQueryOpts` | `QueryParserOpts` | none | **Deprecated**: pass the options as `parseQuery` instead. Still honoured when `parseQuery` is `true`; an object `parseQuery` wins. |
+| `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
+| `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
 | `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
@@ -634,6 +635,16 @@ own options there are two more:
 - `decodeURIComponent: true` decodes the whole string before parsing.
   Rarely needed, because it double-decodes content.
 - `decode: (query) => string` replaces the pre-parse decoding step entirely.
+
+Pass them as the `parseQuery` request option:
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+
+// `?a[b]=1` stays `{ "a[b]": "1" }`; repeated keys still become arrays.
+const app = new BunHttpAdapter(0, { request: { parseQuery: { nesting: false } } });
+app.get("/search", (req, res) => res.json(req.query));
+```
 
 `req.parseQuery(opts)` and `req.setQueryParserOptions(opts)` re-parse at run time.
 
@@ -688,14 +699,14 @@ Example:
 The adapter's `request` options apply to every request. `requestParsing()`
 is middleware that changes them for the routes it is mounted on, and parses
 that request again with them before calling `next()`, as body-parser and
-cookie-parser do. It takes the same option names:
+cookie-parser do. It takes the same option names and shapes (the deprecated
+`parseQueryOpts`, `cookieParseOptions` and `cookieSecret` are not accepted
+here, and throw a `TypeError` naming the replacement):
 
 | Option | Effect on the request |
 |---|---|
-| `parseQuery` | `false` empties `req.query`; `true` parses it again |
-| `parseQueryOpts` | parses the query again with these picoquery options |
-| `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again |
-| `cookieParseOptions`, `cookieSecret` | parses the cookies again with them; `req.secret` becomes the first secret |
+| `parseQuery` | `false` empties `req.query`; `true` parses it again with the defaults; an object parses it again with those picoquery options |
+| `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again with no secret; `{ secret, decode }` parses them again with those, and `req.secret` becomes the first secret |
 | `parseBody` | `false` parses nothing more; `true` or a `ParseBodyConfig` parses the body under these caps and allowlist |
 
 Only that request changes: the adapter's options, and other requests, never
@@ -720,7 +731,9 @@ const app = new BunHttpAdapter(0, {
 // 20mb here, 100kb everywhere else.
 app.use("/upload", requestParsing({ parseBody: { maxContentLength: "20mb" } }));
 // Signed cookies verified here only; no query parsing for webhooks.
-app.use("/account", requestParsing({ cookieSecret: ["new", "old"] }));
+app.use("/account", requestParsing({ parseCookies: { secret: ["new", "old"] } }));
+// `a[b]` stays a flat key on this route.
+app.use("/search", requestParsing({ parseQuery: { nesting: false } }));
 app.use("/webhooks", requestParsing({ parseQuery: false, parseCookies: false }));
 
 app.post("/upload", (req, res) => res.json({ received: true }));
@@ -763,8 +776,8 @@ any object with `headers`.
 as cookie-parser does. Signed (`s:`) cookies move to `req.signedCookies` once
 a secret verifies them, and a tampered one becomes `false`.
 
-The `cookieSecret` request option does what `cookieParser(secret)` does, on
-every request. It sets `req.secret` to its first entry while the request is
+The `parseCookies: { secret }` request option does what
+`cookieParser(secret)` does, on every request. It sets `req.secret` to its first entry while the request is
 built, and verifies signed cookies against every entry. `res.cookie(name,
 value, { signed: true })` then signs with that same first entry:
 
@@ -772,14 +785,18 @@ value, { signed: true })` then signs with that same first entry:
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
 
 // Newest first: "s3cret" signs, and cookies signed with "0ld" still verify.
-const app = new BunHttpAdapter(0, { request: { cookieSecret: ["s3cret", "0ld"] } });
+const app = new BunHttpAdapter(0, {
+  request: { parseCookies: { secret: ["s3cret", "0ld"] } },
+});
 app.get("/me", (req, res) => {
   res.cookie("seen", "yes", { signed: true });
   res.json(req.signedCookies);
 });
 ```
 
-Without `cookieSecret`, verify in middleware instead:
+(The deprecated `cookieSecret` option still does the same.) Without a secret
+in the options, verify in middleware instead, or per route with
+[`requestParsing`](#per-route-parsing-requestparsing):
 
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
@@ -867,7 +884,7 @@ written as a `j:` JSON cookie. `clearCookie(name, options)` expires one.
 | Cookie option | Meaning |
 |---|---|
 | `maxAge` | Milliseconds from now, a number or numeric string. Written as `Max-Age` in seconds plus a matching `Expires`. |
-| `signed`, `secret` | Sign the value (`s:`) with `secret`, or with `req.secret` (its first entry) when that is unset; `req.secret` comes from the `cookieSecret` request option or middleware. Throws when there is no secret. |
+| `signed`, `secret` | Sign the value (`s:`) with `secret`, or with `req.secret` (its first entry) when that is unset; `req.secret` comes from the `parseCookies: { secret }` request option (or the deprecated `cookieSecret`) or middleware. Throws when there is no secret. |
 | `path` | Defaults to `/`. |
 | `domain`, `expires`, `httpOnly`, `secure`, `partitioned`, `priority` | Standard attributes. |
 | `sameSite` | `true` means `Strict` and `false` omits the attribute. Left unset, Bun emits `SameSite=Lax`. |
