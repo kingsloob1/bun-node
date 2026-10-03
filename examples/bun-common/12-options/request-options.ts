@@ -103,13 +103,33 @@ const bare = BunRequest.init(
   },
 );
 check("init() returns the instance itself", bare instanceof BunRequest);
-const scheduled = BunRequest.init(
-  new Request("http://localhost/?a=1"),
+// A request without a body has nothing to read, so parsing is finished
+// while it is built: the instance again, even with every parser on.
+const bodiless = BunRequest.init(
+  new Request("http://localhost/?a=1", { headers: { cookie: "c=1" } }),
   FETCH_STUB_SERVER,
   { parseBody: true },
 );
 check(
-  "…and a promise when parsing was scheduled",
+  "…and with every parser on, for a request without a body",
+  bodiless instanceof BunRequest,
+);
+checkEqual(
+  "…already parsed",
+  {
+    query: (bodiless as BunRequest).query,
+    cookies: (bodiless as BunRequest).cookies,
+    complete: (bodiless as BunRequest).complete,
+  },
+  { query: { a: "1" }, cookies: { c: "1" }, complete: true },
+);
+const scheduled = BunRequest.init(
+  new Request("http://localhost/?a=1", { method: "POST", body: "x" }),
+  FETCH_STUB_SERVER,
+  { parseBody: true },
+);
+check(
+  "…and a promise when a body has to be read",
   scheduled instanceof Promise,
 );
 checkEqual(
@@ -362,7 +382,8 @@ const withCookies = await make(
   "http://localhost/",
   { headers: { Cookie: cookieHeader } },
   {
-    cookieParseOptions: { decode: (value) => value },
+    // Applied to each raw value; this one is the default's percent-decoding.
+    cookieParseOptions: { decode: (value) => decodeURIComponent(value) },
   },
 );
 checkEqual(
@@ -373,6 +394,17 @@ checkEqual(
     prefs: { lang: "en" },
     session: signedValue,
   },
+);
+checkEqual(
+  "cookieParseOptions.decode is applied: an identity decoder keeps raw values",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      { cookieParseOptions: { decode: (value) => value } },
+    )
+  ).cookies,
+  { name: "J%C3%B6rg" },
 );
 checkEqual(
   "parseCookies: false leaves cookies empty",

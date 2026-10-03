@@ -438,13 +438,15 @@ for (const verb of VERBS) {
 }
 checkEqual("one route per verb", verbs.routes().length, VERBS.length);
 checkEqual(
-  "each matches its own method only, as a route handler",
+  "each matches its own method only, as a route handler — HEAD also the GET route",
   VERBS.map((verb) =>
     layers(verbs, "/r", verb.toUpperCase()).map(
       (layer) => layer.isRouteHandler,
     ),
   ),
-  VERBS.map(() => [true]),
+  // As in Express, a HEAD request also matches a GET route, in registration
+  // order: here `get` was registered before `head`, so its handler runs.
+  VERBS.map((verb) => (verb === "head" ? [true, true] : [true])),
 );
 checkEqual(
   "PROPPATCH /r",
@@ -1013,6 +1015,52 @@ checkEqual(
   "an unmatched one resolves undefined",
   (await drive("/nope")).result,
   undefined,
+);
+
+/* ------------------------------------------------------------------ */
+step("dispatch(): handle() without the promise when none is needed");
+
+/** `drive()`'s pipeline options for `GET url`, built synchronously. */
+function dispatchOptions(url: string) {
+  const request = BunRequest.init(
+    new Request(`http://localhost${url}`),
+    FETCH_STUB_SERVER,
+    { parseBody: true },
+  ) as BunRequest;
+  return {
+    requestHost: request.host,
+    requestMethod: request.method,
+    requestUrl: request.originalUrl,
+    request,
+    response: new BunResponse(request),
+  };
+}
+
+handled.get("/later", (_req, res) => {
+  setTimeout(() => void res.send("later"), 1);
+});
+const syncDispatch = dispatchOptions("/h/6");
+const syncResult = handled.dispatch(syncDispatch);
+check(
+  "synchronous layers: the result itself, not a promise",
+  !(syncResult instanceof Promise) && Boolean(syncResult),
+);
+checkEqual(
+  "…with the response settled",
+  await syncDispatch.response.settledResponse?.json(),
+  { id: "6" },
+);
+checkEqual(
+  "…undefined, synchronously, when nothing matches",
+  handled.dispatch(dispatchOptions("/nope")),
+  undefined,
+);
+const laterDispatch = handled.dispatch(dispatchOptions("/later"));
+check("a parked layer: a promise", laterDispatch instanceof Promise);
+check("…resolving to the matched route", Boolean(await laterDispatch));
+check(
+  "handle() is a promise even for synchronous layers",
+  handled.handle(dispatchOptions("/h/7")) instanceof Promise,
 );
 
 /* ------------------------------------------------------------------ */

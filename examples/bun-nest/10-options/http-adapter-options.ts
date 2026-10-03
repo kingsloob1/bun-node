@@ -335,6 +335,31 @@ step("constructor: server, and setListenOptions()");
   );
   await adapter.close();
 
+  const native = new BunHttpAdapter(0, {
+    server: { routes: { "/ping": new Response("pong") } },
+  });
+  let pipelineRuns = 0;
+  native.use((_req, _res, next) => {
+    pipelineRuns++;
+    next();
+  });
+  native.all("/ping", (_req, res) => res.send("router pong"));
+  await native.listen(0);
+  const pinged = await fetch(`${native.url}/ping`, { method: "DELETE" });
+  checkEqual(
+    "server.routes: Bun answers first, for every method",
+    await pinged.text(),
+    "pong",
+  );
+  check("…with an ETag", pinged.headers.has("etag"));
+  checkEqual("…and the pipeline never ran", pipelineRuns, 0);
+  checkEqual(
+    "…while fetch() (no socket) runs the router",
+    await (await native.fetch("/ping")).text(),
+    "router pong",
+  );
+  await native.close();
+
   const other = new BunHttpAdapter();
   other.post("/upload", (_req, res) => {
     return res.send("ok");

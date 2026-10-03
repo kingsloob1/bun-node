@@ -15,6 +15,15 @@
  * - `next("route")` skips the rest of the current route's callbacks;
  *   `next("router")` leaves a mounted sub-router, or abandons the pipeline
  *   when called from the router's own routes.
+ * - `next()` may be called later — from a timer or an I/O callback — as
+ *   Express allows: the pipeline waits for it. Only a callback that never
+ *   responds nor calls `next()` hangs, until the adapter's request timeout
+ *   fails it with `Request Timedout` (a 500 from the final handling).
+ * - An error raised after the response started (`res.write()`, then a throw or
+ *   `next(err)`) still runs the error handlers, which see `res.headersSent`
+ *   as `true` and may still `res.end()` the stream. If none handles it, the
+ *   streamed response is cut off (`res.destroy(err)`) and the error logged,
+ *   as Express's finalhandler destroys the socket.
  * - An error nobody handles is re-thrown to the caller. A bare router's
  *   `fetch()` rejects with it. On an adapter, served or through
  *   `adapter.fetch()`, it reaches `setErrorHandler`, and without one it is
@@ -22,7 +31,13 @@
  *   `500`, with the status message as the body.
  */
 import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
-import { BunHttpAdapter, BunRouter } from "@kingsleyweb/bun-common";
+import net from "node:net";
+import {
+  BunHttpAdapter,
+  BunRouter,
+  createTestLogger,
+} from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Middleware and errors");
@@ -234,22 +249,115 @@ show("GET /users/me", await call(params, "/users/me"));
 show("GET /users/7", await call(params, "/users/7"));
 
 /* ------------------------------------------------------------------ */
+step("next() called later, from a timer or an I/O callback");
+
+// Callback-style middleware — a session store, a rate limiter, a file read —
+// returns first and calls next() when its work is done. The pipeline waits.
+const later = new BunRouter();
+const laterTrail: string[] = [];
+later.use((_req, _res, next) => {
+  laterTrail.push("timer middleware returned");
+  setTimeout(() => {
+    laterTrail.push("timer fired, next()");
+    next();
+  }, 10);
+});
+later.use("/io", (_req, res, next) => {
+  // An I/O callback: read this very file, then carry on.
+  void Bun.file(import.meta.path)
+    .text()
+    .then((source) => {
+      res.setHeader("X-Source-Bytes", String(source.length));
+      next();
+    });
+});
+later.get("/timer", (_req, res) => {
+  laterTrail.push("route handler");
+  res.send("after a late next()");
+});
+later.get("/io", (_req, res) => res.send("after an I/O callback"));
+later.get("/late-error", (_req, _res, next) => {
+  setTimeout(() => next(new Error("failed in a callback")), 5);
+});
+later.use(respondWithError);
+
+checkEqual(
+  "GET /timer waits for the timer's next()",
+  await call(later, "/timer"),
+  "200 after a late next()",
+);
+checkEqual("…in this order", laterTrail, [
+  "timer middleware returned",
+  "timer fired, next()",
+  "route handler",
+]);
+const io = await later.fetch("/io");
+checkEqual(
+  "GET /io waits for the file read",
+  `${io.status} ${await io.text()}`,
+  "200 after an I/O callback",
+);
+check(
+  "…which set a header first",
+  Number(io.headers.get("X-Source-Bytes")) > 0,
+  io.headers.get("X-Source-Bytes"),
+);
+checkEqual(
+  "a late next(err) reaches the error handlers",
+  await call(later, "/late-error"),
+  "500 handled: failed in a callback",
+);
+checkEqual(
+  "a late next() that runs out of routes is a 404",
+  (await later.fetch("/nothing-here")).status,
+  404,
+);
+
+// The same over a real socket: the served path waits just the same.
+const lateServed = new BunHttpAdapter(0);
+lateServed.use((_req, _res, next) => {
+  setTimeout(next, 5);
+});
+lateServed.get("/served", (_req, res) => {
+  res.send("served after a late next()");
+});
+await lateServed.listen(0);
+const servedLate = await fetch(`${lateServed.url}/served`);
+checkEqual(
+  "served: GET /served",
+  `${servedLate.status} ${await servedLate.text()}`,
+  "200 served after a late next()",
+);
+await lateServed.close();
+
+/* ------------------------------------------------------------------ */
 step("A handler that neither responds nor calls next() hangs");
 
 // Nothing times the request out but the adapter's `requestTimeout`, which is
 // why this section uses an adapter. When it expires, the timeout error gets
-// the adapter's final error handling: a 500, as no setErrorHandler is set.
+// the adapter's final error handling: a 500. That handling runs without the
+// request, so even a setErrorHandler does not see it.
 const adapter = new BunHttpAdapter(200);
+adapter.setLogger(createTestLogger().logger);
+const sawTimeout: unknown[] = [];
+adapter.setErrorHandler(((error, _req, res, _next) => {
+  sawTimeout.push(error);
+  res.status(503).send("not used for a timeout");
+}) satisfies RouterErrorMiddlewareHandler);
 adapter.get("/forgot", () => {
   // Returned values are ignored; this request is left hanging.
   return "not a response";
 });
 const started = performance.now();
 const forgot = await adapter.fetch("/forgot");
+const waited = performance.now() - started;
 show(
-  `answered after ${(performance.now() - started).toFixed(0)}ms`,
+  `answered after ${waited.toFixed(0)}ms`,
   `${forgot.status} ${forgot.statusText}`,
 );
+checkEqual("a request that never finishes is a 500", forgot.status, 500);
+check("…once the 200ms timeout ran out", waited >= 190, waited);
+checkEqual("…and the error handlers never saw it", sawTimeout, []);
 
 const unhandledOnAdapter = new BunHttpAdapter();
 unhandledOnAdapter.get("/x", () => {
@@ -260,3 +368,99 @@ show(
   "an adapter with no error handler — finalhandler's answer",
   `${fallback.status} ${(await fallback.text()).match(/<pre>(.*)<\/pre>/)?.[1]}`,
 );
+
+/* ------------------------------------------------------------------ */
+step("Errors after the response started");
+
+/** Sends one raw HTTP/1.1 GET and answers everything the server wrote. */
+function rawGet(port: number, path: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, "127.0.0.1");
+    let data = "";
+    // A cut-off response closes the socket; a hang would hit this instead.
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(`TIMEOUT ${data}`);
+    }, 3000);
+    const done = () => {
+      clearTimeout(timer);
+      resolve(data);
+    };
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("close", done);
+    socket.on("error", done);
+    socket.write(
+      `GET ${path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`,
+    );
+  });
+}
+
+const streaming = new BunHttpAdapter(0);
+const { logger: afterLogger, events: afterEvents } = createTestLogger();
+streaming.setLogger(afterLogger);
+const afterSeen: { path: string; message: string; headersSent: boolean }[] = [];
+streaming.get("/recover", (_req, res) => {
+  res.write("partial;");
+  throw new Error("boom");
+});
+streaming.get("/unhandled", (_req, res, next) => {
+  res.write("partial;");
+  next(new Error("too late to send a 500"));
+});
+streaming.use(((error, req, res, next) => {
+  afterSeen.push({
+    path: req.path,
+    message: (error as Error).message,
+    headersSent: res.headersSent,
+  });
+  if (req.path === "/recover") {
+    // The status line is gone, but the stream is still open: finish it.
+    void res.end(`recovered:${(error as Error).message}`);
+    return;
+  }
+  next(error as Error);
+}) satisfies RouterErrorMiddlewareHandler);
+
+checkEqual(
+  "an error handler can still end() the stream",
+  await (await streaming.fetch("/recover")).text(),
+  "partial;recovered:boom",
+);
+checkEqual("…and saw headersSent: true", afterSeen.splice(0), [
+  { path: "/recover", message: "boom", headersSent: true },
+]);
+
+// Nobody handles the second one, and a 500 can no longer be sent, so the
+// stream is destroyed: the client sees the response cut off — never a hang,
+// never a complete chunked body. (Bun also prints the stream's error.)
+const listening = await streaming.listen(0);
+const cut = await rawGet(listening.port!, "/unhandled");
+show("what the client received", JSON.stringify(cut));
+check(
+  "unhandled: the response is cut off, not left hanging",
+  !cut.startsWith("TIMEOUT"),
+  cut,
+);
+check(
+  "…and never ends as a complete chunked body",
+  !cut.includes("\r\n0\r\n\r\n"),
+  cut,
+);
+checkEqual("…after the error handlers ran", afterSeen.splice(0), [
+  { path: "/unhandled", message: "too late to send a 500", headersSent: true },
+]);
+check(
+  "…and the error is logged",
+  afterEvents.some(
+    (event) =>
+      event.level === "error" &&
+      event.message === "Unhandled error after the response was sent" &&
+      event.error?.message === "too late to send a 500",
+  ),
+  afterEvents.map((event) => event.message),
+);
+await streaming.close();
+
+summary();

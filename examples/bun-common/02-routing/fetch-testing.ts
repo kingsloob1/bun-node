@@ -14,10 +14,14 @@
  * - `adapter.fetch()` goes through the adapter's own request handler — not-found
  *   handlers, the payload guard, response finalisation. `router.fetch()` is the
  *   router alone, so an unmatched path is a bare 404.
+ * - A string starting with `//` is a path, as a served `GET //x/y` has it —
+ *   not a protocol-relative URL naming host `x` (a bare `//` used to throw).
  * - With no socket there is no peer: `req.ip` is empty. While the adapter is
  *   listening, `adapter.fetch()` uses the live server's origin.
  */
+import net from "node:net";
 import { BunHttpAdapter, BunRouter } from "@kingsleyweb/bun-common";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Testing without a socket: fetch()");
@@ -154,6 +158,46 @@ for (const { path, init } of targets) {
 }
 
 /* ------------------------------------------------------------------ */
+step("A path starting with // is a path, over a socket and without one");
+
+const slashes = new BunHttpAdapter();
+slashes.use((req, res) => {
+  res.send(`host ${req.hostname}, path ${req.path}`);
+});
+for (const path of ["//x/y", "//"]) {
+  checkEqual(
+    `adapter.fetch("${path}")`,
+    await (await slashes.fetch(path)).text(),
+    `host localhost, path ${path}`,
+  );
+  checkEqual(
+    `router.fetch("${path}")`,
+    await (await slashes.instance.fetch(path)).text(),
+    `host localhost, path ${path}`,
+  );
+}
+const slashesServer = await slashes.listen(0);
+// `fetch()` would normalise the path, so send the request line by hand.
+const rawAnswer = await new Promise<string>((resolve, reject) => {
+  const socket = net.connect(slashesServer.port!, "127.0.0.1");
+  let data = "";
+  socket.on("data", (chunk) => {
+    data += chunk;
+  });
+  socket.on("close", () => resolve(data));
+  socket.on("error", reject);
+  socket.write(
+    "GET //x/y HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+  );
+});
+checkEqual(
+  "served GET //x/y: the same path",
+  rawAnswer.split("\r\n\r\n")[1],
+  "host localhost, path //x/y",
+);
+await slashes.close();
+
+/* ------------------------------------------------------------------ */
 step("adapter.fetch() on a listening adapter");
 
 const live = await served.fetch("/users/7");
@@ -161,3 +205,5 @@ show("uses the live server's origin and server", await describe(live));
 
 await served.close();
 show("closed", !served.isListening);
+
+summary();

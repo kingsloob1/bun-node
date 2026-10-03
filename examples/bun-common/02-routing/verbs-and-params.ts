@@ -13,6 +13,11 @@
  *   opts in to "most specific first"; middleware never moves either way.
  * - A route handler must respond or call `next()`. Only `next()` moves on — a
  *   handler's return value is ignored.
+ * - `HEAD` runs a route's GET handler when the route has no HEAD handler of
+ *   its own, as in Express: the served response carries the GET's status and
+ *   headers (`Content-Length` included) and no body, and so does `fetch()`.
+ *   Matching keeps registration order, so a HEAD handler registered first
+ *   wins.
  * - Param values are percent-decoded; `*name` publishes both `params.name`
  *   and the positional key `params[0]`.
  */
@@ -22,7 +27,12 @@ import type {
   RouterVerb,
   RouterVerbMethod,
 } from "@kingsleyweb/bun-common";
-import { BunRouter } from "@kingsleyweb/bun-common";
+import {
+  BunHttpAdapter,
+  BunRouter,
+  withoutHeadBody,
+} from "@kingsleyweb/bun-common";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Verbs and params");
@@ -252,3 +262,85 @@ show(
   "GET /steps",
   `${await steps.text()}, X-Step-1: ${steps.headers.get("X-Step-1")}`,
 );
+
+/* ------------------------------------------------------------------ */
+step("HEAD runs the GET handler, without the body");
+
+const pages = new BunHttpAdapter(0);
+let getRuns = 0;
+pages.get("/page", (_req, res) => {
+  getRuns++;
+  res.set("X-Page", "1").send("the page body");
+});
+// A HEAD handler registered ahead of the GET route takes HEAD itself.
+pages.head("/report", (_req, res) => {
+  res.set("X-Which", "head").end();
+});
+pages.get("/report", (_req, res) => {
+  res.set("X-Which", "get").send("the report");
+});
+pages.post("/form", (_req, res) => res.send("posted"));
+
+await pages.listen(0);
+const servedHead = await fetch(`${pages.url}/page`, { method: "HEAD" });
+const servedHeadSummary = {
+  status: servedHead.status,
+  page: servedHead.headers.get("X-Page"),
+  length: servedHead.headers.get("Content-Length"),
+  body: await servedHead.text(),
+};
+show("served HEAD /page", servedHeadSummary);
+checkEqual(
+  "served HEAD /page: the GET's headers, the length, no body",
+  servedHeadSummary,
+  {
+    status: 200,
+    page: "1",
+    length: String("the page body".length),
+    body: "",
+  },
+);
+await pages.close();
+
+const fetchedHead = await pages.fetch("/page", { method: "HEAD" });
+checkEqual(
+  "adapter.fetch() HEAD /page: no body either",
+  {
+    status: fetchedHead.status,
+    page: fetchedHead.headers.get("X-Page"),
+    body: await fetchedHead.text(),
+  },
+  { status: 200, page: "1", body: "" },
+);
+checkEqual("…the GET handler ran for each", getRuns, 2);
+checkEqual(
+  "HEAD /report: the HEAD handler registered first wins",
+  (await pages.fetch("/report", { method: "HEAD" })).headers.get("X-Which"),
+  "head",
+);
+checkEqual(
+  "…GET /report still gets the GET handler",
+  await (await pages.fetch("/report")).text(),
+  "the report",
+);
+checkEqual(
+  "HEAD on a POST-only route is still a 404",
+  (await pages.fetch("/form", { method: "HEAD" })).status,
+  404,
+);
+
+// What fetch() does to a HEAD answer, exported for a fetch() of your own.
+const full = new Response("a body", { headers: { "X-Kept": "yes" } });
+const headless = withoutHeadBody(full, "HEAD");
+checkEqual(
+  "withoutHeadBody(response, 'HEAD') keeps the headers, drops the body",
+  { kept: headless.headers.get("X-Kept"), body: await headless.text() },
+  { kept: "yes", body: "" },
+);
+checkEqual(
+  "…and returns any other method's response as it is",
+  withoutHeadBody(full, "GET") === full,
+  true,
+);
+
+summary();

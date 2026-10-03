@@ -1,3 +1,4 @@
+import { join } from "node:path";
 /**
  * Adapter options — `new BunHttpAdapter(requestTimeout, options)`, field by
  * field.
@@ -18,6 +19,13 @@
  *   middleware runs.
  * - `server` is merged into `Bun.serve`; `port`, `hostname`, `fetch`,
  *   `websocket` and `development` stay the adapter's.
+ * - `server.routes` (opt-in) serves constants natively, ahead of the router:
+ *   a `Response` or `Bun.file` answers **every method**, runs **no
+ *   middleware**, gets an `ETag` from Bun, and wins over a router route on
+ *   the same path. It matches Bun's way — case-sensitive, strict trailing
+ *   slash — and only over a socket: `adapter.fetch()` never sees it. Use it
+ *   for health checks and `robots.txt`; anything needing the pipeline belongs
+ *   on the router.
  * - `router` goes to the underlying `BunRouter`; `logger`, `etag` and
  *   `routeCacheMax` sit beside it.
  */
@@ -26,6 +34,7 @@ import {
   createTestLogger,
   DEFAULT_PARSE_QUERY_OPTS,
 } from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Adapter options");
@@ -199,3 +208,105 @@ for (const bytes of [100, 8_000]) {
   }
 }
 await capped.close();
+
+/* ------------------------------------------------------------------ */
+step("server.routes: native static routes, served by Bun ahead of the router");
+
+const helloFile = join(import.meta.dir, "fixtures", "public", "hello.txt");
+const native = new BunHttpAdapter(0, {
+  server: {
+    routes: {
+      "/health": new Response("ok", {
+        headers: { "Content-Type": "text/plain" },
+      }),
+      "/hello.txt": Bun.file(helloFile),
+    },
+  },
+});
+const nativeTrail: string[] = [];
+native.use((req, _res, next) => {
+  nativeTrail.push(req.path);
+  next();
+});
+native.get("/health", (_req, res) => res.send("the router's /health"));
+native.get("/Health", (_req, res) => res.send("the router's /Health"));
+native.get("/status", (_req, res) => res.send("the router's /status"));
+await native.listen(0);
+
+/** One served request, summarised. */
+async function served(path: string, init?: RequestInit) {
+  const response = await fetch(`${native.url}${path}`, init);
+  return {
+    status: response.status,
+    body: await response.text(),
+    etag: response.headers.get("ETag"),
+  };
+}
+
+const health = await served("/health");
+show("GET /health", health);
+checkEqual(
+  "GET /health is the native Response, not the router's",
+  health.body,
+  "ok",
+);
+check("…with an ETag Bun added", typeof health.etag === "string", health);
+for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+  checkEqual(
+    `${method} /health: every method gets the constant`,
+    (await served("/health", { method })).body,
+    "ok",
+  );
+}
+checkEqual(
+  "HEAD /health: the headers, no body",
+  (await served("/health", { method: "HEAD" })).body,
+  "",
+);
+checkEqual(
+  "If-None-Match with that ETag is a 304",
+  (await served("/health", { headers: { "If-None-Match": health.etag! } }))
+    .status,
+  304,
+);
+checkEqual(
+  "a query string still matches it",
+  (await served("/health?probe=1")).body,
+  "ok",
+);
+checkEqual(
+  "GET /hello.txt: a Bun.file, served natively",
+  (await served("/hello.txt")).body,
+  await Bun.file(helloFile).text(),
+);
+checkEqual("…and no middleware ran for any of them", nativeTrail, []);
+
+// The caveats: Bun's matching, not the router's.
+checkEqual(
+  "GET /Health: case-sensitive, so the router answers",
+  (await served("/Health")).body,
+  "the router's /Health",
+);
+checkEqual(
+  "GET /health/: strict trailing slash, so the router answers",
+  (await served("/health/")).body,
+  "the router's /health",
+);
+checkEqual(
+  "GET /status: not a native route, so the pipeline runs",
+  (await served("/status")).body,
+  "the router's /status",
+);
+checkEqual("…and the middleware ran for those", nativeTrail, [
+  "/Health",
+  "/health/",
+  "/status",
+]);
+checkEqual(
+  "adapter.fetch('/health') has no socket, so no native routes: the router",
+  await (await native.fetch("/health")).text(),
+  "the router's /health",
+);
+await native.close();
+
+summary();
