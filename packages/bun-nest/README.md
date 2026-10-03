@@ -462,6 +462,10 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
   size, as body-parser's `read()` does. It never sets `rawBody` for one. This
   is most of a GET's cost in a Nest app: skipping it made bun-nest's GET
   scenarios 8–23% faster.
+- **The adapter's `parseBody: false` wins.** With it, these parsers parse
+  nothing, whatever Nest's `bodyParser` option says; `requestParsing({
+  parseBody })` turns parsing on for the routes it is applied to (see
+  bun-common's README).
 - **Each kind is registered once.** A second `useBodyParser` call for the same
   kind (and prefix) does nothing; different kinds stack, each with its own
   options.

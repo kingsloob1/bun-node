@@ -593,6 +593,14 @@ Example:
 Either parser passes a request with no body (`req.hasBody` false) on
 synchronously, before its type, encoding or size, as body-parser's `read()`
 does, and sets no `rawBody` for it.
+
+**`parseBody: false` is the master switch.** With it on the adapter's request
+options, a registered parser parses nothing and applies none of its own
+options (`limit`, `inflate`, …) — including the parser NestJS registers by
+default. Only `requestParsing({ parseBody })` turns parsing back on, for the
+routes it is mounted on: it reads the body itself, and a parser registered
+**after** it then runs with its own options (one registered before it ran while
+parsing was still off).
 | `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
 | `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`; see [Static files](#static-files). |
 | `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
