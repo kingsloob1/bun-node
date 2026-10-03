@@ -35,7 +35,7 @@ with no socket at all.
 | File | Shows |
 |---|---|
 | [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` (no HEAD body, the wire's implicit text `Content-Type`) |
-| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout, errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off) |
+| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout (an async handler that never settles included), errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off), `res.write()` then `next()`/a later `next(err)` moving on, an async handler that responds and keeps awaiting (its late rejection logged) |
 | [`sub-routers.ts`](./02-routing/sub-routers.ts) | mounting routers, typed mount params, a validator at the mount, compile-time mount mismatches, `group`, `domain` |
 | [`typed-routes.ts`](./02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator; `ExtractRouteParams`, `TypedRouteHandler` |
 | [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request, a `//x/y` path served and socket-free |
@@ -64,7 +64,7 @@ with no socket at all.
 | File | Shows |
 |---|---|
 | [`sending.ts`](./05-response/sending.ts) | status, every body type for `send`, `json`/`jsonp`, headers (`Set-Cookie` read back as an array, as Node), `location`, `links`, `vary`, ETags, `format()` negotiation, attachments |
-| [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, redirects |
+| [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, redirects, a stream's first chunk sent before its async handler resolves, a stream outliving the request timeout, `isStreamOpen`/`writableEnded`/`onceStreamEnded()`, `awaitPipelineOrStream()` |
 | [`cookies-and-caching.ts`](./05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
 
 ### 06 — Validation
