@@ -1,0 +1,8 @@
+Bun 1.4.2; ns/request, median of 3 processes (each best of 5)
+
+target                  static         param    middleware   routes-1000  param-random          json
+bun-common                3072          2896          3787          3214          9347          9353
+bun-nest                 10913         12592         14443         13904         21370         20711
+bun-nest-nobp             8180         10310         12402         10595         17012         17816
+
+raw: {"bun-common static":[3219,3057,3072],"bun-common param":[2896,2782,3020],"bun-common middleware":[4027,3641,3787],"bun-common routes-1000":[3214,4192,3150],"bun-common param-random":[9179,9744,9347],"bun-common json":[9353,9547,9118],"bun-nest static":[10913,12603,10471],"bun-nest param":[14818,11957,12592],"bun-nest middleware":[14281,14443,14593],"bun-nest routes-1000":[13434,13904,15016],"bun-nest param-random":[21066,21370,23340],"bun-nest json":[20711,20390,21024],"bun-nest-nobp static":[8914,7482,8180],"bun-nest-nobp param":[10533,10310,9769],"bun-nest-nobp middleware":[12402,12444,11399],"bun-nest-nobp routes-1000":[10531,10927,10595],"bun-nest-nobp param-random":[16948,17012,18671],"bun-nest-nobp json":[17816,17944,17057]}

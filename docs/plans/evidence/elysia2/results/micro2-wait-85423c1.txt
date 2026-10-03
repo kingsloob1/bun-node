@@ -1,0 +1,8 @@
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production; ns/op, best of 5 x 100000
+
+
+K. waiting on an async handler that responds after an await (the shape every Nest route has)
+  router.dispatch (#waitLayer: new Promise + onceResponded + then)          1967 ns
+  prototype: pending.then(() => res.settledResponse)                         845 ns
+  prototype: the same, plus one Promise wrapper (onceResponded race)        1169 ns
+    floor: handler(req, new BunResponse) awaited                             838 ns
