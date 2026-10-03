@@ -52,6 +52,7 @@ import {
   Post,
   Req,
   RequestMethod,
+  Res,
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
@@ -76,6 +77,32 @@ class TourController {
 
 @Module({ controllers: [TourController] })
 class TourModule {}
+
+/** Routes for the per-response ETag checks. */
+@Controller("etag")
+class EtagController {
+  @Get("default")
+  tagged() {
+    return { v: 1 };
+  }
+
+  /** Turns the adapter's ETag off for this route's responses only. */
+  @Get("off")
+  untagged(@Res({ passthrough: true }) res: BunResponse) {
+    res.setEtag(false);
+    return { v: 1 };
+  }
+
+  /** Overrules the adapter's weak tags with strong ones for this route. */
+  @Get("strong")
+  strong(@Res({ passthrough: true }) res: BunResponse) {
+    res.etag = "strong";
+    return { v: 1 };
+  }
+}
+
+@Module({ controllers: [EtagController] })
+class EtagModule {}
 
 /** Reads a response's JSON body as `T`. */
 async function json<T = JsonValue>(response: Response): Promise<T> {
@@ -309,6 +336,57 @@ step("constructor: etag");
     headers: { "if-none-match": tag ?? "" },
   });
   checkEqual("a matching If-None-Match is answered 304", again.status, 304);
+
+  // etag: "weak" on the adapter, overruled per response from a controller.
+  const weakAdapter = new BunHttpAdapter(0, { etag: "weak" });
+  const etagApp = await NestFactory.create(EtagModule, weakAdapter, {
+    logger: false,
+  });
+  await etagApp.init();
+  const weakTag = (await weakAdapter.fetch("/etag/default")).headers.get(
+    "etag",
+  );
+  check(
+    'etag: "weak" — a controller\'s response gets a weak tag',
+    weakTag?.startsWith("W/") === true,
+    weakTag,
+  );
+  checkEqual(
+    "…If-None-Match with it is a 304",
+    (
+      await weakAdapter.fetch("/etag/default", {
+        headers: { "if-none-match": weakTag ?? "" },
+      })
+    ).status,
+    304,
+  );
+  checkEqual(
+    "@Res({ passthrough: true }) res.setEtag(false): no tag on that route",
+    (await weakAdapter.fetch("/etag/off")).headers.get("etag"),
+    null,
+  );
+  const strongTag = (await weakAdapter.fetch("/etag/strong")).headers.get(
+    "etag",
+  );
+  check(
+    'res.etag = "strong": a strong tag on that route',
+    !!strongTag && !strongTag.startsWith("W/"),
+    strongTag,
+  );
+  await etagApp.close();
+
+  let invalid: unknown;
+  try {
+    // eslint-disable-next-line no-new
+    new BunHttpAdapter(0, { etag: "medium" as unknown as boolean });
+  } catch (error) {
+    invalid = error;
+  }
+  check(
+    "an invalid etag option is a TypeError",
+    invalid instanceof TypeError,
+    invalid,
+  );
 }
 
 /* ------------------------------------------------------------------ */

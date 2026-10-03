@@ -24,6 +24,7 @@
  */
 import type {
   BunServer,
+  EtagOption,
   JsonValue,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
@@ -35,7 +36,9 @@ import {
   BunRouter,
   BunWebSocket,
   createTestLogger,
+  etag,
   noopLogger,
+  normalizeEtagOption,
 } from "@kingsleyweb/bun-common";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { step, title } from "../shared/console";
@@ -281,6 +284,44 @@ checkEqual(
   (await tagged.fetch("/doc", { headers: { "If-None-Match": tag ?? "" } }))
     .status,
   304,
+);
+
+for (const [option, expected] of [
+  ["weak", `W/${etag('{"version":3}')}`],
+  ["strong", etag('{"version":3}')],
+  [() => '"fixed"', '"fixed"'],
+] as const) {
+  const modal = new BunHttpAdapter(0, { etag: option });
+  modal.get("/doc", (_req, res) => res.send({ version: 3 }));
+  const label = typeof option === "function" ? "a function" : option;
+  checkEqual(
+    `etag: ${label}`,
+    (await modal.fetch("/doc")).headers.get("ETag"),
+    expected,
+  );
+}
+const perResponse = new BunHttpAdapter(0, { etag: false });
+perResponse.get("/weak", (_req, res) => res.setEtag("weak").send("w"));
+check(
+  "a response's setEtag() overrules the adapter's false",
+  (await perResponse.fetch("/weak")).headers.get("ETag")?.startsWith("W/") ===
+    true,
+);
+checkEqual(
+  "normalizeEtagOption(undefined) is false",
+  normalizeEtagOption(undefined),
+  false,
+);
+check(
+  "normalizeEtagOption('nope') throws TypeError — as the constructor does",
+  (() => {
+    try {
+      normalizeEtagOption("nope" as unknown as EtagOption);
+      return false;
+    } catch (error) {
+      return error instanceof TypeError;
+    }
+  })(),
 );
 
 const signature = {
