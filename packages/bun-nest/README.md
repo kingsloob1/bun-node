@@ -579,7 +579,10 @@ Errors reach one of three layers, depending on where they are raised.
    raw router middleware goes to the handlers added with
    `adapter.setErrorHandler`. Nest registers its own exception layer there at
    init, so these errors reach your exception filters as they would on
-   `@nestjs/platform-express`. Error handlers run as Express error
+   `@nestjs/platform-express`. (A declared empty body with no stream — Bun
+   serves `Content-Length: 0` that way — is checked when the body is first
+   read, by the body parser, rather than before routing; its `415` reaches
+   the same handlers.) Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
    handling with a `404`, and a return value is ignored.
