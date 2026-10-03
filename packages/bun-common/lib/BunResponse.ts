@@ -918,6 +918,9 @@ export class BunResponse<
    */
   #sentBody: BunResponseSentBody = undefined;
 
+  /** {@link locals}, once read or assigned. */
+  #locals: Record<string, unknown> | undefined = undefined;
+
   /**
    * Every chunk streamed so far, in order — the response's own list, reported
    * by {@link getBody}. Never a body the caller passed to `send`, which is
@@ -1330,6 +1333,19 @@ export class BunResponse<
 
   set statusCode(code: number) {
     this.status(code);
+  }
+
+  /**
+   * Request-scoped values for the layers that follow and for rendering, as
+   * Express's `res.locals`: a null-prototype object, created on first read
+   * (most requests never use it). Assignable, as in Express.
+   */
+  get locals(): Record<string, unknown> {
+    return (this.#locals ??= Object.create(null) as Record<string, unknown>);
+  }
+
+  set locals(value: Record<string, unknown>) {
+    this.#locals = value;
   }
 
   get statusCode() {

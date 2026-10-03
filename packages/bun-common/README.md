@@ -918,6 +918,7 @@ Example:
 | `type(t)` / `contentType(t)`, `attachment(filename?)`, `location(url)`, `links(map)`, `vary(fields)` | Header helpers with Express semantics. |
 | `setEtag(option?)`, `etag` | How **this** response is tagged with an `ETag`, overruling the adapter's `etag` option for it alone: `false` (none), `true`/`"strong"`, `"weak"`, or a function `(body) => string \| undefined` that gets a text body as a string and a binary one as bytes. `setEtag()` alone means `true`; `res.etag` reads it back or sets it. A tag set by hand (`res.set("ETag", …)`) always wins, a matching `If-None-Match` (weak or strong) becomes a 304, and `sendFile` uses its weak size-and-mtime tag whenever this is not `false`. |
 | `getBody()`, `headersSent` | Inspection. |
+| `locals` | Request-scoped values for later layers, as Express's `res.locals`: a null-prototype object, created on first read and fresh per request; assignable. |
 
 A text or JSON body sent when **no header has been set** (no `set()`,
 `type()`, `cookie()`, CORS or other header-writing middleware, no `ETag`, no
