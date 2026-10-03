@@ -30,6 +30,7 @@ import {
   BunResponse,
   BunRouter,
   FETCH_STUB_SERVER,
+  markSocketFree,
   toFetchResponse,
 } from "@kingsleyweb/bun-common";
 import { checkEqual, summary } from "../shared/check";
@@ -346,8 +347,10 @@ checkEqual(
   toFetchResponse(full, "GET") === full,
   true,
 );
+// markSocketFree() tells the response it is answered without a socket, so
+// it records what toFetchResponse() needs — what fetch() does for you.
 const textRequest = BunRequest.init(
-  new Request("http://localhost/"),
+  markSocketFree(new Request("http://localhost/")),
   FETCH_STUB_SERVER,
   { parseBody: true },
 ) as BunRequest;

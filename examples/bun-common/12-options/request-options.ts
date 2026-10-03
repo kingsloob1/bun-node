@@ -146,6 +146,61 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("Built lazily: an empty query, and options never written");
+
+/** A bodiless request for `url`, built with `options`. */
+function lazyBuilt(
+  url: string,
+  options: Options = { parseBody: true },
+): BunRequest {
+  return BunRequest.init(new Request(url), FETCH_STUB_SERVER, {
+    parseBody: true,
+    ...options,
+  }) as BunRequest;
+}
+const parsedQuery = lazyBuilt("http://localhost/?a=1").query;
+const emptyQuery = lazyBuilt("http://localhost/").query;
+checkEqual("no query string: req.query is {}", emptyQuery, {});
+check(
+  "…with a parsed query's own prototype (picoquery's)",
+  Object.getPrototypeOf(emptyQuery) === Object.getPrototypeOf(parsedQuery),
+);
+const unparsed = lazyBuilt("http://localhost/?a=1", {
+  parseBody: true,
+  parseQuery: false,
+});
+check(
+  "parseQuery: false: a plain {}",
+  Bun.deepEquals(unparsed.query, {}) &&
+    Object.getPrototypeOf(unparsed.query) === Object.prototype,
+  unparsed.query,
+);
+const frozenOptions = Object.freeze({ parseBody: true as const });
+const fromFrozen = BunRequest.init(
+  new Request("http://localhost/?k=v", { headers: { Cookie: "c=1" } }),
+  FETCH_STUB_SERVER,
+  frozenOptions,
+) as BunRequest;
+checkEqual(
+  "frozen options with parseQuery/parseCookies unset: both still parse",
+  [fromFrozen.query, fromFrozen.cookies],
+  [{ k: "v" }, { c: "1" }],
+);
+checkEqual(
+  "…and the frozen object is left as it was",
+  Object.keys(frozenOptions),
+  ["parseBody"],
+);
+const readyRequest = lazyBuilt("http://localhost/?k=v");
+checkEqual(
+  "ready() still reports [query, body, cookies]",
+  (await readyRequest.ready()).map((settled) =>
+    settled.status === "fulfilled" ? settled.value : settled.status,
+  ),
+  [{ k: "v" }, undefined, { cookies: {}, signedCookies: {} }],
+);
+
+/* ------------------------------------------------------------------ */
 step("parseQuery: boolean or parser options");
 
 checkEqual("DEFAULT_PARSE_QUERY_OPTS", DEFAULT_PARSE_QUERY_OPTS, {
