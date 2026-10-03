@@ -436,7 +436,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ parseQuery: { nesting: false } }` alone keeps body and cookie parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
 | `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | [Router options](#router-options), merged over those defaults. **The adapter is case-sensitive by default**, unlike a bare `BunRouter`. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
-| `etag` | `boolean` | `false` | Adds an `ETag` to every response (opt-in: hashing every body has a cost). |
+| `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
@@ -869,7 +869,7 @@ Example:
 | `json(body)` | `application/json;charset=utf-8`. Use `json<Dto>(body)` to check the body's shape. |
 | `jsonp(body)` | Wraps the body in `?callback=` as `text/javascript`, with Express's sanitising and `nosniff`. |
 | `type(t)` / `contentType(t)`, `attachment(filename?)`, `location(url)`, `links(map)`, `vary(fields)` | Header helpers with Express semantics. |
-| `setEtag(enabled?)` | Enables `ETag` for this response. A matching conditional request becomes a 304. |
+| `setEtag(option?)`, `etag` | How **this** response is tagged with an `ETag`, overruling the adapter's `etag` option for it alone: `false` (none), `true`/`"strong"`, `"weak"`, or a function `(body) => string \| undefined` that gets a text body as a string and a binary one as bytes. `setEtag()` alone means `true`; `res.etag` reads it back or sets it. A tag set by hand (`res.set("ETag", …)`) always wins, a matching `If-None-Match` (weak or strong) becomes a 304, and `sendFile` uses its weak size-and-mtime tag whenever this is not `false`. |
 | `getBody()`, `headersSent` | Inspection. |
 
 A text or JSON body sent when **no header has been set** (no `set()`,

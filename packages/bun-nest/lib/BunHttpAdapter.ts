@@ -12,6 +12,7 @@ import type {
   BunWebSocketNormalOptions,
   BunWebSocketServerType,
   EmptyShape,
+  EtagOption,
   FetchInput,
   matchedRoute,
   MountedHandler,
@@ -58,6 +59,7 @@ import {
   isString,
   isUndefined,
   mergeBunRequestOptions,
+  normalizeEtagOption,
   omit,
   set,
   toFetchResponse,
@@ -174,7 +176,8 @@ export class BunHttpAdapter<
    */
   #registeredBodyParsers = new Set<string>();
   /** When true, every response computes an `ETag`. Opt-in (off by default). */
-  protected etagEnabled = false;
+  /** The `etag` option every response starts with (see `BunResponse.etag`). */
+  protected etagEnabled: EtagOption = false;
   /**
    * Emits the server's `listening`, `error` and `close` events, which the
    * Nest-facing server proxy forwards. Annotated rather than inferred: the
@@ -222,8 +225,13 @@ export class BunHttpAdapter<
        * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
        */
       router?: BunRouterOptions;
-      /** Enable automatic `ETag` generation for every response. */
-      etag?: boolean;
+      /**
+       * How every response is tagged with an `ETag`: `false` (the default),
+       * `true`/`"strong"`, `"weak"`, or a function returning the tag (see
+       * `BunResponse.etag`). A response's own `res.setEtag(...)` /
+       * `res.etag = ...` overrules it for that response.
+       */
+      etag?: EtagOption;
       /**
        * Upper bound on the router's matched-pipeline cache before FIFO
        * eviction. Forwarded to {@link BunRouter}; defaults to
@@ -264,7 +272,8 @@ export class BunHttpAdapter<
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
 
-    this.etagEnabled = options?.etag ?? false;
+    // Checked here, so a bad value fails at startup, not on every request.
+    this.etagEnabled = normalizeEtagOption(options?.etag);
     this.logger = logger;
     this.serverOptions = options?.server || {};
 
