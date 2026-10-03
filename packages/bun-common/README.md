@@ -808,8 +808,8 @@ request was built with — so a route that never looks at cookies never pays for
 them. The result is what parsing while the request is built gives: an
 assignment to either property replaces it, and an explicit
 `parseCookies()` without `forceUpdateRequest` still leaves it on the request.
-Two things differ only in timing: a custom `decode` that throws does so at that
-first touch, inside the pipeline; and the header read is the one in place then.
+The header read is the one in place at that first touch. (A custom `decode`
+that throws keeps the raw value, as it always has, so nothing throws there.)
 
 The `parseCookies: { secret }` request option does what
 `cookieParser(secret)` does, on every request. It sets `req.secret` to its first entry while the request is
