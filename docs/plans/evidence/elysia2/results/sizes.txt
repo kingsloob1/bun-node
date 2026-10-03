@@ -1,0 +1,10 @@
+Bun 1.4.2
+
+BunRequest (after init, GET, defaults)          432 bytes    50 fields
+BunResponse (after send)                        320 bytes    31 fields
+Elysia 2-shaped Context (+ set record)           64 bytes     6 fields
+  its set record                                 48 bytes     3 fields
+native Request                                  208 bytes     0 fields
+native Response('42')                           362 bytes     0 fields
+
+public own keys: BunRequest 14, BunResponse 8

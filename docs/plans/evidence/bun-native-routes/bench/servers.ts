@@ -10,6 +10,9 @@
  *   GET  /mw/hit          -> "mw:3", behind three `use("/mw", …)` middleware
  *                            that each bump a counter on the request
  *   POST /json            -> {"ok":true,"n":<body.n>}
+ *   GET  /async           -> "ok", from a handler that awaits once first
+ *   GET  /headers         -> "ok" with Content-Type, Access-Control-Allow-Origin
+ *                            and Vary set (the Elysia 2 plan's C3 scenario)
  *   GET  /r<i>/:id        -> "r<i>:<id>" for i in 0..ROUTES-1 (ROUTES env,
  *                            default 1000) — the lookup-cost set
  *
@@ -20,11 +23,19 @@
  *   bun-common-lean  the same with body/cookie/query parsing off
  *   bun-nest       @kingsleyweb/bun-nest BunHttpAdapter in a Nest app
  *   elysia         Elysia 1.4 (from benchmarks/node_modules)
+ *   elysia2        Elysia 2 beta (the `elysia2` alias in benchmarks/package.json)
  *   proto-*        the prototype variants in ../prototype (see there)
  */
 import process from "node:process";
 
 const ROUTES = Number(process.env.ROUTES ?? 1000);
+
+/** The three headers `GET /headers` sets, on every target. */
+export const HEADERS = {
+  "content-type": "text/plain; charset=utf-8",
+  "access-control-allow-origin": "*",
+  "vary": "Origin",
+} as const;
 const target = process.argv[2];
 
 type Mw = (req: { hits?: number }) => void;
@@ -45,6 +56,11 @@ async function start(): Promise<number> {
           bump(r);
           return new Response(`mw:${r.hits}`);
         },
+        "/async": async () => {
+          await null;
+          return new Response("ok");
+        },
+        "/headers": () => new Response("ok", { headers: HEADERS }),
         "/json": {
           POST: async (req: Bun.BunRequest) => {
             const body = (await req.json()) as { n: number };
@@ -77,6 +93,11 @@ async function start(): Promise<number> {
             bump(r);
             return new Response(`mw:${r.hits}`);
           }
+          if (pathname === "/async") {
+            await null;
+            return new Response("ok");
+          }
+          if (pathname === "/headers") return new Response("ok", { headers: HEADERS });
           if (pathname === "/json" && req.method === "POST") {
             const body = (await req.json()) as { n: number };
             return Response.json({ ok: true, n: body.n });
@@ -108,8 +129,12 @@ async function start(): Promise<number> {
       return await startNest(ROUTES);
     }
 
-    case "elysia": {
-      const { Elysia } = await import("../../../../../benchmarks/node_modules/elysia");
+    case "elysia":
+    case "elysia2": {
+      // `elysia2` is Elysia 2 (benchmarks/package.json aliases the beta).
+      const { Elysia } = (await import(
+        target === "elysia2" ? "../../../../../benchmarks/node_modules/elysia2" : "../../../../../benchmarks/node_modules/elysia"
+      )) as typeof import("../../../../../benchmarks/node_modules/elysia");
       let app = new Elysia()
         .get("/static", () => "ok")
         .get("/user/:id", ({ params }) => params.id)
@@ -123,6 +148,14 @@ async function start(): Promise<number> {
           },
           (g) => g.get("/mw/hit", (ctx) => `mw:${(ctx as { hits?: number }).hits}`),
         )
+        .get("/async", async () => {
+          await null;
+          return "ok";
+        })
+        .get("/headers", ({ set }) => {
+          Object.assign(set.headers, HEADERS);
+          return "ok";
+        })
         .post("/json", ({ body }) => ({ ok: true, n: (body as { n: number }).n }));
       for (let i = 0; i < ROUTES; i++) {
         app = app.get(`/r${i}/:id`, ({ params }) => `r${i}:${params.id}`) as unknown as typeof app;
@@ -168,6 +201,17 @@ export function registerExpressStyle(app: {
   a.get("/user/:id", (req, res) => res.send(req.params.id));
   a.get("/mw/hit", (req, res) => res.send(`mw:${req.hits}`));
   a.post("/json", (req, res) => res.json({ ok: true, n: req.body.n }));
+  a.get("/async", async (_req, res) => {
+    await null;
+    res.send("ok");
+  });
+  a.get("/headers", (_req, res) => {
+    const r = res as Res & { set: (name: string, value: string) => Res };
+    r.set("content-type", HEADERS["content-type"]);
+    r.set("access-control-allow-origin", HEADERS["access-control-allow-origin"]);
+    r.set("vary", HEADERS.vary);
+    r.send("ok");
+  });
   for (let i = 0; i < ROUTES; i++) {
     a.get(`/r${i}/:id`, (req, res) => res.send(`r${i}:${req.params.id}`));
   }

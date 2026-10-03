@@ -43,6 +43,7 @@ Underneath, routing is
   - [CORS](#cors)
   - [Static assets](#static-assets)
   - [Body parsing and raw bodies](#body-parsing-and-raw-bodies)
+  - [Per-route parsing with `requestParsing()`](#per-route-parsing-with-requestparsing)
   - [Response compression](#response-compression)
   - [Error handling](#error-handling)
   - [Testing with `fetch()`](#testing-with-fetch)
@@ -143,12 +144,12 @@ class under a second name. Its constructor is
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `requestTimeout` (1st argument) | `number` | `0` | Milliseconds allowed to finalise a response once routing is done. `0` means no timeout. Also settable with `setTimeout()`. |
-| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Request parsing forwarded to every `BunRequest`: body, cookie and query parsing, size caps (`parseBody.maxContentLength`, `parseBody.contentTypes`, …) and `cookieSecret`. Merged over the default object (`mergeBunRequestOptions`, nested `parseBody` included), so `{ cookieSecret }` alone keeps body parsing on; set a default explicitly to turn it off (`{ parseBody: false }`). |
+| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Request parsing forwarded to every `BunRequest`: body, cookie and query parsing, size caps (`parseBody.maxContentLength`, `parseBody.contentTypes`, …) and the cookie secret (`parseCookies: { secret }`). Merged over the default object (`mergeBunRequestOptions`, nested `parseBody`, `parseQuery` and `parseCookies` objects included), so `{ parseCookies: { secret } }` alone keeps body parsing on; set a default explicitly to turn it off (`{ parseBody: false }`). |
 | `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | Options for the `BunRouter`, merged over the default. |
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
-| `etag` | `boolean` | `false` | Compute an `ETag` for every response, so a matching `If-None-Match` is answered `304`. |
+| `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag`, so a matching `If-None-Match` is answered `304`: `true`/`"strong"`, `"weak"`, or a function returning the tag. A controller overrules it for its own response with `@Res({ passthrough: true }) res` and `res.setEtag(false)` (or `res.etag = "weak"`); see bun-common's `setEtag`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
-| `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. |
+| `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. `routes` serves constants (a health check, `robots.txt`) natively, ahead of Nest: every method, no middleware, guards or interceptors; see bun-common's [Native static routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#native-static-routes-serverroutes). |
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 
 ```ts
@@ -455,6 +456,16 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 | `compressionDictionaries` | none | Dictionaries (or a resolver) for `dcb`/`dcz` bodies. |
 | anything else | | Parser-specific options (`strict`, `reviver`, `extended`, …). |
 
+- **A request with no body is passed on at once.** No `Content-Length`, no
+  `Transfer-Encoding` and no body stream (`req.hasBody` is `false`): the
+  parser calls `next()` synchronously, before looking at the type, encoding or
+  size, as body-parser's `read()` does. It never sets `rawBody` for one. This
+  is most of a GET's cost in a Nest app: skipping it made bun-nest's GET
+  scenarios 8–23% faster.
+- **The adapter's `parseBody: false` wins.** With it, these parsers parse
+  nothing, whatever Nest's `bodyParser` option says; `requestParsing({
+  parseBody })` turns parsing on for the routes it is applied to (see
+  bun-common's README).
 - **Each kind is registered once.** A second `useBodyParser` call for the same
   kind (and prefix) does nothing; different kinds stack, each with its own
   options.
@@ -488,6 +499,54 @@ See
 and
 [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/http-adapter-options.ts).
 
+### Per-route parsing with `requestParsing()`
+
+bun-common's `requestParsing()` (re-exported here) is functional middleware,
+so `consumer.apply()` takes it. It sets how a route's requests are parsed
+(query, cookies, body) for those requests only, and parses them that way
+before calling `next()`. The options and their semantics are bun-common's;
+see its
+[Per-route parsing](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#per-route-parsing-requestparsing).
+
+To let a route **raise** its body cap above the adapter's, two settings are
+needed:
+
+- the adapter's `deferBody` request option, so the body is read on first
+  need instead of while the request is built;
+- `bodyParser: false` in `NestFactory.create`. Otherwise Nest's own body
+  parser, registered for every route at init, reads (and caps) the body
+  before any route's middleware runs.
+
+Lowering a cap, or changing query or cookie parsing, works without either.
+
+```ts
+import type { MiddlewareConsumer } from "@nestjs/common";
+import { BunHttpAdapter, requestParsing } from "@kingsleyweb/bun-nest";
+import { Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Module({ controllers: [UploadController, WebhooksController] })
+class AppModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(requestParsing({ parseBody: { maxContentLength: "20mb" } }))
+      .forRoutes("upload");
+    consumer
+      .apply(requestParsing({ parseQuery: false, parseCookies: false }))
+      .forRoutes("webhooks");
+  }
+}
+
+const adapter = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: "100kb" }, deferBody: true },
+});
+const app = await NestFactory.create(AppModule, adapter, { bodyParser: false });
+await app.listen(3000);
+```
+
+A body over a route's cap reaches Nest's exception layer as a `413`
+`PayloadTooLargeError`, as a body-parser limit does.
+
 ### Response compression
 
 bun-common's `compression()` is ordinary router middleware, so `app.use`
@@ -520,7 +579,10 @@ Errors reach one of three layers, depending on where they are raised.
    raw router middleware goes to the handlers added with
    `adapter.setErrorHandler`. Nest registers its own exception layer there at
    init, so these errors reach your exception filters as they would on
-   `@nestjs/platform-express`. Error handlers run as Express error
+   `@nestjs/platform-express`. (A declared empty body with no stream — Bun
+   serves `Content-Length: 0` that way — is checked when the body is first
+   read, by the body parser, rather than before routing; its `415` reaches
+   the same handlers.) Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
    handling with a `404`, and a return value is ignored.
@@ -1215,7 +1277,7 @@ Everything below is exported from the package root; see
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
-| Re-exported from bun-common | types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
+| Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
 

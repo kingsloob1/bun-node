@@ -31,6 +31,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [BunHttpAdapter](#bunhttpadapter)
     - [Adapter options](#adapter-options)
     - [Listening and closing](#listening-and-closing)
+    - [Native static routes](#native-static-routes-serverroutes)
     - [Not-found and error handlers](#not-found-and-error-handlers)
     - [Testing without a socket](#testing-without-a-socket)
     - [Adapter helpers](#adapter-helpers)
@@ -39,6 +40,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Request options](#request-options)
     - [Query parsing](#query-parsing)
     - [Body parsing](#body-parsing)
+    - [Per-route parsing](#per-route-parsing-requestparsing)
     - [Content negotiation](#content-negotiation)
     - [Request cookies](#request-cookies)
   - [Body decoding](#body-decoding)
@@ -180,11 +182,41 @@ wildcard is exposed as both the positional key and the name.
 - `next("route")` skips the rest of the current route's callbacks.
 - `next("router")` leaves the current mounted sub-router. From the router's
   own routes it abandons the pipeline.
-- `next()` is the only way forward. A callback that neither responds nor calls
-  `next()` leaves the request **hanging** until a timeout fires, and its return
-  value is ignored.
+- A layer is finished when it calls `next()` or sends a complete response.
+  Until then the pipeline waits for it, as Express does:
+  - `next()` may be called later, from a timer or an I/O callback;
+  - an async handler is not awaited for its own sake: its `next()` or its
+    response moves the pipeline on even while its promise is pending, and a
+    response it sends goes out at once (a rejection after that is logged);
+  - a **stream** (`res.write()`) keeps its layer open: `next()` hands the
+    stream to the next layer, which may write to it or end it, and the
+    stream's response goes out as soon as it opens.
+
+  A layer that never finishes leaves the request **hanging** until the
+  adapter's request timeout fires. A return value is ignored.
+
+  The wait is cheap: a pipeline that goes asynchronous creates one promise
+  in all, however many layers wait, and continues a microtask after the
+  `next()` or response that ends a wait — so a `next(err)` called right after
+  a `res.send()` still reaches the error handlers. `serveRequest(options,
+  hooks)` runs a request and finishes it through `hooks` (`respond`,
+  `stream`, `error`, `lateError`) inside that same promise; the adapters and
+  `fetch()` serve through it. `dispatch()` is the same without hooks, and
+  `handle()` its `async` form. The adapters pass a `RequestPipelineOptions`,
+  whose `requestHost` and `requestUrl` read the request's `host` and
+  `originalUrl` only when a host-scoped route (or specificity ordering) asks:
+  most requests never slice the host out of the URL. They are prototype
+  getters, so `{ ...options }` (in a hook or an overridden `handle()`) leaves
+  them out; read or assign them instead.
+- An error raised after the response started still runs the error handlers,
+  which see `res.headersSent` as `true`. If none handles it, a streamed
+  response is cut off (`res.destroy(err)`) and the error is logged, as
+  Express's `finalhandler` destroys the socket.
 - An error nothing handled is re-thrown to the adapter's final error handling
   ([below](#not-found-and-error-handlers)).
+- A `HEAD` request runs a route's GET handler when the route has no HEAD
+  handler of its own, as in Express. The server sends the headers without the
+  body, and so does the socket-free `fetch()`.
 - A path parameter that is not valid percent-encoding becomes a `URIError`
   with `status: 400`, as in Express 5.
 
@@ -254,7 +286,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `caseSensitive` | `boolean` | `false` | Case-sensitive path and host matching. A mounting router's setting wins over a sub-router's. |
 | `host` | `string` | none | Default host pattern for every route (`"api.example.com"`, `":tenant.example.com"`, `"*.example.com"`). A literal host is also the origin `fetch()` resolves bare paths against. |
 | `routeSpecificity` | `boolean \| (a, b) => number` | `false` | How competing route handlers are ordered (see above). |
-| `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Maximum entries in the matched-pipeline cache before FIFO eviction. `0` disables the cache. |
+| `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Maximum entries in the matched-pipeline cache before FIFO eviction. `0` disables the cache. The cache stops filling while it is not paying: when fewer than a quarter of the last 4,096 lookups hit (a fresh id in every path), it stores only one new path in 64, until a returning working set lifts the ratio again. What is matched never depends on it. |
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
@@ -301,9 +333,15 @@ named. A duplicate name also throws.
 
 Matched pipelines are cached per host, path and method. The cache key is the
 **resolved** path, so a route carrying an id needs one entry per distinct id.
-Set `routeCacheMax` above the number of distinct live paths, or set it to `0`.
-A value between the two means every request misses *and* pays for eviction.
-`clearRouteCache()` empties the cache.
+A miss is cheap: routes are indexed by their first path segment, so a miss
+runs only the regexes of routes that can match (those sharing the path's
+first segment, plus param-first routes and global middleware), in
+registration order. When the cache is full the oldest entry is evicted in
+constant time. Measured in process on a 1,000-route table, a miss costs
+about 3 µs with the cache off and 5 µs with it on (a cache hit, about
+0.2 µs), against 93 µs and 99 µs before the index. So a `routeCacheMax`
+below the number of distinct live paths no longer costs much, and `0` (no
+cache) is reasonable for very high-cardinality traffic. `clearRouteCache()` empties the cache.
 
 `RouteClass`, `routeModulePath` and `toNativeRequest` are also exported, for
 advanced integration.
@@ -398,7 +436,9 @@ owns a `Bun.serve` server. Each request goes through one method,
 `handleNativeRequest`, which does the following in order:
 
 1. builds the `BunRequest`;
-2. applies the payload guard (413) and the body-decoding check (415 or 400);
+2. applies the payload guard (413) and the body-decoding check (415 or 400) to
+   a body read while the request was built (see
+   [how the body is read](#body-decoding) for an empty one);
 3. runs the router;
 4. runs the not-found handlers;
 5. performs any WebSocket upgrade;
@@ -408,14 +448,50 @@ owns a `Bun.serve` server. Each request goes through one method,
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `requestTimeout` (1st argument) | `number` | `0` | Milliseconds to wait for a response once the pipeline has run. `0` means no timeout. Also settable with `setTimeout(ms, cb)`. |
-| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ cookieSecret }` alone keeps body parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
+| `requestTimeout` (1st argument) | `number` | `0` | Milliseconds a request may wait on a layer that has not finished — a callback that has not called `next()` or responded yet, or an async handler that has not settled — before it fails with `Request Timedout` (a `500`, through the final handling). An open stream is never timed out. `0` means no timeout. Also settable with `setTimeout(ms, cb)`. |
+| `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ parseQuery: { nesting: false } }` alone keeps body and cookie parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
 | `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | [Router options](#router-options), merged over those defaults. **The adapter is case-sensitive by default**, unlike a bare `BunRouter`. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
-| `etag` | `boolean` | `false` | Adds an `ETag` to every response (opt-in: hashing every body has a cost). |
+| `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
-| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. |
+| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
+
+A request whose body is absent and whose layers all finish synchronously
+reaches `Bun.serve` as a `Response`, with no promise in between; anything
+asynchronous (a body to read, an async handler, a `next()` called later)
+makes it a promise from that point. The semantics are the same either way.
+
+#### Native static routes (`server.routes`)
+
+`server.routes` is passed to `Bun.serve`, so a constant answer can be served
+by Bun itself, ahead of the router, at the speed of a bare `Bun.serve`:
+
+```ts
+const adapter = new BunHttpAdapter(0, {
+  server: {
+    routes: {
+      "/health": new Response("ok", { headers: { "content-type": "text/plain" } }),
+      "/favicon.ico": Bun.file("./public/favicon.ico"),
+    },
+  },
+});
+await adapter.listen(3000);
+```
+
+It is opt-in only, because such a route is not an Express route:
+
+- it answers **every method**, `POST` and `DELETE` included;
+- it runs **no middleware**: no `use()`, CORS, auth, logging or error
+  handlers. A router route on the same path never runs;
+- Bun adds an `ETag` to a static `Response`;
+- only Bun's path syntax applies (`:param` and `*`), matched on the raw
+  request target, case-sensitively and with a strict trailing slash.
+
+Use it for health checks, `robots.txt` and other public constants. Anything
+that needs the pipeline belongs on the router. A function route also works,
+but runs outside the adapter in the same way, so the router is the better
+place for it.
 
 Example tours:
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts),
@@ -479,7 +555,12 @@ builds that response:
 - `Content-Security-Policy: default-src 'none'` and
   `X-Content-Type-Options: nosniff` are set, plus any `err.headers`.
 - A `HEAD` request gets no body.
-- The adapter logs the error at `error` level, except under `NODE_ENV=test`.
+- The adapter logs the error, except under `NODE_ENV=test`: a 4xx (the
+  client's doing, such as a malformed body) at `warn`, anything else at
+  `error`. The request rides on the error as `err.req` for error handlers, but
+  non-enumerable, so a logger printing the error does not print the request.
+  (On a plain object thrown in place of an `Error`, Bun's `console` still
+  prints it: [docs/bun-bugs](https://github.com/kingsloob1/bun-node/blob/develop/docs/bun-bugs/inspect-shows-non-enumerable-properties.md).)
 
 #### Testing without a socket
 
@@ -515,6 +596,18 @@ Example:
 |---|---|
 | `useBodyParser(kind, rawBody, options)` | Registers one body parser (`"json"`, `"urlencoded"`, `"text"` or `"raw"`), once per kind. `options` follows body-parser: `type`, `limit` (over it: 413), `inflate` (`false`: 415), plus the [body-decoding](#body-decoding) options. `rawBody: true` keeps the bytes on `req.rawBody`. |
 | `registerParserMiddleware(prefix?, rawBody?)` | Registers a parser for every body type, optionally under a prefix. |
+
+Either parser passes a request with no body (`req.hasBody` false) on
+synchronously, before its type, encoding or size, as body-parser's `read()`
+does, and sets no `rawBody` for it.
+
+**`parseBody: false` is the master switch.** With it on the adapter's request
+options, a registered parser parses nothing and applies none of its own
+options (`limit`, `inflate`, …) — including the parser NestJS registers by
+default. Only `requestParsing({ parseBody })` turns parsing back on, for the
+routes it is mounted on: it reads the body itself, and a parser registered
+**after** it then runs with its own options (one registered before it ran while
+parsing was still off).
 | `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
 | `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`; see [Static files](#static-files). |
 | `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
@@ -539,7 +632,7 @@ lazily, so a request that only routes pays for nothing else.
 | Routing | `method`, `params`, `query`, `route` (the matched route while a route handler runs) |
 | Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` |
 | Headers | `headers`, `headersDistinct`, `rawHeaders`, `get(name, default?)`, `getHeader`, `getHeaders`, `getHeaderNames`, `hasHeader` |
-| Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
+| Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `hasBody` (a `Content-Length`, `Transfer-Encoding` or body stream — type-is's test, plus in-process bodies), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
 | Caching | `fresh`, `stale`, `range(size, { combine })` (`-1` unsatisfiable, `-2` malformed) |
 | Cookies | `cookies`, `signedCookies`, `secret` |
 
@@ -556,17 +649,19 @@ Examples:
 
 Given as the adapter's `request` option, merged over
 `DEFAULT_ADAPTER_REQUEST_OPTIONS` by `mergeBunRequestOptions(options, base?)`.
-A key left `undefined` keeps the default. `parseBody` objects merge too, and
-so do their `contentTypes` maps; a boolean on either side replaces the other.
+A key left `undefined` keeps the default. `parseBody`, `parseQuery` and
+`parseCookies` objects merge too, and so do `parseBody`'s `contentTypes` maps;
+a boolean on either side replaces the other.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `parseBody` | `boolean \| ParseBodyConfig` | `true` | `true` parses every body with **no size cap**, and `false` parses none. An object enables caps and a per-type allowlist. |
-| `parseCookies` | `boolean` | `true` | Parses `Cookie` into `req.cookies`. |
-| `parseQuery` | `boolean` | `true` | Parses the query string into `req.query`. |
-| `parseQueryOpts` | `QueryParserOpts` | `DEFAULT_PARSE_QUERY_OPTS` | picoquery options, merged over the defaults. |
-| `cookieParseOptions` | `CookieParseOptions` | none | Cookie parser options. |
-| `cookieSecret` | `string \| string[]` | none | Secret(s) for signed cookies, as `cookieParser(secret)`. `req.secret` is the first entry, and every entry verifies (rotation). See [Request cookies](#request-cookies). |
+| `parseCookies` | `boolean \| ParseCookiesConfig` | `true` | Parses `Cookie` into `req.cookies`/`req.signedCookies`. An object turns it on with `{ secret, decode }`: `secret` (a string, or an array for rotation) verifies signed cookies as `cookieParser(secret)` and its first entry is `req.secret`; `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). See [Request cookies](#request-cookies). |
+| `parseQuery` | `boolean \| QueryParserOpts` | `true` | Parses the query string into `req.query`. An object turns it on with those picoquery options, merged over the defaults. See [Query parsing](#query-parsing). |
+| `parseQueryOpts` | `QueryParserOpts` | none | **Deprecated**: pass the options as `parseQuery` instead. Still honoured when `parseQuery` is `true`; an object `parseQuery` wins. |
+| `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
+| `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
+| `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -581,6 +676,16 @@ own options there are two more:
 - `decodeURIComponent: true` decodes the whole string before parsing.
   Rarely needed, because it double-decodes content.
 - `decode: (query) => string` replaces the pre-parse decoding step entirely.
+
+Pass them as the `parseQuery` request option:
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+
+// `?a[b]=1` stays `{ "a[b]": "1" }`; repeated keys still become arrays.
+const app = new BunHttpAdapter(0, { request: { parseQuery: { nesting: false } } });
+app.get("/search", (req, res) => res.json(req.query));
+```
 
 `req.parseQuery(opts)` and `req.setQueryParserOptions(opts)` re-parse at run time.
 
@@ -619,7 +724,8 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 - `PayloadTooLargeError` (`status` and `statusCode` 413, `limit`, `length`)
   is thrown by `parseBody()` and by a parser middleware's `limit`.
 - `req.setParseBodyOptions()` and `req.parseBodyWithOptions()` change the
-  options from middleware; they only affect a body not yet read.
+  options from middleware; they only affect a body not yet read, and only
+  that request (the adapter's options are copied, never changed).
 - A media type no parser knows is kept as a `Buffer` with its `Content-Type`
   rewritten to `application/octet-stream`. For a custom format, run with
   `parseBody: false` and read `req.request` yourself.
@@ -628,6 +734,68 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 
 Example:
 [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts).
+
+#### Per-route parsing (`requestParsing`)
+
+The adapter's `request` options apply to every request. `requestParsing()`
+is middleware that changes them for the routes it is mounted on, and parses
+that request again with them before calling `next()`, as body-parser and
+cookie-parser do. It takes the same option names and shapes (the deprecated
+`parseQueryOpts`, `cookieParseOptions` and `cookieSecret` are not accepted
+here, and throw a `TypeError` naming the replacement):
+
+| Option | Effect on the request |
+|---|---|
+| `parseQuery` | `false` empties `req.query`; `true` parses it again with the defaults; an object parses it again with those picoquery options |
+| `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again with no secret; `{ secret, decode }` parses them again with those, and `req.secret` becomes the first secret |
+| `parseBody` | `false` parses nothing more; `true` or a `ParseBodyConfig` parses the body under these caps and allowlist |
+
+Only that request changes: the adapter's options, and other requests, never
+do. A body over the route's cap, or with an encoding it refuses, goes to
+`next(err)` as a 413, 415 or 400, so error handlers see it.
+
+The body is the one part that depends on **when it was read**. By default it
+is read, capped and parsed while the request is built, before any middleware
+runs, so an oversized body is refused before routing. A route can then only
+**tighten** the rules (a lower cap is checked against the bytes already
+read). To let a route **raise** its cap, set the adapter's `deferBody`: a
+request with a body is routed unread, and read on first need, under the
+options in force at that moment:
+
+```ts
+import { BunHttpAdapter, requestParsing } from "@kingsleyweb/bun-common";
+
+const app = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: "100kb" }, deferBody: true },
+});
+
+// 20mb here, 100kb everywhere else.
+app.use("/upload", requestParsing({ parseBody: { maxContentLength: "20mb" } }));
+// Signed cookies verified here only; no query parsing for webhooks.
+app.use("/account", requestParsing({ parseCookies: { secret: ["new", "old"] } }));
+// `a[b]` stays a flat key on this route.
+app.use("/search", requestParsing({ parseQuery: { nesting: false } }));
+app.use("/webhooks", requestParsing({ parseQuery: false, parseCookies: false }));
+
+app.post("/upload", (req, res) => res.json({ received: true }));
+```
+
+With `deferBody`, the first of these reads the body: a `requestParsing`
+middleware, a body-parser middleware (`useBodyParser`,
+`registerParserMiddleware`, whose `limit` then applies to the read),
+`await req.ready()`, `req.parseBody()`, or the router itself just before the
+first **route handler** runs. Middleware before that point sees
+`req.body === undefined` and `req.hasDeferredBody === true`. A request
+without a body is never deferred and stays synchronous.
+
+The trade-off: with `deferBody`, an oversized body is refused when it is read
+(after the middleware before it has run) rather than before routing.
+
+The same building blocks are available on the request, for this request only:
+`req.applyParseBodyOptions(parseBody)` (what the middleware's `parseBody`
+does), `req.readDeferredBody()`, `req.setCookieOptions({ parseOptions,
+secret })` then `req.parseCookies({ forceUpdateRequest: true })`, and
+`req.setQueryParserOptions(opts)` then `req.parseQuery()`.
 
 #### Content negotiation
 
@@ -649,8 +817,17 @@ any object with `headers`.
 as cookie-parser does. Signed (`s:`) cookies move to `req.signedCookies` once
 a secret verifies them, and a tampered one becomes `false`.
 
-The `cookieSecret` request option does what `cookieParser(secret)` does, on
-every request. It sets `req.secret` to its first entry while the request is
+The `Cookie` header is read and parsed the first time `req.cookies`,
+`req.signedCookies` or `req.parseCookies()` is touched, with the options the
+request was built with — so a route that never looks at cookies never pays for
+them. The result is what parsing while the request is built gives: an
+assignment to either property replaces it, and an explicit
+`parseCookies()` without `forceUpdateRequest` still leaves it on the request.
+The header read is the one in place at that first touch. (A custom `decode`
+that throws keeps the raw value, as it always has, so nothing throws there.)
+
+The `parseCookies: { secret }` request option does what
+`cookieParser(secret)` does, on every request. It sets `req.secret` to its first entry while the request is
 built, and verifies signed cookies against every entry. `res.cookie(name,
 value, { signed: true })` then signs with that same first entry:
 
@@ -658,14 +835,18 @@ value, { signed: true })` then signs with that same first entry:
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
 
 // Newest first: "s3cret" signs, and cookies signed with "0ld" still verify.
-const app = new BunHttpAdapter(0, { request: { cookieSecret: ["s3cret", "0ld"] } });
+const app = new BunHttpAdapter(0, {
+  request: { parseCookies: { secret: ["s3cret", "0ld"] } },
+});
 app.get("/me", (req, res) => {
   res.cookie("seen", "yes", { signed: true });
   res.json(req.signedCookies);
 });
 ```
 
-Without `cookieSecret`, verify in middleware instead:
+(The deprecated `cookieSecret` option still does the same.) Without a secret
+in the options, verify in middleware instead, or per route with
+[`requestParsing`](#per-route-parsing-requestparsing):
 
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
@@ -702,12 +883,48 @@ is built) or in `useBodyParser` options (applied only to a body not yet read):
 | `decompressionFastPathLimit` | `number` | 32 MiB (`DEFAULT_DECOMPRESS_FAST_PATH_LIMIT`) | Worst-case memory one layer may use in Bun's faster, uncapped decoder. A layer above it goes through `node:zlib`, which stops at the body limit; `br`, `dcb` and `dcz` always do. `0` disables the fast path and `Infinity` always uses it. |
 | `compressionDictionaries` | `Uint8Array[] \| (hash, encoding) => Uint8Array \| undefined` | none | Dictionaries for `dcb` and `dcz`, indexed by SHA-256, or a resolver. Without it those codings are refused with 415. |
 
+An invalid option (an unknown coding, a `maxContentCodings` that is not a
+non-negative integer or `Infinity`, a `compressionDictionaries` of the wrong
+shape, a `maxContentLength` — top-level or per type — that is not a
+non-negative size such as `1024` or `"100kb"`) throws where it is configured: the adapter's constructor and `setRequestOpts()`
+(which then keeps its previous options), and `requestParsing()`. A request
+resolves its `parseBody` config only when it has a body, so a bodiless request
+never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
+options built elsewhere. (A `maxContentLength` that did not parse used to be
+ignored silently, leaving the per-kind default cap in force.)
+
+**How the body is read.** When nothing has to be enforced while the body
+streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
+the request reads it in one native `arrayBuffer()` call and parses it
+synchronously: for a small JSON body, about a third less time in the request
+wrapper than before. Otherwise (no declared length under a cap, a chunked
+body) it streams under the cap and stops at the first byte past it. Either way
+the decoded length is checked against the cap afterwards, which also catches an
+in-process `Request` whose `Content-Length` understates its body. Multipart
+bodies, and a subclass overriding `parseBody()`, go through `parseBody()`.
+
+**A request without a body stream reads no header.** Bun serves a bodiless
+request, and an empty one, with no body stream, and builds its `Headers` only
+when something reads them — a cost of up to a tenth of a small request. So such
+a request finishes as bodiless while it is built, without looking at
+`Content-Length` or `Transfer-Encoding`; the first read of the body's state
+(`req.body`, `buffer`, `isBodyParsed`, `complete`, `parseBody()`, `ready()`, a
+body parser, the body events) checks those headers, and parses a declared empty
+body exactly as before: `{}` for JSON and urlencoded, `""` for text, an empty
+`Buffer` for raw. A handler that reads no header, cookie or body never builds
+them. One case changed: a declared empty body (`Content-Length: 0`, or chunked
+with no data) whose `Content-Encoding` is refused is now **routed**, and the
+refusal is recorded in `bodyDecodingError` when the body is first read (a body
+parser or `parseBody()` rejects with it, so `next(err)` still answers 415 or
+400); it used to be answered before routing. A body with data is refused before
+routing, as always.
+
 How a failure is answered:
 
 | Status | When |
 |---|---|
 | **415** | a coding that is unsupported or not allowed, in any layer; `inflate: false`; too many stacked codings; `dcb`/`dcz` without `compressionDictionaries`; a `*` sent in `Content-Encoding` |
-| **400** | data a layer cannot decode; a dictionary the header names but that was not provided |
+| **400** | data a layer cannot decode; a dictionary the header names but that was not provided; a body declared JSON (`application/json`, `+json`) that does not parse — body-parser's `type: "entity.parse.failed"`, with the text in `err.body` (a body sent with no `Content-Type` is only tried as JSON, then as the other kinds) |
 | **413** | a layer decoding past the body limit |
 
 `decompressBody(bytes, contentEncoding, options)` exposes the same decoder
@@ -726,12 +943,22 @@ Example:
 | Method | Behaviour |
 |---|---|
 | `status(code)`, `statusText(text)`, `sendStatus(code)` | Set the status; `sendStatus` also sends the reason phrase as text. |
-| `send(body)` | Accepts a string (`text/plain` unless a type is set), a plain object or array (JSON), a `Buffer` / typed array / `ArrayBuffer` (`application/octet-stream`), a `Blob` or `BunFile`, `FormData`, `URLSearchParams`, a `ReadableStream`, a Node `Readable`, an async iterable or `async function*`, or a `Response` / `BunResponse` (passed through). A number or boolean is sent as a string, where Express 5 sends JSON. |
-| `json(body)` | `application/json`. Use `json<Dto>(body)` to check the body's shape. |
+| `send(body)` | Accepts a string (`text/plain;charset=utf-8` unless a type is set), a plain object or array (JSON), a `Buffer` / typed array / `ArrayBuffer` (`application/octet-stream`), a `Blob` or `BunFile`, `FormData`, `URLSearchParams`, a `ReadableStream`, a Node `Readable`, an async iterable or `async function*`, or a `Response` / `BunResponse` (passed through). A number or boolean is sent as a string, where Express 5 sends JSON. |
+| `json(body)` | `application/json;charset=utf-8`. Use `json<Dto>(body)` to check the body's shape. |
 | `jsonp(body)` | Wraps the body in `?callback=` as `text/javascript`, with Express's sanitising and `nosniff`. |
 | `type(t)` / `contentType(t)`, `attachment(filename?)`, `location(url)`, `links(map)`, `vary(fields)` | Header helpers with Express semantics. |
-| `setEtag(enabled?)` | Enables `ETag` for this response. A matching conditional request becomes a 304. |
+| `setEtag(option?)`, `etag` | How **this** response is tagged with an `ETag`, overruling the adapter's `etag` option for it alone: `false` (none), `true`/`"strong"`, `"weak"`, or a function `(body) => string \| undefined` that gets a text body as a string and a binary one as bytes. `setEtag()` alone means `true`; `res.etag` reads it back or sets it. A tag set by hand (`res.set("ETag", …)`) always wins, a matching `If-None-Match` (weak or strong) becomes a 304, and `sendFile` uses its weak size-and-mtime tag whenever this is not `false`. |
 | `getBody()`, `headersSent` | Inspection. |
+| `locals` | Request-scoped values for later layers, as Express's `res.locals`: a null-prototype object, created on first read and fresh per request; assignable. |
+| `onceResponded(fn)`, `whenResponded(fn)` | Call `fn` with the native `Response` once one is produced (at once if it already is). `onceResponded` returns an unsubscribe function; `whenResponded` builds none and returns whether it called `fn` at once. |
+
+A text or JSON body sent when **no header has been set** (no `set()`,
+`type()`, `cookie()`, CORS or other header-writing middleware, no `ETag`, no
+`compression()`) is built without a `Headers` object at all, which roughly
+halves the cost of `send()`/`json()`. The defaults above are the types Bun
+itself writes for such a body, so a response's `Content-Type` is the same
+whether or not other headers were set, and `res.getHeader("Content-Type")`
+reports it after the send. A `HEAD` request always takes the full path.
 
 Freshness follows Express: a fresh conditional request becomes 304, and a 204
 or 304 loses its body headers.
@@ -753,7 +980,7 @@ written as a `j:` JSON cookie. `clearCookie(name, options)` expires one.
 | Cookie option | Meaning |
 |---|---|
 | `maxAge` | Milliseconds from now, a number or numeric string. Written as `Max-Age` in seconds plus a matching `Expires`. |
-| `signed`, `secret` | Sign the value (`s:`) with `secret`, or with `req.secret` (its first entry) when that is unset; `req.secret` comes from the `cookieSecret` request option or middleware. Throws when there is no secret. |
+| `signed`, `secret` | Sign the value (`s:`) with `secret`, or with `req.secret` (its first entry) when that is unset; `req.secret` comes from the `parseCookies: { secret }` request option (or the deprecated `cookieSecret`) or middleware. Throws when there is no secret. |
 | `path` | Defaults to `/`. |
 | `domain`, `expires`, `httpOnly`, `secure`, `partitioned`, `priority` | Standard attributes. |
 | `sameSite` | `true` means `Strict` and `false` omits the attribute. Left unset, Bun emits `SameSite=Lax`. |

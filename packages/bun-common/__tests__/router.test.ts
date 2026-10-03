@@ -6,7 +6,7 @@ import type {
 import { Router } from "@routejs/router";
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
-import { BunRouter } from "../lib/BunRouter";
+import { BunRouter, isRequestTimeoutError } from "../lib/BunRouter";
 import { BunWebSocket } from "../lib/BunWebSocket";
 import { createTestLogger, isLogger } from "../lib/logging";
 import { makeRequest } from "./helpers";
@@ -567,7 +567,12 @@ describe("BunRouter: direct route matching (no routejs LRU)", () => {
 });
 
 describe("BunRouter: pipeline advances only via next()", () => {
-  async function exec(router: BunRouter, method: string, path: string) {
+  async function exec(
+    router: BunRouter,
+    method: string,
+    path: string,
+    timeout?: number,
+  ) {
     const request = await makeRequest({
       url: `http://localhost${path}`,
       method,
@@ -579,8 +584,33 @@ describe("BunRouter: pipeline advances only via next()", () => {
       requestUrl: path,
       request,
       response,
+      timeout,
     });
     return { result, response };
+  }
+
+  /** Runs `exec`, expecting the pipeline to stay parked until `timeout`. */
+  async function execHung(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const handled = router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+      timeout: 20,
+    });
+    await expect(handled).rejects.toThrow("Request Timedout");
+    let thrown: unknown;
+    await handled.catch((error: unknown) => {
+      thrown = error;
+    });
+    expect(isRequestTimeoutError(thrown)).toBe(true);
+    return { response };
   }
 
   it("a verb handler that calls next() advances to the next verb handler", async () => {
@@ -672,14 +702,12 @@ describe("BunRouter: pipeline advances only via next()", () => {
       res.json({ order });
     });
 
-    const { result, response } = await exec(router, "GET", "/a");
+    // handle() parks on the first handler, waiting for a next() or a
+    // response that never comes — the request hangs until its timeout.
+    const { response } = await execHung(router, "GET", "/a");
     // The first handler ran but never advanced the pipeline.
     expect(order).toEqual(["stuck"]);
-    // handle() resolves truthy (not a 404) — the request is left in flight.
-    expect(result).toBeTruthy();
     expect(response.headersSent).toBe(false);
-    // No response will ever be produced — the request hangs until timeout.
-    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
   });
 
   it("hangs when an async verb handler forgets to respond or call next()", async () => {
@@ -688,10 +716,8 @@ describe("BunRouter: pipeline advances only via next()", () => {
       // Forgot to send a response or call next().
     });
 
-    const { result, response } = await exec(router, "GET", "/a");
-    expect(result).toBeTruthy();
+    const { response } = await execHung(router, "GET", "/a");
     expect(response.headersSent).toBe(false);
-    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
   });
 
   it("hangs when an all() handler neither sends a response nor calls next()", async () => {
@@ -700,10 +726,8 @@ describe("BunRouter: pipeline advances only via next()", () => {
       // No response, no next().
     });
 
-    const { result, response } = await exec(router, "GET", "/a");
-    expect(result).toBeTruthy();
+    const { response } = await execHung(router, "GET", "/a");
     expect(response.headersSent).toBe(false);
-    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
   });
 
   it("hangs when a middleware neither sends a response nor calls next()", async () => {
@@ -717,21 +741,19 @@ describe("BunRouter: pipeline advances only via next()", () => {
       res.json({ order });
     });
 
-    const { response } = await exec(router, "GET", "/a");
+    const { response } = await execHung(router, "GET", "/a");
     // The middleware never called next() — the route handler is unreachable.
     expect(order).toEqual(["middleware"]);
     expect(response.headersSent).toBe(false);
-    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
   });
 
   it("ignores a handler's return value — a returned body does not respond", async () => {
     const router = new BunRouter();
     router.get("/a", () => ({ returned: true }));
 
-    const { response } = await exec(router, "GET", "/a");
+    const { response } = await execHung(router, "GET", "/a");
     // Returning a value is not sending a response — the request hangs.
     expect(response.headersSent).toBe(false);
-    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
   });
 
   it("stops the pipeline once a verb handler sends a response", async () => {
@@ -767,6 +789,64 @@ describe("BunRouter: pipeline advances only via next()", () => {
     const { result } = await exec(router, "GET", "/a");
     // Every handler passed via next() and nothing responded — unhandled.
     expect(order).toEqual(["one", "two"]);
+    expect(result).toBeUndefined();
+  });
+
+  it("continues when a middleware calls next() later, from a callback (Express)", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.use((_req, _res, next) => {
+      order.push("mw");
+      setTimeout(next, 5);
+    });
+    router.get("/a", (_req, res) => {
+      order.push("route");
+      res.send("ok");
+    });
+
+    const { result, response } = await exec(router, "GET", "/a", 1000);
+    expect(result).toBeTruthy();
+    expect(order).toEqual(["mw", "route"]);
+    expect(await response.settledResponse?.text()).toBe("ok");
+  });
+
+  it("hands a late next(err) to the error handlers", async () => {
+    const router = new BunRouter();
+    router.use((_req, _res, next) => {
+      queueMicrotask(() => next(new Error("late")));
+    });
+    router.get("/a", (_req, res) => res.send("unreachable"));
+    router.use(((err, _req, res, _next) => {
+      res.status(500).send(`caught:${(err as Error).message}`);
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const { response } = await exec(router, "GET", "/a", 1000);
+    expect(response.settledResponse?.status).toBe(500);
+    expect(await response.settledResponse?.text()).toBe("caught:late");
+  });
+
+  it("ends the wait when a parked handler responds later", async () => {
+    const router = new BunRouter();
+    let reached = false;
+    router.get("/a", (_req, res) => {
+      setTimeout(() => res.send("later"), 5);
+    });
+    router.get("/a", () => {
+      reached = true;
+    });
+
+    const { result, response } = await exec(router, "GET", "/a", 1000);
+    expect(result).toBeTruthy();
+    expect(reached).toBe(false);
+    expect(await response.settledResponse?.text()).toBe("later");
+  });
+
+  it("returns undefined when a late next() exhausts the pipeline", async () => {
+    const router = new BunRouter();
+    router.get("/a", (_req, _res, next) => {
+      setTimeout(next, 5);
+    });
+    const { result } = await exec(router, "GET", "/a", 1000);
     expect(result).toBeUndefined();
   });
 });

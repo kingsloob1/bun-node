@@ -66,18 +66,26 @@ class PathGateway {
 @Module({ providers: [RoomsGateway, LateGateway, PathGateway] })
 class AppModule {}
 
-let app: INestApplication;
-let httpAdapter: BunHttpAdapter;
-let base: string;
-
-beforeAll(async () => {
-  httpAdapter = new BunHttpAdapter(30000);
-  app = await NestFactory.create(AppModule, httpAdapter, {
+/** One listening app with the three gateways. */
+async function startApp() {
+  const httpAdapter = new BunHttpAdapter(30000);
+  const app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
   app.useWebSocketAdapter(httpAdapter.webSocketAdapter);
   await app.listen(0);
-  base = `ws://127.0.0.1:${httpAdapter.listeningPort}`;
+  return {
+    app,
+    httpAdapter,
+    base: `ws://127.0.0.1:${httpAdapter.listeningPort}`,
+  };
+}
+
+let app: INestApplication;
+let base: string;
+
+beforeAll(async () => {
+  ({ app, base } = await startApp());
 });
 
 afterAll(async () => {
@@ -144,8 +152,21 @@ describe("NestJS gateway binding: exceptions", () => {
 });
 
 describe("NestJS gateway binding: close()", () => {
+  // Its own app: close() tears the gateways down for good, so the tests above
+  // must not share it (under `bun test --randomize` this one may run first).
+  let closing: Awaited<ReturnType<typeof startApp>>;
+
+  beforeAll(async () => {
+    closing = await startApp();
+  });
+
+  afterAll(async () => {
+    await closing?.app.close();
+  });
+
   it("closes connections on the shared server without stopping HTTP", async () => {
-    const client = await connectWs(`${base}/`);
+    const { httpAdapter } = closing;
+    const client = await connectWs(`${closing.base}/`);
     const closed = new Promise<number>((resolve) => {
       client.socket.addEventListener("close", (event) => resolve(event.code));
     });

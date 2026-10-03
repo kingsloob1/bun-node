@@ -1,0 +1,6 @@
+Bun 1.4.2; bodyParser off; 1 layers matched; ns/request, best of 5 x 100000
+
+  whole adapter path: serveNativeRequest(new Request)                8513 ns
+  BunRequest.init + new BunResponse                                  1609 ns
+  + router.dispatch (bun-common pipeline incl. #waitLayer)           6984 ns
+  + Nest route callback called directly, awaited (no pipeline)       5121 ns

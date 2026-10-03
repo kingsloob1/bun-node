@@ -14,10 +14,12 @@
  *   is needed.
  * - `init()` returns the request itself — not a promise — when no parsing was
  *   scheduled, and a promise otherwise.
- * - `parseQueryOpts` accepts picoquery's own options plus `decode` and
- *   `decodeURIComponent`. It **replaces** `DEFAULT_PARSE_QUERY_OPTS` rather
- *   than merging into it — spread the defaults in to keep bracket nesting
- *   (picoquery's own default nesting syntax reads dots only).
+ * - `parseQuery`, like `parseBody`, is `boolean | options`: an object turns
+ *   parsing on with picoquery's own options plus `decode` and
+ *   `decodeURIComponent`. `parseCookies` is `boolean | { secret, decode }`.
+ * - `parseQueryOpts`, `cookieParseOptions` and `cookieSecret` are deprecated:
+ *   still honoured where the object form leaves the field out, and the
+ *   object form wins.
  * - `parseXmlOpts`, `parseMultiPartFormDataOpts` and `allowedContentTypes` are
  *   deprecated in favour of `parseBody.contentTypes`, but still honoured.
  * - Checks marked `Known issue` assert what the library documents where it
@@ -103,13 +105,33 @@ const bare = BunRequest.init(
   },
 );
 check("init() returns the instance itself", bare instanceof BunRequest);
-const scheduled = BunRequest.init(
-  new Request("http://localhost/?a=1"),
+// A request without a body has nothing to read, so parsing is finished
+// while it is built: the instance again, even with every parser on.
+const bodiless = BunRequest.init(
+  new Request("http://localhost/?a=1", { headers: { cookie: "c=1" } }),
   FETCH_STUB_SERVER,
   { parseBody: true },
 );
 check(
-  "…and a promise when parsing was scheduled",
+  "…and with every parser on, for a request without a body",
+  bodiless instanceof BunRequest,
+);
+checkEqual(
+  "…already parsed",
+  {
+    query: (bodiless as BunRequest).query,
+    cookies: (bodiless as BunRequest).cookies,
+    complete: (bodiless as BunRequest).complete,
+  },
+  { query: { a: "1" }, cookies: { c: "1" }, complete: true },
+);
+const scheduled = BunRequest.init(
+  new Request("http://localhost/?a=1", { method: "POST", body: "x" }),
+  FETCH_STUB_SERVER,
+  { parseBody: true },
+);
+check(
+  "…and a promise when a body has to be read",
   scheduled instanceof Promise,
 );
 checkEqual(
@@ -124,7 +146,62 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("parseQuery and parseQueryOpts");
+step("Built lazily: an empty query, and options never written");
+
+/** A bodiless request for `url`, built with `options`. */
+function lazyBuilt(
+  url: string,
+  options: Options = { parseBody: true },
+): BunRequest {
+  return BunRequest.init(new Request(url), FETCH_STUB_SERVER, {
+    parseBody: true,
+    ...options,
+  }) as BunRequest;
+}
+const parsedQuery = lazyBuilt("http://localhost/?a=1").query;
+const emptyQuery = lazyBuilt("http://localhost/").query;
+checkEqual("no query string: req.query is {}", emptyQuery, {});
+check(
+  "…with a parsed query's own prototype (picoquery's)",
+  Object.getPrototypeOf(emptyQuery) === Object.getPrototypeOf(parsedQuery),
+);
+const unparsed = lazyBuilt("http://localhost/?a=1", {
+  parseBody: true,
+  parseQuery: false,
+});
+check(
+  "parseQuery: false: a plain {}",
+  Bun.deepEquals(unparsed.query, {}) &&
+    Object.getPrototypeOf(unparsed.query) === Object.prototype,
+  unparsed.query,
+);
+const frozenOptions = Object.freeze({ parseBody: true as const });
+const fromFrozen = BunRequest.init(
+  new Request("http://localhost/?k=v", { headers: { Cookie: "c=1" } }),
+  FETCH_STUB_SERVER,
+  frozenOptions,
+) as BunRequest;
+checkEqual(
+  "frozen options with parseQuery/parseCookies unset: both still parse",
+  [fromFrozen.query, fromFrozen.cookies],
+  [{ k: "v" }, { c: "1" }],
+);
+checkEqual(
+  "…and the frozen object is left as it was",
+  Object.keys(frozenOptions),
+  ["parseBody"],
+);
+const readyRequest = lazyBuilt("http://localhost/?k=v");
+checkEqual(
+  "ready() still reports [query, body, cookies]",
+  (await readyRequest.ready()).map((settled) =>
+    settled.status === "fulfilled" ? settled.value : settled.status,
+  ),
+  [{ k: "v" }, undefined, { cookies: {}, signedCookies: {} }],
+);
+
+/* ------------------------------------------------------------------ */
+step("parseQuery: boolean or parser options");
 
 checkEqual("DEFAULT_PARSE_QUERY_OPTS", DEFAULT_PARSE_QUERY_OPTS, {
   nesting: true,
@@ -156,7 +233,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nesting: false } },
+      { parseQuery: { nesting: false } },
     )
   ).query,
   {
@@ -170,7 +247,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nestingSyntax: "dot" } },
+      { parseQuery: { nestingSyntax: "dot" } },
     )
   ).query,
   {
@@ -184,7 +261,7 @@ checkEqual(
     await make(
       "http://localhost/?a.b=1&c[d]=2",
       {},
-      { parseQueryOpts: { nestingSyntax: "index" } },
+      { parseQuery: { nestingSyntax: "index" } },
     )
   ).query,
   {
@@ -198,7 +275,7 @@ checkEqual(
     await make(
       "http://localhost/?tag=p&tag=q",
       {},
-      { parseQueryOpts: { arrayRepeat: false } },
+      { parseQuery: { arrayRepeat: false } },
     )
   ).query,
   {
@@ -211,7 +288,7 @@ checkEqual(
     await make(
       "http://localhost/?tag[]=p&tag[]=q",
       {},
-      { parseQueryOpts: { arrayRepeat: true, arrayRepeatSyntax: "bracket" } },
+      { parseQuery: { arrayRepeat: true, arrayRepeatSyntax: "bracket" } },
     )
   ).query,
   {
@@ -224,7 +301,7 @@ checkEqual(
     await make(
       "http://localhost/?a=1;b=2",
       {},
-      { parseQueryOpts: { delimiter: ";" } },
+      { parseQuery: { delimiter: ";" } },
     )
   ).query,
   {
@@ -239,7 +316,7 @@ checkEqual(
       "http://localhost/?n=5&s=x",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           valueDeserializer: (value) => {
             return /^\d+$/.test(value) ? Number(value) : value;
           },
@@ -256,7 +333,7 @@ checkEqual(
       "http://localhost/?Page=2",
       {},
       {
-        parseQueryOpts: { keyDeserializer: (key) => key.toLowerCase() },
+        parseQuery: { keyDeserializer: (key) => key.toLowerCase() },
       },
     )
   ).query,
@@ -283,7 +360,7 @@ checkEqual(
       "http://localhost/?q=a%26b",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decodeURIComponent: true,
         },
@@ -302,7 +379,7 @@ checkEqual(
       "http://localhost/?a=1~b=2",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decode: (q) => q.replace(/~/g, "&"),
         },
@@ -321,7 +398,7 @@ checkEqual(
       "http://localhost/?ids%5B0%5D=1",
       {},
       {
-        parseQueryOpts: {
+        parseQuery: {
           ...DEFAULT_PARSE_QUERY_OPTS,
           decode: () => {
             throw new Error("boom");
@@ -331,6 +408,32 @@ checkEqual(
     )
   ).query,
   { ids: ["1"] },
+);
+
+checkEqual(
+  "deprecated parseQueryOpts still works",
+  (
+    await make(
+      "http://localhost/?a.b=1",
+      {},
+      { parseQueryOpts: { nesting: false } },
+    )
+  ).query,
+  { "a.b": "1" },
+);
+checkEqual(
+  "…and an object parseQuery wins over it",
+  (
+    await make(
+      "http://localhost/?a.b=1",
+      {},
+      {
+        parseQuery: { ...DEFAULT_PARSE_QUERY_OPTS },
+        parseQueryOpts: { nesting: false },
+      },
+    )
+  ).query,
+  { a: { b: "1" } },
 );
 
 const reparsed = await make(
@@ -352,7 +455,7 @@ checkEqual(
 checkEqual("…and assigns req.query", reparsed.query, { a: { b: "1" } });
 
 /* ------------------------------------------------------------------ */
-step("parseCookies, cookieParseOptions and secrets");
+step("parseCookies: boolean or { secret, decode }");
 
 const SECRET = "tour secret";
 const signedValue = `s:${signCookie("user-42", SECRET)}`;
@@ -362,7 +465,8 @@ const withCookies = await make(
   "http://localhost/",
   { headers: { Cookie: cookieHeader } },
   {
-    cookieParseOptions: { decode: (value) => value },
+    // Applied to each raw value; this one is the default's percent-decoding.
+    parseCookies: { decode: (value) => decodeURIComponent(value) },
   },
 );
 checkEqual(
@@ -373,6 +477,76 @@ checkEqual(
     prefs: { lang: "en" },
     session: signedValue,
   },
+);
+checkEqual(
+  "parseCookies: { decode } is applied: an identity decoder keeps raw values",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      { parseCookies: { decode: (value) => value } },
+    )
+  ).cookies,
+  { name: "J%C3%B6rg" },
+);
+const signedAtInit = await make(
+  "http://localhost/",
+  { headers: { Cookie: cookieHeader } },
+  { parseCookies: { secret: ["newer", SECRET] } },
+);
+checkEqual(
+  "parseCookies: { secret } verifies at init, against every secret",
+  signedAtInit.signedCookies,
+  { session: "user-42" },
+);
+checkEqual("…and req.secret is the first", signedAtInit.secret, "newer");
+
+// The deprecated spellings, still honoured where the object leaves a gap.
+checkEqual(
+  "deprecated cookieParseOptions.decode still works",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      { cookieParseOptions: { decode: (value) => value } },
+    )
+  ).cookies,
+  { name: "J%C3%B6rg" },
+);
+checkEqual(
+  "…and parseCookies: { decode } wins over it",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: "name=J%C3%B6rg" } },
+      {
+        parseCookies: { decode: (value) => decodeURIComponent(value) },
+        cookieParseOptions: { decode: (value) => value },
+      },
+    )
+  ).cookies,
+  { name: "Jörg" },
+);
+checkEqual(
+  "deprecated cookieSecret still works",
+  (
+    await make(
+      "http://localhost/",
+      { headers: { Cookie: cookieHeader } },
+      { cookieSecret: SECRET },
+    )
+  ).signedCookies,
+  { session: "user-42" },
+);
+const secretWins = await make(
+  "http://localhost/",
+  { headers: { Cookie: cookieHeader } },
+  { parseCookies: { secret: "a different secret" }, cookieSecret: SECRET },
+);
+checkEqual(
+  "…and parseCookies: { secret } wins over it",
+  { secret: secretWins.secret, signed: secretWins.signedCookies },
+  { secret: "a different secret", signed: { session: false } },
 );
 checkEqual(
   "parseCookies: false leaves cookies empty",
@@ -1644,6 +1818,29 @@ checkEqual(
   "no files: [] and undefined",
   [uploads.files, uploads.file],
   [[], undefined],
+);
+// Rarely-read state is created on first write; untouched, it reads as the
+// defaults it always had.
+checkEqual(
+  "untouched defaults: rawBody, maxHeadersCount, reusedSocket, storageFiles, payload flags",
+  {
+    rawBody: uploads.rawBody,
+    maxHeadersCount: uploads.maxHeadersCount,
+    reusedSocket: uploads.reusedSocket,
+    storageFiles: uploads.storageFiles,
+    isPayloadTooLarge: uploads.isPayloadTooLarge,
+    payloadTooLarge: uploads.payloadTooLarge,
+    bodyDecodingError: uploads.bodyDecodingError,
+  },
+  {
+    rawBody: undefined,
+    maxHeadersCount: 0,
+    reusedSocket: false,
+    storageFiles: [],
+    isPayloadTooLarge: false,
+    payloadTooLarge: undefined,
+    bodyDecodingError: undefined,
+  },
 );
 /** An `avatar` upload named `originalFilename`, as `MemoryStorage` stores it. */
 function storedAvatar(originalFilename: string): MemoryStorageFile {

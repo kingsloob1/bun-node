@@ -232,6 +232,14 @@ type check. It is a standalone package like the bench ones — its own
   handoff); `check-types.ts` about 25 s. The template's README is its quick
   start, so a change to what a provider must do is a change there too.
 
+## Bun bugs
+
+Bun behaviour that bun-node works around is documented in
+[`docs/bun-bugs/`](docs/bun-bugs/README.md): one report and one minimal,
+Bun-only reproduction per bug. A reproduction exits 1 while the bug is
+present, so after raising the Bun floor, run them to see which workaround can
+go. When you work around a new one, add it there (the README says how).
+
 ## Typechecking
 
 **One base config, extended everywhere.** `tsconfig.base.json` at the repo
@@ -604,6 +612,28 @@ matched route.
   resumes normal processing; `next(err)` keeps propagating.
 - `next('route')` skips the rest of the current route's callbacks;
   `next('router')` abandons the router.
+- A layer is finished when it calls `next()` or sends a **complete**
+  response; until then the pipeline waits (`waitForLayer`): for a `next`
+  called from a callback, an async handler's promise, a response, or an open
+  stream's end. An async handler's `next()` or response moves on without
+  awaiting the promise (a later rejection is logged); an open stream
+  (`res.write()`) handed on with `next()` stays open for the next layer.
+  `handle()`'s `timeout` (the adapters pass their request timeout) fails a
+  wait with `Request Timedout` while nothing has been sent, answered without
+  the request (`isRequestTimeoutError`). `dispatch()` returns synchronously
+  when no layer had to wait. A pipeline that parks (`#park`) gets **one**
+  promise for all its waits (`#ensureAsync`); a wake from `next()`, a
+  response or a stream's end resumes a microtask later — never inside the
+  call that woke it, so `res.send(); next(err)` in one tick still reaches
+  the error handlers. The adapters and `fetch()` serve through
+  `serveRequest(options, hooks)`, which finishes the request (its `Response`,
+  or a stream's as soon as it opens) inside that same promise;
+  `awaitPipelineOrStream` remains for a router whose `handle()` is
+  overridden.
+- An error after the response started still runs the error handlers; one
+  none handles destroys a streamed response (`res.destroy`) and is logged.
+- A route without its own HEAD handler answers `HEAD` with its GET one;
+  socket-free `fetch()` drops the body as `Bun.serve` does (`toFetchResponse`).
 - An unhandled error is re-thrown for the adapter's final error handler
   (`setErrorHandler` / `Bun.serve` `error()` callback).
 - `use(path, ...)` registers middleware with `group: path` so

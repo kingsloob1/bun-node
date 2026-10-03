@@ -1,0 +1,16 @@
+Bun 1.4.2; GET /user/42; cumulative ns per request, best of 5 x 200000
+
+Elysia 2 (stages replayed from its source)
+  new Request(url)                                                  277 ns
+  + new Context(request) + extractPath                              353 ns
+  + ~map[method][path] miss + memoirist.find                        632 ns
+  + handler + new Response(value)   (mapCompactResponse)            950 ns
+  real app.fetch (withOrigin)                                      1227 ns
+
+bun-common, adapter defaults (stages as the adapter calls them)
+  new Request(url)                                                  290 ns
+  + BunRequest.init (defaults; no body)                            1727 ns
+  + new BunResponse                                                1961 ns
+  + host/method/originalUrl + getMatchedLayers (hit)               2439 ns
+  + dispatch (pipeline + handler + res.send)                       3866 ns
+  real serveNativeRequest                                          3946 ns

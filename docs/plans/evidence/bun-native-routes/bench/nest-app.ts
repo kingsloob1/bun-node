@@ -5,7 +5,7 @@
  * thousand `/r<i>/:id` routes are one generated controller each.
  */
 import type { MiddlewareConsumer, NestMiddleware } from "@nestjs/common";
-import { Body, Controller, Get, HttpCode, Module, Param, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Header, HttpCode, Module, Param, Post, Req } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import "reflect-metadata";
@@ -34,6 +34,20 @@ class BenchController {
   @Get("mw/hit")
   mw(@Req() req: { hits?: number }) {
     return `mw:${req.hits}`;
+  }
+
+  @Get("async")
+  async asyncRoute() {
+    await null;
+    return "ok";
+  }
+
+  @Get("headers")
+  @Header("Content-Type", "text/plain; charset=utf-8")
+  @Header("Access-Control-Allow-Origin", "*")
+  @Header("Vary", "Origin")
+  headers() {
+    return "ok";
   }
 
   @Post("json")

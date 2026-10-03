@@ -1,0 +1,169 @@
+=== static (GET /static) -> 200
+(no generated source: an inline closure, see createInlineHandler)
+
+=== param (GET /user/42) -> 200
+function route(c){
+try{
+let _r=h(c)
+if(_r instanceof Error)throw _r
+if(typeof _r?.then==='function')_r=Promise.resolve(_r).then(fe)
+const _m=rc(_r,c.request,true)
+return typeof _m?.then==='function'?Promise.resolve(_m).catch((_e)=>fre(rt,c,_e)):_m
+}catch(e){return fre(rt,c,e)}
+}
+
+=== middleware (GET /mw/hit) -> 200
+(function(){
+function _sc(c,_stl){
+c._arf=true
+queueMicrotask(async()=>{if(_stl){try{for await(const v of _stl){}}catch{}}
+let _q=c['~afterResponse']
+if(_q){let _l=_q.length
+for(let _i=0;_i<_l;_i++){try{await _q[_i](c)}catch(_e){console.error(_e)}}
+}
+})
+}
+async function _t(c,_rk,_y,_lr,_le,_stl,_sv){
+let _as
+try{
+let _r=_lr,tmp
+if(_rk<=0){
+tmp=_rk===0?_y:bf[0](c)
+if(_rk===0||typeof tmp?.then==='function'){;_as??=(c['~sig']??=c.request.signal)
+tmp=await tmp}
+if(tmp!==undefined)_r=tmp
+}
+if(_rk<=1&&(_rk===1||!c['~sig']?.aborted&&_r===undefined)){
+tmp=_rk===1?_y:bf[1](c)
+if(_rk===1||typeof tmp?.then==='function'){;_as??=(c['~sig']??=c.request.signal)
+tmp=await tmp}
+if(tmp!==undefined)_r=tmp
+}
+if(_rk<=2&&(_rk===2||!c['~sig']?.aborted&&_r===undefined)){
+tmp=_rk===2?_y:bf[2](c)
+if(_rk===2||typeof tmp?.then==='function'){;_as??=(c['~sig']??=c.request.signal)
+tmp=await tmp}
+if(tmp!==undefined)_r=tmp
+}
+if(_rk<3){
+if(c['~sig']?.aborted)return emp.clone()
+}
+if(_rk<=3&&(_rk===3||_r===undefined)){
+_r=_rk===3?_y:h(c)
+if(_rk===3||typeof _r?.then==='function'){;_as??=(c['~sig']??=c.request.signal)
+_r=await _r}
+if(_r&&(_r[Symbol.iterator]||_r[Symbol.asyncIterator])&&typeof _r.next==='function'){
+const _s=tee(_r,2)
+_sv=_r=_s[0]
+_stl=_s[1]
+}else if(_r instanceof ReadableStream){const _o=obs(_r)
+if(_o){_r=_o[0];_stl=_o[1];_sv=_o[2]}}
+}
+if(_rk<4){
+if(c['~sig']?.aborted){_sv?.return()
+return emp.clone()}
+}
+if(_rk<4){
+if(_r instanceof Error)throw _r
+}
+if(_rk<4){
+c.responseValue=_r
+}
+let _m
+if(_rk<=4){
+_m=_rk===4?_y:rm(_r,c.set,c.request,true)
+if(_rk===4||typeof _m?.then==='function'){_m=await _m}
+}
+_sc(c,_stl)
+return _m
+}catch(e){if(c._arf)return fre(rt,c,e)
+c._arf=true
+const _fr=fre(rt,c,e)
+return typeof _fr?.then==='function'?_fr.then((_v)=>{_sc(c,_stl)
+return _v
+}):(_sc(c,_stl),_fr)
+}
+}
+return function route(c){
+if(ea(c))return emp.clone()
+let _stl,_sv
+try{
+c.query=pq(c.request.url,c.qi)
+c.headers=c.request.headers.toJSON()
+let _ck=pcrd(c.headers['cookie'],cc)
+c.cookie=bcj(c.set,_ck,cc,undefined,1)
+let _r,tmp
+tmp=bf[0](c)
+if(typeof tmp?.then==='function')return _t(c,0,tmp,_r,undefined,_stl,_sv)
+if(tmp!==undefined)_r=tmp
+if(!c['~sig']?.aborted&&_r===undefined){
+tmp=bf[1](c)
+if(typeof tmp?.then==='function')return _t(c,1,tmp,_r,undefined,_stl,_sv)
+if(tmp!==undefined)_r=tmp
+if(!c['~sig']?.aborted&&_r===undefined){
+tmp=bf[2](c)
+if(typeof tmp?.then==='function')return _t(c,2,tmp,_r,undefined,_stl,_sv)
+if(tmp!==undefined)_r=tmp
+}}if(c['~sig']?.aborted)return emp.clone()
+if(_r===undefined){
+_r=h(c)
+if(typeof _r?.then==='function')return _t(c,3,_r,_r,undefined,_stl,_sv)
+if(_r&&(_r[Symbol.iterator]||_r[Symbol.asyncIterator])&&typeof _r.next==='function'){
+const _s=tee(_r,2)
+_sv=_r=_s[0]
+_stl=_s[1]
+}else if(_r instanceof ReadableStream){const _o=obs(_r)
+if(_o){_r=_o[0];_stl=_o[1];_sv=_o[2]}}
+}
+if(c['~sig']?.aborted){_sv?.return()
+return emp.clone()}
+if(_r instanceof Error)throw _r
+c.responseValue=_r
+let _m
+_m=rm(_r,c.set,c.request,true)
+if(typeof _m?.then==='function')return _t(c,4,_m,_r,undefined,_stl,_sv)
+_sc(c,_stl)
+return _m
+}catch(e){if(c._arf)return fre(rt,c,e)
+c._arf=true
+const _fr=fre(rt,c,e)
+return typeof _fr?.then==='function'?_fr.then((_v)=>{_sc(c,_stl)
+return _v
+}):(_sc(c,_stl),_fr)
+}
+}})()
+
+=== routes-1000 (GET /r999/7) -> 200
+function route(c){
+try{
+let _r=h(c)
+if(_r instanceof Error)throw _r
+if(typeof _r?.then==='function')_r=Promise.resolve(_r).then(fe)
+const _m=rc(_r,c.request,true)
+return typeof _m?.then==='function'?Promise.resolve(_m).catch((_e)=>fre(rt,c,_e)):_m
+}catch(e){return fre(rt,c,e)}
+}
+
+=== param-random (GET /r999/26608035) -> 200
+(no generated source: an inline closure, see createInlineHandler)
+
+=== json (POST /json) -> 200
+async function route(c){
+try{
+try{
+let ct=((c.request.headers.get('content-type'))||'')
+let cti=ct.indexOf(";")
+if(cti!==-1)ct=ct.slice(0,cti)
+let ce=nc(ct)
+let cj=(ce.charCodeAt(12)===106&&ce==='application/json')||ce.endsWith('+json')
+if(ct&&hb(c.request)){c.body=cj?await pj(c):await pd(c,ce)
+}
+}catch(e){throw new pe(e)}
+let _r=h(c)
+if(typeof _r?.then==='function'){_r=await _r
+}
+if(_r instanceof Error)throw _r
+return await rc(_r,c.request,true)
+}catch(e){return fre(rt,c,e)}
+}
+

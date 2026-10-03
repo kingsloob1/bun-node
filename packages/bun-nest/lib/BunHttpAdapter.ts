@@ -12,6 +12,7 @@ import type {
   BunWebSocketNormalOptions,
   BunWebSocketServerType,
   EmptyShape,
+  EtagOption,
   FetchInput,
   matchedRoute,
   MountedHandler,
@@ -20,6 +21,7 @@ import type {
   RouterErrorMiddlewareHandler,
   RouterHandler,
   RouterMiddlewareHandler,
+  ServeHooks,
   ServeStaticOptions,
   UnmountedRouter,
   ValidatorMiddleware,
@@ -41,11 +43,13 @@ import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import {
+  awaitPipelineOrStream,
   BunRequest,
   BunResponse,
   BunRouter,
   cors,
   createServeStaticHandler,
+  defineHidden,
   each,
   FETCH_STUB_SERVER,
   finalErrorResponse,
@@ -53,12 +57,18 @@ import {
   isFunction,
   isNull,
   isObject,
+  isRequestTimeoutError,
   isString,
   isUndefined,
+  markSocketFree,
   mergeBunRequestOptions,
+  normalizeEtagOption,
   omit,
+  RequestPipelineOptions,
   set,
+  toFetchResponse,
   toNativeRequest,
+  validateParseBodyOption,
   waitUntil,
 } from "@kingsleyweb/bun-common";
 import {
@@ -117,6 +127,21 @@ type ApplyVersionFilterParameters = Parameters<
   AbstractHttpAdapter["applyVersionFilter"]
 >;
 
+/**
+ * `error` with the request riding on it, for `handleRequestError`, which
+ * needs it to run the error handlers; a thrown primitive is wrapped to carry
+ * it. A pipeline parked past the request timeout is passed on as is: it is
+ * answered as a timed-out response wait always was, without the request.
+ */
+function carryRequest(error: unknown, req: BunRequest): unknown {
+  if (isRequestTimeoutError(error)) {
+    return error;
+  }
+  const carrier: object = isObject(error) ? error : new Error(String(error));
+  defineHidden(carrier, "req", req);
+  return carrier;
+}
+
 export class BunHttpAdapter<
   customWebsocketDataType = unknown,
   routesType extends string = never,
@@ -156,7 +181,8 @@ export class BunHttpAdapter<
    */
   #registeredBodyParsers = new Set<string>();
   /** When true, every response computes an `ETag`. Opt-in (off by default). */
-  protected etagEnabled = false;
+  /** The `etag` option every response starts with (see `BunResponse.etag`). */
+  protected etagEnabled: EtagOption = false;
   /**
    * Emits the server's `listening`, `error` and `close` events, which the
    * Nest-facing server proxy forwards. Annotated rather than inferred: the
@@ -174,10 +200,10 @@ export class BunHttpAdapter<
     options?: {
       /**
        * Request-parsing options forwarded to every {@link BunRequest}
-       * (body/cookie/query parsing, size caps, `cookieSecret`, etc.), merged
-       * over `{ parseBody: true, parseCookies: true }` with
-       * `mergeBunRequestOptions` — so `{ cookieSecret }` alone keeps body
-       * parsing on. Set a default explicitly to turn it off
+       * (body/cookie/query parsing, size caps, the cookie secret, etc.),
+       * merged over `{ parseBody: true, parseCookies: true }` with
+       * `mergeBunRequestOptions` — so `{ parseCookies: { secret } }` alone
+       * keeps body parsing on. Set a default explicitly to turn it off
        * (`{ parseBody: false }`).
        */
       request?: Partial<BunRequestOptions>;
@@ -204,8 +230,13 @@ export class BunHttpAdapter<
        * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
        */
       router?: BunRouterOptions;
-      /** Enable automatic `ETag` generation for every response. */
-      etag?: boolean;
+      /**
+       * How every response is tagged with an `ETag`: `false` (the default),
+       * `true`/`"strong"`, `"weak"`, or a function returning the tag (see
+       * `BunResponse.etag`). A response's own `res.setEtag(...)` /
+       * `res.etag = ...` overrules it for that response.
+       */
+      etag?: EtagOption;
       /**
        * Upper bound on the router's matched-pipeline cache before FIFO
        * eviction. Forwarded to {@link BunRouter}; defaults to
@@ -246,7 +277,8 @@ export class BunHttpAdapter<
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
 
-    this.etagEnabled = options?.etag ?? false;
+    // Checked here, so a bad value fails at startup, not on every request.
+    this.etagEnabled = normalizeEtagOption(options?.etag);
     this.logger = logger;
     this.serverOptions = options?.server || {};
 
@@ -323,13 +355,46 @@ export class BunHttpAdapter<
     nativeRequest: Request,
     server: BunWebSocketServerType<customWebsocketDataType>,
   ): Promise<Response | undefined> {
-    // `BunRequest.init` returns the instance synchronously when no body
-    // or cookie parsing was scheduled. Branching (rather than awaiting
-    // unconditionally) is what banks the saving — `await` on a plain
-    // value still costs a microtask tick.
-    const created = BunRequest.init(nativeRequest, server, this.requestOpts);
-    const req = created instanceof BunRequest ? created : await created;
+    return this.serveNativeRequest(nativeRequest, server);
+  }
 
+  /**
+   * {@link handleNativeRequest}, without the promise when none is needed: a
+   * request with no body whose layers all finish synchronously gets its
+   * `Response` back directly, which `Bun.serve` writes without resolving a
+   * promise. Anything asynchronous along the way makes the result a promise
+   * from that point. An error is always a rejection, as from
+   * {@link handleNativeRequest}.
+   *
+   * `Bun.serve`'s `fetch` calls this unless a subclass overrides
+   * {@link handleNativeRequest}, in which case the override is called.
+   */
+  protected serveNativeRequest(
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    try {
+      // `BunRequest.init` returns the instance synchronously when nothing is
+      // left to read. Branching rather than awaiting is what keeps the whole
+      // request synchronous.
+      const created = BunRequest.init(nativeRequest, server, this.requestOpts);
+      if (created instanceof BunRequest) {
+        return this.#routeRequest(created, nativeRequest, server);
+      }
+      return created.then((req) =>
+        this.#routeRequest(req, nativeRequest, server),
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  /** Runs a built request through the payload guard and the router. */
+  #routeRequest(
+    req: BunRequest,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
     // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
     // rejected with 413 before any route handler or middleware runs.
     if (req.isPayloadTooLarge) {
@@ -343,131 +408,158 @@ export class BunHttpAdapter<
     // body.
     const decodingError = req.bodyDecodingError;
     if (decodingError) {
-      set(decodingError, "req", req);
+      defineHidden(decodingError, "req", req);
       throw decodingError;
     }
 
     const res = new BunResponse<customWebsocketDataType>(req, {
       etag: this.etagEnabled,
     });
-    let routeUsed: matchedRoute | true | undefined;
-
-    const pipeline = this.instance.handle({
-      requestHost: req.host,
-      requestMethod: req.method,
-      response: res,
-      request: req,
-      requestUrl: req.originalUrl,
-    });
+    const router = this.instance;
+    // The host and the full target are read only if a route needs them.
+    const options = new RequestPipelineOptions(
+      req,
+      res,
+      req.method,
+      req.path,
+      this.requestTimeout,
+    );
 
     // A handler that opens a long-lived stream and awaits its end — NestJS's
     // `@Sse()` resolves only once the observable completes or the client
     // leaves — would otherwise hold the headers back until then. On Node they
     // go out as soon as `writeHead`/`flushHeaders` runs, so the stream's
-    // response is returned the moment it exists, the pipeline still running.
-    if (Bun.peek.status(pipeline) === "pending") {
-      const streamed = await Promise.race([
-        pipeline.then(
-          () => undefined,
-          () => undefined,
-        ),
-        res
-          .getNativeResponse(0)
-          .then((response) => (res.isLongLived ? response : undefined)),
-      ]);
-      if (streamed) {
-        pipeline.catch((error: unknown) => {
-          // Headers are gone, so nothing but the stream's end can answer it,
-          // as Express's finalhandler does once headers were sent.
-          this.logger.error(
-            "Error after a streaming response started",
-            error instanceof Error ? error.stack : String(error),
-          );
-          // `end()` on a response that has already ended does nothing.
-          void res.end();
-        });
-        return streamed;
-      }
+    // response is returned the moment it opens, the pipeline still running.
+    if (router.handle === BunRouter.prototype.handle) {
+      return router.serveRequest(options, this.#serveHooks);
     }
-
+    // A router whose `handle` was overridden is run through the override.
+    let routed: ReturnType<typeof awaitPipelineOrStream>;
     try {
-      routeUsed = await pipeline;
-    } catch (e) {
-      const err: object = isObject(e) ? e : new Error(String(e));
-
-      set(err, "req", req);
-      throw err;
+      routed = awaitPipelineOrStream(router.handle(options), res, (error) => {
+        this.#serveHooks.lateError(options, error);
+      });
+    } catch (error) {
+      throw carryRequest(error, req);
     }
+    return routed.then(
+      (outcome) =>
+        outcome.stream ??
+        this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
+      (error: unknown) => {
+        throw carryRequest(error, req);
+      },
+    );
+  }
 
-    let hasNativeResponse = false;
-    if (routeUsed) {
-      hasNativeResponse = true;
-    } else if (this._notFoundHandlers.length) {
-      let continueProcessingHandlers = true;
-      const next: NextFunction = (err) => {
-        if (!(isUndefined(err) || isNull(err))) {
-          continueProcessingHandlers = false;
-        }
-      };
+  /**
+   * How the router finishes a served request (see bun-common's
+   * `BunRouter.serveRequest`): one object for every request, so a request
+   * pays for no closures, and an asynchronous one for no promise but the
+   * pipeline's — Nest's route callback is always asynchronous.
+   */
+  readonly #serveHooks: ServeHooks<Response | undefined> = {
+    respond: (options, routeUsed) => {
+      const req = options.request;
+      return this.#respond(
+        req,
+        options.response as BunResponse<customWebsocketDataType>,
+        routeUsed,
+        req.request,
+        req.server as BunWebSocketServerType<customWebsocketDataType>,
+      );
+    },
+    stream: (_options, stream) => stream,
+    error: (options, error) => carryRequest(error, options.request),
+    lateError: (options, error) => {
+      // Headers are gone, so nothing but the stream's end can answer it,
+      // as Express's finalhandler does once headers were sent.
+      this.logger.error(
+        "Error after a streaming response started",
+        error instanceof Error ? error.stack : String(error),
+      );
+      // `end()` on a response that has already ended does nothing.
+      void options.response.end();
+    },
+  };
 
-      for await (const handler of this._notFoundHandlers) {
-        if (!continueProcessingHandlers) {
-          break;
-        }
-
-        const resp = await handler(req, res, next);
-        continueProcessingHandlers = !!resp;
-      }
-
-      hasNativeResponse = true;
-    }
-
-    if (hasNativeResponse) {
-      if (res.upgradeToWsData) {
-        const upgradeData = res.upgradeToWsData;
-        const success = server.upgrade(nativeRequest, {
-          // The accepting server's port, unless the handler recorded one, so
-          // a gateway can tell which server a client arrived on.
-          data: { ...upgradeData, port: upgradeData.port ?? server.port },
-          // Only headers the upgrade was explicitly given; the key is left out
-          // otherwise so the 101 is exactly Bun's default.
-          ...(res.upgradeToWsHeaders
-            ? { headers: res.upgradeToWsHeaders }
-            : {}),
+  /** Produces the response once the router is done with the request. */
+  #respond(
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+    routeUsed: matchedRoute | true | undefined,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    if (!routeUsed) {
+      if (!this._notFoundHandlers.length) {
+        return new Response(undefined, {
+          status: 404,
+          statusText: "Not Found",
         });
+      }
+      return this.#runNotFoundHandlers(req, res).then(() =>
+        this.#produceResponse(res, nativeRequest, server),
+      );
+    }
+    return this.#produceResponse(res, nativeRequest, server);
+  }
 
-        if (success) {
-          return undefined;
-        }
+  /** Runs the not-found handlers, as when no route answered the request. */
+  async #runNotFoundHandlers(
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+  ): Promise<void> {
+    let continueProcessingHandlers = true;
+    const next: NextFunction = (err) => {
+      if (!(isUndefined(err) || isNull(err))) {
+        continueProcessingHandlers = false;
+      }
+    };
 
-        let response = new Response(
-          "An error occurred while upgrading websocket",
-          {
-            status: 400,
-          },
-        );
-        try {
-          response = await res.getNativeResponse(100);
-        } catch {
-          //
-        }
-
-        return response;
+    for await (const handler of this._notFoundHandlers) {
+      if (!continueProcessingHandlers) {
+        break;
       }
 
-      // A handler that called `send()` has already produced the native
-      // response synchronously; taking it directly avoids a
-      // `Promise.resolve` plus a microtask tick on the common path.
-      return (
-        res.settledResponse ??
-        (await res.getNativeResponse(this.requestTimeout))
+      const resp = await handler(req, res, next);
+      continueProcessingHandlers = !!resp;
+    }
+  }
+
+  /** The native response the handlers produced, or the WebSocket upgrade. */
+  #produceResponse(
+    res: BunResponse<customWebsocketDataType>,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    const upgradeData = res.upgradeToWsData;
+    if (upgradeData) {
+      const success = server.upgrade(nativeRequest, {
+        // The accepting server's port, unless the handler recorded one, so
+        // a gateway can tell which server a client arrived on.
+        data: { ...upgradeData, port: upgradeData.port ?? server.port },
+        // Only headers the upgrade was explicitly given; the key is left out
+        // otherwise so the 101 is exactly Bun's default.
+        ...(res.upgradeToWsHeaders ? { headers: res.upgradeToWsHeaders } : {}),
+      });
+
+      if (success) {
+        return undefined;
+      }
+
+      return res.getNativeResponse(100).catch(
+        () =>
+          new Response("An error occurred while upgrading websocket", {
+            status: 400,
+          }),
       );
     }
 
-    return new Response(undefined, {
-      status: 404,
-      statusText: "Not Found",
-    });
+    // A handler that called `send()` has already produced the native
+    // response synchronously; taking it directly avoids a promise and a
+    // microtask tick on the common path.
+    return res.settledResponse ?? res.getNativeResponse(this.requestTimeout);
   }
 
   /**
@@ -493,10 +585,8 @@ export class BunHttpAdapter<
    * ```
    */
   public async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
-    const nativeRequest = toNativeRequest(
-      input,
-      init,
-      this.isListening ? this.url : undefined,
+    const nativeRequest = markSocketFree(
+      toNativeRequest(input, init, this.isListening ? this.url : undefined),
     );
 
     let response: Response | undefined;
@@ -512,12 +602,17 @@ export class BunHttpAdapter<
       );
     } catch (error) {
       // The same final error handling `Bun.serve`'s `error` callback runs.
-      return this.handleRequestError(error);
+      return toFetchResponse(
+        await this.handleRequestError(error),
+        nativeRequest.method,
+      );
     }
 
-    return (
+    // A served HEAD response carries no body: Bun drops it on the wire.
+    return toFetchResponse(
       response ??
-      new Response(null, { status: 101, statusText: "Switching Protocols" })
+        new Response(null, { status: 101, statusText: "Switching Protocols" }),
+      nativeRequest.method,
     );
   }
 
@@ -535,7 +630,11 @@ export class BunHttpAdapter<
    * before, so an option left out returns to its default.
    */
   set requestOpts(opts: Partial<BunRequestOptions>) {
-    this.#requestOpts = mergeBunRequestOptions(opts);
+    const merged = mergeBunRequestOptions(opts);
+    // Requests resolve `parseBody` lazily (only one with a body does), so a
+    // misconfiguration is caught here instead of on the first such request.
+    validateParseBodyOption(merged.parseBody);
+    this.#requestOpts = merged;
   }
 
   /**
@@ -735,18 +834,25 @@ export class BunHttpAdapter<
       return this;
     }
 
-    const middlewareHandler: RouterMiddlewareHandler = async (req, _, next) => {
+    const parse = async (req: BunRequest, next: NextFunction) => {
       const buffer = await req.handleBodyParsing(true, options, parser);
       // As body-parser's `verify` hook in Nest's ExpressAdapter: `rawBody` is
       // set only by a parser that read the body. A request this parser skipped
-      // (another type, or no body) keeps what an earlier parser set.
+      // (another type) keeps what an earlier parser set.
       if (rawBody && buffer !== undefined) {
         set(req, "rawBody", buffer);
       }
-
-      if (next) {
+      next();
+    };
+    // A request with no body is passed on synchronously, before its type,
+    // encoding or size is looked at, as body-parser's `read()` does — so the
+    // pipeline never waits on a promise for it, and `rawBody` stays unset.
+    const middlewareHandler: RouterMiddlewareHandler = (req, _, next) => {
+      if (!req.hasBody) {
         next();
+        return;
       }
+      return parse(req, next);
     };
 
     if (isString(prefix) && prefix) {
@@ -878,7 +984,11 @@ export class BunHttpAdapter<
         hostname: host,
         development: Bun.env.NODE_ENV !== "production",
         fetch: (nativeRequest: Request, server) => {
-          return this.handleNativeRequest(nativeRequest, server);
+          // The synchronous path, unless a subclass replaced the handler.
+          return this.handleNativeRequest ===
+            BunHttpAdapter.prototype.handleNativeRequest
+            ? this.serveNativeRequest(nativeRequest, server)
+            : this.handleNativeRequest(nativeRequest, server);
         },
         websocket: this.buildServerWebSocketHandler(),
         error: (err) => {
@@ -1014,8 +1124,9 @@ export class BunHttpAdapter<
    * `finalErrorResponse` (Express's `finalhandler`), for `req`'s method — so
    * this adapter and bun-common's answer byte for byte alike.
    *
-   * The error is logged through Nest's {@link logger} at `error` level as
-   * `(message, stack)`, the message naming the method, path and status,
+   * The error is logged through Nest's {@link logger} as `(message, stack)`,
+   * at `warn` for a 4xx and `error` otherwise, the message naming the method,
+   * path and status,
    * except under `NODE_ENV=test`, as Express's default error logging does.
    */
   protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
@@ -1029,10 +1140,13 @@ export class BunHttpAdapter<
               const where = req
                 ? ` (${req.method} ${req.path}, ${status})`
                 : "";
-              this.logger.error(
-                `${message}${where}`,
-                err instanceof Error ? err.stack : String(err),
-              );
+              const detail = err instanceof Error ? err.stack : String(err);
+              // A client error (4xx) is the client's doing: a warning.
+              if (status < 500) {
+                this.logger.warn(`${message}${where}`, detail);
+              } else {
+                this.logger.error(`${message}${where}`, detail);
+              }
             },
     });
   }

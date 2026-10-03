@@ -42,6 +42,7 @@ import {
   BunHttpAdapter,
   BunNestHttpAdapter,
   BunNestWebsocketAdapter,
+  requestParsing,
 } from "@kingsleyweb/bun-nest";
 import {
   Controller,
@@ -52,6 +53,7 @@ import {
   Post,
   Req,
   RequestMethod,
+  Res,
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
@@ -76,6 +78,32 @@ class TourController {
 
 @Module({ controllers: [TourController] })
 class TourModule {}
+
+/** Routes for the per-response ETag checks. */
+@Controller("etag")
+class EtagController {
+  @Get("default")
+  tagged() {
+    return { v: 1 };
+  }
+
+  /** Turns the adapter's ETag off for this route's responses only. */
+  @Get("off")
+  untagged(@Res({ passthrough: true }) res: BunResponse) {
+    res.setEtag(false);
+    return { v: 1 };
+  }
+
+  /** Overrules the adapter's weak tags with strong ones for this route. */
+  @Get("strong")
+  strong(@Res({ passthrough: true }) res: BunResponse) {
+    res.etag = "strong";
+    return { v: 1 };
+  }
+}
+
+@Module({ controllers: [EtagController] })
+class EtagModule {}
 
 /** Reads a response's JSON body as `T`. */
 async function json<T = JsonValue>(response: Response): Promise<T> {
@@ -185,6 +213,86 @@ step("constructor: request");
   checkEqual("setRequestOpts() applies to later requests", after.cookies, {
     theme: "dark",
   });
+
+  // A body read in one call and parsed at once: a Nest controller sees the
+  // same over a socket and through adapter.fetch(), 413 included.
+  const bodied = new BunHttpAdapter(0, {
+    request: { parseBody: { maxContentLength: 64 } },
+  });
+  const bodiedApp = await NestFactory.create(TourModule, bodied, {
+    logger: false,
+  });
+  await bodiedApp.listen(0);
+  for (const [label, body, status] of [
+    ["a small JSON body", { a: 1 }, 200],
+    ["a JSON body over the 64-byte cap", { pad: "x".repeat(100) }, 413],
+  ] as const) {
+    const served = await fetch(`${bodied.url}/raw`, postJson(body));
+    const offline = await bodied.fetch("/raw", postJson(body));
+    checkEqual(
+      `${label}: ${status}, served and through fetch() alike`,
+      [served.status, await served.text()],
+      [offline.status, await offline.text()],
+    );
+    checkEqual(`…${label}: the status`, served.status, status);
+  }
+  await bodiedApp.close();
+
+  // A bad decoding option fails where it is configured, before Nest starts.
+  const badParseBody = { encodings: ["gzip", "lzma"] } as never;
+  await checkRejects(
+    "a bad parseBody coding: the constructor throws, so NestFactory.create never runs",
+    async () =>
+      NestFactory.create(
+        TourModule,
+        new BunHttpAdapter(0, { request: { parseBody: badParseBody } }),
+        { logger: false },
+      ),
+    { name: "RangeError", message: /lzma/ },
+  );
+  const capped = new BunHttpAdapter(0, {
+    request: { parseBody: { maxContentLength: 16 } },
+  });
+  capped.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+  await checkRejects(
+    "setRequestOpts() with it throws",
+    async () => capped.setRequestOpts({ parseBody: badParseBody }),
+    { name: "RangeError" },
+  );
+  checkEqual(
+    "…and keeps the previous 16-byte cap: 413",
+    (await capped.fetch("/echo", postJson({ text: "x".repeat(64) }))).status,
+    413,
+  );
+  await checkRejects(
+    "requestParsing({ parseBody }) throws at creation, before consumer.apply()",
+    async () => requestParsing({ parseBody: badParseBody }),
+    { name: "RangeError" },
+  );
+
+  // parseQuery and parseCookies take options in place of `true`, as parseBody.
+  const shaped = new BunHttpAdapter(0, {
+    request: {
+      parseQuery: { nesting: false },
+      parseCookies: { secret: "k", decode: (value) => value },
+    },
+  });
+  shaped.get("/shape", (req, res) => {
+    return res.json({
+      query: req.query,
+      cookies: req.cookies,
+      secret: req.secret,
+    });
+  });
+  checkEqual(
+    "parseQuery: { nesting: false } and parseCookies: { secret, decode }",
+    await json(
+      await shaped.fetch("/shape?a[b]=1", {
+        headers: { cookie: "n=J%C3%B6rg" },
+      }),
+    ),
+    { query: { "a[b]": "1" }, cookies: { n: "J%C3%B6rg" }, secret: "k" },
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -285,6 +393,57 @@ step("constructor: etag");
     headers: { "if-none-match": tag ?? "" },
   });
   checkEqual("a matching If-None-Match is answered 304", again.status, 304);
+
+  // etag: "weak" on the adapter, overruled per response from a controller.
+  const weakAdapter = new BunHttpAdapter(0, { etag: "weak" });
+  const etagApp = await NestFactory.create(EtagModule, weakAdapter, {
+    logger: false,
+  });
+  await etagApp.init();
+  const weakTag = (await weakAdapter.fetch("/etag/default")).headers.get(
+    "etag",
+  );
+  check(
+    'etag: "weak" — a controller\'s response gets a weak tag',
+    weakTag?.startsWith("W/") === true,
+    weakTag,
+  );
+  checkEqual(
+    "…If-None-Match with it is a 304",
+    (
+      await weakAdapter.fetch("/etag/default", {
+        headers: { "if-none-match": weakTag ?? "" },
+      })
+    ).status,
+    304,
+  );
+  checkEqual(
+    "@Res({ passthrough: true }) res.setEtag(false): no tag on that route",
+    (await weakAdapter.fetch("/etag/off")).headers.get("etag"),
+    null,
+  );
+  const strongTag = (await weakAdapter.fetch("/etag/strong")).headers.get(
+    "etag",
+  );
+  check(
+    'res.etag = "strong": a strong tag on that route',
+    !!strongTag && !strongTag.startsWith("W/"),
+    strongTag,
+  );
+  await etagApp.close();
+
+  let invalid: unknown;
+  try {
+    // eslint-disable-next-line no-new
+    new BunHttpAdapter(0, { etag: "medium" as unknown as boolean });
+  } catch (error) {
+    invalid = error;
+  }
+  check(
+    "an invalid etag option is a TypeError",
+    invalid instanceof TypeError,
+    invalid,
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -334,6 +493,31 @@ step("constructor: server, and setListenOptions()");
     413,
   );
   await adapter.close();
+
+  const native = new BunHttpAdapter(0, {
+    server: { routes: { "/ping": new Response("pong") } },
+  });
+  let pipelineRuns = 0;
+  native.use((_req, _res, next) => {
+    pipelineRuns++;
+    next();
+  });
+  native.all("/ping", (_req, res) => res.send("router pong"));
+  await native.listen(0);
+  const pinged = await fetch(`${native.url}/ping`, { method: "DELETE" });
+  checkEqual(
+    "server.routes: Bun answers first, for every method",
+    await pinged.text(),
+    "pong",
+  );
+  check("…with an ETag", pinged.headers.has("etag"));
+  checkEqual("…and the pipeline never ran", pipelineRuns, 0);
+  checkEqual(
+    "…while fetch() (no socket) runs the router",
+    await (await native.fetch("/ping")).text(),
+    "router pong",
+  );
+  await native.close();
 
   const other = new BunHttpAdapter();
   other.post("/upload", (_req, res) => {

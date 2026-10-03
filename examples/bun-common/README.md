@@ -34,19 +34,21 @@ with no socket at all.
 
 | File | Shows |
 |---|---|
-| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity` |
-| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')` |
+| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` and `markSocketFree` (no HEAD body, the wire's implicit text `Content-Type`) |
+| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout (an async handler that never settles included), errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off), `res.write()` then `next()`/a later `next(err)` moving on, an async handler that responds and keeps awaiting (its late rejection logged) |
 | [`sub-routers.ts`](./02-routing/sub-routers.ts) | mounting routers, typed mount params, a validator at the mount, compile-time mount mismatches, `group`, `domain` |
 | [`typed-routes.ts`](./02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator; `ExtractRouteParams`, `TypedRouteHandler` |
-| [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request |
-| [`route-cache.ts`](./02-routing/route-cache.ts) | the route cache and `routeCacheMax`, named routes, `RouteClass`, `routeModulePath`, `toNativeRequest` |
+| [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request, a `//x/y` path served and socket-free |
+| [`serving-async.ts`](./02-routing/serving-async.ts) | an asynchronous pipeline served and through `adapter.fetch()`: async middleware chains, a response sent before its handler finishes, `res.send(); next(err)` in one tick, a late rejection logged, a stream returned as it opens, the request timeout (`setTimeout()`), an overridden `handle()`, `res.locals` per request; `router.serveRequest()` with custom `ServeHooks` |
+| [`route-cache.ts`](./02-routing/route-cache.ts) | the route cache and `routeCacheMax`, named routes, `RouteClass`, `routeModulePath`, `toNativeRequest` (and `//` paths), a 1,000-route table with high-cardinality ids and a tiny or no cache, `routeIndex`, GET and POST on one cached path, `getMatchedLayers({ requestPath })` |
+| [`synchronous-dispatch.ts`](./02-routing/synchronous-dispatch.ts) | `BunRequest.init()` returning the request itself without a body, `dispatch()` returning synchronously until a layer is async, `handle()` always a promise, the pipeline `timeout` and `isRequestTimeoutError` |
 
 ### 03 — The HTTP adapter
 
 | File | Shows |
 |---|---|
 | [`listen-and-close.ts`](./03-http-adapter/listen-and-close.ts) | every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
-| [`adapter-options.ts`](./03-http-adapter/adapter-options.ts) | every constructor option: `requestTimeout`, `request`, `websocket`, `logger`, `router`, `etag`, `routeCacheMax`, `server` |
+| [`adapter-options.ts`](./03-http-adapter/adapter-options.ts) | every constructor option: `requestTimeout`, `request`, `websocket`, `logger`, `router`, `etag`, `routeCacheMax`, `server`, and `server.routes` — native static routes over a real socket, with their caveats |
 | [`handlers.ts`](./03-http-adapter/handlers.ts) | not-found and error handlers, `enableCors`, `useStaticAssets`, body parsers, `setRequestOpts`, `setLogger`, `setTimeout` |
 
 ### 04 — The request
@@ -54,16 +56,17 @@ with no socket at all.
 | File | Shows |
 |---|---|
 | [`reading-a-request.ts`](./04-request/reading-a-request.ts) | every request property: url parts, params, query parsing options, headers, ip/host/protocol, freshness, ranges, content negotiation |
-| [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies |
-| [`cookies.ts`](./04-request/cookies.ts) | parsing cookies, signed cookies and secrets, JSON cookies |
+| [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies, per-request option setters that leave the adapter's options alone, body-parser middleware passing a request without a body (`req.hasBody`) straight on, a declared empty body (`Content-Length: 0`, no stream) parsed as `{}` and, with a refused encoding, routed and answered by `next(err)` only when read, the one-read body path checked served against `adapter.fetch()` (JSON, `+json`, urlencoded, latin1 text, gzip, corrupt gzip 400, invalid JSON 400, a declared or chunked over-cap body 413, an understated `Content-Length` 413, `data`/`end` events), 4xx logged at `warn` and 5xx at `error` with `err.req` non-enumerable, invalid JSON as body-parser's 400 (`entity.parse.failed`, `err.body`, `req.bodyDecodingError`) reaching `setErrorHandler` before routing or `next(err)` with `deferBody` + `requestParsing()`, an invalid size or decoding option failing where it is configured (constructor, `setRequestOpts()` keeping its old options, `requestParsing()`) and `validateParseBodyOption()` |
+| [`per-route-parsing.ts`](./04-request/per-route-parsing.ts) | `requestParsing()` per route — `parseQuery` (picoquery options), `parseCookies` (`{ secret, decode }`) and `parseBody`, errors through `next(err)`, `TypeError` on bad options; the adapter's `deferBody` letting a route raise its body cap; `hasDeferredBody`, `readDeferredBody()`, `applyParseBodyOptions()`, `setCookieOptions()`, `configuredCookieSecrets`. See the package README's [Per-route parsing](../../packages/bun-common/README.md#per-route-parsing-requestparsing) |
+| [`cookies.ts`](./04-request/cookies.ts) | parsing cookies, signed cookies and secrets (`request: { parseCookies: { secret } }`), JSON cookies; parsing on first touch (a route that never reads them never decodes), assigning one half, `parseCookies({ secret })` leaving the request's own |
 
 ### 05 — The response
 
 | File | Shows |
 |---|---|
 | [`sending.ts`](./05-response/sending.ts) | status, every body type for `send`, `json`/`jsonp`, headers (`Set-Cookie` read back as an array, as Node), `location`, `links`, `vary`, ETags, `format()` negotiation, attachments |
-| [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, redirects |
-| [`cookies-and-caching.ts`](./05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
+| [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, redirects, a stream's first chunk sent before its async handler resolves, a stream outliving the request timeout, `isStreamOpen`/`writableEnded`/`onceStreamEnded()`, `awaitPipelineOrStream()` |
+| [`cookies-and-caching.ts`](./05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s; every `etag` mode (`true`, `"weak"`, `"strong"`, a function, `false`) on the adapter, overruled per response with `res.setEtag()`/`res.etag`, a hand-set `ETag` winning, `sendFile()`'s weak tag, weak/strong `If-None-Match` 304 round-trips, the `TypeError` for an invalid option |
 
 ### 06 — Validation
 
@@ -125,9 +128,9 @@ every option.
 | File | Covers |
 |---|---|
 | [`router-options.ts`](./12-options/router-options.ts) | every `BunRouter` option and public method |
-| [`http-adapter-options.ts`](./12-options/http-adapter-options.ts) | every `BunHttpAdapter` option and public method |
-| [`request-options.ts`](./12-options/request-options.ts) | every request property, body-parsing and query option |
-| [`response-options.ts`](./12-options/response-options.ts) | every response method and option |
+| [`http-adapter-options.ts`](./12-options/http-adapter-options.ts) | every `BunHttpAdapter` option and public method, including each `etag` mode and `normalizeEtagOption` |
+| [`request-options.ts`](./12-options/request-options.ts) | every request property, body-parsing, query and cookie option: `parseQuery` and `parseCookies` as `boolean` or options (`{ secret, decode }`), and the deprecated `parseQueryOpts`/`cookieParseOptions`/`cookieSecret` still honoured, with the object form winning |
+| [`response-options.ts`](./12-options/response-options.ts) | every response method and option, `res.etag`/`setEtag(option)` in every form; the default `text/plain;charset=utf-8` and `application/json;charset=utf-8` types, and text/JSON sent with no header built without a Headers object yet carrying the type served, on HEAD and through `adapter.fetch()` (Bun behaviour: [docs/bun-bugs](../../docs/bun-bugs/README.md)) |
 | [`validate-options.ts`](./12-options/validate-options.ts) | every validation option, execution order, `ValidationError`, `toStandardSchema` |
 | [`cors-options.ts`](./12-options/cors-options.ts) | every CORS field and value form, delegates, `enableCors` |
 | [`static-options.ts`](./12-options/static-options.ts) | every static-file option, caching, 304s, traversal, ranges, `precompressed` and `compression` |
