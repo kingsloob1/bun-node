@@ -1,0 +1,88 @@
+
+Bun 1.4.3 (5f554969), linux-x64, 2026-10-06T09:23:47.722Z
+
+## Part 1: an entry under a queue ref that was never ensured
+
+┌───┬──────────┬────────────────┬────────────┬───────────┬─────────────────┬──────────────────────────┬──────────────────┬─────────────────────┬────────────────┐
+│   │ backend  │ createdVersion │ readBack   │ casUpdate │ staleCasRefused │ listQueueState           │ listQueues       │ pseudoListedAsQueue │ goneAfterPurge │
+├───┼──────────┼────────────────┼────────────┼───────────┼─────────────────┼──────────────────────────┼──────────────────┼─────────────────────┼────────────────┤
+│ 0 │ memory   │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders,__summon │ true                │ true           │
+│ 1 │ file     │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ __summon,renders │ true                │ true           │
+│ 2 │ sqlite   │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+│ 3 │ postgres │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+│ 4 │ mysql    │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+│ 5 │ mariadb  │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+│ 6 │ mongodb  │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+│ 7 │ redis    │ 1              │ {"hour":1} │ 2         │ true            │ __win:summon-group:media │ renders          │ false               │ true           │
+└───┴──────────┴────────────────┴────────────┴───────────┴─────────────────┴──────────────────────────┴──────────────────┴─────────────────────┴────────────────┘
+
+## Part 2: K concurrent charges, one shared entry vs K entries (median of 3 rounds)
+
+┌────┬──────────┬────┬─────────┬────────┬───────┬───────┬──────────────┬────────────┬──────────────┐
+│    │ backend  │ k  │ entries │ wallMs │ p50Ms │ p99Ms │ retriesTotal │ retriesMax │ countCorrect │
+├────┼──────────┼────┼─────────┼────────┼───────┼───────┼──────────────┼────────────┼──────────────┤
+│  0 │ memory   │ 1  │ K       │ 0      │ 0     │ 0     │ 0            │ 0          │ yes          │
+│  1 │ memory   │ 1  │ one     │ 0      │ 0     │ 0     │ 0            │ 0          │ yes          │
+│  2 │ memory   │ 4  │ K       │ 0      │ 0     │ 0     │ 0            │ 0          │ yes          │
+│  3 │ memory   │ 4  │ one     │ 0      │ 0     │ 0     │ 6            │ 3          │ yes          │
+│  4 │ memory   │ 16 │ K       │ 0.1    │ 0.1   │ 0.1   │ 0            │ 0          │ yes          │
+│  5 │ memory   │ 16 │ one     │ 0.3    │ 0.2   │ 0.3   │ 120          │ 15         │ yes          │
+│  6 │ memory   │ 64 │ K       │ 0.2    │ 0.1   │ 0.2   │ 0            │ 0          │ yes          │
+│  7 │ memory   │ 64 │ one     │ 1.7    │ 1.1   │ 1.7   │ 2016         │ 63         │ yes          │
+│  8 │ file     │ 1  │ K       │ 0.3    │ 0.3   │ 0.3   │ 0            │ 0          │ yes          │
+│  9 │ file     │ 1  │ one     │ 0.2    │ 0.2   │ 0.2   │ 0            │ 0          │ yes          │
+│ 10 │ file     │ 4  │ K       │ 0.3    │ 0.3   │ 0.3   │ 0            │ 0          │ yes          │
+│ 11 │ file     │ 4  │ one     │ 16.2   │ 10.9  │ 16.2  │ 3            │ 1          │ yes          │
+│ 12 │ file     │ 16 │ K       │ 0.9    │ 0.9   │ 0.9   │ 0            │ 0          │ yes          │
+│ 13 │ file     │ 16 │ one     │ 80.8   │ 44.7  │ 80.7  │ 20           │ 2          │ yes          │
+│ 14 │ file     │ 64 │ K       │ 3.1    │ 2.8   │ 3     │ 0            │ 0          │ yes          │
+│ 15 │ file     │ 64 │ one     │ 209.9  │ 69.5  │ 209.9 │ 99           │ 4          │ yes          │
+│ 16 │ sqlite   │ 1  │ K       │ 0.2    │ 0.2   │ 0.2   │ 0            │ 0          │ yes          │
+│ 17 │ sqlite   │ 1  │ one     │ 0.2    │ 0.2   │ 0.2   │ 0            │ 0          │ yes          │
+│ 18 │ sqlite   │ 4  │ K       │ 0.3    │ 0.3   │ 0.3   │ 0            │ 0          │ yes          │
+│ 19 │ sqlite   │ 4  │ one     │ 0.8    │ 0.7   │ 0.8   │ 6            │ 3          │ yes          │
+│ 20 │ sqlite   │ 16 │ K       │ 1      │ 1     │ 1     │ 0            │ 0          │ yes          │
+│ 21 │ sqlite   │ 16 │ one     │ 7.2    │ 5.7   │ 7.2   │ 120          │ 15         │ yes          │
+│ 22 │ sqlite   │ 64 │ K       │ 3.3    │ 3.2   │ 3.2   │ 0            │ 0          │ yes          │
+│ 23 │ sqlite   │ 64 │ one     │ 89.9   │ 69.4  │ 89.8  │ 2016         │ 63         │ yes          │
+│ 24 │ postgres │ 1  │ K       │ 1      │ 1     │ 1     │ 0            │ 0          │ yes          │
+│ 25 │ postgres │ 1  │ one     │ 1      │ 1     │ 1     │ 0            │ 0          │ yes          │
+│ 26 │ postgres │ 4  │ K       │ 2.3    │ 1.8   │ 2.3   │ 0            │ 0          │ yes          │
+│ 27 │ postgres │ 4  │ one     │ 6.3    │ 4.8   │ 6.3   │ 6            │ 3          │ yes          │
+│ 28 │ postgres │ 16 │ K       │ 4.2    │ 2.5   │ 4.2   │ 0            │ 0          │ yes          │
+│ 29 │ postgres │ 16 │ one     │ 67.9   │ 48.6  │ 67.9  │ 111          │ 15         │ yes          │
+│ 30 │ postgres │ 64 │ K       │ 9.7    │ 7     │ 9.6   │ 0            │ 0          │ yes          │
+│ 31 │ postgres │ 64 │ one     │ 308.5  │ 155.5 │ 308.5 │ 1460         │ 50         │ yes          │
+│ 32 │ mysql    │ 1  │ K       │ 2.2    │ 2.2   │ 2.2   │ 0            │ 0          │ yes          │
+│ 33 │ mysql    │ 1  │ one     │ 2.2    │ 2.2   │ 2.2   │ 0            │ 0          │ yes          │
+│ 34 │ mysql    │ 4  │ K       │ 3.2    │ 3.2   │ 3.2   │ 0            │ 0          │ yes          │
+│ 35 │ mysql    │ 4  │ one     │ 6.8    │ 5     │ 6.8   │ 6            │ 3          │ yes          │
+│ 36 │ mysql    │ 16 │ K       │ 6.4    │ 4.1   │ 6.3   │ 0            │ 0          │ yes          │
+│ 37 │ mysql    │ 16 │ one     │ 27.2   │ 15.7  │ 27.2  │ 105          │ 15         │ yes          │
+│ 38 │ mysql    │ 64 │ K       │ 22.5   │ 12.7  │ 22.4  │ 0            │ 0          │ yes          │
+│ 39 │ mysql    │ 64 │ one     │ 180.8  │ 113.7 │ 180.7 │ 1532         │ 54         │ yes          │
+│ 40 │ mariadb  │ 1  │ K       │ 1.3    │ 1.3   │ 1.3   │ 0            │ 0          │ yes          │
+│ 41 │ mariadb  │ 1  │ one     │ 1.2    │ 1.2   │ 1.2   │ 0            │ 0          │ yes          │
+│ 42 │ mariadb  │ 4  │ K       │ 1.6    │ 1.6   │ 1.6   │ 0            │ 0          │ yes          │
+│ 43 │ mariadb  │ 4  │ one     │ 2.3    │ 1.8   │ 2.3   │ 6            │ 3          │ yes          │
+│ 44 │ mariadb  │ 16 │ K       │ 3.6    │ 2.8   │ 3.6   │ 0            │ 0          │ yes          │
+│ 45 │ mariadb  │ 16 │ one     │ 7.7    │ 5     │ 7.6   │ 59           │ 9          │ yes          │
+│ 46 │ mariadb  │ 64 │ K       │ 9.6    │ 6.7   │ 9.5   │ 0            │ 0          │ yes          │
+│ 47 │ mariadb  │ 64 │ one     │ 69.5   │ 50.1  │ 69.5  │ 780          │ 30         │ yes          │
+│ 48 │ mongodb  │ 1  │ K       │ 2      │ 1.9   │ 1.9   │ 0            │ 0          │ yes          │
+│ 49 │ mongodb  │ 1  │ one     │ 2      │ 2     │ 2     │ 0            │ 0          │ yes          │
+│ 50 │ mongodb  │ 4  │ K       │ 4.8    │ 4.6   │ 4.7   │ 0            │ 0          │ yes          │
+│ 51 │ mongodb  │ 4  │ one     │ 7.1    │ 6.3   │ 7.1   │ 4            │ 2          │ yes          │
+│ 52 │ mongodb  │ 16 │ K       │ 13.1   │ 9.9   │ 13.1  │ 0            │ 0          │ yes          │
+│ 53 │ mongodb  │ 16 │ one     │ 47.9   │ 37.8  │ 47.9  │ 95           │ 11         │ yes          │
+│ 54 │ mongodb  │ 64 │ K       │ 25.2   │ 22.5  │ 25.2  │ 0            │ 0          │ yes          │
+│ 55 │ mongodb  │ 64 │ one     │ 448.1  │ 336.9 │ 448.1 │ 1201         │ 43         │ yes          │
+│ 56 │ redis    │ 1  │ K       │ 0.2    │ 0.2   │ 0.2   │ 0            │ 0          │ yes          │
+│ 57 │ redis    │ 1  │ one     │ 0.2    │ 0.2   │ 0.2   │ 0            │ 0          │ yes          │
+│ 58 │ redis    │ 4  │ K       │ 0.3    │ 0.3   │ 0.3   │ 0            │ 0          │ yes          │
+│ 59 │ redis    │ 4  │ one     │ 0.9    │ 0.6   │ 0.8   │ 6            │ 3          │ yes          │
+│ 60 │ redis    │ 16 │ K       │ 0.6    │ 0.5   │ 0.6   │ 0            │ 0          │ yes          │
+│ 61 │ redis    │ 16 │ one     │ 6.4    │ 4.8   │ 6.3   │ 120          │ 15         │ yes          │
+│ 62 │ redis    │ 64 │ K       │ 1.4    │ 1.3   │ 1.4   │ 0            │ 0          │ yes          │
+│ 63 │ redis    │ 64 │ one     │ 57.2   │ 43.6  │ 57.1  │ 2016         │ 63         │ yes          │
+└────┴──────────┴────┴─────────┴────────┴───────┴───────┴──────────────┴────────────┴──────────────┘

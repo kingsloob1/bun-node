@@ -1,0 +1,15 @@
+Bun 1.4.3 (5f554969), linux-x64, 2026-10-06T09:25:50.399Z
+┌───┬──────────┬───┬────────────────────┬───────────┬──────────────┬────────────────┬────────────┐
+│   │ backend  │ n │ shape              │ processes │ registeredMs │ slowestReadyMs │ rssMbTotal │
+├───┼──────────┼───┼────────────────────┼───────────┼──────────────┼────────────────┼────────────┤
+│ 0 │ sqlite   │ 1 │ 1 unit × N workers │ 1         │ 327          │ 325            │ 71         │
+│ 1 │ sqlite   │ 4 │ 1 unit × N workers │ 1         │ 291          │ 285            │ 73         │
+│ 2 │ sqlite   │ 4 │ N units × 1 worker │ 4         │ 422          │ 416            │ 276        │
+│ 3 │ sqlite   │ 8 │ 1 unit × N workers │ 1         │ 310          │ 305            │ 71         │
+│ 4 │ sqlite   │ 8 │ N units × 1 worker │ 8         │ 583          │ 575            │ 551        │
+│ 5 │ postgres │ 1 │ 1 unit × N workers │ 1         │ 315          │ 303            │ 71         │
+│ 6 │ postgres │ 4 │ 1 unit × N workers │ 1         │ 378          │ 340            │ 67         │
+│ 7 │ postgres │ 4 │ N units × 1 worker │ 4         │ 486          │ 473            │ 270        │
+│ 8 │ postgres │ 8 │ 1 unit × N workers │ 1         │ 444          │ 410            │ 68         │
+│ 9 │ postgres │ 8 │ N units × 1 worker │ 8         │ 850          │ 804            │ 531        │
+└───┴──────────┴───┴────────────────────┴───────────┴──────────────┴────────────────┴────────────┘
