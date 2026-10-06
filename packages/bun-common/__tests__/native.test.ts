@@ -1612,7 +1612,15 @@ describe("native: decompressBody", () => {
     const bombs: Array<[string, Buffer]> = [
       ["gzip", gzipSync(zeros, { level: 9 })],
       ["deflate", deflateSync(zeros, { level: 9 })],
-      ["br", brotliCompressSync(zeros)],
+      // Quality 4 compresses the zeros to ~100 bytes as well as the default
+      // 11 does, in 0.2 s rather than 4.6 s — which alone used to run this
+      // test into its 5 s timeout on a busy machine.
+      [
+        "br",
+        brotliCompressSync(zeros, {
+          params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 },
+        }),
+      ],
     ];
 
     for (const [encoding, bomb] of bombs) {

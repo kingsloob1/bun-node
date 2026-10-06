@@ -139,9 +139,9 @@ describe("invalid JSON in a body declared JSON", () => {
     const rawApp = new BunHttpAdapter(0, {
       request: { parseBody: { contentTypes: { text: true } } },
     });
-    rawApp.post("/e", (req, res) =>
-      res.send(String(Buffer.isBuffer(req.body))),
-    );
+    rawApp.post("/e", (req, res) => {
+      res.send(String(req.body instanceof Uint8Array));
+    });
     const raw = await rawApp.fetch("/e", {
       method: "POST",
       headers: JSON_HEADERS,
