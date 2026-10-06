@@ -681,8 +681,6 @@ interface LayerStep {
   nextCalled: boolean;
   /** The argument `next()` was called with. */
   nextArg: Parameters<NextFunction>[0];
-  /** Wakes the parked pipeline when `next()` is called late. */
-  wake: (() => void) | undefined;
   /** The layer's return value, for the debug log only. */
   returned: unknown;
 }
@@ -5221,7 +5219,6 @@ export class BunRouter<
       const step: LayerStep = {
         nextCalled: false,
         nextArg: undefined,
-        wake: undefined,
         returned: undefined,
       };
       const next: NextFunction = (arg) => {
@@ -5230,7 +5227,12 @@ export class BunRouter<
         }
         step.nextCalled = true;
         step.nextArg = arg;
-        step.wake?.();
+        // A late `next()` wakes the pipeline parked on this layer — found
+        // through the pipeline, not a wake closure built per park.
+        const wait = state.async?.wait;
+        if (wait !== undefined && wait.step === step) {
+          this.#wake(state, wait, NEXT_CALLED);
+        }
       };
 
       // Express sets both on entering each layer: `baseUrl` to the layer's
@@ -5347,7 +5349,6 @@ export class BunRouter<
       stopStreamWatch: undefined,
     };
     pipeline.wait = wait;
-    step.wake = () => this.#wake(state, wait, NEXT_CALLED);
     if (pending !== undefined) {
       pending.then(
         (value) => {
@@ -5414,7 +5415,6 @@ export class BunRouter<
       wait.timer = undefined;
     }
     wait.stopStreamWatch?.();
-    wait.step.wake = undefined;
     return true;
   }
 
