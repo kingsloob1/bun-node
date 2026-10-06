@@ -1189,7 +1189,9 @@ export class BunHttpAdapter<
         port,
         hostname,
         development: Bun.env.NODE_ENV !== "production",
-        async fetch(nativeRequest: Request, server) {
+        // Not `async`: that would wrap the synchronous path's Response in a
+        // promise again.
+        fetch(nativeRequest: Request, server) {
           // The synchronous path, unless a subclass replaced the handler.
           return that.handleNativeRequest ===
             BunHttpAdapter.prototype.handleNativeRequest
