@@ -22,7 +22,7 @@
  * - Checks marked `Known issue` assert what the library documents where it
  *   currently does something else; they fail until the library is fixed.
  */
-import type { BunServer } from "@kingsleyweb/bun-common";
+import type { BunServer, EtagOption } from "@kingsleyweb/bun-common";
 import type { Writable } from "node:stream";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -57,7 +57,7 @@ async function makeReq(
 /** A fresh response on a fresh request. */
 async function makeRes(
   headers: Record<string, string> = {},
-  etagOption?: boolean,
+  etagOption?: EtagOption,
 ): Promise<BunResponse> {
   return new BunResponse(
     await makeReq("http://localhost/", headers),
@@ -693,6 +693,57 @@ checkEqual(
     await native((await makeRes({}, true)).set("ETag", '"mine"').send("body"))
   ).headers.get("ETag"),
   '"mine"',
+);
+
+const weakRes = await makeRes({}, "weak");
+checkEqual('{ etag: "weak" }: res.etag reports it', weakRes.etag, "weak");
+checkEqual(
+  "…and the tag is weak",
+  (await native(weakRes.send("body"))).headers.get("ETag"),
+  `W/${etag("body")}`,
+);
+const strongRes = await makeRes({}, "weak");
+strongRes.etag = "strong";
+checkEqual(
+  "the res.etag setter overrules the option: strong",
+  (await native(strongRes.send("body"))).headers.get("ETag"),
+  etag("body"),
+);
+const customRes = await makeRes();
+checkEqual("res.etag defaults to false", customRes.etag, false);
+customRes.setEtag((body) => `"custom-${body.length}"`);
+checkEqual(
+  "setEtag(fn): the function's tag",
+  (await native(customRes.send("body"))).headers.get("ETag"),
+  '"custom-4"',
+);
+const noneRes = await makeRes({}, true);
+noneRes.setEtag(() => undefined);
+checkEqual(
+  "…a function answering undefined: no tag",
+  (await native(noneRes.send("body"))).headers.get("ETag"),
+  null,
+);
+const bareSetEtag = await makeRes();
+bareSetEtag.setEtag();
+checkEqual("setEtag() with no argument is true", bareSetEtag.etag, true);
+const weakMatch = await makeRes({ "If-None-Match": `W/${etag("body")}` }, true);
+checkEqual(
+  "a strong tag matches a weak If-None-Match: 304",
+  (await native(weakMatch.send("body"))).status,
+  304,
+);
+await checkRejects(
+  "res.etag = 'medium' throws",
+  async () => {
+    (await makeRes()).etag = "medium" as unknown as EtagOption;
+  },
+  { name: "TypeError" },
+);
+await checkRejects(
+  "new BunResponse(req, { etag: 0 }) throws",
+  async () => makeRes({}, 0 as unknown as EtagOption),
+  { name: "TypeError" },
 );
 
 const fresh = await makeRes({ "If-None-Match": '"v1"' });

@@ -12,13 +12,20 @@
  *   it becomes `Max-Age` in seconds plus a matching `Expires`.
  * - `Path` defaults to `/`, and Bun adds `SameSite=Lax` unless told otherwise.
  * - `signed: true` needs a secret: `opts.secret`, or `req.secret`.
- * - ETags are opt-in: `new BunHttpAdapter(timeout, { etag: true })`, or
- *   `res.setEtag()` per response.
+ * - ETags are opt-in: `new BunHttpAdapter(timeout, { etag })`, or per
+ *   response with `res.setEtag(option)` / `res.etag = option`, which
+ *   overrules the adapter's for that response only. The option is `false`,
+ *   `true` (strong), `"weak"`, `"strong"`, or a function of the body
+ *   returning the tag (or `undefined` for none), as Express's `etag`
+ *   setting; anything else is a `TypeError`. A hand-set `ETag` always wins,
+ *   and `sendFile()` keeps its weak size+mtime tag whenever ETags are on.
  * - `send()` and `json()` set the automatic `ETag` first, then answer 304
  *   when the request is fresh against the response headers — so a client
  *   revalidating with the tag it was given gets a 304, as in Express.
  */
+import type { EtagOption } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, BunRouter, etag } from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Response cookies and caching");
@@ -128,6 +135,126 @@ show(
 );
 
 /* ------------------------------------------------------------------ */
+step("ETag modes: true, weak, strong, a function — and per response");
+
+/** An adapter with the given `etag` and the same routes on each. */
+function etagApp(option: EtagOption): BunHttpAdapter {
+  const app = new BunHttpAdapter(0, { etag: option });
+  app.get("/doc", (_req, res) => res.send("a document"));
+  app.get("/untagged", (_req, res) => {
+    res.setEtag(false); // this route only
+    res.send("a document");
+  });
+  app.get("/weak", (_req, res) => {
+    res.etag = "weak"; // the setter does the same as setEtag("weak")
+    res.send("a document");
+  });
+  app.get("/hand-set", (_req, res) => {
+    res.set("ETag", '"v42"').send("a document");
+  });
+  app.get("/file", async (_req, res) => {
+    await res.sendFile(import.meta.path);
+  });
+  return app;
+}
+
+/** The ETag `path` gets on `app`. */
+async function tagOf(app: BunHttpAdapter, path: string) {
+  return (await app.fetch(path)).headers.get("ETag");
+}
+
+/** The strong tag `etag()` computes for the body every route sends. */
+const strongTag = etag("a document");
+const byLength = (body: string | Uint8Array) => `"len-${body.length}"`;
+for (const [label, option, expected] of [
+  ["true", true, strongTag],
+  ['"strong"', "strong", strongTag],
+  ['"weak"', "weak", `W/${strongTag}`],
+  ["a function", byLength, '"len-10"'],
+  ["false", false, null],
+] as const) {
+  const app = etagApp(option);
+  checkEqual(`etag: ${label}`, await tagOf(app, "/doc"), expected);
+  checkEqual(
+    `etag: ${label} — setEtag(false) on one route: none`,
+    await tagOf(app, "/untagged"),
+    null,
+  );
+  checkEqual(
+    `etag: ${label} — res.etag = "weak" on one route: weak`,
+    await tagOf(app, "/weak"),
+    `W/${strongTag}`,
+  );
+  checkEqual(
+    `etag: ${label} — a hand-set ETag wins`,
+    await tagOf(app, "/hand-set"),
+    '"v42"',
+  );
+  const fileTag = await tagOf(app, "/file");
+  check(
+    `etag: ${label} — sendFile(): ${option === false ? "none" : "its weak size+mtime tag"}`,
+    option === false ? fileTag === null : fileTag?.startsWith("W/") === true,
+    fileTag,
+  );
+}
+
+// 304 round-trips: the tag a client was given revalidates, weak or strong
+// (If-None-Match compares weakly, as RFC 9110 says).
+for (const option of ["strong", "weak", byLength] as const) {
+  const app = etagApp(option);
+  const given = (await tagOf(app, "/doc"))!;
+  const label = typeof option === "function" ? "a function" : option;
+  checkEqual(
+    `${label}: If-None-Match with the tag it gave is a 304`,
+    (await app.fetch("/doc", { headers: { "If-None-Match": given } })).status,
+    304,
+  );
+}
+const strongApp = etagApp("strong");
+checkEqual(
+  "a strong tag sent back as W/… still matches: 304",
+  (
+    await strongApp.fetch("/doc", {
+      headers: { "If-None-Match": `W/${strongTag}` },
+    })
+  ).status,
+  304,
+);
+checkEqual(
+  "a different tag: 200 with the body",
+  (await strongApp.fetch("/doc", { headers: { "If-None-Match": '"other"' } }))
+    .status,
+  200,
+);
+
+let constructorError: unknown;
+try {
+  // eslint-disable-next-line no-new
+  new BunHttpAdapter(0, { etag: "medium" as unknown as EtagOption });
+} catch (error) {
+  constructorError = error;
+}
+check(
+  "an invalid etag option is a TypeError at construction",
+  constructorError instanceof TypeError,
+  constructorError,
+);
+const setterApp = new BunHttpAdapter(0);
+setterApp.get("/bad", (_req, res) => {
+  try {
+    res.etag = 1 as unknown as EtagOption;
+    res.send("accepted");
+  } catch (error) {
+    res.send((error as Error).name);
+  }
+});
+checkEqual(
+  "…and from the res.etag setter",
+  await (await setterApp.fetch("/bad")).text(),
+  "TypeError",
+);
+
+/* ------------------------------------------------------------------ */
 step(
   "304 Not Modified: ETag / If-None-Match, Last-Modified / If-Modified-Since",
 );
@@ -192,3 +319,5 @@ for (const [label, init] of cases) {
 
 await withEtags.close();
 await withoutEtags.close();
+
+summary();

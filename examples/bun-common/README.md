@@ -65,7 +65,7 @@ with no socket at all.
 |---|---|
 | [`sending.ts`](./05-response/sending.ts) | status, every body type for `send`, `json`/`jsonp`, headers (`Set-Cookie` read back as an array, as Node), `location`, `links`, `vary`, ETags, `format()` negotiation, attachments |
 | [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, redirects, a stream's first chunk sent before its async handler resolves, a stream outliving the request timeout, `isStreamOpen`/`writableEnded`/`onceStreamEnded()`, `awaitPipelineOrStream()` |
-| [`cookies-and-caching.ts`](./05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
+| [`cookies-and-caching.ts`](./05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s; every `etag` mode (`true`, `"weak"`, `"strong"`, a function, `false`) on the adapter, overruled per response with `res.setEtag()`/`res.etag`, a hand-set `ETag` winning, `sendFile()`'s weak tag, weak/strong `If-None-Match` 304 round-trips, the `TypeError` for an invalid option |
 
 ### 06 — Validation
 
@@ -127,9 +127,9 @@ every option.
 | File | Covers |
 |---|---|
 | [`router-options.ts`](./12-options/router-options.ts) | every `BunRouter` option and public method |
-| [`http-adapter-options.ts`](./12-options/http-adapter-options.ts) | every `BunHttpAdapter` option and public method |
+| [`http-adapter-options.ts`](./12-options/http-adapter-options.ts) | every `BunHttpAdapter` option and public method, including each `etag` mode and `normalizeEtagOption` |
 | [`request-options.ts`](./12-options/request-options.ts) | every request property, body-parsing, query and cookie option: `parseQuery` and `parseCookies` as `boolean` or options (`{ secret, decode }`), and the deprecated `parseQueryOpts`/`cookieParseOptions`/`cookieSecret` still honoured, with the object form winning |
-| [`response-options.ts`](./12-options/response-options.ts) | every response method and option; the default `text/plain;charset=utf-8` and `application/json;charset=utf-8` types, and text/JSON sent with no header built without a Headers object yet carrying the type served, on HEAD and through `adapter.fetch()` (Bun behaviour: [docs/bun-bugs](../../docs/bun-bugs/README.md)) |
+| [`response-options.ts`](./12-options/response-options.ts) | every response method and option, `res.etag`/`setEtag(option)` in every form; the default `text/plain;charset=utf-8` and `application/json;charset=utf-8` types, and text/JSON sent with no header built without a Headers object yet carrying the type served, on HEAD and through `adapter.fetch()` (Bun behaviour: [docs/bun-bugs](../../docs/bun-bugs/README.md)) |
 | [`validate-options.ts`](./12-options/validate-options.ts) | every validation option, execution order, `ValidationError`, `toStandardSchema` |
 | [`cors-options.ts`](./12-options/cors-options.ts) | every CORS field and value form, delegates, `enableCors` |
 | [`static-options.ts`](./12-options/static-options.ts) | every static-file option, caching, 304s, traversal, ranges, `precompressed` and `compression` |
