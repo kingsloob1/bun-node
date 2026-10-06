@@ -30,6 +30,7 @@ for (let i = 0; i < 3; i++) {
 }
 app.get("/static", (_req, res) => res.send("ok"));
 app.get("/user/:id", (req, res) => res.send(req.path_parameters.id));
+app.get("/assets/*", (_req, res) => res.send("ok"));
 app.get("/mw/hit", (req, res) => res.send(`mw:${req.hits}`));
 app.post("/json", async (req, res) => {
   const body = await req.json();

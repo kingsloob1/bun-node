@@ -46,6 +46,7 @@ const ALL_TARGETS = [
 const ALL_SCENARIOS = [
   "static",
   "param",
+  "wildcard",
   "middleware",
   "routes-1000",
   "param-random",
@@ -131,6 +132,11 @@ const SCENARIOS: Record<string, Scenario> = {
     about: "GET /user/42",
     path: "/user/42",
     check: { path: "/user/42", body: (t) => t === "42" },
+  },
+  wildcard: {
+    about: "GET /assets/css/site/app.css, a /assets/* route",
+    path: "/assets/css/site/app.css",
+    check: { path: "/assets/css/site/app.css", body: (t) => t === "ok" },
   },
   middleware: {
     about: "GET /mw/hit behind 3 middleware",

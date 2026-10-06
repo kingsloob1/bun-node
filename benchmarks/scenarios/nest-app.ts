@@ -5,7 +5,17 @@
  * thousand `/r<i>/:id` routes are one generated controller each.
  */
 import type { MiddlewareConsumer, NestMiddleware } from "@nestjs/common";
-import { Body, Controller, Get, Header, HttpCode, Module, Param, Post, Req } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  HttpCode,
+  Module,
+  Param,
+  Post,
+  Req,
+} from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import "reflect-metadata";
@@ -23,6 +33,11 @@ class Bump3 extends Bump {}
 class BenchController {
   @Get("static")
   static() {
+    return "ok";
+  }
+
+  @Get("assets/*path")
+  assets() {
     return "ok";
   }
 
@@ -64,13 +79,19 @@ function routeController(i: number) {
     }
   }
   Param("id")(RouteController.prototype, "handle", 0);
-  const descriptor = Object.getOwnPropertyDescriptor(RouteController.prototype, "handle")!;
+  const descriptor = Object.getOwnPropertyDescriptor(
+    RouteController.prototype,
+    "handle",
+  )!;
   Get(":id")(RouteController.prototype, "handle", descriptor);
   Controller(`r${i}`)(RouteController);
   return RouteController;
 }
 
-export async function startNest(routes: number, makeAdapter: () => BunHttpAdapter = () => new BunHttpAdapter()): Promise<number> {
+export async function startNest(
+  routes: number,
+  makeAdapter: () => BunHttpAdapter = () => new BunHttpAdapter(),
+): Promise<number> {
   const controllers: unknown[] = [BenchController];
   for (let i = 0; i < routes; i++) controllers.push(routeController(i));
 
@@ -81,7 +102,9 @@ export async function startNest(routes: number, makeAdapter: () => BunHttpAdapte
     }
   }
 
-  const app = await NestFactory.create(AppModule, makeAdapter(), { logger: false });
+  const app = await NestFactory.create(AppModule, makeAdapter(), {
+    logger: false,
+  });
   await app.listen(0);
   const url = await app.getUrl();
   return Number(new URL(url.replace("[::1]", "127.0.0.1")).port);

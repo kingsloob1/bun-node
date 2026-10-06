@@ -1,4 +1,4 @@
-# Why param-random, json and async still trail Elysia 2
+# Why param-random, json, async, headers and wildcard still trail Elysia 2
 
 Research, 2026-10-04, at `44b76be`. Every figure is measured on this session's
 machine (Bun 1.4.2, 4 vCPUs) unless marked **[read]** (traced in the source,
@@ -14,6 +14,8 @@ not timed) or **[est]** (an estimate from the measurements around it).
 | param-random | 33,414 | 50,781 | **66%** |
 | json (after `44b76be`) | 19,662 | 26,712 | **74%** |
 | async | 33,277 | 43,492 | **77%** |
+| headers | 30,461 | 35,648 | **85%** |
+| wildcard (one path) | 39,286 | 48,849 | **80%** |
 
 In process — the same request through each framework's handler, no socket,
 fresh `Request` per call, 7 interleaved rounds, medians
@@ -25,6 +27,12 @@ fresh `Request` per call, 7 interleaved rounds, medians
 | json | 6,093 ns | 3,140 ns | 2,953 ns | **2,312 ns** |
 | async | 2,926 ns | 1,374 ns | 1,552 ns | **911 ns** |
 | param-random | 4,514 ns | 2,038 ns | 2,476 ns | **1,835 ns** |
+| headers | 3,460–4,327 ns | 2,037–2,085 ns | 1,375–2,289 ns | **~700–1,600 ns** |
+| wildcard (one path) | 1,417–1,539 ns | 940–955 ns | 477–584 ns | **~0** |
+| wildcard (fresh path per request) | 4,479 ns | 1,798 ns | 2,681 ns | **~2,000 ns** |
+
+(The headers and wildcard rows come from a second harness run,
+`scratchpad/research-wh2.ts`, whose static gap was 689 ns; ranges are two runs.)
 
 The "beyond static" column is what each scenario adds on top of the fixed
 per-request cost every bun-common request pays (the request and response
@@ -195,6 +203,102 @@ the sampling rate. In `wrk` this scenario also has bun-common's worst tail:
 | Keep the cache small while admission is off (≤4,096 entries), so a miss stays a small-map miss | ~50 ns | Needs an eviction structure that can shrink |
 | A radix candidate index for static prefixes + whole-segment params, keeping regex for the rest | ~200–400 ns | Large; the differential route tests are the safety net |
 
+## 4. headers — `GET /headers`, three `res.set()` then `send("ok")`
+
+**What Elysia 2 does** [read]: the handler assigns into `set.headers`, a
+plain null-prototype object, and the route passes that object as the
+`headers` of `new Response(text, init)`: one native conversion. It never
+reads a request header.
+
+**What bun-common does** [read]: `res.set()` → `setHeader()` → the lazily
+created `Headers` (`new Headers()`) → one native `Headers#set` per header.
+`send()` → `#respondWithText` then (because a header was set, the
+no-headers fast path is off): `#applyFreshnessAndStrip` → `req.fresh`, which
+builds the **request's** `Headers` and reads `If-Modified-Since` and
+`If-None-Match`; `has("content-type")`; and `new Response(text, options)`
+with the `Headers`.
+
+**Measured** (micro-benchmarks on this machine, `scratchpad/research-hdr.ts`):
+
+| Step | Time |
+|---|---:|
+| `new Response("ok")` | 298 ns |
+| `new Response("ok", { headers: plainObject })` — Elysia's way | 929–1,039 ns |
+| `new Headers()` + 3 × `set` + `new Response` — our way | 1,545 ns |
+| `new Headers()` + 3 × `set` alone | 523 ns |
+| `new Response` with an existing 3-entry `Headers` | 686 ns |
+| Request `Headers` built + 2 `get` (the freshness check) | ~220 ns |
+| Our 3 × `res.set` on a fresh request/response | ~850 ns (≈ 330 ns over the bare native calls) |
+| Our whole `res.set` × 3 + `send` | 2,245 ns over a header-less `send` |
+
+In the request's profile: native `Headers#set` 13%, `new Headers` 9.7%,
+`Headers#get`/`has` reads 5%.
+
+This **reverses** `elysia2-performance.md` §4.5, which measured a `Headers`
+object faster than a plain record (1,292 vs 1,340 ns) on the earlier
+machine. Here a plain object handed to `new Response` is 300–600 ns cheaper
+than building a `Headers`. Re-measure on the target machine before acting.
+
+**Why it trails, ranked:**
+
+1. **Headers built as a `Headers` object, one native call per header**,
+   where a plain object costs one conversion — ~300–600 ns.
+2. **The freshness check on every response with a header** reads the
+   request's conditional headers — ~220 ns, plus it takes the request off the
+   lazy-headers path. Express does the same check (`res.send` → `req.fresh`),
+   so it stays; but it can be ordered cheaper (below).
+3. **The JS around each call** (`set` → `setHeader` → the `headersObj`
+   getter → an `isArray` check) — ~110 ns per header.
+4. **The rest of the header path in `send`** (`has("content-type")`, the
+   options object, status reads) — ~250 ns.
+
+**What would make it faster than Elysia's, keeping Express semantics:**
+
+| Change | Gain [est] | Exact? |
+|---|---|---|
+| Keep set headers in a null-prototype record (lower-cased name → value) and hand it to `new Response`; build a real `Headers` only when something needs one (`append`, a multi-value header, `Set-Cookie`, iteration, `getHeaders()`, a transform) | ~300–600 ns | Yes, if every read (`get`, `has`, `getHeaderNames`) is answered from the record with the same case-insensitive, comma-joined semantics. Re-measure first: it contradicts §4.5 |
+| Freshness: decide from the **response** first. With neither `ETag` nor `Last-Modified`, only `If-None-Match: *` can make it fresh (the `fresh` module's rule), so read that one header, not two; skip `If-Modified-Since` and `Cache-Control` | ~50–100 ns | Yes |
+| `res.set(name, string)` straight to the record — no `setHeader` hop, no `isArray` when the value is a string | ~150–250 ns for three headers | Yes |
+| Track "a Content-Type was set" as a flag at set time instead of `has()` at send | ~40 ns | Yes |
+| A `res.set(object)` fast path (Express accepts an object) that copies into the record in one loop | ~100 ns when used | Yes |
+
+Together about 600–1,000 ns of the ~1.6 µs — enough to pass Elysia 2 on this
+scenario, since its own header path is ~630 ns (929 − 298).
+
+## 5. wildcard — `GET /assets/*`
+
+**What Elysia 2 does** [read]: the radix tree has a wildcard node under
+`/assets/`; the walk reaches it and takes the rest of the path as `*`. No
+regex, no cache.
+
+**What bun-common does** [read]: the same as a param route — the per-path
+cache, and on a miss the candidate index (bucket `assets`), the route's
+regex (`/assets/*` compiled by `@routejs/router`), the layer list.
+
+**Measured:**
+
+- **One repeated path** (`/assets/css/site/app.css`, what both benchmarks
+  send): the path is a cache hit after the first request, so wildcard costs
+  what static costs — `wrk` 80% of Elysia 2 against static's 81%; in process
+  the gap beyond static is ~0. Nothing wildcard-specific to fix.
+- **A fresh path per request** (`/assets/<id>/site/app.css`, what real asset
+  traffic looks like): 4,479 ns against Elysia 2's 1,798 ns — a 2.7 µs gap,
+  the same as param-random. Every path misses the cache.
+
+**Why it trails:** on real traffic, the param-random causes exactly — the
+per-path cache that only misses, the layer list built per path, and a regex
+instead of a tree walk. A wildcard route serving many files is the most common
+way to hit that path in production.
+
+**What would close it:** the param-random changes (§3) — per-route layer
+templates, a bounded cache while admission is off — apply unchanged. One more
+specific to wildcards: a route whose pattern ends in `*` with a literal prefix
+can be matched by `startsWith(prefix)` in the candidate index, skipping the
+regex for that route (~100–200 ns [est], exact as long as the regex's
+case-sensitivity and trailing-slash rules are reproduced). The benchmarks
+should also gain a **wildcard-random** scenario: the one-path figure hides
+this.
+
 ## Summary of causes
 
 | Scenario | Main cause | Second | Third |
@@ -202,16 +306,22 @@ the sampling rate. In `wrk` this scenario also has bun-common's worst tail:
 | json | Four-step body read vs `request.json()` — kept for exact bytes | Header/option work for body-parser semantics | (fixed) a stream built by reading `request.body` |
 | async | ~12 objects per parked layer vs ~6 | `queueMicrotask` for the Express "next tick" rule | A no-op reaction on the handler's promise |
 | param-random | Layer list built per path | A per-path cache that only misses, and grows | Regex instead of a tree walk |
+| headers | A `Headers` object with one native call per header vs one plain object | The freshness check reads the request's headers | JS hops around each `set` |
+| wildcard | Nothing on one path (it is the fixed cost); on fresh paths, the param-random causes | — | — |
 
 All three share the fixed cost a static request pays — 641 ns in process
 against Elysia 2 — which is still the largest single item for async.
 
 ## Recommended order
 
+0. **headers record + freshness ordering** — the scenario where bun-common can
+   most plausibly pass Elysia 2: ~600–1,000 ns of a ~1.6 µs gap, all exact.
+   Re-measure the `Headers`-vs-object cost on the target machine first.
 1. **json internals** — `parseContentCodings("")`, no `BodyParseConfig` for a
    boolean `parseBody`, one `content-type` read. Exact, small, ~200–350 ns.
 2. **async allocation** — fold the wait into the pipeline state and drop the
    per-park closures. Exact, ~150–300 ns.
-3. **param-random layer templates** — the largest exact gain, a medium change.
+3. **param-random layer templates** — the largest exact gain, a medium change;
+   it fixes wildcard on real (many-path) traffic too.
 4. **json text path** — the largest json gain, but it needs a decision on what
    `req.buffer` means for a non-UTF-8 JSON body.

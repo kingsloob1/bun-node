@@ -7,6 +7,7 @@
  *
  *   GET  /static          -> "ok"
  *   GET  /user/:id        -> the id
+ *   GET  /assets/*        -> "ok", a wildcard route (/assets/css/site/app.css)
  *   GET  /mw/hit          -> "mw:3", behind three `/mw` middleware that each
  *                            bump a counter on the request
  *   POST /json            -> {"ok":true,"n":<body.n>}
@@ -62,8 +63,11 @@ type ExpressStyle = {
   ) => unknown;
 };
 
-/** The shared route set on an Express-style API (bun-common, Express). */
-function registerExpressStyle(app: ExpressStyle): void {
+/**
+ * The shared route set on an Express-style API (bun-common, Express).
+ * `wildcard` is the catch-all's spelling: Express 5 requires a named one.
+ */
+function registerExpressStyle(app: ExpressStyle, wildcard = "/assets/*"): void {
   const mw = (req: Req, _res: Res, next: Next) => {
     bump(req);
     next();
@@ -73,6 +77,7 @@ function registerExpressStyle(app: ExpressStyle): void {
   app.use("/mw", mw);
   app.get("/static", (_req, res) => res.send("ok"));
   app.get("/user/:id", (req, res) => res.send(req.params.id));
+  app.get(wildcard, (_req, res) => res.send("ok"));
   app.get("/mw/hit", (req, res) => res.send(`mw:${req.hits}`));
   app.post("/json", (req, res) => res.json({ ok: true, n: req.body.n }));
   app.get("/async", async (_req, res) => {
@@ -121,7 +126,7 @@ async function start(target: string | undefined): Promise<number> {
       };
       const app = express();
       app.use("/json", express.json());
-      registerExpressStyle(app);
+      registerExpressStyle(app, "/assets/*splat");
       return await new Promise<number>((resolve) => {
         const server = app.listen(0, () => resolve(server.address().port));
       });
@@ -139,6 +144,7 @@ async function start(target: string | undefined): Promise<number> {
       }
       app.get("/static", (c) => c.text("ok"));
       app.get("/user/:id", (c) => c.text(c.req.param("id")));
+      app.get("/assets/*", (c) => c.text("ok"));
       app.get("/mw/hit", (c) => c.text(`mw:${c.get("hits")}`));
       app.post("/json", async (c) => {
         const body = await c.req.json<{ n: number }>();
@@ -171,6 +177,7 @@ async function start(target: string | undefined): Promise<number> {
       let app = new Elysia()
         .get("/static", () => "ok")
         .get("/user/:id", ({ params }) => params.id)
+        .get("/assets/*", () => "ok")
         .guard(
           {
             beforeHandle: [
@@ -207,6 +214,7 @@ async function start(target: string | undefined): Promise<number> {
     case "bun-serve": {
       const routes: Record<string, unknown> = {
         "/static": () => new Response("ok"),
+        "/assets/*": () => new Response("ok"),
         "/user/:id": (req: Bun.BunRequest<"/user/:id">) =>
           new Response(req.params.id),
         "/mw/hit": (req: Bun.BunRequest) => {
