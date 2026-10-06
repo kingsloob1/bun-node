@@ -1099,17 +1099,21 @@ describe("BunHttpAdapter: a JSON body and rawBody", () => {
       body,
     });
 
-  it("without rawBody, is read with request.json() and keeps no bytes", async () => {
-    const adapter = new BunHttpAdapter(0);
-    adapter.useBodyParser("json", false, {});
-    adapter.post("/j", (req, res) => {
-      res.json({ body: req.body, kept: req.buffer !== undefined });
-    });
-    expect(adapter.requestOpts.retainBuffer).toBeUndefined();
-    expect(await (await adapter.fetch(post())).json()).toEqual({
-      body: { n: 7 },
-      kept: false,
-    });
+  it("keeps the bytes by default; retainBuffer: false reads JSON with request.json()", async () => {
+    for (const [retainBuffer, kept] of [
+      [undefined, true],
+      [false, false],
+    ] as const) {
+      const adapter = new BunHttpAdapter(0, { request: { retainBuffer } });
+      adapter.useBodyParser("json", false, {});
+      adapter.post("/j", (req, res) => {
+        res.json({ body: req.body, kept: req.buffer !== undefined });
+      });
+      expect(await (await adapter.fetch(post())).json()).toEqual({
+        body: { n: 7 },
+        kept,
+      });
+    }
   });
 
   it("with rawBody (Nest's rawBody: true), keeps every body's bytes", async () => {

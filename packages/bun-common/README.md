@@ -667,7 +667,7 @@ a boolean on either side replaces the other.
 | `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
 | `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
 | `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
-| `retainBuffer` | `boolean` | unset (JSON drops its bytes, other kinds keep them) | Keep (`true`) or drop (`false`) the exact bytes of every body; `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind. See [Bodies read without their bytes](#body-decoding). bun-nest's `rawBody: true` turns it on. |
+| `retainBuffer` | `boolean` | `true` | Keep (`true`) or drop (`false`) the exact bytes of every body; `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind. See [Bodies read without their bytes](#body-decoding). bun-nest's `rawBody: true` turns it on. |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -900,17 +900,17 @@ never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
 options built elsewhere. (A `maxContentLength` that did not parse used to be
 ignored silently, leaving the per-kind default cap in force.)
 
-**Bodies read without their bytes (`retainBuffer`).** By default a body
-declared JSON (`application/json`, `+json`) is read and parsed in one native
-call, `request.json()`, as Elysia does — about a sixth less per JSON request,
-+9% `wrk` req/s — and its bytes are not kept. Every other kind keeps them.
-`retainBuffer` decides it:
+**Bodies read without their bytes (`retainBuffer`).** By default every body
+keeps its exact bytes (`req.buffer`, `rawBody`, the `data` events). With
+`retainBuffer: false`, a body that can be read without them is: a JSON body
+in one native call, `request.json()`, as Elysia does — about a sixth less
+per JSON request, +9% `wrk` req/s. `retainBuffer` decides it:
 
 | Where | Applies to |
 |---|---|
 | `retainBuffer` request option (and `requestParsing({ retainBuffer })` for a deferred body) | every kind: `true` keeps every body's bytes, `false` drops them wherever a kind can be read without them |
 | `parseBody.contentTypes.<kind>.retainBuffer` | that kind only, over the request option |
-| neither set | JSON drops its bytes; every other kind keeps them |
+| neither set | every kind keeps its bytes (`true`), capped `parseBody` or not |
 
 A kind read without its bytes: `json` with `request.json()`; `text`,
 `urlencoded` and `xml` with `request.text()` and then their own parser (`text`

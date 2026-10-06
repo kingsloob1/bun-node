@@ -7,9 +7,10 @@ import { BunRequest } from "../lib/BunRequest";
 import { testServer } from "./helpers";
 
 /**
- * A body declared JSON with no `Content-Encoding`, no cap and no reviver is
- * read and parsed in one native call (`request.json()`) unless the request
- * keeps its bytes (`retainBuffer`). The requests here carry the
+ * With `retainBuffer: false`, a body declared JSON with no
+ * `Content-Encoding` and no reviver is read and parsed in one native call
+ * (`request.json()`) and keeps no bytes; by default (`retainBuffer` unset or
+ * `true`) every body keeps them. The requests here carry the
  * `Content-Length` a served request has: an in-process `Request` built from
  * a string has none, and is read as bytes.
  */
@@ -34,7 +35,10 @@ const post = (
 
 const build = (
   request: Request,
-  options: ConstructorParameters<typeof BunRequest>[2] = { parseBody: true },
+  options: ConstructorParameters<typeof BunRequest>[2] = {
+    parseBody: true,
+    retainBuffer: false,
+  },
 ) => BunRequest.init(request, testServer, options) as Promise<BunRequest>;
 
 describe("a JSON body read with request.json()", () => {
@@ -59,7 +63,7 @@ describe("a JSON body read with request.json()", () => {
     expect("body" in req.bodyDecodingError!).toBe(false);
     expect(req.complete).toBe(false);
 
-    const app = new BunHttpAdapter(0);
+    const app = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     let routed = false;
     app.post("/j", (_req, res) => {
       routed = true;
@@ -80,7 +84,7 @@ describe("a JSON body read with request.json()", () => {
   });
 
   it("serves a JSON reply through the adapter", async () => {
-    const app = new BunHttpAdapter(0);
+    const app = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     app.post("/j", (req, res) => {
       res.json({ got: req.body, buffer: req.buffer === undefined });
     });
@@ -169,9 +173,10 @@ describe("read as bytes, as before", () => {
     expect(inProcess.buffer?.toString()).toBe(JSON_BODY);
   });
 
-  it("for a body not declared JSON", async () => {
+  it("for a body not declared JSON, by default", async () => {
     const req = await build(
       post("a=1", { "content-type": "application/x-www-form-urlencoded" }),
+      { parseBody: true },
     );
     expect(req.body).toEqual({ a: "1" });
     expect(req.buffer?.toString()).toBe("a=1");
@@ -180,7 +185,7 @@ describe("read as bytes, as before", () => {
 
 describe("caps and re-parsing a body that kept no bytes", () => {
   it("requestParsing() checks its cap against Content-Length (413)", async () => {
-    const app = new BunHttpAdapter(0);
+    const app = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     app.use("/j", requestParsing({ parseBody: { maxContentLength: 4 } }));
     app.post("/j", (req, res) => {
       res.json(req.body);
@@ -190,7 +195,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
     }) satisfies RouterErrorMiddlewareHandler);
     const response = (await app.fetch(post()))!;
     expect(response.status).toBe(413);
-    const fits = new BunHttpAdapter(0);
+    const fits = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     fits.use("/j", requestParsing({ parseBody: { maxContentLength: "1kb" } }));
     fits.post("/j", (req, res) => {
       res.json(req.body);
@@ -202,7 +207,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
   });
 
   it("a body parser's limit is checked against Content-Length", async () => {
-    const app = new BunHttpAdapter(0);
+    const app = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     app.useBodyParser("json", false, { limit: 4 });
     app.post("/j", (req, res) => {
       res.json(req.body);
@@ -214,7 +219,9 @@ describe("caps and re-parsing a body that kept no bytes", () => {
   });
 
   it("requestParsing({ retainBuffer }) applies to a deferred body", async () => {
-    const app = new BunHttpAdapter(0, { request: { deferBody: true } });
+    const app = new BunHttpAdapter(0, {
+      request: { deferBody: true, retainBuffer: false },
+    });
     app.use("/keep", requestParsing({ retainBuffer: true }));
     app.post("/keep", (req, res) => {
       res.json({ body: req.body, bytes: req.buffer?.toString() ?? null });
@@ -276,14 +283,26 @@ describe("retainBuffer per content type (parseBody.contentTypes.<kind>.retainBuf
   const typed = (type: string, body: string) =>
     post(body, { "content-type": type });
 
-  it("a served request under a cap reads JSON without its bytes, by default", async () => {
+  it("keeps every body's bytes by default, plain or capped", async () => {
+    for (const parseBody of [true, { maxContentLength: "1kb" }] as const) {
+      const req = await build(post(), { parseBody });
+      expect(req.body).toEqual({ n: 7, s: "é" });
+      expect(req.buffer?.toString()).toBe(JSON_BODY);
+    }
+  });
+
+  it("a served request under a cap reads JSON without its bytes when asked", async () => {
     const req = await build(post(), {
       parseBody: { maxContentLength: "1kb" },
+      retainBuffer: false,
     });
     expect(req.body).toEqual({ n: 7, s: "é" });
     expect(req.buffer).toBeUndefined();
     // Over the cap: refused (413) from the declared length, as before.
-    const over = await build(post(), { parseBody: { maxContentLength: 4 } });
+    const over = await build(post(), {
+      parseBody: { maxContentLength: 4 },
+      retainBuffer: false,
+    });
     expect(over.isPayloadTooLarge).toBe(true);
   });
 
@@ -301,7 +320,9 @@ describe("retainBuffer per content type (parseBody.contentTypes.<kind>.retainBuf
   });
 
   it("text, urlencoded and xml keep their bytes unless told not to", async () => {
-    const text = await build(typed("text/plain", "héllo"));
+    const text = await build(typed("text/plain", "héllo"), {
+      parseBody: true,
+    });
     expect([text.body, text.buffer?.toString()]).toEqual(["héllo", "héllo"]);
 
     const options = {
@@ -325,7 +346,11 @@ describe("retainBuffer per content type (parseBody.contentTypes.<kind>.retainBuf
       options,
     );
     expect(xml.body).toEqual(
-      (await build(typed("application/xml", "<a><b>1</b></a>"))).body,
+      (
+        await build(typed("application/xml", "<a><b>1</b></a>"), {
+          parseBody: true,
+        })
+      ).body,
     );
     expect(xml.buffer).toBeUndefined();
   });

@@ -1768,9 +1768,9 @@ export class BunRequest<
        */
       deferBody?: boolean;
       /**
-       * Keep (`true`) or drop (`false`) the exact bytes of every body read;
-       * `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind.
-       * Unset, a JSON body drops them and every other kind keeps them.
+       * Keep (`true`, the default) or drop (`false`) the exact bytes of every
+       * body read; `parseBody.contentTypes.<kind>.retainBuffer` overrides it
+       * per kind. Dropping them is opt-in.
        *
        * A body read without its bytes — JSON with `request.json()`; text,
        * urlencoded and XML with `request.text()` — leaves {@link buffer}
@@ -2097,15 +2097,15 @@ export class BunRequest<
   /**
    * Whether this request keeps the bytes of a body of `kind`: the kind's own
    * `parseBody.contentTypes.<kind>.retainBuffer`, else the `retainBuffer`
-   * request option, else `true` for every kind but JSON.
+   * request option, else `true`.
    */
   #retainsBufferFor(kind: ContentParserType): boolean {
     const own = this.#perTypeConfig?.get(kind)?.retainBuffer;
     if (own !== undefined) {
       return own;
     }
-    const global = this.options.retainBuffer;
-    return global !== undefined ? global : kind !== "json";
+    // Kept unless asked otherwise: dropping the bytes is opt-in.
+    return this.options.retainBuffer !== false;
   }
 
   /**
