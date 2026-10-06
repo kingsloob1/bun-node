@@ -203,13 +203,22 @@ export interface RemoteExecutorStore {
 /** Options for {@link createRemoteExecutorStore}. */
 export interface RemoteExecutorStoreOptions {
   /**
-   * The most records held at once. Default `10_000`. Past it the oldest is
-   * forgotten, which reopens its attempt to running twice: size it above the
-   * attempts one instance sees in `idempotencyTtl`. An executor writes up to
-   * three records per attempt (the attempt, its `status` alias and the job's
-   * fence).
+   * The most records held at once. Default `10_000`; the store an executor
+   * builds for itself is sized from its options instead (`store` below).
+   * Past it the oldest record is forgotten **before it expires**: its attempt
+   * can then run twice, and its job's fence is lost, so an older claim is no
+   * longer refused. Size it above the records one instance writes in an
+   * `idempotencyTtl`: up to three per attempt (the attempt, its `status`
+   * alias and the job's fence).
    */
   max?: number;
+  /**
+   * Told when records are forgotten before they expire, with how many: at the
+   * first, then at most once a minute with the count since, so a burst is one
+   * report. An executor's own store reports here as an `onLog` `warn`. A throw
+   * here is swallowed.
+   */
+  onEvict?: (count: number) => void;
 }
 
 /** Options for `createRemoteExecutor()`. */
@@ -256,7 +265,20 @@ export interface RemoteExecutorOptions {
    * `status` answers off, and the handshake stops advertising them.
    */
   idempotencyTtl?: number;
-  /** Where outcomes and fences are remembered. Default an in-memory store per executor. */
+  /**
+   * Where outcomes and fences are remembered. Default an in-memory store per
+   * executor, holding `3 × maxConcurrency × ⌈idempotencyTtl / 1 s⌉` records
+   * (at least 10,000; 115,200 with the defaults): every record written in
+   * one TTL when each slot finishes one attempt a second. Faster turnover
+   * fills it, and the oldest records are then forgotten before they expire,
+   * so a redelivered attempt can run twice and a stale claim is no longer
+   * refused; each such burst is an `onLog` `warn`.
+   *
+   * The default is per instance and **lost on a restart**: an attempt
+   * redelivered to a restarted or different instance runs again. Give a
+   * persistent, shared store (a KV namespace, a Durable Object, Redis) when
+   * that matters.
+   */
   store?: RemoteExecutorStore;
   /**
    * Where seen signatures are remembered, so a replayed request is

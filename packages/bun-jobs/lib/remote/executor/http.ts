@@ -139,15 +139,26 @@ export async function readBounded(
     // Signed bytes cannot be recovered from a parsed body, and verifying an
     // empty one would report a wrong key: say what is actually wrong.
     throw new ConfigError(
-      "The request's body was already read before the remote executor saw it: mount the executor ahead of any body parser, or pass it a Request rebuilt from the raw bytes",
+      "The request's body was already read before the remote executor saw it: mount the executor where the body is untouched (Bun.serve's fetch or routes, or a route with body parsing off)",
     );
   }
   const declared = request.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared) && Number(declared) > max) {
     throw new RemoteMessageTooLargeError(Number(declared), max);
   }
-  if (request.body === null) {
+  const empty = (): Uint8Array => {
+    if (declared !== null && /^\d+$/.test(declared) && Number(declared) > 0) {
+      // A Request copied from one whose body was read keeps its headers and
+      // reports bodyUsed false, but its body is empty (oven-sh/bun#44307):
+      // the bodyUsed check above cannot see it, and a 401 would mislead.
+      throw new ConfigError(
+        `The request declares a ${declared}-byte body but carries none: it was most likely rebuilt from a Request whose body was already read (new Request(used), oven-sh/bun#44307). Mount the executor where the body is untouched`,
+      );
+    }
     return new Uint8Array(0);
+  };
+  if (request.body === null) {
+    return empty();
   }
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -163,6 +174,9 @@ export async function readBounded(
       throw new RemoteMessageTooLargeError(null, max);
     }
     chunks.push(value);
+  }
+  if (length === 0) {
+    return empty();
   }
   if (chunks.length === 1) {
     return chunks[0]!;

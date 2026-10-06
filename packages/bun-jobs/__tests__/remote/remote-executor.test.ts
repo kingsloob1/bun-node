@@ -1,7 +1,8 @@
+import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import type { RemoteExecutor, RemoteJobHandler } from "../../lib/remote";
 import type { Transport } from "../helpers/remoteExecutor";
 import { createHash } from "node:crypto";
-import { BunRouter } from "@kingsleyweb/bun-common";
+import { BunHttpAdapter, BunRouter } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   createRemoteExecutor,
@@ -815,37 +816,86 @@ describe("handlers", () => {
 });
 
 describe("mounting", () => {
-  it("mounts in bun-common's router, raw body intact", async () => {
+  it("mounts in Bun.serve's routes, at a path and under it", async () => {
     const executor = createRemoteExecutor({
       secret: SECRET,
       handlers: { echo: (job) => job.data },
     });
-    const router = new BunRouter();
-    // The router parses bodies by default, so the executor is handed a
-    // Request rebuilt from the raw bytes the router kept (`req.buffer`).
-    const mount = async (req: any, res: any) => {
-      res.send(
-        await executor(
-          new Request(req.request.url, {
-            method: req.method,
-            headers: req.request.headers,
-            body: req.buffer ?? null,
-          }),
-        ),
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      routes: { "/jobs": executor, "/jobs/*": executor },
+      fetch: () => new Response("not found", { status: 404 }),
+    });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const one = job({ name: "echo", data: "routed" });
+      const request = await signedPost(`${base}/jobs`, invoke([one]));
+      const answer = await read(
+        await fetch(request.url, {
+          method: "POST",
+          headers: request.headers,
+          body: await request.text(),
+        }),
       );
+      expect(answer).toMatchObject({
+        status: 200,
+        signed: true,
+        body: { outcomes: [{ result: "routed" }] },
+      });
+      expect((await fetch(`${base}/jobs/healthz`)).status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  it("mounts in a bun-common adapter with body parsing off, the body untouched", async () => {
+    const executor = createRemoteExecutor({
+      secret: SECRET,
+      handlers: { echo: (job) => job.data },
+    });
+    // On develop body parsing is per adapter; this adapter serves only the
+    // executor, so `req.request` reaches it unread.
+    const app = new BunHttpAdapter(0, { request: { parseBody: false } });
+    const mount = async (req: BunRequest, res: BunResponse) => {
+      res.send(await executor(req.request));
     };
-    router.all("/jobs", mount);
-    router.all("/jobs/healthz", mount);
-    const one = job({ name: "echo", data: "hi" });
-    const request = await signedPost("http://app.test/jobs", invoke([one]));
-    const response = await router.fetch(request);
-    const answer = await read(response);
+    app.all("/jobs", mount);
+    app.all("/jobs/healthz", mount);
+    const one = job({ name: "echo", data: "adapter" });
+    const answer = await read(
+      await app.fetch(await signedPost("http://app.test/jobs", invoke([one]))),
+    );
     expect(answer).toMatchObject({
       status: 200,
       signed: true,
-      body: { outcomes: [{ result: "hi" }] },
+      body: { outcomes: [{ result: "adapter" }] },
     });
-    expect((await router.fetch("/jobs/healthz")).status).toBe(200);
+    expect((await app.fetch("/jobs/healthz")).status).toBe(200);
+  });
+
+  it("the control: behind a body-parsing router the executor says why it cannot verify", async () => {
+    const executor = createRemoteExecutor({ secret: SECRET, handlers: {} });
+    const router = new BunRouter();
+    router.all("/jobs", async (req, res) => {
+      res.send(await executor(req.request));
+    });
+    const answer = await read(
+      await router.fetch(
+        await signedPost("http://app.test/jobs", {
+          v: 1,
+          op: "ping",
+          id: nextId(),
+        }),
+      ),
+    );
+    expect(answer).toMatchObject({
+      status: 500,
+      body: {
+        code: "INTERNAL",
+        detail: expect.stringContaining("already read"),
+      },
+    });
   });
 
   it("a body a host already consumed is a 500 that says so, not a misleading 401", async () => {

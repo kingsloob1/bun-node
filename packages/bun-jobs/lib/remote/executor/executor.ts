@@ -69,7 +69,10 @@ import {
   REMOTE_CANARY_JOB,
 } from "./canary";
 import { answer, problem, readBounded } from "./http";
-import { createRemoteExecutorStore } from "./store";
+import {
+  createRemoteExecutorStore,
+  remoteExecutorStoreCapacity,
+} from "./store";
 
 /** Defaults for the options that have one. */
 const DEFAULTS = {
@@ -263,6 +266,33 @@ function attemptId(
   return JSON.stringify([queue.ns, queue.queue, job, attempt]);
 }
 
+/**
+ * The in-memory store an executor builds when given none: sized for every
+ * record written in one TTL at one attempt per slot per second
+ * (`remoteExecutorStoreCapacity`), and warning through `onLog` when it
+ * forgets records before they expire.
+ */
+function ownStore(
+  maxConcurrency: number,
+  idempotencyTtl: number,
+  log: (
+    level: "warn",
+    message: string,
+    fields: Record<string, unknown>,
+  ) => void,
+): RemoteExecutorStore {
+  const capacity = remoteExecutorStoreCapacity(maxConcurrency, idempotencyTtl);
+  return createRemoteExecutorStore({
+    max: capacity,
+    onEvict: (evicted) =>
+      log(
+        "warn",
+        `The remote executor's in-memory store evicted ${evicted} unexpired record(s): attempts redelivered within idempotencyTtl may run twice, and stale claims may no longer be refused. Give the executor a larger or persistent store.`,
+        { evicted, capacity, idempotencyTtl, maxConcurrency },
+      ),
+  });
+}
+
 /** An answer to `HEAD`: the `GET` answer's status and headers, no body. */
 function headless(response: Response): Response {
   return new Response(null, {
@@ -309,11 +339,25 @@ export function createRemoteExecutorWith(
     );
   }
 
+  const log = (
+    level: Parameters<NonNullable<RemoteExecutorOptions["onLog"]>>[0],
+    message: string,
+    fields?: Record<string, unknown>,
+  ): void => {
+    try {
+      options.onLog?.(level, message, fields);
+    } catch {
+      // The author's logger failing must not fail the attempt.
+    }
+  };
+
   const secret = [...keys];
   const nonces = options.nonces ?? createRemoteNonceCache();
   /** `null` when idempotency is off: nothing is remembered, nothing is fenced. */
   const store: RemoteExecutorStore | null =
-    idempotencyTtl > 0 ? (options.store ?? createRemoteExecutorStore()) : null;
+    idempotencyTtl > 0
+      ? (options.store ?? ownStore(maxConcurrency, idempotencyTtl, log))
+      : null;
   const instance = crypto.randomUUID();
   const runChecks = createHealthRunner(options.health);
   const canary = createCanaryHandler(runChecks);
@@ -337,18 +381,6 @@ export function createRemoteExecutorWith(
   const inProgress = new Map<string, Promise<RemoteOutcome>>();
   /** The controller of every attempt whose handler is running here, by job and attempt. */
   const controllers = new Map<string, AbortController>();
-
-  const log = (
-    level: Parameters<NonNullable<RemoteExecutorOptions["onLog"]>>[0],
-    message: string,
-    fields?: Record<string, unknown>,
-  ): void => {
-    try {
-      options.onLog?.(level, message, fields);
-    } catch {
-      // The author's logger failing must not fail the attempt.
-    }
-  };
 
   const capacity = (): RemoteCapacity => ({
     inFlight,
@@ -455,7 +487,9 @@ export function createRemoteExecutorWith(
               ? compareFences(job.fence, current.fence)
               : undefined;
           stale = order !== undefined && order < 0;
-          return stale
+          // A fence this executor cannot order against the stored one (two
+          // claims at one instant) is let through, and never replaces it.
+          return stale || (current?.kind === "fence" && order === undefined)
             ? null
             : {
                 record: { kind: "fence", fence: job.fence },
@@ -564,7 +598,10 @@ export function createRemoteExecutorWith(
     const key = job.idempotencyKey;
     const joined = store === null || isCanary ? undefined : inProgress.get(key);
     if (joined !== undefined) {
-      return await joined;
+      // Re-stamped with this request's own job: the key is the gateway's
+      // word, and the answer must name the job this request sent.
+      const outcome = await joined;
+      return { ...outcome, job: job.id, attempt: job.attempt };
     }
     const release = reserve();
     if (release === null) {
@@ -904,10 +941,25 @@ export function createRemoteExecutorWith(
       );
     }
     const envelope = parsed.value;
-    return await dispatch(envelope, {
+    const reply: Signer = {
       ...signer,
       id: echoableId(envelope.id) ?? signer.id,
-    });
+    };
+    try {
+      return await dispatch(envelope, reply);
+    } catch (error) {
+      // Past authentication, so even this answer is signed.
+      log("error", "The remote executor failed to answer a request", {
+        error: error instanceof Error ? error.message : String(error),
+        op: envelope.op,
+      });
+      return await problem(
+        500,
+        "INTERNAL",
+        { detail: "The executor failed to answer" },
+        reply,
+      );
+    }
   };
 
   const route = async (request: Request): Promise<Response> => {
@@ -967,9 +1019,21 @@ export function createRemoteExecutorWith(
  * de-duplicates by idempotency key, refuses a stale fence, and runs each job
  * with the handler registered for its name.
  *
- * It imports nothing platform-specific: mount it in `Bun.serve`, bun-common's
- * router, a Next.js route, a Cloudflare Worker or anything else that turns a
- * `Request` into a `Response`. Throws `ConfigError` for unusable options.
+ * It imports nothing platform-specific: mount it in `Bun.serve`, a Next.js
+ * route, a Cloudflare Worker or anything else that turns a `Request` into a
+ * `Response`. Throws `ConfigError` for unusable options.
+ *
+ * **It must be handed the request unread.** Every signature is over the exact
+ * body bytes, so the executor reads the body itself. Mount it where nothing
+ * reads the body first: `Bun.serve`'s `fetch` or `routes`, a platform's fetch
+ * handler, or a bun-common adapter with body parsing off
+ * (`new BunHttpAdapter(port, { request: { parseBody: false } })`, passing
+ * `req.request`). A request whose body was already read is answered 500
+ * `INTERNAL` naming the cause, never a misleading 401, and so is one rebuilt
+ * from a read request, which Bun gives an empty body (oven-sh/bun#44307).
+ * A host in front of it decides two things the executor cannot: its own body
+ * size cap applies before `maxBodyBytes` does, and it must not decode a
+ * `content-encoding`, because the signature covers the bytes as sent.
  *
  * ```ts
  * const executor = createRemoteExecutor({

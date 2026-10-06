@@ -38,6 +38,13 @@ const ordinal = () => s.integer({ minimum: 1 });
 const jobId = () => s.string({ minLength: 1, maxLength: MAX_JOB_ID_LENGTH });
 /** A non-empty identifier. */
 const ident = () => s.string({ minLength: 1 });
+/**
+ * A fence, `<lockToken>:<claimedAt>`: a token without whitespace, a colon,
+ * and the claim's epoch ms. The shape is what lets a receiver order two
+ * claims, so one that does not have it is refused rather than let through
+ * unordered.
+ */
+const fence = () => s.string({ maxLength: 256, pattern: /^\S+:\d{1,16}$/ });
 /** A problem code: upper-case words, so a code from a newer peer still parses. */
 const code = () => s.string({ pattern: /^[A-Z][A-Z0-9_]*$/ });
 /** 128 random bits as unpadded base64url. */
@@ -92,7 +99,7 @@ export const RemoteInvokeJobSchema = open({
   priority: s.optional(s.integer()),
   timeoutMs: s.optional(count()),
   idempotencyKey: ident(),
-  fence: ident(),
+  fence: fence(),
   delivery: ordinal(),
   repeatKey: s.optional(s.nullable(s.string())),
   parent: s.optional(s.nullable(RemoteJobParentSchema)),
@@ -101,7 +108,7 @@ export const RemoteInvokeJobSchema = open({
 /** The fields every completed outcome has, without its job and attempt. */
 const resultFields = {
   op: s.literal("result"),
-  fence: ident(),
+  fence: fence(),
   status: s.literal("completed"),
   result: s.optional(s.unknown()),
   progress: s.optional(s.unknown()),
@@ -113,7 +120,7 @@ const resultFields = {
 /** The fields every failed outcome has, without its job and attempt. */
 const failFields = {
   op: s.literal("fail"),
-  fence: ident(),
+  fence: fence(),
   status: s.enum(["failed", "failed-fatal", "handler-not-found"]),
   error: RemoteErrorSchema,
   retryAfterMs: s.optional(count()),
@@ -139,7 +146,7 @@ export const RemoteRejectedOutcomeSchema = open({
   op: s.literal("rejected"),
   job: jobId(),
   attempt: ordinal(),
-  fence: s.optional(ident()),
+  fence: s.optional(fence()),
   code: code(),
   retryAfterMs: s.optional(count()),
   at: at(),
@@ -398,7 +405,7 @@ export const AcceptedMessageSchema = open({
   op: s.literal("accepted"),
   job: jobId(),
   attempt: ordinal(),
-  fence: ident(),
+  fence: fence(),
   duplicate: s.optional(s.boolean()),
   at: at(),
 });

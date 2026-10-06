@@ -106,6 +106,7 @@ reference.
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
   - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
   - [Compute providers](#compute-providers)
+- [Remote executors: `createRemoteExecutor`](#remote-executors-createremoteexecutor)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Upgrading from `"spawn"` and `"worker"`](#upgrading-from-spawn-and-worker)
@@ -3457,6 +3458,75 @@ reads instead of knowing the platform. Its guides ship in this package, in
   `./provider`, `./provider/testing` and `./summon`, and every member.
 - [Security](docs/providers/security.md): what a provider can reach, what
   is redacted, and what never reaches API clients.
+
+## Remote executors: `createRemoteExecutor`
+
+`createRemoteExecutor()`, from `@kingsleyweb/bun-jobs/remote`, is the
+reference **remote executor**: the far end of the remote-worker protocol, as
+a plain fetch handler, `(request: Request) => Promise<Response>`. It answers
+the handshake (`GET`), the `invoke`, `cancel`, `ping`, `health` and `status`
+operations (`POST`), and the platform probes `GET …/healthz` and
+`GET …/readyz`. It verifies every request's signature, signs every answer to
+an authenticated one, runs each job with the handler registered for its
+name, and answers a redelivered attempt from its store instead of running it
+again. It imports no Bun, Node or driver module, so it runs on Bun, Node,
+Deno and in a V8 isolate. The gateway side that calls it lands in a later
+release.
+
+```ts
+import { createRemoteExecutor } from "@kingsleyweb/bun-jobs/remote";
+
+const executor = createRemoteExecutor({
+  secret: process.env.BUN_JOBS_SECRET!, // at least 32 bytes; a list rotates
+  handlers: {
+    "resize-image": async (job, ctx) => {
+      await job.log(`resizing ${job.id}`);
+      return await resize(job.data, { signal: ctx.signal });
+    },
+  },
+});
+
+Bun.serve({ port: 8080, idleTimeout: 255, fetch: executor });
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `maxBatch` | `1` | Most jobs per invoke; the rest are rejected `BUSY`. |
+| `maxDurationMs` | `300_000` | Longest attempt; past it the signal aborts and the job fails as a timeout. |
+| `maxBodyBytes` | `1_048_576` | Largest request body; above it, 413 `TOO_LARGE`. |
+| `maxConcurrency` | `64` | Attempts at once; a job with no free slot is rejected `BUSY`. |
+| `idempotencyTtl` | `600_000` | How long outcomes and fences are kept; `0` turns both off. |
+| `store` | in memory | Where outcomes and fences are kept. |
+| `nonces` | in memory | Where seen signatures are kept, to refuse a replay. |
+
+**Mount it where the body is untouched.** The signature covers the exact
+bytes sent, so the executor reads the body itself and must be handed the
+request unread: `Bun.serve`'s `fetch` or `routes`, a platform's fetch
+handler, or a bun-common adapter with body parsing off.
+
+<!-- Update when bun-common's per-route opt-out (#271, requestParsing() and deferBody) merges. -->
+
+```ts
+const app = new BunHttpAdapter(0, { request: { parseBody: false } });
+app.all("/jobs", async (req, res) => res.send(await executor(req.request)));
+```
+
+A host in front of it sets the effective size cap, since its own limit
+applies before `maxBodyBytes`, and must not decode a `content-encoding`.
+A request whose body something already read is answered 500 `INTERNAL`
+naming the cause, as is one rebuilt from a read request (Bun gives the copy
+an empty body, oven-sh/bun#44307).
+
+**What is remembered, and where.** The default store is in memory, per
+instance, sized for every record written in one `idempotencyTtl` at one
+attempt per slot per second (115,200 records with the defaults). Faster
+turnover fills it, and each burst of early evictions is an `onLog` warning.
+It is **lost on a restart**, so an attempt redelivered to a restarted or
+different instance runs again; supply a persistent, shared `store` (a KV
+namespace, a Durable Object, Redis) when that matters, and write handlers to
+be idempotent either way. The nonce cache that refuses replays is per
+instance too: a replay sent to another instance is not caught unless
+`nonces` is shared.
 
 ## BunRunner
 

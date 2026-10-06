@@ -324,12 +324,26 @@ describe("fencing", () => {
     expect(runs).toHaveLength(2);
   });
 
-  it("fences it cannot order are not refused", async () => {
+  it("two claims at one instant cannot be ordered, and neither is refused", async () => {
     const { runs, send } = counting();
     const id = nextId("job");
-    await send([{ ...claim(id, 1, "x", 1), fence: "opaque-b" }]);
-    await send([{ ...claim(id, 2, "x", 1), fence: "opaque-a" }]);
+    await send([claim(id, 1, "x", 1_000)]);
+    await send([claim(id, 2, "y", 1_000)]);
     expect(runs).toHaveLength(2);
+  });
+
+  it("a fence without its claim time is refused as VALIDATION", async () => {
+    const { executor, runs } = counting();
+    const answer = await read(
+      await executor(
+        await signedPost(
+          URL,
+          invoke([{ ...job({ name: "work" }), fence: "opaque" }]),
+        ),
+      ),
+    );
+    expect(answer).toMatchObject({ status: 400, body: { code: "VALIDATION" } });
+    expect(runs).toHaveLength(0);
   });
 
   it("orders fences by claim time, and only when it can", () => {
