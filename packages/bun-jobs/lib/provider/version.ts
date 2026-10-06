@@ -22,9 +22,13 @@ import { ConfigError } from "../shared/errors";
 export const COMPUTE_PROVIDER_API: {
   /** The shared core: identity, config, contexts. */
   readonly core: "0.1";
-  /** The summon facet. */
-  readonly summon: "0.1";
-} = Object.freeze({ core: "0.1", summon: "0.1" } as const);
+  /**
+   * The summon facet. `0.2` added `SummonRequest.queues`, `.group` and
+   * `.demands` and `SummonReleaseRequest.queues`, all additive: a provider
+   * written for `0.1` runs unchanged.
+   */
+  readonly summon: "0.2";
+} = Object.freeze({ core: "0.1", summon: "0.2" } as const);
 
 /** The facets this build implements, besides the core. */
 const FACETS = ["summon"] as const;

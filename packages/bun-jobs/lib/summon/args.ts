@@ -27,8 +27,19 @@ export const SUMMON_ARGS = {
   mode: "--bun-jobs-summon-mode",
   /** The namespace the summoned worker should consume. */
   namespace: "--bun-jobs-summon-namespace",
-  /** The queue the summoned worker should consume. */
+  /**
+   * A queue the summoned unit should consume. **Repeated once per queue**, in
+   * the policy's order, for a unit that serves several queues; written once
+   * for one queue. Comes back as `summon.queues`, and the first as
+   * `summon.queue`.
+   */
   queue: "--bun-jobs-summon-queue",
+  /**
+   * The summon group the unit was started for, written only when it serves
+   * more than one queue. Comes back as `summon.group`, and is written on the
+   * worker's record.
+   */
+  group: "--bun-jobs-summon-group",
   /** The longest the worker may live, as a duration in ms (never a timestamp). */
   maxLifetimeMs: "--bun-jobs-summon-max-lifetime-ms",
   /** The platform's grace after its stop signal, in ms, when the summoner knows it. */
@@ -51,6 +62,25 @@ function read(name: string, argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Every value of a repeated argument, in order: each `--name=value`, with
+ * empty values skipped and repeats dropped (the first occurrence keeps its
+ * place).
+ */
+function readAll(name: string, argv: readonly string[]): string[] {
+  const prefix = `${name}=`;
+  const values: string[] = [];
+  for (const arg of argv) {
+    if (arg.startsWith(prefix)) {
+      const value = arg.slice(prefix.length);
+      if (value !== "" && !values.includes(value)) {
+        values.push(value);
+      }
+    }
+  }
+  return values;
+}
+
 /** A duration argument: absent, or a non-negative whole number of ms. */
 function duration(name: string, raw: string | undefined): number | undefined {
   if (raw === undefined) {
@@ -70,8 +100,19 @@ function duration(name: string, raw: string | undefined): number | undefined {
 export type SummonedArgs = WorkerSummonProvenance & {
   /** `--bun-jobs-summon-namespace`: the namespace to consume. Not written on the record. */
   namespace?: string;
-  /** `--bun-jobs-summon-queue`: the queue to consume. Not written on the record. */
+  /**
+   * `--bun-jobs-summon-queue`: the queue to consume, or for a unit serving
+   * several queues the first of them (`queues[0]`). Not written on the
+   * record.
+   */
   queue?: string;
+  /**
+   * Every `--bun-jobs-summon-queue` in the order the summon passed them, with
+   * repeats dropped: the queues this unit should run a worker for, one
+   * worker per queue (`runSummoned`). `[queue]` for one queue; absent when
+   * the summon named none. Not written on the record.
+   */
+  queues?: readonly string[];
   /** `--bun-jobs-summon-max-lifetime-ms`: the longest the worker may live, in ms. Not written on the record. */
   maxLifetimeMs?: number;
   /** `--bun-jobs-summon-grace-ms`: the platform's grace after its stop signal, in ms. Not written on the record. */
@@ -108,7 +149,10 @@ export function parseSummonArgs(
     );
   }
   const namespace = read(SUMMON_ARGS.namespace, argv);
-  const queue = read(SUMMON_ARGS.queue, argv);
+  const group = read(SUMMON_ARGS.group, argv);
+  // Every queue, in order: a unit serving several queues gets one argument
+  // per queue. With one, this is the single value `read` would give.
+  const queues = readAll(SUMMON_ARGS.queue, argv);
   const maxLifetimeMs = duration(
     SUMMON_ARGS.maxLifetimeMs,
     read(SUMMON_ARGS.maxLifetimeMs, argv),
@@ -125,8 +169,11 @@ export function parseSummonArgs(
     ...(maxLifetimeMs === undefined
       ? {}
       : { deadlineAt: Date.now() + maxLifetimeMs, maxLifetimeMs }),
+    ...(group === undefined ? {} : { group }),
     ...(namespace === undefined ? {} : { namespace }),
-    ...(queue === undefined ? {} : { queue }),
+    ...(queues.length === 0
+      ? {}
+      : { queue: queues[0]!, queues: Object.freeze(queues) }),
     ...(graceMs === undefined ? {} : { graceMs }),
   };
 }
@@ -140,6 +187,10 @@ export function parseSummonArgs(
  * const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
  * ```
  *
+ * A unit summoned for several queues (a summon group with a shared unit)
+ * gets one `--bun-jobs-summon-queue=` per queue: `queues` lists them in
+ * order, and `queue` is the first. Build one worker per queue.
+ *
  * - **Reads only `--bun-jobs-summon-*=` arguments** ({@link SUMMON_ARGS}),
  *   never an environment variable for provenance: an environment leaks to
  *   every descendant, arguments do not (see {@link SUMMON_ARGS}).
@@ -150,6 +201,10 @@ export function parseSummonArgs(
  *   is then computed here, on this process's clock, as now + that duration.
  *   `handle` is never read: a worker that knows its platform handle passes
  *   it itself (`{ ...summon, handle }`).
+ * - **Call it in the main thread.** Bun gives a `Worker` thread an empty
+ *   `argv`, so inside one this answers `undefined`. Build the workers in the
+ *   main thread and pass `summon` to them; a worker's `target` option runs
+ *   its jobs in threads without moving the worker itself.
  * - **`undefined` inside a runner child**, whatever the arguments say. A
  *   runner's or worker target's child process or `Worker` is marked
  *   `BUN_JOBS_CHILD=1` (`CHILD_ENV.marker`), and that is the one variable

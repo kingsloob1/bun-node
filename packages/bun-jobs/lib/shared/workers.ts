@@ -268,8 +268,8 @@ export interface WorkerTargetInfo {
  * Usually built by `summonedFromArgs()` from the `--bun-jobs-summon-*=`
  * command-line arguments a summon passes.
  *
- * A worker writes only these five fields, whatever else the object it was
- * given carries: `summonedFromArgs()`'s `namespace`, `queue`,
+ * A worker writes only these six fields, whatever else the object it was
+ * given carries: `summonedFromArgs()`'s `namespace`, `queue`, `queues`,
  * `maxLifetimeMs` and `graceMs` configure the worker and never reach the
  * record. Nothing in it is defaulted: a field the summoner did not pass is
  * absent. The record may carry one more, `resolvedMode`, which is the
@@ -311,6 +311,13 @@ export interface WorkerSummonProvenance {
    * Absent when none was requested — never defaulted.
    */
   deadlineAt?: number;
+  /**
+   * The summon group whose shared unit this worker belongs to, when the unit
+   * was summoned for several queues (`--bun-jobs-summon-group=`): what a
+   * Workers page shows as "unit of media". Absent for a unit summoned for
+   * one queue, and never defaulted.
+   */
+  group?: string;
 }
 
 /**

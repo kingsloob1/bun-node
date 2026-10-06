@@ -62,7 +62,9 @@ The summon facet only: bun-jobs has no execute facet yet.
    platform takes command-line arguments (never the environment), the boot
    budget, the shutdown signal and grace, the lifetime cap.
 6. **`summon()`**: send `request.dedupeKey` as the platform's token, and
-   `request.argv` as the unit's arguments. Under a strict token, send nothing
+   `request.argv` as the unit's arguments, whole and in order: a unit for
+   several queues repeats `--bun-jobs-summon-queue=`, and the kit's
+   `summon.argv.round-trip` checks that every repeat arrives. Under a strict token, send nothing
    that is not a function of the request's id: never `demand` or `reason`.
    Call through `ctx.fetch` with `ctx.signal`, never the global `fetch`.
 7. **Errors**: a `SummonResult` when the platform answered normally

@@ -1206,6 +1206,7 @@ export function toWorkerDto(
       ...(summon.deadlineAt === undefined
         ? {}
         : { deadlineAt: summon.deadlineAt }),
+      ...(summon.group === undefined ? {} : { group: summon.group }),
       // What the worker resolved, beside what was asked for: only a mode
       // string, so it hides nothing and needs no switch.
       ...(summon.resolvedMode === undefined

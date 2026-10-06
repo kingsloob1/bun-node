@@ -2230,6 +2230,17 @@ const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
 await worker.run();
 ```
 
+**A unit for several queues.** A summon for a unit that serves several
+queues repeats `--bun-jobs-summon-queue=` once per queue, in the policy's
+order, and adds `--bun-jobs-summon-group=<name>`: `summon.queues` lists the
+queues (repeats dropped), `summon.queue` is the first, and the group is
+written on each worker's record as `summon.group`, so a Workers page can say
+which group's unit it belongs to. A one-queue summon passes exactly the
+arguments it always has, and answers `queues: [queue]`. **Call
+`summonedFromArgs()` in the main thread:** Bun gives a `Worker` thread an
+empty `argv`, so there it answers `undefined`. A worker's `target` option
+runs its jobs in threads and leaves the worker itself in the main thread.
+
 <a id="summon-arguments-not-environment"></a>
 **Arguments, not environment variables, by design.** An environment leaks to
 every descendant — `Bun.spawn` with no `env` passes the environment the
@@ -5466,7 +5477,7 @@ const actions = JOBS_API_ACTIONS.filter(
     action === "providers.validate",
 );
 export const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize, actions });
-// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.1" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0~1", … }] }
+// GET  /admin/jobs/providers → { api: { core: "0.1", summon: "0.2" }, providers: [{ id: "bun-jobs-provider-acme@1.0.0~1", … }] }
 // POST /admin/jobs/providers/bun-jobs-provider-acme@1.0.0~1/validate
 //   → { id, ok: false, checks: [], error: { kind: "auth", detail: "InvalidToken" } }
 ```

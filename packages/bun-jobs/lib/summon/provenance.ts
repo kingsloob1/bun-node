@@ -32,7 +32,7 @@ export function isSummonMode(
 /** A string field of the provenance: absent, or a non-empty string. */
 function optionalText(
   summon: Record<string, unknown>,
-  field: "kind" | "handle",
+  field: "kind" | "handle" | "group",
 ): string | undefined {
   const value = summon[field];
   if (value === undefined) {
@@ -48,10 +48,11 @@ function optionalText(
 }
 
 /**
- * Checks a worker's `summon` option and copies the five fields the record
+ * Checks a worker's `summon` option and copies the six fields the record
  * carries, so the record is written from a resolved value rather than
  * whatever object the caller passed (`summonedFromArgs()` adds `namespace`,
- * `queue`, `maxLifetimeMs` and `graceMs`, which must not reach the record).
+ * `queue`, `queues`, `maxLifetimeMs` and `graceMs`, which must not reach the
+ * record).
  *
  * `undefined` stays `undefined`: an ordinary worker writes no `summon`. And
  * nothing inside one is defaulted either: a `mode` or `deadlineAt` the
@@ -137,6 +138,7 @@ export function resolveSummonProvenance(
   const deadline = deadlineAt as number | undefined;
   const kind = optionalText(given, "kind");
   const handle = optionalText(given, "handle");
+  const group = optionalText(given, "group");
 
   return Object.freeze({
     id,
@@ -144,5 +146,6 @@ export function resolveSummonProvenance(
     ...(handle === undefined ? {} : { handle }),
     ...(mode === undefined ? {} : { mode }),
     ...(deadline === undefined ? {} : { deadlineAt: deadline }),
+    ...(group === undefined ? {} : { group }),
   });
 }

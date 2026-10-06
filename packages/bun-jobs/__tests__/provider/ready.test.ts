@@ -25,6 +25,7 @@ import {
   defineComputeProvider,
   toStandardSchema,
 } from "../../lib/provider/index";
+import { negotiate } from "../../lib/provider/version";
 import { makeTmpDir, testNamespace } from "../helpers";
 
 /**
@@ -914,7 +915,23 @@ describe("registration warnings", () => {
     controller({ summoner: syncProvider()(), logger, queue: "c" });
     const found = warnings(events, /provider API is experimental/);
     expect(found).toHaveLength(2);
-    expect(found[0]).toContain("(core 0.1, summon 0.1)");
+    expect(found[0]).toContain("(core 0.1, summon 0.2)");
+  });
+
+  it("runs a provider written for summon 0.1 on this 0.2 host with no newer-minor warning, negotiated at 0.1", async () => {
+    const { controller } = await setup();
+    const { logger, events } = createTestLogger();
+    const configured = syncProvider({ core: "0.1", summon: "0.1" })();
+    controller({ summoner: configured, logger, queue: "old" });
+    expect(warnings(events, /members added since are ignored/)).toEqual([]);
+    expect(negotiate({ core: "0.1", summon: "0.1" })).toEqual({
+      core: "0.1",
+      summon: "0.1",
+    });
+    expect(negotiate({ core: "0.1", summon: "0.2" })).toEqual({
+      core: "0.1",
+      summon: "0.2",
+    });
   });
 
   it("never warns for defineSummoner", async () => {
@@ -939,7 +956,7 @@ describe("registration warnings", () => {
     expect(
       warnings(
         events,
-        /written for summon 0\.4; this bun-jobs speaks summon 0\.1/,
+        /written for summon 0\.4; this bun-jobs speaks summon 0\.2/,
       ),
     ).toHaveLength(1);
 

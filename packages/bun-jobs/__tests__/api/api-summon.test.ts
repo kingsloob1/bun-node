@@ -163,7 +163,8 @@ describe("GET /queues/{queue}/summon", () => {
           name: "custom:fake",
           version: "0.0.0",
           kind: "fake",
-          apiVersion: { core: "0.1", summon: "0.1" },
+          // `defineSummoner` builds it at the host's own versions.
+          apiVersion: { core: "0.1", summon: "0.2" },
         },
         // The configured instance's id in this process, for "Test
         // connection", and ready: `defineSummoner` validates synchronously.

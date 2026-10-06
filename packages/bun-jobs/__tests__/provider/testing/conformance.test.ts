@@ -114,6 +114,7 @@ describe("a known-good provider conforms", () => {
       "summon.errors.throttled",
       "summon.timeouts.no-timer-left",
       "summon.secrets.no-leak",
+      "summon.argv.round-trip",
       "summon.handoff.started",
       "summon.handoff.released",
       "summon.handoff.drained",
@@ -121,6 +122,10 @@ describe("a known-good provider conforms", () => {
     ]) {
       expect(status[id], id).toBe("pass");
     }
+    expect(
+      report.checks.find((check) => check.id === "summon.argv.round-trip")
+        ?.detail,
+    ).toBe("3 repeated arguments arrived in order");
     expect(
       report.checks.find((check) => check.id === "summon.handoff.released")
         ?.detail,
@@ -141,6 +146,9 @@ describe("a known-good provider conforms", () => {
       report.checks.find((check) => check.id === "summon.handoff.released")
         ?.detail,
     ).toBe("by start time");
+    expect(
+      report.checks.find((check) => check.id === "summon.argv.round-trip"),
+    ).toMatchObject({ status: "skip" });
   });
 
   it("scale: a target set twice is one count, release sets zero, and an idle controller scales down", async () => {
@@ -152,6 +160,7 @@ describe("a known-good provider conforms", () => {
     expect(status["summon.scale.target-idempotent"]).toBe("pass");
     expect(status["summon.scale.release-to-zero"]).toBe("pass");
     expect(status["summon.handoff.scale-down"]).toBe("pass");
+    expect(status["summon.argv.round-trip"]).toBe("pass");
     expect(status["summon.concurrency.distinct-ids"]).toBe("skip");
   });
 
@@ -206,11 +215,13 @@ describe("the host's fixed behaviour, as the kit sees it", () => {
  * line, the global fetch, a timestamp under a strict token, a token over
  * `maxLength`, a plain `Error`, a timer left after the abort, identity
  * dropped under `passes: "argv"`, scale with no `release`), plus one each
- * for the identity, config, concurrency, status, lifetime and validate
- * groups.
+ * for the identity, config, concurrency, status, lifetime, validate and
+ * argv groups. Dropping identity is the one defect two groups catch: with
+ * no arguments at all, the argument round trip fails as well as the
+ * handoff, and both say why.
  */
 describe("a provider broken in one way fails exactly that group", () => {
-  const cases: [AcmeDefect, string, string][] = [
+  const cases: [AcmeDefect, string | string[], string][] = [
     ["identity", "identity", "summon.identity.version"],
     ["config", "config", "summon.config.rejects-invalid"],
     ["capabilities", "capabilities", "summon.capabilities.scale-has-release"],
@@ -224,12 +235,15 @@ describe("a provider broken in one way fails exactly that group", () => {
     ["lifetime", "lifetime", "summon.lifetime.enforced"],
     ["validate", "validate", "summon.validate.starts-nothing"],
     ["secrets", "secrets", "summon.secrets.no-leak"],
-    ["handoff", "handoff", "summon.handoff.released"],
+    ["handoff", ["argv", "handoff"], "summon.handoff.released"],
+    ["argv", "argv", "summon.argv.round-trip"],
   ];
   for (const [defect, group, check] of cases) {
-    it(`${defect}: fails ${check}, and no other group`, async () => {
+    it(`${defect}: fails ${check}, and no group but ${[group].flat().join(" and ")}`, async () => {
       const report = await acme({ defect });
-      expect(failedGroups(report), report.toMarkdown()).toEqual([group]);
+      expect(failedGroups(report), report.toMarkdown()).toEqual(
+        Array.isArray(group) ? group : [group],
+      );
       expect(failed(report)).toContain(check);
       expect(report.ok).toBe(false);
       expect(() => assertConformance(report)).toThrow(check);
@@ -394,9 +408,9 @@ describe("what a run leaves behind", () => {
     const report = await acme({ style: "scale" }, { driver: config });
     expect(failed(report), report.toMarkdown()).toEqual([]);
     const internals = fakeInternals(platforms.at(-1)!);
-    // One unit handed to a worker process: the handoff's. The scale-down
-    // check's unit stays a unit on the fake.
-    expect(internals.handedOff).toHaveLength(1);
+    // Two units handed to a process: the argument round trip's and the
+    // handoff's worker. The scale-down check's unit stays a unit on the fake.
+    expect(internals.handedOff).toHaveLength(2);
     expect(await leftovers(config, internals.namespaces)).toEqual([]);
   });
 

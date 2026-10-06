@@ -84,7 +84,8 @@ export type AcmeDefect =
   | "lookalike" // a ProviderError look-alike, not the class
   | "retry-huge" // a retry-after of about 63 years
   | "prose-code" // a platformCode that is a sentence
-  | "handoff"; // identity dropped under passes "argv"
+  | "handoff" // identity dropped under passes "argv"
+  | "argv"; // arguments keyed by flag: a repeated argument keeps only its last value
 
 /** How to build an Acme provider. */
 export interface AcmeOptions {
@@ -319,7 +320,13 @@ export function acmeProvider(
                       ? `--bun-jobs-summon-id=${current!.id}`
                       : arg,
                   )
-                : [...request.argv];
+                : defect === "argv"
+                  ? [
+                      ...new Map(
+                        request.argv.map((arg) => [arg.split("=")[0], arg]),
+                      ).values(),
+                    ]
+                  : [...request.argv];
           const token =
             defect === "dedupe"
               ? `acme-${request.dedupeKey}`

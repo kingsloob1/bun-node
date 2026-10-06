@@ -34,6 +34,7 @@ import {
 } from "./checks";
 import { fakeInternals } from "./fake";
 import {
+  argvChecks,
   assertSharedDriver,
   casChecks,
   handoffChecks,
@@ -90,6 +91,7 @@ const CHECKS: readonly (readonly [string, ConformanceCheck["level"]])[] = [
   ["summon.validate.auth-fails", "must"],
   ["summon.validate.starts-nothing", "must"],
   ["summon.secrets.no-leak", "must"],
+  ["summon.argv.round-trip", "must"],
   ["summon.handoff.started", "must"],
   ["summon.handoff.released", "must"],
   ["summon.handoff.drained", "must"],
@@ -323,7 +325,8 @@ export interface ConformanceOptions<TInput = unknown> {
  * platform, and reports every check in a fixed order (plugins §12.2):
  * identity, config, capabilities, routing, purity, dedupe, concurrency,
  * errors, timeouts, scale, status, lifetime, describe, validate, secrets,
- * the handoff to a real worker, and the compare-and-set race.
+ * the argument round trip (a repeated argument reaches the unit whole and
+ * in order), the handoff to a real worker, and the compare-and-set race.
  *
  * The provider is an unconfigured `ComputeProvider` (configured here with
  * `config`, and again with every declared secret replaced by a canary) or a
@@ -673,9 +676,13 @@ export async function runProviderConformance<TInput, TConfig>(
     await scaleChecks(run);
   }
   if (blocked !== undefined) {
+    skipAll("summon.argv.", blocked);
     skipAll("summon.handoff.", blocked);
     skipAll("summon.cas.", blocked);
   } else {
+    if (wanted("argv")) {
+      await argvChecks(run);
+    }
     if (wanted("handoff")) {
       await handoffChecks(run);
     }
