@@ -23,6 +23,9 @@ import type {
 } from "../../lib/api/schemas/common";
 import type {
   AddBodySchema,
+  AddFlowBodySchema,
+  AddFlowOptionsSchema,
+  AddFlowResultSchema,
   AddResultSchema,
   bulkBodySchema,
   bulkRetryBodySchema,
@@ -387,6 +390,47 @@ export type RetryAllBodyOk = Expect<
 export type AddBodyOk = Expect<
   DeepEqual<Contract.AddJobBody, Infer<typeof AddBodySchema>>
 >;
+// A flow's node is recursive, which the schema's own inference cannot follow:
+// the body schema is declared with the contract's type (and `recursiveSchema`
+// requires the object it is built from to be assignable to it), so its
+// options — the part inferred from the builder — are compared on their own,
+// and the node's other fields against the single add's body.
+export type AddFlowOptionsOk = Expect<
+  DeepEqual<Contract.AddFlowJobOptions, Infer<typeof AddFlowOptionsSchema>>
+>;
+export type AddFlowBodyOk = Expect<
+  Equal<Contract.AddFlowBody, Infer<typeof AddFlowBodySchema>>
+>;
+export type AddFlowNodeFieldsOk = Expect<
+  DeepEqual<
+    Omit<Contract.AddFlowNodeBody, "opts" | "queue" | "children">,
+    Omit<Contract.AddJobBody, "opts">
+  >
+>;
+export type AddFlowOptionsExtendAddOk = Expect<
+  DeepEqual<
+    Omit<Contract.AddFlowJobOptions, "ignoreFailure">,
+    Contract.AddJobOptions
+  >
+>;
+export type AddFlowResultOk = Expect<
+  Matches<
+    Omit<Contract.AddFlowResultDto, "children">,
+    Omit<Infer<typeof AddFlowResultSchema>, "children">
+  >
+>;
+export type AddFlowResultChildrenOk = Expect<
+  Equal<
+    keyof Contract.AddFlowResultDto["children"][number],
+    keyof Infer<typeof AddFlowResultSchema>["children"][number]
+  >
+>;
+type AddFlowOptionsDrift = DeepEqual<
+  Contract.AddJobOptions,
+  Infer<typeof AddFlowOptionsSchema>
+>;
+// @ts-expect-error — the flow options carry `ignoreFailure` beyond the single add's.
+export type AddFlowOptionsDriftCaught = Expect<AddFlowOptionsDrift>;
 
 // The single-job and bulk results are built inline in `routes/jobs.ts`; their
 // shapes are restated here exactly as the route builds them.
@@ -1560,6 +1604,7 @@ export type MetaFeatureKeysOk = Expect<
     | "update"
     | "limits"
     | "flows"
+    | "addFlow"
     | "search"
     | "workers"
     | "workerControl"
@@ -1911,6 +1956,13 @@ type MetaWithoutAddedByState = DeepEqual<
 >;
 // @ts-expect-error — `MetaSchema` carries `addedByState`: the contract dropping it is caught.
 export type MetaWithoutAddedByStateCaught = Expect<MetaWithoutAddedByState>;
+
+type MetaWithoutAddFlow = DeepEqual<
+  Omit<Contract.MetaDto["features"], "addFlow">,
+  Infer<typeof MetaSchema>["features"]
+>;
+// @ts-expect-error — `MetaSchema` carries `addFlow`: the contract dropping it is caught.
+export type MetaWithoutAddFlowCaught = Expect<MetaWithoutAddFlow>;
 
 type SortAnyString = Equal<Contract.JobListQuery["sort"], string | undefined>;
 // @ts-expect-error — `sort` takes the listed sorts only, not any string.

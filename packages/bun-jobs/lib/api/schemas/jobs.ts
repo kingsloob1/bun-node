@@ -1,4 +1,6 @@
-import type { Schema } from "../schema/builder";
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import type { AddFlowNodeBody } from "../contract/types";
+import type { Infer, Schema } from "../schema/builder";
 import {
   JOB_DEFAULT_KEYS,
   JOB_INCLUDES,
@@ -7,8 +9,10 @@ import {
   MAX_JOB_FILTER_VALUES,
   MAX_JOB_ID_LENGTH,
   MAX_JOB_REF_LENGTH,
+  MAX_NAME_LENGTH,
+  NAME_PARAM_PATTERN,
 } from "../contract/constants";
-import { s } from "../schema/builder";
+import { recursiveSchema, s } from "../schema/builder";
 import {
   ErrorDtoSchema,
   JobRefSchema,
@@ -492,26 +496,26 @@ export const RetryAllResultSchema = s.object({
   truncated: s.boolean(),
 });
 
+/** The options `POST /queues/:queue/jobs` accepts, shared with each job of a flow. */
+const ADD_JOB_OPTION_PROPERTIES = {
+  jobId: s.optional(NewJobIdSchema),
+  priority: s.optional(s.number()),
+  delay: s.optional(s.integer({ minimum: 0 })),
+  runAt: s.optional(TimeInputSchema),
+  attempts: s.optional(s.integer({ minimum: 1 })),
+  backoff: s.optional(s.integer({ minimum: 0 })),
+  timeout: s.optional(s.integer({ minimum: 0 })),
+};
+
 /** `POST /queues/:queue/jobs` body: a name, a payload, and a safe subset of options. */
 export const AddBodySchema = s.object({
   name: s.string({ minLength: 1, maxLength: 200 }),
   data: s.unknown({ description: "The payload. JSON; `null` is allowed." }),
   opts: s.optional(
-    s.object(
-      {
-        jobId: s.optional(NewJobIdSchema),
-        priority: s.optional(s.number()),
-        delay: s.optional(s.integer({ minimum: 0 })),
-        runAt: s.optional(TimeInputSchema),
-        attempts: s.optional(s.integer({ minimum: 1 })),
-        backoff: s.optional(s.integer({ minimum: 0 })),
-        timeout: s.optional(s.integer({ minimum: 0 })),
-      },
-      {
-        description:
-          "Repeat, debounce, throttle, dead-letter, retention and flow options are not accepted over HTTP.",
-      },
-    ),
+    s.object(ADD_JOB_OPTION_PROPERTIES, {
+      description:
+        "Repeat, debounce, throttle, dead-letter, retention and flow options are not accepted over HTTP.",
+    }),
   ),
 });
 
@@ -523,6 +527,166 @@ export const AddResultSchema = s.object({
   }),
   job: JobSchema,
 });
+
+/** Most jobs one `POST /queues/:queue/flows` body may hold, the top job included. */
+export const MAX_FLOW_NODES = 100;
+
+/** Most levels one `POST /queues/:queue/flows` body may nest; the top job is level 1. */
+export const MAX_FLOW_DEPTH = 10;
+
+/**
+ * The driver methods adding a flow needs: what `BunQueue.addFlow` requires
+ * before it writes anything. The route `requires` them, and
+ * `features.addFlow` names them.
+ */
+export const FLOW_ADD_METHODS = [
+  "recordChild",
+  "requeueParent",
+  "markChildRecorded",
+] as const;
+
+/** The options one job of a flow accepts. Mirrors `AddFlowJobOptions`. */
+export const AddFlowOptionsSchema = s.object(
+  {
+    ...ADD_JOB_OPTION_PROPERTIES,
+    ignoreFailure: s.optional(
+      s.boolean({
+        description:
+          "On a child: its parent carries on without it if it fails. `true` on the top job is 400 VALIDATION.",
+      }),
+    ),
+  },
+  {
+    description:
+      "The options POST /queues/{queue}/jobs accepts, plus `ignoreFailure`. Repeat, debounce, throttle, dead-letter and retention options are not accepted over HTTP.",
+  },
+);
+
+/** The body a flow node validates into, before its bounds are checked. */
+const AddFlowNodeTree = recursiveSchema<AddFlowNodeBody>(
+  "AddFlowNode",
+  (self) =>
+    s.object(
+      {
+        name: s.string({
+          minLength: 1,
+          maxLength: 200,
+          description:
+            "The job name; must be addable (`MetaDto.addableNames`), or 403 NAME_NOT_ADDABLE with this path in `context.path`.",
+        }),
+        data: s.unknown({
+          description: "The payload. JSON; `null` is allowed.",
+        }),
+        opts: s.optional(AddFlowOptionsSchema),
+        queue: s.optional(
+          s.string({
+            minLength: 1,
+            maxLength: MAX_NAME_LENGTH,
+            pattern: NAME_PARAM_PATTERN,
+            description:
+              'The queue this job goes in, in the same namespace: letters, digits, "_", "." and "-", and not "." or "..". Defaults to its parent\'s; on the top job, omit it or give the path\'s queue.',
+          }),
+        ),
+        children: s.optional(
+          s.array(self, {
+            maxItems: MAX_FLOW_NODES - 1,
+            description:
+              "The jobs this one waits on, added before it, in this order.",
+          }),
+        ),
+      },
+      {
+        description: `One job of a flow, with the jobs it waits on. A flow holds at most ${MAX_FLOW_NODES} jobs and nests at most ${MAX_FLOW_DEPTH} levels (the top job is level 1); more is 400 VALIDATION at the first job past the bound.`,
+      },
+    ),
+);
+
+/**
+ * The first job of a flow body past {@link MAX_FLOW_NODES} or
+ * {@link MAX_FLOW_DEPTH}, in body order, as a validation issue. Walked
+ * without recursion and stopped at the bound, so a body nested thousands of
+ * levels deep is refused before the (recursive) validator walks it.
+ */
+function flowBoundsIssue(value: unknown): StandardSchemaV1.Issue | undefined {
+  const stack: { node: unknown; path: PropertyKey[]; level: number }[] = [
+    { node: value, path: [], level: 1 },
+  ];
+  let seen = 0;
+  while (stack.length > 0) {
+    const { node, path, level } = stack.pop()!;
+    seen += 1;
+    if (seen > MAX_FLOW_NODES) {
+      return {
+        message: `A flow may hold at most ${MAX_FLOW_NODES} jobs`,
+        path,
+      };
+    }
+    if (level > MAX_FLOW_DEPTH) {
+      return {
+        message: `A flow may nest at most ${MAX_FLOW_DEPTH} levels`,
+        path,
+      };
+    }
+    const children =
+      typeof node === "object" && node !== null
+        ? (node as { children?: unknown }).children
+        : undefined;
+    if (Array.isArray(children)) {
+      for (let index = children.length - 1; index >= 0; index--) {
+        stack.push({
+          node: children[index],
+          path: [...path, "children", index],
+          level: level + 1,
+        });
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * `POST /queues/:queue/flows` body: the top job, with every job below it.
+ * Its bounds are checked first ({@link flowBoundsIssue}), then its shape.
+ */
+export const AddFlowBodySchema: Schema<AddFlowNodeBody> = Object.freeze({
+  ...AddFlowNodeTree,
+  "~standard": Object.freeze({
+    ...AddFlowNodeTree["~standard"],
+    validate: (value: unknown) => {
+      const issue = flowBoundsIssue(value);
+      return issue
+        ? { issues: [issue] }
+        : AddFlowNodeTree["~standard"].validate(value);
+    },
+  }),
+});
+
+/** What adding a flow answers, for the top job and each below it. Mirrors `AddFlowResultDto`. */
+export interface AddFlowResultOut {
+  /** `false` when `jobId` matched an existing job; nothing is then added below it. */
+  added: boolean;
+  /** The job. */
+  job: Infer<typeof JobSchema>;
+  /** Its children's results, in the order the body gave them. */
+  children: AddFlowResultOut[];
+}
+
+/** `POST /queues/:queue/flows` response. */
+export const AddFlowResultSchema = recursiveSchema<AddFlowResultOut>(
+  "AddFlowResult",
+  (self) =>
+    s.object({
+      added: s.boolean({
+        description:
+          "`false` when `jobId` matched an existing job, which is returned; nothing is then added below it.",
+      }),
+      job: JobSchema,
+      children: s.array(self, {
+        description:
+          "Its children's results, in the order the body gave them; `[]` when `added` is `false`.",
+      }),
+    }),
+);
 
 /** A repeat series. Mirrors `RepeatableDto`. */
 export const RepeatableSchema = s.named(

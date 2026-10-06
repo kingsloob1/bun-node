@@ -438,7 +438,11 @@ describe("pruning", () => {
 
   it("prunes by actions, leaving opt-in actions out by default", () => {
     expect(ids(api())).not.toContain("addTest");
-    expect(ids(api({ actions: ["jobs.add"] }))).toEqual(["addJob", "addTest"]);
+    expect(ids(api({ actions: ["jobs.add"] }))).toEqual([
+      "addJob",
+      "addFlow",
+      "addTest",
+    ]);
     expect(ids(api({ actions: ["meta.read"] }))).toEqual([
       "getMeta",
       "getPermissions",
@@ -562,6 +566,8 @@ describe("GET /meta", () => {
         name: jobs.driver.name,
         capabilities: jobs.driver.capabilities,
       },
+      // Every flag is the backend's, `addFlow` included: it reads `true`
+      // though `jobs.add` is opt-in and not enabled here.
       features: probeFeatures(jobs.driver),
       events: jobs.driver.capabilities.events,
       // A context that never set `publishEvents` does not publish.
@@ -582,6 +588,8 @@ describe("GET /meta", () => {
         maxJobDataBytes: 1_048_576,
         maxQueues: 500,
         maxApplyDefaults: 1000,
+        maxFlowNodes: 100,
+        maxFlowDepth: 10,
       },
       // The memory driver serves every analytics route, so `/meta` reports
       // what its own `getMetricsSupport()` says, with the contract's caps. A

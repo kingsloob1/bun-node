@@ -106,6 +106,16 @@ export const MetaLimitsSchema = s.named(
         description:
           "Most jobs one POST /queues/{queue}/job-defaults/apply call examines: its largest `limit`.",
       }),
+      maxFlowNodes: s.integer({
+        minimum: 1,
+        description:
+          "Most jobs one POST /queues/{queue}/flows body may hold, the top job included; more is 400 VALIDATION.",
+      }),
+      maxFlowDepth: s.integer({
+        minimum: 1,
+        description:
+          "Most levels one POST /queues/{queue}/flows body may nest, the top job being level 1; deeper is 400 VALIDATION.",
+      }),
     },
     {
       description:
@@ -189,6 +199,10 @@ export const MetaSchema = s.named(
         update: s.boolean(),
         limits: s.boolean(),
         flows: s.boolean(),
+        addFlow: s.boolean({
+          description:
+            "Whether the backend can add flows, so POST /queues/{queue}/flows exists wherever `jobs.add` is enabled. Like every flag it follows the mode, not `actions` or `readOnly`.",
+        }),
         search: s.boolean(),
         workers: s.boolean(),
         workerControl: s.boolean(),

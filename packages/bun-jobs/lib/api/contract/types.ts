@@ -712,6 +712,54 @@ export interface AddJobResultDto {
   job: JobDto;
 }
 
+/** The options one job of a `POST /queues/:queue/flows` body accepts: {@link AddJobOptions}, plus one. */
+export interface AddFlowJobOptions extends AddJobOptions {
+  /**
+   * On a child: its parent carries on without it if it fails, and reads the
+   * failure from `getChildrenFailures()`. Defaults to `false`. `true` on
+   * the top job, which has no parent, is 400 `VALIDATION`.
+   */
+  ignoreFailure?: boolean;
+}
+
+/**
+ * One job in a `POST /queues/:queue/flows` body, with the jobs it waits on.
+ * A flow holds at most `MetaLimitsDto.maxFlowNodes` jobs, nested at most
+ * `MetaLimitsDto.maxFlowDepth` levels deep (the top job is level 1).
+ */
+export interface AddFlowNodeBody {
+  /** The job name; must be addable (see `MetaDto.addableNames`), or 403 `NAME_NOT_ADDABLE` with `context.path` at it, as for `POST /queues/:queue/jobs`. */
+  name: string;
+  /** The payload. JSON; `null` is allowed. */
+  data: unknown;
+  /** A safe subset of options, as for `POST /queues/:queue/jobs`, plus `ignoreFailure` on a child. */
+  opts?: AddFlowJobOptions;
+  /**
+   * The queue this job goes in, in the same namespace. Defaults to its
+   * parent's queue. On the top job, omit it or give the path's `:queue`.
+   */
+  queue?: string;
+  /** The jobs this one waits on, added before it. Defaults to none. */
+  children?: AddFlowNodeBody[];
+}
+
+/** `POST /queues/:queue/flows` body: the top job of the flow. */
+export type AddFlowBody = AddFlowNodeBody;
+
+/**
+ * `POST /queues/:queue/flows`, and each job below it: 201 when anything was
+ * added, 200 when the top `jobId` already existed (and nothing was added
+ * below it, as `BunQueue.addFlow` does).
+ */
+export interface AddFlowResultDto {
+  /** `false` when `jobId` matched an existing job, which is returned; nothing is then added below it. */
+  added: boolean;
+  /** The job. */
+  job: JobDto;
+  /** Its children's results, in the order the body gave them; `[]` when `added` is `false`. */
+  children: AddFlowResultDto[];
+}
+
 /** A repeat series as a client sees it. */
 export interface RepeatableDto {
   /** The queue the series belongs to. */
@@ -3585,6 +3633,10 @@ export interface MetaLimitsDto {
   maxQueues: number;
   /** Most jobs one `POST /queues/{queue}/job-defaults/apply` call examines (its largest `limit`). */
   maxApplyDefaults: number;
+  /** Most jobs one `POST /queues/{queue}/flows` body may hold, the top job included; more is 400 `VALIDATION`. Fixed at `100`. */
+  maxFlowNodes: number;
+  /** Most levels one `POST /queues/{queue}/flows` body may nest, the top job being level 1; deeper is 400 `VALIDATION`. Fixed at `10`. */
+  maxFlowDepth: number;
 }
 
 /** The CSRF rules mutations are held to. */
@@ -3622,6 +3674,16 @@ export interface MetaDto {
     limits: boolean;
     /** Flows. */
     flows: boolean;
+    /**
+     * Adding a flow: the backend implements what `BunQueue.addFlow` needs
+     * (`recordChild`, `requeueParent`, `markChildRecorded`), so
+     * `POST /queues/{queue}/flows` exists wherever `jobs.add` is enabled.
+     * Like every flag here it follows the mode (`false` in `runner` mode)
+     * but not `actions` or `readOnly`: `jobs.add` is opt-in, and whether it
+     * is on is `/meta/permissions`' answer (or `addableNames` being `[]`),
+     * not this one's.
+     */
+    addFlow: boolean;
     /** Name/id search. */
     search: boolean;
     /** Worker listing. */
