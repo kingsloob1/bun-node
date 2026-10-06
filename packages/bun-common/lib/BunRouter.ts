@@ -46,9 +46,17 @@ import { FifoCache, RouteCandidateIndex } from "./utils/routeIndex";
 export type { matchedRoute } from "@routejs/router";
 
 export interface RouteMatchMethodOptionType {
+  /** The request's host, as routes with a `host` pattern match it. */
   requestHost: string;
+  /** The request method; `HEAD` also matches GET routes. */
   requestMethod: string;
+  /** The request target (path, query, fragment), as `req.originalUrl`. */
   requestUrl: string;
+  /**
+   * The path alone (`req.path`), when the caller has it: spares splitting it
+   * back out of {@link requestUrl}.
+   */
+  requestPath?: string;
 }
 
 /** A matched route handler passed to a custom route-specificity comparator. */
@@ -502,6 +510,11 @@ export interface PipelineOptions {
   requestMethod: string;
   /** The request target (path and query), as `req.originalUrl`. */
   requestUrl: string;
+  /**
+   * The path alone (`req.path`), when the caller has it: spares splitting it
+   * back out of {@link requestUrl}. The adapters pass it.
+   */
+  requestPath?: string;
   /** The request the layers receive. */
   request: BunRequest;
   /** The response the layers write to. */
@@ -4784,9 +4797,13 @@ export class BunRouter<
     // route is host-scoped (no other route's match depends on it). Neither
     // a method nor a host contains a space, so the parts cannot run together.
     // `getCacheKey()` is the readable form of the same signature.
+    // The path, split once for the key and the match alike — or as the
+    // caller passed it.
+    const requestPath =
+      options.requestPath ??
+      (this.getRequestPathFromRequestURL(options.requestUrl) || "/");
     let cacheKey = "";
     if (cache !== undefined) {
-      const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
       cacheKey = this.#hostScoped
         ? `${options.requestMethod} ${options.requestHost || "none"} ${requestPath}`
         : `${options.requestMethod} ${requestPath}`;
@@ -4800,8 +4817,6 @@ export class BunRouter<
       }
     }
 
-    const requestPath =
-      this.getRequestPathFromRequestURL(options.requestUrl) || "/";
     const routes = this.routes();
     // Only the routes that can match this path: the index rules out the rest
     // without running their regexes. Indices stay those of `routes()`.
