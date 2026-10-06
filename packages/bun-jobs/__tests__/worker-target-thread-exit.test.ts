@@ -32,8 +32,11 @@ import { FakeWorker, installFakeWorker } from "./helpers/fakeWorker";
  * The real-thread tests pin the thread's last side effect against the moment
  * the close resolved with a stamp the processor writes on every turn
  * (`job-spin-stamp.ts`), and the moment of its `close` event with a recording
- * `Worker`. Those with a stand-in `Worker` decide when the "thread" stops,
- * which is the only way to test a thread that outlives the bound.
+ * `Worker`. They wait for that event, with a generous deadline, rather than
+ * for any fixed window: how long a killed thread runs on is Bun's to decide
+ * and grows with the machine's load. Those with a stand-in `Worker` decide
+ * when the "thread" stops, which is the only way to test a thread that
+ * outlives the bound.
  */
 
 const handlers = join(import.meta.dir, "fixtures", "handlers");
@@ -65,18 +68,29 @@ function overruns(events: LogEvent[]): LogEvent[] {
   );
 }
 
+/** A thread's `close` event: when it fired, and what had been logged by then. */
+interface ThreadClose {
+  /** When the event fired, on {@link now}'s clock. */
+  at: number;
+  /** How many overrun warnings had been logged when it fired. */
+  warnedBefore: number;
+}
+
 /**
- * Replaces the global `Worker` with a subclass that records when each
- * instance's `close` event fired, on {@link now}'s clock. Restored after the
- * test.
+ * Replaces the global `Worker` with a subclass that records each instance's
+ * `close` event, and the overrun warnings among `events` at that moment.
+ * Restored after the test.
  */
-function recordWorkerCloses(): number[] {
-  const closes: number[] = [];
+function recordWorkerCloses(events: LogEvent[]): ThreadClose[] {
+  const closes: ThreadClose[] = [];
   const Real = globalThis.Worker;
   class Recorded extends Real {
     constructor(...args: ConstructorParameters<typeof Worker>) {
       super(...args);
-      this.addEventListener("close", () => closes.push(now()));
+      const record = () => {
+        closes.push({ at: now(), warnedBefore: overruns(events).length });
+      };
+      this.addEventListener("close", record);
     }
   }
   globalThis.Worker = Recorded;
@@ -87,26 +101,23 @@ function recordWorkerCloses(): number[] {
 }
 
 /**
- * Reads `file` every 15 ms until it has not changed for 300 ms, for 5 s at
- * most: the value a thread left once it stopped writing, and whether it did.
+ * Waits for the thread's `close` event, 15 s at most, then reads the stamp it
+ * left in `file`: its last side effect, and whether it stopped at all.
+ *
+ * Not "the file stopped changing": that read a thread starved of CPU for
+ * 300 ms on a loaded machine as stopped, and a thread still running for 5 s
+ * after a close as left running, where Bun was only slow to end it
+ * (oven-sh/bun#44216). The `close` event is the only certain sign.
  */
 async function lastWrite(
   file: string,
-): Promise<{ value: string; settled: boolean }> {
-  const deadline = Date.now() + 5_000;
-  let value = await Bun.file(file).text();
-  let since = Date.now();
-  while (Date.now() < deadline) {
-    await Bun.sleep(15);
-    const next = await Bun.file(file).text();
-    if (next !== value) {
-      value = next;
-      since = Date.now();
-    } else if (Date.now() - since >= 300) {
-      return { value, settled: true };
-    }
+  closes: ThreadClose[],
+): Promise<{ value: string; stopped: boolean }> {
+  const deadline = Date.now() + 15_000;
+  while (closes.length === 0 && Date.now() < deadline) {
+    await Bun.sleep(10);
   }
-  return { value, settled: false };
+  return { value: await Bun.file(file).text(), stopped: closes.length > 0 };
 }
 
 /**
@@ -120,13 +131,13 @@ async function spinning(
   worker: BunQueueWorker;
   beacon: string;
   events: LogEvent[];
-  closes: number[];
+  closes: ThreadClose[];
 }> {
-  const closes = recordWorkerCloses();
+  const { logger, events } = createTestLogger();
+  const closes = recordWorkerCloses(events);
   const tmp = await makeTmpDir("thread-exit");
   cleanups.push(tmp.cleanup);
   const beacon = join(tmp.path, "beacon");
-  const { logger, events } = createTestLogger();
   const processor = join(handlers, "job-spin-stamp.ts");
   const factory: WorkerTargetFactory = (context) =>
     new FileTargetExecutor(target, processor, {
@@ -168,26 +179,29 @@ async function spinning(
  * The claim, for a close that resolved at `closedAt`: the thread had stopped
  * by then — its `close` event and its last stamp came first — unless it
  * outlived `TARGET_CLOSE_REAP`, which Bun's termination latency can on a
- * loaded machine, and then the close said so in exactly one warning.
+ * loaded machine, and then the close said so in exactly one warning, logged
+ * while the thread was indeed still running.
  */
 async function expectStoppedBy(
   closedAt: number,
   spin: Awaited<ReturnType<typeof spinning>>,
 ): Promise<void> {
-  const last = await lastWrite(spin.beacon);
+  const last = await lastWrite(spin.beacon, spin.closes);
   // Not left running, whatever else: the processor spins for 30 s.
-  expect(last.settled).toBe(true);
+  expect(last.stopped).toBe(true);
   expect(spin.closes.length).toBe(1);
+  expect(Number(last.value)).toBeGreaterThan(0);
   const warned = overruns(spin.events);
   if (warned.length > 0) {
     expect(warned.length).toBe(1);
-    expect(spin.closes[0]!).toBeGreaterThan(closedAt);
+    // The warning was true when it was logged: the thread closed after it.
+    expect(spin.closes[0]!.warnedBefore).toBe(1);
     return;
   }
   // The thread's last side effect came before the close resolved...
   expect(Number(last.value)).toBeLessThanOrEqual(closedAt);
   // ...and so did its `close` event, the only certain sign it had stopped.
-  expect(spin.closes[0]!).toBeLessThanOrEqual(closedAt);
+  expect(spin.closes[0]!.at).toBeLessThanOrEqual(closedAt);
 }
 
 describe("a worker-thread target's close waits for the thread to stop", () => {
