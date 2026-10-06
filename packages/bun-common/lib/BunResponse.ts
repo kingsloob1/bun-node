@@ -363,6 +363,41 @@ function parseTokenList(value: string): string[] {
 const textEncoder = new TextEncoder();
 
 /**
+ * How a response tags a body with an `ETag` (see {@link BunResponse.etag}):
+ * off, on (strong), `"weak"`, `"strong"`, or a function returning the tag
+ * (or `undefined` for none), as Express's `etag` setting.
+ */
+export type EtagOption =
+  | boolean
+  | "weak"
+  | "strong"
+  | ((body: string | Uint8Array) => string | undefined);
+
+/**
+ * `option` checked: `undefined` is `false`.
+ *
+ * @throws TypeError for anything else that is not an {@link EtagOption}.
+ */
+export function normalizeEtagOption(
+  option: EtagOption | undefined,
+): EtagOption {
+  if (option === undefined) {
+    return false;
+  }
+  if (
+    typeof option === "boolean" ||
+    option === "weak" ||
+    option === "strong" ||
+    typeof option === "function"
+  ) {
+    return option;
+  }
+  throw new TypeError(
+    `etag must be a boolean, "weak", "strong" or a function; got ${String(option)}`,
+  );
+}
+
+/**
  * The default `Content-Type` of a text body: what Bun itself writes for a
  * string body, so a response sent with no headers and one sent with others
  * carry the same type.
@@ -601,8 +636,11 @@ export class BunResponse<
    */
   #streamEndWaiters: (() => void)[] | undefined = undefined;
 
-  /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
-  #etagEnabled: boolean;
+  /**
+   * How {@link send} tags a body with an `ETag` — see {@link etag}. Starts as
+   * the adapter's `etag` option (`false` by default).
+   */
+  #etag: EtagOption;
 
   /**
    * Lazily-created event bus mirroring Node's `http.ServerResponse` events
@@ -647,14 +685,15 @@ export class BunResponse<
     public req: BunRequest,
     options?: {
       /**
-       * Enable automatic `ETag` generation for this response. Opt-in because
-       * hashing every body has a measurable per-request cost; defaults to
-       * `false`. Can also be toggled later via {@link setEtag}.
+       * How this response tags a body with an `ETag` — see {@link etag}.
+       * Opt-in because hashing every body has a measurable per-request cost;
+       * defaults to `false`. The adapters pass their `etag` option; change it
+       * per response with {@link setEtag} or {@link etag}.
        */
-      etag?: boolean;
+      etag?: EtagOption;
     },
   ) {
-    this.#etagEnabled = options?.etag ?? false;
+    this.#etag = normalizeEtagOption(options?.etag);
     // Bind the pair at construction, as Express does with `req.res`, so
     // `req.fresh` / `req.stale` can be computed from the moment the response
     // exists — not only once `send()` runs.
@@ -662,12 +701,68 @@ export class BunResponse<
   }
 
   /**
-   * Enables (or disables) automatic `ETag` generation for this response.
-   * ETag is **opt-in** — hashing every body has a measurable per-request cost.
+   * How this response tags a body with an `ETag`, overruling the adapter's
+   * `etag` option for this response only (as Express's `etag` setting, per
+   * response):
+   *
+   * - `false` — no `ETag`;
+   * - `true` or `"strong"` — a strong tag over the body's bytes
+   *   (`"<length>-<hash>"`);
+   * - `"weak"` — the same tag, weak (`W/"<length>-<hash>"`);
+   * - a function `(body) => string | undefined` — the tag to send (quoted,
+   *   `W/` for a weak one), or `undefined` for none. It receives a text body
+   *   as a string and a binary one as bytes.
+   *
+   * A tag set by hand (`res.set("ETag", …)`) always wins. Files sent with
+   * `sendFile` get the weak size-and-mtime tag whenever this is not `false`.
+   * A request whose `If-None-Match` matches the tag is answered `304`.
    */
-  public setEtag(enabled = true): BunResponse {
-    this.#etagEnabled = enabled;
+  get etag(): EtagOption {
+    return this.#etag;
+  }
+
+  set etag(option: EtagOption) {
+    this.#etag = normalizeEtagOption(option);
+  }
+
+  /**
+   * Sets {@link etag} — how (and whether) this response is tagged — and
+   * returns the response. `setEtag()` alone turns it on; `setEtag(false)`
+   * turns it off even when the adapter's `etag` option is on.
+   */
+  public setEtag(option: EtagOption = true): BunResponse {
+    this.etag = option;
     return this;
+  }
+
+  /** Whether any `ETag` is to be generated for this response. */
+  get #etagEnabled(): boolean {
+    return this.#etag !== false;
+  }
+
+  /**
+   * The `ETag` for `body` under {@link etag}, or `undefined` for none (off,
+   * or a function that returned nothing).
+   */
+  #etagFor(
+    body: string | ArrayBufferView | ArrayBufferLike,
+  ): string | undefined {
+    const option = this.#etag;
+    if (option === false) {
+      return undefined;
+    }
+    if (typeof option === "function") {
+      const tag = option(
+        typeof body === "string"
+          ? body
+          : ArrayBuffer.isView(body)
+            ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+            : new Uint8Array(body as ArrayBuffer),
+      );
+      return typeof tag === "string" && tag !== "" ? tag : undefined;
+    }
+    const tag = etag(body);
+    return option === "weak" ? `W/${tag}` : tag;
   }
 
   /* ---------------------------------------------------------------- *
@@ -1125,7 +1220,10 @@ export class BunResponse<
     this.options.headers = this.headersObj;
 
     if (this.#etagEnabled && text && !this.hasHeader("ETag")) {
-      this.setHeader("ETag", etag(text));
+      const tag = this.#etagFor(text);
+      if (tag !== undefined) {
+        this.setHeader("ETag", tag);
+      }
     }
 
     if (this.#applyFreshnessAndStrip()) {
@@ -1350,7 +1448,12 @@ export class BunResponse<
       // SharedArrayBuffer) go to the socket verbatim — Bun writes the bytes
       // and sets Content-Length itself.
       if (this.#etagEnabled && !this.hasHeader("ETag")) {
-        this.setHeader("ETag", etag(body));
+        const tag = this.#etagFor(
+          body as string | ArrayBufferView | ArrayBufferLike,
+        );
+        if (tag !== undefined) {
+          this.setHeader("ETag", tag);
+        }
       }
 
       if (this.#applyFreshnessAndStrip()) {

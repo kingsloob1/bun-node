@@ -319,6 +319,8 @@ export {
   type BunResponseHeaders,
   type BunResponseSentBody,
   type CookieValue,
+  type EtagOption,
+  normalizeEtagOption,
   type SendFileCallOptions,
   toFetchResponse,
   type UpgradeToWebsocketOptions,

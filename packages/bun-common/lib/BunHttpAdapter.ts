@@ -1,6 +1,7 @@
 import type { WebSocketHandler } from "bun";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { EtagOption } from "./BunResponse";
 import type { FetchInput } from "./BunRouter";
 import type {
   CorsOptions as BunCorsOptions,
@@ -40,6 +41,7 @@ import {
   BunResponse,
   BunWebSocket,
   mergeBunRequestOptions,
+  normalizeEtagOption,
   toFetchResponse,
 } from "./index";
 import { resolveLogger } from "./logging";
@@ -242,7 +244,8 @@ export class BunHttpAdapter<
    */
   #registeredBodyParsers = new Set<string>();
   /** When true, every response computes an `ETag`. Opt-in (off by default). */
-  protected etagEnabled = false;
+  /** The `etag` option every response starts with (see `BunResponse.etag`). */
+  protected etagEnabled: EtagOption = false;
   /**
    * Adapter lifecycle events, typed by {@link BunHttpAdapterEvents}:
    * `listening` with the `Bun.serve` server once `listen` binds, and `close`
@@ -291,8 +294,13 @@ export class BunHttpAdapter<
        * case-insensitive.
        */
       router?: BunRouterOptions;
-      /** Enable automatic `ETag` generation for every response. */
-      etag?: boolean;
+      /**
+       * How every response is tagged with an `ETag`: `false` (the default),
+       * `true`/`"strong"`, `"weak"`, or a function returning the tag (see
+       * `BunResponse.etag`). A response's own `res.setEtag(...)` /
+       * `res.etag = ...` overrules it for that response.
+       */
+      etag?: EtagOption;
       /**
        * Upper bound on the router's matched-pipeline cache before FIFO
        * eviction. Forwarded to {@link BunRouter}; defaults to
@@ -337,7 +345,8 @@ export class BunHttpAdapter<
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
 
-    this.etagEnabled = options?.etag ?? false;
+    // Checked here, so a bad value fails at startup, not on every request.
+    this.etagEnabled = normalizeEtagOption(options?.etag);
     this.logger = logger;
     this.serverOptions = options?.server || {};
     this.webSocketAdapter = new BunWebSocket<customWebsocketDataType>({
