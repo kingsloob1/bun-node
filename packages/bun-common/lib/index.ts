@@ -321,6 +321,7 @@ export {
   type BunResponseSentBody,
   type CookieValue,
   type EtagOption,
+  markSocketFree,
   normalizeEtagOption,
   type SendFileCallOptions,
   toFetchResponse,

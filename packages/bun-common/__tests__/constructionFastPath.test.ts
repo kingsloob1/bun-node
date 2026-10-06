@@ -180,3 +180,51 @@ describe("requestPath: the router matches the path it is given", () => {
     expect(await (await app.fetch("/a/9?x=1#f")).text()).toBe("9");
   });
 });
+
+describe("the request URL split (host, path, search, hash)", () => {
+  // [url, host, path, search, hash, originalUrl] — pinned from the previous
+  // per-character implementation, which the indexOf-based one must match,
+  // raw (unnormalised) URLs included.
+  const CASES: [string, string, string, string, string, string][] = [
+    ["http://h/", "h", "/", "", "", "/"],
+    ["http://h", "h", "/", "", "", "/"],
+    ["http://h?x=/y", "h", "/", "?x=/y", "", "/?x=/y"],
+    ["http://h#f/g?z", "h", "/", "", "#f/g?z", "/#f/g?z"],
+    ["http://h/a?b#c", "h", "/a", "?b", "#c", "/a?b#c"],
+    ["http://h/a#b?c", "h", "/a", "", "#b?c", "/a#b?c"],
+    ["http://u:p@h:8/x", "h:8", "/x", "", "", "/x"],
+    ["http://h/a/b?", "h", "/a/b", "?", "", "/a/b?"],
+    ["http://h/?#", "h", "/", "?", "#", "/?#"],
+    [
+      "http://h:3000/%2F/x?q=%3F#%23",
+      "h:3000",
+      "/%2F/x",
+      "?q=%3F",
+      "#%23",
+      "/%2F/x?q=%3F#%23",
+    ],
+    ["https://[::1]:8443/p?a=1", "[::1]:8443", "/p", "?a=1", "", "/p?a=1"],
+    ["http://h/a//b", "h", "/a//b", "", "", "/a//b"],
+  ];
+  for (const [url, host, path, search, hash, originalUrl] of CASES) {
+    it(url, () => {
+      const req = new BunRequest(
+        {
+          url,
+          headers: new Headers(),
+          body: null,
+          method: "GET",
+        } as unknown as Request,
+        testServer,
+        { parseBody: false, parseQuery: false, parseCookies: false },
+      );
+      expect([
+        req.host,
+        req.path,
+        req.search,
+        req.hash,
+        req.originalUrl,
+      ]).toEqual([host, path, search, hash, originalUrl]);
+    });
+  }
+});

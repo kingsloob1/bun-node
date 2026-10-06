@@ -40,6 +40,7 @@ import {
   BunRequest,
   BunResponse,
   BunWebSocket,
+  markSocketFree,
   mergeBunRequestOptions,
   normalizeEtagOption,
   toFetchResponse,
@@ -604,10 +605,8 @@ export class BunHttpAdapter<
     input: FetchInput,
     init?: RequestInit,
   ): Promise<Response> {
-    const nativeRequest = toNativeRequest(
-      input,
-      init,
-      this.isListening ? this.url : undefined,
+    const nativeRequest = markSocketFree(
+      toNativeRequest(input, init, this.isListening ? this.url : undefined),
     );
 
     let response: Response | undefined;
