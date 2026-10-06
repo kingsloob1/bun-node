@@ -27,6 +27,7 @@ import {
   addChildBlocked,
   addFlowChild,
   checkFlowQueue,
+  fieldUnchangedSince,
   findFlowNode,
   flowBody,
   flowNode,
@@ -219,7 +220,10 @@ function OpenAddFlowDialog({ queue, onClose }: AddFlowDialogProps) {
     errorOf: (key, field) =>
       (field === "opts.runAt" ? times.problems[key] : undefined) ??
       clientErrors[key]?.[field] ??
-      server?.errors[key]?.[field],
+      // An API error stays only while the field holds what was sent.
+      (sent && fieldUnchangedSince(root, sent, queue, key, field)
+        ? server?.errors[key]?.[field]
+        : undefined),
     blockedReason: (key) => addChildBlocked(root, key, limits),
     patch: (key, patch) =>
       setRoot((current) => updateFlowNode(current, key, patch)),

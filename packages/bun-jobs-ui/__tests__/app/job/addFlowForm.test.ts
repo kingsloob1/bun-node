@@ -11,6 +11,7 @@ import {
   addFlowChild,
   checkFlowQueue,
   countFlowNodes,
+  fieldUnchangedSince,
   flowBody,
   flowDepth,
   flowNode,
@@ -511,5 +512,68 @@ describe("flowInvalidation", () => {
       ["queues"],
       ["overview"],
     ]);
+  });
+});
+
+describe("fieldUnchangedSince", () => {
+  /** Top job (emails) > Child 1 (reports) > Child 1.1 (its parent's), and Child 2. */
+  function sentTree() {
+    const grandchild = node("c11");
+    const child = node("c1", { queue: "reports", children: [grandchild] });
+    const sibling = node("c2");
+    return {
+      root: node("top", { children: [child, sibling] }),
+      child,
+      grandchild,
+      sibling,
+    };
+  }
+
+  it("holds while nothing changed", () => {
+    const { root, child } = sentTree();
+    expect(fieldUnchangedSince(root, root, TOP, child.key, "queue")).toBe(true);
+    expect(fieldUnchangedSince(root, root, TOP, child.key, "name")).toBe(true);
+  });
+
+  it("drops a queue error when the job's queue changes, and its inheriting child's too", () => {
+    const { root, child, grandchild, sibling } = sentTree();
+    const now = updateFlowNode(root, child.key, { queue: "" });
+    expect(fieldUnchangedSince(now, root, TOP, child.key, "queue")).toBe(false);
+    // Child 1.1 took its parent's queue, so it now goes to emails too.
+    expect(fieldUnchangedSince(now, root, TOP, grandchild.key, "queue")).toBe(
+      false,
+    );
+    expect(fieldUnchangedSince(now, root, TOP, sibling.key, "queue")).toBe(
+      true,
+    );
+    // Only the queue moved: Child 1's name still holds what was sent.
+    expect(fieldUnchangedSince(now, root, TOP, child.key, "name")).toBe(true);
+  });
+
+  it("drops a field's error once that field is edited, and no other", () => {
+    const { root, sibling, child } = sentTree();
+    const now = updateFlowNode(root, sibling.key, { form: form("renamed") });
+    expect(fieldUnchangedSince(now, root, TOP, sibling.key, "name")).toBe(
+      false,
+    );
+    expect(fieldUnchangedSince(now, root, TOP, child.key, "name")).toBe(true);
+    const ignoring = updateFlowNode(root, sibling.key, { ignoreFailure: true });
+    expect(
+      fieldUnchangedSince(
+        ignoring,
+        root,
+        TOP,
+        sibling.key,
+        "opts.ignoreFailure",
+      ),
+    ).toBe(false);
+  });
+
+  it("drops a node's own error once the node moves to another path", () => {
+    const { root, sibling } = sentTree();
+    const now = moveFlowNode(root, sibling.key, -1);
+    expect(fieldUnchangedSince(now, root, TOP, sibling.key, "node")).toBe(
+      false,
+    );
   });
 });

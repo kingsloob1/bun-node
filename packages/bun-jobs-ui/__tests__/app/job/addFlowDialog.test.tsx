@@ -532,6 +532,48 @@ describe("the add-flow dialog: errors on their nodes", () => {
     expect(node(dialog, "Top job").textContent).not.toContain(message);
   });
 
+  it("drops a queue's refusal once the job goes elsewhere, with the child that followed it", async () => {
+    const { dialog } = await failWith(
+      403,
+      problem(403, "FORBIDDEN", "Forbidden", {
+        context: { queue: "reports" },
+      }),
+    );
+    const message = "You may not add jobs to “reports”.";
+    await waitFor(() =>
+      expect(errorOf(node(dialog, "Child 1"), "Queue")).toBe(message),
+    );
+    // Back to its parent's queue: the refusal no longer applies to Child 1, nor
+    // to Child 1.1, which takes its parent's queue.
+    type(node(dialog, "Child 1"), "Queue", "");
+    await waitFor(() =>
+      expect(errorOf(node(dialog, "Child 1"), "Queue")).toBe(""),
+    );
+    expect(errorOf(node(dialog, "Child 1.1"), "Queue")).toBe("");
+  });
+
+  it("drops a field's API error once that field is edited, and keeps the others", async () => {
+    const { dialog } = await failWith(
+      400,
+      problem(400, "VALIDATION", "Validation failed", {
+        issues: [
+          { target: "body", path: "children.0.data", message: "Bad data" },
+          { target: "body", path: "children.1.data", message: "Bad data" },
+        ],
+      }),
+    );
+    await waitFor(() =>
+      expect(errorOf(node(dialog, "Child 1"), "Data")).toBe("Bad data"),
+    );
+    // A valid edit of Child 1's data: its error goes (nothing else would show
+    // there), while Child 2's, untouched, stays.
+    type(node(dialog, "Child 1"), "Data", '{"fixed":true}');
+    await waitFor(() =>
+      expect(errorOf(node(dialog, "Child 1"), "Data")).toBe(""),
+    );
+    expect(errorOf(node(dialog, "Child 2"), "Data")).toBe("Bad data");
+  });
+
   it("puts a FORBIDDEN without context.queue on the path's queue", async () => {
     const { dialog } = await failWith(
       403,

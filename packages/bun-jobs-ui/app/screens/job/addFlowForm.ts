@@ -529,3 +529,67 @@ export function flowProblemErrors(
   }
   return { errors, unplaced: true };
 }
+
+/**
+ * What node `key`'s `field` holds in a placed flow, in a form two placings
+ * can be compared by: the job's effective queue for `queue` (so a child
+ * taking its parent's queue changes when the parent's does), its path for
+ * `node`, the timing with the value for `opts.delay` and `opts.runAt`.
+ * `undefined` when the node is not in the flow.
+ */
+function fieldValue(
+  placed: readonly PlacedFlowNode[],
+  key: string,
+  field: FlowField,
+): unknown {
+  const entry = placed.find((candidate) => candidate.node.key === key);
+  if (entry === undefined) {
+    return undefined;
+  }
+  const { node } = entry;
+  switch (field) {
+    case "node":
+      return entry.path;
+    case "queue":
+      return entry.queue;
+    case "opts.ignoreFailure":
+      return node.ignoreFailure;
+    case "name":
+      return node.form.name;
+    case "data":
+      return node.form.data.text;
+    case "opts.jobId":
+      return node.form.jobId;
+    case "opts.priority":
+      return node.form.priority;
+    case "opts.delay":
+      return `${node.form.timing}:${node.form.delay}`;
+    case "opts.runAt":
+      return `${node.form.timing}:${node.form.runAt}`;
+    case "opts.attempts":
+      return node.form.attempts;
+    case "opts.backoff":
+      return node.form.backoff;
+    case "opts.timeout":
+      return node.form.timeout;
+  }
+}
+
+/**
+ * Whether node `key`'s `field` still holds what the flow `sent` had there, so
+ * an API error about it still applies. Once the user edits the field (or, for
+ * `queue`, anything that changes where the job goes), the error is stale and
+ * the dialog stops showing it; the next send is the API's next word.
+ */
+export function fieldUnchangedSince(
+  current: FlowNode,
+  sent: FlowNode,
+  topQueue: string,
+  key: string,
+  field: FlowField,
+): boolean {
+  return (
+    fieldValue(placeFlow(current, topQueue), key, field) ===
+    fieldValue(placeFlow(sent, topQueue), key, field)
+  );
+}
