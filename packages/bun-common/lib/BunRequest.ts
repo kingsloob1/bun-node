@@ -947,6 +947,16 @@ class BodyParseConfig {
 }
 
 /**
+ * The config of a boolean `parseBody` with no deprecated allowlist — what
+ * nearly every request resolves to — shared rather than built per request,
+ * and frozen so a write to it throws. A request that tailors its own config
+ * (the per-request setters) copies it first (`#writableBodyConfig`).
+ */
+const DEFAULT_BODY_CONFIG: BodyParseConfig = Object.freeze(
+  new BodyParseConfig(),
+);
+
+/**
  * Resolves `parseBody` (with the deprecated `allowedContentTypes` fallback,
  * which `contentTypes` overrides) into a {@link BodyParseConfig}: the
  * allowlist, the caps and the decoding options.
@@ -957,6 +967,11 @@ function resolveBodyParseConfig(
   parseBody: ParseBodyOption | undefined,
   legacyAllowed: ContentParserType[] | undefined,
 ): BodyParseConfig {
+  // Boolean form with no deprecated allowlist: uncapped, every kind, the
+  // decoding defaults — the shared config.
+  if ((!isObject(parseBody) || isArray(parseBody)) && !isArray(legacyAllowed)) {
+    return DEFAULT_BODY_CONFIG;
+  }
   const resolved = new BodyParseConfig();
 
   // Deprecated allowlist fallback (overridden below by `contentTypes`).
@@ -1137,6 +1152,20 @@ export class BunRequest<
   }
 
   /**
+   * {@link #resolvedBodyConfig}, made this request's own first: the shared
+   * default is copied before a per-request setter writes to it.
+   */
+  #writableBodyConfig(): BodyParseConfig {
+    const config = this.#resolvedBodyConfig();
+    if (config !== DEFAULT_BODY_CONFIG) {
+      return config;
+    }
+    const own = Object.assign(new BodyParseConfig(), config);
+    this.#bodyConfig = own;
+    return own;
+  }
+
+  /**
    * Rarely-used state, created on first write. Each field moved here is an
    * accessor that reads its default until then, so a request or response that
    * never touches it pays no per-field initialisation (about 6 ns each).
@@ -1246,6 +1275,12 @@ export class BunRequest<
   #bodyDeferred = false;
 
   /**
+   * `true` when the body was read and parsed in one native call
+   * (`request.json()`, see `retainBuffer`): parsed, with no bytes kept.
+   */
+  #readAsJson = false;
+
+  /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
    * `TBody` view can be cast in and out without narrowing the storage.
    */
@@ -1310,7 +1345,7 @@ export class BunRequest<
   }
 
   set #allowedParsers(value: Set<ContentParserType> | undefined) {
-    this.#resolvedBodyConfig().allowedParsers = value;
+    this.#writableBodyConfig().allowedParsers = value;
   }
 
   /**
@@ -1322,7 +1357,7 @@ export class BunRequest<
   }
 
   set #bodyCapsEnabled(value: boolean) {
-    this.#resolvedBodyConfig().bodyCapsEnabled = value;
+    this.#writableBodyConfig().bodyCapsEnabled = value;
   }
 
   /**
@@ -1335,7 +1370,7 @@ export class BunRequest<
   }
 
   set #maxContentLength(value: number | undefined) {
-    this.#resolvedBodyConfig().maxContentLength = value;
+    this.#writableBodyConfig().maxContentLength = value;
   }
 
   /**
@@ -1352,7 +1387,7 @@ export class BunRequest<
   set #perTypeConfig(
     value: Map<ContentParserType, PerTypeParserConfig> | undefined,
   ) {
-    this.#resolvedBodyConfig().perTypeConfig = value;
+    this.#writableBodyConfig().perTypeConfig = value;
   }
 
   /**
@@ -1427,7 +1462,7 @@ export class BunRequest<
   }
 
   set #inflate(value: boolean) {
-    this.#resolvedBodyConfig().inflate = value;
+    this.#writableBodyConfig().inflate = value;
   }
 
   /**
@@ -1444,7 +1479,7 @@ export class BunRequest<
   }
 
   set #decompressionFastPathLimit(value: number) {
-    this.#resolvedBodyConfig().decompressionFastPathLimit = value;
+    this.#writableBodyConfig().decompressionFastPathLimit = value;
   }
 
   /**
@@ -1458,7 +1493,7 @@ export class BunRequest<
   }
 
   set #contentEncodings(value: ContentEncodingAllowlist) {
-    this.#resolvedBodyConfig().contentEncodings = value;
+    this.#writableBodyConfig().contentEncodings = value;
   }
 
   /**
@@ -1472,7 +1507,7 @@ export class BunRequest<
   }
 
   set #maxContentCodings(value: number) {
-    this.#resolvedBodyConfig().maxContentCodings = value;
+    this.#writableBodyConfig().maxContentCodings = value;
   }
 
   /**
@@ -1487,7 +1522,7 @@ export class BunRequest<
   }
 
   set #compressionDictionaries(value: CompressionDictionaries | undefined) {
-    this.#resolvedBodyConfig().compressionDictionaries = value;
+    this.#writableBodyConfig().compressionDictionaries = value;
   }
 
   /**
@@ -1700,6 +1735,23 @@ export class BunRequest<
        * without a body is unaffected.
        */
       deferBody?: boolean;
+      /**
+       * Keep the exact bytes of every body read. Defaults to `false`: a body
+       * declared JSON (`application/json`, `+json`) with no
+       * `Content-Encoding`, no `parseBody` cap and no JSON `reviver` is read
+       * and parsed in one native call (`request.json()`), and its bytes are
+       * not kept — {@link buffer} is `undefined`, a `data` event carries
+       * nothing (only `end` is emitted), and a body that does not parse is
+       * refused with 400 as before but without the text on `err.body`.
+       *
+       * With `true`, every body is read as bytes first, as before: `buffer`,
+       * `rawBody` and the `data` events hold exactly what was received. Turn
+       * it on for an app that verifies signatures over the raw body or
+       * re-parses a body under other options; bun-nest's `rawBody: true`
+       * turns it on for you. {@link requestParsing} can set it per route for
+       * a body not read yet (with `deferBody`).
+       */
+      retainBuffer?: boolean;
     } = {
       parseBody: true,
       parseCookies: true,
@@ -1966,6 +2018,15 @@ export class BunRequest<
       : undefined;
     const limit = this.resolveContentLimit(declaredKind);
     if (
+      this.parseBody === BunRequest.prototype.parseBody &&
+      this.#canReadAsJson(declaredKind, limit)
+    ) {
+      return this.#readAsJsonBody().then(
+        () => this.#bodyEnded(),
+        (error: unknown) => this.#bodyFailed(error),
+      );
+    }
+    if (
       declaredKind === "multipart" ||
       this.parseBody !== BunRequest.prototype.parseBody ||
       this.request.bodyUsed ||
@@ -1992,6 +2053,91 @@ export class BunRequest<
       },
       (error: unknown) => this.#bodyFailed(error),
     );
+  }
+
+  /**
+   * Whether the body can be read and parsed in one native call
+   * (`request.json()`) with nothing observable lost but its bytes, which
+   * `retainBuffer` asks to keep: declared JSON and allowed as JSON, no
+   * `Content-Encoding` (nothing to decode), no cap (nothing to measure), no
+   * JSON `reviver`, a declared non-zero length or a chunked body (a
+   * `Content-Length: 0` body is the declared-empty `{}`), never read.
+   */
+  #canReadAsJson(
+    declaredKind: ContentParserType | undefined,
+    limit: number | undefined,
+  ): boolean {
+    if (
+      declaredKind !== "json" ||
+      limit !== undefined ||
+      this.options.retainBuffer === true ||
+      this._buffer !== undefined ||
+      this.request.bodyUsed ||
+      !this.isParserAllowed("json") ||
+      this.getParserOpts("json")?.reviver !== undefined
+    ) {
+      return false;
+    }
+    const encoding = this.getHeader("Content-Encoding");
+    if (encoding && parseContentCodings(encoding).length > 0) {
+      return false;
+    }
+    const length = this.getHeader("Content-Length");
+    return length === null
+      ? this.getHeader("Transfer-Encoding") !== null
+      : Number(length) > 0;
+  }
+
+  /**
+   * Throws (and records) a {@link PayloadTooLargeError} when the request's
+   * `Content-Length` is over `limit`: the size check of a body read with
+   * `request.json()`, whose bytes were not kept.
+   */
+  #checkDeclaredLength(limit: number | undefined): void {
+    if (limit === undefined) {
+      return;
+    }
+    const length = Number(this.getHeader("Content-Length"));
+    if (Number.isFinite(length) && length > limit) {
+      this.#payloadTooLarge = { limit, length };
+      throw new PayloadTooLargeError(limit, length);
+    }
+  }
+
+  /**
+   * Keeps (or stops keeping) the bytes of a body read from now on — the
+   * `retainBuffer` request option for this request only. A body already read
+   * keeps what it had.
+   */
+  public setRetainBuffer(retain: boolean): this {
+    this.#writableOptions().retainBuffer = retain;
+    return this;
+  }
+
+  /**
+   * Reads and parses the body with `request.json()` (see
+   * {@link #canReadAsJson}); a body that does not parse is refused with
+   * body-parser's 400 `entity.parse.failed`, recorded as
+   * {@link bodyDecodingError} — without `err.body`, as the text is not kept.
+   */
+  async #readAsJsonBody(): Promise<void> {
+    let value: unknown;
+    try {
+      value = await this.request.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw this.#refuseBody(
+          httpError(400, error.message),
+          "entity.parse.failed",
+          undefined,
+        );
+      }
+      throw error;
+    }
+    this._body = value as DefaultRequestBody;
+    this._contentType = "json";
+    this.#bodyParsed = true;
+    this.#readAsJson = true;
   }
 
   /**
@@ -3358,6 +3504,10 @@ export class BunRequest<
    */
   #decodeContentEncoding(buffer: Buffer, limit: number | undefined): Buffer {
     const header = this.getHeader("Content-Encoding") ?? "";
+    // No coding, the common case: nothing to parse or decode.
+    if (header === "") {
+      return buffer;
+    }
     const codings = parseContentCodings(header);
     // No body at all (no `Content-Length`, no `Transfer-Encoding`, as
     // `type-is` defines it) is never decoded — body-parser skips such a
@@ -3430,9 +3580,9 @@ export class BunRequest<
   #refuseBody(
     error: BunHttpClientError,
     type: string,
-    body: string,
+    body: string | undefined,
   ): BunHttpClientError {
-    Object.assign(error, { type, body });
+    Object.assign(error, body === undefined ? { type } : { type, body });
     this.#bodyDecodingError = error;
     return error;
   }
@@ -3508,6 +3658,15 @@ export class BunRequest<
       return;
     }
     const buffer = this._buffer;
+    if (this.#readAsJson) {
+      // Read with `request.json()`: no bytes to measure or parse again. The
+      // cap is checked against the declared length (a served body is framed
+      // by it), and the parsed body stays (see `retainBuffer`).
+      this.#checkDeclaredLength(
+        this.resolveContentLimit(this.detectParserKind("application/json")),
+      );
+      return;
+    }
     if (buffer === undefined) {
       // Never read (parsing was off when the request was built): read now.
       if (!this.request.bodyUsed) {
@@ -3768,7 +3927,9 @@ export class BunRequest<
         throw error;
       }
     }
-    if (!fresh && this.isBodyParsed) {
+    // A body read with `request.json()` kept no bytes to parse again: a
+    // fresh parse answers with what was parsed (see `retainBuffer`).
+    if ((!fresh || this.#readAsJson) && this.isBodyParsed) {
       return {
         body: this._body,
         buffer: this._buffer,
@@ -3782,6 +3943,19 @@ export class BunRequest<
       ? this.detectParserKind(contentTypeHeader)
       : undefined;
     const limit = limitOverride ?? this.resolveContentLimit(declaredKind);
+
+    if (
+      this.parseBody === BunRequest.prototype.parseBody &&
+      this.#canReadAsJson(declaredKind, limit)
+    ) {
+      await this.#readAsJsonBody();
+      return {
+        body: this._body,
+        buffer: undefined,
+        contentType: this._contentType,
+        multipart: undefined,
+      };
+    }
 
     let buffer = this._buffer;
     if (!buffer && !this.request.bodyUsed) {
@@ -4085,6 +4259,10 @@ export class BunRequest<
 
     const limit =
       options?.limit !== undefined ? parseByteSize(options.limit) : undefined;
+    if (this.#readAsJson) {
+      // No bytes kept (see `retainBuffer`): the declared length stands in.
+      this.#checkDeclaredLength(limit);
+    }
     if (limit !== undefined && this._buffer && this._buffer.length > limit) {
       this.#payloadTooLarge = { limit, length: this._buffer.length };
       throw new PayloadTooLargeError(limit, this._buffer.length);

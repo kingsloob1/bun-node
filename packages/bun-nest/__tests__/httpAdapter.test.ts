@@ -1088,3 +1088,45 @@ describe("BunHttpAdapter.fetch: a Request from before a DOM shim replaced global
     });
   });
 });
+
+describe("BunHttpAdapter: a JSON body and rawBody", () => {
+  const body = '{"n":7}';
+  /** A served-shaped JSON POST: it carries its Content-Length. */
+  const post = () =>
+    new Request("http://h/j", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "7" },
+      body,
+    });
+
+  it("without rawBody, is read with request.json() and keeps no bytes", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.useBodyParser("json", false, {});
+    adapter.post("/j", (req, res) => {
+      res.json({ body: req.body, kept: req.buffer !== undefined });
+    });
+    expect(adapter.requestOpts.retainBuffer).toBeUndefined();
+    expect(await (await adapter.fetch(post())).json()).toEqual({
+      body: { n: 7 },
+      kept: false,
+    });
+  });
+
+  it("with rawBody (Nest's rawBody: true), keeps every body's bytes", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.registerParserMiddleware(undefined, true);
+    adapter.post("/j", (req, res) => {
+      res.json({
+        body: req.body,
+        raw: (req as unknown as { rawBody?: Buffer }).rawBody?.toString(),
+      });
+    });
+    expect(adapter.requestOpts.retainBuffer).toBe(true);
+    adapter.setRequestOpts({ parseCookies: false });
+    expect(adapter.requestOpts.retainBuffer).toBe(true);
+    expect(await (await adapter.fetch(post())).json()).toEqual({
+      body: { n: 7 },
+      raw: body,
+    });
+  });
+});

@@ -472,7 +472,10 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 - **`rawBody`.** With `NestFactory.create(AppModule, adapter, { rawBody: true })`
   a parser that read the body keeps the bytes on `req.rawBody` (type the request
   as `RawBodyRequest<BunRequest>`). A request that parser skipped keeps what an
-  earlier parser set.
+  earlier parser set. Registering a parser with `rawBody` also sets the
+  adapter's `retainBuffer` request option, so a plain JSON body is read as
+  bytes rather than with `request.json()` (which keeps none); without
+  `rawBody` it is read the fast way and `req.rawBody` stays unset.
 
 ```ts
 import type { BunRequest } from "@kingsleyweb/bun-common";

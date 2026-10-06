@@ -36,6 +36,15 @@ export interface RequestParsingOptions {
    * it is checked against this one (413 when over) and parsed again.
    */
   parseBody?: ParseBodyOption;
+  /**
+   * Keep the exact bytes of the body for the route (the request option of the
+   * same name). It applies to a body not read yet — one left unread by the
+   * adapter's `deferBody` — which this middleware then reads with it: a body
+   * already read while the request was built kept what the adapter's option
+   * said. `true` keeps `req.buffer`, `rawBody` and the `data` events for a
+   * JSON body; `false` lets a plain JSON body be read with `request.json()`.
+   */
+  retainBuffer?: boolean;
 }
 
 /**
@@ -65,12 +74,15 @@ export interface RequestParsingOptions {
  */
 export function requestParsing(options: RequestParsingOptions): RouterHandler {
   validateOptions(options);
-  const { parseQuery, parseCookies, parseBody } = options;
+  const { parseQuery, parseCookies, parseBody, retainBuffer } = options;
   // Sizes and decoding options fail here, at creation, not per request.
   validateParseBodyOption(parseBody);
 
   return (req, _res, next) => {
     const request = req as BunRequest;
+    if (retainBuffer !== undefined) {
+      request.setRetainBuffer(retainBuffer);
+    }
     try {
       if (parseQuery !== undefined) {
         applyQuery(request, parseQuery);
@@ -84,7 +96,17 @@ export function requestParsing(options: RequestParsingOptions): RouterHandler {
     }
 
     if (parseBody === undefined) {
-      next();
+      // A deferred body is read now, with `retainBuffer` as set above.
+      const deferred =
+        retainBuffer === undefined ? undefined : request.readDeferredBody();
+      if (deferred === undefined) {
+        next();
+        return;
+      }
+      deferred.then(
+        () => next(),
+        (error: unknown) => next(error as Error),
+      );
       return;
     }
     request.applyParseBodyOptions(parseBody).then(
@@ -129,6 +151,12 @@ function applyCookies(req: BunRequest, parseCookies: ParseCookiesOption): void {
 function validateOptions(options: RequestParsingOptions): void {
   if (typeof options !== "object" || options === null) {
     throw new TypeError("requestParsing() takes an options object");
+  }
+  if (
+    options.retainBuffer !== undefined &&
+    typeof options.retainBuffer !== "boolean"
+  ) {
+    throw new TypeError("requestParsing(): retainBuffer must be a boolean");
   }
   for (const key of ["parseQuery", "parseCookies", "parseBody"] as const) {
     const value: unknown = options[key];

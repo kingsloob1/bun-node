@@ -156,6 +156,13 @@ export class BunHttpAdapter<
   /** The merged request options; see {@link requestOpts}. */
   #requestOpts!: ResolvedBunRequestOptions;
 
+  /**
+   * Set once a body parser is registered with `rawBody`: it needs the bytes
+   * of every body, so the request options keep them (`retainBuffer`) unless
+   * they say otherwise, whenever they are replaced.
+   */
+  #rawBodyNeedsBuffer = false;
+
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
   private _serverInstance:
@@ -634,6 +641,9 @@ export class BunHttpAdapter<
     // Requests resolve `parseBody` lazily (only one with a body does), so a
     // misconfiguration is caught here instead of on the first such request.
     validateParseBodyOption(merged.parseBody);
+    if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
+      merged.retainBuffer = true;
+    }
     this.#requestOpts = merged;
   }
 
@@ -832,6 +842,12 @@ export class BunHttpAdapter<
     const key = `${prefix ?? ""}\0${parser ?? "*"}`;
     if (this.#registeredBodyParsers.has(key)) {
       return this;
+    }
+    // `rawBody` needs the bytes, which a JSON body read with
+    // `request.json()` does not keep: keep them for every request.
+    if (rawBody && !this.#rawBodyNeedsBuffer) {
+      this.#rawBodyNeedsBuffer = true;
+      this.requestOpts = this.#requestOpts;
     }
 
     const parse = async (req: BunRequest, next: NextFunction) => {

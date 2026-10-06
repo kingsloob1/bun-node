@@ -662,6 +662,7 @@ a boolean on either side replaces the other.
 | `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
 | `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
 | `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
+| `retainBuffer` | `boolean` | `false` | Keep the exact bytes of every body. Off, a plain JSON body is read with `request.json()` and keeps none: see [How the body is read](#body-decoding). bun-nest's `rawBody: true` turns it on. |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -749,6 +750,7 @@ here, and throw a `TypeError` naming the replacement):
 | `parseQuery` | `false` empties `req.query`; `true` parses it again with the defaults; an object parses it again with those picoquery options |
 | `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again with no secret; `{ secret, decode }` parses them again with those, and `req.secret` becomes the first secret |
 | `parseBody` | `false` parses nothing more; `true` or a `ParseBodyConfig` parses the body under these caps and allowlist |
+| `retainBuffer` | Keep the body's bytes for the route — for a body not read yet (the adapter's `deferBody`), which this middleware then reads |
 
 Only that request changes: the adapter's options, and other requests, never
 do. A body over the route's cap, or with an encoding it refuses, goes to
@@ -892,6 +894,31 @@ resolves its `parseBody` config only when it has a body, so a bodiless request
 never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
 options built elsewhere. (A `maxContentLength` that did not parse used to be
 ignored silently, leaving the per-kind default cap in force.)
+
+**A JSON body is read with `request.json()`.** A body declared JSON
+(`application/json`, `+json`) with no `Content-Encoding`, no `parseBody` cap
+(a boolean `parseBody`), no JSON `reviver` and a `Content-Length` above zero
+(or chunked) is read and parsed in one native call, as Elysia does — about a
+sixth less per JSON request, +9% `wrk` req/s. What that read does not give
+back is the bytes:
+
+- `req.buffer` is `undefined`, and a body parser registered with `rawBody`
+  finds none to keep;
+- a `data` listener gets no chunk, only `end`;
+- an invalid body is still a 400 `entity.parse.failed` refused before routing,
+  but `err.body` (the text) is not set;
+- a body cannot be parsed again under other options (`parseBody(true)`,
+  `requestParsing()`): it keeps what was parsed, and a cap is checked against
+  `Content-Length` — exact for a served request, whose body that length frames;
+- a chunked JSON body that turns out empty is a 400, where the byte path gives
+  `{}` (`Content-Length: 0` is unaffected: it is never read).
+
+`retainBuffer: true` (a request option, or `requestParsing({ retainBuffer })`
+for a deferred body) reads every body as bytes, exactly as before. Use it to
+verify a signature over the raw body; bun-nest turns it on when the app is
+created with `rawBody: true`. Any other body — another type, an encoding, a
+cap, an in-process `Request` without a `Content-Length` — is read as bytes
+whatever the option says.
 
 **How the body is read.** When nothing has to be enforced while the body
 streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
