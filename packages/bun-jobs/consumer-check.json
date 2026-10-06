@@ -329,10 +329,6 @@
       "types": ["JobBuilderOptions", "RepeatEveryOptions"]
     },
     {
-      "spelling": "@kingsleyweb/bun-jobs/lib/queue/jobRouter",
-      "values": ["JOB_ROUTER"]
-    },
-    {
       "spelling": "@kingsleyweb/bun-jobs/lib/shared/errors",
       "values": ["ConfigError"]
     }
