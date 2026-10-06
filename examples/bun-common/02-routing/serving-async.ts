@@ -19,6 +19,8 @@
  * - The request timeout (the constructor's first argument, or
  *   `adapter.setTimeout(ms, callback)`) fails a parked pipeline as a 500.
  * - A router whose `handle()` is overridden is still served through it.
+ * - `res.locals` carries values between one request's layers, as in
+ *   Express: a fresh null-prototype object per request, and assignable.
  * - `router.serveRequest(options, hooks)` runs the pipeline and finishes it
  *   through `hooks`: `respond(options, routeUsed)`, `stream(options,
  *   response)`, `error(options, error)` and `lateError(options, error)`. It
@@ -55,21 +57,20 @@ process.env.NODE_ENV = "development";
 const errorsSeen: { path: string; message: string; headersSent: boolean }[] =
   [];
 
-/** Each request's trail through the `/chain` layers. */
-const trails = new WeakMap<object, string[]>();
-app.use("/chain", async (req, _res, next) => {
+app.use("/chain", async (_req, res, next) => {
   await Bun.sleep(2);
-  trails.set(req, ["first"]);
+  // res.locals: request-scoped values for the layers that follow.
+  res.locals.trail = ["first"];
   next();
 });
-app.use("/chain", async (req, _res, next) => {
+app.use("/chain", async (_req, res, next) => {
   await Promise.resolve();
-  trails.get(req)?.push("second");
+  (res.locals.trail as string[]).push("second");
   next();
 });
-app.get("/chain", async (req, res) => {
+app.get("/chain", async (_req, res) => {
   await Bun.sleep(2);
-  res.send([...(trails.get(req) ?? []), "handler"].join(","));
+  res.send([...(res.locals.trail as string[]), "handler"].join(","));
 });
 app.get("/early", async (_req, res) => {
   res.send("sent before the handler finished");
@@ -250,6 +251,45 @@ check(
 );
 await app.close();
 process.env.NODE_ENV = nodeEnvBefore;
+
+/* ------------------------------------------------------------------ */
+step("res.locals: shared across one request's layers, never across requests");
+
+const scoped = new BunHttpAdapter(0);
+let counter = 0;
+scoped.use(async (_req, res, next) => {
+  await Promise.resolve();
+  res.locals.requestNumber = ++counter;
+  next();
+});
+scoped.get("/locals", (_req, res) => {
+  res.json({
+    seen: { ...res.locals },
+    nullPrototype: Object.getPrototypeOf(res.locals) === null,
+  });
+});
+scoped.get("/replace", (_req, res) => {
+  res.locals = { replaced: true }; // assignable, as in Express
+  res.json({ ...res.locals });
+});
+await scoped.listen(0);
+checkEqual(
+  "two requests, served then through fetch(): each its own locals",
+  [
+    await (await fetch(`${scoped.url}/locals`)).json(),
+    await (await scoped.fetch("/locals")).json(),
+  ],
+  [
+    { seen: { requestNumber: 1 }, nullPrototype: true },
+    { seen: { requestNumber: 2 }, nullPrototype: true },
+  ],
+);
+checkEqual(
+  "res.locals = {...} replaces it for that request",
+  await (await scoped.fetch("/replace")).json(),
+  { replaced: true },
+);
+await scoped.close();
 
 /* ------------------------------------------------------------------ */
 step("A router with an overridden handle() is served through it");

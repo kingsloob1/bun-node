@@ -11,8 +11,11 @@
  *
  * Worth knowing before reading it:
  *
- * - Cookies are parsed while the request is built, before any middleware
- *   runs. The adapter's `request: { parseCookies: { secret } }` option
+ * - Cookies are parsed on first touch — `req.cookies`, `req.signedCookies`
+ *   or `req.parseCookies()` — with the options the request was built with,
+ *   so a route that never reads them never parses them. Assigning either
+ *   property replaces that half of the result. The adapter's
+ *   `request: { parseCookies: { secret } }` option
  *   (`cookieSecret`, deprecated, still works) makes that parse
  *   verify signed cookies — `cookieParser(secret)` on every request — and
  *   sets `req.secret`, which `res.cookie(..., { signed: true })` signs with.
@@ -30,12 +33,15 @@
  */
 import {
   BunHttpAdapter,
+  BunRequest,
   BunRouter,
   cookieParser,
+  FETCH_STUB_SERVER,
   parseCookie,
   signCookie,
   unsignCookie,
 } from "@kingsleyweb/bun-common";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Request cookies");
@@ -187,3 +193,91 @@ show("cookieParser.signedCookies (removes verified entries from its input)", {
   remaining: parsed,
 });
 show("cookieParser.JSONCookies", cookieParser.JSONCookies(parsed));
+
+/* ------------------------------------------------------------------ */
+step("Parsed on first touch, with the options the request was built with");
+
+/** Every value the custom decoder was given. */
+const decoded: string[] = [];
+const lazy = new BunHttpAdapter(0, {
+  request: {
+    parseCookies: {
+      decode: (value) => {
+        decoded.push(value);
+        if (value === "bad") {
+          throw new Error("undecodable");
+        }
+        return value.toUpperCase();
+      },
+    },
+  },
+});
+lazy.get("/reads", (req, res) => res.json(req.cookies));
+lazy.get("/ignores", (_req, res) => res.send("cookies never read"));
+await lazy.listen(0);
+
+/** GETs `path` with `cookie`, served and through fetch(), as JSON or text. */
+async function bothWays(path: string, cookie: string) {
+  const init = { headers: { Cookie: cookie } };
+  const served = await fetch(`${lazy.url}${path}`, init);
+  const offline = await lazy.fetch(path, init);
+  return [await served.text(), await offline.text()];
+}
+
+checkEqual(
+  "a route that reads req.cookies: decoded, served and through fetch()",
+  await bothWays("/reads", "a=x"),
+  ['{"a":"X"}', '{"a":"X"}'],
+);
+decoded.length = 0;
+checkEqual("a route that never reads them", await bothWays("/ignores", "a=x"), [
+  "cookies never read",
+  "cookies never read",
+]);
+checkEqual("…never ran the decoder", decoded, []);
+checkEqual(
+  "a decoder that throws keeps the raw value, both ways",
+  await bothWays("/reads", "a=bad"),
+  ['{"a":"bad"}', '{"a":"bad"}'],
+);
+await lazy.close();
+
+const SIGNING = "touch secret";
+const header = `plain=1; session=${encodeURIComponent(`s:${signCookie("user-7", SIGNING)}`)}`;
+/** A request carrying `header`, built with `SIGNING` as its secret. */
+function built(): BunRequest {
+  return BunRequest.init(
+    new Request("http://localhost/", { headers: { Cookie: header } }),
+    FETCH_STUB_SERVER,
+    { parseBody: true, parseCookies: { secret: SIGNING } },
+  ) as BunRequest;
+}
+
+const assigned = built();
+assigned.cookies = { replaced: "yes" };
+checkEqual(
+  "assigning req.cookies replaces that half; signedCookies is still parsed",
+  [assigned.cookies, assigned.signedCookies],
+  [{ replaced: "yes" }, { session: "user-7" }],
+);
+const assignedSigned = built();
+assignedSigned.signedCookies = {};
+checkEqual(
+  "assigning req.signedCookies replaces that half; cookies is still parsed",
+  [assignedSigned.cookies, assignedSigned.signedCookies],
+  [{ plain: "1" }, {}],
+);
+const explicit = built();
+const answer = explicit.parseCookies({ secret: "another secret" });
+checkEqual(
+  "parseCookies({ secret: other }) answers with that secret…",
+  answer.signedCookies,
+  { session: false },
+);
+checkEqual(
+  "…but leaves the request's own cookies as its options parse them",
+  [explicit.cookies, explicit.signedCookies],
+  [{ plain: "1" }, { session: "user-7" }],
+);
+
+summary();
