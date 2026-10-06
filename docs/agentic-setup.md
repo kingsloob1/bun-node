@@ -33,10 +33,10 @@ shows today, and think in roles.
 |---|---|---|
 | **bun-common agent** | `packages/bun-common/**` | the HTTP layer: router, request/response, adapter, WebSocket, multipart, logging, `native.ts`; its tests, bench and package README |
 | **bun-nest agent** | `packages/bun-nest/**` | the NestJS adapter, WebSocket adapter, interceptors and decorators; its tests and package README |
-| **bun-jobs agent** | `packages/bun-jobs/**` (but see `lib/runner/**` below) | queues, drivers, schema sync, the management API, compute providers; its tests, bench and package README |
-| **bun-jobs-ui agent** | `packages/bun-jobs-ui/**` | the React UI and its server; its tests, e2e and package README |
-| **Examples agent** | `examples/**`, the README example tables | a self-asserting example for every user-facing change; reviews `lib/runner/**` changes |
-| **Features agent** | nothing exclusively | cross-package work (performance, streaming, summon, host isolation), built in the owner's package with the owner's review |
+| **bun-jobs agent** | `packages/bun-jobs/**` (but see `lib/runner/**` below) | queues, drivers, schema sync, the management API; its tests, bench and package README; reviews every PR that touches `packages/bun-jobs/**` — compute providers, summon and host isolation are built by the features agent under this review |
+| **bun-jobs-ui agent** | `packages/bun-jobs-ui/**`, `playground/**` | the React UI and its server; its tests, e2e and package README; reviews every playground change |
+| **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
+| **Features agent** | nothing exclusively | cross-package and phase work: performance; streaming and SSE (bun-common, bun-nest); summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review |
 
 **As of 2026-10-06:**
 
@@ -54,7 +54,9 @@ changes in those two packages and the examples agent checks them against the
 examples, as they have so far.
 Once they start, the features agent hands bun-common and bun-nest work to
 them, and keeps its cross-package work (it still writes code in their
-packages when a feature spans several, under their review).
+packages when a feature spans several, under their review). At hand-over, its
+only planned work in those packages is the SSE helpers, PR-sse2 to sse5
+(`docs/plans/bun-native-routes.md` §16, not started); nothing else is open.
 
 Update the dated table when a session is replaced. Nothing else in this file
 should need to change for that.
@@ -68,26 +70,39 @@ failure this split exists to prevent.
   sends the owner a report (below) and waits for the fix. That includes a
   one-character typo, a failing test and a wrong README row.
 - **Shared files** — the root `CLAUDE.md`, `README.md`, `package.json`,
-  `tsconfig.base.json`, `scripts/`, `templates/`, `docs/`, `playground/` —
-  have no single owner. Before editing one, tell the agents whose work it
+  `tsconfig.base.json`, `scripts/`, `templates/`, `docs/` — have no single
+  owner. Before editing one, tell the agents whose work it
   describes; a CLAUDE.md section about a package is that package owner's to
   review.
 - **A feature that spans packages** is built by the features agent (or by the
   owner of the package it mostly lives in), and every other package it
   touches is reviewed by that package's owner before merge.
-- **`lib/runner/**` and `lib/queue/workerTarget.ts`** (bun-jobs' runner and
-  isolation executors) are written by whoever builds the feature and reviewed
-  by the examples agent, against the pitfalls in
+- **`lib/runner/**` and `lib/queue/workerTarget.ts`** are written by whoever
+  builds the feature, and reviewed by the examples agent. Host-isolation and
+  executor changes (`lib/runner/executors/**`, `workerTarget.ts`, the
+  container target) are also reviewed by the bun-jobs agent (the user's
+  decision, 2026-10-01). Both check against the pitfalls in
   [Reviewing runner changes](#reviewing-runner-changes).
 - **Package READMEs:** a feature branch writes the reference section for its
   feature in its own package README. The examples agent owns the example
   links, tables and option tours, and every `examples/*/README.md`.
-- **Done includes the playground.** Whoever builds a feature adds it to
-  `playground/` (`bun playground/index.ts`, served at
+- **Done includes the playground.** Whoever builds a feature writes its
+  addition to `playground/` (`bun playground/index.ts`, served at
   `http://localhost:4000/jobs`) so the user can see and try it, as its own
-  small PR or in the feature's last one, and tells the bun-jobs-ui agent,
-  whose screens it drives. The playground runs the working tree live, so flip
-  a feature's capability flag last, after everything it advertises works.
+  small PR or in the feature's last one. The playground is the bun-jobs-ui
+  agent's (the user's decision, 2026-10-06), so it reviews every playground
+  change before merge: the typecheck, `cd playground && CI=1 bunx eslint .`,
+  and a smoke run on `PORT=0` that exercises the feature, stops on SIGINT and
+  leaves no processes or data. The playground runs the working tree live, so
+  flip a feature's capability flag last, after everything it advertises works.
+- **Contract fixtures are the one exception to one writer per file.** A
+  change to bun-jobs' `api/contract` may make the minimal fixture additions in
+  bun-jobs-ui's tests that the typecheck needs (as #277 did), and tells the
+  bun-jobs-ui agent (the user's decision, 2026-10-06).
+- **A parsed table belongs to the package that states the rules.** The
+  bun-jobs-ui README's "What each element needs" table is the bun-jobs-ui
+  agent's; the examples agent parses it and owns `permissions.ts`. Likewise
+  bun-jobs' scaler recipes are the bun-jobs agent's.
 - **Parsed READMEs are code.** `examples/bun-jobs-ui/04-screens/permissions.ts`
   parses the bun-jobs-ui README's "What each element needs" table, and
   `11-management-api/scaler-recipes.ts` parses bun-jobs' scaler recipes. A
@@ -163,7 +178,9 @@ text beside it carries the evidence: what ran, what passed, what is unproven.
 - **Conditional approval** is fine and common: "merge after the bun-jobs
   agent's check", "after the joint gate". Merge when the condition is met,
   without asking again — and bring it back to the user if the check finds a
-  problem.
+  problem. If the permission classifier refuses a merge made on a conditional
+  approval (it has, as "Merge Without Review"), ask the user again with a
+  popup; never retry another way.
 - **No attribution.** No `Co-Authored-By` trailer and no "Generated with"
   footer in commits or PR bodies. The user's rule overrides any tool default.
 - **Signed commits.** develop's ruleset requires them; the repo's
@@ -220,13 +237,20 @@ Before asking for a commit, run what the change touches; before a merge, the
 full gate on the rebased branch. `CLAUDE.md` has each package's commands; in
 short:
 
-- `bun scripts/typecheck.ts` — every project. In a fresh worktree the three
-  bench projects fail on uninstalled comparators; everything else must pass.
+- `bun scripts/typecheck.ts` — every project, and all must pass. In a fresh
+  worktree, first `bun install` in `packages/bun-common/bench`,
+  `packages/bun-jobs/bench`, `benchmarks/` and `templates/compute-provider/`:
+  without them those projects fail on missing modules, and that noise hides
+  real errors in the same projects.
 - `CI=1 bunx eslint .` in each changed package or examples directory —
   0 errors.
 - `bun run test` in each changed package, plus `bun test --randomize` (serial)
-  for bun-jobs-ui. After a bun-common change, also bun-nest and bun-jobs.
-- `bun run-all.ts` in each affected `examples/*` directory. For bun-jobs, set
+  for bun-jobs-ui. After a bun-common change, also bun-nest and bun-jobs;
+  after a bun-jobs `api/contract` change, also bun-jobs-ui, whose fixtures and
+  tests type against the contract.
+- `bun run-all.ts` in each affected `examples/*` directory. A bun-jobs-ui
+  change runs both `examples/bun-jobs-ui` and `examples/bun-nest` (whose
+  `06-jobs-ui/mount.ts` serves the UI). For bun-jobs, set
   `EXAMPLE_DRIVER` **and** the five `EXAMPLE_*_URL`s (from
   `bun scripts/setup-databases.ts --dry-run`); a URL alone runs on memory, and
   a run without URLs reads 77 of 80 because three examples sit out.
@@ -320,9 +344,10 @@ fact.
 A reproducible bug in Bun itself (the runtime, `bun test`, the bundler, a Bun
 API) is filed on `oven-sh/bun` without asking: search the existing issues
 first, reduce it to a single-file reproduction with none of our code, follow
-the repo's issue template, and tell the user the URL. Document the workaround
-in [`docs/bun-bugs/`](bun-bugs/README.md) and name the issue where the
-workaround lives, so it can go when Bun fixes it.
+the repo's issue template, and tell the user the URL. A subagent drafts the
+issue in its scratch directory; the session reproduces it and files it.
+Document the workaround in [`docs/bun-bugs/`](bun-bugs/README.md) and name
+the issue where the workaround lives, so it can go when Bun fixes it.
 
 ## Starting a new agent
 
