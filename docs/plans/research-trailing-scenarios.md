@@ -570,7 +570,7 @@ that.
 | param-random / wildcard (fresh paths): radix tree route lookup | `85b6e22` | **`wrk` param-random 31,292 → 35,267 req/s (+12.7%)**; see §6 |
 | multipart: busboy fed in one write, one native read under a cap, plain-name inflation, `detectFileType` | `f5abecd` | in process **189.6 → 87.0 µs** per upload; see §7 |
 | object-form `parseBody`: resolved once per options object | `f5abecd` | 707 → 144 ns per request; the capped config no longer trails `parseBody: true` |
-| multipart: busboy-exact buffered parser; `getMultiParts` restructured | (this commit) | `wrk` multipart **14,519 → 21,375 req/s** (+47%), bun-nest +50%; parser fastest of seven candidates; see §7 |
+| multipart: busboy-exact buffered parser; `getMultiParts` restructured | `7ef403f` | `wrk` multipart **14,519 → 21,375 req/s** (+47%), bun-nest +50%; parser fastest of seven candidates; see §7 |
 
 ## Recommended order
 
