@@ -6,6 +6,7 @@ import {
   BunQueue,
   BunQueueWorker,
   ConfigError,
+  DriverError,
   MemoryDriver,
 } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
@@ -96,6 +97,50 @@ describe("retryJobs", () => {
     expect((await queue.getJob(a.id))?.attemptsMade).toBe(0);
     expect((await queue.getJob(c.id))?.state).toBe("dead");
     expect(announced).toEqual([retried]);
+  });
+
+  /**
+   * A retry a driver throws for — the file driver's, on a marker that stayed
+   * held — fails the call, but the jobs that did go back to the queue went:
+   * they are announced all the same, by `retryJobs` and `retryAll` alike.
+   */
+  it("announces the jobs that went when another retry throws", async () => {
+    const { driver, queue, runUntilDead } = setup();
+    const a = await queue.add("mail", { failWith: "boom" });
+    const b = await queue.add("mail", { failWith: "boom" });
+    const c = await queue.add("mail", { failWith: "boom" });
+    const d = await queue.add("mail", { failWith: "boom" });
+    await runUntilDead(4);
+
+    const retryJob = driver.retryJob.bind(driver);
+    driver.retryJob = async (...args: Parameters<typeof retryJob>) => {
+      if (args[1] === b.id || args[1] === d.id) {
+        throw new DriverError("memory", "retryJob", new Error("unreachable"), {
+          id: args[1],
+        });
+      }
+      return await retryJob(...args);
+    };
+
+    const announced: string[][] = [];
+    queue.on("retried", (ids) => announced.push(ids));
+
+    const listed = await queue.retryJobs([a.id, b.id]).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(listed).toBeInstanceOf(DriverError);
+    expect(announced).toEqual([[a.id]]);
+    expect((await queue.getJob(a.id))?.state).toBe("waiting");
+
+    const all = await queue.retryAll("dead").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(all).toBeInstanceOf(DriverError);
+    // `b` and `d` threw; `c`, the one left that could go, went and was told.
+    expect(announced).toEqual([[a.id], [c.id]]);
+    expect((await queue.getJob(c.id))?.state).toBe("waiting");
   });
 
   it("keeps attempts when asked not to reset them", async () => {

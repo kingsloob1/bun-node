@@ -1681,6 +1681,11 @@ export class FileDriver implements JobsDriver {
     }
   }
 
+  /**
+   * {@link JobsDriver.buryJob}. Answers `null` only as the contract means it:
+   * a job whose marker another change keeps held past the wait throws a
+   * `DriverError` ("the job's marker stayed held") instead.
+   */
   async buryJob(
     q: QueueRef,
     id: string,
@@ -1712,7 +1717,7 @@ export class FileDriver implements JobsDriver {
         expiresAt: expiryFor(opts.retention, now, record.expiresAt),
       };
     };
-    const buried = await this.#mutateJob(q, id, bury);
+    const buried = await this.#mutateHeld(q, id, "buryJob", bury);
 
     if (!buried) {
       return null;
@@ -1724,6 +1729,11 @@ export class FileDriver implements JobsDriver {
     return buried;
   }
 
+  /**
+   * {@link JobsDriver.updateProgress}. Answers `false` (no such job) only as
+   * the contract means it: a job whose marker another change keeps held past
+   * the wait throws a `DriverError` ("the job's marker stayed held") instead.
+   */
   async updateProgress(
     q: QueueRef,
     id: string,
@@ -1731,7 +1741,17 @@ export class FileDriver implements JobsDriver {
   ): Promise<boolean> {
     const path = this.#jobPath(q, id);
     const active = join(this.#queueDir(q), "index", "active");
-    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    // Patience as `#holdJob` keeps it: from the last sign of progress, up to
+    // `LOCK_WAIT_MS` in all, and once more before giving up.
+    let attempt = 0;
+    let giveUp = Date.now() + LOCK_WAIT_MS;
+    let deadline = Date.now() + HOLD_PATIENCE_MS;
+    /** The newest hold of the marker seen so far, by its start. */
+    let seen = 0;
+    /** Somebody did something with the job: the patience starts again. */
+    const progressed = (): void => {
+      deadline = Math.min(giveUp, Date.now() + HOLD_PATIENCE_MS);
+    };
 
     for (;;) {
       const record = await this.#readJob(path);
@@ -1742,10 +1762,12 @@ export class FileDriver implements JobsDriver {
       // Progress is reported by the processor, so this is nearly always an
       // active job. Anything else is rare enough to take the full hold.
       if (record.state !== "active") {
-        const updated = await this.#mutateJob(q, id, (current) => ({
-          ...current,
-          progress: jsonClone(progress ?? null),
-        }));
+        const updated = await this.#mutateHeld(
+          q,
+          id,
+          "updateProgress",
+          (current) => ({ ...current, progress: jsonClone(progress ?? null) }),
+        );
         return updated !== null;
       }
 
@@ -1784,24 +1806,50 @@ export class FileDriver implements JobsDriver {
       }
 
       if (Date.now() >= deadline) {
-        return false;
+        // `false` is "no such job", and this one was there a moment ago: the
+        // read at the top of the loop answers that. A job still there gets one
+        // more round of patience, then an error rather than a `false` that
+        // would say it had gone.
+        if (attempt >= 1) {
+          if (!(await this.#readJob(path))) {
+            return false;
+          }
+          throw markerStayedHeld("updateProgress", id);
+        }
+
+        attempt++;
+        seen = 0;
+        giveUp = Date.now() + LOCK_WAIT_MS;
+        deadline = Date.now() + HOLD_PATIENCE_MS;
+        continue;
       }
 
       const fresh = await this.#readJob(path);
       if (fresh?.state === "active" && this.#markerFor(fresh) === marker) {
-        await this.#healHolds(q);
+        const newest = await this.#healHolds(q, "active", marker);
+        if (newest > seen) {
+          seen = newest;
+          progressed();
+        }
         await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+      } else {
+        progressed();
       }
     }
   }
 
+  /**
+   * {@link JobsDriver.updateJob}. Answers `null` only as the contract means
+   * it: a job whose marker another change keeps held past the wait throws a
+   * `DriverError` ("the job's marker stayed held") instead.
+   */
   async updateJob(
     q: QueueRef,
     id: string,
     patch: JobPatch,
     now: number,
   ): Promise<JobRecord | null> {
-    const updated = await this.#mutateJob(q, id, (record) => {
+    const updated = await this.#mutateHeld(q, id, "updateJob", (record) => {
       // Judged against the record read *under the hold*, which is what makes
       // `onlyIn` hold at the moment of the write rather than of some earlier
       // read: a claim cannot slip between the check and the change.
@@ -1866,6 +1914,13 @@ export class FileDriver implements JobsDriver {
    *   backend sees those, unlike the ones that lock a batch. A claim that
    *   finds the marker held moves on to the next job, as it does for any held
    *   marker, and one that comes after reads the whole rewritten record.
+   * - **A job whose marker stays held throws.** The walk waits for a held
+   *   marker as `updateJob` does; one still held once that patience is spent
+   *   (`#mutateHeld`) is a `DriverError`, not a `moved` — the job is still
+   *   pending, and the contract promises no such job is skipped. The call
+   *   lets its in-flight rewrites finish first; what they wrote stays
+   *   written, and calling again from the same cursor counts them
+   *   `unchanged`.
    * - **Priority reorders** because `#mutateJob` puts the marker back under
    *   the name the new record gives it: the priority prefix changes, and
    *   `createdAt` then the id keep the job's FIFO place among equals.
@@ -1931,7 +1986,9 @@ export class FileDriver implements JobsDriver {
       const batch = candidates.slice(0, room);
 
       for (let at = 0; at < batch.length; at += REWRITE_CONCURRENCY) {
-        await Promise.all(
+        // Settled, all of them, before a failure is thrown: a rewrite still in
+        // flight once the call has answered would race the caller's retry.
+        const settled = await Promise.allSettled(
           batch
             .slice(at, at + REWRITE_CONCURRENCY)
             .map(
@@ -1939,6 +1996,10 @@ export class FileDriver implements JobsDriver {
                 await this.#rewriteOne(q, state, marker, request, result),
             ),
         );
+        const failed = settled.find((outcome) => outcome.status === "rejected");
+        if (failed) {
+          throw failed.reason;
+        }
       }
 
       last = { state, marker: batch.at(-1)! };
@@ -2010,9 +2071,10 @@ export class FileDriver implements JobsDriver {
      */
     const judged: { plan: PendingRewritePlan | null } = { plan: null };
 
-    const updated = await this.#mutateJob(
+    const updated = await this.#mutateHeld(
       q,
       id,
+      "rewritePendingOptions",
       (current) => {
         if (!request.states.includes(current.state)) {
           judged.plan = null;
@@ -2043,8 +2105,10 @@ export class FileDriver implements JobsDriver {
     if (updated && final) {
       tallyRewrite(result, final);
     } else if (!final || final.outcome === "rewritten") {
-      // Left `states` before the write, or — the plan still stood — its marker
-      // stayed held past `HOLD_PATIENCE_MS`. Either way it was not written.
+      // Left `states` before the write, or went: its record was gone by the
+      // time it was read again, so `decide` never judged the last copy. A
+      // marker that stayed held is neither, and `#mutateHeld` throws for it
+      // rather than have it counted here.
       tallyMoved(result);
     } else {
       // Changed under the hold into a job with nothing to write.
@@ -2052,6 +2116,11 @@ export class FileDriver implements JobsDriver {
     }
   }
 
+  /**
+   * {@link JobsDriver.addJobLog}. Answers `0` (no such job) only as the
+   * contract means it: a job whose marker another change keeps held past the
+   * wait throws a `DriverError` ("the job's marker stayed held") instead.
+   */
   async addJobLog(
     q: QueueRef,
     id: string,
@@ -2063,7 +2132,7 @@ export class FileDriver implements JobsDriver {
     // deleting the log and deleting the record, so a log file exists only
     // while its record does. It also serialises appends to one job, which
     // counting and trimming — a read and a rewrite — need.
-    const held = await this.#holdJob(q, id, () => true);
+    const held = await this.#holdLogged(q, id);
     if (!held) {
       return 0;
     }
@@ -2124,6 +2193,30 @@ export class FileDriver implements JobsDriver {
       // sleep believing the queue empty.
       if (held.record.state === "waiting") {
         await this.#touchWake(q);
+      }
+    }
+  }
+
+  /**
+   * `addJobLog`'s hold: the job's, or `null` when there is no such job — the
+   * one case the contract answers `0` for. `#holdJob` also answers `null` when
+   * the marker stayed out of reach, and a `0` then would say a job that is
+   * still there had gone, so that is told apart as `#mutateHeld` does: once
+   * more, then a `DriverError`.
+   */
+  async #holdLogged(q: QueueRef, id: string): Promise<HeldJob | null> {
+    for (let attempt = 0; ; attempt++) {
+      const held = await this.#holdJob(q, id, () => true);
+      if (held) {
+        return held;
+      }
+
+      if (!(await this.#readJob(this.#jobPath(q, id)))) {
+        return null;
+      }
+
+      if (attempt >= 1) {
+        throw markerStayedHeld("addJobLog", id);
       }
     }
   }
@@ -2200,12 +2293,7 @@ export class FileDriver implements JobsDriver {
       // job settled between the refusal and the read above. Once more, then
       // give up loudly rather than guess.
       if (attempt >= 1) {
-        throw new DriverError(
-          "file",
-          "clearJobLogs",
-          new Error("the job's marker stayed held"),
-          { id },
-        );
+        throw markerStayedHeld("clearJobLogs", id);
       }
     }
   }
@@ -2362,8 +2450,14 @@ export class FileDriver implements JobsDriver {
     return result;
   }
 
+  /**
+   * {@link JobsDriver.requeueParent}. Answers `false` only as the contract
+   * means it — no such job, or not a `dead` one with a flow: a job whose marker
+   * another change keeps held past the wait throws a `DriverError` ("the job's
+   * marker stayed held") instead.
+   */
   async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
-    const updated = await this.#mutateJob(q, id, (record) => {
+    const updated = await this.#mutateHeld(q, id, "requeueParent", (record) => {
       if (record.state !== "dead" || !record.flow) {
         return null;
       }
@@ -2401,32 +2495,44 @@ export class FileDriver implements JobsDriver {
     return true;
   }
 
+  /**
+   * {@link JobsDriver.markChildRecorded}. Answers `false` only as the contract
+   * means it — no such job: a job whose marker another change keeps held past
+   * the wait throws a `DriverError` ("the job's marker stayed held") instead,
+   * so a caller never takes a child still there for one already gone.
+   */
   async markChildRecorded(
     q: QueueRef,
     id: string,
     retention: Retention,
     now: number,
   ): Promise<boolean> {
-    const updated = await this.#mutateJob(q, id, (record) => {
-      const finished = record.state === "completed" || record.state === "dead";
+    const updated = await this.#mutateHeld(
+      q,
+      id,
+      "markChildRecorded",
+      (record) => {
+        const finished =
+          record.state === "completed" || record.state === "dead";
 
-      return {
-        ...record,
-        flow: {
-          parent: record.flow?.parent ?? null,
-          children: record.flow?.children ?? [],
-          pending: record.flow?.pending ?? 0,
-          values: record.flow?.values ?? {},
-          failures: record.flow?.failures ?? {},
-          recorded: true,
-        },
-        // The TTL goes in with the same write, as completion does it: a
-        // second write afterwards could land over a patch, or under one.
-        expiresAt: finished
-          ? expiryFor(retention, now, record.expiresAt)
-          : record.expiresAt,
-      };
-    });
+        return {
+          ...record,
+          flow: {
+            parent: record.flow?.parent ?? null,
+            children: record.flow?.children ?? [],
+            pending: record.flow?.pending ?? 0,
+            values: record.flow?.values ?? {},
+            failures: record.flow?.failures ?? {},
+            recorded: true,
+          },
+          // The TTL goes in with the same write, as completion does it: a
+          // second write afterwards could land over a patch, or under one.
+          expiresAt: finished
+            ? expiryFor(retention, now, record.expiresAt)
+            : record.expiresAt,
+        };
+      },
+    );
 
     if (!updated) {
       return false;
@@ -3403,6 +3509,11 @@ export class FileDriver implements JobsDriver {
     return read;
   }
 
+  /**
+   * {@link JobsDriver.removeJob}. Answers `false` only as the contract means
+   * it: a job whose marker another change keeps held past the wait throws a
+   * `DriverError` ("the job's marker stayed held") instead.
+   */
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     for (let attempt = 0; ; attempt++) {
       if (await this.#deleteJob(q, id, (record) => record.state !== "active")) {
@@ -3421,16 +3532,16 @@ export class FileDriver implements JobsDriver {
       // Or it settled between the refusal and the read above. Once more, then
       // give up loudly rather than guess, as `clearJobLogs` does.
       if (attempt >= 1) {
-        throw new DriverError(
-          "file",
-          "removeJob",
-          new Error("the job's marker stayed held"),
-          { id },
-        );
+        throw markerStayedHeld("removeJob", id);
       }
     }
   }
 
+  /**
+   * {@link JobsDriver.retryJob}. Answers `false` only as the contract means
+   * it: a job whose marker another change keeps held past the wait throws a
+   * `DriverError` ("the job's marker stayed held") instead.
+   */
   async retryJob(
     q: QueueRef,
     id: string,
@@ -3439,7 +3550,7 @@ export class FileDriver implements JobsDriver {
   ): Promise<boolean> {
     // Under a hold, like `updateJob`: a retry that wrote the copy it read
     // before the rename would put back whatever a patch had just replaced.
-    const updated = await this.#mutateJob(q, id, (record) => {
+    const updated = await this.#mutateHeld(q, id, "retryJob", (record) => {
       // A parent waiting on children is not finished; moving it would run it
       // before they settle.
       if (
@@ -3470,8 +3581,13 @@ export class FileDriver implements JobsDriver {
     return true;
   }
 
+  /**
+   * {@link JobsDriver.promoteJob}. Answers `false` only as the contract means
+   * it: a job whose marker another change keeps held past the wait throws a
+   * `DriverError` ("the job's marker stayed held") instead.
+   */
   async promoteJob(q: QueueRef, id: string, now: number): Promise<boolean> {
-    const updated = await this.#mutateJob(q, id, (record) => {
+    const updated = await this.#mutateHeld(q, id, "promoteJob", (record) => {
       if (!SCHEDULED_STATES.includes(record.state)) {
         return null;
       }
@@ -4528,7 +4644,10 @@ export class FileDriver implements JobsDriver {
 
   /**
    * Changes one job while holding its marker, and answers with what was
-   * written — or `null` when there is no such job or `decide` refuses it.
+   * written — or `null` when there is no such job, `decide` refuses it, or
+   * the marker stayed out of reach (`#holdJob`). A public write whose `null`
+   * means something to its caller goes through `#mutateHeld`, which tells
+   * the last of those apart.
    *
    * The marker is the job's lock everywhere else in this driver, so it is here
    * too: renamed out of the index into `held/`, which no claim, completion or
@@ -4598,6 +4717,49 @@ export class FileDriver implements JobsDriver {
 
     await this.#release(q, hold, current, updated);
     return updated;
+  }
+
+  /**
+   * `#mutateJob` for a public write whose "nothing happened" answer the
+   * contract gives a meaning: answers with what was written, or `null` only
+   * when there is no such job or `decide` refuses it — and throws a
+   * `DriverError` naming `operation` when the marker stayed out of reach.
+   *
+   * `#mutateJob` answers `null` for that third thing too, and passing it on
+   * would tell a caller that a job still there, in a state the write allows,
+   * had gone or moved on. So a `null` is checked against the record as it
+   * stands: missing or refused is the answer; otherwise the write is tried
+   * once more, then given up loudly, as `removeJob` and `clearJobLogs` do.
+   * The check asks `decide` once more, which it must allow anyway.
+   */
+  async #mutateHeld(
+    q: QueueRef,
+    id: string,
+    operation: string,
+    decide: (record: JobRecord) => JobRecord | null,
+    known?: JobRecord,
+  ): Promise<JobRecord | null> {
+    for (let attempt = 0; ; attempt++) {
+      const updated = await this.#mutateJob(
+        q,
+        id,
+        decide,
+        attempt === 0 ? known : undefined,
+      );
+      if (updated) {
+        return updated;
+      }
+
+      const current = await this.#readJob(this.#jobPath(q, id));
+      if (!current || decide(current) === null) {
+        return null;
+      }
+
+      // Or it settled between the refusal and the read above.
+      if (attempt >= 1) {
+        throw markerStayedHeld(operation, id);
+      }
+    }
   }
 
   /**
@@ -5758,6 +5920,20 @@ interface HeldJob {
   record: JobRecord;
   /** Where the marker is while held; the caller must place or delete it. */
   hold: string;
+}
+
+/**
+ * What a write throws when a job's marker stayed out of its reach: neither
+ * the contract's "nothing happened" answer, which would say the job had gone
+ * or moved on, nor a guess.
+ */
+function markerStayedHeld(operation: string, id: string): DriverError {
+  return new DriverError(
+    "file",
+    operation,
+    new Error("the job's marker stayed held"),
+    { id },
+  );
 }
 
 /**

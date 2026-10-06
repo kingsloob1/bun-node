@@ -1,4 +1,4 @@
-import type { JobRecord } from "../lib/drivers/driver";
+import type { JobRecord, QueueRef } from "../lib/drivers/driver";
 import { afterAll, describe, expect, it } from "bun:test";
 import {
   decodeName,
@@ -535,7 +535,7 @@ describe("file driver: removal and writes racing a patch", () => {
   }, 60_000);
 
   /**
-   * Takes `id`'s waiting marker out of the index the way another process's
+   * Takes `id`'s marker out of the `state` index the way another process's
    * hold does, and answers with what puts it back. `stamp` names the hold's
    * start, which is what `#healHolds` reads to judge a holder dead.
    */
@@ -544,30 +544,37 @@ describe("file driver: removal and writes racing a patch", () => {
     q: { ns: string; queue: string },
     id: string,
     stamp: number,
+    state: JobRecord["state"] = "waiting",
   ) {
     const { mkdir, readdir, rename } = await import("node:fs/promises");
     const { join } = await import("node:path");
     const dir = join(root, q.ns, "queues", q.queue);
-    const waiting = join(dir, "index", "waiting");
+    const waiting = join(dir, "index", state);
     const marker = (await readdir(waiting)).find((name) => name.includes(id));
     if (!marker) {
-      throw new Error(`no waiting marker for ${id}`);
+      throw new Error(`no ${state} marker for ${id}`);
     }
 
     await mkdir(join(dir, "held"), { recursive: true });
-    let held = join(dir, "held", `${stamp}.waiting.${marker}`);
+    let held = join(dir, "held", `${stamp}.${state}.${marker}`);
     await rename(join(waiting, marker), held);
 
     return {
       /** Hands the hold on under a new start, as a next holder's would be. */
       async restamp(next: number) {
-        const moved = join(dir, "held", `${next}.waiting.${marker}`);
+        const moved = join(dir, "held", `${next}.${state}.${marker}`);
         await rename(held, moved);
         held = moved;
       },
       /** Puts the marker back in the index. */
       async release() {
         await rename(held, join(waiting, marker));
+      },
+      /** Deletes the job under the hold, as a holder removing it does. */
+      async remove() {
+        const { unlink } = await import("node:fs/promises");
+        await unlink(join(dir, "jobs", `${encodeName(id)}.json`));
+        await unlink(held);
       },
     };
   }
@@ -648,6 +655,329 @@ describe("file driver: removal and writes racing a patch", () => {
     expect(await driver.removeJob(q, "stuck")).toBe(true);
     // And `false` still means what the contract says.
     expect(await driver.removeJob(q, "stuck")).toBe(false);
+
+    await driver.purge(q.ns);
+    await driver.close();
+  }, 20_000);
+
+  /**
+   * One write that answers "nothing happened" when it finds nothing to do —
+   * and used to answer the same when a held marker outlasted its patience.
+   */
+  interface HeldWrite {
+    /** The driver method, as a `DriverError` names it. */
+    operation: string;
+    /** The state the job is in when its marker is taken. */
+    state: JobRecord["state"];
+    /** Puts job `id` in `state`. */
+    seed: (driver: FileDriver, q: QueueRef, id: string) => Promise<void>;
+    /** The write. */
+    call: (driver: FileDriver, q: QueueRef, id: string) => Promise<unknown>;
+    /** What it answers for a job that has gone: the contract's "nothing". */
+    nothing: unknown;
+    /** Whether an answer is one that did the write. */
+    wrote: (answer: unknown) => boolean;
+  }
+
+  const seedWaiting = async (driver: FileDriver, q: QueueRef, id: string) => {
+    await driver.addJob(q, makeJob({ id, runAt: Date.now() }));
+  };
+
+  const heldWrites: HeldWrite[] = [
+    {
+      operation: "updateJob",
+      state: "waiting",
+      seed: seedWaiting,
+      call: async (driver, q, id) =>
+        await driver.updateJob(q, id, { data: { patched: true } }, Date.now()),
+      nothing: null,
+      wrote: (answer) =>
+        Bun.deepEquals((answer as JobRecord | null)?.data, { patched: true }),
+    },
+    {
+      operation: "buryJob",
+      state: "waiting",
+      seed: seedWaiting,
+      call: async (driver, q, id) =>
+        await driver.buryJob(
+          q,
+          id,
+          { name: "Error", message: "buried" },
+          { retention: false, keepStacktraces: 1 },
+          Date.now(),
+        ),
+      nothing: null,
+      wrote: (answer) => (answer as JobRecord | null)?.state === "dead",
+    },
+    {
+      operation: "addJobLog",
+      state: "waiting",
+      seed: seedWaiting,
+      call: async (driver, q, id) => await driver.addJobLog(q, id, "line", 0),
+      nothing: 0,
+      wrote: (answer) => answer === 1,
+    },
+    {
+      operation: "retryJob",
+      state: "dead",
+      seed: async (driver, q, id) => {
+        await driver.addJob(
+          q,
+          makeJob({ id, state: "dead", finishedOn: Date.now() }),
+        );
+      },
+      call: async (driver, q, id) =>
+        await driver.retryJob(q, id, true, Date.now()),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+    {
+      operation: "promoteJob",
+      state: "delayed",
+      seed: async (driver, q, id) => {
+        await driver.addJob(
+          q,
+          makeJob({ id, state: "delayed", runAt: Date.now() + 60_000 }),
+        );
+      },
+      call: async (driver, q, id) => await driver.promoteJob(q, id, Date.now()),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+    {
+      // A job not running takes the full hold.
+      operation: "updateProgress",
+      state: "waiting",
+      seed: seedWaiting,
+      call: async (driver, q, id) => await driver.updateProgress(q, id, 50),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+    {
+      // A running job's progress is its own loop: a rename of the marker.
+      operation: "updateProgress",
+      state: "active",
+      seed: async (driver, q, id) => {
+        await seedWaiting(driver, q, id);
+        const claimed = await driver.claimJob(q, {
+          workerId: "held-writes",
+          token: "held-writes-token",
+          lockMs: 60_000,
+          now: Date.now(),
+        });
+        expect(claimed?.id).toBe(id);
+      },
+      call: async (driver, q, id) => await driver.updateProgress(q, id, 50),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+    {
+      operation: "rewritePendingOptions",
+      state: "waiting",
+      seed: seedWaiting,
+      call: async (driver, q) =>
+        await driver.rewritePendingOptions(q, {
+          states: ["waiting"],
+          values: { attempts: 5 },
+          cursor: null,
+          limit: 10,
+          includeUnmarked: true,
+          dryRun: false,
+          now: Date.now(),
+        }),
+      // Gone between the listing and the write: counted `moved`.
+      nothing: expect.objectContaining({ examined: 1, moved: 1 }),
+      wrote: (answer) =>
+        (answer as { rewritten?: number } | null)?.rewritten === 1,
+    },
+    {
+      // A parent its child's failure buried, retried.
+      operation: "requeueParent",
+      state: "dead",
+      seed: async (driver, q, id) => {
+        await driver.addJob(
+          q,
+          makeJob({
+            id,
+            state: "dead",
+            finishedOn: Date.now(),
+            flow: {
+              parent: null,
+              children: [{ queue: q.queue, id: `${id}-child` }],
+              pending: 1,
+              values: {},
+              failures: {},
+              recorded: false,
+            },
+          }),
+        );
+      },
+      call: async (driver, q, id) =>
+        await driver.requeueParent(q, id, Date.now()),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+    {
+      // A child whose outcome its parent now holds.
+      operation: "markChildRecorded",
+      state: "dead",
+      seed: async (driver, q, id) => {
+        await driver.addJob(
+          q,
+          makeJob({
+            id,
+            state: "dead",
+            finishedOn: Date.now(),
+            flow: {
+              parent: { queue: q.queue, id: `${id}-parent` },
+              children: [],
+              pending: 0,
+              values: {},
+              failures: {},
+              recorded: false,
+            },
+          }),
+        );
+      },
+      call: async (driver, q, id) =>
+        await driver.markChildRecorded(q, id, false, Date.now()),
+      nothing: false,
+      wrote: (answer) => answer === true,
+    },
+  ];
+
+  /** A connected driver in a fresh directory, and a queue of its own. */
+  async function heldWriteDriver(label: string) {
+    const tmp = await makeTmpDir(`bun-jobs-held-${label}`);
+    cleanups.push(tmp.cleanup);
+    const driver = new FileDriver({ root: tmp.path });
+    await driver.connect();
+    return {
+      root: tmp.path,
+      driver,
+      q: { ns: testNamespace(), queue: label.toLowerCase() },
+    };
+  }
+
+  /**
+   * A marker nobody hands on is a write that did not happen, not a job that is
+   * not there. Each of these answered its "nothing" — `null`, `0`, `false`, or
+   * a rewrite counted `moved` — which the contract reserves for a job that has
+   * gone or is in a state the write refuses, so a caller read a live job as
+   * finished with. Each now says what happened, as `removeJob` does.
+   */
+  for (const write of heldWrites) {
+    it.concurrent(
+      `${write.operation} (${write.state}) throws, rather than answering nothing, when the marker stays held`,
+      async () => {
+        const label = `${write.operation}-${write.state}-stuck`;
+        const { root, driver, q } = await heldWriteDriver(label);
+        await write.seed(driver, q, "stuck");
+        const before = await driver.getJob(q, "stuck");
+
+        // Stamped ahead, so healing never takes it for a dead holder's.
+        const hold = await holdMarker(
+          root,
+          q,
+          "stuck",
+          Date.now() + 60_000,
+          write.state,
+        );
+
+        const error = await write.call(driver, q, "stuck").then(
+          (answer) => answer,
+          (caught: unknown) => caught,
+        );
+
+        expect(error).toBeInstanceOf(DriverError);
+        expect(error).toMatchObject({
+          operation: write.operation,
+          context: { id: "stuck" },
+        });
+        expect(String((error as Error).cause)).toContain("stayed held");
+        // Nothing was written.
+        expect(await driver.getJob(q, "stuck")).toEqual(before);
+
+        // Once the holder lets go, the same write goes through.
+        await hold.release();
+        expect(write.wrote(await write.call(driver, q, "stuck"))).toBe(true);
+
+        await driver.purge(q.ns);
+        await driver.close();
+      },
+      30_000,
+    );
+
+    /**
+     * The contract's "nothing" still means what it says: a job its holder
+     * removed while the write waited for the marker is gone, and is answered
+     * as gone — through the same wait the stuck marker exhausts.
+     */
+    it.concurrent(
+      `${write.operation} (${write.state}) still answers nothing for a job removed while it waited`,
+      async () => {
+        const label = `${write.operation}-${write.state}-gone`;
+        const { root, driver, q } = await heldWriteDriver(label);
+        await write.seed(driver, q, "gone");
+
+        const hold = await holdMarker(
+          root,
+          q,
+          "gone",
+          Date.now() + 60_000,
+          write.state,
+        );
+        const removal = (async () => {
+          await Bun.sleep(300);
+          await hold.remove();
+        })();
+
+        const answer = await write.call(driver, q, "gone");
+        await removal;
+
+        expect(answer).toEqual(write.nothing);
+        expect(await driver.getJob(q, "gone")).toBeNull();
+
+        await driver.purge(q.ns);
+        await driver.close();
+      },
+      30_000,
+    );
+  }
+
+  /**
+   * A running job's progress has a loop of its own rather than `#holdJob`, and
+   * it waited a flat two seconds. A marker that keeps changing hands is busy,
+   * not stuck, so the report waits it out as every other write does.
+   */
+  it("reports progress through a marker that keeps changing hands", async () => {
+    const { root, driver, q } = await heldWriteDriver("progress-busy");
+    await seedWaiting(driver, q, "busy");
+    await driver.claimJob(q, {
+      workerId: "held-writes",
+      token: "held-writes-token",
+      lockMs: 60_000,
+      now: Date.now(),
+    });
+
+    const hold = await holdMarker(root, q, "busy", Date.now(), "active");
+    let handing = true;
+    const handOver = (async () => {
+      const until = Date.now() + 5_000;
+      while (Date.now() < until) {
+        await Bun.sleep(200);
+        await hold.restamp(Date.now());
+      }
+      handing = false;
+      await hold.release();
+    })();
+
+    const reported = await driver.updateProgress(q, "busy", 75);
+    await handOver;
+
+    expect(handing).toBe(false);
+    expect(reported).toBe(true);
+    expect((await driver.getJob(q, "busy"))?.progress).toBe(75);
 
     await driver.purge(q.ns);
     await driver.close();
