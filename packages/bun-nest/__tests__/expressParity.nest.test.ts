@@ -86,3 +86,32 @@ describe("bun-nest: Express parity", () => {
     expect(await (await adapter.fetch("/late")).text()).toBe("after-late-next");
   });
 });
+
+@Controller()
+class StuckController {
+  @Get("stuck")
+  async stuck() {
+    await new Promise(() => {});
+  }
+}
+
+@Module({ controllers: [StuckController] })
+class StuckModule {}
+
+describe("bun-nest: the request timeout covers a stuck controller", () => {
+  it("answers a controller that never settles once the timeout passes", async () => {
+    const timed = new BunHttpAdapter(100);
+    const stuckApp = await NestFactory.create(StuckModule, timed, {
+      logger: false,
+    });
+    await stuckApp.init();
+    try {
+      const started = performance.now();
+      const response = await timed.fetch("/stuck");
+      expect(response.status).toBe(500);
+      expect(performance.now() - started).toBeLessThan(2_000);
+    } finally {
+      await stuckApp.close();
+    }
+  });
+});

@@ -18,6 +18,7 @@ import { BunResponse } from "./BunResponse";
 // creates a private one on first use. `BunRouter.ts` imports this module only
 // as a type, so there is no runtime cycle.
 import {
+  awaitPipelineOrStream,
   BunRouter as BunRouterClass,
   isRequestTimeoutError,
 } from "./BunRouter";
@@ -724,14 +725,27 @@ export class BunWebSocket<
         let routeUsed: matchedRoute | true | undefined;
 
         try {
-          routeUsed = await this.router.handle({
-            requestHost: req.host,
-            requestMethod: req.method,
-            response: res,
-            request: req,
-            requestUrl: req.originalUrl,
-            timeout: createOpts?.responseTimeout ?? 0,
-          });
+          const routed = await awaitPipelineOrStream(
+            this.router.handle({
+              requestHost: req.host,
+              requestMethod: req.method,
+              response: res,
+              request: req,
+              requestUrl: req.originalUrl,
+              timeout: createOpts?.responseTimeout ?? 0,
+            }),
+            res,
+            (error) => {
+              this.router.logger.error(
+                "Error after a streamed response started",
+                { error },
+              );
+            },
+          );
+          if (routed.stream !== undefined) {
+            return routed.stream;
+          }
+          routeUsed = routed.routeUsed;
         } catch (e) {
           // A pipeline parked past the response timeout goes to the `error`
           // callback as a timed-out response wait always did.

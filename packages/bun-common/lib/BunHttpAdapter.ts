@@ -28,6 +28,7 @@ import { EventEmitter } from "node:events";
 import { STATUS_CODES } from "node:http";
 import { isPromise } from "node:util/types";
 import {
+  awaitPipelineOrStream,
   BunRouter,
   FETCH_STUB_SERVER,
   isRequestTimeoutError,
@@ -448,9 +449,16 @@ export class BunHttpAdapter<
       throw carryRequest(error, req);
     }
     if (routed instanceof Promise) {
-      return routed.then(
-        (routeUsed) =>
-          this.#respond(req, res, routeUsed, nativeRequest, server),
+      // A stream's response goes out as soon as it opens (the pipeline keeps
+      // running behind it); anything else once the pipeline is done.
+      return awaitPipelineOrStream(routed, res, (error) => {
+        this.logger.error("Error after a streamed response started", {
+          error,
+        });
+      }).then(
+        (outcome) =>
+          outcome.stream ??
+          this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
         (error: unknown) => {
           throw carryRequest(error, req);
         },
