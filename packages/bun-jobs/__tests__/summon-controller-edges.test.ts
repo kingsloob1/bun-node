@@ -291,7 +291,12 @@ for (const backend of BACKENDS) {
             await new Promise(() => {});
           },
           summonTimeout: 100,
-          bootBudget: 500,
+          // Room for the checks below, not a wait: `until` is stamped as the
+          // first check starts, and on a loaded machine that check alone took
+          // 540–830 ms on MongoDB (its round trips around the 100 ms timeout),
+          // so at 500 the attempt was already lost when the second check read
+          // it. The wait for `until` below is on the attempt's own `until`.
+          bootBudget: 2_000,
           backoff: { initial: 60_000 },
         });
         summon.on("summon", (event) => events.push(event));
@@ -300,17 +305,22 @@ for (const backend of BACKENDS) {
         expect(await summon.check()).toMatchObject({ outcome: "failed" });
         let status = await summon.status();
         expect(status.pending).toHaveLength(1);
+        const until = status.pending[0]!.until;
         expect(status.failures).toBe(0);
         expect(status.backoffUntil).toBeUndefined();
         expect(status.last).toMatchObject({
           outcome: "failed",
           detail: "timeout",
         });
-        // It may still start: no second attempt while it is on its way.
+        // It may still start: no second attempt while it is on its way. (The
+        // first assertion says the check is still inside the budget, so a
+        // machine too slow for it fails here, saying so.)
+        expect(Date.now()).toBeLessThan(until);
         expect(await summon.check()).toMatchObject({ reason: "pending" });
         expect(calls).toBe(1);
 
-        await Bun.sleep(550);
+        // Its `until` passes with nothing registered: lost.
+        await Bun.sleep(Math.max(0, until - Date.now()) + 20);
         expect(await summon.check()).toMatchObject({ reason: "backoff" });
         status = await summon.status();
         expect(status.pending).toHaveLength(0);

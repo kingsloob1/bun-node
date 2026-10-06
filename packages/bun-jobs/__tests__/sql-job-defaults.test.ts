@@ -703,7 +703,10 @@ for (const engine of ENGINES) {
             }
           }
         }
-      });
+        // Its own timeout: writing the 20,000 rows is nearly all of it, 1.3-1.5 s
+        // idle on Postgres (0.7-1.1 s on MySQL and MariaDB) and past bun's 5 s
+        // default under a loaded parallel run. It checks a plan, not time.
+      }, 30_000);
     },
   );
 }

@@ -221,31 +221,87 @@ describe("redaction: the default rules", () => {
     expect(R).toBe("[REDACTED]");
   });
 
-  it("runs in linear time on hostile megabyte lines", () => {
-    for (const line of [
-      "a".repeat(1_000_000),
-      "token".repeat(200_000),
-      "token=".repeat(160_000),
-      "token: ".repeat(140_000),
-      "password ".repeat(110_000),
-      `password="`.repeat(100_000),
-      '"'.repeat(1_000_000),
-      "x=".repeat(500_000),
-      "http://".repeat(140_000),
-      "eyJ".repeat(330_000),
-      // A URL scheme may hold letters and dots: each word boundary in the run
-      // used to start a scheme scanned to the run's end (about 2 s for
-      // `"a.".repeat(50_000)`, so minutes here).
-      "a.".repeat(500_000),
-      "eyJ.".repeat(250_000),
-      `${"a.".repeat(400_000)}://u:p@h`,
-    ]) {
-      const begun = performance.now();
-      redact(line);
-      // Generous: a quadratic backtrack here takes minutes, not a second.
-      expect(performance.now() - begun).toBeLessThan(1_500);
+  it("runs in linear time on hostile long lines", () => {
+    // What this guards is the shape, not a figure: an absolute budget per line
+    // failed under a loaded parallel run (1.7 s against 1.5 s) on a line that
+    // takes milliseconds idle. So each input is timed at `n` and `4n` bytes:
+    // linear work grows about 4x, a quadratic backtrack about 16x. The old
+    // URL-password expression took 0.19 s at 32 KB of `"a."` and 3.1 s at
+    // 128 KB, so minutes at a megabyte; these sizes keep that failure to
+    // seconds.
+    //
+    // Timed in this thread's CPU time, not on the wall clock: waiting for a
+    // core is not work. Measured at load 15-35, four copies at once, linear
+    // lines read anywhere from 0.8x to 20x on the wall clock, and 3.7x to 7.2x
+    // in CPU time.
+    const SMALL = 32_768;
+    const fill = (unit: string, bytes: number) =>
+      unit.repeat(Math.ceil(bytes / unit.length));
+    const inputs: ((bytes: number) => string)[] = [
+      ...[
+        "a",
+        "token",
+        "token=",
+        "token: ",
+        "password ",
+        `password="`,
+        '"',
+        "x=",
+        "http://",
+        "eyJ",
+        // A URL scheme may hold letters and dots: each word boundary in the
+        // run used to start a scheme scanned to the run's end (about 2 s for
+        // `"a.".repeat(50_000)`).
+        "a.",
+        "eyJ.",
+      ].map((unit) => (bytes: number) => fill(unit, bytes)),
+      (bytes) => `${fill("a.", bytes)}://u:p@h`,
+    ];
+
+    /** Mean CPU milliseconds of one `redact(line)` over `times` calls. */
+    const timeOf = (line: string, times: number) => {
+      const begun = process.threadCpuUsage();
+      for (let call = 0; call < times; call++) {
+        redact(line);
+      }
+      const { user, system } = process.threadCpuUsage(begun);
+      return (user + system) / 1_000 / times;
+    };
+    /**
+     * The least of up to three timings: the floor is the work, anything above
+     * it is the machine. One is enough once a line is slow on its own.
+     */
+    const floorOf = (line: string, times: number) => {
+      let least = Infinity;
+      let spent = 0;
+      for (let sample = 0; sample < 3 && spent < 1_000; sample++) {
+        const took = timeOf(line, times);
+        expect(took, "a hang guard only; the ratio is the check").toBeLessThan(
+          20_000,
+        );
+        least = Math.min(least, took);
+        spent += took * times;
+      }
+      return least;
+    };
+
+    for (const make of inputs) {
+      const small = make(SMALL);
+      const large = make(SMALL * 4);
+      // Enough calls per timing that a sub-millisecond line is not all timer.
+      let times = 1;
+      while (times < 1_024 && timeOf(small, times) * times < 10) {
+        times *= 2;
+      }
+      // A collection can land on the large line's timings alone, so a ratio
+      // over the bound is measured again before it counts.
+      let ratio = Infinity;
+      for (let attempt = 0; attempt < 3 && ratio >= 8; attempt++) {
+        ratio = floorOf(large, times) / floorOf(small, times);
+      }
+      expect(ratio, `4x the bytes of ${small.slice(0, 16)}…`).toBeLessThan(8);
     }
-  });
+  }, 60_000);
 
   it("finds a URL's password exactly where the expression it replaced did", () => {
     // The expression the linear scan replaced, and its rewrite. A replacement

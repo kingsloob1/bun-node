@@ -528,7 +528,11 @@ describe("file driver: removal and writes racing a patch", () => {
 
     await driver.purge(q.ns);
     await driver.close();
-  });
+    // Its own timeout: 25 rounds of 61 racing file operations took 1.2-1.6 s
+    // idle and 5-10 s on a machine at load 20-35, past bun's 5 s default. The
+    // rounds slowed evenly (none stalled) and every assertion held, so this
+    // checks what survives a race, not how fast it runs.
+  }, 60_000);
 
   /**
    * `updateProgress` was a read and a write with nothing around it, which was

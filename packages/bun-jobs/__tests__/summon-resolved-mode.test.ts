@@ -216,7 +216,12 @@ describe("the resolved summon mode", () => {
     const jobs = context();
     const worker = jobs.worker("work", async () => {}, {
       summon: { id: "a-7" },
-      reportInterval: 50,
+      // Not 50 like its neighbours: a record lives three intervals, and this
+      // test reads it again through the API after building the harness, a
+      // synchronous 100–260 ms on a loaded machine. At 50 the record lapsed
+      // in between and the route answered 404. The first report is written
+      // at `run()` either way, so `recordOf` waits no longer for it.
+      reportInterval: 5_000,
     });
     const run = runSummoned(worker, IN_TEST);
     await recordOf(jobs, worker.id);
