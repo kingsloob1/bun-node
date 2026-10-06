@@ -24,6 +24,7 @@ import {
   SummonController,
 } from "../lib/index";
 import { unitLines, unitSpawner } from "../lib/provider/testing/spawn";
+import { expandSummonOption } from "../lib/summon/groups";
 import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 
@@ -178,7 +179,7 @@ describe("summon groups: the expansion", () => {
     ]);
   });
 
-  it("applies an override to its queue alone, shallowly over the group's policy", async () => {
+  it("applies an override to its queue alone", async () => {
     const { summoner, calls } = recorder();
     const jobs = context(sqliteDriver(), [
       {
@@ -336,17 +337,219 @@ describe("summon groups: refusals", () => {
   it("closes the controllers a group started when a later queue is refused", () => {
     const close = spyOn(SummonController.prototype, "close");
     try {
-      // `bad name` passes the expansion and fails the controller's own
-      // check, after `emails` and `images` were built.
-      expect(
-        refusal([
-          { queues: ["emails", "images", "bad name"], summoner, ...QUIET },
-        ]),
-      ).toBeInstanceOf(ConfigError);
+      // A hand-built summoner passes the expansion and fails the
+      // controller's own check, after `emails` and `images` were built.
+      const error = refusal([
+        {
+          queues: ["emails", "images", "reports"],
+          summoner,
+          ...QUIET,
+          overrides: {
+            reports: { summoner: {} as unknown as SummonPolicy["summoner"] },
+          },
+        },
+      ]);
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toContain("summoner");
       expect(close).toHaveBeenCalledTimes(2);
     } finally {
       close.mockRestore();
     }
+  });
+});
+
+describe("summon groups: more refusals, and null", () => {
+  const { summoner } = recorder();
+
+  it("refuses an invalid queue name in a group, saying where, before any controller is built", () => {
+    const close = spyOn(SummonController.prototype, "close");
+    try {
+      const error = refusal([
+        { queues: ["emails", "images", "bad name"], summoner, ...QUIET },
+      ]);
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toContain('"bad name"');
+      expect((error as ConfigError).message).toContain("summon[0].queues[2]");
+      // Refused while expanding: nothing was built, so nothing was closed.
+      expect(close).toHaveBeenCalledTimes(0);
+    } finally {
+      close.mockRestore();
+    }
+  });
+
+  it("refuses an invalid queue name in a record, saying where", () => {
+    const error = refusal([{ "bad/name": { summoner, ...QUIET } }]);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).message).toContain("summon[0].bad/name");
+  });
+
+  it("accepts summon: null like undefined, building nothing", () => {
+    const jobs = context(sqliteDriver(), null as unknown as SummonOption);
+    expect(() => jobs.summonController("emails")).toThrow(
+      /No summon policy for queue "emails"/,
+    );
+    expect(expandSummonOption(null).size).toBe(0);
+  });
+
+  it("refuses a record entry that is not a policy, naming the queue", () => {
+    for (const option of [
+      [{ emails: undefined }],
+      { emails: undefined },
+    ] as unknown as SummonOption[]) {
+      const error = refusal(option);
+      expect(error).toBeInstanceOf(ConfigError);
+      // At expansion, not later as "No summon policy for queue".
+      expect((error as ConfigError).message).toContain(
+        'must be a summon policy ({ summoner, … }) for queue "emails"',
+      );
+      expect((error as ConfigError).context).toMatchObject({
+        queue: "emails",
+      });
+    }
+  });
+
+  it("refuses a hole in the array, naming its index", () => {
+    // Index 1 is never assigned: a hole, not an `undefined`.
+    const sparse: unknown[] = [{ queues: ["emails"], summoner }];
+    sparse[2] = { reports: { summoner } };
+    const error = refusal(sparse as unknown as SummonOption);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).message).toContain("summon[1] is a hole");
+  });
+});
+
+describe("summon groups: how an override merges", () => {
+  const { summoner } = recorder();
+
+  /** The policy `queue` expands to under `option`. */
+  function expanded(option: SummonOption, queue: string): SummonPolicy {
+    return expandSummonOption(option).get(queue)!;
+  }
+
+  it("merges plain-object fields one level deep, the override's over the group's", () => {
+    const option: SummonOption = [
+      {
+        queues: ["emails", "images"],
+        summoner,
+        budget: { perHour: 20, perDay: 100 },
+        triggers: { onAdd: false, poll: 500 },
+        overrides: {
+          images: { budget: { perHour: 5 }, triggers: { poll: false } },
+        },
+      },
+    ];
+    expect(expanded(option, "images")).toMatchObject({
+      budget: { perHour: 5, perDay: 100 },
+      triggers: { onAdd: false, poll: false },
+    });
+    expect(expanded(option, "images").budget).toEqual({
+      perHour: 5,
+      perDay: 100,
+    });
+    expect(expanded(option, "images").triggers).toEqual({
+      onAdd: false,
+      poll: false,
+    });
+    // The other queue keeps the group's, untouched.
+    expect(expanded(option, "emails").budget).toEqual({
+      perHour: 20,
+      perDay: 100,
+    });
+    expect(expanded(option, "emails").triggers).toEqual({
+      onAdd: false,
+      poll: 500,
+    });
+  });
+
+  it("merges backoff, circuit, scaleDown and env the same way", () => {
+    const policy = expanded(
+      [
+        {
+          queues: ["a"],
+          summoner,
+          backoff: { initial: 1_000, max: 9_000 },
+          circuit: { failures: 3, resetAfter: 60_000 },
+          scaleDown: { after: 5_000 },
+          env: { REGION: "eu", TIER: "small" },
+          overrides: {
+            a: {
+              backoff: { max: 2_000 },
+              circuit: { failures: 1 },
+              scaleDown: {},
+              env: { TIER: "large" },
+            },
+          },
+        },
+      ],
+      "a",
+    );
+    expect(policy.backoff).toEqual({ initial: 1_000, max: 2_000 });
+    expect(policy.circuit).toEqual({ failures: 1, resetAfter: 60_000 });
+    expect(policy.scaleDown).toEqual({ after: 5_000 });
+    expect(policy.env).toEqual({ REGION: "eu", TIER: "large" });
+  });
+
+  it("replaces anything that is not a plain object on both sides: the summoner, numbers, false", () => {
+    const other = defineSummoner({ kind: "other", invoke: async () => {} });
+    const group = defineSummoner({ kind: "group", invoke: async () => {} });
+    const policy = expanded(
+      [
+        {
+          queues: ["a"],
+          summoner: group,
+          maxWorkers: 4,
+          triggers: { poll: 500, debounce: 10 },
+          overrides: {
+            a: { summoner: other, maxWorkers: 1, triggers: { poll: false } },
+          },
+        },
+      ],
+      "a",
+    );
+    expect(policy.summoner).toBe(other);
+    expect(policy.maxWorkers).toBe(1);
+    expect(policy.triggers).toEqual({ poll: false, debounce: 10 });
+  });
+
+  it("lets a budget: false override turn the budget off, and an override's budget over a group's false turn it on", () => {
+    // `budget: false` is the failed-budget PR's spelling; the rule is the
+    // general one — `false` is not a plain object, so it replaces.
+    const off = expanded(
+      [
+        {
+          queues: ["a"],
+          summoner,
+          budget: { perHour: 20, perDay: 100 },
+          overrides: { a: { budget: false } },
+        },
+      ] as unknown as SummonOption,
+      "a",
+    );
+    expect((off as { budget?: unknown }).budget).toBe(false);
+
+    const on = expanded(
+      [
+        {
+          queues: ["a"],
+          summoner,
+          budget: false,
+          overrides: { a: { budget: { perHour: 5 } } },
+        },
+      ] as unknown as SummonOption,
+      "a",
+    );
+    expect(on.budget).toEqual({ perHour: 5 });
+  });
+
+  it("finds an override only by own key", () => {
+    const overrides = Object.create({
+      a: { maxWorkers: 9 },
+    }) as Record<string, Partial<SummonPolicy>>;
+    const policy = expanded(
+      [{ queues: ["a"], summoner, maxWorkers: 2, overrides }],
+      "a",
+    );
+    expect(policy.maxWorkers).toBe(2);
   });
 });
 

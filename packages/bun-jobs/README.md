@@ -3346,12 +3346,21 @@ Examples:
 builds one ordinary `SummonController` per queue, exactly as if each queue had
 its own key, so each queue keeps its own marker, `maxWorkers`, backoff,
 circuit and **budget** (`perHour: 20` on a group of two queues allows 20 an
-hour for each). `overrides` changes a queue's policy within its group,
-shallowly: an override's `budget` replaces the group's whole `budget`.
-Records may sit in the same array. A queue named twice anywhere in the
-option, a group with no queues, or an override for a queue the group does not
-name is a `ConfigError` at construction, before any controller starts; each
-queue's controller is still `jobs.summonController(queue)`.
+hour for each). Records may sit in the same array. A queue named twice
+anywhere in the option, a group with no queues, an invalid queue name, or an
+override for a queue the group does not name is a `ConfigError` at
+construction that says where, before any controller starts; each queue's
+controller is still `jobs.summonController(queue)`.
+
+`overrides` changes a queue's policy within its group, **one level deep**:
+where the group and the override both hold an object — `triggers`,
+`backoff`, `circuit`, `budget`, `scaleDown`, `env` — the override's fields go
+over the group's and the rest are kept; anything else (`summoner`, a
+function, a number, `false`) replaces the group's value whole. So with the
+group below, `images` gets `{ perHour: 5, perDay: 100 }` and
+`{ onAdd: false, poll: false }`. A `budget: false` override turns the budget
+off, and a `budget` object over a group's `budget: false` turns it on with
+only the override's values (the controller's defaults for the rest).
 
 ```ts
 export const jobs = new BunJobs({
@@ -3362,8 +3371,15 @@ export const jobs = new BunJobs({
       queues: ["emails", "images"],
       summoner,
       jobsPerWorker: 10,
-      budget: { perHour: 20 },
-      overrides: { images: { jobsPerWorker: 2 } },
+      budget: { perHour: 20, perDay: 100 },
+      triggers: { onAdd: false, poll: 500 },
+      overrides: {
+        images: {
+          jobsPerWorker: 2,
+          budget: { perHour: 5 },
+          triggers: { poll: false },
+        },
+      },
     },
     { reports: { summoner: other } },
   ],

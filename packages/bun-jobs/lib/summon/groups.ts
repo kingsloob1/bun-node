@@ -1,5 +1,6 @@
 import type { SummonPolicy } from "./types";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 
 /**
  * One summon policy written once for several queues: an entry of the array
@@ -28,10 +29,17 @@ export interface SummonGroup extends SummonPolicy {
   queues: readonly string[];
   /**
    * Per-queue changes to the group's policy, keyed by a queue in `queues`
-   * (any other key is a `ConfigError`). **Shallow**: an override's field
-   * replaces the group's whole field, so `{ budget: { perHour: 5 } }` drops a
-   * `perDay` the group set. Unset by default: every queue gets the policy
-   * as written.
+   * (any other key is a `ConfigError`). Unset by default: every queue gets
+   * the policy as written.
+   *
+   * **Merged one level deep.** Where both the group and the override hold a
+   * plain object — `triggers`, `backoff`, `circuit`, `budget`, `scaleDown`,
+   * `env` — the override's fields go over the group's, so
+   * `{ budget: { perHour: 5 } }` keeps a `perDay` the group set. Anything
+   * else replaces the group's value whole: `summoner`, a function, a number,
+   * `false`. So a `budget: false` override turns the budget off, and a
+   * `budget` object over a group's `budget: false` turns it on with only the
+   * override's values.
    */
   overrides?: Readonly<Record<string, Partial<SummonPolicy>>>;
 }
@@ -47,14 +55,13 @@ type SummonPolicyRecord = { readonly [queue: string]: SummonPolicy } & {
 };
 
 /**
- * Summon policies keyed by queue name: the record form. Never has a
- * `length`, so an array is never read as one — which keeps a typo in the
- * array form reported against the group it is in.
+ * Summon policies keyed by queue name: the record form. An array or a `Map`
+ * is never one: their own members are not policies.
  */
-type SummonPolicyMap = { readonly [queue: string]: SummonPolicy } & {
-  /** Reserved: an array is the {@link SummonGroup} form. */
-  readonly length?: never;
-};
+interface SummonPolicyMap {
+  /** A queue's policy, by the queue's name. */
+  readonly [queue: string]: SummonPolicy;
+}
 
 /**
  * What `BunJobsOptions.summon` takes: summon policies keyed by queue name, or
@@ -77,26 +84,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Whether `value` is a plain object: an object literal, or `Object.create(null)`. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * A group's policy with one queue's override over it, one level deep: a
+ * field where both hold a plain object is merged, field by field; any other
+ * field of the override replaces the group's. `summoner` always replaces —
+ * a `Summoner` may be a plain object, and half of one is not a summoner.
+ */
+function withOverride(
+  /** The group's policy, without `queues` and `overrides`. */
+  policy: Readonly<Record<string, unknown>>,
+  /** The queue's override, if any. */
+  override: Readonly<Record<string, unknown>> | undefined,
+): SummonPolicy {
+  const merged: Record<string, unknown> = { ...policy };
+  for (const [key, value] of Object.entries(override ?? {})) {
+    const base = merged[key];
+    merged[key] =
+      key !== "summoner" && isPlainObject(base) && isPlainObject(value)
+        ? { ...base, ...value }
+        : value;
+  }
+  return merged as unknown as SummonPolicy;
+}
+
 /**
  * The `summon` option expanded to one policy per queue, in the order written.
  * Internal: `BunJobs` builds a controller from each entry.
  *
- * @throws {ConfigError} for an entry that is neither a group nor a record, a
- *   group with no queues (or a `queues` that is not an array of names), an
- *   override for a queue its group does not name, or a queue named twice
- *   anywhere in the option.
+ * @throws {ConfigError} for an entry that is neither a group nor a record (a
+ *   hole in the array included), a record entry that is not a policy, a group
+ *   with no queues (or a `queues` that is not an array of names), an override
+ *   for a queue its group does not name, a queue name that is not a valid
+ *   segment, or a queue named twice anywhere in the option. Each names where.
  */
 export function expandSummonOption(
-  /** The option as given; `undefined` expands to nothing. */
-  option: SummonOption | undefined,
+  /** The option as given; `undefined` and `null` expand to nothing. */
+  option: SummonOption | null | undefined,
 ): Map<string, SummonPolicy> {
   const policies = new Map<string, SummonPolicy>();
-  if (option === undefined) {
+  if (option === undefined || option === null) {
     return policies;
   }
 
-  /** Adds one queue's policy, refusing a second policy for it. */
+  /** Adds one queue's policy, refusing a bad name or a second policy for it. */
   const add = (queue: string, policy: SummonPolicy, where: string): void => {
+    assertSegment(queue, `summon queue "${queue}" (at ${where})`);
     if (policies.has(queue)) {
       throw new ConfigError(
         `Queue "${queue}" is named twice in the summon option (again at ${where}): each queue takes one policy`,
@@ -109,7 +150,13 @@ export function expandSummonOption(
   /** Adds every queue of a record entry. */
   const addRecord = (record: Record<string, unknown>, where: string): void => {
     for (const [queue, policy] of Object.entries(record)) {
-      add(queue, policy as SummonPolicy, `${where}.${queue}`);
+      if (!isRecord(policy)) {
+        throw new ConfigError(
+          `${where}.${queue} must be a summon policy ({ summoner, … }) for queue "${queue}"`,
+          { queue, at: `${where}.${queue}` },
+        );
+      }
+      add(queue, policy as unknown as SummonPolicy, `${where}.${queue}`);
     }
   };
 
@@ -124,8 +171,16 @@ export function expandSummonOption(
     return policies;
   }
 
-  option.forEach((entry: unknown, index) => {
+  const entries: readonly unknown[] = option;
+  for (let index = 0; index < entries.length; index++) {
     const where = `summon[${index}]`;
+    if (!(index in entries)) {
+      throw new ConfigError(
+        `${where} is a hole in the array: each entry is a group ({ queues, summoner, … }) or a record of policies by queue`,
+        { at: where },
+      );
+    }
+    const entry = entries[index];
     if (!isRecord(entry)) {
       throw new ConfigError(
         `${where} must be a group ({ queues, summoner, … }) or a record of policies by queue`,
@@ -134,7 +189,7 @@ export function expandSummonOption(
     }
     if (!Object.hasOwn(entry, "queues")) {
       addRecord(entry, where);
-      return;
+      continue;
     }
 
     const { queues, overrides, ...policy } = entry as unknown as SummonGroup;
@@ -166,13 +221,17 @@ export function expandSummonOption(
         );
       }
     }
-    for (const queue of queues) {
+    queues.forEach((queue, position) => {
+      const override =
+        overrides !== undefined && Object.hasOwn(overrides, queue)
+          ? overrides[queue]
+          : undefined;
       add(
         queue,
-        { ...policy, ...overrides?.[queue] } as SummonPolicy,
-        `${where}.queues`,
+        withOverride(policy, override),
+        `${where}.queues[${position}]`,
       );
-    }
-  });
+    });
+  }
   return policies;
 }

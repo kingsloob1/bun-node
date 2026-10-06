@@ -36,6 +36,17 @@ declare const built: Record<string, SummonPolicy>;
 export const recordVariable: SummonOption = built;
 // @ts-expect-error a typo in a record's policy is still caught.
 export const recordTypo: SummonOption = { emails: { summoner, maxWorker: 2 } };
+// Any queue name compiles in the record form, as on develop: `length`
+// included, and `queues` too.
+export const lengthQueue: SummonOption = {
+  length: { summoner },
+  queues: { summoner },
+};
+// An array of policies is not a record, nor is a Map.
+// @ts-expect-error an array's members are not policies by queue.
+export const policyArray: SummonOption = [{ summoner }] as SummonPolicy[];
+// @ts-expect-error a Map's members are not policies by queue.
+export const policyMap: SummonOption = new Map([["emails", { summoner }]]);
 
 /* --- the group form --------------------------------------------------------- */
 

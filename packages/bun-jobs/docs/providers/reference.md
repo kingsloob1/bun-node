@@ -725,7 +725,10 @@ has an example.
 - `queues`: the queues it summons for: at least one, each named once across
   the whole option, or a `ConfigError` naming the queue.
 - `overrides`: optional. Per-queue `Partial<SummonPolicy>` changes, keyed by
-  a queue in `queues`, merged shallowly over the group's policy.
+  a queue in `queues`, merged one level deep over the group's policy: a
+  field where both hold a plain object (`triggers`, `backoff`, `circuit`,
+  `budget`, `scaleDown`, `env`) is merged field by field; anything else,
+  `summoner` always, replaces the group's value.
 
 ### `SummonOption`
 
