@@ -809,11 +809,17 @@ export class BunRequest<
    */
   public rawBody?: Buffer = undefined;
   /**
-   * Init promises, lazily allocated only when body/cookie/query parsing runs:
+   * Init tasks, lazily allocated only when body/cookie/query parsing runs:
    * the parsed query, the body parse (settled, no value) and the cookies.
+   * A task that finished while the request was built is held as its value;
+   * only a body that is still being read is a promise.
    */
-  #initPromises: Promise<TQuery | BunRequestCookies | void>[] | undefined =
-    undefined;
+  #initTasks:
+    | (TQuery | BunRequestCookies | Promise<void> | undefined)[]
+    | undefined = undefined;
+
+  /** Whether any of {@link #initTasks} is still a pending promise. */
+  #initPending = false;
 
   /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
@@ -1144,29 +1150,37 @@ export class BunRequest<
     // honouring the deprecated `allowedContentTypes` as a fallback.
     this.normalizeParseBodyOptions();
 
+    // The query and cookie parses are synchronous, and so is the body's when
+    // the request has none: each finishes here, and only a body still to be
+    // read leaves a promise for `init()` to await.
     if (this.options?.parseQuery) {
-      (this.#initPromises ??= []).push(
-        Promise.resolve(this.parseQuery(this.options.parseQueryOpts)),
+      (this.#initTasks ??= []).push(
+        this.parseQuery(this.options.parseQueryOpts),
       );
     }
 
     if (this.options?.parseBody) {
-      (this.#initPromises ??= []).push(
-        Promise.resolve(this.parseBody()).then(
-          () => {
-            // The body has been fully received — release the `data`/`end`
-            // events to any listener (or arm them for a later subscriber).
-            this.#bodyState = "ended";
-            this.#flushBodyEvents();
-          },
-          // `unknown`: a rejection reason is whatever the parse threw.
-          (error: unknown) => {
-            this.#bodyState = "errored";
-            this.#bodyError = error;
-            this.#flushBodyEvents();
-          },
-        ),
-      );
+      if (this.#finishAbsentBody()) {
+        (this.#initTasks ??= []).push(undefined);
+      } else {
+        this.#initPending = true;
+        (this.#initTasks ??= []).push(
+          Promise.resolve(this.parseBody()).then(
+            () => {
+              // The body has been fully received — release the `data`/`end`
+              // events to any listener (or arm them for a later subscriber).
+              this.#bodyState = "ended";
+              this.#flushBodyEvents();
+            },
+            // `unknown`: a rejection reason is whatever the parse threw.
+            (error: unknown) => {
+              this.#bodyState = "errored";
+              this.#bodyError = error;
+              this.#flushBodyEvents();
+            },
+          ),
+        );
+      }
     }
 
     // cookie-parser sets `req.secret = secrets[0]` on every request.
@@ -1176,15 +1190,46 @@ export class BunRequest<
     }
 
     if (this.options?.parseCookies) {
-      (this.#initPromises ??= []).push(
-        Promise.resolve(
-          this.parseCookies({
-            forceUpdateRequest: true,
-            secret: cookieSecrets.length ? cookieSecrets : undefined,
-          }),
-        ),
+      (this.#initTasks ??= []).push(
+        this.parseCookies({
+          forceUpdateRequest: true,
+          secret: cookieSecrets.length ? cookieSecrets : undefined,
+        }),
       );
     }
+  }
+
+  /**
+   * Finishes the body parse synchronously for a request that has **no body**
+   * — no stream, no `Content-Length` and no `Transfer-Encoding` (as `type-is`
+   * defines a body) — and returns `true`; returns `false`, changing nothing,
+   * for any other request.
+   *
+   * It reaches exactly the state the full parse reaches for such a request
+   * (an empty buffer, `req.body` `undefined`, the body counted as parsed and
+   * ended), without reading a stream that does not exist: the read, the
+   * encoding check and the size checks all have nothing to act on. That read
+   * was the largest single cost of a bodiless GET.
+   */
+  #finishAbsentBody(): boolean {
+    // The headers first: reading `request.body` of a request that has one
+    // would build its stream for nothing.
+    const request = this.request;
+    if (
+      this.headersObj.get("content-length") !== null ||
+      this.headersObj.get("transfer-encoding") !== null ||
+      this._buffer !== undefined ||
+      this.#bodyParsed ||
+      request.body !== null ||
+      request.bodyUsed
+    ) {
+      return false;
+    }
+    this._buffer = Buffer.alloc(0);
+    this.#bodyParsed = true;
+    this._body = undefined;
+    this.#bodyState = "ended";
+    return true;
   }
 
   /** The `cookieSecret` option as a list of non-empty secrets; `[]` when unset. */
@@ -1214,8 +1259,7 @@ export class BunRequest<
     ...args: ConstructorParameters<typeof BunRequest>
   ): BunRequest | Promise<BunRequest> {
     const req = new BunRequest(...args);
-    const pending = req.#initPromises;
-    if (pending === undefined || pending.length === 0) {
+    if (!req.#initPending) {
       return req;
     }
     return req.ready().then(() => req);
@@ -1229,10 +1273,10 @@ export class BunRequest<
     PromiseSettledResult<TQuery | BunRequestCookies | void>[]
   > {
     // Avoid the `Promise.allSettled` allocation when nothing was scheduled.
-    if (!this.#initPromises || this.#initPromises.length === 0) {
+    if (!this.#initTasks || this.#initTasks.length === 0) {
       return [];
     }
-    return await Promise.allSettled(this.#initPromises);
+    return await Promise.allSettled(this.#initTasks);
   }
 
   /* ---------------------------------------------------------------- *
