@@ -74,8 +74,18 @@ export interface RemoteOutcomeLog {
   line: string;
 }
 
-/** One attempt of one job, named by both halves. */
+/** A queue, named as `Job.queue` names it: the namespace and the queue's name. */
+export interface RemoteQueueRef {
+  /** The namespace the queue lives in: an invoke's `namespace`. */
+  ns: string;
+  /** The queue's name: an invoke's `queue`. */
+  queue: string;
+}
+
+/** One attempt of one job, named by its queue, its id and its attempt. */
 export interface RemoteJobRef {
+  /** The job's queue: a job id is unique only within one, so two queues may hold the same id and attempt. */
+  queue: RemoteQueueRef;
   /** The job's id. */
   job: string;
   /** The attempt, 1-based (`attemptsMade` at the claim). */
@@ -213,6 +223,8 @@ export type RemoteRetainedOutcome =
 
 /** What an executor knows of one attempt, in a `status-result`. */
 export interface RemoteAttemptStatus {
+  /** The job's queue: a job id is unique only within one, so two queues may hold the same id and attempt. */
+  queue: RemoteQueueRef;
   /** The job's id. */
   job: string;
   /** The attempt asked about. */
@@ -232,6 +244,8 @@ export type RemoteCancelReason =
 
 /** One attempt's answer in a `cancel-result`. */
 export interface RemoteCancelledJob {
+  /** The job's queue: a job id is unique only within one, so two queues may hold the same id and attempt. */
+  queue: RemoteQueueRef;
   /** The job's id. */
   job: string;
   /** The attempt asked about. */
