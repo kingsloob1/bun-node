@@ -1,6 +1,8 @@
 import type { QueryKey } from "@tanstack/react-query";
 import type { ApiClient } from "./client";
 import type {
+  AddFlowBody,
+  AddFlowResultDto,
   AddJobBody,
   AddJobResultDto,
   ChildrenDto,
@@ -251,6 +253,37 @@ export function addJob(
       body,
     },
   );
+}
+
+/**
+ * `POST /queues/:queue/flows`: a job and the jobs it waits on, each in its
+ * own `queue` or its parent's. 201 when added; 200 `added: false` (with
+ * `children: []`) when the top `jobId` already existed, nothing being added
+ * below it.
+ */
+export function addFlow(
+  api: ApiClient,
+  queue: string,
+  body: AddFlowBody,
+): Promise<AddFlowResultDto> {
+  return api.request<AddFlowResultDto>(
+    "POST",
+    `/queues/${segment(queue)}/flows`,
+    { body },
+  );
+}
+
+/**
+ * What adding a flow invalidates: each queue it wrote to (its jobs lists,
+ * counts and detail, all under `["queue", q]`), every queue list, and the
+ * overview.
+ */
+export function flowInvalidation(queues: Iterable<string>): QueryKey[] {
+  return [
+    ...[...new Set(queues)].map((queue) => queryKeys.queue(queue)),
+    queryKeys.queuesAll,
+    queryKeys.overviewAll,
+  ];
 }
 
 /** `GET /definitions`. */

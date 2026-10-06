@@ -1,6 +1,7 @@
 import type { AddJobBody, AddJobOptions } from "../../api/types";
 import type { JsonEditorState } from "../../components/jsonParse";
 import { MAX_JOB_ID_LENGTH } from "@kingsleyweb/bun-jobs/api/contract";
+import { jsonEditorState } from "../../components/jsonParse";
 
 /** The add-job form's shape, its client-side checks, and its request body. */
 
@@ -29,6 +30,33 @@ export interface AddJobForm {
   backoff: number | undefined;
   /** Processor timeout, ms; `undefined` for the default. */
   timeout: number | undefined;
+}
+
+/** What {@link emptyAddForm} starts from. */
+export interface EmptyAddFormOptions {
+  /** `MetaDto.addableNames`: the only name is preselected; `null` (any name) or several leave it empty. */
+  addableNames: readonly string[] | null;
+  /** `limits.maxJobDataBytes`, metered by the data editor. Defaults to no limit. */
+  maxBytes?: number;
+}
+
+/** A fresh form: data `{}`, every option at its default, the name preselected when only one is addable. */
+export function emptyAddForm({
+  addableNames,
+  maxBytes,
+}: EmptyAddFormOptions): AddJobForm {
+  return {
+    name: addableNames?.length === 1 ? addableNames[0]! : "",
+    data: jsonEditorState("{}", { maxBytes }),
+    jobId: "",
+    priority: undefined,
+    timing: "now",
+    delay: undefined,
+    runAt: undefined,
+    attempts: undefined,
+    backoff: undefined,
+    timeout: undefined,
+  };
 }
 
 /** A field of {@link AddJobForm} that can carry an error, keyed as the API's field errors are. */

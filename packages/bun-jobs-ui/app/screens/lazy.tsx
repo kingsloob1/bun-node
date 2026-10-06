@@ -1,4 +1,5 @@
 import type { ComponentType, LazyExoticComponent } from "react";
+import type { AddFlowDialogProps } from "./job/AddFlowDialog";
 import type { AddedByStateGroupProps } from "./overview/added";
 import type { SectionProps } from "./overview/sections";
 import type { JobDefaultsPanelProps } from "./queues/panels/jobDefaults";
@@ -163,4 +164,15 @@ export const AddedByStateGroup = onDemand<AddedByStateGroupProps>(
 export const JobDefaultsPanel = onDemand<JobDefaultsPanelProps>(
   async () => (await import("./queues/panels/jobDefaults")).JobDefaultsPanel,
   "Loading the job defaults",
+);
+
+/**
+ * The queue screen's Add flow dialog, on demand: a chunk of its own, fetched
+ * the first time the dialog is opened (the queue screen renders it only
+ * while open), so neither the entry nor the queue and job screens' chunk
+ * grows by it. `./job` re-exports this wrapper, not the dialog itself.
+ */
+export const AddFlowDialog = onDemand<AddFlowDialogProps>(
+  async () => (await import("./job/AddFlowDialog")).AddFlowDialog,
+  "Loading the add-flow form",
 );

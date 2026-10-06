@@ -19,7 +19,7 @@ import { useUrlTab } from "../../hooks/useUrlTab";
 import { useCan, useMeta, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
-import { AddJobDialog } from "../job";
+import { AddFlowDialog, AddJobDialog } from "../job";
 import { JobDefaultsPanel } from "../lazy";
 import { canAddJobs, useCanMutate } from "./gating";
 import { JobsTable } from "./JobsTable";
@@ -51,7 +51,7 @@ export function QueueScreen() {
   const meta = useMeta();
   const canRead = useCan("queues.read");
   const canListJobs = useCan("jobs.list");
-  const canAdd = useCan("jobs.add");
+  const canAddAction = useCan("jobs.add");
   const canRepeatables = useCan("repeatables.list");
   const settled = usePermissionsSettled();
   const detailInterval = useRefreshInterval("detail");
@@ -65,6 +65,8 @@ export function QueueScreen() {
   });
   const [adding, setAdding] = useState(false);
   const addButtonRef = useRef<HTMLButtonElement>(null);
+  const [addingFlow, setAddingFlow] = useState(false);
+  const addFlowButtonRef = useRef<HTMLButtonElement>(null);
 
   const detail = useQuery({
     queryKey: queueKeys.detail(queue),
@@ -92,6 +94,10 @@ export function QueueScreen() {
     );
   }
 
+  const canAdd = canAddJobs(meta, canAddAction);
+  // `features.addFlow` is the backend's capability alone: `jobs.add` (opt-in,
+  // pruned under readOnly) is what `canAddJobs` checks.
+  const canAddFlow = canAdd && meta.features.addFlow;
   const total = counts.data
     ? JOB_STATES.reduce((sum, state) => sum + counts.data[state], 0)
     : detail.data?.total;
@@ -127,7 +133,7 @@ export function QueueScreen() {
           )}
         </div>
         <div className="queue-toolbar">
-          {canAddJobs(meta, canAdd) && (
+          {canAdd && (
             <Button
               ref={addButtonRef}
               variant="primary"
@@ -136,19 +142,37 @@ export function QueueScreen() {
               Add job
             </Button>
           )}
+          {canAddFlow && (
+            <Button
+              ref={addFlowButtonRef}
+              onClick={() => setAddingFlow(true)}
+            >
+              Add flow
+            </Button>
+          )}
           <QueueActions
             queue={queue}
             paused={detail.data?.paused}
           />
         </div>
       </header>
-      {canAddJobs(meta, canAdd) && (
+      {canAdd && (
         <AddJobDialog
           queue={queue}
           open={adding}
           onClose={() => {
             setAdding(false);
             addButtonRef.current?.focus();
+          }}
+        />
+      )}
+      {canAddFlow && addingFlow && (
+        <AddFlowDialog
+          queue={queue}
+          open
+          onClose={() => {
+            setAddingFlow(false);
+            addFlowButtonRef.current?.focus();
           }}
         />
       )}
