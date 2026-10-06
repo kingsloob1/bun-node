@@ -423,7 +423,43 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `etag` | `boolean` | `false` | Adds an `ETag` to every response (opt-in: hashing every body has a cost). |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
-| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. |
+| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
+
+A request whose body is absent and whose layers all finish synchronously
+reaches `Bun.serve` as a `Response`, with no promise in between; anything
+asynchronous (a body to read, an async handler, a `next()` called later)
+makes it a promise from that point. The semantics are the same either way.
+
+#### Native static routes (`server.routes`)
+
+`server.routes` is passed to `Bun.serve`, so a constant answer can be served
+by Bun itself, ahead of the router, at the speed of a bare `Bun.serve`:
+
+```ts
+const adapter = new BunHttpAdapter(0, {
+  server: {
+    routes: {
+      "/health": new Response("ok", { headers: { "content-type": "text/plain" } }),
+      "/favicon.ico": Bun.file("./public/favicon.ico"),
+    },
+  },
+});
+await adapter.listen(3000);
+```
+
+It is opt-in only, because such a route is not an Express route:
+
+- it answers **every method**, `POST` and `DELETE` included;
+- it runs **no middleware**: no `use()`, CORS, auth, logging or error
+  handlers. A router route on the same path never runs;
+- Bun adds an `ETag` to a static `Response`;
+- only Bun's path syntax applies (`:param` and `*`), matched on the raw
+  request target, case-sensitively and with a strict trailing slash.
+
+Use it for health checks, `robots.txt` and other public constants. Anything
+that needs the pipeline belongs on the router. A function route also works,
+but runs outside the adapter in the same way, so the router is the better
+place for it.
 
 Example tours:
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts),
