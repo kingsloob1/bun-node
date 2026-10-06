@@ -523,6 +523,14 @@ JSON request *has* a body for body-parser, which parses it to `{}`
 go is reading them twice (the constructor's `#finishAbsentBody` and the
 parser middleware's own check).
 
+**Done (`28804fa`)**, by a trade the user accepted: a request without a body
+stream finishes as bodiless without reading a header, and the first read of
+its body's state checks `Content-Length`/`Transfer-Encoding` and parses a
+declared empty body as before. The one observable change is that such a body
+with a refused `Content-Encoding` is routed and refused when read rather than
+before routing. `wrk`: bun-common static +27%, param +14%, routes-1000 +8%,
+param-random +13%, async +12% (`results/wrk-lazy-headers.md`).
+
 ### 4.2 Routing without a per-path cache
 
 **What.** Elysia: static dictionary + radix tree, nothing cached (§3.3).
