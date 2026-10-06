@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, it } from "bun:test";
 import { signCookie } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
