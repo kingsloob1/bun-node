@@ -47,6 +47,7 @@ Its evidence is under
 14. [Bun behaviour worth reporting upstream](#14-bun-behaviour-worth-reporting-upstream)
 15. [Evidence index](#15-evidence-index)
 16. [Server-sent events (SSE) helpers](#16-server-sent-events-sse-helpers)
+17. [Implementation and results](#17-implementation-and-results)
 
 ### How to read the markings
 
@@ -1431,3 +1432,85 @@ run from the repository root after `bun install` (and `bun install` in
 | `h2.ts` | SSE over HTTP/2 (needs `openssl`, `curl`) | `h2.txt` |
 | `cors.ts` | `cors()` headers on a stream | `cors.txt` |
 | `lib.ts` | the timestamped event reader the probes share | — |
+
+## 17. Implementation and results
+
+Added 2026-10-03, on branch `claude/wizardly-feynman-c72eec` from `develop` at
+`5bbce9e`, Bun **1.4.2** (`744846f8`). The recommendation of §1 was followed:
+**no native routing**. Every recommended PR landed, plus pipeline work beyond
+PR-4's scope and a set of Express 5 fixes the work surfaced.
+
+### 17.1 What landed
+
+| PR | Change | Where |
+|---|---|---|
+| PR-1 | Candidate index on a route-cache miss (bucketed by first segment, `routes()` indices kept) and O(1) FIFO eviction (`FifoCache`); a seeded differential (800 tables × 60 paths) with a negative control | `lib/utils/routeIndex.ts`, `BunRouter.getMatchedLayers` |
+| PR-2 | A bodiless request finishes its parse while it is built; `BunRequest.init` returns it without a promise. PR-2a's spike: 6 cases, 0 differences against develop (`spikes/parse-fast-path.ts`) | `BunRequest` constructor |
+| PR-3 | `server.routes` documented as an opt-in native static route (every method, no middleware, ETag) | both READMEs |
+| PR-4 | Empty query/cookie parses skipped; synchronous `dispatch()` and `serveNativeRequest()` so a synchronous request reaches `Bun.serve` as a `Response`; a synchronous `fetch` hook; a shorter cache key; a miss built in one loop; text/JSON sent without a `Headers` object when none was set | `BunRouter`, both adapters, `BunResponse` |
+
+Also new, at the user's request: `requestParsing()` (per-route query, cookie
+and body parsing) with the `deferBody` request option; `parseQuery` and
+`parseCookies` as `boolean | options` (the separate options deprecated); and
+a per-response `ETag` override (`res.etag`, `res.setEtag(option)`).
+
+Pre-existing bugs fixed on the way, each with a test that fails on develop:
+a `next()` called from a callback hung the request; `HEAD` on a GET route was
+a 404; an error after the response started was dropped and a stream left
+open; after `res.write()` a `next()` was ignored; the request timeout missed
+an async handler that never settles; a stream's headers waited for its
+handler; per-request option setters changed every later request (a raised
+body cap leaked); `fetch("//")` threw; `cookieParseOptions.decode` was
+ignored; bun-nest's gateway tests failed under `--randomize`. Two Bun
+behaviours found are documented with reproductions in
+[`docs/bun-bugs/`](../bun-bugs/README.md).
+
+### 17.2 Benchmark
+
+`bench/wrk-run.ts` (wrk, as `oha` was unavailable): one fresh server process
+per cell, pinned to CPU 0, `wrk -t2 -c64` on CPUs 1–3, 2 s warm-up, 5 s
+measured, 3 interleaved rounds, median req/s. A 4-vCPU Xeon @ 2.80 GHz, idle
+(load 0.35 at the start); slower than §9's machine, so compare rows, not
+tables. `develop` runs from a worktree at `5bbce9e` in the same run
+(`base/…`). Every cell answered 2xx. Raw runs: `results/wrk/final.json`.
+
+| req/s (median) | static | param | middleware | routes-1000 | param-random | json |
+|---|---:|---:|---:|---:|---:|---:|
+| raw `Bun.serve` routes | 59,018 | 55,362 | 55,973 | 23,509 | 26,622 | 30,205 |
+| Elysia 1.4.28 | 43,250 | 31,681 | 23,087 | 22,639 | 24,762 | 24,116 |
+| Elysia 2.0.0-beta.21 | 49,434 | 47,538 | 34,262 | 46,475 | 46,818 | 25,130 |
+| bun-common, develop | 18,179 | 19,955 | 18,533 | 17,798 | 7,064 | 14,288 |
+| **bun-common, this branch** | **30,511** | **30,549** | **27,971** | **29,440** | **23,538** | **14,979** |
+| bun-nest, develop | 14,596 | 14,671 | 14,265 | 13,982 | 5,951 | 10,798 |
+| **bun-nest, this branch** | **17,627** | **16,901** | **15,799** | **16,797** | **13,609** | **10,632** |
+
+Reading it [M]:
+
+- **bun-common: +51% to +68% on every cached scenario, 3.3× on
+  param-random.** `json` is unchanged (+5%, inside the spread): it is body
+  parsing, which none of this work touched.
+- **bun-nest: +11% to +21% cached, 2.3× on param-random**; `json` −2%,
+  inside its spread (10.3k–11.3k across rounds). Nest's own layers (guards,
+  pipes, interceptors, the async router proxy) dominate its request.
+- **Against Elysia 1.4**, bun-common now leads on `middleware` (+21%),
+  `routes-1000` (+30%) and is close on `param` (−4%); it trails on `static`
+  (−29%), `param-random` (−5%) and `json` (−38%).
+- **Against Elysia 2**, bun-common reaches 62% of its throughput on
+  `static`, 64% on `param` and `routes-1000`, 82% on `middleware`, 50% on
+  `param-random` and 60% on `json`. Elysia 2 no longer pays Bun's sibling
+  scan (its `routes-1000` matches its `static`), so the routing-table
+  advantage bun-common held over Elysia 1.4 is gone.
+
+### 17.3 Where the rest of the gap is
+
+A served request on this branch spends (in process, `bench/breakdown.ts`):
+about 0.3 µs on `new Request`, 0.9 µs building `BunRequest`/`BunResponse`
+(the Express-shaped wrappers, most of it field initialisers), 0.2 µs on a
+cache hit, and the `Response` itself (0.36 µs bare; about 0.9 µs whenever a
+header is set). Elysia 2 builds no wrapper objects and a `Response` with no
+headers for a plain return. The remaining gap is the cost of the Express
+contract — a mutable `req`/`res` every middleware may read — not routing;
+§4.9's reasons for keeping the wrappers stand. The next measured steps, if
+the gap must close further: lazy initialisation of `BunRequest`'s rarely-read
+fields, and a body-parse fast path for small JSON (the `json` column).
+
