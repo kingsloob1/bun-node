@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { parse as parseQueryString } from "picoquery";
 import {
+  DEFAULT_PARSE_QUERY_OPTS,
   DiskStorage,
   getBusBoyConfig,
   handleMultipartAnyFiles,
@@ -21,6 +23,7 @@ import {
   handleMultipartSingleFile,
   handleNoFiles,
   MemoryStorage,
+  merge,
   transformUploadOptions,
   UPLOAD_ERROR_MESSAGES,
   UploadError,
@@ -875,5 +878,222 @@ describe("multipart: BunRequest field parsing", () => {
     const req = await multipartRequest((fd) => fd.append("a", "1"));
     const first = await req.getMultiParts({});
     expect(await req.getMultiParts({ limits: {} })).toBe(first);
+  });
+});
+
+/**
+ * The default inflation as it was before plain names skipped the query
+ * parser: every name through it, every string value tried as JSON. The fast
+ * path must answer exactly this.
+ */
+function referenceInflate(name: string, value: string) {
+  const parsed = parseQueryString(
+    `${name}=${encodeURIComponent(value)}`,
+    DEFAULT_PARSE_QUERY_OPTS,
+  ) as Record<string, unknown>;
+  for (const key of Object.keys(parsed)) {
+    const raw = parsed[key];
+    if (typeof raw === "string") {
+      try {
+        parsed[key] = JSON.parse(raw.replace(/\\\\"/g, `"`));
+      } catch {}
+    }
+  }
+  let fields: Record<string, unknown> = {};
+  for (const key of Object.keys(parsed)) {
+    fields = merge(fields, { [key]: parsed[key] });
+  }
+  return fields;
+}
+
+/** The paths the reference file inflation records for a file on `name`. */
+function referenceFilePaths(name: string) {
+  const paths: string[] = [];
+  const walk = (obj: unknown, at: string) => {
+    if (obj === "x") {
+      paths.push(at);
+    } else if (obj && typeof obj === "object") {
+      for (const key of Object.keys(obj)) {
+        walk((obj as Record<string, unknown>)[key], `${at}[${key}]`);
+      }
+    }
+  };
+  walk(parseQueryString(`${name}=x`, DEFAULT_PARSE_QUERY_OPTS), "");
+  return paths;
+}
+
+const INFLATE_NAMES = [
+  "a",
+  "field",
+  "Field_1",
+  "x-y",
+  "0",
+  "12",
+  "constructor",
+  "toString",
+  "_",
+  "-",
+  "a.b",
+  "a[b]",
+  "a[]",
+  "a+b",
+  "a%20b",
+  "a b",
+  "é",
+  "a]",
+];
+
+const INFLATE_VALUES = [
+  "value",
+  "",
+  "7",
+  "-1.5",
+  "1e5",
+  "+1",
+  "0x10",
+  "true",
+  "false",
+  "null",
+  "t",
+  "nope{",
+  '{"a":1}',
+  "[1,2]",
+  " 7",
+  '\t{"a":1}',
+  "\n[1]",
+  '"quoted"',
+  '\\\\"hi\\\\"',
+  '{\\\\"a\\\\":1}',
+  " x",
+  "\u00A07",
+  "a&b=c%d+e",
+];
+
+/**
+ * A request whose multipart body is written by hand, so a value reaches busboy
+ * byte for byte (`FormData` turns `\n` into `\r\n`).
+ */
+function rawMultipartRequest(name: string, value: string, filename?: string) {
+  const boundary = "InflateBoundary";
+  const disposition = filename
+    ? `form-data; name="${name}"; filename="${filename}"`
+    : `form-data; name="${name}"`;
+  const body = `--${boundary}\r\nContent-Disposition: ${disposition}\r\n${filename ? "Content-Type: text/plain\r\n" : ""}\r\n${value}\r\n--${boundary}--\r\n`;
+  return makeRequest({
+    method: "POST",
+    body,
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+  });
+}
+
+/** Part names as UTF-8, as browsers send them (busboy's default is latin1). */
+const UTF8_NAMES: MultiPartOptions = { defParamCharset: "utf8" };
+
+describe("multipart: default inflation", () => {
+  it("answers what the query parser and JSON.parse did, for every name and value", async () => {
+    const mismatches: string[] = [];
+    for (const name of INFLATE_NAMES) {
+      for (const value of INFLATE_VALUES) {
+        const req = await rawMultipartRequest(name, value);
+        const { fields } = await req.getMultiParts(UTF8_NAMES);
+        const expected = referenceInflate(name, value);
+        if (!Bun.deepEquals(fields, expected, true)) {
+          mismatches.push(
+            `${JSON.stringify(name)}=${JSON.stringify(value)}: ${JSON.stringify(fields)} expected ${JSON.stringify(expected)}`,
+          );
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("records a file under the paths the query parser gives its name", async () => {
+    for (const name of INFLATE_NAMES) {
+      const req = await rawMultipartRequest(name, "f", "f.txt");
+      const { files } = await req.getMultiParts(UTF8_NAMES);
+      expect([...files.values()].flatMap((paths) => [...paths])).toEqual(
+        referenceFilePaths(name),
+      );
+    }
+  });
+
+  it("parses a plain-named JSON value, and keeps a plain one as sent", async () => {
+    const req = await multipartRequest((fd) => {
+      fd.append("count", "7");
+      fd.append("meta", '{"a":[1,2]}');
+      fd.append("name", "Ada");
+      fd.append("flag", "true");
+    });
+    const { body } = await handleNoFiles(req, transformUploadOptions());
+    expect(body).toEqual({
+      count: 7,
+      meta: { a: [1, 2] },
+      name: "Ada",
+      flag: true,
+    });
+  });
+});
+
+describe("multipart: detectFileType", () => {
+  /** A file whose bytes open like a JPEG, sent as `application/octet-stream`. */
+  const jpeg = () =>
+    new File(
+      [new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46])],
+      "photo.bin",
+      { type: "application/octet-stream" },
+    );
+
+  it("sniffs each file's type by default", async () => {
+    const req = await multipartRequest((fd) => fd.append("file", jpeg()));
+    const { file } = await handleMultipartSingleFile(
+      req,
+      "file",
+      transformUploadOptions(),
+    );
+    expect(file?.validatedMimeType).toEqual({
+      ext: "jpg",
+      mime: "image/jpeg",
+    });
+    expect(file?.mimetype).toBe("application/octet-stream");
+  });
+
+  it("false skips sniffing at the request's own parse; the client's type is kept", async () => {
+    const fd = new FormData();
+    fd.append("file", jpeg());
+    const req = await makeRequest({
+      method: "POST",
+      body: fd,
+      options: {
+        parseBody: {
+          contentTypes: { multipart: { opts: { detectFileType: false } } },
+        },
+      },
+    });
+    const { file } = await handleMultipartSingleFile(
+      req,
+      "file",
+      transformUploadOptions(),
+    );
+    expect(file?.validatedMimeType).toBeUndefined();
+    expect(file?.mimetype).toBe("application/octet-stream");
+    expect(file?.size).toBe(10);
+  });
+
+  it("is a parse key: a call that turns it off re-parses, one that repeats it does not", async () => {
+    const req = await multipartRequest((fd) => fd.append("file", jpeg()));
+    const sniffed = await req.getMultiParts({});
+    expect([...sniffed.files.keys()][0].validatedMimeType?.ext).toBe("jpg");
+
+    const unsniffed = await req.getMultiParts({ detectFileType: false });
+    expect(unsniffed).not.toBe(sniffed);
+    expect([...unsniffed.files.keys()][0].validatedMimeType).toBeUndefined();
+    expect(await req.getMultiParts({ detectFileType: false })).toBe(unsniffed);
+  });
+
+  it("is never handed to busboy", async () => {
+    const config = getBusBoyConfig(
+      transformUploadOptions({ storageType: "memory", detectFileType: false }),
+    );
+    expect(config).toEqual({ detectFileType: false } as never);
   });
 });

@@ -3,6 +3,11 @@
  * allowlist/config, size caps, and the DDoS-hardening 413 path.
  */
 import type { App } from "supertest/types";
+import type {
+  ParseBodyConfig,
+  ParseBodyContentTypeConfig,
+  ParseBodyContentTypesMap,
+} from "../lib/BunRequest";
 import { Buffer } from "node:buffer";
 import {
   brotliCompressSync,
@@ -262,6 +267,73 @@ describe("parseBody: dynamic options", () => {
     expect(req.setParseBodyOptions({ contentTypes: "all" })).toBe(req);
     await req.parseBody(true);
     expect(req.body).toEqual({ a: 1 });
+  });
+});
+
+/** `isParserAllowed`, private on `BunRequest`, read for an assertion. */
+function allows(req: BunRequest, kind: string): boolean {
+  return (
+    req as unknown as { isParserAllowed: (kind: string) => boolean }
+  ).isParserAllowed(kind);
+}
+
+describe("parseBody: one object form, shared by every request it reaches", () => {
+  const post = (
+    parseBody: ParseBodyConfig,
+    body = JSON.stringify({ a: 1 }),
+    type = "application/json",
+  ) =>
+    makeRequest({
+      method: "POST",
+      headers: { "Content-Type": type },
+      body,
+      options: { parseBody },
+    });
+
+  it("a request tailoring its config leaves the next request's alone", async () => {
+    const parseBody: ParseBodyConfig = { contentTypes: { json: true } };
+    const first = await post(parseBody);
+    expect(first.body).toEqual({ a: 1 });
+    // A per-request setter writes to this request's own copy…
+    first.setAllowedContentTypes(["text"]);
+    expect(allows(first, "json")).toBe(false);
+    // …never to the config the next request shares.
+    const second = await post(parseBody);
+    expect(allows(second, "json")).toBe(true);
+    expect(second.body).toEqual({ a: 1 });
+  });
+
+  it("a mutated options object is resolved again", async () => {
+    const contentTypes: ParseBodyContentTypesMap = { json: true };
+    const parseBody: ParseBodyConfig = { contentTypes };
+    expect((await post(parseBody)).body).toEqual({ a: 1 });
+
+    // A kind turned off: its body stays the raw bytes.
+    contentTypes.json = false;
+    expect(Buffer.isBuffer((await post(parseBody)).body)).toBe(true);
+
+    // A cap lowered on the same object.
+    contentTypes.json = true;
+    parseBody.maxContentLength = 4;
+    expect((await post(parseBody)).isPayloadTooLarge).toBe(true);
+
+    // A per-kind entry's field changed in place.
+    parseBody.maxContentLength = undefined;
+    const entry: ParseBodyContentTypeConfig<"json"> = { maxContentLength: 4 };
+    contentTypes.json = entry;
+    expect((await post(parseBody)).isPayloadTooLarge).toBe(true);
+    entry.maxContentLength = 1024;
+    const req = await post(parseBody);
+    expect(req.isPayloadTooLarge).toBe(false);
+    expect(req.body).toEqual({ a: 1 });
+  });
+
+  it("an invalid option still throws on every request, never cached", async () => {
+    const parseBody = { maxContentLength: "lots" } as ParseBodyConfig;
+    for (let i = 0; i < 2; i++) {
+      const req = await makeRequest({ options: { parseBody } });
+      expect(() => req.setParseBodyOptions(parseBody)).toThrow(RangeError);
+    }
   });
 });
 

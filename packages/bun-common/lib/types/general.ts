@@ -35,6 +35,15 @@ export type MultiPartOptions = BusboyConfig & {
    */
   inflate?: boolean;
   /**
+   * Whether each file's leading bytes are sniffed with `file-type` to fill
+   * its `validatedMimeType`. Defaults to `true`. Sniffing is the costliest
+   * step of a small upload (7 µs for a JPEG, 35 µs for bytes it does not
+   * recognise, more for some PNGs), so `false` skips it when nothing reads
+   * `validatedMimeType`; it is then `undefined`. The client's own
+   * `mimeType` is kept either way.
+   */
+  detectFileType?: boolean;
+  /**
    * Custom inflation for a field value. The result is client-supplied data,
    * parsed but not validated — hence `unknown` values.
    */

@@ -24,6 +24,7 @@ import {
   UploadedFile,
 } from "@kingsleyweb/bun-nest";
 import "reflect-metadata";
+import { BENCH_PARSE_BODY } from "./parse-body";
 
 class Bump implements NestMiddleware {
   use(req: { hits?: number }, _res: unknown, next: () => void) {
@@ -129,9 +130,12 @@ function routeController(i: number) {
 
 export async function startNest(
   routes: number,
-  // No body bytes kept, as the other frameworks keep none.
+  // No body bytes kept and no upload sniffed, as the other frameworks do
+  // neither.
   makeAdapter: () => BunHttpAdapter = () =>
-    new BunHttpAdapter(undefined, { request: { retainBuffer: false } }),
+    new BunHttpAdapter(undefined, {
+      request: { retainBuffer: false, parseBody: BENCH_PARSE_BODY },
+    }),
 ): Promise<number> {
   const controllers: unknown[] = [BenchController];
   for (let i = 0; i < routes; i++) controllers.push(routeController(i));

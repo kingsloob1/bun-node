@@ -26,7 +26,6 @@ import type {
 } from "./utils/native";
 import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
-import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
 import { fileTypeFromBuffer } from "file-type";
@@ -576,6 +575,47 @@ export type SetCookieHeaderName<N extends string> =
   Lowercase<N> extends "set-cookie" ? N : never;
 
 /**
+ * A multipart field name the query-string parser answers unchanged, as a
+ * single top-level key: no nesting (`[`, `]`, `.`) and nothing to decode
+ * (`%`, `+`). The default inflators skip the parser for these.
+ */
+const PLAIN_FIELD_NAME = /^[\w-]+$/;
+
+/**
+ * What the query-string parser answers for a {@link PLAIN_FIELD_NAME}: a
+ * null-prototype object holding `name` alone.
+ */
+function plainFieldRecord(
+  name: string,
+  value: unknown,
+): Record<string, unknown> {
+  const record: Record<string, unknown> = Object.create(null);
+  record[name] = value;
+  return record;
+}
+
+/** The first non-whitespace character of a JSON text, as `JSON.parse` reads it. */
+const JSON_START = /^[\t\n\r ]*[[{"\-\dtfn]/;
+
+/**
+ * A field value as the default inflator keeps it: parsed as JSON (after
+ * unescaping `\\"`) when it is JSON, otherwise the string as sent.
+ */
+function inflateJsonValue(value: string): unknown {
+  const text = value.includes('\\\\"') ? value.replace(/\\\\"/g, `"`) : value;
+  // Only these can open a JSON text; anything else would throw, and a throw
+  // per plain value was the costliest part of inflating a form.
+  if (!JSON_START.test(text)) {
+    return value;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * The busboy / inflation options {@link BunRequest.getMultiParts} compares to
  * decide whether a per-call options object changes the parse.
  */
@@ -590,6 +630,7 @@ const MULTIPART_PARSE_KEYS = [
   "inflate",
   "fieldInflator",
   "fileInflator",
+  "detectFileType",
 ] as const;
 
 /**
@@ -977,6 +1018,18 @@ const DEFAULT_BODY_CONFIG: BodyParseConfig = Object.freeze(
 );
 
 /**
+ * Resolved object-form `parseBody` configs, keyed by the options object (see
+ * {@link resolveBodyParseConfig}). Each is frozen and shared, so a request
+ * tailoring its own copies it first (`#writableBodyConfig`). Resolving one
+ * built a `Set`, a `Map` and the decoding options per request: about 0.7 µs,
+ * and 3–4% of a served JSON request's time.
+ */
+const RESOLVED_BODY_CONFIGS = new WeakMap<
+  ParseBodyConfig,
+  { snapshot: unknown[]; config: BodyParseConfig }
+>();
+
+/**
  * Resolves `parseBody` (with the deprecated `allowedContentTypes` fallback,
  * which `contentTypes` overrides) into a {@link BodyParseConfig}: the
  * allowlist, the caps and the decoding options.
@@ -992,6 +1045,107 @@ function resolveBodyParseConfig(
   if ((!isObject(parseBody) || isArray(parseBody)) && !isArray(legacyAllowed)) {
     return DEFAULT_BODY_CONFIG;
   }
+  // The object form, as an adapter's options carry it to every request: one
+  // resolved config per object, shared while the object reads the same.
+  if (isObject(parseBody) && !isArray(parseBody) && !isArray(legacyAllowed)) {
+    const config = parseBody as ParseBodyConfig;
+    const cached = RESOLVED_BODY_CONFIGS.get(config);
+    if (cached && matchesSnapshot(cached.snapshot, config)) {
+      return cached.config;
+    }
+    const resolved = Object.freeze(buildBodyParseConfig(config, undefined));
+    RESOLVED_BODY_CONFIGS.set(config, {
+      snapshot: parseBodySnapshot(config),
+      config: resolved,
+    });
+    return resolved;
+  }
+  return buildBodyParseConfig(parseBody, legacyAllowed);
+}
+
+/**
+ * Every value of an object-form `parseBody` that its resolved config is
+ * built from, in a fixed order: a cached config is reused only while these
+ * are all the same (`Object.is`), so a mutated options object is resolved
+ * again. Nested objects (`opts`, `encodings`, dictionaries) are compared by
+ * identity, as the resolved config holds them by reference.
+ */
+function parseBodySnapshot(config: ParseBodyConfig): unknown[] {
+  const contentTypes = config.contentTypes;
+  const snapshot: unknown[] = [
+    config.maxContentLength,
+    config.inflate,
+    config.decompressionFastPathLimit,
+    config.encodings,
+    config.maxContentCodings,
+    config.compressionDictionaries,
+    contentTypes,
+  ];
+  if (isObject(contentTypes)) {
+    for (const kind of VALID_PARSER_KINDS) {
+      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      snapshot.push(entry);
+      if (isObject(entry)) {
+        const typeConfig = entry as ParseBodyContentTypeConfig;
+        snapshot.push(
+          typeConfig.opts,
+          typeConfig.maxContentLength,
+          typeConfig.retainBuffer,
+        );
+      }
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * Whether `config` still holds the values of `snapshot`, taken by
+ * {@link parseBodySnapshot}: the same walk, compared in place rather than
+ * allocating a second snapshot per request.
+ */
+function matchesSnapshot(
+  snapshot: unknown[],
+  config: ParseBodyConfig,
+): boolean {
+  const contentTypes = config.contentTypes;
+  if (
+    !Object.is(snapshot[0], config.maxContentLength) ||
+    !Object.is(snapshot[1], config.inflate) ||
+    !Object.is(snapshot[2], config.decompressionFastPathLimit) ||
+    !Object.is(snapshot[3], config.encodings) ||
+    !Object.is(snapshot[4], config.maxContentCodings) ||
+    !Object.is(snapshot[5], config.compressionDictionaries) ||
+    !Object.is(snapshot[6], contentTypes)
+  ) {
+    return false;
+  }
+  let at = 7;
+  if (isObject(contentTypes)) {
+    for (const kind of VALID_PARSER_KINDS) {
+      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      if (!Object.is(snapshot[at++], entry)) {
+        return false;
+      }
+      if (isObject(entry)) {
+        const typeConfig = entry as ParseBodyContentTypeConfig;
+        if (
+          !Object.is(snapshot[at++], typeConfig.opts) ||
+          !Object.is(snapshot[at++], typeConfig.maxContentLength) ||
+          !Object.is(snapshot[at++], typeConfig.retainBuffer)
+        ) {
+          return false;
+        }
+      }
+    }
+  }
+  return at === snapshot.length;
+}
+
+/** Builds a fresh {@link BodyParseConfig} (see {@link resolveBodyParseConfig}). */
+function buildBodyParseConfig(
+  parseBody: ParseBodyOption | undefined,
+  legacyAllowed: ContentParserType[] | undefined,
+): BodyParseConfig {
   const resolved = new BodyParseConfig();
 
   // Deprecated allowlist fallback (overridden below by `contentTypes`).
@@ -1184,12 +1338,14 @@ export class BunRequest<
   }
 
   /**
-   * {@link #resolvedBodyConfig}, made this request's own first: the shared
-   * default is copied before a per-request setter writes to it.
+   * {@link #resolvedBodyConfig}, made this request's own first: a shared
+   * config (the default, or a cached object form) is copied before a
+   * per-request setter writes to it.
    */
   #writableBodyConfig(): BodyParseConfig {
     const config = this.#resolvedBodyConfig();
-    if (config !== DEFAULT_BODY_CONFIG) {
+    // Shared configs (the default, a cached object form) are frozen.
+    if (!Object.isFrozen(config)) {
       return config;
     }
     const own = Object.assign(new BodyParseConfig(), config);
@@ -2918,7 +3074,7 @@ export class BunRequest<
    * `parseBody.contentTypes.multipart.opts`), and that result is returned to
    * later calls. When a call's `options` set a parse-affecting key — busboy's
    * `limits`, `preservePath`, charsets, high-water marks, or `inflate` /
-   * `fieldInflator` / `fileInflator` — to a different value, the buffered body
+   * `fieldInflator` / `fileInflator`, `detectFileType` — to a different value, the buffered body
    * is **re-parsed** with those options merged over the original ones, so an
    * upload handler's `limits: { files: 1 }` applies.
    *
@@ -2987,10 +3143,12 @@ export class BunRequest<
       const fieldNameAndValue = new Map<string, string[]>();
 
       let { inflate, fileInflator, fieldInflator } = options;
+      const detectFileType = options.detectFileType !== false;
       const busBoyOpts = omit(options, [
         "inflate",
         "fileInflator",
         "fieldInflator",
+        "detectFileType",
       ]);
 
       if (!isBoolean(inflate)) {
@@ -3023,6 +3181,9 @@ export class BunRequest<
             file: Buffer,
             // opts: FileInfo,
           ) => {
+            if (PLAIN_FIELD_NAME.test(fieldname)) {
+              return plainFieldRecord(fieldname, file);
+            }
             const parsedObj = parseQueryString(
               `${fieldname}=x`,
               DEFAULT_PARSE_QUERY_OPTS,
@@ -3043,6 +3204,9 @@ export class BunRequest<
             value: string,
             // opts: FieldInfo,
           ) => {
+            if (PLAIN_FIELD_NAME.test(fieldname)) {
+              return plainFieldRecord(fieldname, inflateJsonValue(value));
+            }
             try {
               let parsedData: Record<string, unknown> | undefined;
 
@@ -3066,13 +3230,8 @@ export class BunRequest<
                 }
               } else {
                 each(parsedData, (value, key) => {
-                  try {
-                    if (!!parsedData && isString(value)) {
-                      value = value.replace(/\\\\"/g, `"`);
-                      parsedData[key] = JSON.parse(value as string);
-                    }
-                  } catch {
-                    //
+                  if (!!parsedData && isString(value)) {
+                    parsedData[key] = inflateJsonValue(value);
                   }
                 });
               }
@@ -3110,20 +3269,19 @@ export class BunRequest<
 
       try {
         const bb = busboy({ ...busBoyOpts, headers: this.headers });
-        const source = Readable.from(buffer);
         // Track each file handler's promise so the `close` event can await
         // completion deterministically instead of polling state arrays.
         const filePromises: Promise<void>[] = [];
 
-        // multer's `abortWithCode`: refuse the upload, stop feeding busboy and
-        // cancel the body, so nothing truncated is ever resolved.
+        // multer's `abortWithCode`: refuse the upload, so nothing truncated
+        // is ever resolved. The whole body is already in memory and handed to
+        // busboy in one write, so there is no stream to stop: every handler
+        // below ignores what arrives once the parse has settled.
         const abort = (code: UploadErrorCode, field?: string) => {
           if (settled) {
             return;
           }
           fail(new UploadError(code, { field }));
-          source.unpipe(bb);
-          source.destroy();
         };
 
         // busboy never truncates a multipart part's name (its `nameTruncated`
@@ -3153,8 +3311,9 @@ export class BunRequest<
 
           const task = (async () => {
             const fileBuffer = await streamToBuffer(file);
-            const mimeTypeResp: FileTypeResult | undefined =
-              await fileTypeFromBuffer(fileBuffer);
+            const mimeTypeResp: FileTypeResult | undefined = detectFileType
+              ? await fileTypeFromBuffer(fileBuffer)
+              : undefined;
 
             const fileData: MultiPartFileRecord = {
               ...info,
@@ -3323,7 +3482,9 @@ export class BunRequest<
         });
 
         bb.on("error", (error) => fail(error));
-        source.pipe(bb);
+        // One write rather than piping a `Readable` over the buffer: the
+        // stream machinery cost more than busboy's own parse.
+        bb.end(buffer);
       } catch (err) {
         fail(err);
       }
@@ -3495,6 +3656,18 @@ export class BunRequest<
           throw new PayloadTooLargeError(limit, declaredLength);
         }
       }
+    }
+
+    // A declared length within the cap, not chunked: one native read, as the
+    // initial read does for every other kind (see #canReadWhole). Streaming
+    // it chunk by chunk cost a multipart upload a fifth of its time. A body
+    // longer than it declared is still refused, once read.
+    if (limit !== undefined && this.#canReadWhole(limit)) {
+      const bytes = Buffer.from(await this.request.arrayBuffer());
+      if (bytes.length > limit) {
+        throw new PayloadTooLargeError(limit, bytes.length);
+      }
+      return bytes;
     }
 
     const stream = this.request.body;

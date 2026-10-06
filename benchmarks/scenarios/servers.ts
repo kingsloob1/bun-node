@@ -34,6 +34,7 @@
  * `../hyper-express/scenarios.mjs` instead (see `../wrk.ts`).
  */
 import process from "node:process";
+import { BENCH_PARSE_BODY } from "./parse-body";
 
 const ROUTES = Number(process.env.ROUTES ?? 1000);
 
@@ -114,10 +115,11 @@ async function start(target: string | undefined): Promise<number> {
   switch (target) {
     case "bun-common": {
       // Default options (query, cookie and body parsing on, as an app has
-      // them), keeping no body bytes as the other frameworks keep none.
+      // them), doing no work the other frameworks skip: no body bytes kept,
+      // no file-type sniffing of uploads.
       const lib = await import("../../packages/bun-common/lib/index");
       const adapter = new lib.BunHttpAdapter(0, {
-        request: { retainBuffer: false },
+        request: { retainBuffer: false, parseBody: BENCH_PARSE_BODY },
       });
       registerExpressStyle(adapter as unknown as ExpressStyle);
       const uploads = lib.transformUploadOptions({ storageType: "memory" });

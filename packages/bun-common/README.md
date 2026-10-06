@@ -1362,11 +1362,47 @@ repeated names become arrays.
 | `limits`, `preservePath`, `defCharset`, ... | busboy defaults | busboy options. `getBusBoyConfig(opts)` extracts them. |
 | `inflate` | `true` | Parse field values as JSON or urlencoded. `false` keeps the raw strings. |
 | `fieldInflator`, `fileInflator`, `isPartAFile` | none | Custom inflation, and custom file-versus-field detection. |
+| `detectFileType` | `true` | Sniff each file's bytes with `file-type` for `validatedMimeType`. `false` skips it, and `validatedMimeType` is `undefined`. |
 
 Every stored file carries `fieldname`, `originalFilename`, `mimetype`,
 `encoding`, `size` and `validatedMimeType` (sniffed from the bytes by
 `file-type`). A disk file adds `path`, `dest` and `filename`; a memory file
 adds `buffer`.
+
+**Where the cost of a small upload goes.** The body is parsed once, while
+the request is built, with `parseBody.contentTypes.multipart.opts`. A handler
+whose options change the parse — `limits`, `inflate`, `detectFileType`, … —
+parses it again, so set an option that should always apply in both places.
+Sniffing is the costliest step for a small file: 7 µs for a JPEG, 35 µs for
+bytes `file-type` does not recognise, and more for some PNGs. When nothing
+reads `validatedMimeType`, turn it off where the request is parsed:
+
+```ts
+const app = new BunHttpAdapter(0, {
+  request: {
+    parseBody: {
+      contentTypes: {
+        json: true,
+        urlencoded: true,
+        text: true,
+        raw: true,
+        xml: true,
+        multipart: { opts: { detectFileType: false } },
+      },
+    },
+  },
+});
+app.listen(3000);
+```
+
+The object form caps bodies (100kb by default, 10mb for multipart and raw).
+Its resolved config is built once per options object and shared by every
+request, so it costs no more per request than `parseBody: true`.
+
+A field with a plain name (letters, digits, `_` and `-`) is inflated without
+the query-string parser, and a value that cannot open a JSON text is not
+handed to `JSON.parse`. The answers are the same; a differential test in
+`__tests__/multipart.test.ts` holds them to it.
 
 ```ts
 import {

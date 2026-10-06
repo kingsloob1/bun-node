@@ -759,6 +759,7 @@ Options every storage type accepts:
 | `limits` | busboy's | busboy limits: `fileSize`, `files`, `fields`, `parts`, `fieldNameSize`, `fieldSize`, `headerPairs`. |
 | `inflate` | `true` | Replace a field value that parses as JSON (or urlencoded) with the parsed value; `false` keeps raw strings. |
 | `fieldInflator`, `fileInflator` | none | Custom inflation of a field value or a file's bytes. |
+| `detectFileType` | `true` | Sniff each file's bytes for `validatedMimeType`; `false` skips it (`undefined`). The body is parsed while the request is built, so set it in the adapter's `parseBody.contentTypes.multipart.opts` too, or the interceptor parses it again (see bun-common's README). |
 | `isPartAFile` | busboy's rule | `(fieldName, contentType, fileName) => boolean`. |
 | other busboy options | | `preservePath`, `highWaterMark`, `fileHwm`, `defParamCharset`, … |
 
