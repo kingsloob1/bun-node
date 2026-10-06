@@ -1549,8 +1549,15 @@ export class BunQueue<
     options?: { resetAttempts?: boolean },
   ): Promise<string[]> {
     await this.connect();
-    const retried = await this.#retryIds(ids, options?.resetAttempts ?? true);
-    await this.#announceRetried(retried);
+    const retried: string[] = [];
+
+    try {
+      await this.#retryIds(ids, options?.resetAttempts ?? true, retried);
+    } finally {
+      // Those that went are announced even when another one threw.
+      await this.#announceRetried(retried);
+    }
+
     return retried;
   }
 
@@ -1584,45 +1591,49 @@ export class BunQueue<
     // them; jobs that were retried left it, so they are not counted.
     let offset = 0;
 
-    while (retried.length < limit) {
-      const page = await this.driver.listJobs(this.ref, [state], {
-        offset,
-        limit: RETRY_PAGE,
-        order: "asc",
-      });
+    try {
+      while (retried.length < limit) {
+        const page = await this.driver.listJobs(this.ref, [state], {
+          offset,
+          limit: RETRY_PAGE,
+          order: "asc",
+        });
 
-      if (page.length === 0) {
-        break;
-      }
-
-      const chosen: string[] = [];
-      let skipped = 0;
-
-      for (const record of page) {
-        if (retried.length + chosen.length >= limit) {
+        if (page.length === 0) {
           break;
         }
 
-        if (this.#matchesRetry(record, selection)) {
-          chosen.push(record.id);
-        } else {
-          skipped++;
+        const chosen: string[] = [];
+        let skipped = 0;
+
+        for (const record of page) {
+          if (retried.length + chosen.length >= limit) {
+            break;
+          }
+
+          if (this.#matchesRetry(record, selection)) {
+            chosen.push(record.id);
+          } else {
+            skipped++;
+          }
+        }
+
+        const before = retried.length;
+        await this.#retryIds(chosen, reset, retried);
+        offset += skipped;
+
+        // A chosen job that was not retried has been taken by someone else and
+        // left the state, so it shifts nothing. But a page that moved nothing
+        // at all would be read again identically, forever; step past it.
+        if (retried.length === before && skipped === 0) {
+          offset += page.length;
         }
       }
-
-      const done = await this.#retryIds(chosen, reset);
-      retried.push(...done);
-      offset += skipped;
-
-      // A chosen job that was not retried has been taken by someone else and
-      // left the state, so it shifts nothing. But a page that moved nothing at
-      // all would be read again identically, forever; step past it instead.
-      if (done.length === 0 && skipped === 0) {
-        offset += page.length;
-      }
+    } finally {
+      // Those that went are announced even when a later one threw.
+      await this.#announceRetried(retried);
     }
 
-    await this.#announceRetried(retried);
     return retried;
   }
 
@@ -2517,13 +2528,15 @@ export class BunQueue<
           return view;
         }
 
-        // A `null` should mean the pending job has started or is gone, and
-        // only then may the window move to a new one. But a driver can also
-        // answer `null` because it could not get at the job in time — the file
-        // driver gives up on a marker somebody else holds — and replacing the
-        // job then would leave two where the caller asked for one. So look:
-        // still waiting or delayed means the update simply did not land, and
-        // it is tried again.
+        // A `null` means the pending job has started or is gone, and only
+        // then may the window move to a new one. A driver that cannot get at
+        // the job in time does not answer `null` — the file driver, giving up
+        // on a marker somebody else holds, throws a `DriverError`, which fails
+        // this add rather than replace a job that is still pending and leave
+        // two where the caller asked for one. But the job can be pending again
+        // by now (a retry promoted since), and a custom driver may still answer
+        // `null` for a job it could not reach, so look: waiting or delayed is
+        // a job to debounce into, and the update is tried again.
         const pending = await this.driver.getJob(this.ref, current.jobId);
         if (pending?.state === "waiting" || pending?.state === "delayed") {
           continue;
@@ -2650,25 +2663,41 @@ export class BunQueue<
     return this.driver;
   }
 
-  /** Retries ids a bounded number at a time, and answers with those that went. */
-  async #retryIds(ids: string[], resetAttempts: boolean): Promise<string[]> {
+  /**
+   * Retries ids a bounded number at a time, adding those that went to
+   * `retried` as each batch settles.
+   *
+   * A retry that throws — a driver that could not reach a job, such as the
+   * file driver's on a marker that stayed held — fails the call once its batch
+   * has settled, and no later batch is started. The jobs that did go are in
+   * `retried` by then, so the caller can still announce them: they moved
+   * whether or not the call as a whole succeeded.
+   */
+  async #retryIds(
+    ids: string[],
+    resetAttempts: boolean,
+    retried: string[],
+  ): Promise<void> {
     const now = Date.now();
-    const retried: string[] = [];
 
     for (let at = 0; at < ids.length; at += RETRY_CONCURRENCY) {
       const chunk = ids.slice(at, at + RETRY_CONCURRENCY);
-      const results = await Promise.all(
+      const results = await Promise.allSettled(
         chunk.map((id) => this.#retryOne(id, resetAttempts, now)),
       );
 
       chunk.forEach((id, index) => {
-        if (results[index]) {
+        const result = results[index];
+        if (result?.status === "fulfilled" && result.value) {
           retried.push(id);
         }
       });
-    }
 
-    return retried;
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) {
+        throw failed.reason;
+      }
+    }
   }
 
   /** Whether a finished job is one `retryAll` was asked for. */
