@@ -7,6 +7,16 @@ import { isReadable, Readable } from "node:stream";
 import { promisify } from "node:util";
 import mime from "mime";
 
+/**
+ * Set on a native `Request` that is answered without a socket — by a
+ * `fetch()` (see `markSocketFree`). Read by the response (Bun's implicit
+ * text type) and by the request (a body read without its bytes needs a
+ * served request's framing to trust `Content-Length`).
+ */
+export const SOCKET_FREE: unique symbol = Symbol(
+  "bun-common socket-free request",
+);
+
 export function streamToBuffer(stream: Readable): Promise<Buffer> {
   if (isReadable(stream)) {
     return new Promise((resolve, reject) => {

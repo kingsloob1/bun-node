@@ -174,7 +174,8 @@ const CASES: Case[] = [
       "content-type": "application/json",
       "content-length": String(json.length),
     },
-    options: { parseBody: { maxContentLength: 1000 } },
+    // Kept as bytes: this suite compares the byte path with parseBody().
+    options: { parseBody: { maxContentLength: 1000 }, retainBuffer: true },
   },
   {
     name: "declared over the cap",

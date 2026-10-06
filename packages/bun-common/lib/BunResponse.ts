@@ -28,7 +28,11 @@ import process from "node:process";
 import { ReadableStream } from "node:stream/web";
 import { inspect } from "node:util";
 import mime from "mime";
-import { getMimeFromStr, isNodeReadableStream } from "./utils/general";
+import {
+  getMimeFromStr,
+  isNodeReadableStream,
+  SOCKET_FREE,
+} from "./utils/general";
 import {
   appendVary,
   createDeferred,
@@ -418,9 +422,6 @@ const NO_HEADERS = new Headers();
  * one never needs it, and the `WeakSet.add` cost ~115 ns per response.
  */
 const IMPLICIT_TEXT_RESPONSES = new WeakSet<Response>();
-
-/** Set on a native `Request` that is answered without a socket. */
-const SOCKET_FREE: unique symbol = Symbol("bun-common socket-free request");
 
 /**
  * Marks a native `Request` as answered without a socket — by a `fetch()` —

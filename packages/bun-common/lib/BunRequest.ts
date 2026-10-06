@@ -34,7 +34,7 @@ import { parseDomain, ParseResultType, Validation } from "parse-domain";
 import { parse as parseQueryString } from "picoquery";
 import typeIs from "type-is";
 import { UploadError } from "./multipart/errors";
-import { streamToBuffer } from "./utils/general";
+import { SOCKET_FREE, streamToBuffer } from "./utils/general";
 import {
   cloneDeep,
   ContentCodingLimitError,
@@ -191,6 +191,15 @@ export interface ParseBodyContentTypeConfig<
    * (`"5mb"`). Overrides {@link ParseBodyConfig.maxContentLength}.
    */
   maxContentLength?: number | string;
+  /**
+   * Keep the exact bytes of a body of this content type — overrides the
+   * `retainBuffer` request option for this kind. `false` lets a body of the
+   * kind be read without its bytes: `json` with `request.json()`, `text`,
+   * `urlencoded` and `xml` with `request.text()` then their parser (`text`
+   * only without a non-UTF-8 `encoding`). No effect on `raw` (the bytes are
+   * the body) or `multipart` (parsed from its bytes).
+   */
+  retainBuffer?: boolean;
 }
 
 /**
@@ -415,6 +424,8 @@ interface PerTypeParserConfig {
   opts?: ContentTypeParserOptsMap[ContentParserType];
   /** The kind's own byte cap, already parsed to bytes. */
   maxContentLength?: number;
+  /** The kind's own `retainBuffer`; the request option's when unset. */
+  retainBuffer?: boolean;
 }
 
 /**
@@ -917,6 +928,15 @@ export interface BunRequestSocket {
   readonly localFamily: SocketAddress["family"] | undefined;
 }
 
+/** Whether a text parser `encoding` decodes as UTF-8 (unset is UTF-8). */
+function isUtf8Encoding(encoding: string | undefined): boolean {
+  if (encoding === undefined) {
+    return true;
+  }
+  const name = encoding.toLowerCase();
+  return name === "utf8" || name === "utf-8";
+}
+
 /**
  * The `parseBody` options resolved for one request (caps, allowlist, body
  * decoding): built by `normalizeParseBodyOptions`, on the first read or
@@ -1053,7 +1073,19 @@ function resolveBodyParseConfig(
               `parseBody.contentTypes.${key}.maxContentLength`,
             )
           : undefined;
-      perType.set(key, { opts: typeConfig.opts, maxContentLength: max });
+      if (
+        typeConfig.retainBuffer !== undefined &&
+        !isBoolean(typeConfig.retainBuffer)
+      ) {
+        throw new TypeError(
+          `parseBody.contentTypes.${key}.retainBuffer must be a boolean`,
+        );
+      }
+      perType.set(key, {
+        opts: typeConfig.opts,
+        maxContentLength: max,
+        retainBuffer: typeConfig.retainBuffer,
+      });
     }
   }
 
@@ -1275,10 +1307,10 @@ export class BunRequest<
   #bodyDeferred = false;
 
   /**
-   * `true` when the body was read and parsed in one native call
-   * (`request.json()`, see `retainBuffer`): parsed, with no bytes kept.
+   * `true` when the body was read without its bytes (`request.json()` or
+   * `request.text()`, see `retainBuffer`): parsed, with no bytes kept.
    */
-  #readAsJson = false;
+  #readDirect = false;
 
   /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
@@ -1736,13 +1768,18 @@ export class BunRequest<
        */
       deferBody?: boolean;
       /**
-       * Keep the exact bytes of every body read. Defaults to `false`: a body
-       * declared JSON (`application/json`, `+json`) with no
-       * `Content-Encoding`, no `parseBody` cap and no JSON `reviver` is read
-       * and parsed in one native call (`request.json()`), and its bytes are
-       * not kept — {@link buffer} is `undefined`, a `data` event carries
-       * nothing (only `end` is emitted), and a body that does not parse is
-       * refused with 400 as before but without the text on `err.body`.
+       * Keep (`true`) or drop (`false`) the exact bytes of every body read;
+       * `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind.
+       * Unset, a JSON body drops them and every other kind keeps them.
+       *
+       * A body read without its bytes — JSON with `request.json()`; text,
+       * urlencoded and XML with `request.text()` — leaves {@link buffer}
+       * `undefined`, emits `end` with no `data`, and a JSON body that does
+       * not parse is refused with 400 as before but without `err.body`. It
+       * applies only where nothing needs the bytes: no `Content-Encoding`,
+       * no JSON `reviver`, a UTF-8 text `encoding`, and under a cap only a
+       * served request within it by its `Content-Length`. `raw` and
+       * `multipart` always keep them.
        *
        * With `true`, every body is read as bytes first, as before: `buffer`,
        * `rawBody` and the `data` events hold exactly what was received. Turn
@@ -2019,9 +2056,11 @@ export class BunRequest<
     const limit = this.resolveContentLimit(declaredKind);
     if (
       this.parseBody === BunRequest.prototype.parseBody &&
-      this.#canReadAsJson(declaredKind, limit)
+      this.#canReadDirect(declaredKind, limit)
     ) {
-      return this.#readAsJsonBody().then(
+      return this.#readDirectBody(
+        declaredKind as "json" | "text" | "urlencoded" | "xml",
+      ).then(
         () => this.#bodyEnded(),
         (error: unknown) => this.#bodyFailed(error),
       );
@@ -2056,25 +2095,55 @@ export class BunRequest<
   }
 
   /**
-   * Whether the body can be read and parsed in one native call
-   * (`request.json()`) with nothing observable lost but its bytes, which
-   * `retainBuffer` asks to keep: declared JSON and allowed as JSON, no
-   * `Content-Encoding` (nothing to decode), no cap (nothing to measure), no
-   * JSON `reviver`, a declared non-zero length or a chunked body (a
-   * `Content-Length: 0` body is the declared-empty `{}`), never read.
+   * Whether this request keeps the bytes of a body of `kind`: the kind's own
+   * `parseBody.contentTypes.<kind>.retainBuffer`, else the `retainBuffer`
+   * request option, else `true` for every kind but JSON.
    */
-  #canReadAsJson(
+  #retainsBufferFor(kind: ContentParserType): boolean {
+    const own = this.#perTypeConfig?.get(kind)?.retainBuffer;
+    if (own !== undefined) {
+      return own;
+    }
+    const global = this.options.retainBuffer;
+    return global !== undefined ? global : kind !== "json";
+  }
+
+  /**
+   * Whether the body can be read without its bytes — `request.json()` for
+   * JSON, `request.text()` for text, urlencoded and XML — with nothing
+   * observable lost but those bytes, which `retainBuffer` asks to keep:
+   * declared one of those kinds and allowed as it, no `Content-Encoding`
+   * (nothing to decode), no JSON `reviver` and no non-UTF-8 text `encoding`
+   * (the native reads decode UTF-8), a declared non-zero length or a chunked
+   * body (a `Content-Length: 0` body is the declared-empty one), never read.
+   *
+   * Under a cap, only a served request whose `Content-Length` is within it
+   * and which is not chunked: its body is framed by that length, so the cap
+   * holds without measuring the bytes. An in-process `Request` under a cap
+   * is read as bytes, so a `Content-Length` that understates its body is
+   * still caught.
+   */
+  #canReadDirect(
     declaredKind: ContentParserType | undefined,
     limit: number | undefined,
   ): boolean {
     if (
-      declaredKind !== "json" ||
-      limit !== undefined ||
-      this.options.retainBuffer === true ||
+      (declaredKind !== "json" &&
+        declaredKind !== "text" &&
+        declaredKind !== "urlencoded" &&
+        declaredKind !== "xml") ||
       this._buffer !== undefined ||
       this.request.bodyUsed ||
-      !this.isParserAllowed("json") ||
-      this.getParserOpts("json")?.reviver !== undefined
+      this.#retainsBufferFor(declaredKind) ||
+      !this.isParserAllowed(declaredKind)
+    ) {
+      return false;
+    }
+    if (
+      declaredKind === "json"
+        ? this.getParserOpts("json")?.reviver !== undefined
+        : declaredKind === "text" &&
+          !isUtf8Encoding(this.getParserOpts("text")?.encoding)
     ) {
       return false;
     }
@@ -2083,6 +2152,16 @@ export class BunRequest<
       return false;
     }
     const length = this.getHeader("Content-Length");
+    if (limit !== undefined) {
+      return (
+        length !== null &&
+        this.getHeader("Transfer-Encoding") === null &&
+        (this.request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] !==
+          true &&
+        this.#canReadWhole(limit) &&
+        Number(length) > 0
+      );
+    }
     return length === null
       ? this.getHeader("Transfer-Encoding") !== null
       : Number(length) > 0;
@@ -2115,29 +2194,44 @@ export class BunRequest<
   }
 
   /**
-   * Reads and parses the body with `request.json()` (see
-   * {@link #canReadAsJson}); a body that does not parse is refused with
-   * body-parser's 400 `entity.parse.failed`, recorded as
-   * {@link bodyDecodingError} — without `err.body`, as the text is not kept.
+   * Reads and parses a body of `kind` without its bytes (see
+   * {@link #canReadDirect}): `request.json()` for JSON — a body that does not
+   * parse is refused with body-parser's 400 `entity.parse.failed`, recorded
+   * as {@link bodyDecodingError}, without `err.body` as the text is not kept
+   * — and `request.text()` then the kind's own parser for the others.
    */
-  async #readAsJsonBody(): Promise<void> {
-    let value: unknown;
-    try {
-      value = await this.request.json();
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        throw this.#refuseBody(
-          httpError(400, error.message),
-          "entity.parse.failed",
-          undefined,
-        );
+  async #readDirectBody(
+    kind: "json" | "text" | "urlencoded" | "xml",
+  ): Promise<void> {
+    if (kind === "json") {
+      let value: unknown;
+      try {
+        value = await this.request.json();
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          throw this.#refuseBody(
+            httpError(400, error.message),
+            "entity.parse.failed",
+            undefined,
+          );
+        }
+        throw error;
       }
-      throw error;
+      this._body = value as DefaultRequestBody;
+      this._contentType = "json";
+    } else {
+      const text = await this.request.text();
+      if (kind === "text") {
+        this._body = text;
+        this._contentType = "text";
+      } else if (kind === "urlencoded") {
+        this.handleUrlFormEncodingParsing(text);
+      } else {
+        this.handleXmlBodyParsing(text);
+      }
     }
-    this._body = value as DefaultRequestBody;
-    this._contentType = "json";
     this.#bodyParsed = true;
-    this.#readAsJson = true;
+    this.#readDirect = true;
   }
 
   /**
@@ -3658,12 +3752,15 @@ export class BunRequest<
       return;
     }
     const buffer = this._buffer;
-    if (this.#readAsJson) {
-      // Read with `request.json()`: no bytes to measure or parse again. The
-      // cap is checked against the declared length (a served body is framed
-      // by it), and the parsed body stays (see `retainBuffer`).
+    if (this.#readDirect) {
+      // Read without its bytes: none to measure or parse again. The cap is
+      // checked against the declared length (a served body is framed by
+      // it), and the parsed body stays (see `retainBuffer`).
+      const contentType = this.getHeader("Content-Type");
       this.#checkDeclaredLength(
-        this.resolveContentLimit(this.detectParserKind("application/json")),
+        this.resolveContentLimit(
+          contentType ? this.detectParserKind(contentType) : undefined,
+        ),
       );
       return;
     }
@@ -3929,7 +4026,7 @@ export class BunRequest<
     }
     // A body read with `request.json()` kept no bytes to parse again: a
     // fresh parse answers with what was parsed (see `retainBuffer`).
-    if ((!fresh || this.#readAsJson) && this.isBodyParsed) {
+    if ((!fresh || this.#readDirect) && this.isBodyParsed) {
       return {
         body: this._body,
         buffer: this._buffer,
@@ -3946,9 +4043,11 @@ export class BunRequest<
 
     if (
       this.parseBody === BunRequest.prototype.parseBody &&
-      this.#canReadAsJson(declaredKind, limit)
+      this.#canReadDirect(declaredKind, limit)
     ) {
-      await this.#readAsJsonBody();
+      await this.#readDirectBody(
+        declaredKind as "json" | "text" | "urlencoded" | "xml",
+      );
       return {
         body: this._body,
         buffer: undefined,
@@ -4259,7 +4358,7 @@ export class BunRequest<
 
     const limit =
       options?.limit !== undefined ? parseByteSize(options.limit) : undefined;
-    if (this.#readAsJson) {
+    if (this.#readDirect) {
       // No bytes kept (see `retainBuffer`): the declared length stands in.
       this.#checkDeclaredLength(limit);
     }

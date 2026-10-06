@@ -662,7 +662,7 @@ a boolean on either side replaces the other.
 | `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
 | `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
 | `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
-| `retainBuffer` | `boolean` | `false` | Keep the exact bytes of every body. Off, a plain JSON body is read with `request.json()` and keeps none: see [How the body is read](#body-decoding). bun-nest's `rawBody: true` turns it on. |
+| `retainBuffer` | `boolean` | unset (JSON drops its bytes, other kinds keep them) | Keep (`true`) or drop (`false`) the exact bytes of every body; `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind. See [Bodies read without their bytes](#body-decoding). bun-nest's `rawBody: true` turns it on. |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -719,7 +719,7 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 | `ParseBodyConfig` field | Default | Meaning |
 |---|---|---|
 | `maxContentLength` | 100kb (`DEFAULT_MAX_CONTENT_LENGTH`); 10mb for `multipart` and `raw` (`DEFAULT_MAX_CONTENT_LENGTH_BY_KIND`) | Overall cap, in bytes or as a string such as `"5mb"`. It applies to the **decoded** size, so a decompression bomb is a 413 too. |
-| `contentTypes` | `"all"` | An allowlist keyed by kind: `json`, `urlencoded`, `xml`, `multipart`, `text` or `raw`. Each is `true` or `{ opts, maxContentLength }`. A kind left out is not parsed: `req.body` is the raw `Buffer`. |
+| `contentTypes` | `"all"` | An allowlist keyed by kind: `json`, `urlencoded`, `xml`, `multipart`, `text` or `raw`. Each is `true` or `{ opts, maxContentLength, retainBuffer }` (`retainBuffer`: keep this kind's bytes; see [Bodies read without their bytes](#body-decoding)). A kind left out is not parsed: `req.body` is the raw `Buffer`. |
 | `inflate`, `decompressionFastPathLimit`, `encodings`, `maxContentCodings`, `compressionDictionaries` | see [Body decoding](#body-decoding) | How a `Content-Encoding` body is decoded. |
 
 - `PayloadTooLargeError` (`status` and `statusCode` 413, `limit`, `length`)
@@ -895,30 +895,46 @@ never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
 options built elsewhere. (A `maxContentLength` that did not parse used to be
 ignored silently, leaving the per-kind default cap in force.)
 
-**A JSON body is read with `request.json()`.** A body declared JSON
-(`application/json`, `+json`) with no `Content-Encoding`, no `parseBody` cap
-(a boolean `parseBody`), no JSON `reviver` and a `Content-Length` above zero
-(or chunked) is read and parsed in one native call, as Elysia does — about a
-sixth less per JSON request, +9% `wrk` req/s. What that read does not give
-back is the bytes:
+**Bodies read without their bytes (`retainBuffer`).** By default a body
+declared JSON (`application/json`, `+json`) is read and parsed in one native
+call, `request.json()`, as Elysia does — about a sixth less per JSON request,
++9% `wrk` req/s — and its bytes are not kept. Every other kind keeps them.
+`retainBuffer` decides it:
+
+| Where | Applies to |
+|---|---|
+| `retainBuffer` request option (and `requestParsing({ retainBuffer })` for a deferred body) | every kind: `true` keeps every body's bytes, `false` drops them wherever a kind can be read without them |
+| `parseBody.contentTypes.<kind>.retainBuffer` | that kind only, over the request option |
+| neither set | JSON drops its bytes; every other kind keeps them |
+
+A kind read without its bytes: `json` with `request.json()`; `text`,
+`urlencoded` and `xml` with `request.text()` and then their own parser (`text`
+only without a non-UTF-8 `encoding`, since the native read decodes UTF-8 — and
+it drops a leading byte-order mark). `raw` (the bytes are the body) and
+`multipart` (parsed from its bytes) always keep them. Even then a body is read
+as bytes when it has a `Content-Encoding` (to decode), a JSON `reviver`, or a
+`Content-Length` of 0 (the declared-empty body); and under a cap (the object
+form of `parseBody`) only a **served** request whose `Content-Length` is within
+the cap is read without its bytes — its body is framed by that length, so the
+cap holds without measuring. An in-process `Request` (`fetch()`, tests) under
+a cap is read as bytes, so a `Content-Length` that understates its body is still
+caught.
+
+What such a read does not give back is the bytes:
 
 - `req.buffer` is `undefined`, and a body parser registered with `rawBody`
   finds none to keep;
 - a `data` listener gets no chunk, only `end`;
-- an invalid body is still a 400 `entity.parse.failed` refused before routing,
-  but `err.body` (the text) is not set;
+- an invalid JSON body is still a 400 `entity.parse.failed` refused before
+  routing, but `err.body` (the text) is not set;
 - a body cannot be parsed again under other options (`parseBody(true)`,
   `requestParsing()`): it keeps what was parsed, and a cap is checked against
-  `Content-Length` — exact for a served request, whose body that length frames;
+  `Content-Length` — exact for a served request;
 - a chunked JSON body that turns out empty is a 400, where the byte path gives
   `{}` (`Content-Length: 0` is unaffected: it is never read).
 
-`retainBuffer: true` (a request option, or `requestParsing({ retainBuffer })`
-for a deferred body) reads every body as bytes, exactly as before. Use it to
-verify a signature over the raw body; bun-nest turns it on when the app is
-created with `rawBody: true`. Any other body — another type, an encoding, a
-cap, an in-process `Request` without a `Content-Length` — is read as bytes
-whatever the option says.
+Keep the bytes to verify a signature over the raw body; bun-nest turns
+`retainBuffer` on when the app is created with `rawBody: true`.
 
 **How the body is read.** When nothing has to be enforced while the body
 streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
