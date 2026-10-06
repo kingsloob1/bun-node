@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/native.test.ts": 3385,
+    "__tests__/websocket.test.ts": 1566,
+    "__tests__/compression.test.ts": 490,
+    "__tests__/bunValidate.libraries.test.ts": 446,
+    "__tests__/fetch.test.ts": 442,
+    "__tests__/router.test.ts": 379,
+    "__tests__/httpAdapter.test.ts": 377,
+    "__tests__/buildDeclarations.test.ts": 372,
+    "__tests__/serveStatic.test.ts": 371,
+    "__tests__/multipart.test.ts": 358,
+    "__tests__/parseBody.test.ts": 324,
+    "__tests__/packaging.test.ts": 296,
+    "__tests__/request.test.ts": 230,
+    "__tests__/wsOnUpgrade.test.ts": 225,
+    "__tests__/bunValidate.test.ts": 201,
+    "__tests__/utils.test.ts": 188,
+    "__tests__/cors.test.ts": 179,
+    "__tests__/response.test.ts": 175,
+    "__tests__/compression.chrome.e2e.test.ts": 147,
+    "__tests__/finalErrorResponse.test.ts": 144,
+    "__tests__/express-use.test.ts": 130,
+    "__tests__/upgradeHeaders.test.ts": 103,
+    "__tests__/logging.test.ts": 14
+  }
+}

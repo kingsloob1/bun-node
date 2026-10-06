@@ -52,7 +52,9 @@
     "build": "bun scripts/build.ts",
     "build:types": "bun scripts/build-declarations.ts",
     "prepack": "bun scripts/build.ts && bun scripts/build-declarations.ts",
-    "test": "bun test",
+    "test": "bun test --parallel=4 --timings=bun-timings.json",
+    "test:serial": "bun test",
+    "test:timings": "rm -f bun-timings.json && bun test --parallel=4 --timings=bun-timings.json --update-timings",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app"
   },
   "peerDependencies": {

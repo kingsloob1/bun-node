@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "files": {
+    "test/conformance.test.ts": 5064,
+    "test/config.test.ts": 89,
+    "test/errors.test.ts": 80
+  }
+}
