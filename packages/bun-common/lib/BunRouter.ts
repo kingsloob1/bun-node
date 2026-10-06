@@ -38,6 +38,7 @@ import {
   orderBy,
   pick,
 } from "./utils/native";
+import { FifoCache, RouteCandidateIndex } from "./utils/routeIndex";
 
 export type { matchedRoute } from "@routejs/router";
 
@@ -518,10 +519,19 @@ export class BunRouter<
    * Cache of the fully-resolved, request-matched pipeline for a request
    * signature (see {@link getCacheKey}). Each value is the exact array
    * {@link handle} iterates — a cache hit is a single `Map.get` with zero
-   * allocation. Bounded with FIFO eviction so high-cardinality paths cannot
-   * leak memory; invalidated wholesale by {@link setRoute}/{@link clearRouteCache}.
+   * allocation. Bounded with FIFO eviction (O(1), see {@link FifoCache}) so
+   * high-cardinality paths cannot leak memory; invalidated wholesale by
+   * {@link setRoute}/{@link clearRouteCache}. `undefined` when
+   * `routeCacheMax` is `0`.
    */
-  private routeCacheLayers = new Map<string, MatchedLayer[]>();
+  private routeCacheLayers: FifoCache<MatchedLayer[]> | undefined;
+
+  /**
+   * Narrows a cache miss to the routes that can match the request's path, so
+   * a miss costs O(routes sharing its first segment) rather than O(routes).
+   * Rebuilt lazily when the route table changes.
+   */
+  #candidateIndex = new RouteCandidateIndex();
 
   /** Allocates a fresh group id for the next `use(subRouter)` mount. */
   #nextRouterGroupId = 1;
@@ -615,6 +625,10 @@ export class BunRouter<
     } else {
       this.routeCacheMax = DEFAULT_ROUTE_CACHE_MAX;
     }
+    this.routeCacheLayers =
+      this.routeCacheMax > 0
+        ? new FifoCache<MatchedLayer[]>(this.routeCacheMax)
+        : undefined;
 
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
   }
@@ -782,10 +796,12 @@ export class BunRouter<
     // Only a route handler can be named — see `setName`.
     this.#lastRoute = isEndpoint ? route : null;
     // The route table changed — drop the matched-pipeline cache so a route
-    // registered after the first request is still picked up.
-    if (this.routeCacheLayers.size) {
+    // registered after the first request is still picked up, and the
+    // candidate index so it is a candidate.
+    if (this.routeCacheLayers?.size) {
       this.routeCacheLayers.clear();
     }
+    this.#candidateIndex.invalidate();
     return this;
   }
 
@@ -4255,7 +4271,8 @@ export class BunRouter<
   }
 
   clearRouteCache() {
-    this.routeCacheLayers.clear();
+    this.routeCacheLayers?.clear();
+    this.#candidateIndex.invalidate();
 
     return this;
   }
@@ -4444,10 +4461,9 @@ export class BunRouter<
     const cache = this.routeCacheLayers;
     // `routeCacheMax: 0` disables the cache outright — skip building the key so
     // a disabled cache costs nothing, not even its string concatenation.
-    const cacheEnabled = this.routeCacheMax > 0;
-    const cacheKey = cacheEnabled ? this.getCacheKey(options) : "";
+    const cacheKey = cache !== undefined ? this.getCacheKey(options) : "";
 
-    if (cacheEnabled) {
+    if (cache !== undefined) {
       // Fast path: a single `Map.get`, no allocation, no bookkeeping.
       const cached = cache.get(cacheKey);
       if (cached !== undefined) {
@@ -4458,10 +4474,14 @@ export class BunRouter<
     const requestPath =
       this.getRequestPathFromRequestURL(options.requestUrl) || "/";
     const routes = this.routes();
+    // Only the routes that can match this path: the index rules out the rest
+    // without running their regexes. Indices stay those of `routes()`.
+    const candidates = this.#candidateIndex.candidates(routes, requestPath);
 
-    // 1. Match every route, preserving registration order.
-    const entries = routes
-      .map((route, routeIndex) => {
+    // 1. Match every candidate, preserving registration order.
+    const entries = candidates
+      .map((routeIndex) => {
+        const route = routes[routeIndex];
         let matched: matchedRoute | false;
         // Set when the route matched but a captured value would not decode.
         let decodeFailure: string | undefined;
@@ -4592,15 +4612,7 @@ export class BunRouter<
 
     // 5. Cache, evicting the oldest entry when full. Skipped entirely when the
     //    cache is disabled (`routeCacheMax: 0`).
-    if (cacheEnabled) {
-      if (cache.size >= this.routeCacheMax) {
-        const oldest = cache.keys().next().value;
-        if (oldest !== undefined) {
-          cache.delete(oldest);
-        }
-      }
-      cache.set(cacheKey, layers);
-    }
+    cache?.set(cacheKey, layers);
 
     return layers;
   }

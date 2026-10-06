@@ -20,6 +20,7 @@
  *   bun-common-lean  the same with body/cookie/query parsing off
  *   bun-nest       @kingsleyweb/bun-nest BunHttpAdapter in a Nest app
  *   elysia         Elysia 1.4 (from benchmarks/node_modules)
+ *   elysia2        Elysia 2 beta (the `elysia2` alias in benchmarks/package.json)
  *   proto-*        the prototype variants in ../prototype (see there)
  */
 import process from "node:process";
@@ -108,8 +109,12 @@ async function start(): Promise<number> {
       return await startNest(ROUTES);
     }
 
-    case "elysia": {
-      const { Elysia } = await import("../../../../../benchmarks/node_modules/elysia");
+    case "elysia":
+    case "elysia2": {
+      // `elysia2` is Elysia 2 (benchmarks/package.json aliases the beta).
+      const { Elysia } = (await import(
+        target === "elysia2" ? "../../../../../benchmarks/node_modules/elysia2" : "../../../../../benchmarks/node_modules/elysia"
+      )) as typeof import("../../../../../benchmarks/node_modules/elysia");
       let app = new Elysia()
         .get("/static", () => "ok")
         .get("/user/:id", ({ params }) => params.id)
