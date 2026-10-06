@@ -363,6 +363,48 @@ function parseTokenList(value: string): string[] {
 const textEncoder = new TextEncoder();
 
 /**
+ * The default `Content-Type` of a text body: what Bun itself writes for a
+ * string body, so a response sent with no headers and one sent with others
+ * carry the same type.
+ */
+const TEXT_CONTENT_TYPE = "text/plain;charset=utf-8";
+
+/** The `Content-Type` of a JSON body: what `Response.json` sets. */
+const JSON_CONTENT_TYPE = "application/json;charset=utf-8";
+
+/** A shared, never-written `Headers` that header reads see before any exist. */
+const NO_HEADERS = new Headers();
+
+/**
+ * Text responses sent with no `Headers` object, whose `Content-Type` Bun adds
+ * only on the wire. A socket-free `fetch()` adds it to them (see
+ * {@link toFetchResponse}) so it answers as a served request does.
+ */
+const IMPLICIT_TEXT_RESPONSES = new WeakSet<Response>();
+
+/**
+ * `response` as a served request's client would see it, for a socket-free
+ * `fetch()`: the `Content-Type` Bun writes for a text body sent without
+ * headers, and no body in answer to `HEAD` (Bun drops it on the wire).
+ */
+export function toFetchResponse(response: Response, method: string): Response {
+  if (
+    IMPLICIT_TEXT_RESPONSES.has(response) &&
+    !response.headers.has("content-type")
+  ) {
+    response.headers.set("Content-Type", TEXT_CONTENT_TYPE);
+  }
+  if (method.toUpperCase() !== "HEAD" || response.body === null) {
+    return response;
+  }
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/**
  * The lifecycle events emitted by {@link BunResponse}, mirroring Node's
  * `http.ServerResponse`. Declared as a `type` (not an `interface`) so it
  * satisfies `TypedEmitter`'s `Record<string, …>` constraint.
@@ -436,7 +478,77 @@ export class BunResponse<
    */
   #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
   private options: Writable<ResponseInit> = {};
-  private headersObj = new Headers();
+  /**
+   * The headers set so far; `undefined` until the first write (see
+   * {@link headersObj}). A response that never sets one is sent without a
+   * `Headers` object at all — see {@link #canSkipHeaders}.
+   */
+  #headers: Headers | undefined = undefined;
+
+  /**
+   * The `Content-Type` a response sent without headers carries — the one Bun
+   * (or `Response.json`) gives it — so reading the headers after the send
+   * still reports it. `undefined` otherwise.
+   */
+  #implicitContentType: string | undefined = undefined;
+
+  /**
+   * The headers, created on first use. A response sent without headers
+   * starts them with the `Content-Type` it was sent with.
+   */
+  private get headersObj(): Headers {
+    if (this.#headers === undefined) {
+      this.#headers = new Headers();
+      if (this.#implicitContentType !== undefined) {
+        this.#headers.set("Content-Type", this.#implicitContentType);
+      }
+    }
+    return this.#headers;
+  }
+
+  /**
+   * The headers for a read: the real ones once any exist, a shared empty set
+   * otherwise — so reading (`getHeader`, `hasHeader`, …) never creates them
+   * and never takes a response off the no-headers path.
+   */
+  get #readableHeaders(): Headers {
+    if (
+      this.#headers !== undefined ||
+      this.#implicitContentType !== undefined
+    ) {
+      return this.headersObj;
+    }
+    return NO_HEADERS;
+  }
+
+  /**
+   * Whether the body can be sent without a `Headers` object: nothing set a
+   * header (or passed one in the init), no `ETag` is to be computed and no
+   * transform (`compression()`) will rewrite the response, and the request
+   * is not `HEAD`. Freshness needs a validator header, so it cannot apply
+   * either.
+   */
+  #canSkipHeaders(): boolean {
+    return (
+      this.#headers === undefined &&
+      // Bun leaves the type off a served HEAD response it has no headers
+      // for, while GET gets it; HEAD carries it explicitly instead.
+      this.req.method !== "HEAD" &&
+      this.options.headers === undefined &&
+      !this.#etagEnabled &&
+      this.#responseTransforms === undefined
+    );
+  }
+
+  /** The init for a response sent without headers: status and reason only. */
+  #initWithoutHeaders(): ResponseInit | undefined {
+    const { status, statusText } = this.options;
+    if (status === undefined && statusText === undefined) {
+      return undefined;
+    }
+    return { status, statusText };
+  }
+
   private _isLongLived = false;
   #readableStream: ReadableStream | undefined = undefined;
   #readableStreamController: ReadableStreamDefaultController | undefined =
@@ -868,7 +980,8 @@ export class BunResponse<
   }
 
   /**
-   * Sends `body` serialised as `application/json`. Goes through the same path
+   * Sends `body` serialised as `application/json;charset=utf-8` (with no
+   * header set, through `Response.json`, without a `Headers` object). Goes through the same path
    * as a string `send()`: the automatic `ETag` (when enabled) is computed over
    * the serialisation, then freshness turns a matching conditional request
    * into a 304 — as Express's `res.json` does via `res.send`.
@@ -879,10 +992,39 @@ export class BunResponse<
    * `JSON.stringify` cannot serialise, are rejected.)
    */
   public json<T extends BunResponseBody>(body: T): BunResponse {
-    this.options.headers = this.headersObj;
-    this.headersObj.set("Content-Type", "application/json");
     this.#sentBody = body;
+    if (this.#canSkipHeaders()) {
+      return this.#respondWithJson(body);
+    }
+    this.options.headers = this.headersObj;
+    this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
     return this.#respondWithText(JSON.stringify(body));
+  }
+
+  /**
+   * Sends `body` as JSON with no `Headers` object: `Response.json`
+   * serialises it as `JSON.stringify` does and sets
+   * `application/json;charset=utf-8` itself. Only for a response with no
+   * header set (see {@link #canSkipHeaders}).
+   */
+  #respondWithJson(body: unknown): BunResponse {
+    const code = this.options.status;
+    if (code === 204 || code === 205 || code === 304) {
+      // These strip the body: the full path handles them.
+      this.options.headers = this.headersObj;
+      this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
+      return this.#respondWithText(JSON.stringify(body));
+    }
+    this.req.setResponse(this);
+    this.#implicitContentType = JSON_CONTENT_TYPE;
+    const kind = typeof body;
+    // `JSON.stringify` gives `undefined` for `undefined`, a function or a
+    // symbol: an empty body then, as the text path sends one.
+    this.response =
+      kind === "undefined" || kind === "function" || kind === "symbol"
+        ? new Response(undefined, this.#initWithoutHeaders())
+        : Response.json(body, this.#initWithoutHeaders());
+    return this;
   }
 
   /**
@@ -901,7 +1043,7 @@ export class BunResponse<
 
     if (!this.hasHeader("Content-Type")) {
       this.set("X-Content-Type-Options", "nosniff");
-      this.set("Content-Type", "application/json");
+      this.set("Content-Type", JSON_CONTENT_TYPE);
     }
 
     if (isArray(callback)) {
@@ -957,8 +1099,24 @@ export class BunResponse<
    * `text/plain` unless a Content-Type is already set. Synchronous.
    */
   #respondWithText(text: string): BunResponse {
-    this.options.headers = this.headersObj;
     this.req.setResponse(this);
+
+    // Nothing set a header: send the text with no `Headers` object at all.
+    // Bun writes `text/plain;charset=utf-8` for a string body itself, which
+    // is the default here too. A 204/205/304 still takes the full path (it
+    // strips the body), as does anything needing a header.
+    if (this.#canSkipHeaders()) {
+      const code = this.options.status;
+      if (code !== 204 && code !== 205 && code !== 304) {
+        this.#implicitContentType = TEXT_CONTENT_TYPE;
+        IMPLICIT_TEXT_RESPONSES.add(
+          (this.response = new Response(text, this.#initWithoutHeaders())),
+        );
+        return this;
+      }
+    }
+
+    this.options.headers = this.headersObj;
 
     if (this.#etagEnabled && text && !this.hasHeader("ETag")) {
       this.setHeader("ETag", etag(text));
@@ -970,7 +1128,7 @@ export class BunResponse<
     }
 
     if (!this.headersObj.has("content-type")) {
-      this.headersObj.set("Content-Type", "text/plain");
+      this.headersObj.set("Content-Type", TEXT_CONTENT_TYPE);
     }
 
     if (this.#responseTransforms !== undefined) {
@@ -1107,7 +1265,9 @@ export class BunResponse<
    *
    * Every body type `Bun.serve` can write is accepted:
    *
-   * - `string` — sent as `text/plain` unless a Content-Type is already set.
+   * - `string` — sent as `text/plain;charset=utf-8` unless a Content-Type is
+   *   already set. With no header set at all, the response is built without
+   *   a `Headers` object (Bun writes that type itself).
    * - plain objects / arrays — serialised as `application/json`.
    * - binary: `Buffer`, any typed array, `DataView`, `ArrayBuffer`,
    *   `SharedArrayBuffer` — sent verbatim (only the view's byte window),
@@ -1219,7 +1379,10 @@ export class BunResponse<
       ) &&
       (isObject(body) || isArray(body))
     ) {
-      this.headersObj.set("Content-Type", "application/json");
+      if (this.#canSkipHeaders()) {
+        return this.#respondWithJson(body);
+      }
+      this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
       return this.#respondWithText(JSON.stringify(body));
     }
 
@@ -1822,11 +1985,12 @@ export class BunResponse<
   ): string[] | undefined;
   getHeader(name: string): string | null;
   getHeader(name: string): string | string[] | null | undefined {
+    const headers = this.#readableHeaders;
     if (name.toLowerCase() === "set-cookie") {
-      const lines = this.headersObj.getSetCookie();
+      const lines = headers.getSetCookie();
       return lines.length > 0 ? lines : undefined;
     }
-    return this.headersObj.get(name);
+    return headers.get(name);
   }
 
   /**
@@ -1835,7 +1999,7 @@ export class BunResponse<
    * In the order `Headers` iterates them, not Node's insertion order.
    */
   getHeaderNames(): string[] {
-    return Array.from(new Set(this.headersObj.keys()));
+    return Array.from(new Set(this.#readableHeaders.keys()));
   }
 
   /**
@@ -1845,11 +2009,12 @@ export class BunResponse<
    */
   getHeaders(): BunResponseHeaders {
     const headers: BunResponseHeaders = Object.create(null);
-    for (const [name, value] of this.headersObj) {
+    const source = this.#readableHeaders;
+    for (const [name, value] of source) {
       if (name !== "set-cookie") {
         headers[name] = value;
       } else if (!headers["set-cookie"]) {
-        headers["set-cookie"] = this.headersObj.getSetCookie();
+        headers["set-cookie"] = source.getSetCookie();
       }
     }
     return headers;
@@ -1885,7 +2050,7 @@ export class BunResponse<
   }
 
   hasHeader(name: string) {
-    return this.headersObj.has(name);
+    return this.#readableHeaders.has(name);
   }
 
   removeHeader(name: string) {
@@ -2230,12 +2395,13 @@ export class BunResponse<
     name: string,
     defaultVal?: string | string[],
   ): string | string[] | undefined {
+    const headers = this.#readableHeaders;
     if (name.toLowerCase() === "set-cookie") {
-      const lines = this.headersObj.getSetCookie();
+      const lines = headers.getSetCookie();
       return lines.length > 0 ? lines : defaultVal;
     }
 
-    const value = this.headersObj.get(name);
+    const value = headers.get(name);
     if (!isString(value)) {
       return defaultVal;
     }

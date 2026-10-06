@@ -320,6 +320,7 @@ export {
   type BunResponseSentBody,
   type CookieValue,
   type SendFileCallOptions,
+  toFetchResponse,
   type UpgradeToWebsocketOptions,
 } from "./BunResponse";
 export {
@@ -402,7 +403,6 @@ export {
   routeModulePath,
   toNativeRequest,
   type UnmountedRouter,
-  withoutHeadBody,
 } from "./BunRouter";
 export {
   BunHttpAdapter,

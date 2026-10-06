@@ -857,12 +857,20 @@ Example:
 | Method | Behaviour |
 |---|---|
 | `status(code)`, `statusText(text)`, `sendStatus(code)` | Set the status; `sendStatus` also sends the reason phrase as text. |
-| `send(body)` | Accepts a string (`text/plain` unless a type is set), a plain object or array (JSON), a `Buffer` / typed array / `ArrayBuffer` (`application/octet-stream`), a `Blob` or `BunFile`, `FormData`, `URLSearchParams`, a `ReadableStream`, a Node `Readable`, an async iterable or `async function*`, or a `Response` / `BunResponse` (passed through). A number or boolean is sent as a string, where Express 5 sends JSON. |
-| `json(body)` | `application/json`. Use `json<Dto>(body)` to check the body's shape. |
+| `send(body)` | Accepts a string (`text/plain;charset=utf-8` unless a type is set), a plain object or array (JSON), a `Buffer` / typed array / `ArrayBuffer` (`application/octet-stream`), a `Blob` or `BunFile`, `FormData`, `URLSearchParams`, a `ReadableStream`, a Node `Readable`, an async iterable or `async function*`, or a `Response` / `BunResponse` (passed through). A number or boolean is sent as a string, where Express 5 sends JSON. |
+| `json(body)` | `application/json;charset=utf-8`. Use `json<Dto>(body)` to check the body's shape. |
 | `jsonp(body)` | Wraps the body in `?callback=` as `text/javascript`, with Express's sanitising and `nosniff`. |
 | `type(t)` / `contentType(t)`, `attachment(filename?)`, `location(url)`, `links(map)`, `vary(fields)` | Header helpers with Express semantics. |
 | `setEtag(enabled?)` | Enables `ETag` for this response. A matching conditional request becomes a 304. |
 | `getBody()`, `headersSent` | Inspection. |
+
+A text or JSON body sent when **no header has been set** (no `set()`,
+`type()`, `cookie()`, CORS or other header-writing middleware, no `ETag`, no
+`compression()`) is built without a `Headers` object at all, which roughly
+halves the cost of `send()`/`json()`. The defaults above are the types Bun
+itself writes for such a body, so a response's `Content-Type` is the same
+whether or not other headers were set, and `res.getHeader("Content-Type")`
+reports it after the send. A `HEAD` request always takes the full path.
 
 Freshness follows Express: a fresh conditional request becomes 304, and a 204
 or 304 loses its body headers.

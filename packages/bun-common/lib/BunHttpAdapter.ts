@@ -32,7 +32,6 @@ import {
   FETCH_STUB_SERVER,
   isRequestTimeoutError,
   toNativeRequest,
-  withoutHeadBody,
 } from "./BunRouter";
 import { cors } from "./cors";
 import {
@@ -40,6 +39,7 @@ import {
   BunResponse,
   BunWebSocket,
   mergeBunRequestOptions,
+  toFetchResponse,
 } from "./index";
 import { resolveLogger } from "./logging";
 import { createServeStaticHandler } from "./serveStatic";
@@ -581,7 +581,7 @@ export class BunHttpAdapter<
           >),
       );
     } catch (error) {
-      return withoutHeadBody(
+      return toFetchResponse(
         await this.handleRequestError(error),
         nativeRequest.method,
       );
@@ -590,7 +590,7 @@ export class BunHttpAdapter<
     // `handleNativeRequest` returns undefined only for a successful WebSocket
     // upgrade, which cannot happen without a socket. A served HEAD response
     // carries no body: Bun drops it on the wire.
-    return withoutHeadBody(
+    return toFetchResponse(
       response ??
         new Response(null, { status: 101, statusText: "Switching Protocols" }),
       nativeRequest.method,
