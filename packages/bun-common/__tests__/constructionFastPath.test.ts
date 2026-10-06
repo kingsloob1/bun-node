@@ -585,3 +585,69 @@ describe("RequestPipelineOptions: the host and target read on demand", () => {
     expect(await (await app.fetch("http://h/h")).text()).toBe("any h");
   });
 });
+
+describe("per-value caches behind the body and cookie options", () => {
+  it("decides each Content-Type's kind as before, whatever its case or boundary", async () => {
+    const parse = async (type: string, body: string) =>
+      (
+        await BunRequest.init(
+          new Request("http://h/", {
+            method: "POST",
+            body,
+            headers: { "content-type": type },
+          }),
+          testServer,
+          { parseBody: true },
+        )
+      ).body;
+    // The same values twice: the second answer comes from the cache.
+    for (let round = 0; round < 2; round++) {
+      expect(await parse("application/json", '{"a":1}')).toEqual({ a: 1 });
+      expect(await parse("Application/JSON; charset=utf-8", "[2]")).toEqual([
+        2,
+      ]);
+      expect(await parse("application/vnd.api+json", '{"b":2}')).toEqual({
+        b: 2,
+      });
+      expect(await parse("text/plain", "hi")).toBe("hi");
+      expect(await parse("application/x-www-form-urlencoded", "a=1")).toEqual({
+        a: "1",
+      });
+      expect(Buffer.isBuffer(await parse("image/png", "x"))).toBe(true);
+    }
+    // A fresh boundary per form: each parsed as multipart all the same.
+    for (const boundary of ["b1", "b2", "b3"]) {
+      const body = `--${boundary}\r\nContent-Disposition: form-data; name="f"\r\n\r\nv\r\n--${boundary}--\r\n`;
+      const req = await BunRequest.init(
+        new Request("http://h/", {
+          method: "POST",
+          body,
+          headers: {
+            "content-type": `multipart/form-data; boundary=${boundary}`,
+          },
+        }),
+        testServer,
+        { parseBody: true },
+      );
+      expect((await req.getMultiParts({})).fields).toEqual({ f: "v" });
+    }
+  });
+
+  it("sees a secret rotated into the same configured array", () => {
+    const secrets = ["one"];
+    const options = { parseBody: false, parseCookies: { secret: secrets } };
+    const first = BunRequest.init(
+      new Request("http://h/"),
+      testServer,
+      options,
+    ) as BunRequest;
+    expect(first.secret).toBe("one");
+    secrets.unshift("two");
+    const second = BunRequest.init(
+      new Request("http://h/"),
+      testServer,
+      options,
+    ) as BunRequest;
+    expect(second.secret).toBe("two");
+  });
+});

@@ -1074,6 +1074,49 @@ export interface BunRequestSocket {
   readonly localFamily: SocketAddress["family"] | undefined;
 }
 
+/**
+ * Each `Content-Type` value's parser kind, as `detectParserKind` decides it:
+ * a client sends the same few values, and deciding lowercased and searched the
+ * whole value on every request with a body. Multipart values are not kept,
+ * since each carries a fresh boundary.
+ */
+const PARSER_KINDS = new Map<string, ContentParserType | undefined>();
+
+/**
+ * Each configured secret array's usable secrets, with a copy of what the
+ * array held when they were taken (a secret rotated into the same array is
+ * seen). A lone string secret needs no cache.
+ */
+const COOKIE_SECRETS = new WeakMap<
+  readonly unknown[],
+  { source: unknown[]; list: string[] }
+>();
+
+/** The parser kind for a `Content-Type` (see `BunRequest#detectParserKind`). */
+function detectParserKindOf(
+  contentType: string,
+): ContentParserType | undefined {
+  const ct = contentType.toLowerCase();
+  switch (true) {
+    case ct.includes("application/json") || ct.includes("+json"):
+      return "json";
+    case ct.includes("application/x-www-form-urlencoded"):
+      return "urlencoded";
+    case ct.includes("multipart/form-data"):
+      return "multipart";
+    case ct.includes("application/xml") ||
+      ct.includes("text/xml") ||
+      ct.includes("+xml"):
+      return "xml";
+    case ct.includes("text/plain"):
+      return "text";
+    case ct.includes("application/octet-stream"):
+      return "raw";
+    default:
+      return undefined;
+  }
+}
+
 /** Answers nothing: `ready()`'s body task settles with `undefined`, as before. */
 function noop(): void {}
 
@@ -2332,10 +2375,24 @@ export class BunRequest<
     if (configured === undefined) {
       return EMPTY_SECRETS;
     }
-    const list = isArray(configured) ? configured : [configured];
-    return list.filter(
+    if (!isArray(configured)) {
+      return isString(configured) && configured !== "" ? [configured] : [];
+    }
+    // One list per configured array, not a filtered copy per request — while
+    // the array still holds what it held (a secret rotated in place is seen).
+    const cached = COOKIE_SECRETS.get(configured);
+    if (
+      cached !== undefined &&
+      cached.source.length === configured.length &&
+      cached.source.every((secret, i) => secret === configured[i])
+    ) {
+      return cached.list;
+    }
+    const list = configured.filter(
       (secret): secret is string => isString(secret) && secret !== "",
     );
+    COOKIE_SECRETS.set(configured, { source: [...configured], list });
+    return list;
   }
 
   /**
@@ -4013,25 +4070,18 @@ export class BunRequest<
    * handle it, or `undefined` for an unrecognized media type.
    */
   private detectParserKind(contentType: string): ContentParserType | undefined {
-    const ct = contentType.toLowerCase();
-    switch (true) {
-      case ct.includes("application/json") || ct.includes("+json"):
-        return "json";
-      case ct.includes("application/x-www-form-urlencoded"):
-        return "urlencoded";
-      case ct.includes("multipart/form-data"):
-        return "multipart";
-      case ct.includes("application/xml") ||
-        ct.includes("text/xml") ||
-        ct.includes("+xml"):
-        return "xml";
-      case ct.includes("text/plain"):
-        return "text";
-      case ct.includes("application/octet-stream"):
-        return "raw";
-      default:
-        return undefined;
+    if (PARSER_KINDS.has(contentType)) {
+      return PARSER_KINDS.get(contentType);
     }
+    const kind = detectParserKindOf(contentType);
+    // Not a multipart type: its boundary makes every client's value unique.
+    if (kind !== "multipart") {
+      if (PARSER_KINDS.size >= 256) {
+        PARSER_KINDS.clear();
+      }
+      PARSER_KINDS.set(contentType, kind);
+    }
+    return kind;
   }
 
   /**
