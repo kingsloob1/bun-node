@@ -103,10 +103,27 @@ floor. So plain `bun test` is still the one-process run, as is
   1668 in 76 s. On a quiet machine (load about 5) the cap does cost time:
   4 workers took 44–46 s against 23–24 s for 16, both green twice. The
   failures cost more than that, so the cap stays.
-- **One heavy run at a time.** Several sessions share this machine, so a
-  full suite, a `run-all.ts`, a consumer check or a load probe runs under
-  `flock /tmp/claude-1000/bun-node-heavy.lock <command>`; a single test file
-  or example needs no lock.
+- **Heavy runs take a slot.** Several sessions share this machine, so a
+  heavy job runs through `/tmp/claude-1000/bun-node-heavy-run.sh <command>`:
+  two slots, the second open only while the 1-minute load is under the core
+  count, so two heavy jobs run together on an idle machine and one at a time
+  on a busy one. Slot 1 is the old `/tmp/claude-1000/bun-node-heavy.lock`, so
+  a plain `flock` on it still counts. The command's exit status is passed
+  through; giving up after `HEAVY_WAIT` (default 90 min) exits 75.
+  - **A bun-jobs suite with database URLs runs alone**: the full suite, its
+    `--randomize` run, multi-file database runs. Prefix
+    `HEAVY_EXCLUSIVE=1`. Those suites share five servers and assert on
+    durations, and the 4-worker figures above were measured one at a time.
+  - **Heavy:** the bun-jobs and bun-jobs-ui suites, their `run-all.ts`
+    (Chrome), the consumer check, `check-types.ts`, benches, repeat or
+    concurrent-copy loops and load probes. **Not heavy, run directly:** the
+    bun-common and bun-nest suites and `run-all.ts` (seconds each), single
+    test files and examples, lint, typecheck and the template's test.
+  - Wrap the heavy command, not a script that also installs or sleeps, and
+    give it a `timeout`. Never `flock -o` on these locks: on this machine it
+    drops the lock while the command runs.
+  - The single lock this replaced queued 14 jobs for up to 40 minutes at a
+    load of about 6 on 16 cores — seconds-long runs waiting behind long ones.
 
 **Running the examples.** Each `examples/*/run-all.ts` runs four examples at a
 time (two in `bun-jobs-ui`, where each drives Chrome). `--jobs N` or
