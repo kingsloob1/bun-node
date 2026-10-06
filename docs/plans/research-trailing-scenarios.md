@@ -560,6 +560,104 @@ about 2.5 µs of a request.
 it. It is now documented as ignored and deprecated, with a test pinning
 that.
 
+## 8. Upload requests against Elysia 2: where the time goes
+
+Scripts: `evidence/trailing-scenarios/upload/` (in process: `stages.ts`,
+`pipeline.ts`; served under `wrk`: `served-layers.ts` with `layer-ab.sh`
+for interleaved rounds and `gcrun.sh` for GC time from JSC's GC log).
+
+**How Elysia 2 handles it.** It reads the upload with Bun's native
+`request.formData()` and returns `file.size`. A `File` from `formData()` is a
+lazy view of the body, so its request never copies the file's bytes or runs
+any per-file JavaScript. In process, a whole Elysia 2 upload is 5.6–6.4 µs, of
+which `formData()` is about 1.1–1.5 µs.
+
+**What was ours (in process, the served code path):** 15.2 µs per upload,
+broken down as:
+
+- `BunRequest.init` 11.5 µs, of which the read is 1.1 µs and the parse about
+  2.5 µs;
+- `handleMultipartSingleFile` 2.3 µs;
+- the pipeline and response 1.4 µs.
+
+The rest of `init` was machinery around the parse: a promise executor, a
+closure per event, an async task per file, `allSettled`, an awaited inflator
+per field, and busboy's content-type parser on every request.
+
+**Changes (`b3cfffe`, and the content-type regex after it):**
+
+- A body the in-memory parser answers, with the default inflators and no file
+  to sniff, is parsed into its result in one synchronous pass
+  (`#multipartSync`). The full parse keeps every other case, and both answer
+  the same (compared against busboy in `multipartBuffered.test.ts`).
+- The initial read takes the same one-call path as every other kind, and
+  awaits only a parse that really is asynchronous.
+- The parser:
+  - reads a part's header block from its own bytes, not a 1 KiB window, so a
+    file's content is never turned into a string;
+  - reads `multipart/form-data; boundary=<token>` with one regex. A cache
+    keyed by the header would miss on every browser upload, since each one
+    draws a new boundary.
+- The plain-name inflation walk is short-circuited.
+- `filterUpload` is skipped without a filter.
+- `omit()` builds no `Set` for a short key list.
+
+In process: 15.2 → **9.9 µs**. Served, same machine, `wrk`: 21,375 →
+**27,932 req/s**, 75% of Elysia 2 (37,383).
+
+**Served, layer by layer** (µs per request on the server's one core,
+interleaved rounds):
+
+| Layer | µs/req |
+|---|---:|
+| `await req.arrayBuffer()`, then `Response.json` | 16.8 |
+| `await req.formData()` (Elysia's parse) | 19.7 |
+| `arrayBuffer` + our parser | 23.6 |
+| `BunRequest` constructor + manual read + our parser | 23.0 |
+| `BunRequest.init` reading the body, then our parser | 29.2 |
+| `BunRequest.init` with the parse (the real build) | 30.0 |
+| + `handleMultipartSingleFile` | 31.2 |
+| the adapter, whole request | 34.2 |
+| Elysia 2, whole request | 26.7 |
+
+Served, the parser costs about 3 µs where it costs about 1.1 µs in a tight
+loop, as code sharing a core with a server does. `BunRequest.init`'s own read
+path costs about 6 µs more than a manual read, against about 1 µs in process.
+
+**GC is part of the served gap.** From JSC's GC log under the same load:
+
+| | GC per request | full collections in 5 s | live heap after a full GC |
+|---|---:|---:|---:|
+| our adapter | 4.2 µs | 40 | 6.3 MB |
+| Elysia 2 | 0.8–1.0 µs | 17–19 | 3.8 MB |
+| `arrayBuffer()` alone | 2.1–2.5 µs | 74–79 | |
+| `formData()` alone | 0.8 µs | 23 | |
+| `blob()` then `.bytes()` alone | 0.8 µs | 29 | |
+
+Any per-request typed-array **view** over an `ArrayBuffer` makes JSC
+materialise ("possess") the buffer and track it as extra memory. That covers
+`Buffer.from(await req.arrayBuffer())`, `subarray`, and reading `.buffer`.
+Made per request, these drove it to full collections. A **copy** does not:
+`Uint8Array.prototype.slice` measured 0.96 µs.
+
+Reading bodies through `blob().bytes()` and copying cut our GC to 1.75 µs per
+request and full collections from 40 to 9. **But throughput did not move**,
+in interleaved A/B rounds both with a 6 MB heap and with 150 MB of live
+objects retained (base 27.4–27.7k, read-by-blob 25.8–28.3k req/s). The extra
+native step and the copies cost what the GC saved, so it was reverted. The
+finding stands for anyone chasing p99s: per-request views over a body are
+what the collector pays for.
+
+**What is left, and why it is not multipart.** Our parser is at parity with
+native: `formData()` plus each file's bytes is 3.7 µs, and our read plus parse
+is also 3.7 µs. Elysia is faster because it never materialises the file and
+because its per-request machinery is lighter. The body scenarios measured
+the same way show this too: text and json at about 80% of Elysia 2, where
+multipart was at 35% and is now at 75%. Beating Elysia 2 on uploads therefore
+needs the general per-request work (`BunRequest` and `BunResponse`
+construction, the pipeline's async wait, the response): task C of the Elysia
+plan, "construction + dispatch".
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |
@@ -571,6 +669,7 @@ that.
 | multipart: busboy fed in one write, one native read under a cap, plain-name inflation, `detectFileType` | `f5abecd` | in process **189.6 → 87.0 µs** per upload; see §7 |
 | object-form `parseBody`: resolved once per options object | `f5abecd` | 707 → 144 ns per request; the capped config no longer trails `parseBody: true` |
 | multipart: busboy-exact buffered parser; `getMultiParts` restructured | `7ef403f` | `wrk` multipart **14,519 → 21,375 req/s** (+47%), bun-nest +50%; parser fastest of seven candidates; see §7 |
+| upload: synchronous multipart build, one-call read for multipart, header-block slice, content-type regex | `b3cfffe` + next | in process 15.2 → 9.9 µs; `wrk` multipart **21,375 → 27,932 req/s** (75% of Elysia 2); see §8 |
 
 ## Recommended order
 

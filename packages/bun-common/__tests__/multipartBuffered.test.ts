@@ -246,12 +246,16 @@ function makeCase(rnd: () => number) {
   }
   const quoted = /[ '"]/.test(boundary) || /[^\x21-\x7E]/.test(boundary);
   const contentType =
-    rnd() < 0.05
+    rnd() < 0.15
       ? pick([
           "multipart/form-data",
           "text/plain",
           `multipart/form-data; boundary="${boundary}"`,
           `Multipart/Form-Data; Boundary=${boundary}`,
+          `multipart/form-data ;boundary=${boundary}`,
+          `multipart/form-data;\tboundary=${boundary}  `,
+          `multipart/form-data; boundary=${boundary}; charset=utf-8`,
+          `multipart/form-data; boundary=${boundary} x`,
         ])
       : `multipart/form-data; boundary=${quoted ? `"${boundary}"` : boundary}`;
   const config: BufferedMultipartConfig = {};

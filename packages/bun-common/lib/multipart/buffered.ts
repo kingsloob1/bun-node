@@ -185,29 +185,30 @@ const COMMON_BLOCK = new RegExp(
 const COMMON_BLOCK_WINDOW = 1024;
 
 /**
- * Each `Content-Type` value's boundary, as busboy reads it (`undefined` when
- * busboy would not parse it as `multipart/form-data`). A client sends one
- * value per form, so busboy's char-by-char parse ran once per request.
+ * The `Content-Type` clients send, `multipart/form-data; boundary=<token>`,
+ * read without busboy's char-by-char parser: the same answer for this shape
+ * (type and parameter name without case, an unquoted token value). Not a
+ * cache keyed by the header, since a browser draws a new boundary per form.
  */
-const BOUNDARIES = new Map<string, string | undefined>();
+const SIMPLE_CONTENT_TYPE =
+  /^multipart\/form-data[ \t]*;[ \t]*boundary=([!#$%&'*+\-.^`|~\w]+)[ \t]*$/i;
 
+/**
+ * The body's boundary as busboy reads it, or `undefined` when busboy would
+ * not parse it as `multipart/form-data`.
+ */
 function boundaryFor(contentType: string): string | undefined {
-  if (BOUNDARIES.has(contentType)) {
-    return BOUNDARIES.get(contentType);
+  const simple = SIMPLE_CONTENT_TYPE.exec(contentType);
+  if (simple !== null) {
+    return simple[1];
   }
   const conType = utils.parseContentType(contentType);
-  const boundary =
-    conType &&
+  return conType &&
     conType.type === "multipart" &&
     conType.subtype === "form-data" &&
     typeof conType.params?.boundary === "string"
-      ? conType.params.boundary
-      : undefined;
-  if (BOUNDARIES.size >= 256) {
-    BOUNDARIES.clear();
-  }
-  BOUNDARIES.set(contentType, boundary);
-  return boundary;
+    ? conType.params.boundary
+    : undefined;
 }
 
 /** Each boundary's search needle, as busboy builds it (`\r\n--` + boundary, UTF-8). */

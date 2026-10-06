@@ -26,6 +26,9 @@ shell exports `--smol`). The `wrk` figures themselves come from
 | `multipart/formdata-semantics.ts` | §7 | What each answers on 20 inputs where they could differ |
 | `multipart/alternatives/speed.ts` | §7 | busboy, @fastify/busboy, bun-common's buffered parser, `formData()`, the Remix and remix-the-web parsers and multipasta, seven upload shapes, answers checked equal. Its own `package.json`: `npm install` there first |
 | `multipart/alternatives/remix-semantics.ts` | §7 | What busboy and the two Remix parsers answer on nine inputs where they could differ |
+| `upload/stages.ts`, `upload/pipeline.ts` | §8 | An upload in process, stage by stage, ours against Elysia 2; sync, async and upload handlers on the adapter |
+| `upload/served-layers.ts` | §8 | One served layer at a time (`LAYER=`): body read variants, `formData()`, our parser, `BunRequest.init`, the helper, the adapter |
+| `upload/layer-ab.sh`, `upload/gcrun.sh` | §8 | Interleaved `wrk` rounds of layers; GC time per request from `BUN_JSC_logGC` |
 | `urlencoded-parsers.ts` | §7 | picoquery against `formData()` and `URLSearchParams` for urlencoded bodies |
 | `parse-body-resolve.ts` | §7 | Resolving an object-form `parseBody` per request |
 
