@@ -27,12 +27,26 @@
  *   Node's `ServerResponse` does.
  * - `redirect()` builds a fresh `Response`, so headers set earlier on `res`
  *   are not carried onto it.
+ * - A stream's headers go out as soon as it opens: an async handler that
+ *   writes and then awaits does not hold its first chunk back. An open
+ *   stream is never cut short by the adapter's request timeout.
+ * - `res.isStreamOpen`, `res.writableEnded` and `res.onceStreamEnded()` say
+ *   where a stream is; `awaitPipelineOrStream()` is how the adapters and
+ *   `fetch()` hand a stream's `Response` back while the pipeline runs on.
  */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { Readable } from "node:stream";
-import { BunHttpAdapter, BunRouter } from "@kingsleyweb/bun-common";
+import {
+  awaitPipelineOrStream,
+  BunHttpAdapter,
+  BunRequest,
+  BunResponse,
+  BunRouter,
+  FETCH_STUB_SERVER,
+} from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
 title("Files and streams");
@@ -312,3 +326,121 @@ router.get("/tmp", async (_req, res) => {
 });
 show("root: os.tmpdir()", await (await router.fetch("/tmp")).text());
 await Bun.file(tmpPath).delete();
+
+/* ------------------------------------------------------------------ */
+step("A stream goes out as soon as it opens, and is never timed out");
+
+const live = new BunHttpAdapter(150);
+live.get("/progress", async (_req, res) => {
+  res.write("first;");
+  await Bun.sleep(300);
+  void res.end("last");
+});
+live.get("/long", (_req, res) => {
+  // Outlives the 150ms request timeout by far.
+  res.write("a;");
+  setTimeout(() => res.write("b;"), 200);
+  setTimeout(() => void res.end("c"), 400);
+});
+await live.listen(0);
+
+const progressFrom = performance.now();
+const progress = await fetch(`${live.url}/progress`);
+const progressReader = progress.body!.getReader();
+const firstChunk = await progressReader.read();
+const firstAt = performance.now() - progressFrom;
+checkEqual(
+  "an async handler's first chunk",
+  new TextDecoder().decode(firstChunk.value),
+  "first;",
+);
+check("…arrives before the handler resolves", firstAt < 250, firstAt);
+let rest = "";
+for (
+  let chunk = await progressReader.read();
+  !chunk.done;
+  chunk = await progressReader.read()
+) {
+  rest += new TextDecoder().decode(chunk.value);
+}
+checkEqual("…and the rest follows", rest, "last");
+
+const longFrom = performance.now();
+const long = await fetch(`${live.url}/long`);
+const longBody = await long.text();
+const longTook = performance.now() - longFrom;
+checkEqual(
+  "a stream outlives a 150ms requestTimeout",
+  [long.status, longBody],
+  [200, "a;b;c"],
+);
+check("…running its full ~400ms", longTook >= 350, longTook);
+await live.close();
+
+/* ------------------------------------------------------------------ */
+step("isStreamOpen, writableEnded, onceStreamEnded(), awaitPipelineOrStream()");
+
+/** A bodiless request and a response for it. */
+function pair(url = "http://localhost/"): [BunRequest, BunResponse] {
+  const request = BunRequest.init(new Request(url), FETCH_STUB_SERVER, {
+    parseBody: true,
+  }) as BunRequest;
+  return [request, new BunResponse(request)];
+}
+
+const [, tracked] = pair();
+checkEqual(
+  "before anything: not open, not ended",
+  [tracked.isStreamOpen, tracked.writableEnded],
+  [false, false],
+);
+tracked.write("x");
+checkEqual(
+  "after write(): open, not ended",
+  [tracked.isStreamOpen, tracked.writableEnded],
+  [true, false],
+);
+let streamEnded = false;
+tracked.onceStreamEnded(() => {
+  streamEnded = true;
+});
+await tracked.end("y");
+checkEqual(
+  "after end(): closed, ended, and onceStreamEnded() fired",
+  [tracked.isStreamOpen, tracked.writableEnded, streamEnded],
+  [false, true, true],
+);
+let calledAtOnce = false;
+pair()[1].onceStreamEnded(() => {
+  calledAtOnce = true;
+});
+check("onceStreamEnded() with no stream open: called at once", calledAtOnce);
+
+const streamer = new BunRouter();
+streamer.get("/s", (_req, res) => {
+  res.write("open");
+  setTimeout(() => void res.end(";done"), 50);
+});
+const [streamRequest, streamResponse] = pair("http://localhost/s");
+const outcome = await awaitPipelineOrStream(
+  streamer.handle({
+    requestHost: "localhost",
+    requestMethod: "GET",
+    requestUrl: "/s",
+    request: streamRequest,
+    response: streamResponse,
+  }),
+  streamResponse,
+  (error) => show("late error", error),
+);
+check(
+  "awaitPipelineOrStream(): the stream's Response, while it is still open",
+  outcome.stream instanceof Response && streamResponse.isStreamOpen,
+);
+checkEqual(
+  "…which reads to its end",
+  await outcome.stream?.text(),
+  "open;done",
+);
+
+summary();

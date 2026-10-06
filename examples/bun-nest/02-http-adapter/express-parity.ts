@@ -18,8 +18,9 @@
  *   `@Post()`) still answers `HEAD` with a 404.
  * - A `MiddlewareConsumer` middleware may call `next()` from a timer or an
  *   I/O callback, as callback-style Express middleware does: the request
- *   waits for it. One that never calls it is cut short by the adapter's
- *   request timeout (`new BunHttpAdapter(ms)`), as a 500.
+ *   waits for it. One that never calls it — or an `async` controller method
+ *   that never settles — is cut short by the adapter's request timeout
+ *   (`new BunHttpAdapter(ms)`), as a 500.
  * - `server.routes` is passed to `Bun.serve`: a constant `Response` there
  *   answers every method with no middleware, guard or interceptor, gets an
  *   `ETag`, and wins over a Nest route on the same path. It exists only on
@@ -113,6 +114,13 @@ class ParityController {
   @Get("stuck")
   stuck() {
     return "never reached: the middleware never calls next()";
+  }
+
+  @Get("stuck-controller")
+  async stuckController(): Promise<string> {
+    // Awaits forever: only the request timeout ends this request.
+    await new Promise<never>(() => {});
+    return "never reached";
   }
 }
 
@@ -221,6 +229,20 @@ show(
 );
 checkEqual("a middleware that never calls next() is a 500", stuck.status, 500);
 check("…once the 300ms request timeout ran out", waited >= 290, waited);
+
+const controllerFrom = performance.now();
+const stuckController = await fetch(`${base}/stuck-controller`);
+const controllerWaited = performance.now() - controllerFrom;
+checkEqual(
+  "an async controller method that never settles is a 500",
+  stuckController.status,
+  500,
+);
+check(
+  "…once the 300ms request timeout ran out",
+  controllerWaited >= 290,
+  controllerWaited,
+);
 
 /* ------------------------------------------------------------------ */
 step("server.routes: a native route, ahead of Nest");
