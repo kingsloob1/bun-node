@@ -559,12 +559,31 @@ function resolveMaxContentCodings(value: number | undefined): number {
   if (value === undefined) {
     return DEFAULT_MAX_CONTENT_CODINGS;
   }
-  if (!(typeof value === "number" && value >= 0)) {
+  if (
+    !(typeof value === "number" && value >= 0) ||
+    !(Number.isInteger(value) || value === Infinity)
+  ) {
     throw new RangeError(
-      `maxContentCodings must be a non-negative number, got ${String(value)}`,
+      `maxContentCodings must be a non-negative integer (or Infinity), got ${String(value)}`,
     );
   }
   return value;
+}
+
+/**
+ * Parses a `maxContentLength` option (bytes, or a string such as `"100kb"`).
+ *
+ * @throws {RangeError} for a value that is not a non-negative size — which
+ * would otherwise switch the cap off without a word.
+ */
+function resolveByteSizeOption(value: number | string, name: string): number {
+  const bytes = parseByteSize(value);
+  if (bytes === undefined) {
+    throw new RangeError(
+      `${name} must be a non-negative number of bytes or a size such as "100kb", got ${JSON.stringify(value)}`,
+    );
+  }
+  return bytes;
 }
 
 /**
@@ -898,7 +917,10 @@ function resolveBodyParseConfig(
   resolved.bodyCapsEnabled = true;
   resolved.maxContentLength =
     config.maxContentLength !== undefined
-      ? parseByteSize(config.maxContentLength)
+      ? resolveByteSizeOption(
+          config.maxContentLength,
+          "parseBody.maxContentLength",
+        )
       : undefined;
   // Body decoding, resolved here with the caps so it reaches the parse the
   // constructor schedules — which reads the body before any middleware.
@@ -947,7 +969,10 @@ function resolveBodyParseConfig(
       const typeConfig = value as ParseBodyContentTypeConfig;
       const max =
         typeConfig.maxContentLength !== undefined
-          ? parseByteSize(typeConfig.maxContentLength)
+          ? resolveByteSizeOption(
+              typeConfig.maxContentLength,
+              `parseBody.contentTypes.${key}.maxContentLength`,
+            )
           : undefined;
       perType.set(key, { opts: typeConfig.opts, maxContentLength: max });
     }
@@ -1135,8 +1160,12 @@ export class BunRequest<
       )[]
     | undefined = undefined;
 
-  /** Whether any of {@link #initTasks} is still a pending promise. */
-  #initPending = false;
+  /**
+   * The one {@link #initTasks} entry that can be pending — the body read,
+   * which never rejects (a failure settles the body as errored) — or
+   * `undefined` when initialisation finished synchronously.
+   */
+  #initPending: Promise<void> | undefined = undefined;
 
   /** Whether {@link options} is this request's own copy (see #writableOptions). */
   #ownsOptions = false;
@@ -1660,23 +1689,9 @@ export class BunRequest<
         this.#bodyDeferred = true;
         (this.#initTasks ??= []).push(DEFERRED_BODY_TASK);
       } else {
-        this.#initPending = true;
-        (this.#initTasks ??= []).push(
-          Promise.resolve(this.parseBody()).then(
-            () => {
-              // The body has been fully received — release the `data`/`end`
-              // events to any listener (or arm them for a later subscriber).
-              this.#bodyState = "ended";
-              this.#flushBodyEvents();
-            },
-            // `unknown`: a rejection reason is whatever the parse threw.
-            (error: unknown) => {
-              this.#bodyState = "errored";
-              this.#bodyError = error;
-              this.#flushBodyEvents();
-            },
-          ),
-        );
+        const bodyTask = this.#readInitialBody();
+        this.#initPending = bodyTask;
+        (this.#initTasks ??= []).push(bodyTask);
       }
     }
 
@@ -1798,6 +1813,65 @@ export class BunRequest<
   }
 
   /**
+   * The body read the constructor schedules; it never rejects, settling the
+   * body as ended or errored instead. A body that can be read in one native
+   * call and parsed synchronously — every kind but multipart, with no cap to
+   * enforce while it streams (see #canReadWhole) — is: `arrayBuffer()` then
+   * the parse, one promise in all. Anything else, and a subclass overriding
+   * `parseBody`, goes through {@link parseBody}.
+   */
+  #readInitialBody(): Promise<void> {
+    const contentTypeHeader = this.getHeader("Content-Type");
+    const declaredKind = contentTypeHeader
+      ? this.detectParserKind(contentTypeHeader)
+      : undefined;
+    const limit = this.resolveContentLimit(declaredKind);
+    if (
+      declaredKind === "multipart" ||
+      this.parseBody !== BunRequest.prototype.parseBody ||
+      this.request.bodyUsed ||
+      !this.#canReadWhole(limit)
+    ) {
+      return this.parseBody().then(
+        () => this.#bodyEnded(),
+        (error: unknown) => this.#bodyFailed(error),
+      );
+    }
+    return this.request.arrayBuffer().then(
+      (bytes) => {
+        try {
+          this.#parseBuffer(
+            this.#acceptBody(Buffer.from(bytes), limit),
+            contentTypeHeader,
+            declaredKind,
+          );
+        } catch (error) {
+          this.#bodyFailed(error);
+          return;
+        }
+        this.#bodyEnded();
+      },
+      (error: unknown) => this.#bodyFailed(error),
+    );
+  }
+
+  /**
+   * The body has been fully received: releases the `data`/`end` events to
+   * any listener (or arms them for a later subscriber).
+   */
+  #bodyEnded(): void {
+    this.#bodyState = "ended";
+    this.#flushBodyEvents();
+  }
+
+  /** The body read or parse failed: releases the `error` event. */
+  #bodyFailed(error: unknown): void {
+    this.#bodyState = "errored";
+    this.#bodyError = error;
+    this.#flushBodyEvents();
+  }
+
+  /**
    * Builds a `BunRequest` and settles whatever initialisation the options
    * scheduled (body / cookie parsing).
    *
@@ -1815,10 +1889,13 @@ export class BunRequest<
     ...args: ConstructorParameters<typeof BunRequest>
   ): BunRequest | Promise<BunRequest> {
     const req = new BunRequest(...args);
-    if (!req.#initPending) {
+    const pending = req.#initPending;
+    if (pending === undefined) {
       return req;
     }
-    return req.ready().then(() => req);
+    // Every other task finished in the constructor, and this one never
+    // rejects, so it alone is awaited — not `ready()`'s `allSettled`.
+    return pending.then(() => req);
   }
 
   /**
@@ -2809,7 +2886,7 @@ export class BunRequest<
   // what the client sent (a sniffed body is reported by `isBodyParsed` and the
   // body's shape, not by a rewritten header).
 
-  private async handleUrlFormEncodingParsing(data: string) {
+  private handleUrlFormEncodingParsing(data: string): boolean {
     try {
       const parsedData = parseSearchString(
         data,
@@ -2828,7 +2905,7 @@ export class BunRequest<
     return false;
   }
 
-  private async handleJsonBodyParsing(data: string) {
+  private handleJsonBodyParsing(data: string): boolean {
     try {
       this._body = JSON.parse(data, this.getParserOpts("json")?.reviver);
       this._contentType = "json";
@@ -2839,7 +2916,7 @@ export class BunRequest<
     return false;
   }
 
-  private async handleXmlBodyParsing(data: string) {
+  private handleXmlBodyParsing(data: string): boolean {
     try {
       this._body = parseXmlToObject(
         data,
@@ -2928,6 +3005,26 @@ export class BunRequest<
    *
    * @throws {PayloadTooLargeError} when the body exceeds `limit`.
    */
+  /**
+   * Whether the body can be read in one native call, with no cap to enforce
+   * while it streams: there is no cap, or the request declares a
+   * `Content-Length` within it and no `Transfer-Encoding` (a served request's
+   * body is framed by that length, so it cannot run past it). The length
+   * read is checked against the cap afterwards either way, which covers an
+   * in-process `Request` whose header disagrees with its body.
+   */
+  #canReadWhole(limit: number | undefined): boolean {
+    if (limit === undefined) {
+      return true;
+    }
+    const declared = this.getHeader("Content-Length");
+    if (!declared || this.getHeader("Transfer-Encoding")) {
+      return false;
+    }
+    const length = Number(declared);
+    return Number.isInteger(length) && length >= 0 && length <= limit;
+  }
+
   private async readBodyWithLimit(limit: number | undefined): Promise<Buffer> {
     if (limit !== undefined) {
       const declared = this.getHeader("Content-Length");
@@ -3396,7 +3493,9 @@ export class BunRequest<
    * a declared-but-empty JSON or urlencoded body gives `{}`, and an empty text
    * body `""`. Request headers are never modified.
    */
-  public async parseBody(fresh = false) {
+  public parseBody(fresh = false): Promise<ParsedBodyResult> {
+    // Not `async`: #parseBody already returns a promise, and a second async
+    // frame would cost another promise and microtask per body.
     return this.#parseBody(fresh, undefined);
   }
 
@@ -3442,26 +3541,72 @@ export class BunRequest<
       // Read the body under the cap resolved from the declared content type —
       // rejecting an oversized payload before (or while) it is buffered. See
       // {@link readBodyWithLimit}.
+      let raw: Buffer;
       try {
-        buffer = this.#decodeContentEncoding(
-          await this.readBodyWithLimit(limit),
-          limit,
-        );
-        if (limit !== undefined && buffer.length > limit) {
-          throw new PayloadTooLargeError(limit, buffer.length);
-        }
+        raw = this.#canReadWhole(limit)
+          ? Buffer.from(await this.request.arrayBuffer())
+          : await this.readBodyWithLimit(limit);
       } catch (error) {
-        if (error instanceof PayloadTooLargeError) {
-          this.#payloadTooLarge = { limit: error.limit, length: error.length };
-        }
+        this.#notePayloadTooLarge(error);
         throw error;
       }
+      buffer = this.#acceptBody(raw, limit);
     }
 
     if (!buffer) {
       throw new Error("Invalid body sent");
     }
 
+    const multipart = this.#parseBuffer(
+      buffer,
+      contentTypeHeader,
+      declaredKind,
+    );
+    if (multipart !== undefined) {
+      await multipart;
+    }
+    return {
+      body: this._body,
+      buffer: this._buffer,
+      contentType: this._contentType,
+      multipart: this.#parsedMultipartResp,
+    };
+  }
+
+  /** Records a {@link PayloadTooLargeError} for `isPayloadTooLarge`. */
+  #notePayloadTooLarge(error: unknown): void {
+    if (error instanceof PayloadTooLargeError) {
+      this.#payloadTooLarge = { limit: error.limit, length: error.length };
+    }
+  }
+
+  /**
+   * Decodes the body's `Content-Encoding` and checks the result against the
+   * cap. Throws a {@link PayloadTooLargeError} (recorded) over it, and the
+   * decoding's 400/415 errors.
+   */
+  #acceptBody(raw: Buffer, limit: number | undefined): Buffer {
+    try {
+      const buffer = this.#decodeContentEncoding(raw, limit);
+      if (limit !== undefined && buffer.length > limit) {
+        throw new PayloadTooLargeError(limit, buffer.length);
+      }
+      return buffer;
+    } catch (error) {
+      this.#notePayloadTooLarge(error);
+      throw error;
+    }
+  }
+
+  /**
+   * Parses a read (and decoded) body into `req.body` by its declared kind.
+   * Synchronous for every kind but multipart, whose parse it returns.
+   */
+  #parseBuffer(
+    buffer: Buffer,
+    contentTypeHeader: string | null | undefined,
+    declaredKind: ContentParserType | undefined,
+  ): Promise<unknown> | undefined {
     this._buffer = buffer;
     this.#bodyParsed = true;
 
@@ -3482,22 +3627,18 @@ export class BunRequest<
         }
       }
 
-      return {
-        body: this._body,
-        buffer: this._buffer,
-        contentType: this._contentType,
-        multipart: this.#parsedMultipartResp,
-      };
+      return undefined;
     }
 
-    const bufferText = buffer.toString();
-
+    // Decoded to text only for the kinds parsed from text: a multipart or raw
+    // body is never turned into a string it does not use.
     if (!contentTypeHeader) {
+      const bufferText = buffer.toString();
       let hasParsedData = false;
 
       // Try JSON parse
       if (!hasParsedData && this.isParserAllowed("json")) {
-        hasParsedData = await this.handleJsonBodyParsing(bufferText);
+        hasParsedData = this.handleJsonBodyParsing(bufferText);
       }
 
       // Try XML parse (only when the payload actually looks like XML) — this
@@ -3508,12 +3649,12 @@ export class BunRequest<
         this.isParserAllowed("xml") &&
         bufferText.trimStart().startsWith("<")
       ) {
-        hasParsedData = await this.handleXmlBodyParsing(bufferText);
+        hasParsedData = this.handleXmlBodyParsing(bufferText);
       }
 
       // Try url-encoded form data parse
       if (!hasParsedData && this.isParserAllowed("urlencoded")) {
-        hasParsedData = await this.handleUrlFormEncodingParsing(bufferText);
+        hasParsedData = this.handleUrlFormEncodingParsing(bufferText);
       }
 
       // Leave it as buffer
@@ -3531,7 +3672,9 @@ export class BunRequest<
         switch (kind) {
           case "text": {
             const encoding = this.getParserOpts("text")?.encoding;
-            this._body = encoding ? buffer.toString(encoding) : bufferText;
+            this._body = encoding
+              ? buffer.toString(encoding)
+              : buffer.toString();
             this._contentType = "text";
             break;
           }
@@ -3542,28 +3685,27 @@ export class BunRequest<
           }
 
           case "json": {
-            await this.handleJsonBodyParsing(bufferText);
+            this.handleJsonBodyParsing(buffer.toString());
             break;
           }
 
           case "urlencoded": {
-            await this.handleUrlFormEncodingParsing(bufferText);
+            this.handleUrlFormEncodingParsing(buffer.toString());
             break;
           }
 
           case "xml": {
-            await this.handleXmlBodyParsing(bufferText);
+            this.handleXmlBodyParsing(buffer.toString());
             break;
           }
 
           case "multipart": {
-            await this.getMultiParts(
+            return this.getMultiParts(
               this.getParserOpts("multipart") ??
                 (isObject(this.legacyOptions.parseMultiPartFormDataOpts)
                   ? this.legacyOptions.parseMultiPartFormDataOpts
                   : {}),
             );
-            break;
           }
 
           default: {
@@ -3574,12 +3716,7 @@ export class BunRequest<
       }
     }
 
-    return {
-      body: this._body,
-      buffer: this._buffer,
-      contentType: this._contentType,
-      multipart: this.#parsedMultipartResp,
-    };
+    return undefined;
   }
 
   /** Whether the request matches a body-parser `type` option (body-parser's `typeChecker`). */

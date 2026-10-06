@@ -51,7 +51,9 @@ describe("BunRequest: lazily-held state", () => {
   it("emits request events through a lazily created emitter", async () => {
     const req = await makeRequest({ method: "POST", body: "hello" });
     const seen: string[] = [];
-    req.on("data", (chunk: Uint8Array) => seen.push(new TextDecoder().decode(chunk)));
+    req.on("data", (chunk: Uint8Array) => {
+      seen.push(new TextDecoder().decode(chunk));
+    });
     await new Promise<void>((resolve) => req.on("end", () => resolve()));
     expect(seen.join("")).toBe("hello");
   });
@@ -136,6 +138,46 @@ describe("parseBody misconfiguration fails where it is configured", () => {
     expect(() =>
       validateParseBodyOption({ encodings: ["gzip"], maxContentCodings: 2 }),
     ).not.toThrow();
+  });
+
+  it("rejects a size that does not parse, instead of ignoring it", () => {
+    for (const bad of ["lots", "-5", "1.5 parsecs", -5, Number.NaN, Infinity]) {
+      expect(() =>
+        validateParseBodyOption({ maxContentLength: bad as never }),
+      ).toThrow(/parseBody\.maxContentLength must be/);
+      expect(() =>
+        validateParseBodyOption({
+          contentTypes: { json: { maxContentLength: bad as never } },
+        }),
+      ).toThrow(/parseBody\.contentTypes\.json\.maxContentLength must be/);
+    }
+    for (const good of [0, 1024, "100kb", "1.5mb", "  2 KB "]) {
+      expect(() =>
+        validateParseBodyOption({ maxContentLength: good }),
+      ).not.toThrow();
+    }
+    expect(
+      () =>
+        new BunHttpAdapter(0, {
+          request: { parseBody: { maxContentLength: "lots" as never } },
+        }),
+    ).toThrow(RangeError);
+    expect(() =>
+      requestParsing({ parseBody: { maxContentLength: -5 } }),
+    ).toThrow(RangeError);
+  });
+
+  it("maxContentCodings must be a non-negative integer or Infinity", () => {
+    for (const bad of [1.5, -1, Number.NaN, "2" as never]) {
+      expect(() => validateParseBodyOption({ maxContentCodings: bad })).toThrow(
+        /non-negative integer/,
+      );
+    }
+    for (const good of [0, 1, 5, Infinity]) {
+      expect(() =>
+        validateParseBodyOption({ maxContentCodings: good }),
+      ).not.toThrow();
+    }
   });
 
   it("the adapter throws at construction and keeps its options on a bad replace", async () => {
