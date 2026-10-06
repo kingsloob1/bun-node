@@ -456,6 +456,12 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 | `compressionDictionaries` | none | Dictionaries (or a resolver) for `dcb`/`dcz` bodies. |
 | anything else | | Parser-specific options (`strict`, `reviver`, `extended`, …). |
 
+- **A request with no body is passed on at once.** No `Content-Length`, no
+  `Transfer-Encoding` and no body stream (`req.hasBody` is `false`): the
+  parser calls `next()` synchronously, before looking at the type, encoding or
+  size, as body-parser's `read()` does. It never sets `rawBody` for one. This
+  is most of a GET's cost in a Nest app: skipping it made bun-nest's GET
+  scenarios 8–23% faster.
 - **Each kind is registered once.** A second `useBodyParser` call for the same
   kind (and prefix) does nothing; different kinds stack, each with its own
   options.

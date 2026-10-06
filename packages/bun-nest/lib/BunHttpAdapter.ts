@@ -826,18 +826,25 @@ export class BunHttpAdapter<
       return this;
     }
 
-    const middlewareHandler: RouterMiddlewareHandler = async (req, _, next) => {
+    const parse = async (req: BunRequest, next: NextFunction) => {
       const buffer = await req.handleBodyParsing(true, options, parser);
       // As body-parser's `verify` hook in Nest's ExpressAdapter: `rawBody` is
       // set only by a parser that read the body. A request this parser skipped
-      // (another type, or no body) keeps what an earlier parser set.
+      // (another type) keeps what an earlier parser set.
       if (rawBody && buffer !== undefined) {
         set(req, "rawBody", buffer);
       }
-
-      if (next) {
+      next();
+    };
+    // A request with no body is passed on synchronously, before its type,
+    // encoding or size is looked at, as body-parser's `read()` does — so the
+    // pipeline never waits on a promise for it, and `rawBody` stays unset.
+    const middlewareHandler: RouterMiddlewareHandler = (req, _, next) => {
+      if (!req.hasBody) {
         next();
+        return;
       }
+      return parse(req, next);
     };
 
     if (isString(prefix) && prefix) {

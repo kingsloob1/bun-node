@@ -3881,6 +3881,23 @@ export class BunRequest<
     }
   }
 
+  /**
+   * Whether the request carries a body: a `Content-Length` or
+   * `Transfer-Encoding` header (`type-is`'s `hasBody`, which body-parser
+   * checks before anything else), or — for a `Request` built in process,
+   * which may have a body and neither header — a body stream. A body parser
+   * skips a request without one, as body-parser's `read()` does, before
+   * looking at its type, encoding or size.
+   */
+  get hasBody(): boolean {
+    const headers = this.headersObj;
+    return (
+      headers.get("content-length") !== null ||
+      headers.get("transfer-encoding") !== null ||
+      this.request.body !== null
+    );
+  }
+
   /** `true` once the body has been parsed (a body left `undefined` included). */
   get isBodyParsed() {
     return this.#bodyParsed || !!this._contentType;
