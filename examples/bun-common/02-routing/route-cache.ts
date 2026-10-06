@@ -298,4 +298,35 @@ checkEqual(
   "/r999/:id",
 );
 
+/* ------------------------------------------------------------------ */
+step("One cache entry per path, one answer per method; requestPath");
+
+const verbs = new BunRouter({ routeCacheMax: 4 });
+verbs.get("/items/:id", (req, res) => res.send(`GET ${req.params.id}`));
+verbs.post("/items/:id", (req, res) => res.send(`POST ${req.params.id}`));
+const answers: string[] = [];
+for (const method of ["GET", "POST", "GET", "POST", "DELETE"]) {
+  const response = await verbs.fetch("/items/7", { method });
+  answers.push(`${response.status} ${await response.text()}`);
+}
+checkEqual(
+  "GET and POST on one path, alternating: each routed to its own handler",
+  answers,
+  ["200 GET 7", "200 POST 7", "200 GET 7", "200 POST 7", "404 "],
+);
+// The adapters pass the path they already split as `requestPath`; the
+// router then matches it rather than splitting `requestUrl` again.
+checkEqual(
+  "getMatchedLayers({ …, requestPath }): matched on the path given",
+  verbs
+    .getMatchedLayers({
+      requestHost: "localhost",
+      requestMethod: "POST",
+      requestUrl: "/items/9?expand=true",
+      requestPath: "/items/9",
+    })
+    .map((layer) => [layer.routeIndex, layer.matched.params]),
+  [[1, { id: "9" }]],
+);
+
 summary();
