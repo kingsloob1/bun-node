@@ -1326,6 +1326,32 @@ export const worker = jobs.worker("mail", processor, { concurrency: 4 });
 export const cleanup = jobs.runner({ id: "cleanup", file: "./jobs/cleanup.ts" });
 ```
 
+**A queue's options apply when it is created.** `jobs.queue(name, options)`
+builds the queue on the first call — or whatever reaches that name first: the
+registry's verbs, `start()`, the management API — and every later call returns
+that instance unchanged. Options a later call passes are ignored; when they
+differ from the ones the queue was created with, the context's logger warns,
+once per queue name:
+
+```ts
+jobs.queue("mail", { defaultJobOptions: { attempts: 3 } });
+jobs.queue("mail"); // the same queue, no warning
+jobs.queue("mail", { defaultJobOptions: { attempts: 3 } }); // same options, no warning
+jobs.queue("mail", { defaultJobOptions: { attempts: 5 } }); // still attempts: 3
+// warn: Queue "mail" already exists, so these options passed for it are ignored:
+//       defaultJobOptions. … { queue: "mail", ignoredOptions: ["defaultJobOptions"] }
+```
+
+Data options (`defaultJobOptions`, `subscribe`, `publish`,
+`jobDefaultsRefreshInterval`) compare by value, so equal options in a new
+object are not a difference; `logger` and `dateParser` compare by identity.
+An option passed with the queue's own default (`subscribe: false`) is not a
+difference either.
+Context defaults count as what the queue was created with: on a context with
+`defaultJobOptions`, passing those same defaults again says nothing. To give a
+queue its own options, pass them on the call that creates it — typically one
+module that exports the queue, as above.
+
 Examples:
 
 - [`01-quick-start/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/01-quick-start/index.ts)
@@ -1362,7 +1388,7 @@ The context has these members:
 | `service` | The `service` option, or `undefined`. |
 | `runners` | The context's [`BunRunnerManager`](#bunrunnermanager). |
 | `workers` | The context's `WorkerControllerManager`: `workers.controller(queue)` returns the [`WorkerController`](#controlling-workers-from-another-process) for that queue's workers, in any process. |
-| `queue(name, opts?)` | The queue by that name. |
+| `queue(name, opts?)` | The queue by that name, created on the first call; `opts` apply only then, and a later call passing different ones warns (see [above](#the-bunjobs-registry-and-builder)). |
 | `worker(name, processor, opts?)` | Creates a worker on a queue. |
 | `runner(opts)` | Creates a runner. |
 | `define(name, handler, opts?)` | Defines a job by name. |

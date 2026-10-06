@@ -342,6 +342,14 @@ export class BunJobs<
   readonly #childDriver?: DriverConfig;
   /** Queues created here, by name, so `close()` can close them. */
   readonly #queues = new Map<string, BunQueue<any, any, any>>();
+  /**
+   * The options each queue in `#queues` was created with, as resolved here
+   * (context defaults filled in), so a later `queue()` call can tell whether
+   * the options it passes would have changed anything.
+   */
+  readonly #queueOptions = new Map<string, QueueCreateOptions>();
+  /** Names already warned about ignored options, so each warns only once. */
+  readonly #warnedQueueOptions = new Set<string>();
   /** Workers created here. */
   readonly #workers = new Set<BunQueueWorker<any, any>>();
   /** Jobs defined by name, and how to run them. */
@@ -526,6 +534,15 @@ export class BunJobs<
    * The queue by that name in this namespace. Calling it twice returns the
    * same instance, so listeners attached to it are not silently orphaned.
    *
+   * `options` apply only when the queue is created — by the first
+   * `queue(name)` call, or by anything here that reaches the queue first (the
+   * registry's verbs, `start()` and `drain()`, the management API). A later
+   * call returns that queue unchanged; if it passes options that differ from
+   * the ones the queue was created with, the context's logger warns once per
+   * name, listing the ignored keys. A later call with no options, or the same
+   * ones, says nothing. Data options (`defaultJobOptions`, `subscribe`, ...)
+   * compare by value; `logger`, `dateParser` and `publishGate` by identity.
+   *
    * On a context that declared a {@link JobMap}, the registry queue — the
    * one named by `TRegistryQueue`, `"jobs"` unless declared otherwise —
    * answers with the registry's queue type: `add` takes a declared name and
@@ -555,6 +572,9 @@ export class BunJobs<
    * queue's own name reaches — `jobs.queue<unknown>("jobs")` is the untyped
    * view of the same instance, for code that reads what the map does not
    * describe.
+   *
+   * As above, `options` apply only when the queue is created; a later call
+   * passing different ones gets the existing queue and a warning.
    */
   queue<TData = unknown, TResult = unknown, TName extends string = string>(
     name: string,
@@ -568,26 +588,67 @@ export class BunJobs<
   ): BunQueue<any, any, any, any> {
     const existing = this.#queues.get(name);
     if (existing) {
+      if (options !== undefined) {
+        this.#warnIgnoredQueueOptions(name, options);
+      }
       return existing;
     }
 
-    const queue = new BunQueue(name, {
+    const created: QueueCreateOptions = {
       ...(this.#publishEvents ? { publish: true } : {}),
       publishGate: this.#publishGate,
       ...options,
-      namespace: this.namespace,
-      driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
       defaultJobOptions: options?.defaultJobOptions ?? this.#defaultJobOptions,
       dateParser: options?.dateParser ?? this.#dateParser,
+    };
+    const queue = new BunQueue(name, {
+      ...created,
+      namespace: this.namespace,
+      driver: this.driver,
     });
 
     // Its verbs, and every builder's toQueue(), route through this context.
     queue[JOB_ROUTER] = this.#router;
     this.#queues.set(name, queue);
+    // With the queue's own defaults resolved, so passing one explicitly
+    // later (`subscribe: false`) is not a difference.
+    const subscribe = created.subscribe ?? false;
+    this.#queueOptions.set(name, {
+      ...created,
+      subscribe,
+      publish: created.publish ?? subscribe,
+      jobDefaultsRefreshInterval: queue.jobDefaultsRefreshInterval,
+    });
     this.#summonControllers.get(name)?.[ATTACH_QUEUE](queue);
     this.#followInNotifiers("queue", name);
     return queue;
+  }
+
+  /**
+   * Warns, once per name, that `options` passed for an existing queue are
+   * ignored — when any of them differs from what the queue was created with.
+   * See {@link differingQueueOptions} for what counts as different.
+   */
+  #warnIgnoredQueueOptions(
+    /** The queue's name. */
+    name: string,
+    /** The options this call passed. */
+    options: QueueCreateOptions,
+  ): void {
+    const created = this.#queueOptions.get(name);
+    if (created === undefined || this.#warnedQueueOptions.has(name)) {
+      return;
+    }
+    const ignored = differingQueueOptions(created, options);
+    if (ignored.length === 0) {
+      return;
+    }
+    this.#warnedQueueOptions.add(name);
+    this.#logger.warn(
+      `Queue "${name}" already exists, so these options passed for it are ignored: ${ignored.join(", ")}. A queue's options apply only when it is created`,
+      { queue: name, ignoredOptions: ignored },
+    );
   }
 
   /**
@@ -1388,6 +1449,8 @@ export class BunJobs<
     );
 
     this.#queues.clear();
+    this.#queueOptions.clear();
+    this.#warnedQueueOptions.clear();
     this.#workers.clear();
 
     if (this.#ownsDriver) {
@@ -1504,4 +1567,47 @@ function readProcessEvery(interval: number | string): number {
   }
 
   return ms;
+}
+
+/** The options `BunJobs.queue()` takes: a queue's, less what the context sets. */
+type QueueCreateOptions = Omit<BunQueueOptions, "namespace" | "driver">;
+
+/**
+ * Queue options that are objects with behaviour rather than data — a logger,
+ * a date parser, a function — compared by identity: the same instance or
+ * not. Comparing a logger's insides would call two `child()` loggers of one
+ * parent equal, which they are not, and could walk a large object graph.
+ */
+const IDENTITY_QUEUE_OPTIONS: ReadonlySet<string> = new Set<
+  keyof QueueCreateOptions
+>(["logger", "dateParser", "publishGate"]);
+
+/**
+ * The top-level keys of `passed` whose value differs from the one in
+ * `created`, sorted. Only keys `passed` gives a defined value count: a key
+ * left out, or set to `undefined`, asks for nothing. Behaviour-carrying
+ * options ({@link IDENTITY_QUEUE_OPTIONS}) compare by identity; the rest are
+ * plain data and compare by value with `Bun.deepEquals` — key order and
+ * `undefined` properties aside, `Date`s by time, and any function found
+ * nested by identity.
+ */
+function differingQueueOptions(
+  /** What the queue was created with. */
+  created: QueueCreateOptions,
+  /** What a later call passed. */
+  passed: QueueCreateOptions,
+): string[] {
+  const createdByKey = created as Record<string, unknown>;
+  return Object.entries(passed)
+    .filter(([key, value]) => {
+      if (value === undefined) {
+        return false;
+      }
+      const original = createdByKey[key];
+      return IDENTITY_QUEUE_OPTIONS.has(key)
+        ? value !== original
+        : !Bun.deepEquals(value, original);
+    })
+    .map(([key]) => key)
+    .sort();
 }
