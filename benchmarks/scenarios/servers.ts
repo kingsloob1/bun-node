@@ -17,6 +17,18 @@
  *   GET  /r<i>/:id        -> "r<i>:<id>" for i in 0..ROUTES-1 (ROUTES env,
  *                            default 1000): the lookup-cost set
  *
+ * And one route per body type, each answering JSON built from what it parsed:
+ *
+ *   POST /form    urlencoded `a=1&b=two`        -> {"a":"1","b":"two"}
+ *   POST /upload  multipart: field + 1 KiB file -> {"field":"v","size":1024}
+ *   POST /binary  1 KiB application/octet-stream -> {"size":1024}
+ *   POST /text    text/plain `hello world`      -> {"length":11}
+ *   POST /xml     `<root><n>7</n></root>`       -> {"n":7}  (only where the
+ *                 framework parses XML itself; see UNSUPPORTED in ../wrk.ts)
+ *
+ * bun-common and bun-nest run with `retainBuffer: false`: no other framework
+ * keeps a body's bytes, so they do not either (the library default keeps them).
+ *
  * Targets: bun-common, bun-nest, express, hono, elysia, elysia2, bun-serve
  * (Bun's native `routes`). hyper-express is a Node.js addon and runs from
  * `../hyper-express/scenarios.mjs` instead (see `../wrk.ts`).
@@ -101,11 +113,39 @@ function registerExpressStyle(app: ExpressStyle, wildcard = "/assets/*"): void {
 async function start(target: string | undefined): Promise<number> {
   switch (target) {
     case "bun-common": {
-      const { BunHttpAdapter } =
-        await import("../../packages/bun-common/lib/index");
-      // Default options: query, cookie and body parsing on, as an app has them.
-      const adapter = new BunHttpAdapter(0, {});
+      // Default options (query, cookie and body parsing on, as an app has
+      // them), keeping no body bytes as the other frameworks keep none.
+      const lib = await import("../../packages/bun-common/lib/index");
+      const adapter = new lib.BunHttpAdapter(0, {
+        request: { retainBuffer: false },
+      });
       registerExpressStyle(adapter as unknown as ExpressStyle);
+      const uploads = lib.transformUploadOptions({ storageType: "memory" });
+      type BodyReq = { body: unknown };
+      type JsonRes = { json: (body: unknown) => unknown };
+      adapter.post("/form", (req, res) => {
+        res.json((req as BodyReq).body as Record<string, string>);
+      });
+      adapter.post("/binary", (req, res) => {
+        res.json({ size: ((req as BodyReq).body as Uint8Array).length });
+      });
+      adapter.post("/text", (req, res) => {
+        res.json({ length: ((req as BodyReq).body as string).length });
+      });
+      adapter.post("/xml", (req, res) => {
+        res.json({ n: ((req as BodyReq).body as { root: { n: unknown } }).root.n });
+      });
+      adapter.post("/upload", async (req, res) => {
+        const { body, file } = await lib.handleMultipartSingleFile(
+          req,
+          "file",
+          uploads,
+        );
+        (res as unknown as JsonRes).json({
+          field: (body as { field: string }).field,
+          size: file?.size,
+        });
+      });
       const server = await adapter.listen(0);
       return server.port!;
     }
@@ -126,6 +166,23 @@ async function start(target: string | undefined): Promise<number> {
       };
       const app = express();
       app.use("/json", express.json());
+      // Express parses neither XML nor multipart without another package.
+      const mod = express as unknown as {
+        urlencoded: (o: object) => (req: Req, res: Res, next: Next) => void;
+        raw: (o: object) => (req: Req, res: Res, next: Next) => void;
+        text: (o: object) => (req: Req, res: Res, next: Next) => void;
+      };
+      app.use("/form", mod.urlencoded({ extended: false }));
+      app.use("/binary", mod.raw({ type: "application/octet-stream" }));
+      app.use("/text", mod.text({ type: "text/plain" }));
+      const body = (req: Req) => (req as unknown as { body: unknown }).body;
+      app.post("/form", (req, res) => res.json(body(req)));
+      app.post("/binary", (req, res) =>
+        res.json({ size: (body(req) as Uint8Array).length }),
+      );
+      app.post("/text", (req, res) =>
+        res.json({ length: (body(req) as string).length }),
+      );
       registerExpressStyle(app, "/assets/*splat");
       return await new Promise<number>((resolve) => {
         const server = app.listen(0, () => resolve(server.address().port));
@@ -150,6 +207,17 @@ async function start(target: string | undefined): Promise<number> {
         const body = await c.req.json<{ n: number }>();
         return c.json({ ok: true, n: body.n });
       });
+      app.post("/form", async (c) => c.json(await c.req.parseBody()));
+      app.post("/upload", async (c) => {
+        const body = await c.req.parseBody();
+        return c.json({ field: body.field, size: (body.file as File).size });
+      });
+      app.post("/binary", async (c) =>
+        c.json({ size: (await c.req.arrayBuffer()).byteLength }),
+      );
+      app.post("/text", async (c) =>
+        c.json({ length: (await c.req.text()).length }),
+      );
       app.get("/async", async (c) => {
         await null;
         return c.text("ok");
@@ -200,7 +268,16 @@ async function start(target: string | undefined): Promise<number> {
         .post("/json", ({ body }) => ({
           ok: true,
           n: (body as { n: number }).n,
-        }));
+        }))
+        .post("/form", ({ body }) => body)
+        .post("/upload", ({ body }) => {
+          const form = body as { field: string; file: File };
+          return { field: form.field, size: form.file.size };
+        })
+        .post("/binary", ({ body }) => ({
+          size: (body as ArrayBuffer).byteLength,
+        }))
+        .post("/text", ({ body }) => ({ length: (body as string).length }));
       for (let i = 0; i < ROUTES; i++) {
         app = app.get(
           `/r${i}/:id`,
@@ -234,6 +311,29 @@ async function start(target: string | undefined): Promise<number> {
             const body = (await req.json()) as { n: number };
             return Response.json({ ok: true, n: body.n });
           },
+        },
+        "/form": {
+          POST: async (req: Bun.BunRequest) =>
+            Response.json(
+              Object.fromEntries(new URLSearchParams(await req.text())),
+            ),
+        },
+        "/upload": {
+          POST: async (req: Bun.BunRequest) => {
+            const form = await req.formData();
+            return Response.json({
+              field: form.get("field"),
+              size: (form.get("file") as File).size,
+            });
+          },
+        },
+        "/binary": {
+          POST: async (req: Bun.BunRequest) =>
+            Response.json({ size: (await req.arrayBuffer()).byteLength }),
+        },
+        "/text": {
+          POST: async (req: Bun.BunRequest) =>
+            Response.json({ length: (await req.text()).length }),
         },
       };
       for (let i = 0; i < ROUTES; i++) {

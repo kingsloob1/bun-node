@@ -51,9 +51,33 @@ const ALL_SCENARIOS = [
   "routes-1000",
   "param-random",
   "json",
+  "urlencoded",
+  "multipart",
+  "binary",
+  "text",
+  "xml",
   "async",
   "headers",
 ];
+
+/**
+ * Scenarios a framework cannot serve without another package, and why: they
+ * are reported, not measured with a stand-in. Express 5 ships parsers for
+ * JSON, urlencoded, raw and text only; XML is built into bun-common alone
+ * (and bun-nest, which uses its requests).
+ */
+const UNSUPPORTED: Record<string, Record<string, string>> = {
+  express: {
+    multipart: "no built-in multipart parser (needs multer)",
+    xml: "no built-in XML parser",
+  },
+  hono: { xml: "no built-in XML parser" },
+  elysia: { xml: "no built-in XML parser" },
+  elysia2: { xml: "no built-in XML parser" },
+  "bun-serve": { xml: "no built-in XML parser" },
+  "hyper-express-node": { xml: "no built-in XML parser" },
+  "hyper-express-bun": { xml: "no built-in XML parser" },
+};
 
 /** How each target is labelled in the report. */
 const LABELS: Record<string, string> = {
@@ -111,6 +135,38 @@ const lua = (name: string, body: string) => {
   writeFileSync(path, body);
   return path;
 };
+
+/** A wrk script POSTing `bodyLua` (a Lua expression) as `contentType`. */
+function post(name: string, contentType: string, bodyLua: string): string {
+  return lua(
+    name,
+    `wrk.method = "POST"\nwrk.body = ${bodyLua}\nwrk.headers["Content-Type"] = "${contentType}"\n`,
+  );
+}
+
+/** A response check: the body parses to exactly `expected`. */
+function jsonEquals(expected: unknown): (text: string) => boolean {
+  return (text) => {
+    try {
+      return JSON.stringify(JSON.parse(text)) === JSON.stringify(expected);
+    } catch {
+      return false;
+    }
+  };
+}
+
+const BOUNDARY = "BunNodeBenchBoundary";
+const FILE_BYTES = "x".repeat(1024);
+/** The multipart body: a `field` of "v" and a 1 KiB `file`. */
+const MULTIPART_BODY =
+  `--${BOUNDARY}\r\nContent-Disposition: form-data; name="field"\r\n\r\nv\r\n` +
+  `--${BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n` +
+  `Content-Type: application/octet-stream\r\n\r\n${FILE_BYTES}\r\n--${BOUNDARY}--\r\n`;
+/** The same body as a Lua expression. */
+const MULTIPART_LUA =
+  `"--${BOUNDARY}\\r\\nContent-Disposition: form-data; name=\\"field\\"\\r\\n\\r\\nv\\r\\n` +
+  `--${BOUNDARY}\\r\\nContent-Disposition: form-data; name=\\"file\\"; filename=\\"a.bin\\"\\r\\n` +
+  `Content-Type: application/octet-stream\\r\\n\\r\\n" .. string.rep("x", 1024) .. "\\r\\n--${BOUNDARY}--\\r\\n"`;
 
 interface Scenario {
   /** What it exercises, for the report. */
@@ -182,6 +238,83 @@ const SCENARIOS: Record<string, Scenario> = {
           return false;
         }
       },
+    },
+  },
+  urlencoded: {
+    about: "POST /form a=1&b=two, the parsed fields back as JSON",
+    path: "/form",
+    script: post("form", "application/x-www-form-urlencoded", `"a=1&b=two"`),
+    check: {
+      path: "/form",
+      init: {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "a=1&b=two",
+      },
+      body: jsonEquals({ a: "1", b: "two" }),
+    },
+  },
+  multipart: {
+    about: "POST /upload, a field and a 1 KiB file (multipart/form-data)",
+    path: "/upload",
+    script: post(
+      "upload",
+      `multipart/form-data; boundary=${BOUNDARY}`,
+      MULTIPART_LUA,
+    ),
+    check: {
+      path: "/upload",
+      init: {
+        method: "POST",
+        headers: {
+          "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+        },
+        body: MULTIPART_BODY,
+      },
+      body: jsonEquals({ field: "v", size: 1024 }),
+    },
+  },
+  binary: {
+    about: "POST /binary, 1 KiB application/octet-stream, its size back",
+    path: "/binary",
+    script: post("binary", "application/octet-stream", `string.rep("x", 1024)`),
+    check: {
+      path: "/binary",
+      init: {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: "x".repeat(1024),
+      },
+      body: jsonEquals({ size: 1024 }),
+    },
+  },
+  text: {
+    about: "POST /text hello world (text/plain), its length back",
+    path: "/text",
+    script: post("text", "text/plain", `"hello world"`),
+    check: {
+      path: "/text",
+      init: {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "hello world",
+      },
+      body: jsonEquals({ length: 11 }),
+    },
+  },
+  xml: {
+    about: "POST /xml <root><n>7</n></root>, the parsed value back",
+    path: "/xml",
+    script: post("xml", "application/xml", `"<root><n>7</n></root>"`),
+    check: {
+      path: "/xml",
+      init: {
+        method: "POST",
+        headers: { "content-type": "application/xml" },
+        body: "<root><n>7</n></root>",
+      },
+      // A parser may give the number or its text.
+      body: (t) => t === '{"n":7}' || t === '{"n":"7"}',
     },
   },
   async: {
@@ -388,6 +521,11 @@ for (let round = 0; round < Number(values.rounds); round++) {
     }
     for (const name of scenarios) {
       if (skipped[key(target, name)]) {
+        continue;
+      }
+      const unsupported = UNSUPPORTED[target]?.[name];
+      if (unsupported !== undefined) {
+        skipped[key(target, name)] = `not supported — ${unsupported}`;
         continue;
       }
       const scenario = SCENARIOS[name];

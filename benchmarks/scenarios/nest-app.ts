@@ -15,9 +15,14 @@ import {
   Param,
   Post,
   Req,
+  UseInterceptors,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
+import {
+  BunHttpAdapter,
+  FileInterceptor,
+  UploadedFile,
+} from "@kingsleyweb/bun-nest";
 import "reflect-metadata";
 
 class Bump implements NestMiddleware {
@@ -70,6 +75,40 @@ class BenchController {
   json(@Body() body: { n: number }) {
     return { ok: true, n: body.n };
   }
+
+  @Post("form")
+  @HttpCode(200)
+  form(@Body() body: Record<string, string>) {
+    return body;
+  }
+
+  @Post("binary")
+  @HttpCode(200)
+  binary(@Body() body: Uint8Array) {
+    return { size: body.length };
+  }
+
+  @Post("text")
+  @HttpCode(200)
+  text(@Body() body: string) {
+    return { length: body.length };
+  }
+
+  @Post("xml")
+  @HttpCode(200)
+  xml(@Body() body: { root: { n: unknown } }) {
+    return { n: body.root.n };
+  }
+
+  @Post("upload")
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor("file", { storageType: "memory" }))
+  upload(
+    @Body() body: { field: string },
+    @UploadedFile() file: { size: number } | undefined,
+  ) {
+    return { field: body.field, size: file?.size };
+  }
 }
 
 function routeController(i: number) {
@@ -90,7 +129,9 @@ function routeController(i: number) {
 
 export async function startNest(
   routes: number,
-  makeAdapter: () => BunHttpAdapter = () => new BunHttpAdapter(),
+  // No body bytes kept, as the other frameworks keep none.
+  makeAdapter: () => BunHttpAdapter = () =>
+    new BunHttpAdapter(undefined, { request: { retainBuffer: false } }),
 ): Promise<number> {
   const controllers: unknown[] = [BenchController];
   for (let i = 0; i < routes; i++) controllers.push(routeController(i));

@@ -36,6 +36,25 @@ app.post("/json", async (req, res) => {
   const body = await req.json();
   res.json({ ok: true, n: body.n });
 });
+app.post("/form", async (req, res) => res.json(await req.urlencoded()));
+app.post("/upload", async (req, res) => {
+  let field;
+  let size = 0;
+  await req.multipart(async (part) => {
+    if (part.file) {
+      for await (const chunk of part.file.stream) size += chunk.length;
+    } else if (part.name === "field") {
+      field = part.value;
+    }
+  });
+  res.json({ field, size });
+});
+app.post("/binary", async (req, res) =>
+  res.json({ size: (await req.buffer()).length }),
+);
+app.post("/text", async (req, res) =>
+  res.json({ length: (await req.text()).length }),
+);
 app.get("/async", async (_req, res) => {
   await null;
   res.send("ok");
