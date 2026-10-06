@@ -341,6 +341,15 @@ this.
 All three share the fixed cost a static request pays — 641 ns in process
 against Elysia 2 — which is still the largest single item for async.
 
+## Status of the fixes (2026-10-04)
+
+| Fix | Commit | Result |
+|---|---|---|
+| json: `request.json()` for a plain JSON body; `retainBuffer` keeps the bytes; shared default body config; no codings parse for an absent `Content-Encoding` | `b2374a0` | **`wrk` json 19,662 → 21,462 req/s, 74% → 88% of Elysia 2**; in process 6.1 → 5.0 µs |
+| headers: header record + response-first freshness | — | Built, measured slower (+6–11% in process), **reverted** (§4) |
+| async: no per-park wake closure | `8c98cb8` | Kept as a simplification; within noise |
+| param-random / wildcard (fresh paths) | — | Not started: what is left is structural — a regex match and the Express layer list per path, against a tree walk. A bounded cache under admission was rejected on arithmetic: at a 20% hit ratio it loses ~200 ns of hits to save ~44 ns of misses |
+
 ## Recommended order
 
 0. ~~**headers record + freshness ordering**~~ — built and measured: no gain
