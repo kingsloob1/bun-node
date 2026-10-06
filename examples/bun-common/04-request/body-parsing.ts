@@ -68,12 +68,12 @@
  *   what Nest's body parser calls) passes a request without a body
  *   (`req.hasBody`) straight on, before its type or encoding is looked at,
  *   and leaves `req.rawBody` unset for it.
- * - A request with no body stream (a bodiless GET, a `Content-Length: 0`
- *   POST) reads no header while it is built. The first read of the body's
- *   state parses a declared empty body as before (`{}` for JSON). With a
- *   refused `Content-Encoding` such a request is now routed: the refusal
+ * - A declared empty body (`Content-Length: 0`) parses as before: `{}` for
+ *   JSON. A GET or HEAD with no body stream reads no header while it is
+ *   built, so with a refused `Content-Encoding` it is routed: the refusal
  *   lands in `req.bodyDecodingError` when the body is read, and a body
  *   parser or `parseBody()` rejects with it (415), so `next(err)` answers.
+ *   Any other method checks first and is refused before routing.
  * - `req.buffer` always holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
@@ -821,78 +821,95 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("A declared empty body: Content-Length: 0 and no body stream");
 
-// A request with no body stream reads no header while it is built. The
-// first read of the body's state checks Content-Length/Transfer-Encoding
-// and parses a declared empty body as before. (In process, `body: ""`
+// A GET or HEAD with no body stream reads no header while it is built; the
+// first read of the body's state checks Content-Length/Transfer-Encoding.
+// Every other method reads them first, as reading `request.body` on a
+// request that has one would slow its read. (In process, `body: ""`
 // creates a stream; headers alone, with no `body`, are the no-stream case.)
 const emptyJson = { "Content-Type": "application/json", "Content-Length": "0" };
 const empty = new BunHttpAdapter(0);
 adapters.push(empty);
-empty.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+empty.all("/echo", (req, res) => res.json({ body: req.body ?? null }));
 await empty.listen(0);
-checkEqual(
-  "an empty JSON POST: req.body is {}, served and through fetch()",
-  [
-    await (
-      await fetch(`${empty.url}/echo`, { method: "POST", headers: emptyJson })
-    ).json(),
-    await (
-      await empty.fetch("/echo", { method: "POST", headers: emptyJson })
-    ).json(),
-  ],
-  [{ body: {} }, { body: {} }],
-);
+for (const method of ["POST", "GET"]) {
+  checkEqual(
+    `an empty JSON ${method}: req.body is {}, served and through fetch()`,
+    [
+      await (
+        await fetch(`${empty.url}/echo`, { method, headers: emptyJson })
+      ).json(),
+      await (await empty.fetch("/echo", { method, headers: emptyJson })).json(),
+    ],
+    [{ body: {} }, { body: {} }],
+  );
+}
 
-// With a refused Content-Encoding the empty body is now routed; the refusal
-// is recorded when the body is first read, and a body parser answers it.
+// With a refused Content-Encoding (inflate: false), the two halves part.
 const refusing = new BunHttpAdapter(0, {
   request: { parseBody: { maxContentLength: 64, inflate: false } },
 });
 adapters.push(refusing);
 refusing.setLogger(createTestLogger().logger);
-refusing.post("/ignores-body", (_req, res) => res.send("handler answered"));
-refusing.post("/reads-body", (req, res) => {
+/** Paths whose handler ran. */
+const handled: string[] = [];
+refusing.all("/ignores-body", (req, res) => {
+  handled.push(`${req.method} ${req.path}`);
+  res.send("handler answered");
+});
+refusing.all("/reads-body", (req, res) => {
   res.json({
     body: req.body ?? null,
     refusal: req.bodyDecodingError?.status ?? null,
   });
 });
-// A body parser registered ahead of /parsed: it reads the body, and rejects.
+// Middleware ahead of /parsed that reads the body, and passes on its error.
 refusing.use("/parsed", (req, _res, next) => {
   req.parseBody().then(
     () => next(),
     (error: unknown) => next(error as Error),
   );
 });
-refusing.post("/parsed", (req, res) => res.json({ body: req.body ?? null }));
+refusing.all("/parsed", (req, res) => res.json({ body: req.body ?? null }));
 await refusing.listen(0);
 const gzipEmpty = { ...emptyJson, "Content-Encoding": "gzip" };
 
-/** Status (and text) of `path` served and through fetch(). */
-async function emptyBothWays(path: string, headers: Record<string, string>) {
-  const served = await fetch(`${refusing.url}${path}`, {
-    method: "POST",
-    headers,
-  });
-  const offline = await refusing.fetch(path, { method: "POST", headers });
+/** `"<status> <text>"` of `method path`, served and through fetch(). */
+async function emptyBothWays(method: string, path: string) {
+  const init = { method, headers: gzipEmpty };
+  const served = await fetch(`${refusing.url}${path}`, init);
+  const offline = await refusing.fetch(path, init);
   return [
     `${served.status} ${served.status < 400 ? await served.text() : ""}`,
     `${offline.status} ${offline.status < 400 ? await offline.text() : ""}`,
   ];
 }
+
+// A POST (or PUT, PATCH, DELETE…) is refused before routing, as always.
 checkEqual(
-  "gzip + Content-Length: 0 under inflate: false — a handler that never reads the body answers",
-  await emptyBothWays("/ignores-body", gzipEmpty),
+  "POST, gzip + Content-Length: 0: 415 before routing, both ways",
+  await emptyBothWays("POST", "/ignores-body"),
+  ["415 ", "415 "],
+);
+checkEqual("…the handler never ran", handled.splice(0), []);
+
+// A GET or HEAD is routed; the refusal comes when the body is read.
+checkEqual(
+  "GET, gzip + Content-Length: 0: a handler that never reads the body answers",
+  await emptyBothWays("GET", "/ignores-body"),
   ["200 handler answered", "200 handler answered"],
 );
+checkEqual("…it ran both times", handled.splice(0), [
+  "GET /ignores-body",
+  "GET /ignores-body",
+]);
 checkEqual(
-  "…one that reads it finds no body and the 415 recorded in req.bodyDecodingError",
-  await emptyBothWays("/reads-body", gzipEmpty),
+  "…one that reads req.body finds the 415 in req.bodyDecodingError",
+  await emptyBothWays("GET", "/reads-body"),
   ['200 {"body":null,"refusal":415}', '200 {"body":null,"refusal":415}'],
 );
 checkEqual(
-  "…and parseBody() in a middleware before the route rejects: next(err) answers 415",
-  await emptyBothWays("/parsed", gzipEmpty),
+  "…parseBody() in a middleware before the route rejects: next(err) answers 415",
+  await emptyBothWays("GET", "/parsed"),
   ["415 ", "415 "],
 );
 const parserFirst = new BunHttpAdapter(0, {
@@ -901,15 +918,18 @@ const parserFirst = new BunHttpAdapter(0, {
 adapters.push(parserFirst);
 parserFirst.setLogger(createTestLogger().logger);
 parserFirst.useBodyParser("json", false, { inflate: false });
-parserFirst.post("/x", (req, res) => res.json({ body: req.body ?? null }));
+parserFirst.all("/x", (req, res) => res.json({ body: req.body ?? null }));
+await parserFirst.listen(0);
 checkEqual(
   "…as does a json body parser registered before the route",
-  (await parserFirst.fetch("/x", { method: "POST", headers: gzipEmpty }))
-    .status,
-  415,
+  [
+    (await fetch(`${parserFirst.url}/x`, { headers: gzipEmpty })).status,
+    (await parserFirst.fetch("/x", { headers: gzipEmpty })).status,
+  ],
+  [415, 415],
 );
 checkEqual(
-  "the same encoding on a body with data is still refused before routing",
+  "a body with data and that encoding is refused before routing",
   (
     await fetch(`${refusing.url}/ignores-body`, {
       method: "POST",
