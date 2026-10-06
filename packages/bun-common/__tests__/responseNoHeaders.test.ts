@@ -296,3 +296,28 @@ describe("BunResponse: res.locals, as Express", () => {
     expect(res.locals).toEqual({ a: 1 });
   });
 });
+
+describe("BunResponse: response listeners", () => {
+  it("whenResponded calls at once when a response exists, else once it is produced", async () => {
+    const res = await makeResponse();
+    const seen: string[] = [];
+    expect(res.whenResponded(() => seen.push("first"))).toBe(false);
+    const unsubscribe = res.onceResponded(() => seen.push("removed"));
+    res.onceResponded(() => seen.push("second"));
+    unsubscribe();
+    res.send("x");
+    expect(seen).toEqual(["first", "second"]);
+    expect(res.whenResponded(() => seen.push("late"))).toBe(true);
+    expect(seen).toEqual(["first", "second", "late"]);
+  });
+
+  it("getNativeResponse's timeout removes only its own waiter", async () => {
+    const res = await makeResponse();
+    let called = 0;
+    res.whenResponded(() => called++);
+    expect(res.getNativeResponse(5)).rejects.toThrow("Request Timedout");
+    await Bun.sleep(15);
+    res.send("x");
+    expect(called).toBe(1);
+  });
+});
