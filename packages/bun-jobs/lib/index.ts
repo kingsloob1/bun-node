@@ -159,9 +159,13 @@ export type {
   QueueDemandListDto,
   QueueDemandListQuery,
   QueueDemandQuery,
+  SummonBudgetDto,
   SummonCheckDto,
   SummonEventDto,
+  SummonListDto,
+  SummonListItemDto,
   SummonNowBody,
+  SummonResetBody,
   SummonStatusDto,
 } from "./api/contract/types";
 export { createJobsApi } from "./api/createJobsApi";
@@ -963,6 +967,8 @@ export {
   type SummonerFunction,
   type SummonEventPayload,
   type SummonFacet,
+  type SummonFailure,
+  type SummonFailureOutcome,
   type SummonGroup,
   type SummonLastOutcome,
   type SummonMarker,

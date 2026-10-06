@@ -63,6 +63,7 @@ import { createJobsLogger } from "./shared/logger";
 import {
   ATTACH_QUEUE,
   FIND_SUMMON_CONTROLLER,
+  LIST_SUMMON_CONTROLLERS,
   SummonController,
 } from "./summon/controller";
 import { expandSummonOption } from "./summon/groups";
@@ -719,6 +720,15 @@ export class BunJobs<
     queue: string,
   ): SummonController | undefined {
     return this.#summonControllers.get(queue);
+  }
+
+  /**
+   * Internal ({@link LIST_SUMMON_CONTROLLERS}): every summon controller this
+   * context has, in the order they were built. Never builds one; after
+   * `close()`, none.
+   */
+  [LIST_SUMMON_CONTROLLERS](): SummonController[] {
+    return [...this.#summonControllers.values()];
   }
 
   /**

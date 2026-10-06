@@ -291,6 +291,46 @@ export function rollBudget(marker: SummonMarker, now: number): void {
   }
 }
 
+/**
+ * Gives back the one attempt an attempt claimed at `claimedAt` counted
+ * against the budget, when the provider was never called for it. Only in a
+ * window that is still the claim's: a window that has rolled on since
+ * dropped the count with it. Never below `0`.
+ */
+export function refundBudget(marker: SummonMarker, claimedAt: number): void {
+  const hourStart = Math.floor(claimedAt / HOUR_MS) * HOUR_MS;
+  const dayStart = Math.floor(claimedAt / DAY_MS) * DAY_MS;
+  if (marker.budget.hourStart === hourStart && marker.budget.hour > 0) {
+    marker.budget.hour--;
+  }
+  if (marker.budget.dayStart === dayStart && marker.budget.day > 0) {
+    marker.budget.day--;
+  }
+}
+
+/**
+ * When the marker's budget windows end, epoch ms: the next UTC hour and the
+ * next UTC midnight after the windows it holds (rolled to `now` first).
+ */
+export function budgetResets(marker: SummonMarker): {
+  /** The end of the hour window. */
+  hourResetsAt: number;
+  /** The end of the day window. */
+  dayResetsAt: number;
+} {
+  return {
+    hourResetsAt: marker.budget.hourStart + HOUR_MS,
+    dayResetsAt: marker.budget.dayStart + DAY_MS,
+  };
+}
+
+/** Zeroes the budget's counts in the windows `now` falls in. */
+export function clearBudget(marker: SummonMarker, now: number): void {
+  rollBudget(marker, now);
+  marker.budget.hour = 0;
+  marker.budget.day = 0;
+}
+
 /** The wait after the `failures`th consecutive failure: `initial`, doubling, at most `max`. */
 export function backoffFor(
   failures: number,

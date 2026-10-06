@@ -95,6 +95,7 @@ describe("mounting", () => {
       "GET /admin/jobs/queues/:queue/counts getQueueCounts queues.read",
       "GET /admin/jobs/queues/:queue/counts/added getQueueAddedByState queues.read",
       "GET /admin/jobs/queues/:queue/demand getQueueDemand queues.read",
+      "GET /admin/jobs/summon listSummonControllers queues.read",
       // The summon status only: "summon now" and reset are `queues.summon`,
       // opt-in, so a default API does not register them.
       "GET /admin/jobs/queues/:queue/summon getQueueSummon queues.read",

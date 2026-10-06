@@ -34,6 +34,7 @@ import type {
   QueueDemandDto,
   SummonCapabilitiesDto,
   SummonCheckDto,
+  SummonListItemDto,
   SummonProviderDto,
   SummonStatusDto,
 } from "./contract/types";
@@ -987,6 +988,37 @@ function toSummonCapabilitiesDto(
     ...(capabilities.poolSize === undefined
       ? {}
       : { poolSize: capabilities.poolSize }),
+  };
+}
+
+/**
+ * Shapes one summon controller's status as an item of `GET /summon`: its
+ * queue, its summoner's kind and readiness, the last outcome and the budget
+ * usage, field by field as {@link toSummonStatusDto} has them.
+ */
+export function toSummonListItemDto(
+  /** The controller's namespace. */
+  namespace: string,
+  /** What its `status()` answered. */
+  status: SummonStatus,
+): SummonListItemDto {
+  const full = toSummonStatusDto(status, {
+    exposeSummonHandles: false,
+    exposeHosts: false,
+  });
+  return {
+    namespace,
+    queue: status.queue,
+    kind: status.summoner?.provider.kind ?? "",
+    readiness: status.summoner?.readiness ?? "ready",
+    ...(full.last === undefined ? {} : { last: full.last }),
+    // `status()` always reports the budget; the fallback keeps the type total.
+    budget: full.budget ?? {
+      hour: 0,
+      day: 0,
+      hourResetsAt: 0,
+      dayResetsAt: 0,
+    },
   };
 }
 
