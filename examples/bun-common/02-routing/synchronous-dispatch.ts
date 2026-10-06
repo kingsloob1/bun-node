@@ -22,9 +22,16 @@
  *   calls `next()` fails with `Request Timedout`, which
  *   `isRequestTimeoutError()` recognises (the adapters pass their request
  *   timeout, and answer it as a 500 without running the error handlers).
+ * - So code that drives `handle()` or `dispatch()` itself must end every
+ *   layer with `next()` or a **finished** response — `send()`, `end()`, an
+ *   upgrade; a streamed response only once it ends — or pass a `timeout`. A
+ *   layer that only records something and returns (a guard's marker, say)
+ *   parks the pipeline, and without a timeout the promise never settles.
+ *   Before the Express 5 pipeline such a layer counted as finished.
  * - The adapters' served path uses both, so a bodiless synchronous request
  *   reaches `Bun.serve` as a `Response`, with no promise in between.
  */
+import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import {
   BunRequest,
   BunResponse,
@@ -244,6 +251,89 @@ check("isRequestTimeoutError() recognises it", isRequestTimeoutError(timedOut));
 check(
   "…and nothing else, even with the same message",
   !isRequestTimeoutError(new Error("Request Timedout")),
+);
+
+/* ------------------------------------------------------------------ */
+step("Driving handle() yourself: end every layer, or pass a timeout");
+
+// A guard in front of something else, the way a raw upgrade check is built:
+// one layer records that the request passed, an error handler refuses it.
+// The marker returns without responding — so unless it calls next(), the
+// pipeline parks on it, waiting for a next() that never comes.
+const passed = new WeakSet<BunRequest>();
+let parkedNext: (() => void) | undefined;
+
+const markOnly = new BunRouter();
+markOnly.use("/guarded", (req, _res, next) => {
+  passed.add(req);
+  parkedNext = () => next();
+});
+markOnly.use(((_err, _req, res, _next) => {
+  res.status(403).send("refused");
+}) satisfies RouterErrorMiddlewareHandler);
+
+/** Whether `promise` settles within `ms`. */
+async function settlesWithin(promise: Promise<unknown>, ms: number) {
+  return Promise.race([
+    promise.then(
+      () => true,
+      () => true,
+    ),
+    Bun.sleep(ms).then(() => false),
+  ]);
+}
+
+const marked = pipeline("/guarded");
+const markedRun = markOnly.handle(marked);
+check("the marker ran", passed.has(marked.request));
+check(
+  "…but without next() and no timeout, handle() has not settled after 200ms",
+  !(await settlesWithin(markedRun, 200)),
+);
+check("…nor has anything been sent", !marked.response.headersSent);
+parkedNext?.();
+check(
+  "…and a later next() is what finishes it",
+  await settlesWithin(markedRun, 200),
+);
+
+const markThenNext = new BunRouter();
+markThenNext.use("/guarded", (req, _res, next) => {
+  passed.add(req);
+  next();
+});
+markThenNext.use(((_err, _req, res, _next) => {
+  res.status(403).send("refused");
+}) satisfies RouterErrorMiddlewareHandler);
+
+const nexted = pipeline("/guarded");
+const nextedRun = markThenNext.dispatch(nexted);
+check(
+  "the marker calling next(): the pipeline runs out synchronously",
+  !(nextedRun instanceof Promise),
+);
+check("…with the request marked", passed.has(nexted.request));
+check(
+  "…and the error handler skipped, as nothing failed",
+  !nexted.response.headersSent,
+);
+
+// A response finishes a layer only once it is finished: a stream that has
+// started holds the pipeline until it ends.
+const streaming = new BunRouter();
+streaming.get("/stream", (_req, res) => {
+  res.write("first chunk");
+  setTimeout(() => void res.end(), 150);
+});
+const streamed = pipeline("/stream");
+const streamedRun = streaming.handle(streamed);
+check(
+  "a streamed response: started, but handle() still waits for it",
+  streamed.response.headersSent && !(await settlesWithin(streamedRun, 50)),
+);
+check(
+  "…and settles once the stream ends",
+  await settlesWithin(streamedRun, 500),
 );
 
 /* ------------------------------------------------------------------ */
