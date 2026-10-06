@@ -74,17 +74,17 @@
  *   lands in `req.bodyDecodingError` when the body is read, and a body
  *   parser or `parseBody()` rejects with it (415), so `next(err)` answers.
  *   Any other method checks first and is refused before routing.
- * - A plain JSON body (no encoding, no cap, no reviver, a Content-Length) is
- *   parsed with one native `request.json()` call and keeps no bytes:
- *   `req.buffer` is undefined, a `data` listener gets only `end`, and an
- *   invalid body's 400 has no `err.body`. `retainBuffer: true` (a request
- *   option, or `requestParsing({ retainBuffer })` for a deferred body) reads
- *   every body as bytes; a body parser registered with `rawBody` turns it on.
- *   `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind, and
- *   `retainBuffer: false` drops the bytes of text, urlencoded and xml too
- *   (raw and multipart always keep them). Under a cap a served body within
- *   it keeps no bytes, while `adapter.fetch()` reads as bytes.
- * - Otherwise `req.buffer` holds the exact bytes received — the "raw body" a
+ * - Every body keeps its exact bytes by default (`retainBuffer` defaults to
+ *   `true`). Dropping them is opt-in: with `retainBuffer: false` (a request
+ *   option, `requestParsing({ retainBuffer })`, or per kind with
+ *   `parseBody.contentTypes.<kind>.retainBuffer`) a JSON body with a
+ *   Content-Length is parsed with one native `request.json()` call, and text,
+ *   urlencoded and xml with `request.text()`: `req.body` is the same, but
+ *   `req.buffer` and `req.rawBody` are absent, a `data` listener gets only
+ *   `end`, and an invalid body's 400 has no `err.body`. Raw and multipart
+ *   always keep their bytes. Under a cap, `adapter.fetch()` still reads as
+ *   bytes.
+ * - With the default, `req.buffer` holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
 import type {
@@ -958,9 +958,6 @@ step("One read, parsed at once: a served request and adapter.fetch() agree");
 
 const fast = new BunHttpAdapter(0, {
   request: {
-    // Keep every body's bytes, so a served JSON body within the cap is read
-    // as bytes too (data events, err.body) rather than with request.json().
-    retainBuffer: true,
     parseBody: {
       maxContentLength: 64,
       contentTypes: {
@@ -1149,14 +1146,14 @@ checkEqual(
 
 /* ------------------------------------------------------------------ */
 step(
-  "A plain JSON body is read with request.json(); retainBuffer keeps the bytes",
+  "retainBuffer: false — a plain JSON body read with request.json(), no bytes kept",
 );
 
-// A body declared JSON with no Content-Encoding, no cap (a boolean
-// parseBody), no reviver and a Content-Length is parsed in one native
-// request.json() call, which gives no bytes back. A served request always
-// has a Content-Length; an in-process Request needs one set explicitly,
-// or it is read as bytes.
+// Bodies keep their bytes by default. With retainBuffer: false, a body
+// declared JSON with no Content-Encoding, no reviver and a Content-Length is
+// parsed in one native request.json() call, which gives no bytes back. A
+// served request always has a Content-Length; an in-process Request needs
+// one set explicitly, or it is read as bytes.
 
 /** A JSON POST to `path` carrying an explicit Content-Length. */
 function jsonRequest(path: string, text: string): Request {
@@ -1201,11 +1198,11 @@ function jsonApp(request: BunRequestOptions): BunHttpAdapter {
   return app;
 }
 
-const nativeJson = jsonApp({ parseBody: true });
+const nativeJson = jsonApp({ parseBody: true, retainBuffer: false });
 await nativeJson.listen(0);
 const viaJson = { body: { a: 1 }, buffer: "undefined", events: ["end"] };
 checkEqual(
-  "parseBody: true — parsed, no req.buffer, a data listener gets only end",
+  "retainBuffer: false — parsed, no req.buffer, a data listener gets only end",
   [
     await (
       await fetch(
@@ -1230,11 +1227,11 @@ checkEqual(
   { type: "entity.parse.failed", body: null },
 );
 
-const retained = jsonApp({ parseBody: true, retainBuffer: true });
+const retained = jsonApp({ parseBody: true });
 await retained.listen(0);
 const viaBytes = { body: { a: 1 }, buffer: '{"a":1}', events: ["data", "end"] };
 checkEqual(
-  "retainBuffer: true — the exact bytes in req.buffer, and data events",
+  "by default — the exact bytes in req.buffer, and data events",
   [
     await (
       await fetch(
@@ -1253,7 +1250,7 @@ checkEqual(
 );
 const cappedJson = jsonApp({ parseBody: { maxContentLength: "1kb" } });
 checkEqual(
-  "under a cap, adapter.fetch() reads as bytes (see the next step for served)",
+  "under a cap, by default: read as bytes",
   (
     (await (
       await cappedJson.fetch(jsonRequest("/echo", '{"a":1}'))
@@ -1264,10 +1261,11 @@ checkEqual(
   '{"a":1}',
 );
 
-// A deferred body: requestParsing() can ask for the bytes, and its cap and
-// a body parser's limit are checked against Content-Length.
+// A deferred body, bytes off by default here: requestParsing() can ask for
+// them, and its cap and a body parser's limit are checked against
+// Content-Length.
 const deferredJson = new BunHttpAdapter(0, {
-  request: { parseBody: true, deferBody: true },
+  request: { parseBody: true, deferBody: true, retainBuffer: false },
 });
 adapters.push(deferredJson);
 deferredJson.setLogger(createTestLogger().logger);
@@ -1302,7 +1300,7 @@ checkEqual(
   { body: { a: "123456789" }, buffer: null },
 );
 const limited = new BunHttpAdapter(0, {
-  request: { parseBody: true, deferBody: true },
+  request: { parseBody: true, deferBody: true, retainBuffer: false },
 });
 adapters.push(limited);
 limited.setLogger(createTestLogger().logger);
@@ -1314,7 +1312,8 @@ checkEqual(
   413,
 );
 
-// A body parser registered with rawBody turns retainBuffer on for good.
+// A body parser registered with rawBody turns retainBuffer on for good,
+// unless the options said retainBuffer: false explicitly.
 const raw = new BunHttpAdapter(0);
 adapters.push(raw);
 const retainBefore = raw.requestOpts.retainBuffer === true;
@@ -1336,6 +1335,23 @@ checkEqual(
   "…so req.rawBody keeps working for a JSON body with a Content-Length",
   await (await raw.fetch(jsonRequest("/raw", '{"b":2}'))).json(),
   { rawBody: '{"b":2}', body: { b: 2 } },
+);
+const noBytes = new BunHttpAdapter(0, {
+  request: { parseBody: true, retainBuffer: false },
+});
+adapters.push(noBytes);
+noBytes.useBodyParser("json", true, {});
+noBytes.post("/raw", (req, res) => {
+  res.json({
+    rawBody: req.rawBody?.toString() ?? null,
+    buffer: req.buffer?.toString() ?? null,
+    body: req.body ?? null,
+  });
+});
+checkEqual(
+  "explicit retainBuffer: false with a rawBody parser: parsed, no req.rawBody or req.buffer",
+  await (await noBytes.fetch(jsonRequest("/raw", '{"b":2}'))).json(),
+  { rawBody: null, buffer: null, body: { b: 2 } },
 );
 
 /* ------------------------------------------------------------------ */
@@ -1373,15 +1389,16 @@ checkEqual(
 );
 const jsonOn = await bufferApp({
   parseBody: { contentTypes: { json: { retainBuffer: true } } },
+  retainBuffer: false,
 });
 checkEqual(
-  "default, json { retainBuffer: true }: JSON keeps its bytes",
+  "global retainBuffer: false, json { retainBuffer: true }: JSON keeps its bytes",
   await servedEcho(jsonOn, "application/json", '{"a":1}'),
   { body: { a: 1 }, buffer: '{"a":1}' },
 );
 
 const keepNothing = await bufferApp({ parseBody: true, retainBuffer: false });
-const keepAll = await bufferApp({ parseBody: true, retainBuffer: true });
+const keepAll = await bufferApp({ parseBody: true });
 for (const [label, type, text] of [
   ["text", "text/plain", "hello"],
   ["urlencoded", "application/x-www-form-urlencoded", "a=1&b=2"],
@@ -1401,11 +1418,15 @@ checkEqual(
   { body: { buffer: "raw bytes" }, buffer: "raw bytes" },
 );
 
-// Under a cap, a served request whose Content-Length is within it is read
-// without bytes; an in-process one (adapter.fetch()) is read as bytes.
-const cappedBytes = await bufferApp({ parseBody: { maxContentLength: 64 } });
+// Under a cap with retainBuffer: false, a served request whose
+// Content-Length is within it is read without bytes; an in-process one
+// (adapter.fetch()) is read as bytes.
+const cappedBytes = await bufferApp({
+  parseBody: { maxContentLength: 64 },
+  retainBuffer: false,
+});
 checkEqual(
-  "capped JSON: served keeps no bytes, adapter.fetch() keeps them",
+  "capped JSON, retainBuffer: false: served keeps no bytes, adapter.fetch() keeps them",
   [
     (await servedEcho(cappedBytes, "application/json", '{"a":1}')).buffer,
     (
@@ -1450,9 +1471,7 @@ step("Invalid JSON is a 400, as body-parser answers it");
 // Read while the request is built, the body fails before routing, so its
 // error reaches setErrorHandler — never `use()` error middleware.
 const strict = new BunHttpAdapter(0, {
-  // retainBuffer keeps the text for err.body; without it a served JSON body
-  // within the cap is read with request.json() and err.body is not set.
-  request: { parseBody: { maxContentLength: 64 }, retainBuffer: true },
+  request: { parseBody: { maxContentLength: 64 } },
 });
 adapters.push(strict);
 strict.setLogger(createTestLogger().logger);

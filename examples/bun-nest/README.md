@@ -46,7 +46,7 @@ Applications listen on port `0`.
 
 | File | Shows |
 |---|---|
-| [`interceptors.ts`](./03-file-uploads/interceptors.ts) | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `@UploadedFile(s)`, memory and disk storage, upload errors |
+| [`interceptors.ts`](./03-file-uploads/interceptors.ts) | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `@UploadedFile(s)`, memory and disk storage, upload errors, `detectFileType: false` in the adapter's multipart opts leaving `validatedMimeType` unset |
 
 ### 04 — WebSockets
 

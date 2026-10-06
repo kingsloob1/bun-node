@@ -70,6 +70,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
@@ -524,6 +525,61 @@ await upload(
 );
 
 await second.close();
+
+/* ------------------------------------------------------------------ */
+step("detectFileType: off in the adapter's multipart opts, where it is parsed");
+
+/** A JPEG-headed file the client declares as application/octet-stream. */
+const disguisedJpeg = () =>
+  new File([Buffer.from("ffd8ffe000104a4649460001", "hex")], "photo.bin", {
+    type: "application/octet-stream",
+  });
+const sniffed = await fetch(`${url}/unfiltered/avatar`, {
+  method: "POST",
+  body: form([["avatar", disguisedJpeg()]]),
+});
+checkEqual(
+  "default: FileInterceptor's file is sniffed as a JPEG, the claim kept",
+  await sniffed.json(),
+  {
+    field: "avatar",
+    name: "photo.bin",
+    claimed: "application/octet-stream",
+    detected: "image/jpeg",
+    size: 12,
+    storage: "memory",
+  },
+);
+const noSniffAdapter = new BunHttpAdapter(0, {
+  request: {
+    parseBody: {
+      contentTypes: { multipart: { opts: { detectFileType: false } } },
+    },
+  },
+});
+const noSniff = await NestFactory.create(UploadModule, noSniffAdapter, {
+  logger: false,
+  abortOnError: false,
+});
+await noSniff.listen(0);
+const unsniffed = await fetch(`${await noSniff.getUrl()}/unfiltered/avatar`, {
+  method: "POST",
+  body: form([["avatar", disguisedJpeg()]]),
+});
+checkEqual(
+  "detectFileType: false: validatedMimeType undefined, the claim kept",
+  await unsniffed.json(),
+  {
+    field: "avatar",
+    name: "photo.bin",
+    claimed: "application/octet-stream",
+    detected: null,
+    size: 12,
+    storage: "memory",
+  },
+);
+await noSniff.close();
 await app.close();
 await rm(scratch, { recursive: true, force: true });
 show("closed");
+summary();
