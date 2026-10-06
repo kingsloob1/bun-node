@@ -56,6 +56,14 @@
  *   the decoded length is checked after the read, so a `Content-Length` that
  *   understates the body is still a 413, and a served request and
  *   `adapter.fetch()` answer alike.
+ * - Invalid JSON in a body declared JSON (`application/json`, `+json`) is a
+ *   400, as body-parser answers it: `type: "entity.parse.failed"`, the text
+ *   in `err.body`, recorded as `req.bodyDecodingError`. Read while the
+ *   request is built, it fails before routing and reaches `setErrorHandler`;
+ *   read inside the pipeline (`deferBody` with `requestParsing()`), it goes
+ *   to `next(err)`. A body with no `Content-Type` is only *tried* as JSON.
+ * - The final handler logs a 4xx at `warn` and a 5xx at `error` (nothing
+ *   under `NODE_ENV=test`); `err.req` is attached non-enumerable.
  * - `req.buffer` always holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
@@ -69,6 +77,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
+import process from "node:process";
 import {
   brotliCompressSync,
   deflateSync,
@@ -741,8 +750,13 @@ const fast = new BunHttpAdapter(0, {
   },
 });
 adapters.push(fast);
-// A corrupt body is a client error; keep its log out of the output.
-fast.setLogger(createTestLogger().logger);
+// A corrupt body is a client error: logged at warn (a 5xx would be error),
+// recorded here so the step can assert it.
+const { logger: fastLogger, events: fastEvents } = createTestLogger();
+fast.setLogger(fastLogger);
+// The final handler logs nothing under NODE_ENV=test; make sure it is on.
+const nodeEnvBefore = process.env.NODE_ENV;
+process.env.NODE_ENV = "development";
 fast.post("/echo", (req, res) => {
   res.json({ body: describeBody(req), parsed: req.body !== undefined });
 });
@@ -792,6 +806,8 @@ const fastCases: [string, RequestInit, number][] = [
     }),
     200,
   ],
+  ["invalid JSON", bodyInit("application/json", '{"a":'), 400],
+  ["invalid +json", bodyInit("application/vnd.api+json", '{"a":'), 400],
   [
     "corrupt gzip",
     bodyInit("application/json", new Uint8Array([1, 2, 3, 4, 5]), {
@@ -823,22 +839,34 @@ checkEqual(
   [{ a: 1 }, { a: 2 }, { a: "1", b: "2" }, "café", { z: 1 }],
 );
 
-// Invalid JSON: answered alike both ways, and never a parsed body.
-const invalidJson = bodyInit("application/json", '{"a":');
-const invalidServed = await statusAndBody(
-  await fetch(`${fast.url}/echo`, invalidJson),
-);
-show("invalid JSON", invalidServed);
-checkEqual(
-  "invalid JSON: served and adapter.fetch() agree",
-  await statusAndBody(await fast.fetch("/echo", invalidJson)),
-  invalidServed,
+const clientErrorLogs = fastEvents.filter(
+  (event) => event.message === "Unhandled error while handling a request",
 );
 check(
-  "…and the handler never sees a parsed body",
-  invalidServed.endsWith('"parsed":false}'),
-  invalidServed,
+  "every client error above was logged at warn, not error",
+  clientErrorLogs.length > 0 &&
+    clientErrorLogs.every((event) => event.level === "warn"),
+  clientErrorLogs.map((event) => [event.level, event.error?.message]),
 );
+const logged = clientErrorLogs[0]?.error as
+  | (Error & { req?: unknown })
+  | undefined;
+check(
+  "…with err.req still readable, but hidden from Object.keys",
+  logged?.req !== undefined && !Object.keys(logged ?? {}).includes("req"),
+  logged === undefined ? "nothing logged" : Object.keys(logged),
+);
+fast.get("/fail", () => {
+  throw new Error("a server fault");
+});
+fastEvents.length = 0;
+await fast.fetch("/fail");
+checkEqual(
+  "a 5xx is logged at error",
+  fastEvents.map((event) => event.level),
+  ["error"],
+);
+process.env.NODE_ENV = nodeEnvBefore;
 
 /** A chunked JSON body: a stream, so no Content-Length is sent. */
 function chunked(padding: number): RequestInit {
@@ -895,6 +923,99 @@ checkEqual(
     response: { body: { e: 1 } },
     delivered: { bytes: '{"e":1}', ended: true },
   },
+);
+
+/* ------------------------------------------------------------------ */
+step("Invalid JSON is a 400, as body-parser answers it");
+
+// Read while the request is built, the body fails before routing, so its
+// error reaches setErrorHandler — never `use()` error middleware.
+const strict = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: 64 } },
+});
+adapters.push(strict);
+strict.setLogger(createTestLogger().logger);
+const middlewareSaw: string[] = [];
+strict.post("/echo", (req, res) => res.json({ body: describeBody(req) }));
+strict.use(((error, _req, res, _next) => {
+  middlewareSaw.push((error as Error).message);
+  res.status(500).send("not reached for a body error");
+}) satisfies RouterErrorMiddlewareHandler);
+strict.setErrorHandler(((error, req, res, _next) => {
+  const parseError = error as Error & {
+    status: number;
+    statusCode: number;
+    expose: boolean;
+    type: string;
+    body: string;
+  };
+  res.status(parseError.status).json({
+    status: parseError.status,
+    statusCode: parseError.statusCode,
+    expose: parseError.expose,
+    type: parseError.type,
+    body: parseError.body,
+    recorded: req.bodyDecodingError === error,
+  });
+}) satisfies RouterErrorMiddlewareHandler);
+await strict.listen(0);
+
+const brokenJson = bodyInit("application/json", '{"a":');
+const strictServed = await fetch(`${strict.url}/echo`, brokenJson);
+const strictAnswer = await strictServed.json();
+checkEqual("setErrorHandler sees the parse error", strictAnswer, {
+  status: 400,
+  statusCode: 400,
+  expose: true,
+  type: "entity.parse.failed",
+  body: '{"a":',
+  recorded: true,
+});
+checkEqual(
+  "…the same through adapter.fetch()",
+  await (await strict.fetch("/echo", brokenJson)).json(),
+  strictAnswer,
+);
+checkEqual("…and use() error middleware never saw it", middlewareSaw, []);
+
+checkEqual(
+  "no Content-Type: only tried as JSON, so a=1 parses as urlencoded",
+  await (await strict.fetch("/echo", { method: "POST", body: "a=1" })).json(),
+  { body: { a: "1" } },
+);
+const rawJson = new BunHttpAdapter(0, {
+  request: {
+    parseBody: { maxContentLength: 64, contentTypes: { urlencoded: true } },
+  },
+});
+rawJson.post("/echo", (req, res) => res.json({ body: describeBody(req) }));
+const rawAnswer = await rawJson.fetch("/echo", brokenJson);
+checkEqual(
+  "JSON left out of contentTypes: the body stays raw, 200",
+  [rawAnswer.status, await rawAnswer.json()],
+  [200, { body: { buffer: '{"a":' } }],
+);
+
+// With deferBody the body is read inside the pipeline, by requestParsing()
+// here, so the error goes to next(err) and use() error middleware.
+const lazy = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: 64 }, deferBody: true },
+});
+lazy.use("/upload", requestParsing({ parseBody: { maxContentLength: "1mb" } }));
+lazy.post("/upload", (req, res) => res.json({ body: describeBody(req) }));
+lazy.use(((error, req, res, _next) => {
+  const parseError = error as Error & { status: number; type: string };
+  res.status(parseError.status).json({
+    via: "next(err)",
+    type: parseError.type,
+    recorded: req.bodyDecodingError === error,
+  });
+}) satisfies RouterErrorMiddlewareHandler);
+const lazyAnswer = await lazy.fetch("/upload", brokenJson);
+checkEqual(
+  "deferBody + requestParsing(): the 400 goes to next(err)",
+  [lazyAnswer.status, await lazyAnswer.json()],
+  [400, { via: "next(err)", type: "entity.parse.failed", recorded: true }],
 );
 
 /* ------------------------------------------------------------------ */

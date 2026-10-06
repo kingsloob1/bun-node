@@ -40,7 +40,7 @@ Applications listen on port `0`.
 | [`pipeline.ts`](./02-http-adapter/pipeline.ts) | guards, pipes, exception filters and interceptors on Bun; error and not-found handlers |
 | [`adapter-options.ts`](./02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, `fetch()` without a socket, `close()` |
 | [`express-parity.ts`](./02-http-adapter/express-parity.ts) | Express 5 parity from a Nest app: `@Get()` answering `HEAD`, `MiddlewareConsumer` middleware calling `next()` from a timer or I/O callback, the request timeout (a middleware that never calls `next()`, an `async` controller method that never settles), and `server.routes` native routes ahead of Nest |
-| [`per-route-parsing.ts`](./02-http-adapter/per-route-parsing.ts) | `consumer.apply(requestParsing({ ... })).forRoutes(...)` for query, cookie and body parsing per route; raising one route's body cap with the adapter's `deferBody` and `bodyParser: false`, and what happens without either. See the package README's [Per-route parsing with `requestParsing()`](../../packages/bun-nest/README.md#per-route-parsing-with-requestparsing) |
+| [`per-route-parsing.ts`](./02-http-adapter/per-route-parsing.ts) | `consumer.apply(requestParsing({ ... })).forRoutes(...)` for query, cookie and body parsing per route; raising one route's body cap with the adapter's `deferBody` and `bodyParser: false`, and what happens without either; invalid JSON answered 400 by Nest's default body parser, with `deferBody`, and served. See the package README's [Per-route parsing with `requestParsing()`](../../packages/bun-nest/README.md#per-route-parsing-with-requestparsing) |
 
 ### 03 — File uploads
 
