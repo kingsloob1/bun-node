@@ -265,3 +265,34 @@ describe("BunResponse: served and fetch() agree with no headers set", () => {
     expect(response.headers.get("content-type")).toBe(TEXT);
   });
 });
+
+describe("BunResponse: res.locals, as Express", () => {
+  it("is a null-prototype object shared by every layer of a request, and fresh per request", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.use("/me", (_req, res, next) => {
+      res.locals.user = "ada";
+      next();
+    });
+    adapter.get("/me", (_req, res) => {
+      res.json({
+        user: res.locals.user,
+        proto: Object.getPrototypeOf(res.locals) === null,
+        keys: Object.keys(res.locals),
+      });
+    });
+    expect(await (await adapter.fetch("/me")).json()).toEqual({
+      user: "ada",
+      proto: true,
+      keys: ["user"],
+    });
+    // A second request starts empty.
+    adapter.get("/empty", (_req, res) => res.json(Object.keys(res.locals)));
+    expect(await (await adapter.fetch("/empty")).json()).toEqual([]);
+  });
+
+  it("can be replaced", async () => {
+    const res = await makeResponse();
+    res.locals = { a: 1 };
+    expect(res.locals).toEqual({ a: 1 });
+  });
+});
