@@ -108,7 +108,7 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { noteScheduled } from "./delayedHints";
 import { Job } from "./Job";
-import { JOB_ROUTER, JobBuilder } from "./JobBuilder";
+import { JobBuilder } from "./JobBuilder";
 import {
   describeJobDefaults,
   isJobDefaultKey,
@@ -122,6 +122,7 @@ import {
   writeJobDefaults,
 } from "./jobDefaults";
 import { JobDraft } from "./JobDraft";
+import { JOB_ROUTER } from "./jobRouter";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import {
   assertJobId,
@@ -864,7 +865,10 @@ export class BunQueue<
    *
    * Unlike `add()`, on a context's registry queue the name must be defined
    * and the definition's options apply; on any other queue it is `add()`
-   * read through the builder's vocabulary.
+   * read through the builder's vocabulary, with one difference: given both
+   * `repeat` and `jobId`, `now()` makes `jobId` the series key (unless
+   * `repeat.key` is set), as the builder's `unique()` does on a series,
+   * while `add()` drops it and derives the key from the name and schedule.
    */
   now<TVerbName extends TypedJobName<TJobs>>(
     name: TVerbName,

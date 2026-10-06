@@ -10,6 +10,7 @@ import {
   readRecurrence,
 } from "../shared/humanTime";
 import { addDefinedJob, splitDefinitionDefaults } from "./BunQueue";
+import { JOB_ROUTER } from "./jobRouter";
 import { assertTimeZone } from "./repeat";
 
 /**
@@ -44,15 +45,6 @@ export type JobRouter = (
   /** The name the job is added under. */
   name: string,
 ) => JobRoute;
-
-/**
- * The key a builder is routed by, and a queue carries its router under.
- *
- * Internal, a symbol so neither class grows a public name for it: `BunJobs`
- * sets `queue[JOB_ROUTER]` on every queue it creates, and calls
- * `builder[JOB_ROUTER](router)` on every builder it makes.
- */
-export const JOB_ROUTER: unique symbol = Symbol("bun-jobs: job router");
 
 /**
  * Everything a job can be told, in one object — all of it except the name.
@@ -178,7 +170,8 @@ export class JobBuilder<
   #defaults: JobOptions;
   /**
    * How `toQueue()` resolves a name, set by the `BunJobs` that made this
-   * builder; `undefined` for one made directly or by a standalone queue.
+   * builder; `undefined` for one made directly or by a standalone queue, when
+   * `toQueue()` falls back to the router its queue carries, if any.
    */
   #router: JobRouter | undefined;
   /** What the job carries. */
@@ -271,19 +264,36 @@ export class JobBuilder<
    * `jobs.queue("images").schedule("resize", data)`.
    *
    * After `toQueue()` the builder is a plain one, typed by its arguments
-   * (`toQueue<Payload>("images")`), as `jobs.queue<Payload>()` is.
+   * (`toQueue<Payload>("images")`), as `jobs.queue<Payload>()` is. That holds
+   * for the registry queue too: `toQueue("jobs")` brings back its runtime
+   * checks and defaults, but not the map's types.
    *
-   * @throws {ConfigError} naming the registry queue for a name it does not
-   *   define (from `jobs.queue(other).schedule(name)`); and on a builder no
-   *   `BunJobs` made — `new JobBuilder`, or a standalone `BunQueue`'s verbs —
-   *   for any queue but its own, since there is no context to find it in.
+   * The queue is resolved at the call, through `jobs.queue(name)`, so a queue
+   * the context has not made yet is made here, with the context's options.
+   * **Configure a queue with `jobs.queue(name, options)` before sending to
+   * it**: a later call answers with the instance already made, and its options
+   * are ignored. A `toQueue()` that a later one replaces —
+   * `toQueue("x").toQueue("jobs")` — still leaves the `x` instance on the
+   * context, followed by its notifiers like any other queue.
+   *
+   * @throws {ConfigError} for a queue name a queue cannot have (empty, longer
+   *   than 200 characters, or with characters other than letters, digits,
+   *   `_`, `.` and `-`); naming the registry queue for a name it does not
+   *   define (from `jobs.queue(other).schedule(name)`); and on a builder whose
+   *   queue no `BunJobs` made — a standalone `BunQueue`'s verbs, or
+   *   `new JobBuilder` on one — for any queue but its own, since there is no
+   *   context to find it in.
    */
   toQueue<TQueueData = unknown, TQueueResult = unknown>(
     /** The queue's name, in the same namespace. */
     queue: string,
   ): JobBuilder<TQueueData, TQueueResult> {
-    if (this.#router) {
-      this.#apply(this.#router(queue, this.#name));
+    // A builder made directly on a context's queue was never routed, but its
+    // queue carries the context's router all the same.
+    const router = this.#router ?? this.#queue[JOB_ROUTER];
+
+    if (router) {
+      this.#apply(router(queue, this.#name));
     } else if (queue !== this.#queue.name) {
       throw new ConfigError(
         `toQueue("${queue}") needs a builder made by a BunJobs context, which knows the other queues; this one can only add to "${this.#queue.name}"`,

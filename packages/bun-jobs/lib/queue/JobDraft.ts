@@ -113,9 +113,21 @@ export class JobDraft<
    * follow the job, because that queue's own worker runs it. Naming the
    * registry queue brings its rules back. Called after a save began, it is a
    * change like any setter, and the next `save()` refuses it. To send a name
-   * the registry doesn't define, use `jobs.queue(name).create()`.
+   * the registry doesn't define, use `jobs.queue(name).create()`. The draft
+   * is a plain one afterwards, `toQueue("jobs")` included: the registry's
+   * runtime checks come back, the map's types do not.
    *
-   * @throws {ConfigError} as `JobBuilder.toQueue` does.
+   * The queue is resolved at the call, as the builder's is, so one the
+   * context has not made yet is made here with the context's options.
+   * **Configure a queue with `jobs.queue(name, options)` before sending to
+   * it**: a later call answers with the instance already made and ignores its
+   * options. A `toQueue()` a later one replaces still leaves its queue's
+   * instance on the context.
+   *
+   * @throws {ConfigError} as `JobBuilder.toQueue` does: for a queue name a
+   *   queue cannot have, for a name the registry does not define when the
+   *   registry queue is named, and, with no context behind the draft's queue,
+   *   for any queue but its own. The draft is left as it was.
    */
   toQueue<TQueueData = unknown, TQueueResult = unknown>(
     /** The queue's name, in the same namespace. */

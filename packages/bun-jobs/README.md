@@ -1624,10 +1624,19 @@ await jobs.queue("images").now("thumbnail", { id }, { priority: 1 });
   `toQueue()` is on the builder (from `schedule`/`run`/`process`) and on the
   draft (from `create`). `now()` adds at once and has no builder, so send it
   elsewhere with `jobs.queue(name).now(...)`. The last `toQueue()` wins.
-- **Types.** On a typed context the registry queue keeps every check, by
-  either spelling. After `toQueue()`, and on `jobs.queue(other)`, any payload
-  is accepted, typed like `jobs.queue<T>()`: `toQueue<Payload>("images")` or
-  `jobs.queue<Payload>("images")`.
+- **Types.** On a typed context `jobs.queue("jobs")` keeps every check the
+  map gives `jobs.schedule()`. `toQueue()` returns a plain builder whatever it
+  names, `toQueue("jobs")` included: the registry's runtime checks and
+  defaults come back, but not the map's types. After `toQueue()`, and on
+  `jobs.queue(other)`, any payload is accepted, typed like `jobs.queue<T>()`:
+  `toQueue<Payload>("images")` or `jobs.queue<Payload>("images")`.
+- **Configure a queue with `jobs.queue(name, options)` before sending to
+  it.** `toQueue()`, like `jobs.queue(name)`, makes the queue if the context
+  has not, with the context's options, and a later `jobs.queue(name, options)`
+  answers with that instance and ignores its options. Each `toQueue()` makes
+  its queue when called, so one a later `toQueue()` replaces, as in
+  `toQueue("x").toQueue("jobs")`, still leaves an `x` queue on the context,
+  followed by its notifiers.
 - A standalone `new BunQueue(...)` has the verbs too. Its builders can only
   `toQueue()` their own queue, since no context knows the others.
 

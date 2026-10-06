@@ -75,6 +75,17 @@ export async function builderToQueueChecks(): Promise<void> {
   // @ts-expect-error a name the map does not declare, at the verb
   jobs.schedule("resize").toQueue("images");
 
+  // toQueue() is plain whatever it names, the registry queue included: its
+  // runtime checks and defaults come back, the map's types do not. The
+  // registry-typed spelling is jobs.queue("jobs"), below.
+  const _back = jobs.schedule("send-report", { month: "x" }).toQueue("jobs");
+  type Back = Equal<typeof _back, JobBuilder<unknown, unknown>>;
+  type _Back = Expect<Back>;
+
+  const _draftBack = jobs.create("reindex").toQueue("jobs");
+  type DraftBack = Equal<typeof _draftBack, JobDraft<unknown, unknown>>;
+  type _DraftBack = Expect<DraftBack>;
+
   const _draft = jobs.create("send-report", { month: "x" }).toQueue("images");
   type Draft = Equal<typeof _draft, JobDraft<unknown, unknown>>;
   type _Draft = Expect<Draft>;

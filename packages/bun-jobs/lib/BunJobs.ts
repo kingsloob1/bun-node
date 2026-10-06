@@ -50,8 +50,9 @@ import {
   BunQueueWorker,
   WorkerControllerManager,
 } from "./queue/index";
-import { JOB_ROUTER, JobBuilder } from "./queue/JobBuilder";
+import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
+import { JOB_ROUTER } from "./queue/jobRouter";
 import { BunRunnerManager } from "./runner/index";
 import { mapConcurrent } from "./shared/bounded";
 import { ConfigError, NotSupportedError } from "./shared/errors";
