@@ -27,7 +27,13 @@ import type { LoggerLike } from "./logging";
 import { EventEmitter } from "node:events";
 import { STATUS_CODES } from "node:http";
 import { isPromise } from "node:util/types";
-import { BunRouter, FETCH_STUB_SERVER, toNativeRequest } from "./BunRouter";
+import {
+  BunRouter,
+  FETCH_STUB_SERVER,
+  isRequestTimeoutError,
+  toNativeRequest,
+  withoutHeadBody,
+} from "./BunRouter";
 import { cors } from "./cors";
 import {
   BunRequest,
@@ -381,8 +387,14 @@ export class BunHttpAdapter<
         response: res,
         request: req,
         requestUrl: req.originalUrl,
+        timeout: this.requestTimeout,
       });
     } catch (error) {
+      // A pipeline parked past the request timeout is answered as a timed-out
+      // response wait always was: by the final handling, without the request.
+      if (isRequestTimeoutError(error)) {
+        throw error;
+      }
       // The request rides on the error to `handleRequestError`, which needs it
       // to run the error handlers. A thrown primitive is wrapped to carry it.
       const carrier: object = isObject(error)
@@ -506,14 +518,19 @@ export class BunHttpAdapter<
           >),
       );
     } catch (error) {
-      return this.handleRequestError(error);
+      return withoutHeadBody(
+        await this.handleRequestError(error),
+        nativeRequest.method,
+      );
     }
 
     // `handleNativeRequest` returns undefined only for a successful WebSocket
-    // upgrade, which cannot happen without a socket.
-    return (
+    // upgrade, which cannot happen without a socket. A served HEAD response
+    // carries no body: Bun drops it on the wire.
+    return withoutHeadBody(
       response ??
-      new Response(null, { status: 101, statusText: "Switching Protocols" })
+        new Response(null, { status: 101, statusText: "Switching Protocols" }),
+      nativeRequest.method,
     );
   }
 

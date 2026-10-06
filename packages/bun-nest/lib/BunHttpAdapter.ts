@@ -53,6 +53,7 @@ import {
   isFunction,
   isNull,
   isObject,
+  isRequestTimeoutError,
   isString,
   isUndefined,
   mergeBunRequestOptions,
@@ -60,6 +61,7 @@ import {
   set,
   toNativeRequest,
   waitUntil,
+  withoutHeadBody,
 } from "@kingsleyweb/bun-common";
 import {
   InternalServerErrorException,
@@ -358,6 +360,7 @@ export class BunHttpAdapter<
       response: res,
       request: req,
       requestUrl: req.originalUrl,
+      timeout: this.requestTimeout,
     });
 
     // A handler that opens a long-lived stream and awaits its end — NestJS's
@@ -393,6 +396,11 @@ export class BunHttpAdapter<
     try {
       routeUsed = await pipeline;
     } catch (e) {
+      // A pipeline parked past the request timeout is answered as a timed-out
+      // response wait always was: by the final handling, without the request.
+      if (isRequestTimeoutError(e)) {
+        throw e;
+      }
       const err: object = isObject(e) ? e : new Error(String(e));
 
       set(err, "req", req);
@@ -512,12 +520,17 @@ export class BunHttpAdapter<
       );
     } catch (error) {
       // The same final error handling `Bun.serve`'s `error` callback runs.
-      return this.handleRequestError(error);
+      return withoutHeadBody(
+        await this.handleRequestError(error),
+        nativeRequest.method,
+      );
     }
 
-    return (
+    // A served HEAD response carries no body: Bun drops it on the wire.
+    return withoutHeadBody(
       response ??
-      new Response(null, { status: 101, statusText: "Switching Protocols" })
+        new Response(null, { status: 101, statusText: "Switching Protocols" }),
+      nativeRequest.method,
     );
   }
 

@@ -180,11 +180,19 @@ wildcard is exposed as both the positional key and the name.
 - `next("route")` skips the rest of the current route's callbacks.
 - `next("router")` leaves the current mounted sub-router. From the router's
   own routes it abandons the pipeline.
-- `next()` is the only way forward. A callback that neither responds nor calls
-  `next()` leaves the request **hanging** until a timeout fires, and its return
-  value is ignored.
+- `next()` is the only way forward, and it may be called later, from a timer
+  or an I/O callback, as Express allows: the pipeline waits for it. A callback
+  that never responds nor calls `next()` leaves the request **hanging** until
+  the adapter's request timeout fires, and its return value is ignored.
+- An error raised after the response started still runs the error handlers,
+  which see `res.headersSent` as `true`. If none handles it, a streamed
+  response is cut off (`res.destroy(err)`) and the error is logged, as
+  Express's `finalhandler` destroys the socket.
 - An error nothing handled is re-thrown to the adapter's final error handling
   ([below](#not-found-and-error-handlers)).
+- A `HEAD` request runs a route's GET handler when the route has no HEAD
+  handler of its own, as in Express. The server sends the headers without the
+  body, and so does the socket-free `fetch()`.
 - A path parameter that is not valid percent-encoding becomes a `URIError`
   with `status: 400`, as in Express 5.
 
@@ -619,7 +627,8 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 - `PayloadTooLargeError` (`status` and `statusCode` 413, `limit`, `length`)
   is thrown by `parseBody()` and by a parser middleware's `limit`.
 - `req.setParseBodyOptions()` and `req.parseBodyWithOptions()` change the
-  options from middleware; they only affect a body not yet read.
+  options from middleware; they only affect a body not yet read, and only
+  that request (the adapter's options are copied, never changed).
 - A media type no parser knows is kept as a `Buffer` with its `Content-Type`
   rewritten to `application/octet-stream`. For a custom format, run with
   `parseBody: false` and read `req.request` yourself.
