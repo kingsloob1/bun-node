@@ -378,6 +378,60 @@ random tables × 2 case modes × 60 paths, exact captures). Request level:
 | `wrk` routes-1000 (a cache hit), 5 rounds | 40,062 | 40,278 |
 | in process param-random, 2 runs | 5,271 / 5,610 ns | 5,056 / 5,410 ns (−4%) |
 
+## 7. Body scenarios — urlencoded, multipart, binary, text, xml
+
+The `wrk` harness gained five body scenarios beside `json`. bun-common and
+bun-nest run them with `retainBuffer: false` and multipart's
+`detectFileType: false`, because no other framework keeps the bytes or sniffs
+uploads. The first smoke run had bun-common at 63–74% of the fastest
+framework on every kind but one: **multipart, at 11%** (2,468 req/s against
+22,140 for `Bun.serve`).
+
+**Multipart: where the time went.** This was measured on a served-like
+request (one field and a 1 KiB file, with `Content-Length`, as wrk sends it)
+in process:
+
+| Cost | Share | Fix |
+|---|---:|---|
+| `file-type` sniffing | ~30% (7 µs JPEG, 35 µs unrecognised, 393 µs a minimal PNG) | `detectFileType: false` skips it; the default is unchanged |
+| busboy fed by `Readable.from(buffer).pipe()` | ~25% | `bb.end(buffer)`: the stream machinery cost more than busboy's own parse (38 → 22 µs) |
+| capped body read chunk by chunk | ~20% | one `arrayBuffer()` when `Content-Length` is within the cap, as every other kind already did |
+| query parser and a throwing `JSON.parse` per field | ~10% | plain names (`[\w-]+`) skip the parser; only a value that can open a JSON text reaches `JSON.parse`; held to the old answers by a differential test |
+
+Result: **189.6 → 87.0 µs** per upload, and `wrk` multipart 2,468 → 4,221
+req/s after the first two rows alone (the full run is in
+`benchmarks/results/body-scenarios-wrk.md`). What remains is about a third
+busboy, construction included.
+
+**The object-form `parseBody` was resolved per request.** Opting out of
+sniffing needs `parseBody.contentTypes.multipart.opts`, which is the
+capped object form, and that form cost served json, urlencoded and text 5–12%
+against `parseBody: true`. It rebuilt a `BodyParseConfig` with a `Set` and a
+`Map` for every request: 707 ns, and 2.9% self time under load. It is now
+built once per options object, frozen and shared (copy-on-write as the
+default already was), and reused while a snapshot of the object's fields
+still matches, so mutating the object is still honoured: **707 → 144 ns**.
+Profiled under `wrk`, the two configs are now within 2%.
+
+**Would Bun's `formData()` be faster for urlencoded?** No:
+
+| Body | `text()` + picoquery (kept) | `formData()` | `text()` + `URLSearchParams` |
+|---|---:|---:|---:|
+| `a=1&b=two` | **1.91 µs** | 3.92 µs | 2.93 µs |
+| 20 encoded fields | 26.5 µs | 24.1 µs | **20.7 µs** |
+| `user[name]=…&user[langs]=…` | **3.32 µs** | 7.56 µs | 5.54 µs |
+
+It is twice as slow on small and nested forms and only 9% faster on a large
+flat one, and its flat entries would still need picoquery for nesting.
+
+**Multipart is the opposite case.** `request.formData()` parsed the upload,
+file bytes included, in **8.9 µs** against busboy's ~38 µs. Using it would
+change what the parse answers: part names decode as UTF-8 where busboy's
+default is latin1, the limits would be checked after parsing rather than
+while streaming (so which limit is reported when several are exceeded can
+differ), and `isPartAFile`, `fieldSize` truncation and the charsets options
+have no equivalent. It is a decision, not a refactor, so it has not been made.
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |
@@ -385,7 +439,9 @@ random tables × 2 case modes × 60 paths, exact captures). Request level:
 | json: `request.json()` for a plain JSON body; `retainBuffer` keeps the bytes; shared default body config; no codings parse for an absent `Content-Encoding` | `b2374a0` | **`wrk` json 19,662 → 21,462 req/s, 74% → 88% of Elysia 2**; in process 6.1 → 5.0 µs |
 | headers: header record + response-first freshness | — | Built, measured slower (+6–11% in process), **reverted** (§4) |
 | async: no per-park wake closure | `8c98cb8` | Kept as a simplification; within noise |
-| param-random / wildcard (fresh paths): radix tree route lookup | (this commit) | **`wrk` param-random 31,292 → 35,267 req/s (+12.7%)**; see §6 |
+| param-random / wildcard (fresh paths): radix tree route lookup | `85b6e22` | **`wrk` param-random 31,292 → 35,267 req/s (+12.7%)**; see §6 |
+| multipart: busboy fed in one write, one native read under a cap, plain-name inflation, `detectFileType` | `f5abecd` | in process **189.6 → 87.0 µs** per upload; see §7 |
+| object-form `parseBody`: resolved once per options object | `f5abecd` | 707 → 144 ns per request; the capped config no longer trails `parseBody: true` |
 
 ## Recommended order
 
