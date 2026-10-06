@@ -25,8 +25,10 @@
  *   `maxContentCodings` and `compressionDictionaries` (for `dcb`/`dcz`); they
  *   apply to the parse the adapter runs while building the request, before
  *   any middleware.
- * - An invalid decoding option — an unknown coding in `encodings`, a negative
- *   `maxContentCodings`, a `compressionDictionaries` of the wrong shape —
+ * - An invalid size or decoding option — a `maxContentLength` (top-level or
+ *   per kind) that does not parse or is negative, NaN or Infinity, an unknown
+ *   coding in `encodings`, a `maxContentCodings` that is not a non-negative
+ *   integer or Infinity, a `compressionDictionaries` of the wrong shape —
  *   throws where it is configured: the adapter's constructor,
  *   `setRequestOpts()` (which then keeps its previous options) and
  *   `requestParsing()`. A bodiless request never resolves `parseBody`, so
@@ -48,6 +50,12 @@
  *   requests after it. `requestParsing()` wraps these as middleware, and the
  *   adapter's `deferBody` lets a route raise its cap before the body is read:
  *   see `per-route-parsing.ts`.
+ * - A body with no cap, or with a `Content-Length` within its cap and no
+ *   `Transfer-Encoding`, is read in one native call and parsed
+ *   synchronously; a chunked body under a cap streams under it. Either way
+ *   the decoded length is checked after the read, so a `Content-Length` that
+ *   understates the body is still a 413, and a served request and
+ *   `adapter.fetch()` answer alike.
  * - `req.buffer` always holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
@@ -70,6 +78,7 @@ import {
 import {
   BunHttpAdapter,
   compressionDictionaryHash,
+  createTestLogger,
   DEFAULT_MAX_CONTENT_LENGTH,
   DEFAULT_MAX_CONTENT_LENGTH_BY_KIND,
   dictionaryCompressedHeader,
@@ -717,6 +726,178 @@ check(
 );
 
 /* ------------------------------------------------------------------ */
+step("One read, parsed at once: a served request and adapter.fetch() agree");
+
+const fast = new BunHttpAdapter(0, {
+  request: {
+    parseBody: {
+      maxContentLength: 64,
+      contentTypes: {
+        json: true,
+        urlencoded: true,
+        text: { opts: { encoding: "latin1" } },
+      },
+    },
+  },
+});
+adapters.push(fast);
+// A corrupt body is a client error; keep its log out of the output.
+fast.setLogger(createTestLogger().logger);
+fast.post("/echo", (req, res) => {
+  res.json({ body: describeBody(req), parsed: req.body !== undefined });
+});
+/** What `req.on("data"/"end")` delivered on `/events`. */
+let delivered: { bytes: string; ended: boolean } | undefined;
+fast.post("/events", (req, res) => {
+  const chunks: Buffer[] = [];
+  req.on("data", (chunk: Buffer) => chunks.push(chunk));
+  req.on("end", () => {
+    delivered = { bytes: Buffer.concat(chunks).toString(), ended: true };
+    res.json({ body: describeBody(req) });
+  });
+});
+await fast.listen(0);
+
+/** A POST of `body` as `type`, with optional extra headers. */
+function bodyInit(
+  type: string,
+  body: string | Uint8Array,
+  headers: Record<string, string> = {},
+): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": type, ...headers },
+    body,
+  };
+}
+
+/** `"<status> <body>"` for one response. */
+async function statusAndBody(response: Response): Promise<string> {
+  return `${response.status} ${await response.text()}`;
+}
+
+const fastCases: [string, RequestInit, number][] = [
+  ["JSON", bodyInit("application/json", '{"a":1}'), 200],
+  ["+json", bodyInit("application/vnd.api+json", '{"a":2}'), 200],
+  ["urlencoded", bodyInit("application/x-www-form-urlencoded", "a=1&b=2"), 200],
+  [
+    "latin1 text",
+    bodyInit("text/plain", new Uint8Array([0x63, 0x61, 0x66, 0xe9])),
+    200,
+  ],
+  [
+    "gzip JSON",
+    bodyInit("application/json", gzipSync('{"z":1}'), {
+      "Content-Encoding": "gzip",
+    }),
+    200,
+  ],
+  [
+    "corrupt gzip",
+    bodyInit("application/json", new Uint8Array([1, 2, 3, 4, 5]), {
+      "Content-Encoding": "gzip",
+    }),
+    400,
+  ],
+  [
+    "a declared over-cap body",
+    bodyInit("application/json", JSON.stringify({ pad: "x".repeat(100) })),
+    413,
+  ],
+];
+for (const [label, init, status] of fastCases) {
+  const served = await statusAndBody(await fetch(`${fast.url}/echo`, init));
+  const offline = await statusAndBody(await fast.fetch("/echo", init));
+  show(label, served.replace(/\s+/g, " ").slice(0, 70));
+  checkEqual(`${label}: ${status}`, Number(served.split(" ")[0]), status);
+  checkEqual(`${label}: served and adapter.fetch() agree`, offline, served);
+}
+checkEqual(
+  "the parsed bodies",
+  await Promise.all(
+    fastCases.slice(0, 5).map(async ([, init]) => {
+      const response = await fetch(`${fast.url}/echo`, init);
+      return ((await response.json()) as { body: unknown }).body;
+    }),
+  ),
+  [{ a: 1 }, { a: 2 }, { a: "1", b: "2" }, "café", { z: 1 }],
+);
+
+// Invalid JSON: answered alike both ways, and never a parsed body.
+const invalidJson = bodyInit("application/json", '{"a":');
+const invalidServed = await statusAndBody(
+  await fetch(`${fast.url}/echo`, invalidJson),
+);
+show("invalid JSON", invalidServed);
+checkEqual(
+  "invalid JSON: served and adapter.fetch() agree",
+  await statusAndBody(await fast.fetch("/echo", invalidJson)),
+  invalidServed,
+);
+check(
+  "…and the handler never sees a parsed body",
+  invalidServed.endsWith('"parsed":false}'),
+  invalidServed,
+);
+
+/** A chunked JSON body: a stream, so no Content-Length is sent. */
+function chunked(padding: number): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            JSON.stringify({ pad: "x".repeat(padding) }),
+          ),
+        );
+        controller.close();
+      },
+    }),
+  };
+}
+for (const [padding, status] of [
+  [5, 200],
+  [200, 413],
+] as const) {
+  checkEqual(
+    `a chunked body of ~${padding + 10} bytes under the 64-byte cap: ${status}, both ways`,
+    [
+      (await fetch(`${fast.url}/echo`, chunked(padding))).status,
+      (await fast.fetch("/echo", chunked(padding))).status,
+    ],
+    [status, status],
+  );
+}
+
+// In process a Request can carry a Content-Length that understates its
+// body; the length is checked again after the read.
+const lying = new Request("http://localhost/echo", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "Content-Length": "10" },
+  body: JSON.stringify({ pad: "x".repeat(100) }),
+});
+checkEqual(
+  "a Content-Length of 10 on a ~110-byte body: still 413",
+  (await fast.fetch(lying)).status,
+  413,
+);
+
+const eventsResponse = await fetch(
+  `${fast.url}/events`,
+  bodyInit("application/json", '{"e":1}'),
+);
+checkEqual(
+  "req.on('data'/'end') on a body read in one call",
+  { response: await eventsResponse.json(), delivered },
+  {
+    response: { body: { e: 1 } },
+    delivered: { bytes: '{"e":1}', ended: true },
+  },
+);
+
+/* ------------------------------------------------------------------ */
 step("Invalid decoding options fail where they are configured");
 
 /** Runs `configure` and answers the error's name, or `"ok"`. */
@@ -737,6 +918,20 @@ const invalidParseBody: [string, unknown, string][] = [
     "RangeError",
   ],
   ["a negative maxContentCodings", { maxContentCodings: -1 }, "RangeError"],
+  ["a fractional maxContentCodings", { maxContentCodings: 1.5 }, "RangeError"],
+  ["maxContentLength: 'lots'", { maxContentLength: "lots" }, "RangeError"],
+  ["maxContentLength: -5", { maxContentLength: -5 }, "RangeError"],
+  ["maxContentLength: NaN", { maxContentLength: Number.NaN }, "RangeError"],
+  [
+    "maxContentLength: Infinity",
+    { maxContentLength: Number.POSITIVE_INFINITY },
+    "RangeError",
+  ],
+  [
+    "a per-kind maxContentLength that does not parse",
+    { contentTypes: { json: { maxContentLength: "lots" } } },
+    "RangeError",
+  ],
   [
     "compressionDictionaries as a string",
     { compressionDictionaries: "dictionary.bin" },
@@ -809,6 +1004,10 @@ for (const [label, parseBody] of [
   [
     "dictionaries from a resolver",
     { compressionDictionaries: () => undefined },
+  ],
+  [
+    "maxContentCodings: Infinity, maxContentLength: 0",
+    { maxContentCodings: Number.POSITIVE_INFINITY, maxContentLength: 0 },
   ],
 ] as [string, ParseBodyOption | undefined][]) {
   checkEqual(
