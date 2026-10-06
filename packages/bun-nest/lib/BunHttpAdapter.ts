@@ -21,6 +21,7 @@ import type {
   RouterErrorMiddlewareHandler,
   RouterHandler,
   RouterMiddlewareHandler,
+  ServeHooks,
   ServeStaticOptions,
   UnmountedRouter,
   ValidatorMiddleware,
@@ -422,56 +423,63 @@ export class BunHttpAdapter<
       timeout: this.requestTimeout,
     };
 
-    let routed: ReturnType<BunRouter["dispatch"]>;
-    try {
-      // A router whose `handle` was overridden is run through the override.
-      routed =
-        router.handle === BunRouter.prototype.handle
-          ? router.dispatch(options)
-          : router.handle(options);
-    } catch (error) {
-      throw carryRequest(error, req);
-    }
-    if (routed instanceof Promise) {
-      return this.#awaitPipeline(routed, req, res, nativeRequest, server);
-    }
-    return this.#respond(req, res, routed, nativeRequest, server);
-  }
-
-  /** Waits for an asynchronous pipeline, returning a stream's response early. */
-  async #awaitPipeline(
-    pipeline: Promise<matchedRoute | true | undefined>,
-    req: BunRequest,
-    res: BunResponse<customWebsocketDataType>,
-    nativeRequest: Request,
-    server: BunWebSocketServerType<customWebsocketDataType>,
-  ): Promise<Response | undefined> {
     // A handler that opens a long-lived stream and awaits its end — NestJS's
     // `@Sse()` resolves only once the observable completes or the client
     // leaves — would otherwise hold the headers back until then. On Node they
     // go out as soon as `writeHead`/`flushHeaders` runs, so the stream's
     // response is returned the moment it opens, the pipeline still running.
-    let outcome: Awaited<ReturnType<typeof awaitPipelineOrStream>>;
+    if (router.handle === BunRouter.prototype.handle) {
+      return router.serveRequest(options, this.#serveHooks);
+    }
+    // A router whose `handle` was overridden is run through the override.
+    let routed: ReturnType<typeof awaitPipelineOrStream>;
     try {
-      outcome = await awaitPipelineOrStream(pipeline, res, (error) => {
-        // Headers are gone, so nothing but the stream's end can answer it,
-        // as Express's finalhandler does once headers were sent.
-        this.logger.error(
-          "Error after a streaming response started",
-          error instanceof Error ? error.stack : String(error),
-        );
-        // `end()` on a response that has already ended does nothing.
-        void res.end();
+      routed = awaitPipelineOrStream(router.handle(options), res, (error) => {
+        this.#serveHooks.lateError(options, error);
       });
     } catch (error) {
       throw carryRequest(error, req);
     }
-    if (outcome.stream !== undefined) {
-      return outcome.stream;
-    }
-    const routeUsed = outcome.routeUsed;
-    return this.#respond(req, res, routeUsed, nativeRequest, server);
+    return routed.then(
+      (outcome) =>
+        outcome.stream ??
+        this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
+      (error: unknown) => {
+        throw carryRequest(error, req);
+      },
+    );
   }
+
+  /**
+   * How the router finishes a served request (see bun-common's
+   * `BunRouter.serveRequest`): one object for every request, so a request
+   * pays for no closures, and an asynchronous one for no promise but the
+   * pipeline's — Nest's route callback is always asynchronous.
+   */
+  readonly #serveHooks: ServeHooks<Response | undefined> = {
+    respond: (options, routeUsed) => {
+      const req = options.request;
+      return this.#respond(
+        req,
+        options.response as BunResponse<customWebsocketDataType>,
+        routeUsed,
+        req.request,
+        req.server as BunWebSocketServerType<customWebsocketDataType>,
+      );
+    },
+    stream: (_options, stream) => stream,
+    error: (options, error) => carryRequest(error, options.request),
+    lateError: (options, error) => {
+      // Headers are gone, so nothing but the stream's end can answer it,
+      // as Express's finalhandler does once headers were sent.
+      this.logger.error(
+        "Error after a streaming response started",
+        error instanceof Error ? error.stack : String(error),
+      );
+      // `end()` on a response that has already ended does nothing.
+      void options.response.end();
+    },
+  };
 
   /** Produces the response once the router is done with the request. */
   #respond(

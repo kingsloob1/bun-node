@@ -518,8 +518,70 @@ export interface PipelineOptions {
 /** A pipeline's result: the matched route, `true`, or `undefined` (unhandled). */
 type PipelineOutcome = matchedRoute | true | undefined;
 
-/** {@link PipelineOutcome}, synchronously or once async layers settle. */
-type PipelineResult = PipelineOutcome | Promise<PipelineOutcome>;
+/**
+ * What {@link awaitPipelineOrStream} resolves with: the pipeline's outcome,
+ * or — the moment its response opens a stream — the streamed `Response`, the
+ * pipeline still running behind it.
+ */
+export type PipelineServeOutcome =
+  | { routeUsed: PipelineOutcome; stream?: undefined }
+  | { stream: Response; routeUsed?: undefined };
+
+/**
+ * How {@link BunRouter.serveRequest} turns a pipeline into what it returns,
+ * so that serving an asynchronous request costs the pipeline's one promise
+ * and nothing on top. An adapter builds one for all its requests; each hook
+ * gets the request's {@link PipelineOptions}.
+ */
+export interface ServeHooks<R> {
+  /** The result for a pipeline that ended (`undefined`: nothing matched). */
+  respond: (
+    options: PipelineOptions,
+    routeUsed: PipelineOutcome,
+  ) => R | Promise<R>;
+  /**
+   * The result the moment the response opens a stream, the pipeline still
+   * running behind it (a stream's headers must go out before it ends).
+   */
+  stream: (options: PipelineOptions, stream: Response) => R;
+  /** The error to throw or reject with for the pipeline's unhandled `error`. */
+  error: (options: PipelineOptions, error: unknown) => unknown;
+  /** An unhandled error after a stream already settled the result. */
+  lateError: (options: PipelineOptions, error: unknown) => void;
+}
+
+/** Returned by `#run` when the pipeline parked on an unfinished layer. */
+const PARKED: unique symbol = Symbol("parked");
+
+/** What `#run` returns: the outcome, or {@link PARKED}. */
+type RunResult = PipelineOutcome | typeof PARKED;
+
+/** A layer the pipeline is parked on (see `#park`). */
+interface ActiveWait {
+  /** The layer's step, whose `next()` wakes the wait. */
+  step: LayerStep;
+  /** The `timeout` timer, while one runs. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+  /** Stops watching an open stream's end, while one is watched. */
+  stopStreamWatch: (() => void) | undefined;
+}
+
+/**
+ * A pipeline that went asynchronous: created the first time a layer parks,
+ * then shared by every later wait, so the whole pipeline costs one promise.
+ */
+interface AsyncPipeline {
+  /** The pipeline's promise: its outcome, or what its {@link ServeHooks} made of it. */
+  promise: Promise<unknown>;
+  /** Resolves {@link promise}. */
+  resolve: (value: unknown) => void;
+  /** Rejects {@link promise}. */
+  reject: (error: unknown) => void;
+  /** Whether {@link promise} is settled (early, for a stream). */
+  settled: boolean;
+  /** The wait in progress; `undefined` while layers run. */
+  wait: ActiveWait | undefined;
+}
 
 /** One request's progress through its layers, carried across async layers. */
 interface PipelineState {
@@ -539,6 +601,10 @@ interface PipelineState {
   exitedRouters: Set<number> | undefined;
   /** The route whose params are bound to the request; `-1` for none yet. */
   paramsBoundToRoute: number;
+  /** Created the first time a layer parks (see `#park`). */
+  async: AsyncPipeline | undefined;
+  /** Set by {@link BunRouter.serveRequest}: what the pipeline settles with. */
+  serve: ServeHooks<unknown> | undefined;
 }
 
 /** What one layer did: what it passed to `next()`, and what it returned. */
@@ -588,6 +654,12 @@ type LayerWait =
   | { kind: "timeout" }
   | { kind: "settled"; value: unknown }
   | { kind: "threw"; error: unknown };
+
+/** The {@link LayerWait}s with no payload, shared rather than rebuilt. */
+const NEXT_CALLED: LayerWait = { kind: "next" };
+const RESPONDED: LayerWait = { kind: "responded" };
+const STREAM_ENDED: LayerWait = { kind: "ended" };
+const TIMED_OUT: LayerWait = { kind: "timeout" };
 
 /**
  * Whether a layer is done with the request: it called `next()`, or produced
@@ -656,78 +728,6 @@ export function awaitPipelineOrStream(
 /** Whether a streamed response has ended (it started, and is no longer open). */
 function streamEnded(response: BunResponse): boolean {
   return response.headersSent && !response.isStreamOpen;
-}
-
-/**
- * Waits for a layer that returned without finishing (see {@link
- * layerFinished}): for its `next()`, its promise (`pending`) to settle, a
- * complete response, its open stream to end, or — while nothing has been
- * sent — `timeout` ms (`0`/unset: no limit).
- */
-function waitForLayer(
-  response: BunResponse,
-  step: LayerStep,
-  pending: PromiseLike<unknown> | undefined,
-  timeout: number | undefined,
-): Promise<LayerWait> {
-  return new Promise((resolve) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe: (() => void) | undefined;
-    let done = false;
-    const finish = (outcome: LayerWait) => {
-      if (done) {
-        return;
-      }
-      done = true;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-      unsubscribe?.();
-      step.wake = undefined;
-      resolve(outcome);
-    };
-    // A stream that opens is watched until it ends; a complete response
-    // ends the wait.
-    const watchStream = () => {
-      unsubscribe = response.onceStreamEnded(() => finish({ kind: "ended" }));
-    };
-    step.wake = () => finish({ kind: "next" });
-    if (pending !== undefined) {
-      pending.then(
-        (value) => finish({ kind: "settled", value }),
-        (error: unknown) => finish({ kind: "threw", error }),
-      );
-    }
-    if (done) {
-      return;
-    }
-    if (response.isStreamOpen) {
-      watchStream();
-      return;
-    }
-    if (response.headersSent) {
-      finish({ kind: "responded" });
-      return;
-    }
-    unsubscribe = response.onceResponded(() => {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-      if (response.isStreamOpen) {
-        watchStream();
-      } else {
-        finish({ kind: "responded" });
-      }
-    });
-    if (!done && timeout !== undefined && timeout > 0) {
-      timer = setTimeout(() => {
-        if (!response.headersSent) {
-          finish({ kind: "timeout" });
-        }
-      }, timeout);
-    }
-  });
 }
 
 export class BunRouter<
@@ -4531,21 +4531,32 @@ export class BunRouter<
       created instanceof BunRequestClass ? created : await created;
     const response = new BunResponseClass(request);
 
-    const routed = await awaitPipelineOrStream(
-      this.handle({
-        requestHost: request.host,
-        requestMethod: request.method,
-        requestUrl: request.originalUrl,
-        request,
-        response,
-      }),
+    const pipelineOptions: PipelineOptions = {
+      requestHost: request.host,
+      requestMethod: request.method,
+      requestUrl: request.originalUrl,
+      request,
       response,
-      (error) => {
-        this.logger.error("Error after a streamed response started", {
-          error,
-        });
-      },
-    );
+    };
+    const onLateError = (error: unknown) => {
+      this.logger.error("Error after a streamed response started", {
+        error,
+      });
+    };
+    // An overridden `handle` is run through the override.
+    const routed: PipelineServeOutcome =
+      this.handle === BunRouter.prototype.handle
+        ? await this.serveRequest<PipelineServeOutcome>(pipelineOptions, {
+            respond: (_options, routeUsed) => ({ routeUsed }),
+            stream: (_options, stream) => ({ stream }),
+            error: (_options, error) => error,
+            lateError: (_options, error) => onLateError(error),
+          })
+        : await awaitPipelineOrStream(
+            this.handle(pipelineOptions),
+            response,
+            onLateError,
+          );
     if (routed.stream !== undefined) {
       return toFetchResponse(routed.stream, request.method);
     }
@@ -4981,11 +4992,52 @@ export class BunRouter<
     | true
     | undefined
     | Promise<matchedRoute | true | undefined> {
+    const state = this.#startPipeline(options, undefined);
+    const result = this.#run(state);
+    return result === PARKED
+      ? (state.async!.promise as Promise<PipelineOutcome>)
+      : result;
+  }
+
+  /**
+   * {@link dispatch} for serving a request, finishing it through `hooks`:
+   * `hooks.respond(options, outcome)` — synchronously when every layer
+   * finished synchronously, else as the pipeline's one promise, which
+   * settles with `hooks.stream(options, response)` instead the moment the
+   * response opens a stream (the pipeline still running behind it). An
+   * unhandled error is thrown or rejected as `hooks.error(options, error)`;
+   * one after a stream settled the result goes to `hooks.lateError`.
+   *
+   * Serving an asynchronous request costs one promise in all — no wrapper
+   * around the pipeline's, as {@link awaitPipelineOrStream} over
+   * {@link dispatch} would add. The adapters and `fetch()` serve through it.
+   */
+  serveRequest<R>(
+    options: PipelineOptions,
+    hooks: ServeHooks<R>,
+  ): R | Promise<R> {
+    const state = this.#startPipeline(options, hooks as ServeHooks<unknown>);
+    let result: RunResult;
+    try {
+      result = this.#run(state);
+    } catch (error) {
+      throw hooks.error(options, error);
+    }
+    return result === PARKED
+      ? (state.async!.promise as Promise<R>)
+      : hooks.respond(options, result);
+  }
+
+  /** A fresh pipeline for `options`, over its matched layers. */
+  #startPipeline(
+    options: PipelineOptions,
+    serve: ServeHooks<unknown> | undefined,
+  ): PipelineState {
     const layers = this.getMatchedLayers(options);
     // Where a bare `res.upgradeToWebsocket()` reads router-wide upgrade
     // defaults: the outermost router running the request.
     options.response.webSocketUpgradeDefaults ??= this;
-    return this.#runPipeline({
+    return {
       options,
       layers,
       index: 0,
@@ -4994,15 +5046,19 @@ export class BunRouter<
       matchedRoute: undefined,
       exitedRouters: undefined,
       paramsBoundToRoute: -1,
-    });
+      async: undefined,
+      serve,
+    };
   }
 
   /**
-   * Runs layers from `state.index` until the pipeline ends, or until a layer
-   * has not finished when it returns; the rest then runs from that layer's
-   * promise (or its parked `next()`), and the result is a promise.
+   * Runs layers from `state.index` until the pipeline ends — returning its
+   * outcome, or throwing its unhandled error — or until a layer has not
+   * finished when it returns: the pipeline then parks on it (see `#park`)
+   * and this returns {@link PARKED}; the rest runs when the layer finishes,
+   * and settles the pipeline's promise.
    */
-  #runPipeline(state: PipelineState): PipelineResult {
+  #run(state: PipelineState): RunResult {
     const { layers } = state;
     const { request, response } = state.options;
 
@@ -5037,14 +5093,16 @@ export class BunRouter<
       if (layer.isRouteHandler && request.hasDeferredBody === true) {
         const reading = request.readDeferredBody();
         if (reading !== undefined) {
-          return reading.then(
-            () => this.#runPipeline(state),
+          this.#ensureAsync(state);
+          reading.then(
+            () => this.#continue(state),
             (error: unknown) => {
               state.hasError = true;
               state.currentError = error;
-              return this.#runPipeline(state);
+              this.#continue(state);
             },
           );
+          return PARKED;
         }
       }
 
@@ -5119,7 +5177,7 @@ export class BunRouter<
         if (layerFinished(step, response)) {
           this.#watchLateRejection(state, pending);
         } else {
-          return this.#waitLayer(state, step, pending);
+          return this.#park(state, step, pending);
         }
       } else {
         step.returned = invoked;
@@ -5127,7 +5185,7 @@ export class BunRouter<
         // or its stream ends, as Express waits for a `next` handed to a
         // callback.
         if (!layerFinished(step, response)) {
-          return this.#waitLayer(state, step, undefined);
+          return this.#park(state, step, undefined);
         }
       }
 
@@ -5140,48 +5198,256 @@ export class BunRouter<
   }
 
   /**
-   * Waits for an unfinished layer (see {@link waitForLayer}) and moves on as
-   * if it had finished then.
+   * The pipeline's {@link AsyncPipeline}, created on its first park: one
+   * promise for the whole pipeline, and one listener on the response that
+   * every later wait shares — it wakes the wait in progress, and (for
+   * {@link dispatchOrStream}) settles the promise with the stream the moment
+   * one opens.
    */
-  #waitLayer(
+  #ensureAsync(state: PipelineState): AsyncPipeline {
+    if (state.async !== undefined) {
+      return state.async;
+    }
+    // An executor rather than Promise.withResolvers(): a quarter of the cost
+    // on Bun 1.4.2 (18 vs 62 ns).
+    const pipeline = {
+      settled: false,
+      wait: undefined,
+    } as AsyncPipeline;
+    pipeline.promise = new Promise((resolve, reject) => {
+      pipeline.resolve = resolve;
+      pipeline.reject = reject;
+    });
+    state.async = pipeline;
+    const { response } = state.options;
+    response.onceResponded((native) => {
+      const serve = state.serve;
+      if (serve !== undefined && !pipeline.settled && response.isStreamOpen) {
+        pipeline.settled = true;
+        pipeline.resolve(serve.stream(state.options, native));
+      }
+      const wait = pipeline.wait;
+      if (wait !== undefined) {
+        this.#onResponded(state, wait);
+      }
+    });
+    return pipeline;
+  }
+
+  /**
+   * Parks the pipeline on a layer that returned without finishing (see
+   * {@link layerFinished}) and returns {@link PARKED}. It moves on at the
+   * layer's `next()`, its promise (`pending`) settling, a complete response,
+   * its open stream ending — whichever comes first — or fails after `timeout`
+   * ms while nothing has been sent (`0`/unset: no limit). A settlement of
+   * `pending` after the pipeline moved on is stale: a rejection is logged
+   * (see {@link #lateRejection}), anything else ignored.
+   */
+  #park(
     state: PipelineState,
     step: LayerStep,
     pending: PromiseLike<unknown> | undefined,
-  ): Promise<PipelineOutcome> {
+  ): typeof PARKED {
+    const pipeline = this.#ensureAsync(state);
     const { response, timeout } = state.options;
-    return waitForLayer(response, step, pending, timeout).then(
-      (outcome): PipelineResult => {
-        switch (outcome.kind) {
-          case "timeout":
-            throw createRequestTimeoutError();
-          case "threw":
-            if (this.#settleLayer(state, step, true, outcome.error)) {
-              return this.#finishPipeline(state);
-            }
-            state.index++;
-            return this.#runPipeline(state);
-          case "settled":
-            step.returned = outcome.value;
-            // Resolved without finishing: keep waiting for next(), a
-            // response or the stream's end, as for a synchronous layer.
-            if (!layerFinished(step, response) && !streamEnded(response)) {
-              return this.#waitLayer(state, step, undefined);
-            }
-            break;
-          default:
-            // next(), a complete response, or the stream ended: a promise
-            // still pending is watched for a late rejection.
-            if (pending !== undefined) {
-              this.#watchLateRejection(state, pending);
-            }
+    const wait: ActiveWait = {
+      step,
+      timer: undefined,
+      stopStreamWatch: undefined,
+    };
+    pipeline.wait = wait;
+    step.wake = () => this.#wake(state, wait, NEXT_CALLED);
+    if (pending !== undefined) {
+      pending.then(
+        (value) => {
+          // Already in a microtask: go on directly.
+          if (this.#claim(state, wait)) {
+            this.#resume(state, wait, { kind: "settled", value });
+          }
+        },
+        (error: unknown) => {
+          if (this.#claim(state, wait)) {
+            this.#resume(state, wait, { kind: "threw", error });
+          } else {
+            this.#lateRejection(state, error);
+          }
+        },
+      );
+    }
+    if (response.isStreamOpen) {
+      this.#watchStream(state, wait);
+    } else if (response.headersSent) {
+      this.#wake(state, wait, RESPONDED);
+    } else if (timeout !== undefined && timeout > 0) {
+      wait.timer = setTimeout(() => {
+        if (!response.headersSent) {
+          this.#wake(state, wait, TIMED_OUT);
         }
-        if (this.#settleLayer(state, step, false, undefined)) {
-          return this.#finishPipeline(state);
-        }
-        state.index++;
-        return this.#runPipeline(state);
-      },
+      }, timeout);
+    }
+    return PARKED;
+  }
+
+  /** A response arrived while parked: a complete one ends the wait. */
+  #onResponded(state: PipelineState, wait: ActiveWait): void {
+    if (wait.timer !== undefined) {
+      clearTimeout(wait.timer);
+      wait.timer = undefined;
+    }
+    if (state.options.response.isStreamOpen) {
+      this.#watchStream(state, wait);
+    } else {
+      this.#wake(state, wait, RESPONDED);
+    }
+  }
+
+  /** Waits for the open stream to end (at once, if it already has). */
+  #watchStream(state: PipelineState, wait: ActiveWait): void {
+    wait.stopStreamWatch = state.options.response.onceStreamEnded(() =>
+      this.#wake(state, wait, STREAM_ENDED),
     );
+  }
+
+  /**
+   * Ends `wait` if it is still the one in progress, clearing what it set up;
+   * `false` when something else ended it first.
+   */
+  #claim(state: PipelineState, wait: ActiveWait): boolean {
+    const pipeline = state.async!;
+    if (pipeline.wait !== wait) {
+      return false;
+    }
+    pipeline.wait = undefined;
+    if (wait.timer !== undefined) {
+      clearTimeout(wait.timer);
+      wait.timer = undefined;
+    }
+    wait.stopStreamWatch?.();
+    wait.step.wake = undefined;
+    return true;
+  }
+
+  /**
+   * Ends `wait` from a `next()`, a response, a stream's end or the timer, and
+   * goes on in a microtask — never inside the call that woke it. That is not
+   * only about running the next layers outside a handler's `next()`: a
+   * handler may send and then call `next(err)` in the same tick, and Express
+   * still runs the error handlers for that error, so the layer is read once
+   * that tick is over. The timer has no handler on the stack, and fails the
+   * pipeline at once.
+   */
+  #wake(state: PipelineState, wait: ActiveWait, outcome: LayerWait): void {
+    if (!this.#claim(state, wait)) {
+      return;
+    }
+    if (outcome === TIMED_OUT) {
+      this.#resume(state, wait, outcome);
+    } else {
+      queueMicrotask(() => this.#resume(state, wait, outcome));
+    }
+  }
+
+  /** Moves on from an ended wait as if its layer had finished then. */
+  #resume(state: PipelineState, wait: ActiveWait, outcome: LayerWait): void {
+    const { step } = wait;
+    const { response } = state.options;
+    let result: RunResult;
+    try {
+      switch (outcome.kind) {
+        case "timeout":
+          throw createRequestTimeoutError();
+        case "threw":
+          if (this.#settleLayer(state, step, true, outcome.error)) {
+            result = this.#finishPipeline(state);
+          } else {
+            state.index++;
+            result = this.#run(state);
+          }
+          break;
+        case "settled":
+          step.returned = outcome.value;
+          // Resolved without finishing: keep waiting for next(), a response
+          // or the stream's end, as for a synchronous layer.
+          if (!layerFinished(step, response) && !streamEnded(response)) {
+            result = this.#park(state, step, undefined);
+            break;
+          }
+          result = this.#advance(state, step);
+          break;
+        default:
+          // next(), a complete response, or the stream ended. A promise
+          // still pending is watched by its stale handlers in #park.
+          result = this.#advance(state, step);
+      }
+    } catch (error) {
+      this.#fail(state, error);
+      return;
+    }
+    if (result !== PARKED) {
+      this.#complete(state, result);
+    }
+  }
+
+  /** Applies a finished layer and runs the rest of the pipeline. */
+  #advance(state: PipelineState, step: LayerStep): RunResult {
+    if (this.#settleLayer(state, step, false, undefined)) {
+      return this.#finishPipeline(state);
+    }
+    state.index++;
+    return this.#run(state);
+  }
+
+  /** Runs the rest of a parked pipeline from `state.index`, and settles it. */
+  #continue(state: PipelineState): void {
+    let result: RunResult;
+    try {
+      result = this.#run(state);
+    } catch (error) {
+      this.#fail(state, error);
+      return;
+    }
+    if (result !== PARKED) {
+      this.#complete(state, result);
+    }
+  }
+
+  /**
+   * Resolves the pipeline's promise — through `hooks.respond` when serving —
+   * unless a stream already did.
+   */
+  #complete(state: PipelineState, outcome: PipelineOutcome): void {
+    const pipeline = state.async!;
+    if (pipeline.settled) {
+      return;
+    }
+    pipeline.settled = true;
+    const serve = state.serve;
+    if (serve === undefined) {
+      pipeline.resolve(outcome);
+      return;
+    }
+    try {
+      pipeline.resolve(serve.respond(state.options, outcome));
+    } catch (error) {
+      pipeline.reject(error);
+    }
+  }
+
+  /**
+   * Rejects the pipeline's promise (with `hooks.error`'s error when serving)
+   * — or, once a stream settled it, hands the error to `hooks.lateError`.
+   */
+  #fail(state: PipelineState, error: unknown): void {
+    const pipeline = state.async!;
+    const serve = state.serve;
+    if (!pipeline.settled) {
+      pipeline.settled = true;
+      pipeline.reject(
+        serve === undefined ? error : serve.error(state.options, error),
+      );
+      return;
+    }
+    serve?.lateError(state.options, error);
   }
 
   /**
@@ -5194,15 +5460,28 @@ export class BunRouter<
     state: PipelineState,
     pending: PromiseLike<unknown>,
   ): void {
+    // An async handler that finished before returning — the common case —
+    // returns a promise already fulfilled: nothing can come of it.
+    if (
+      pending instanceof Promise &&
+      Bun.peek.status(pending) === "fulfilled"
+    ) {
+      return;
+    }
     pending.then(undefined, (error: unknown) => {
-      this.logger.error("Error from a handler after it had moved on", {
-        error,
-      });
-      const { response } = state.options;
-      if (response.isStreamOpen) {
-        response.destroy(error);
-      }
+      this.#lateRejection(state, error);
     });
+  }
+
+  /** Logs a layer's rejection after the pipeline moved on, cutting a stream off. */
+  #lateRejection(state: PipelineState, error: unknown): void {
+    this.logger.error("Error from a handler after it had moved on", {
+      error,
+    });
+    const { response } = state.options;
+    if (response.isStreamOpen) {
+      response.destroy(error);
+    }
   }
 
   /**

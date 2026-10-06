@@ -401,10 +401,13 @@ export {
   type FetchInput,
   isRequestTimeoutError,
   type matchedRoute,
+  type PipelineOptions,
+  type PipelineServeOutcome,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
   routeModulePath,
+  type ServeHooks,
   toNativeRequest,
   type UnmountedRouter,
 } from "./BunRouter";

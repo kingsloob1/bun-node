@@ -194,6 +194,15 @@ wildcard is exposed as both the positional key and the name.
 
   A layer that never finishes leaves the request **hanging** until the
   adapter's request timeout fires. A return value is ignored.
+
+  The wait is cheap: a pipeline that goes asynchronous creates one promise
+  in all, however many layers wait, and continues a microtask after the
+  `next()` or response that ends a wait — so a `next(err)` called right after
+  a `res.send()` still reaches the error handlers. `serveRequest(options,
+  hooks)` runs a request and finishes it through `hooks` (`respond`,
+  `stream`, `error`, `lateError`) inside that same promise; the adapters and
+  `fetch()` serve through it. `dispatch()` is the same without hooks, and
+  `handle()` its `async` form.
 - An error raised after the response started still runs the error handlers,
   which see `res.headersSent` as `true`. If none handles it, a streamed
   response is cut off (`res.destroy(err)`) and the error is logged, as
