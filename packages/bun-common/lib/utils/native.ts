@@ -645,6 +645,30 @@ export function get(
 }
 
 /**
+ * Sets `key` on `target` as a non-enumerable (but writable, configurable)
+ * property: readable as usual, and left out of `Object.keys`, JSON and
+ * `console`/`Bun.inspect` output. Used to let the request ride on an error
+ * without every logger printing all of it. A frozen or sealed target is left
+ * as it is.
+ */
+export function defineHidden(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  try {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  } catch {
+    // Not extensible, or a non-configurable `key` already: nothing to carry.
+  }
+}
+
+/**
  * Writes `value` at `path` in `obj`, creating missing containers, and returns
  * `obj`. `value` is `unknown` because any value may be written, and the path
  * need not exist in `T`.

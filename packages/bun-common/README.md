@@ -539,7 +539,10 @@ builds that response:
 - `Content-Security-Policy: default-src 'none'` and
   `X-Content-Type-Options: nosniff` are set, plus any `err.headers`.
 - A `HEAD` request gets no body.
-- The adapter logs the error at `error` level, except under `NODE_ENV=test`.
+- The adapter logs the error, except under `NODE_ENV=test`: a 4xx (the
+  client's doing, such as a malformed body) at `warn`, anything else at
+  `error`. The request rides on the error as `err.req` for error handlers, but
+  non-enumerable, so a logger printing the error does not print the request.
 
 #### Testing without a socket
 
@@ -866,7 +869,7 @@ How a failure is answered:
 | Status | When |
 |---|---|
 | **415** | a coding that is unsupported or not allowed, in any layer; `inflate: false`; too many stacked codings; `dcb`/`dcz` without `compressionDictionaries`; a `*` sent in `Content-Encoding` |
-| **400** | data a layer cannot decode; a dictionary the header names but that was not provided |
+| **400** | data a layer cannot decode; a dictionary the header names but that was not provided; a body declared JSON (`application/json`, `+json`) that does not parse — body-parser's `type: "entity.parse.failed"`, with the text in `err.body` (a body sent with no `Content-Type` is only tried as JSON, then as the other kinds) |
 | **413** | a layer decoding past the body limit |
 
 `decompressBody(bytes, contentEncoding, options)` exposes the same decoder

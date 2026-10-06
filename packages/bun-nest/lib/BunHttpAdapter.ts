@@ -48,6 +48,7 @@ import {
   BunRouter,
   cors,
   createServeStaticHandler,
+  defineHidden,
   each,
   FETCH_STUB_SERVER,
   finalErrorResponse,
@@ -134,7 +135,7 @@ function carryRequest(error: unknown, req: BunRequest): unknown {
     return error;
   }
   const carrier: object = isObject(error) ? error : new Error(String(error));
-  set(carrier, "req", req);
+  defineHidden(carrier, "req", req);
   return carrier;
 }
 
@@ -404,7 +405,7 @@ export class BunHttpAdapter<
     // body.
     const decodingError = req.bodyDecodingError;
     if (decodingError) {
-      set(decodingError, "req", req);
+      defineHidden(decodingError, "req", req);
       throw decodingError;
     }
 
@@ -1108,8 +1109,9 @@ export class BunHttpAdapter<
    * `finalErrorResponse` (Express's `finalhandler`), for `req`'s method — so
    * this adapter and bun-common's answer byte for byte alike.
    *
-   * The error is logged through Nest's {@link logger} at `error` level as
-   * `(message, stack)`, the message naming the method, path and status,
+   * The error is logged through Nest's {@link logger} as `(message, stack)`,
+   * at `warn` for a 4xx and `error` otherwise, the message naming the method,
+   * path and status,
    * except under `NODE_ENV=test`, as Express's default error logging does.
    */
   protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
@@ -1123,10 +1125,13 @@ export class BunHttpAdapter<
               const where = req
                 ? ` (${req.method} ${req.path}, ${status})`
                 : "";
-              this.logger.error(
-                `${message}${where}`,
-                err instanceof Error ? err.stack : String(err),
-              );
+              const detail = err instanceof Error ? err.stack : String(err);
+              // A client error (4xx) is the client's doing: a warning.
+              if (status < 500) {
+                this.logger.warn(`${message}${where}`, detail);
+              } else {
+                this.logger.error(`${message}${where}`, detail);
+              }
             },
     });
   }
