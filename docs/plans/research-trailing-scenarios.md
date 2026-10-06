@@ -341,6 +341,43 @@ this.
 All three share the fixed cost a static request pays — 641 ns in process
 against Elysia 2 — which is still the largest single item for async.
 
+## 6. Route lookup: a regex-free matcher against a radix tree
+
+Asked to try both and keep the faster. Both were prototyped against the real
+route table (the benchmark's 1,000 `/r<i>/:id` routes plus every other route
+shape), compiled from each route's **own regex source** so they answer for
+exactly that regex, and checked against `exec` on every lookup before timing
+(`evidence/elysia2/lookup-prototypes.ts`).
+
+- **A — regex-free matcher**: the existing per-segment candidate index, with
+  each candidate's `exec` replaced by a compiled segment comparison.
+- **B — radix tree**: the index replaced. B1/B2 (a tree of segments, `Map`
+  per node) were *slower* than today: a `Map.get` on the root's 1,007 keys with
+  a freshly sliced, lower-cased segment alone cost 150–250 ns. B3 walked
+  characters instead (Elysia's memoirist does the same) — no substring, no
+  hashing — but still ran the old index for the 3 routes outside the grammar.
+  **B4** hangs those as regex leaves at their literal prefix, so nothing else
+  runs.
+
+Lookup alone, per fresh path (3 interleaved rounds, this machine):
+
+| Workload | Current | A matcher | B4 radix |
+|---|---:|---:|---:|
+| param-random `/r999/<id>` | 1,136–1,206 ns | 911–1,013 ns | **869–980 ns** |
+| wildcard, fresh path | 1,114–1,167 ns | 998–1,321 ns | **747–821 ns** |
+| static `/static` | 579–780 ns | 611–701 ns | **399–502 ns** |
+
+**B4 won everywhere** and became `lib/utils/routeTree.ts`; the per-segment
+index is gone. It is held to the regexes by two differential tests (a hand
+table of every shape over ~3,400 paths with a negative control, and 400
+random tables × 2 case modes × 60 paths, exact captures). Request level:
+
+| | before | tree |
+|---|---:|---:|
+| `wrk` param-random, 5 rounds | 31,292 | **35,267 (+12.7%)** |
+| `wrk` routes-1000 (a cache hit), 5 rounds | 40,062 | 40,278 |
+| in process param-random, 2 runs | 5,271 / 5,610 ns | 5,056 / 5,410 ns (−4%) |
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |
@@ -348,7 +385,7 @@ against Elysia 2 — which is still the largest single item for async.
 | json: `request.json()` for a plain JSON body; `retainBuffer` keeps the bytes; shared default body config; no codings parse for an absent `Content-Encoding` | `b2374a0` | **`wrk` json 19,662 → 21,462 req/s, 74% → 88% of Elysia 2**; in process 6.1 → 5.0 µs |
 | headers: header record + response-first freshness | — | Built, measured slower (+6–11% in process), **reverted** (§4) |
 | async: no per-park wake closure | `8c98cb8` | Kept as a simplification; within noise |
-| param-random / wildcard (fresh paths) | — | Not started: what is left is structural — a regex match and the Express layer list per path, against a tree walk. A bounded cache under admission was rejected on arithmetic: at a 20% hit ratio it loses ~200 ns of hits to save ~44 ns of misses |
+| param-random / wildcard (fresh paths): radix tree route lookup | (this commit) | **`wrk` param-random 31,292 → 35,267 req/s (+12.7%)**; see §6 |
 
 ## Recommended order
 

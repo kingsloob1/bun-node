@@ -42,7 +42,8 @@ import {
   orderBy,
   pick,
 } from "./utils/native";
-import { FifoCache, RouteCandidateIndex } from "./utils/routeIndex";
+import { FifoCache } from "./utils/routeIndex";
+import { RouteTree } from "./utils/routeTree";
 
 export type { matchedRoute } from "@routejs/router";
 
@@ -859,11 +860,11 @@ export class BunRouter<
   private routeCacheLayers: FifoCache<CachedPipelines> | undefined;
 
   /**
-   * Narrows a cache miss to the routes that can match the request's path, so
-   * a miss costs O(routes sharing its first segment) rather than O(routes).
-   * Rebuilt lazily when the route table changes.
+   * Finds the routes matching a path, with their captures, on a cache miss —
+   * a radix tree compiled from each route's own regex (see
+   * `utils/routeTree.ts`). Rebuilt lazily when the route table changes.
    */
-  #candidateIndex = new RouteCandidateIndex();
+  #routeTree = new RouteTree();
 
   /**
    * Whether any route was registered with a host pattern, so a matched
@@ -1141,12 +1142,12 @@ export class BunRouter<
     // Only a route handler can be named — see `setName`.
     this.#lastRoute = isEndpoint ? route : null;
     // The route table changed — drop the matched-pipeline cache so a route
-    // registered after the first request is still picked up, and the
-    // candidate index so it is a candidate.
+    // registered after the first request is still picked up, and the route
+    // tree so the lookup finds it.
     if (this.routeCacheLayers?.size) {
       this.routeCacheLayers.clear();
     }
-    this.#candidateIndex.invalidate();
+    this.#routeTree.invalidate();
     return this;
   }
 
@@ -4651,7 +4652,7 @@ export class BunRouter<
 
   clearRouteCache() {
     this.routeCacheLayers?.clear();
-    this.#candidateIndex.invalidate();
+    this.#routeTree.invalidate();
 
     return this;
   }
@@ -4687,6 +4688,8 @@ export class BunRouter<
     hostSource: { readonly requestHost: string },
     requestMethod: string,
     requestPath: string,
+    /** The path regex's captures, when already known (the route tree's). */
+    knownPathMatch?: readonly (string | undefined)[],
   ): matchedRoute | false {
     const pathRegexp = route.pathRegexp;
     if (pathRegexp === null || pathRegexp === undefined) {
@@ -4715,7 +4718,7 @@ export class BunRouter<
     }
 
     // 2. Path.
-    const pathMatch = pathRegexp.exec(requestPath);
+    const pathMatch = knownPathMatch ?? pathRegexp.exec(requestPath);
     if (pathMatch === null) {
       return false;
     }
@@ -4878,12 +4881,14 @@ export class BunRouter<
     }
 
     const routes = this.routes();
-    // Only the routes that can match this path: the index rules out the rest
-    // without running their regexes. Indices stay those of `routes()`.
-    const candidates = this.#candidateIndex.candidates(routes, requestPath);
+    // The routes whose path regex matches, with its captures, in
+    // registration order: the tree answers for every route's regex without
+    // running it for most. Indices stay those of `routes()`.
+    const found = this.#routeTree.match(routes, requestPath);
+    const candidates = found.indices;
 
-    // 1. Match every candidate, preserving registration order. A plain loop:
-    //    this is the whole cost of a cache miss.
+    // 1. Match every candidate (method, host, params), preserving
+    //    registration order. A plain loop: this is the whole cost of a miss.
     const entries: MatchedEntry[] = [];
     for (let c = 0; c < candidates.length; c++) {
       const routeIndex = candidates[c];
@@ -4899,6 +4904,7 @@ export class BunRouter<
           options,
           options.requestMethod,
           requestPath,
+          found.captures[c],
         );
       } catch (error) {
         if (!(error instanceof ParamDecodeFailure)) {

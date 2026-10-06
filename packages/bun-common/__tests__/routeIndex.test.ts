@@ -8,10 +8,8 @@ import {
   ADMISSION_SAMPLE,
   ADMISSION_WINDOW,
   FifoCache,
-  requestPathBounds,
-  RouteCandidateIndex,
-  splitRequestPath,
 } from "../lib/utils/routeIndex";
+import { RouteTree } from "../lib/utils/routeTree";
 
 /** A small seeded PRNG (mulberry32), so a failure names a reproducible seed. */
 function prng(seed: number) {
@@ -180,61 +178,61 @@ function matching(routes: Route[], path: string): number[] {
 
 const SEEDS = 400;
 
-describe("RouteCandidateIndex", () => {
-  it("never drops a route whose regex matches, over random tables (differential)", () => {
+describe("RouteTree over random tables", () => {
+  /** `[index, captures]` for every route whose own regex matches `path`. */
+  const viaRegex = (routes: Route[], path: string) =>
+    matching(routes, path).map((index) => [
+      index,
+      [...(routes[index].pathRegexp as RegExp).exec(path)!],
+    ]);
+  const viaTree = (tree: RouteTree, routes: Route[], path: string) => {
+    const found = tree.match(routes, path);
+    return found.indices.map((index, k) => [index, [...found.captures[k]]]);
+  };
+
+  it("finds exactly the routes whose regex matches, with their captures (differential)", () => {
     const misses: string[] = [];
     let probes = 0;
-    let candidatesTotal = 0;
-    let routesTotal = 0;
+    let matches = 0;
     for (let seed = 1; seed <= SEEDS; seed++) {
       for (const caseSensitive of [false, true]) {
         const { router, paths } = randomTable(seed, caseSensitive);
         const routes = router.routes();
-        const index = new RouteCandidateIndex();
+        const tree = new RouteTree();
         for (const path of paths) {
-          const candidates = index.candidates(routes, path);
-          // Ascending, so registration order is kept.
-          expect(candidates).toEqual([...candidates].sort((a, b) => a - b));
-          const candidateSet = new Set(candidates);
-          for (const routeIndex of matching(routes, path)) {
-            if (!candidateSet.has(routeIndex)) {
-              const route = routes[routeIndex];
-              misses.push(
-                `seed ${seed} cs=${caseSensitive} ${path}: dropped ${route.path ?? `use(${route.group})`}`,
-              );
-            }
+          const actual = JSON.stringify(viaTree(tree, routes, path));
+          const expected = JSON.stringify(viaRegex(routes, path));
+          if (actual !== expected) {
+            misses.push(
+              `seed ${seed} cs=${caseSensitive} ${path}: ${actual} vs ${expected}`,
+            );
           }
           probes++;
-          candidatesTotal += candidates.length;
-          routesTotal += routes.length;
+          matches += matching(routes, path).length;
         }
       }
     }
     expect(misses.slice(0, 10)).toEqual([]);
     expect(probes).toBe(SEEDS * 2 * 60);
-    // And it narrows: on these small, overlapping tables, under half the
-    // routes are candidates on average.
-    expect(candidatesTotal / routesTotal).toBeLessThan(0.5);
+    // The tables exercise real matches, not only misses.
+    expect(matches).toBeGreaterThan(probes);
   });
 
-  it("negative control: the differential catches a rule that drops a matching route", () => {
-    // The same check, against an index that wrongly drops every wildcard
-    // route. If the tables never exercised wildcards, this would pass too and
-    // the differential above would prove nothing.
+  it("negative control: the differential catches a tree that drops a match", () => {
+    // The same check against answers with every wildcard route removed: if
+    // the tables never exercised wildcards, this would pass too and the
+    // differential above would prove nothing.
     let caught = 0;
     for (let seed = 1; seed <= 50; seed++) {
       const { router, paths } = randomTable(seed, false);
       const routes = router.routes();
-      const index = new RouteCandidateIndex();
+      const tree = new RouteTree();
       for (const path of paths) {
-        const broken = new Set(
-          index
-            .candidates(routes, path)
-            .filter(
-              (i) => !String(routes[i].path ?? routes[i].group).includes("*"),
-            ),
+        const { indices } = tree.match(routes, path);
+        const kept = indices.filter(
+          (i) => !String(routes[i].path ?? routes[i].group).includes("*"),
         );
-        if (matching(routes, path).some((i) => !broken.has(i))) {
+        if (matching(routes, path).length !== kept.length) {
           caught++;
         }
       }
@@ -242,7 +240,7 @@ describe("RouteCandidateIndex", () => {
     expect(caught).toBeGreaterThan(20);
   });
 
-  it("buckets by first segment and keeps everywhere-routes in registration order", () => {
+  it("answers in registration order across literals, params and prefixes", () => {
     const router = new BunRouter();
     const noop = () => {};
     router.use(noop); // 0: global middleware
@@ -252,49 +250,48 @@ describe("RouteCandidateIndex", () => {
     router.get("/users/new", noop); // 4
     router.get("/users/:id/posts", noop); // 5: wrong length for /users/42
     router.get("/USERS/42", noop); // 6: case-insensitive by default
-    const index = new RouteCandidateIndex();
-    const forUser = [0, 1, 3, 6];
-    expect(index.candidates(router.routes(), "/users/42")).toEqual(forUser);
-    expect(index.candidates(router.routes(), "/users/42/")).toEqual(forUser);
-    expect(index.candidates(router.routes(), "/posts/1")).toEqual([0, 2, 3]);
-    expect(index.candidates(router.routes(), "/")).toEqual([0]);
-    expect(index.candidates(router.routes(), "/nothing")).toEqual([0, 3]);
+    const tree = new RouteTree();
+    const routes = router.routes();
+    expect(tree.match(routes, "/users/42").indices).toEqual([0, 1, 3, 6]);
+    expect(tree.match(routes, "/users/42/").indices).toEqual([0, 1, 3, 6]);
+    expect(tree.match(routes, "/users/new").indices).toEqual([0, 1, 3, 4]);
+    expect(tree.match(routes, "/posts/1").indices).toEqual([0, 2, 3]);
+    expect(tree.match(routes, "/").indices).toEqual([0]);
+    expect(tree.match(routes, "/nothing").indices).toEqual([0, 3]);
   });
 
   it("compares a case-sensitive route exactly", () => {
     const router = new BunRouter({ caseSensitive: true });
     router.get("/Users/:id", () => {});
-    const index = new RouteCandidateIndex();
-    expect(index.candidates(router.routes(), "/Users/1")).toEqual([0]);
-    expect(index.candidates(router.routes(), "/users/1")).toEqual([]);
+    const tree = new RouteTree();
+    expect(tree.match(router.routes(), "/Users/1").indices).toEqual([0]);
+    expect(tree.match(router.routes(), "/users/1").indices).toEqual([]);
   });
 
-  it("never rules out a route on a non-ASCII case fold it cannot reproduce", () => {
+  it("leaves a non-ASCII case fold it cannot reproduce to the route's regex", () => {
     // Without the `u` flag, /σ/i matches "ς": lower-casing would say they differ.
     const router = new BunRouter();
     router.get("/a/σ", () => {});
     const route = router.routes()[0];
     expect(route.pathRegexp.test("/a/ς")).toBe(true);
-    expect(
-      new RouteCandidateIndex().candidates(router.routes(), "/a/ς"),
-    ).toEqual([0]);
+    expect(new RouteTree().match(router.routes(), "/a/ς").indices).toEqual([0]);
   });
 
-  it("rebuilds when the table grows or is replaced, or on invalidate()", () => {
+  it("rebuilds when the table grows or is replaced", () => {
     const router = new BunRouter();
-    const index = new RouteCandidateIndex();
+    const tree = new RouteTree();
     router.get("/a", () => {});
-    expect(index.candidates(router.routes(), "/b")).toEqual([]);
+    expect(tree.match(router.routes(), "/b").indices).toEqual([]);
     router.get("/b", () => {});
-    expect(index.candidates(router.routes(), "/b")).toEqual([1]);
+    expect(tree.match(router.routes(), "/b").indices).toEqual([1]);
 
     const other = new BunRouter();
     other.get("/b", () => {});
-    expect(index.candidates(other.routes(), "/b")).toEqual([0]);
+    expect(tree.match(other.routes(), "/b").indices).toEqual([0]);
   });
 });
 
-describe("BunRouter: candidate index in the pipeline", () => {
+describe("BunRouter: route lookup in the pipeline", () => {
   it("keeps routeIndex as the route's position in routes()", () => {
     const router = new BunRouter();
     for (let i = 0; i < 20; i++) {
@@ -575,51 +572,5 @@ describe("BunRouter route cache admission", () => {
     expect(await (await router.fetch("/static")).text()).toBe("static");
     expect(await (await router.fetch("/r7/abc")).text()).toBe("r7:abc");
     expect((await router.fetch("/nope")).status).toBe(404);
-  });
-});
-
-describe("requestPathBounds", () => {
-  const fromBounds = (path: string) => {
-    const bounds = requestPathBounds(path);
-    const out: string[] = [];
-    for (let i = 0; i + 1 < bounds.length; i++) {
-      out.push(path.slice(bounds[i], bounds[i + 1] - 1));
-    }
-    return out;
-  };
-
-  it("describes exactly the segments splitRequestPath gives", () => {
-    const fixed = [
-      "",
-      "/",
-      "//",
-      "///",
-      "/a",
-      "/a/",
-      "/a//",
-      "/a/b",
-      "/a//b",
-      "/a/b/",
-      "x",
-      "x/",
-      "/A/b%2F/c",
-      "/é/ü",
-    ];
-    const random = prng(7);
-    const alphabet = ["/", "a", "B", "%", "é", "-"];
-    for (let n = 0; n < 2000; n++) {
-      let path = "/";
-      const length = Math.floor(random() * 12);
-      for (let i = 0; i < length; i++) {
-        path += alphabet[Math.floor(random() * alphabet.length)];
-      }
-      fixed.push(path);
-    }
-    for (const path of fixed) {
-      expect({ path, segments: fromBounds(path) }).toEqual({
-        path,
-        segments: splitRequestPath(path),
-      });
-    }
   });
 });

@@ -333,13 +333,18 @@ named. A duplicate name also throws.
 
 Matched pipelines are cached per host, path and method. The cache key is the
 **resolved** path, so a route carrying an id needs one entry per distinct id.
-A miss is cheap: routes are indexed by their first path segment, so a miss
-runs only the regexes of routes that can match (those sharing the path's
-first segment, plus param-first routes and global middleware), in
-registration order. When the cache is full the oldest entry is evicted in
+A miss is cheap: the routes live in a radix tree compiled from each route's
+own regex, walked character by character, so a literal, a whole-segment
+`:param` and a trailing `*` match without running a regex at all, and the
+other shapes (an optional or regex-constrained param, a param inside a
+segment) run their regex only when the path reaches their literal prefix. The
+matches come back in registration order, with exactly the captures their
+regexes would give — a differential test over hundreds of random tables holds
+the tree to that. When the cache is full the oldest entry is evicted in
 constant time. Measured in process on a 1,000-route table, a miss costs
-about 3 µs with the cache off and 5 µs with it on (a cache hit, about
-0.2 µs), against 93 µs and 99 µs before the index. So a `routeCacheMax`
+a few µs (a cache hit, about 0.2 µs), against 93 µs before the first index;
+the tree made a fresh-path miss (param-random) 12.7% faster over `wrk` than
+the per-segment index it replaced. So a `routeCacheMax`
 below the number of distinct live paths no longer costs much, and `0` (no
 cache) is reasonable for very high-cardinality traffic. `clearRouteCache()` empties the cache.
 
