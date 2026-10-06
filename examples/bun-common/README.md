@@ -34,19 +34,20 @@ with no socket at all.
 
 | File | Shows |
 |---|---|
-| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity` |
-| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')` |
+| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `withoutHeadBody` |
+| [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout, errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off) |
 | [`sub-routers.ts`](./02-routing/sub-routers.ts) | mounting routers, typed mount params, a validator at the mount, compile-time mount mismatches, `group`, `domain` |
 | [`typed-routes.ts`](./02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator; `ExtractRouteParams`, `TypedRouteHandler` |
-| [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request |
-| [`route-cache.ts`](./02-routing/route-cache.ts) | the route cache and `routeCacheMax`, named routes, `RouteClass`, `routeModulePath`, `toNativeRequest` |
+| [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request, a `//x/y` path served and socket-free |
+| [`route-cache.ts`](./02-routing/route-cache.ts) | the route cache and `routeCacheMax`, named routes, `RouteClass`, `routeModulePath`, `toNativeRequest` (and `//` paths), a 1,000-route table with high-cardinality ids and a tiny or no cache, `routeIndex` |
+| [`synchronous-dispatch.ts`](./02-routing/synchronous-dispatch.ts) | `BunRequest.init()` returning the request itself without a body, `dispatch()` returning synchronously until a layer is async, `handle()` always a promise, the pipeline `timeout` and `isRequestTimeoutError` |
 
 ### 03 — The HTTP adapter
 
 | File | Shows |
 |---|---|
 | [`listen-and-close.ts`](./03-http-adapter/listen-and-close.ts) | every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
-| [`adapter-options.ts`](./03-http-adapter/adapter-options.ts) | every constructor option: `requestTimeout`, `request`, `websocket`, `logger`, `router`, `etag`, `routeCacheMax`, `server` |
+| [`adapter-options.ts`](./03-http-adapter/adapter-options.ts) | every constructor option: `requestTimeout`, `request`, `websocket`, `logger`, `router`, `etag`, `routeCacheMax`, `server`, and `server.routes` — native static routes over a real socket, with their caveats |
 | [`handlers.ts`](./03-http-adapter/handlers.ts) | not-found and error handlers, `enableCors`, `useStaticAssets`, body parsers, `setRequestOpts`, `setLogger`, `setTimeout` |
 
 ### 04 — The request
@@ -54,7 +55,8 @@ with no socket at all.
 | File | Shows |
 |---|---|
 | [`reading-a-request.ts`](./04-request/reading-a-request.ts) | every request property: url parts, params, query parsing options, headers, ip/host/protocol, freshness, ranges, content negotiation |
-| [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies |
+| [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies, per-request option setters that leave the adapter's options alone |
+| [`per-route-parsing.ts`](./04-request/per-route-parsing.ts) | `requestParsing()` per route — query, cookie (`decode`, `cookieSecret`) and body options, errors through `next(err)`, `TypeError` on bad options; the adapter's `deferBody` letting a route raise its body cap; `hasDeferredBody`, `readDeferredBody()`, `applyParseBodyOptions()`, `setCookieOptions()`, `configuredCookieSecrets`. See the package README's [Per-route parsing](../../packages/bun-common/README.md#per-route-parsing-requestparsing) |
 | [`cookies.ts`](./04-request/cookies.ts) | parsing cookies, signed cookies and secrets, JSON cookies |
 
 ### 05 — The response

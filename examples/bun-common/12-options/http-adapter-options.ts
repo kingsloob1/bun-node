@@ -331,6 +331,31 @@ try {
 }
 check("a body beyond it never reaches the route", refused !== 200, refused);
 
+const nativeRoutes = await serve(
+  new BunHttpAdapter(0, {
+    server: { routes: { "/ping": new Response("pong") } },
+  }),
+);
+let nativeMiddlewareRuns = 0;
+nativeRoutes.use((_req, _res, next) => {
+  nativeMiddlewareRuns++;
+  next();
+});
+nativeRoutes.all("/ping", (_req, res) => res.send("router pong"));
+const nativePing = await fetch(`${nativeRoutes.url}/ping`, { method: "POST" });
+checkEqual(
+  "server.routes: Bun answers first, for every method",
+  await nativePing.text(),
+  "pong",
+);
+check("…with an ETag", nativePing.headers.has("ETag"));
+checkEqual("…and no middleware ran", nativeMiddlewareRuns, 0);
+checkEqual(
+  "…while adapter.fetch() (no socket) runs the router",
+  await (await nativeRoutes.fetch("/ping")).text(),
+  "router pong",
+);
+
 /* ------------------------------------------------------------------ */
 step("listen(), its events, and the address getters");
 

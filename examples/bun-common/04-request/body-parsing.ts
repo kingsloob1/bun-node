@@ -33,6 +33,14 @@
  *   `parseBody: false` and look at the header before parsing anything.
  * - Multipart bodies land in `parseBody()`'s `multipart` result, not in
  *   `req.body`.
+ * - `req.setParseBodyOptions()`, `setQueryParserOptions()`,
+ *   `setMultipartParserOptions()`, `setXmlParserOptions()` and
+ *   `setAllowedContentTypes()` tailor **that request only**: the adapter hands
+ *   every request the same options object, and a setter copies it before its
+ *   first write, so raising the cap on one route never raises it for the
+ *   requests after it. `requestParsing()` wraps these as middleware, and the
+ *   adapter's `deferBody` lets a route raise its cap before the body is read:
+ *   see `per-route-parsing.ts`.
  * - `req.buffer` always holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
@@ -60,6 +68,7 @@ import {
   parseXmlToObject,
   PayloadTooLargeError,
 } from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Body parsing");
@@ -635,9 +644,74 @@ for (const [label, sig] of [
 }
 
 /* ------------------------------------------------------------------ */
+step("Per-request options: a setter changes its own request only");
+
+const shared = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: 16 }, parseQuery: true },
+});
+adapters.push(shared);
+const sharedBefore = structuredClone(shared.requestOpts);
+
+// One route tailors everything it can: the body cap (lifted entirely), the
+// query parser, the multipart and XML options and the allowed content types.
+shared.post("/tailor", (req, res) => {
+  req
+    .setParseBodyOptions(true)
+    .setQueryParserOptions({ nesting: false })
+    .setMultipartParserOptions({ limits: { files: 1 } })
+    .setXmlParserOptions({ parsePrimitives: false })
+    .setAllowedContentTypes(["json"]);
+  res.json({ query: req.parseQuery() });
+});
+// Another uses whatever the adapter says.
+shared.post("/plain", (req, res) => {
+  res.json({ query: req.query, body: describeBody(req) });
+});
+
+/** POSTs `body` as text to `path` on the shared adapter. */
+function postText(path: string, body: string): Promise<Response> {
+  return shared.fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body,
+  });
+}
+
+const oversized = "x".repeat(64);
+checkEqual(
+  "before: 64 bytes is over the 16-byte cap",
+  (await postText("/plain", oversized)).status,
+  413,
+);
+const tailored = await postText("/tailor?a[b]=1", "tiny");
+checkEqual(
+  "the tailoring route re-parses its query flat",
+  await tailored.json(),
+  { query: { "a[b]": "1" } },
+);
+checkEqual(
+  "after: still a 413 — the lifted cap stayed on its own request",
+  (await postText("/plain", oversized)).status,
+  413,
+);
+const plain = await postText("/plain?a[b]=1", "short text");
+checkEqual(
+  "…the query still nests and text is still parsed",
+  await plain.json(),
+  { query: { a: { b: "1" } }, body: "short text" },
+);
+check(
+  "adapter.requestOpts is exactly as it was",
+  Bun.deepEquals(shared.requestOpts, sharedBefore, true),
+  { before: sharedBefore, after: shared.requestOpts },
+);
+
+/* ------------------------------------------------------------------ */
 step("Cleaning up");
 
 for (const adapter of adapters) {
   await adapter.close();
 }
 show("done");
+
+summary();

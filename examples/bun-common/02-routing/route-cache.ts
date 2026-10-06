@@ -16,6 +16,13 @@
  *   `0`: a cap between the two means every request misses *and* evicts.
  * - Registering a route drops the whole cache, so late routes are never
  *   hidden by a stale entry.
+ * - A miss is cheap even on a large table: the router keeps a candidate
+ *   index (routes bucketed by their static first segment), so a 1,000-route
+ *   table with high-cardinality ids routes correctly with a tiny cache or
+ *   none, in registration order. Eviction is O(1) FIFO.
+ * - A layer's `routeIndex` is its route's position in `routes()`.
+ * - `toNativeRequest("//x/y")` keeps `//x/y` as the path, as a served
+ *   request has it (`//` used to be read as a host, and threw).
  * - Name a route with `setRoute({ name })`; `route(name, params)` builds its
  *   URL back.
  */
@@ -32,6 +39,7 @@ import {
   routeModulePath,
   toNativeRequest,
 } from "@kingsleyweb/bun-common";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("The route cache and routing internals");
@@ -203,8 +211,91 @@ show(
 );
 const posted = toNativeRequest({ url: "/users", method: "POST", body: "{}" });
 show("an object with a url", `${posted.method} ${posted.url}`);
+checkEqual(
+  "a path starting with // is a path, not a host",
+  toNativeRequest("//x/y").url,
+  "http://localhost//x/y",
+);
+checkEqual(
+  "…including a bare //",
+  toNativeRequest("//").url,
+  "http://localhost//",
+);
+checkEqual(
+  "…dot segments still resolve",
+  toNativeRequest("//a/../b").url,
+  "http://localhost//b",
+);
 const original = new Request("http://localhost/as-is");
 show(
   "a Request is returned untouched",
   toNativeRequest(original, { method: "DELETE" }) === original,
 );
+
+/* ------------------------------------------------------------------ */
+step("A large route table: 1,000 routes, high-cardinality ids");
+
+/** Registers `/r0/:id` … `/r999/:id`, each answering its own name and id. */
+function bigTable(router: BunRouter): BunRouter {
+  for (let i = 0; i < 1000; i++) {
+    router.get(`/r${i}/:id`, (req, res) => res.send(`r${i}:${req.params.id}`));
+  }
+  // Registered after /r5/:id, so — registration order — it never runs.
+  router.get("/r5/special", (_req, res) => res.send("never reached"));
+  // A param in the first segment: a candidate for every path.
+  router.get("/:section/x/:id", (req, res) => {
+    res.send(`late ${req.params.section} ${req.params.id}`);
+  });
+  return router;
+}
+
+for (const routeCacheMax of [16, 0]) {
+  const big = bigTable(new BunRouter({ routeCacheMax }));
+  let correct = 0;
+  const requests = 3000;
+  const from = performance.now();
+  for (let k = 0; k < requests; k++) {
+    // Every id is new, so nearly every lookup is a cache miss.
+    const i = (k * 7919) % 1000;
+    const id = crypto.randomUUID();
+    const response = await big.fetch(`/r${i}/${id}`);
+    if ((await response.text()) === `r${i}:${id}`) {
+      correct++;
+    }
+  }
+  show(
+    `routeCacheMax: ${routeCacheMax} — ${requests} unique paths`,
+    `${(performance.now() - from).toFixed(0)}ms`,
+  );
+  checkEqual(
+    `routeCacheMax: ${routeCacheMax} — every one routed right`,
+    correct,
+    requests,
+  );
+  checkEqual(
+    `routeCacheMax: ${routeCacheMax} — /r5/special: the earlier /r5/:id wins`,
+    await (await big.fetch("/r5/special")).text(),
+    "r5:special",
+  );
+  checkEqual(
+    `routeCacheMax: ${routeCacheMax} — a first-segment param route still matches`,
+    await (await big.fetch("/r12/x/9")).text(),
+    "late r12 9",
+  );
+}
+
+const indexed = bigTable(new BunRouter());
+const last = layers(indexed, "/r999/abc");
+checkEqual("one layer for /r999/abc", last.length, 1);
+checkEqual(
+  "routeIndex is the route's position in routes()",
+  last[0]!.routeIndex,
+  999,
+);
+checkEqual(
+  "…so routes()[routeIndex] is the route that matched",
+  indexed.routes()[last[0]!.routeIndex]!.path,
+  "/r999/:id",
+);
+
+summary();

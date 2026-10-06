@@ -966,8 +966,19 @@ checkEqual(
 );
 checkEqual("parseCookie: an empty header", parseCookie(""), {});
 checkEqual(
-  "parseCookie: options.decode is not applied (documented)",
-  parseCookie("a=x", { decode: (value) => value.toUpperCase() }),
+  "parseCookie: options.decode replaces the decoding",
+  parseCookie("a=x; b=hello%20world", {
+    decode: (value) => value.toUpperCase(),
+  }),
+  { a: "X", b: "HELLO%20WORLD" },
+);
+checkEqual(
+  "parseCookie: a decoder that throws keeps the raw value",
+  parseCookie("a=x", {
+    decode: () => {
+      throw new Error("bad value");
+    },
+  }),
   { a: "x" },
 );
 
