@@ -520,8 +520,8 @@ const INIT_COOKIES = 8;
  */
 const COOKIES_PENDING = 16;
 /**
- * The body was found absent from the request object alone (no stream, never
- * read) and finished as empty without reading a header. A `Content-Length:
+ * A `GET` or `HEAD` body was found absent from the request object alone (no
+ * stream, never read) and finished as empty without reading a header. A `Content-Length:
  * 0` or `Transfer-Encoding` would make it a *declared* empty body — `{}` for
  * JSON, `""` for text, its `Content-Encoding` checked — so the first read of
  * the body's state settles that (see `#settleEmptyBody`). Until then the
@@ -1770,8 +1770,11 @@ export class BunRequest<
         this.#resolvedBodyConfig();
       }
       if (absent) {
-        // Finished: nothing to read, unless its headers declare an empty body.
-        scheduled |= EMPTY_BODY_UNSETTLED;
+        // Finished: nothing to read — unless, for a GET or HEAD whose headers
+        // were not read, they declare an empty body.
+        if (absent === "unsettled") {
+          scheduled |= EMPTY_BODY_UNSETTLED;
+        }
       } else if (this.options.deferBody === true) {
         // Read on first need (see `deferBody`); `ready()` reads it too.
         this.#bodyDeferred = true;
@@ -1802,26 +1805,42 @@ export class BunRequest<
    * It reaches exactly the state the full parse reaches for a request with
    * no body (an empty buffer, `req.body` `undefined`, the body counted as
    * parsed and ended), without reading a stream that does not exist — that
-   * read was the largest single cost of a bodiless GET — and without reading
-   * a header. A served `Content-Length: 0` body has no stream either; its
-   * headers make it a declared empty body, settled on first read (see
-   * {@link EMPTY_BODY_UNSETTLED}).
+   * read was the largest single cost of a bodiless GET.
+   *
+   * A `GET` or `HEAD` is decided without reading a header: it almost never
+   * has a body, so `request.body` is `null` and cheap to read. A served
+   * `Content-Length: 0` has no stream either; its headers make it a declared
+   * empty body, settled on first read — `"unsettled"`, see
+   * {@link EMPTY_BODY_UNSETTLED}. Any other method checks `Content-Length`
+   * and `Transfer-Encoding` first, as body-parser does: reading
+   * `request.body` of a request that has one builds a `ReadableStream`, and
+   * the body is then read through it instead of Bun's direct path (measured
+   * at about a tenth of a small JSON POST).
    */
-  #finishAbsentBody(): boolean {
+  #finishAbsentBody(): false | "settled" | "unsettled" {
     const request = this.request;
-    if (
-      this._buffer !== undefined ||
-      this.#bodyParsed ||
-      request.body !== null ||
-      request.bodyUsed
-    ) {
+    if (this._buffer !== undefined || this.#bodyParsed) {
+      return false;
+    }
+    const method = this.method;
+    const headerFree = method === "GET" || method === "HEAD";
+    if (!headerFree) {
+      const headers = this.headersObj;
+      if (
+        headers.get("content-length") !== null ||
+        headers.get("transfer-encoding") !== null
+      ) {
+        return false;
+      }
+    }
+    if (request.body !== null || request.bodyUsed) {
       return false;
     }
     this._buffer = EMPTY_BODY_BUFFER;
     this.#bodyParsed = true;
     this._body = undefined;
     this.#bodyState = "ended";
-    return true;
+    return headerFree ? "unsettled" : "settled";
   }
 
   /**
@@ -4135,10 +4154,10 @@ export class BunRequest<
    * parsed while the request was built is read before any middleware, so the
    * adapter passes this error to its error handling (body-parser's
    * `next(err)`), answering with its status instead of routing a request
-   * whose body is missing. A declared empty body on a request with no body
-   * stream (a served `Content-Length: 0`) is checked on the first read of the
-   * body instead (see {@link EMPTY_BODY_UNSETTLED}), so its refusal appears
-   * here only after that read, and the request is routed.
+   * whose body is missing. A declared empty body on a GET or HEAD with no
+   * body stream (a served `Content-Length: 0`) is checked on the first read
+   * of the body instead (see {@link EMPTY_BODY_UNSETTLED}), so its refusal
+   * appears here only after that read, and the request is routed.
    */
   get bodyDecodingError(): BunHttpClientError | undefined {
     return this.#bodyDecodingError;

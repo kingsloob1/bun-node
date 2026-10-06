@@ -363,43 +363,45 @@ describe("a request's Headers are built on first read", () => {
     expect(reads()).toBe(1);
   });
 
-  it("a declared empty body still parses as one, on first read", () => {
-    // Served, a `Content-Length: 0` body has no stream: only its headers
-    // tell it from no body, and they are read when the body is.
-    const declared = (headers: Record<string, string>) => {
-      const req = new BunRequest(
-        {
-          url: "http://h/",
-          method: "POST",
-          body: null,
-          bodyUsed: false,
-          headers: new Headers({ "content-length": "0", ...headers }),
-          signal: new AbortController().signal,
-        } as unknown as Request,
-        testServer,
-        { parseBody: true },
-      );
-      return req;
-    };
-    expect(declared({ "content-type": "application/json" }).body).toEqual({});
+  /** A GET with `headers` and no body stream, as Bun serves `Content-Length: 0`. */
+  const bodilessGet = (headers: Record<string, string>) =>
+    new BunRequest(
+      {
+        url: "http://h/",
+        method: "GET",
+        body: null,
+        bodyUsed: false,
+        headers: new Headers({ "content-length": "0", ...headers }),
+        signal: new AbortController().signal,
+      } as unknown as Request,
+      testServer,
+      { parseBody: true },
+    );
+
+  it("a GET's declared empty body still parses as one, on first read", () => {
+    // A GET is built without reading its headers; a `Content-Length: 0`
+    // makes its absent stream a declared empty body when the body is read.
+    expect(bodilessGet({ "content-type": "application/json" }).body).toEqual(
+      {},
+    );
     expect(
-      declared({ "content-type": "application/x-www-form-urlencoded" }).body,
+      bodilessGet({ "content-type": "application/x-www-form-urlencoded" }).body,
     ).toEqual({});
-    expect(declared({ "content-type": "text/plain" }).body).toBe("");
-    const raw = declared({ "content-type": "application/octet-stream" });
+    expect(bodilessGet({ "content-type": "text/plain" }).body).toBe("");
+    const raw = bodilessGet({ "content-type": "application/octet-stream" });
     expect(raw.isBodyParsed).toBe(true);
-    expect(declared({}).body).toBeUndefined();
-    expect(declared({ "content-type": "application/json" }).complete).toBe(
+    expect(bodilessGet({}).body).toBeUndefined();
+    expect(bodilessGet({ "content-type": "application/json" }).complete).toBe(
       true,
     );
   });
 
-  it("a declared empty body with a bad Content-Encoding is routed, refused when read", async () => {
-    // The one change the lazy headers make: before, this was answered 415
-    // before routing; now the handler runs, and reading the body records
-    // the refusal (and a parser rejects with it).
+  it("a GET's declared empty body with a bad Content-Encoding is routed, refused when read", async () => {
+    // The one change the lazy headers make, for a GET or HEAD only: before,
+    // this was answered 415 before routing; now the handler runs, and
+    // reading the body records the refusal (and a parser rejects with it).
     const app = new BunHttpAdapter(0);
-    app.post("/e", async (req, res) => {
+    app.get("/e", async (req, res) => {
       const before = req.bodyDecodingError;
       const body = req.body;
       const error = req.bodyDecodingError;
@@ -416,13 +418,11 @@ describe("a request's Headers are built on first read", () => {
       });
     });
     const response = await app.fetch("/e", {
-      method: "POST",
       headers: {
         "content-type": "application/json",
         "content-encoding": "nope",
         "content-length": "0",
       },
-      // No body stream, as Bun serves an empty body.
     });
     expect(await response.json()).toEqual({
       before: null,
@@ -433,22 +433,70 @@ describe("a request's Headers are built on first read", () => {
     });
   });
 
-  it("a body assigned before the first read is kept", () => {
-    const req = new BunRequest(
-      {
-        url: "http://h/",
+  it("any other method checks its headers first, as before: refused before routing", async () => {
+    const app = new BunHttpAdapter(0);
+    let routed = false;
+    app.post("/e", (_req, res) => {
+      routed = true;
+      res.send("routed");
+    });
+    const response = await app.fetch("/e", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-encoding": "nope",
+        "content-length": "0",
+      },
+    });
+    expect(response.status).toBe(415);
+    expect(routed).toBe(false);
+    const empty = await app.fetch("/e", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "0" },
+    });
+    expect(empty.status).toBe(200);
+  });
+
+  it("a POST with a body is read without touching request.body", async () => {
+    // Reading `request.body` builds a ReadableStream, and the body is then
+    // read through it rather than Bun's direct path.
+    let bodyReads = 0;
+    /** A request whose `body` reads are counted. */
+    const counted = (url: string, init: RequestInit) => {
+      const request = new Request(url, init);
+      const body = Object.getOwnPropertyDescriptor(Request.prototype, "body")!;
+      Object.defineProperty(request, "body", {
+        get() {
+          bodyReads++;
+          return body.get!.call(request);
+        },
+      });
+      return request;
+    };
+    /** Opens the entry point `Bun.serve` calls. */
+    class Served extends BunHttpAdapter {
+      serve(request: Request) {
+        return this.handleNativeRequest(request, testServer as never);
+      }
+    }
+    const app = new Served(0);
+    app.post("/j", (req, res) => {
+      res.json(req.body);
+    });
+    const response = (await app.serve(
+      counted("http://h/j", {
         method: "POST",
-        body: null,
-        bodyUsed: false,
-        headers: new Headers({
-          "content-length": "0",
-          "content-type": "application/json",
-        }),
-        signal: new AbortController().signal,
-      } as unknown as Request,
-      testServer,
-      { parseBody: true },
-    );
+        // As a served POST carries it.
+        headers: { "content-type": "application/json", "content-length": "7" },
+        body: '{"n":7}',
+      }),
+    ))!;
+    expect(await response.json()).toEqual({ n: 7 });
+    expect(bodyReads).toBe(0);
+  });
+
+  it("a body assigned before the first read is kept", () => {
+    const req = bodilessGet({ "content-type": "application/json" });
     req.body = { set: true };
     expect(req.body).toEqual({ set: true });
   });
