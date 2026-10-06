@@ -265,6 +265,35 @@ than building a `Headers`. Re-measure on the target machine before acting.
 Together about 600–1,000 ns of the ~1.6 µs — enough to pass Elysia 2 on this
 scenario, since its own header path is ~630 ns (929 − 298).
 
+**Tried, measured, reverted** (after `b2374a0`). The record was built: plain
+single-value headers kept in a null-prototype record, handed to
+`new Response` as one object, read back (`get`, `getHeader`, `hasHeader`,
+`removeHeader`) from the record, and turned into a `Headers` only for an
+append, an array, an unusual value or iteration — with the response-first
+freshness ordering beside it. Isolated, the record is cheaper
+(`new Response` with a 3-key object 1,117–1,158 ns against 1,404 ns for
+`Headers` + 3 `set`). In the request it was not:
+
+| A/B | static | headers |
+|---|---:|---:|
+| `wrk`, 5 rounds, `b2374a0` → record | 37,528 → 35,841 | 28,331 → 26,709 |
+| in process, interleaved, 3 runs | −12% … 0% | **+6% … +11% slower** |
+| in process, record with no name/value validation | — | −0.1% … +7% |
+
+So neither the validation nor the representation is where the time goes on
+this Bun; the freshness reordering also reads two response headers to save
+one request header, which is no saving when there is no conditional request
+(the common case). Both were reverted; the parity tests written for them
+(`__tests__/responseHeaders.test.ts`) stay, and pass on the original code.
+
+What is left for headers is what Express itself requires — the freshness
+check reading the request's conditional headers (which builds the request's
+`Headers`), and a `Headers` store answering `get`/`has`/`getHeaders` — plus the
+fixed per-request cost. The next lever there is not the store but the
+freshness check: ask Bun for the two conditional headers without building the
+request's `Headers` (no API for that today), or skip it for responses that can
+never be fresh — which `If-None-Match: *` prevents, exactly.
+
 ## 5. wildcard — `GET /assets/*`
 
 **What Elysia 2 does** [read]: the radix tree has a wildcard node under
@@ -314,9 +343,8 @@ against Elysia 2 — which is still the largest single item for async.
 
 ## Recommended order
 
-0. **headers record + freshness ordering** — the scenario where bun-common can
-   most plausibly pass Elysia 2: ~600–1,000 ns of a ~1.6 µs gap, all exact.
-   Re-measure the `Headers`-vs-object cost on the target machine first.
+0. ~~**headers record + freshness ordering**~~ — built and measured: no gain
+   in the request (see §4), reverted.
 1. **json internals** — `parseContentCodings("")`, no `BodyParseConfig` for a
    boolean `parseBody`, one `content-type` read. Exact, small, ~200–350 ns.
 2. **async allocation** — fold the wait into the pipeline state and drop the
