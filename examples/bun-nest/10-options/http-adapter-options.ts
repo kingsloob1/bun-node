@@ -185,6 +185,30 @@ step("constructor: request");
   checkEqual("setRequestOpts() applies to later requests", after.cookies, {
     theme: "dark",
   });
+
+  // parseQuery and parseCookies take options in place of `true`, as parseBody.
+  const shaped = new BunHttpAdapter(0, {
+    request: {
+      parseQuery: { nesting: false },
+      parseCookies: { secret: "k", decode: (value) => value },
+    },
+  });
+  shaped.get("/shape", (req, res) => {
+    return res.json({
+      query: req.query,
+      cookies: req.cookies,
+      secret: req.secret,
+    });
+  });
+  checkEqual(
+    "parseQuery: { nesting: false } and parseCookies: { secret, decode }",
+    await json(
+      await shaped.fetch("/shape?a[b]=1", {
+        headers: { cookie: "n=J%C3%B6rg" },
+      }),
+    ),
+    { query: { "a[b]": "1" }, cookies: { n: "J%C3%B6rg" }, secret: "k" },
+  );
 }
 
 /* ------------------------------------------------------------------ */
