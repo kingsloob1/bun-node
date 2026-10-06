@@ -14,6 +14,7 @@ import type {
   BunJobs,
   BunQueueWorker,
   BunQueueWorkerOptions,
+  ContainerTarget,
   JobDefinition,
   LocalWorkerTarget,
   WORKER_TARGET_KINDS,
@@ -45,7 +46,9 @@ assertTrue<
   Equals<WorkerTargetMode, "in-process" | "worker-thread" | "child-process">
 >();
 assertTrue<Equals<LocalWorkerTarget["kind"], WorkerTargetMode>>();
-assertTrue<Equals<WorkerTargetKind, WorkerTargetMode | "custom">>();
+assertTrue<
+  Equals<WorkerTargetKind, WorkerTargetMode | "container" | "custom">
+>();
 assertTrue<Equals<(typeof WORKER_TARGET_KINDS)[number], WorkerTargetKind>>();
 assertTrue<Equals<WorkerTargetInfo["processor"], "function" | "file">>();
 
@@ -142,9 +145,79 @@ export const withFactory: BunQueueWorkerOptions = { ...base, target: factory };
 assertTrue<
   Equals<
     WorkerTarget,
-    WorkerTargetMode | LocalWorkerTarget | WorkerTargetFactory
+    WorkerTargetMode | LocalWorkerTarget | ContainerTarget | WorkerTargetFactory
   >
 >();
+
+/* --- the container target -------------------------------------------------- */
+
+export const container: BunQueueWorkerOptions = {
+  ...base,
+  target: {
+    kind: "container",
+    image: "oven/bun:1",
+    processor: "/app/jobs/processor.ts",
+    pull: "missing",
+    engine: { cli: "podman", host: "unix:///run/podman.sock" },
+    runtime: "runsc",
+    limits: { memory: "256m", cpus: 0.5, pids: 64, tmpfs: "16m" },
+    network: "none",
+    env: { NODE_ENV: "production" },
+    mounts: [{ source: "/srv/data", target: "/data", readOnly: true }],
+    user: "1000:1000",
+    allowRoot: false,
+    security: { apparmor: "docker-default" },
+    closeTimeout: 1000,
+    maxLogBytes: 4096,
+  },
+};
+assertTrue<Equals<ContainerTarget["kind"], "container">>();
+// No string form: a container needs an image.
+export const containerString: BunQueueWorkerOptions = {
+  ...base,
+  // @ts-expect-error `"container"` alone names no image.
+  target: "container",
+};
+export const containerImage: ContainerTarget = {
+  kind: "container",
+  image: "x",
+};
+// @ts-expect-error the image is required.
+export const containerNoImage: ContainerTarget = { kind: "container" };
+export const containerNone: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  network: "none",
+};
+export const containerHostNet: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  // @ts-expect-error the host's network is not a value this target takes.
+  network: "host",
+};
+export const containerEnv: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  env: { A: "1" },
+};
+export const containerEnvNoValue: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  // @ts-expect-error a variable without a value would copy the host's.
+  env: { A: undefined },
+};
+export const containerPrivileged: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  // @ts-expect-error there is no privileged mode, nor any raw flag.
+  privileged: true,
+};
+export const containerNnp: ContainerTarget = {
+  kind: "container",
+  image: "x",
+  // @ts-expect-error no-new-privileges is fixed, not an option.
+  security: { noNewPrivileges: false },
+};
 
 /* --- a target's close() may be told the close is forced ------------------- */
 

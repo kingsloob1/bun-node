@@ -40,6 +40,10 @@ const KIND_TEXT: Readonly<
     label: "Child process",
     hint: "Each attempt runs in a fresh child process, which can be killed if it ignores its signal.",
   },
+  container: {
+    label: "Container",
+    hint: "Each attempt runs in a fresh container: no network, none of the worker's environment, a read-only filesystem.",
+  },
   custom: {
     label: "Custom",
     hint: "Its attempts run on a target the application supplied.",

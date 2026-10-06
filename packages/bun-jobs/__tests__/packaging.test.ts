@@ -249,6 +249,22 @@ describe("this package's optional peers", () => {
     expect(contract?.browser).toBe(true);
   });
 
+  // The runner inside a container target's image: the bootstrap resolves it
+  // by this spelling from the processor's directory, so it must stay an
+  // `exports` key, and the consumer check must keep importing it.
+  it("publishes the container entry, and checks it like any other spelling", () => {
+    expect(manifest.exports["./container-entry"]).toEqual({
+      "@kingsleyweb/source": "./lib/runner/bootstrap/container-entry.ts",
+      types: "./dts/runner/bootstrap/container-entry.d.ts",
+      default: "./lib/runner/bootstrap/container-entry.ts",
+    });
+    expect(
+      checkConfig.entries?.some(
+        (e) => e.spelling === "@kingsleyweb/bun-jobs/container-entry",
+      ),
+    ).toBe(true);
+  });
+
   // An executor in a V8 isolate imports the remote protocol, so both of its
   // spellings are checked with no ambient Node or Bun types.
   it("checks the remote protocol entry as browser-safe, under both spellings", () => {

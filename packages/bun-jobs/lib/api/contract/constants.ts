@@ -552,15 +552,16 @@ export type WorkerStopPersistence = (typeof WORKER_STOP_PERSISTENCE)[number];
 
 /**
  * Every value a worker record's `target.kind` can take, for a reader to
- * enumerate: the three local targets, and `"custom"` for a
- * `WorkerTargetFactory`. A closed list a UI can switch on — though a reader
- * meeting a kind it does not know should show the raw string, since a later
- * version may add one.
+ * enumerate: the three local targets, `"container"` (a fresh container per
+ * attempt), and `"custom"` for a `WorkerTargetFactory`. A closed list a UI
+ * can switch on — though a reader meeting a kind it does not know should show
+ * the raw string, since a later version may add one.
  */
 export const WORKER_TARGET_KINDS = [
   "in-process",
   "worker-thread",
   "child-process",
+  "container",
   "custom",
 ] as const;
 

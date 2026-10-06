@@ -1220,6 +1220,16 @@ export function toWorkerDto(
       kind: worker.target.kind,
       processor: worker.target.processor,
       ...(worker.target.name === undefined ? {} : { name: worker.target.name }),
+      ...(worker.target.container === undefined
+        ? {}
+        : {
+            container: {
+              image: worker.target.container.image,
+              ...(worker.target.container.runtime === undefined
+                ? {}
+                : { runtime: worker.target.container.runtime }),
+            },
+          }),
       ...(options.exposeProcessorFiles && worker.target.file !== undefined
         ? { file: worker.target.file }
         : {}),

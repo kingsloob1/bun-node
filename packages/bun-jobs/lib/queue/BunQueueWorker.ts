@@ -134,6 +134,7 @@ import { WorkerMetricsRecorder } from "./workerMetrics";
 import {
   buildTargetExecutor,
   describeTarget,
+  FileTargetExecutor,
   resolveWorkerTarget,
 } from "./workerTarget";
 
@@ -681,6 +682,12 @@ export class BunQueueWorker<
    */
   readonly #target: WorkerTargetExecutor | undefined;
   /**
+   * Aborted by `close()`: ends a start-up check still running in `run()` —
+   * a container target's probe, which may be pulling an image — so a close
+   * during start-up does not wait for it.
+   */
+  readonly #startup = new AbortController();
+  /**
    * The heartbeat record's `target`, derived once from the very target
    * `#target` was built from, so the record cannot disagree with it. Frozen,
    * because {@link BunQueueWorker.target} hands out this very object and the
@@ -1199,6 +1206,7 @@ export class BunQueueWorker<
       namespace: this.namespace,
       queue: this.queueName,
       workerId: this.id,
+      workerKey: this.key,
       logger: this.#logger,
     });
     this.#targetInfo = Object.freeze(describeTarget(target, this.#target));
@@ -1486,6 +1494,22 @@ export class BunQueueWorker<
       // cleared the timers, so anything armed after it would outlive it.
       if (!this.#closing) {
         await this.driver.ensureQueue(this.ref);
+      }
+      // A container target proves it can isolate before anything is claimed,
+      // and throws `IsolationUnavailableError` when it cannot: no fallback.
+      // Then it removes the containers its key's dead workers left behind.
+      if (!this.#closing && this.#target instanceof FileTargetExecutor) {
+        await this.#target.prepare({
+          live: async () =>
+            supportsWorkers(this.driver)
+              ? new Set(
+                  (
+                    await listWorkerRecords(this.driver, this.ref, Date.now())
+                  ).map((worker) => worker.id),
+                )
+              : undefined,
+          signal: this.#startup.signal,
+        });
       }
     } catch (error) {
       if (!this.#closing) {
@@ -1864,6 +1888,7 @@ export class BunQueueWorker<
 
     this.#closing = true;
     this.#closeForced = options?.force === true;
+    this.#startup.abort();
 
     try {
       await this.#closeOnce(options?.timeout);

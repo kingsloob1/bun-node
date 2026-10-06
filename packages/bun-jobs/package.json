@@ -18,6 +18,11 @@
       "types": "./dts/api/contract/index.d.ts",
       "default": "./lib/api/contract/index.ts"
     },
+    "./container-entry": {
+      "@kingsleyweb/source": "./lib/runner/bootstrap/container-entry.ts",
+      "types": "./dts/runner/bootstrap/container-entry.d.ts",
+      "default": "./lib/runner/bootstrap/container-entry.ts"
+    },
     "./provider": {
       "@kingsleyweb/source": "./lib/provider/index.ts",
       "types": "./dts/provider/index.d.ts",

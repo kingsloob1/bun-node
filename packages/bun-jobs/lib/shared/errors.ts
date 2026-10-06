@@ -397,6 +397,41 @@ export class ConfigError extends JobsError {
 }
 
 /**
+ * A `container` target cannot run here, found at `worker.run()` before any job
+ * is claimed: the engine did not answer, the requested runtime is not listed,
+ * the image is missing and may not be pulled, or a probe container with the
+ * target's exact flags did not run. `context.step` names which, and
+ * `context.stderr` carries what the engine said.
+ *
+ * A {@link ConfigError}, with its `"CONFIG"` code: the fix is to the host or
+ * the target, never a retry. There is no fallback — a worker that cannot
+ * isolate its jobs as configured does not run them some other way.
+ */
+export class IsolationUnavailableError extends ConfigError {
+  /** The step that failed and the engine's own words, plus any added detail. */
+  declare readonly context: {
+    step: "engine" | "runtime" | "image" | "probe";
+    stderr: string;
+  } & Record<string, unknown>;
+
+  constructor(
+    /** The step that failed: `"engine"`, `"runtime"`, `"image"` or `"probe"`. */
+    step: "engine" | "runtime" | "image" | "probe",
+    /** What failed, in a sentence, without the engine's output. */
+    problem: string,
+    /** What the engine wrote to stderr, trimmed; `""` when it wrote nothing. */
+    stderr: string,
+    /** Extra detail, safe to log. May not set `step` or `stderr`. */
+    context?: ErrorContext<"step" | "stderr">,
+  ) {
+    super(
+      `Container isolation is unavailable (${step}): ${problem}${stderr ? `: ${stderr}` : ""}`,
+      { ...context, step, stderr },
+    );
+  }
+}
+
+/**
  * A driver was asked for something it does not implement, e.g. listing jobs
  * on a backend with no way to enumerate them.
  *

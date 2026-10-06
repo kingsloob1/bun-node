@@ -13,6 +13,10 @@ import type {
 import type { RunContext, SpawnOptions, WorkerOptions } from "../runner/types";
 import type { Logger } from "../shared/logger";
 import type { WorkerTargetInfo, WorkerTargetKind } from "../shared/workers";
+import type {
+  ContainerTarget,
+  ResolvedContainerTarget,
+} from "./container/target";
 import type { JobDefinition, JobDefinitions } from "./definitions";
 import type { Job } from "./Job";
 import type { JobProcessor, ProcessorContext } from "./types";
@@ -34,6 +38,12 @@ import {
 } from "../shared/constants";
 import { ConfigError, UnrecoverableJobError } from "../shared/errors";
 import { resolveLogger } from "../shared/logger";
+import {
+  ContainerExecutor,
+  containerMarkers,
+  containerOutputCutNotice,
+} from "./container/executor";
+import { resolveContainerTarget } from "./container/target";
 
 /**
  * Where a worker's attempts run: the `target` option.
@@ -82,13 +92,17 @@ export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
 
 /**
  * Where a worker's attempts run: one of the three {@link WorkerTargetMode}s, a
- * {@link LocalWorkerTarget} (the same, with its tuning), or a
+ * {@link LocalWorkerTarget} (the same, with its tuning), a
+ * {@link ContainerTarget} (a fresh container per attempt), or a
  * {@link WorkerTargetFactory} for a target this package does not ship.
  */
 export type WorkerTarget =
   | WorkerTargetMode
   | LocalWorkerTarget
+  | ContainerTarget
   | WorkerTargetFactory;
+
+export type { ContainerTarget } from "./container/target";
 
 /**
  * A local target with its tuning. The string `"child-process"` is exactly
@@ -426,6 +440,8 @@ export interface ResolvedWorkerTarget {
   kind: WorkerTargetKind;
   /** The local target, normalised to its object form; for the three local kinds. */
   local?: LocalWorkerTarget;
+  /** The container target, checked and with its defaults; for `"container"`. */
+  container?: ResolvedContainerTarget;
   /** The factory, for `"custom"`. */
   factory?: WorkerTargetFactory;
   /** The processor file's absolute path, when the processor is a file. */
@@ -498,6 +514,28 @@ export function resolveWorkerTarget(
       kind: "custom",
       factory: target as WorkerTargetFactory,
       ...(isFunction ? {} : { file: resolveProcessorFile(processor) }),
+    };
+  }
+
+  if (
+    target &&
+    typeof target === "object" &&
+    (target as { kind?: unknown }).kind === "container"
+  ) {
+    const container = resolveContainerTarget(target);
+    if (isFunction) {
+      throw new ConfigError(
+        'target "container" needs a processor file: a function cannot be sent to a container',
+        { target: "container" },
+      );
+    }
+    return {
+      kind: "container",
+      container,
+      // The path inside the image when the target names one: the file need
+      // not exist on this host at all. Otherwise the worker's own file, at
+      // the same path in the image.
+      file: container.processor ?? resolveProcessorFile(processor),
     };
   }
 
@@ -630,6 +668,11 @@ interface Runner {
   /** The worker's id. */
   workerId: string;
   /**
+   * The worker's stable key, which a container's labels carry for the orphan
+   * sweep. Defaults to the worker's id.
+   */
+  workerKey?: string;
+  /**
    * Where the target reports what it could not do, such as a `worker-thread`
    * run whose thread outlived a close's reap window. The worker passes its
    * own, already bound to it; defaults to a console logger.
@@ -644,18 +687,27 @@ interface Runner {
  */
 export class FileTargetExecutor implements WorkerTargetExecutor {
   /** The kind, as the executor's name: `"child-process"`, say. */
-  readonly name: WorkerTargetMode;
-  /** The processor file, resolved to an absolute path. */
+  readonly name: WorkerTargetMode | "container";
+  /**
+   * The processor file, resolved to an absolute path — for `"container"`, the
+   * path inside the image.
+   */
   readonly file: string;
 
   /** The target with its tuning. */
-  readonly #target: LocalWorkerTarget;
+  readonly #target: LocalWorkerTarget | ResolvedContainerTarget;
   /** Who runs the attempts, for the run context the executors need. */
   readonly #runner: Runner;
   /** Where a close reports a thread it could not see stop. */
   readonly #logger: Logger;
-  /** The executor, for `"worker-thread"` and `"child-process"`. */
-  #executor: Executor | undefined;
+  /** The executor, for `"worker-thread"`, `"child-process"` and `"container"`. */
+  #executor: Pick<Executor, "start"> | undefined;
+  /**
+   * The container target's start-up checks, once they have passed: the
+   * probe and the orphan sweep (see {@link prepare}). Kept so a second
+   * `run()` does not repeat them; cleared when they fail, so it can retry.
+   */
+  #prepared: Promise<void> | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
   /**
@@ -708,8 +760,8 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   #forced: Promise<void> | undefined;
 
   constructor(
-    /** The local target, in its object form. */
-    target: LocalWorkerTarget,
+    /** The local target in its object form, or the resolved container target. */
+    target: LocalWorkerTarget | ResolvedContainerTarget,
     /** The processor file, already resolved to an absolute path. */
     file: string,
     /** Who runs the attempts. */
@@ -756,8 +808,10 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       attempt: record.attemptsMade,
       source: "queued",
       // The target's own kind, which is also what the shared executors and
-      // the child's `BUN_JOBS_MODE` call it.
-      mode: target.kind,
+      // the child's `BUN_JOBS_MODE` call it. A container's runner is a child
+      // process inside it, so its context says so; its `BUN_JOBS_MODE` is
+      // `"container"`, and a processor's context carries no mode at all.
+      mode: target.kind === "container" ? "child-process" : target.kind,
       startedAt: Date.now(),
       deadline: null,
       args: null,
@@ -808,7 +862,15 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           const write = context.logger[level] ?? context.logger.info;
           write.call(context.logger, message, fields);
         },
-        onOutput: () => {},
+        // A container's own output — stdout lines without the channel's
+        // prefix, and stderr — becomes the job's log, through its `Job`. The
+        // other kinds' output goes to this process's own stdio instead.
+        onOutput:
+          target.kind === "container"
+            ? (_stream, line) => {
+                void job.log(line).catch(() => undefined);
+              }
+            : () => {},
         // A job has no run log; its attempt's logger is where the cut is said.
         onEnvWithheld: (withheld) => {
           context.logger.debug(childEnvWithheldMessage(withheld), {
@@ -816,6 +878,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           });
         },
         onOutputLimit: (maxBuffer, bytes) => {
+          if (target.kind === "container") {
+            const notice = containerOutputCutNotice(maxBuffer);
+            void job.log(notice).catch(() => undefined);
+            context.logger.warn(notice, { maxLogBytes: maxBuffer, bytes });
+            return;
+          }
           context.logger.warn(outputCutNotice(maxBuffer), {
             maxBuffer,
             bytes,
@@ -863,6 +931,82 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     } finally {
       signal.removeEventListener("abort", stop);
     }
+  }
+
+  /**
+   * The container target's start-up checks, run by `worker.run()` before the
+   * worker claims anything (I5): the engine answers, the runtime is listed,
+   * the image is present or pulled, and a probe container with the exact
+   * flags runs. Throws `IsolationUnavailableError` when one fails — never a
+   * fallback. Then removes this worker key's containers whose worker is not
+   * in `live` (orphans of a crashed worker), when `live` is known.
+   *
+   * Nothing for the other kinds. Passes once per executor: a later call
+   * returns the same promise, and a failed one is forgotten so a later
+   * `run()` checks again.
+   */
+  async prepare(options: {
+    /** The live workers' ids on this queue, or `undefined` when the driver cannot list them. */
+    live: () => Promise<ReadonlySet<string> | undefined>;
+    /** Aborts the checks: a close during start-up. */
+    signal?: AbortSignal;
+    /** The youngest container the sweep may remove, in ms; for tests. */
+    sweepMinAge?: number;
+  }): Promise<void> {
+    const target = this.#target;
+    if (target.kind !== "container") {
+      return;
+    }
+    this.#prepared ??= (async () => {
+      const executor = this.#containerExecutor(target);
+      const owner = this.#owner();
+      await executor.engine.probe(target, {
+        owner,
+        processor: this.file,
+        markers: containerMarkers(owner, "probe", this.file),
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        return;
+      }
+      const live = await options.live();
+      if (live === undefined) {
+        this.#logger.warn(
+          "This driver cannot list workers, so orphaned containers of crashed workers are not swept",
+          { workerKey: owner.workerKey },
+        );
+        return;
+      }
+      await executor.engine.sweep(owner, live, this.#logger, {
+        signal: options.signal,
+        ...(options.sweepMinAge === undefined
+          ? {}
+          : { minAge: options.sweepMinAge }),
+      });
+    })();
+    try {
+      await this.#prepared;
+    } catch (error) {
+      this.#prepared = undefined;
+      throw error;
+    }
+  }
+
+  /** Whose containers this executor starts. */
+  #owner() {
+    const runner = this.#runner;
+    return {
+      workerKey: runner.workerKey ?? runner.workerId,
+      workerId: runner.workerId,
+      namespace: runner.namespace,
+      queue: runner.queue,
+    };
+  }
+
+  /** The container executor, built on first use. */
+  #containerExecutor(target: ResolvedContainerTarget): ContainerExecutor {
+    this.#executor ??= new ContainerExecutor(target, this.#owner(), this.file);
+    return this.#executor as ContainerExecutor;
   }
 
   /**
@@ -1046,8 +1190,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
   /**
    * Logs one `warn` for the `worker-thread` runs among `handles` whose thread
-   * has still not stopped, leaving out any already warned about. A child that
-   * is slow to be reaped is not reported: that wait is what it always was.
+   * has still not stopped — or the `container` runs whose container has not
+   * yet been removed — leaving out any already warned about. A child that is
+   * slow to be reaped is not reported: that wait is what it always was.
    */
   #warnOverrun(handles: ExecutorHandle[]): void {
     const runIds: string[] = [];
@@ -1067,7 +1212,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       return;
     }
     this.#logger.warn(
-      `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
+      this.name === "container"
+        ? `container ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not been removed ${TARGET_CLOSE_REAP} ms after being killed; the target's close resolved without waiting further (the removal goes on)`
+        : `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
       {
         runIds,
         reapMs: TARGET_CLOSE_REAP,
@@ -1078,7 +1225,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   }
 
   /** The executor for this kind, built on first use. */
-  #executorFor(target: WorkerThreadTarget | ChildProcessTarget): Executor {
+  #executorFor(
+    target: WorkerThreadTarget | ChildProcessTarget | ResolvedContainerTarget,
+  ): Pick<Executor, "start"> {
+    if (target.kind === "container") {
+      return this.#containerExecutor(target);
+    }
     this.#executor ??=
       target.kind === "child-process"
         ? new SpawnExecutor({
@@ -1146,7 +1298,11 @@ export function buildTargetExecutor(
     return undefined;
   }
 
-  return new FileTargetExecutor(resolved.local!, resolved.file, worker);
+  return new FileTargetExecutor(
+    resolved.container ?? resolved.local!,
+    resolved.file,
+    worker,
+  );
 }
 
 /**
@@ -1163,6 +1319,18 @@ export function describeTarget(
     kind: resolved.kind,
     processor: resolved.file === undefined ? "function" : "file",
     ...(resolved.kind === "custom" && executor ? { name: executor.name } : {}),
+    // The image and runtime, never the environment: a record is read by
+    // anyone the management API lets list workers.
+    ...(resolved.container
+      ? {
+          container: {
+            image: resolved.container.image,
+            ...(resolved.container.runtime === undefined
+              ? {}
+              : { runtime: resolved.container.runtime }),
+          },
+        }
+      : {}),
     ...(resolved.file === undefined ? {} : { file: resolved.file }),
   };
 }

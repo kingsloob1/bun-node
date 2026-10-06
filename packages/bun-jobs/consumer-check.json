@@ -30,6 +30,7 @@
         "defineSummoner",
         "runSummoned",
         "ConfigError",
+        "IsolationUnavailableError",
         "ProviderError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL",
@@ -44,6 +45,7 @@
         "WorkerTarget",
         "WorkerTargetMode",
         "LocalWorkerTarget",
+        "ContainerTarget",
         "WorkerTargetFactory",
         "WorkerTargetExecutor",
         "WorkerTargetAttempt",
@@ -284,6 +286,9 @@
       "snippet": "export async function roundTrip(): Promise<boolean> {\n  const envelope: t.PingEnvelope = { v: m.WORKER_PROTOCOL_VERSION, op: \"ping\", id: \"p1\" };\n  const body = JSON.stringify(envelope);\n  const header: string = await m.signEnvelope(body, { direction: \"request\", secret: [\"new-key\", \"old-key\"], now: 1_790_000_000_000 });\n  const nonces: t.RemoteNonceStore = m.createRemoteNonceCache({ max: 100 });\n  const result: t.VerifyEnvelopeResult = await m.verifyEnvelope(new TextEncoder().encode(body), header, { direction: \"request\", secret: \"new-key\", now: 1_790_000_000_000, nonces });\n  if (!result.ok) {\n    const _code: t.RemoteProblemCode = result.code;\n    const _status: 401 = result.status;\n    return false;\n  }\n  return result.keyIndex === 0;\n}\nexport type _verify = Expect<IsAny<Awaited<ReturnType<typeof m.verifyEnvelope>>>>;\nexport const _version: 1 = m.WORKER_PROTOCOL_VERSION;\nexport const _header: \"bun-jobs-signature\" = m.REMOTE_HEADERS.signature;\nexport const _outcome = (outcome: t.RemoteOutcome): string => outcome.op === \"fail\" ? outcome.error.message : outcome.op === \"rejected\" ? outcome.code : outcome.job;\nexport type _data = Expect<IsAny<t.InvokeEnvelope[\"jobs\"][number][\"fence\"]>>;\nexport const _fence: Equal<t.InvokeEnvelope[\"jobs\"][number][\"fence\"], string> = true;\nexport const signGet = (id: string): Promise<string> => m.signEnvelope(null, { direction: \"request\", secret: \"k\", id });\nexport const _idPattern: RegExp = m.REMOTE_ID_PATTERN;\nexport const _direction: t.RemoteSignatureDirection = \"response\";\nexport const executor: t.RemoteExecutor = m.createRemoteExecutor({ secret: \"k\".repeat(32), name: \"edge\", maxBatch: 2, maxDurationMs: 25_000, maxBodyBytes: 1_048_576, maxConcurrency: 4, idempotencyTtl: 60_000, store: m.createRemoteExecutorStore({ max: 100 }), onLog: (level, message) => { const _l: string = level; const _m: string = message; }, health: { check: async () => [{ id: \"db\", status: \"pass\" }] }, handlers: { resize: async (job: t.RemoteJob<{ url: string }>, ctx: t.RemoteContext) => { await job.log(job.data.url); await job.updateProgress(50); await ctx.heartbeat(); return { aborted: ctx.signal.aborted, attempt: ctx.attempt }; } } });\nexport const answer = (request: Request): Promise<Response> => executor(request);\nexport type _executor = Expect<IsAny<t.RemoteExecutor>>;\nexport const _canary: string = m.REMOTE_CANARY_JOB;\nexport const _tooLarge: { bytes: number | null; max: number } = new m.RemoteMessageTooLargeError(null, 10);\nexport const _store = (store: t.RemoteExecutorStore): unknown => store.update(\"k\", (current: t.RemoteExecutorRecord | undefined) => current === undefined ? { record: { kind: \"fence\", fence: \"t:1\" }, expiresAt: 1 } : null, 0);\nexport const _handler: t.RemoteJobHandler = async (job) => job.id;"
     },
     {
+      "spelling": "@kingsleyweb/bun-jobs/container-entry"
+    },
+    {
       "spelling": "@kingsleyweb/bun-jobs/lib/index",
       "values": ["BunQueue", "createJobsApi"]
     },
@@ -314,7 +319,7 @@
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/queue",
       "values": ["BunQueue", "BunQueueWorker", "Job", "defineProcessors"],
-      "types": ["JobOptions", "WorkerTarget"]
+      "types": ["JobOptions", "WorkerTarget", "ContainerTarget"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/runner",
