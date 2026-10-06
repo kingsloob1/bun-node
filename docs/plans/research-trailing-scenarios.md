@@ -12,7 +12,7 @@ not timed) or **[est]** (an estimate from the measurements around it).
 |---|---:|---:|---:|
 | static (reference) | 41,355 | 51,219 | 81% |
 | param-random | 33,414 | 50,781 | **66%** |
-| json | 19,476 | 25,434 | **77%** |
+| json (after `44b76be`) | 19,662 | 26,712 | **74%** |
 | async | 33,277 | 43,492 | **77%** |
 
 In process — the same request through each framework's handler, no socket,
@@ -44,6 +44,15 @@ The fix: only a GET or HEAD (which almost never has a body, so `request.body`
 is `null` and cheap) is decided without headers; every other method checks
 `Content-Length`/`Transfer-Encoding` first, as before. A test now counts
 `request.body` reads on a served-shaped POST.
+
+**It does not move `wrk`'s json figure:** re-measured after the fix,
+bun-common 19,662 req/s against Elysia 2's 26,712 (74%), against 19,476
+before. A request `Bun.serve` hands over evidently reads its body through the
+socket's stream either way [est], so building the stream early costs only an
+in-process `Request` (the adapters' `fetch()`, tests). The fix stays — it is
+correct and it is what the code meant — but it is not a served-json gain, and
+the in-process json figures below overstate the read path's share of a
+served request accordingly.
 
 ## 1. json — `POST /json {"n":7}`
 
