@@ -474,6 +474,13 @@ const INIT_QUERY = 1;
 const INIT_BODY = 2;
 const INIT_BODY_DEFERRED = 4;
 const INIT_COOKIES = 8;
+/**
+ * The cookies are still to be parsed: the `Cookie` header is read and parsed
+ * on the first touch of `req.cookies` / `req.signedCookies` (or a
+ * `parseCookies()` call), so a request whose handlers never look at them
+ * never reads the header.
+ */
+const COOKIES_PENDING = 16;
 
 /**
  * The body of every request that has none: zero-length, so nothing can be
@@ -1721,15 +1728,8 @@ export class BunRequest<
     }
 
     if (this.options.parseCookies !== false) {
-      scheduled |= INIT_COOKIES;
-      // No `Cookie` header: `req.cookies` and `req.signedCookies` are empty,
-      // and their getters create them on first read.
-      if (this.headersObj.get("cookie") !== null) {
-        this.parseCookies({
-          forceUpdateRequest: true,
-          secret: cookieSecrets.length ? cookieSecrets : undefined,
-        });
-      }
+      // Parsed on first touch (see COOKIES_PENDING), with these options.
+      scheduled |= INIT_COOKIES | COOKIES_PENDING;
     }
     this.#scheduled = scheduled;
   }
@@ -2174,11 +2174,33 @@ export class BunRequest<
    * boolean or `null`), so it is typed `JsonValue`.
    */
   get cookies(): Record<string, JsonValue> {
+    if (this.#scheduled & COOKIES_PENDING) {
+      this.#parsePendingCookies();
+    }
     return (this.#cookies ??= {});
   }
 
   set cookies(value: Record<string, JsonValue>) {
+    // The parse the options asked for happens first, as it did while the
+    // request was built: an assignment replaces its result, not the reverse.
+    if (this.#scheduled & COOKIES_PENDING) {
+      this.#parsePendingCookies();
+    }
     this.#cookies = value;
+  }
+
+  /**
+   * Runs the cookie parse the options scheduled (see COOKIES_PENDING) — what
+   * the constructor did before it was deferred to the first touch: with the
+   * configured secrets, updating the request.
+   */
+  #parsePendingCookies(): void {
+    this.#scheduled &= ~COOKIES_PENDING;
+    const secrets = this.#configuredCookieSecrets();
+    this.parseCookies({
+      forceUpdateRequest: true,
+      secret: secrets.length ? secrets : undefined,
+    });
   }
 
   /**
@@ -2186,10 +2208,16 @@ export class BunRequest<
    * value (parsed JSON for a `j:` one), or `false` when no secret verifies it.
    */
   get signedCookies(): Record<string, JsonValue> {
+    if (this.#scheduled & COOKIES_PENDING) {
+      this.#parsePendingCookies();
+    }
     return (this.#signedCookies ??= {});
   }
 
   set signedCookies(value: Record<string, JsonValue>) {
+    if (this.#scheduled & COOKIES_PENDING) {
+      this.#parsePendingCookies();
+    }
     this.#signedCookies = value;
   }
 
@@ -3490,6 +3518,11 @@ export class BunRequest<
     const forceUpdateRequest = isBoolean(opts?.forceUpdateRequest)
       ? opts?.forceUpdateRequest
       : false;
+    // The scheduled parse first, as it ran before any explicit call when it
+    // was done while the request was built.
+    if (this.#scheduled & COOKIES_PENDING) {
+      this.#parsePendingCookies();
+    }
     const updateRequest = forceUpdateRequest || this.#cookies === undefined;
 
     const sentSecret = !isUndefined(opts?.secret) ? opts?.secret : "";
