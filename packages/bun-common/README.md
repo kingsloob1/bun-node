@@ -543,6 +543,8 @@ builds that response:
   client's doing, such as a malformed body) at `warn`, anything else at
   `error`. The request rides on the error as `err.req` for error handlers, but
   non-enumerable, so a logger printing the error does not print the request.
+  (On a plain object thrown in place of an `Error`, Bun's `console` still
+  prints it: [docs/bun-bugs](https://github.com/kingsloob1/bun-node/blob/develop/docs/bun-bugs/inspect-shows-non-enumerable-properties.md).)
 
 #### Testing without a socket
 

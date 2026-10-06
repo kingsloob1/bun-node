@@ -11,6 +11,7 @@ it and the test that guards it.
 |---|---|---|---|
 | [A served HEAD response loses the implicit `Content-Type` its GET gets](./head-response-loses-implicit-content-type.md) | 1.4.2 | not filed | `BunResponse` `#canSkipHeaders` |
 | [`new Response(string).headers` has no `Content-Type`](./response-headers-miss-body-content-type.md) | 1.4.2 | not filed | `toFetchResponse` (socket-free `fetch()`) |
+| [`console.log` / `Bun.inspect` print an object's non-enumerable properties](./inspect-shows-non-enumerable-properties.md) | 1.4.2 | not filed | `defineHidden` (`err.req`), partially: Errors only |
 
 Found earlier, while planning native routes, and filed upstream; their
 reproductions live with that plan's evidence
