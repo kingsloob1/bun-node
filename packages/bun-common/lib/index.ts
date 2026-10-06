@@ -303,9 +303,13 @@ export {
   type ParseBodyContentTypeConfig,
   type ParseBodyContentTypesMap,
   type ParseBodyOption,
+  type ParseCookiesConfig,
+  type ParseCookiesOption,
+  type ParseQueryOption,
   PayloadTooLargeError,
   type QueryParserOpts,
   type RawMultiPartFields,
+  validateParseBodyOption,
 } from "./BunRequest";
 export {
   type BunCookieOptions,
@@ -316,7 +320,11 @@ export {
   type BunResponseHeaders,
   type BunResponseSentBody,
   type CookieValue,
+  type EtagOption,
+  markSocketFree,
+  normalizeEtagOption,
   type SendFileCallOptions,
+  toFetchResponse,
   type UpgradeToWebsocketOptions,
 } from "./BunResponse";
 export {
@@ -338,6 +346,7 @@ export {
   type ValidatorMiddleware,
 } from "./BunValidate";
 export type { StandardSchemaV1 } from "./types/standardSchema";
+export { requestParsing, type RequestParsingOptions } from "./requestParsing";
 export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 /* ------------------------------------------------------------------ *
  * Response compression (`lib/compression.ts`) — the `compression`
@@ -385,16 +394,22 @@ export type {
   ValidationShape,
 } from "./types/routeTyping";
 export {
+  awaitPipelineOrStream,
   BunRouter,
   type CachedRouteMatch,
   DEFAULT_ROUTE_CACHE_MAX,
   FETCH_STUB_SERVER,
   type FetchInput,
+  isRequestTimeoutError,
   type matchedRoute,
+  type PipelineOptions,
+  type PipelineServeOutcome,
+  RequestPipelineOptions,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
   routeModulePath,
+  type ServeHooks,
   toNativeRequest,
   type UnmountedRouter,
 } from "./BunRouter";

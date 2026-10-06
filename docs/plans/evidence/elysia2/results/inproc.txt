@@ -1,0 +1,9 @@
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production, N=100000, best of 5, ns/request
+
+target                  static         param    middleware   routes-1000  param-random          json
+new Request                246           261           283           280           437          1057
+raw                        714           795           796           987          1311          2661
+elysia2                   1059          1300          2202          4565          3386          7492
+elysia1                   1084          1175          3435          1490          1700          5881
+bun-common                3305          3026          4007          4027          9802         11478
+bun-nest                 10815         12859         14113         12967         19300         24058

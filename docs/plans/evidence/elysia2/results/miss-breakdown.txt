@@ -1,0 +1,8 @@
+Bun 1.4.2; ns/op, best of 5 x 200000
+
+  fresh path string (the loop's own cost)                          83 ns
+  candidate index: candidates(routes, path)                       699 ns
+  route regex exec                                                375 ns
+  regex exec + params object + decodeURIComponent                 566 ns
+  regex exec + params, decode only when '%' (Elysia: decodeParams)    454 ns
+  whole getMatchedLayers, routeCacheMax: 0                       1866 ns

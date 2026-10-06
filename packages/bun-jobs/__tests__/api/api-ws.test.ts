@@ -620,6 +620,56 @@ describe("connecting", () => {
     expect(meta.status).toBe(200);
   });
 
+  it("settles upgrade() on raw Bun.serve once the guard passes, whichever subprotocols are offered", async () => {
+    const jobs = publishingJobs();
+    const api = createJobsApi({
+      jobs,
+      basePath: "/admin/jobs",
+      logger: noopLogger,
+      // Asynchronous, so the guard's pipeline goes async before it passes.
+      authorize: async () => true,
+    });
+    /** What each `upgrade()` call came to: `undefined` once upgraded. */
+    const answers: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req, srv) {
+        // Bounded, so a guard pipeline that never settles fails here by name
+        // rather than as a refused socket after the test's timeout.
+        const answer = await Promise.race([
+          api.websocket!.upgrade(req, srv),
+          Bun.sleep(1000).then(() => "unsettled" as const),
+        ]);
+        answers.push(answer);
+        if (answer === "unsettled") {
+          return new Response("upgrade() did not settle", { status: 504 });
+        }
+        return answer === null ? new Response(null, { status: 404 }) : answer;
+      },
+      websocket: api.websocket!.handler,
+    });
+    cleanups.push(async () => {
+      await api.close();
+      server.stop(true);
+    });
+    const url = `ws://127.0.0.1:${server.port}/admin/jobs/ws`;
+
+    const plain = await connect(url).catch((error: unknown) => {
+      throw new Error(`${String(error)}; upgrade() gave ${String(answers)}`);
+    });
+    await plain.next("hello");
+    expect(plain.ws.protocol).toBe("");
+
+    // Offered second: the raw path still names it on the 101.
+    const second = await connect(url, {
+      protocols: ["other", JOBS_API_WS_SUBPROTOCOL],
+    });
+    await second.next("hello");
+    expect(second.ws.protocol).toBe(JOBS_API_WS_SUBPROTOCOL);
+
+    expect(answers).toEqual([undefined, undefined]);
+  });
+
   it("serves the socket on a dedicated port, and close() stops that server", async () => {
     const jobs = publishingJobs();
     const api = createJobsApi({

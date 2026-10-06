@@ -464,9 +464,11 @@ export function omit(
     return result;
   }
 
-  const exclude = new Set(paths);
+  // A handful of paths, as callers pass: a scan beats building a `Set` per
+  // call (getBusBoyConfig runs on every upload).
+  const exclude = paths.length > 16 ? new Set(paths) : undefined;
   for (const key of Object.keys(obj)) {
-    if (!exclude.has(key)) {
+    if (exclude ? !exclude.has(key) : !paths.includes(key)) {
       result[key] = (obj as Record<string, unknown>)[key];
     }
   }
@@ -642,6 +644,32 @@ export function get(
   }
 
   return current === undefined ? defaultValue : current;
+}
+
+/**
+ * Sets `key` on `target` as a non-enumerable (but writable, configurable)
+ * property: readable as usual, and left out of `Object.keys`, JSON and
+ * Node's `util.inspect`. Used to let the request ride on an error without
+ * every logger printing all of it. Bun's `console`/`Bun.inspect` leave it out
+ * of an `Error` but, unlike Node, print it on a plain object or class
+ * instance (docs/bun-bugs/inspect-shows-non-enumerable-properties.md). A
+ * frozen or sealed target is left as it is.
+ */
+export function defineHidden(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  try {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  } catch {
+    // Not extensible, or a non-configurable `key` already: nothing to carry.
+  }
 }
 
 /**
@@ -1190,8 +1218,10 @@ export function appendVary(current: string, field: string | string[]): string {
 
 export interface CookieParseOptions {
   /**
-   * Retained for call-signature compatibility. Bun's `CookieMap` performs
-   * standard percent-decoding, so a custom decoder is no longer applied.
+   * Decodes each cookie value, as the `cookie` package's `decode`: given the
+   * raw value (quotes stripped), it returns the value to keep; a decoder that
+   * throws keeps the raw value. Defaults to standard percent-decoding (Bun's
+   * `CookieMap`).
    */
   decode?: (value: string) => string;
 }
@@ -1224,10 +1254,15 @@ export interface CookieSerializeOptions {
  */
 export function parseCookie(
   str: string,
-  _options?: CookieParseOptions,
+  options?: CookieParseOptions,
 ): Record<string, string> {
   if (!str) {
     return {};
+  }
+
+  const decode = options?.decode;
+  if (typeof decode === "function") {
+    return parseCookieWithDecoder(str, decode);
   }
 
   try {
@@ -1235,6 +1270,39 @@ export function parseCookie(
   } catch {
     return {};
   }
+}
+
+/**
+ * The `cookie` package's parse with a custom `decode`: `name=value` pairs
+ * split on `;`, names and values trimmed, one pair of surrounding quotes
+ * stripped from a value, the first occurrence of a name kept, and a value the
+ * decoder throws on kept raw. A pair without `=` is skipped.
+ */
+function parseCookieWithDecoder(
+  str: string,
+  decode: (value: string) => string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of str.split(";")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) {
+      continue;
+    }
+    const name = pair.slice(0, eq).trim();
+    if (!name || Object.hasOwn(out, name)) {
+      continue;
+    }
+    let value = pair.slice(eq + 1).trim();
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1);
+    }
+    try {
+      out[name] = decode(value);
+    } catch {
+      out[name] = value;
+    }
+  }
+  return out;
 }
 
 /**

@@ -6,7 +6,7 @@
  * request to a handler on Bun, using one identical route set:
  *
  *   - `bun-router`          BunRouter (`@kingsleyweb/bun-common`), pipeline
- *                           cache on (the default `routeCacheMax: 2000`)
+ *                           cache on (the default `routeCacheMax: 50000`)
  *   - `bun-router-nocache`  the same router with the matched-pipeline cache
  *                           defeated on every request (cold match each time)
  *   - `bun-router-methods`  BunRouter registering each path once per verb (the
@@ -149,7 +149,8 @@ const MIXED_PATHS = [
  * caches per resolved path (BunRouter does, keyed by host+path+method) only
  * wins while that working set fits in `routeCacheMax`. Above it the FIFO
  * evicts an entry the caller is about to need again, so every request pays a
- * cold match *plus* the cache bookkeeping.
+ * cold match *plus* the cache bookkeeping. The default rotation (60,000) sits
+ * just above the default cap (50,000), so it measures that miss path.
  */
 let cardinalityPathsCache: string[] | undefined;
 
@@ -213,7 +214,7 @@ Options:
                           reported                          (default: 5)
       --cardinality <n>   Distinct /user/:id paths the 'cardinality' scenario
                           rotates through. Above BunRouter's routeCacheMax
-                          (2000) the pipeline cache thrashes. (default: 5000)
+                          (50000) every request misses. (default: 60000)
       --workers <n>       autocannon worker threads         (default: 0)
       --port <n>          Base port                         (default: 42000)
       --json              Emit raw JSON results
@@ -240,7 +241,7 @@ const { values } = parseArgs({
     verify: { type: "boolean", default: false },
     iterations: { type: "string", default: "300000" },
     repeats: { type: "string", default: "5" },
-    cardinality: { type: "string", default: "5000" },
+    cardinality: { type: "string", default: "60000" },
     "micro-child": { type: "string" },
     workers: { type: "string", default: "0" },
     port: { type: "string", default: "42000" },
@@ -268,7 +269,7 @@ const config = {
   iterations: Math.max(1000, toInt(values.iterations, 300000)),
   repeats: Math.max(1, toInt(values.repeats, 5)),
   method: String(values.method).toUpperCase(),
-  cardinality: Math.max(2, toInt(values.cardinality, 5000)),
+  cardinality: Math.max(2, toInt(values.cardinality, 60000)),
   workers: Math.max(0, toInt(values.workers, 0)),
   basePort: toInt(values.port, 42000),
   micro: !!values.micro,
@@ -360,7 +361,7 @@ const BUN_ROUTER_ROUTES: [
  *   Express idiom, and a 5x larger route table) instead of once with `all`
  *   (one route that answers every verb, mirroring Bun's bare-function form).
  * @param routeCacheMax Pipeline-cache cap; omitted leaves BunRouter's default
- *   of 2000. The cache is keyed by resolved path, so this must exceed the
+ *   of 50000. The cache is keyed by resolved path, so this must exceed the
  *   number of distinct paths in flight or every request misses *and* pays
  *   eviction.
  */
@@ -396,7 +397,7 @@ function makeBunRouterAdapter(
  * @param label     Name shown in the tables.
  * @param noCache   Defeat the matched-pipeline cache on every request.
  * @param perMethod Register one route per verb rather than a single `all`.
- * @param routeCacheMax Pipeline-cache cap; omitted uses the default of 2000.
+ * @param routeCacheMax Pipeline-cache cap; omitted uses the default of 50000.
  */
 function bunRouterStrategy(
   id: string,

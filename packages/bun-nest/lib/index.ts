@@ -51,3 +51,8 @@ export {
   transformUploadException,
   type UploadExceptionBody,
 } from "./interceptors";
+// bun-common's per-route parsing middleware, for `consumer.apply(...)`.
+export {
+  requestParsing,
+  type RequestParsingOptions,
+} from "@kingsleyweb/bun-common";

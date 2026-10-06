@@ -617,8 +617,13 @@ export function createJobsApiWebSocket(
     if (!guardRouter) {
       guardRouter = new BunRouter();
       guardRouter.setLogger(config.logger);
-      const markPassed: RouterHandler = (request) => {
+      // Marks, then calls next(): `refuse` after it is an error handler, so
+      // the pipeline runs out and `handle()` settles. A layer that neither
+      // responds nor calls next() parks the pipeline for a later next(), as
+      // Express does, and `handle()` would never settle — nor the upgrade run.
+      const markPassed: RouterHandler = (request, _response, next) => {
         passed.add(request);
+        next();
       };
       guardRouter.setRoute({
         path: fullPath,

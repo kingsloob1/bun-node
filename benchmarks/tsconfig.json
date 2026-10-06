@@ -11,6 +11,6 @@
   "compilerOptions": {
     "typeRoots": ["./node_modules/@types", "../node_modules/@types"]
   },
-  "include": ["./*.ts", "./pages/**/*.ts"],
+  "include": ["./*.ts", "./pages/**/*.ts", "./scenarios/**/*.ts"],
   "exclude": ["node_modules"]
 }

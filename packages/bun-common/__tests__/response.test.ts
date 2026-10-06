@@ -978,7 +978,9 @@ describe("BunResponse: Express parity", () => {
       .json({ a: 1 })
       .getNativeResponse(0);
     expect(first.headers.get("ETag")).toBe(etag('{"a":1}'));
-    expect(first.headers.get("Content-Type")).toBe("application/json");
+    expect(first.headers.get("Content-Type")).toBe(
+      "application/json;charset=utf-8",
+    );
 
     const again = await makeResponse({
       headers: { "If-None-Match": etag('{"a":1}') },
@@ -1241,7 +1243,9 @@ describe("BunResponse: Express parity", () => {
 
     const plain = await makeResponse();
     const plainNative = await plain.jsonp({ a: 1 }).getNativeResponse(0);
-    expect(plainNative.headers.get("Content-Type")).toBe("application/json");
+    expect(plainNative.headers.get("Content-Type")).toBe(
+      "application/json;charset=utf-8",
+    );
     expect(await plainNative.text()).toBe('{"a":1}');
   });
 });

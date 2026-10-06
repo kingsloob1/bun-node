@@ -1,0 +1,9 @@
+Bun 1.4.2; ns/request, median of 3 processes (each best of 5)
+
+target                  static         param    middleware   routes-1000  param-random
+bun-common                3206          3078          3670          3250          9068
+bun-common-nocache          3698          4401          5940          5357          6099
+bun-nest                 10655         12385         13861         13377         21884
+bun-nest-nobp             7869          9467         11155         10034         17558
+
+raw: {"bun-common static":[2842,3527,3206],"bun-common param":[3078,3231,2848],"bun-common middleware":[3548,3918,3670],"bun-common routes-1000":[3250,3311,3118],"bun-common param-random":[9068,8995,9189],"bun-common-nocache static":[3948,3685,3698],"bun-common-nocache param":[4327,5670,4401],"bun-common-nocache middleware":[5320,5970,5940],"bun-common-nocache routes-1000":[5357,4853,5463],"bun-common-nocache param-random":[6099,5718,6448],"bun-nest static":[11194,10655,10350],"bun-nest param":[12385,13171,11708],"bun-nest middleware":[14657,13861,13630],"bun-nest routes-1000":[13411,13377,12372],"bun-nest param-random":[21277,22093,21884],"bun-nest-nobp static":[8156,7635,7869],"bun-nest-nobp param":[9467,9239,9699],"bun-nest-nobp middleware":[10653,11644,11155],"bun-nest-nobp routes-1000":[9451,10246,10034],"bun-nest-nobp param-random":[18273,17558,16907]}

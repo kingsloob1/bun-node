@@ -1,0 +1,44 @@
+Bun 1.4.2 (744846f844374847c902b5e7fd59b4342a51ef99), NODE_ENV=production; ns/op, best of 5 x 100000
+
+H. a response with 3 headers (CORS-like): how they reach `new Response`
+  Headers object, 3x set(), new Response   (BunResponse today)              1292 ns
+  null-proto record, 3 writes, new Response(init.headers=record) (Elysia set.headers)    1340 ns
+  record of [name, value] (Node's kOutHeaders) -> tuple array -> new Response    1593 ns
+  BunResponse: set x3 + send(json text)                                     2334 ns
+    floor: new Response(body)                                                293 ns
+
+I. a 404 and a thrown error, whole request
+  Elysia 2: unknown path (cached 404, .clone())                             1342 ns
+  Elysia 2: handler throws -> 500                                           5695 ns
+  bun-common (lean): unknown path -> 404                                    2406 ns
+  bun-common (lean): handler throws -> 500 (adapter error handler)          6775 ns
+  new Response(undefined, {status: 404, statusText})                         416 ns
+  cachedResponse.clone()                                                     525 ns
+
+J. the pipeline walk: #runPipeline against a sync-only fast loop (same cached layers)
+  0 use() + route: router.dispatch (getMatchedLayers hit incl.)             1070 ns
+  0 use() + route: getMatchedLayers + fastRun, one next per layer            761 ns
+  0 use() + route: getMatchedLayers + fastRun, one next per request          752 ns
+  3 use() + route: router.dispatch (getMatchedLayers hit incl.)             1463 ns
+  3 use() + route: getMatchedLayers + fastRun, one next per layer            967 ns
+  3 use() + route: getMatchedLayers + fastRun, one next per request          923 ns
+  10 use() + route: router.dispatch (getMatchedLayers hit incl.)            2072 ns
+  10 use() + route: getMatchedLayers + fastRun, one next per layer          1394 ns
+  10 use() + route: getMatchedLayers + fastRun, one next per request        1228 ns
+    floor: new BunResponse + send('ok')                                      711 ns
+
+K. waiting on an async handler that responds after an await (the shape every Nest route has)
+  router.dispatch (#waitLayer: new Promise + onceResponded + then)          2847 ns
+  prototype: pending.then(() => res.settledResponse)                        1056 ns
+  prototype: the same, plus one Promise wrapper (onceResponded race)        1184 ns
+    floor: handler(req, new BunResponse) awaited                             997 ns
+
+L. a fresh path per request (param-random): cache admission policies on getMatchedLayers
+  today: every miss inserted (FIFO 50,000)                                  4194 ns
+  today's FIFO with routeCacheMax: 256                                      3002 ns
+  today's FIFO with routeCacheMax: 1000                                     3248 ns
+  today's FIFO with routeCacheMax: 5000                                     3408 ns
+  routeCacheMax: 0 (no cache)                                               2359 ns
+  prototype: doorkeeper (admit on 2nd sighting) + uncached lookup           3051 ns
+  prototype: sampled admission (1 miss in 8 inserted, Map) + uncached lookup    2952 ns
+  prototype: sampled admission, the same path every time (hit path)           19 ns

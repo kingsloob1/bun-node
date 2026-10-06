@@ -16,7 +16,8 @@
  *   the status — call `res.status(code)` too.
  * - `res.end()` takes text or bytes, as Node's `end(chunk)`: an object throws
  *   `ERR_INVALID_ARG_TYPE` — send it with `json()` instead.
- * - There is no `res.jsonp()`.
+ * - `res.jsonp()` wraps the JSON in the `callback` query parameter's call,
+ *   as `text/javascript`; without one it is plain JSON.
  * - `res.format()` needs a `default` handler: when nothing in `Accept`
  *   matches and there is none, no response is produced.
  * - `res.location("back")` reads the `Referrer` header only, not the usual

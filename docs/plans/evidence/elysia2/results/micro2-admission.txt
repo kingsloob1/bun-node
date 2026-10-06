@@ -1,0 +1,9 @@
+L. a fresh path per request (param-random): cache admission policies on getMatchedLayers
+  today: every miss inserted (FIFO 50,000)                                  3675 ns
+  today's FIFO with routeCacheMax: 256                                      2527 ns
+  today's FIFO with routeCacheMax: 1000                                     3038 ns
+  today's FIFO with routeCacheMax: 5000                                     3412 ns
+  routeCacheMax: 0 (no cache)                                               1850 ns
+  prototype: doorkeeper (admit on 2nd sighting) + uncached lookup           2806 ns
+  prototype: sampled admission (1 miss in 8 inserted, Map) + uncached lookup    2866 ns
+  prototype: sampled admission, the same path every time (hit path)           20 ns

@@ -1,0 +1,18 @@
+
+fresh Request (no headers); floor 258 ns; first read costs:
+  url                                    30 ns
+  method                                 10 ns
+  headers                               127 ns
+  headers.get('host')                   186 ns
+  body                                  125 ns
+  signal                                639 ns
+  url + method + headers + body         286 ns
+
+fresh Request (3 headers); floor 1149 ns; first read costs:
+  url                                    81 ns
+  method                                 69 ns
+  headers                               247 ns
+  headers.get('host')                   379 ns
+  body                                  104 ns
+  signal                                690 ns
+  url + method + headers + body         503 ns

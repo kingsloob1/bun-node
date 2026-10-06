@@ -35,6 +35,15 @@ export type MultiPartOptions = BusboyConfig & {
    */
   inflate?: boolean;
   /**
+   * Whether each file's leading bytes are sniffed with `file-type` to fill
+   * its `validatedMimeType`. Defaults to `true`. Sniffing is the costliest
+   * step of a small upload (7 µs for a JPEG, 35 µs for bytes it does not
+   * recognise, more for some PNGs), so `false` skips it when nothing reads
+   * `validatedMimeType`; it is then `undefined`. The client's own
+   * `mimeType` is kept either way.
+   */
+  detectFileType?: boolean;
+  /**
    * Custom inflation for a field value. The result is client-supplied data,
    * parsed but not validated — hence `unknown` values.
    */
@@ -53,10 +62,11 @@ export type MultiPartOptions = BusboyConfig & {
     opts?: FileInfo,
   ) => Promise<Record<string, unknown>>;
   /**
-   * Decides whether a part is a file (`true`) or a field, given its field
-   * name, content type and file name. busboy honours it, but `@types/busboy`
-   * does not declare it. Defaults to busboy's rule: a part with a `filename`
-   * is a file.
+   * **Has no effect**, and never has with busboy 1.x, which does not read it
+   * (busboy 0.x did). A part is a file when it has a `filename` or its type
+   * is `application/octet-stream`, and a field otherwise.
+   *
+   * @deprecated Ignored by the parser; kept so existing options still type-check.
    */
   isPartAFile?: (
     fieldName: string | undefined,

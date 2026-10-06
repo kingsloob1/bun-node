@@ -24,6 +24,7 @@
  */
 import type {
   BunServer,
+  EtagOption,
   JsonValue,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
@@ -35,7 +36,9 @@ import {
   BunRouter,
   BunWebSocket,
   createTestLogger,
+  etag,
   noopLogger,
+  normalizeEtagOption,
 } from "@kingsleyweb/bun-common";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { step, title } from "../shared/console";
@@ -201,7 +204,9 @@ checkEqual(
   (await runtime.fetch("/body", postJson({ text: "x".repeat(500) }))).status,
   200,
 );
-const partial = new BunHttpAdapter(0, { request: { cookieSecret: "k" } });
+const partial = new BunHttpAdapter(0, {
+  request: { parseCookies: { secret: "k" } },
+});
 partial.post("/body", (req, res) => res.json({ body: req.body ?? null }));
 checkEqual(
   "a partial request option keeps body parsing on",
@@ -281,6 +286,44 @@ checkEqual(
   304,
 );
 
+for (const [option, expected] of [
+  ["weak", `W/${etag('{"version":3}')}`],
+  ["strong", etag('{"version":3}')],
+  [() => '"fixed"', '"fixed"'],
+] as const) {
+  const modal = new BunHttpAdapter(0, { etag: option });
+  modal.get("/doc", (_req, res) => res.send({ version: 3 }));
+  const label = typeof option === "function" ? "a function" : option;
+  checkEqual(
+    `etag: ${label}`,
+    (await modal.fetch("/doc")).headers.get("ETag"),
+    expected,
+  );
+}
+const perResponse = new BunHttpAdapter(0, { etag: false });
+perResponse.get("/weak", (_req, res) => res.setEtag("weak").send("w"));
+check(
+  "a response's setEtag() overrules the adapter's false",
+  (await perResponse.fetch("/weak")).headers.get("ETag")?.startsWith("W/") ===
+    true,
+);
+checkEqual(
+  "normalizeEtagOption(undefined) is false",
+  normalizeEtagOption(undefined),
+  false,
+);
+check(
+  "normalizeEtagOption('nope') throws TypeError — as the constructor does",
+  (() => {
+    try {
+      normalizeEtagOption("nope" as unknown as EtagOption);
+      return false;
+    } catch (error) {
+      return error instanceof TypeError;
+    }
+  })(),
+);
+
 const signature = {
   requestHost: "localhost",
   requestMethod: "GET",
@@ -330,6 +373,31 @@ try {
   refused = (error as Error).message;
 }
 check("a body beyond it never reaches the route", refused !== 200, refused);
+
+const nativeRoutes = await serve(
+  new BunHttpAdapter(0, {
+    server: { routes: { "/ping": new Response("pong") } },
+  }),
+);
+let nativeMiddlewareRuns = 0;
+nativeRoutes.use((_req, _res, next) => {
+  nativeMiddlewareRuns++;
+  next();
+});
+nativeRoutes.all("/ping", (_req, res) => res.send("router pong"));
+const nativePing = await fetch(`${nativeRoutes.url}/ping`, { method: "POST" });
+checkEqual(
+  "server.routes: Bun answers first, for every method",
+  await nativePing.text(),
+  "pong",
+);
+check("…with an ETag", nativePing.headers.has("ETag"));
+checkEqual("…and no middleware ran", nativeMiddlewareRuns, 0);
+checkEqual(
+  "…while adapter.fetch() (no socket) runs the router",
+  await (await nativeRoutes.fetch("/ping")).text(),
+  "router pong",
+);
 
 /* ------------------------------------------------------------------ */
 step("listen(), its events, and the address getters");

@@ -67,6 +67,11 @@ await time("  + getNativeResponse", async () => {
 });
 await time("handleNativeRequest, parsing off (whole adapter path)", () => handleNative(leanAdapter, new Request(url)));
 await time("handleNativeRequest, adapter defaults", () => handleNative(full, new Request(url)));
+// The path Bun.serve takes (when present): no promise for a synchronous request.
+const serveNative = (a: BunHttpAdapter, req: Request) =>
+  (a as unknown as { serveNativeRequest?: (r: Request, s: never) => unknown }).serveNativeRequest?.(req, stub);
+await time("serveNativeRequest, parsing off (served path)", () => serveNative(leanAdapter, new Request(url)));
+await time("serveNativeRequest, adapter defaults (served path)", () => serveNative(full, new Request(url)));
 await time("floor: new Request + new Response(id)", () => {
   new Request(url);
   return new Response("42");

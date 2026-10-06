@@ -1,0 +1,9 @@
+{
+  // Minimal reproductions of Bun behaviour bun-node works around, each run on
+  // its own with `bun <file>.ts`. This file exists so an editor resolves them
+  // against Bun's types. Not in scripts/typecheck.ts: a reproduction records
+  // what one Bun version did; it is not maintained code.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}

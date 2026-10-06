@@ -1,13 +1,17 @@
 # Router benchmarks
 
 Throughput comparison of **BunRouter** (`@kingsleyweb/bun-common`) against
-**Express 5**, **Bun.serve** native routes, **Elysia** and **Hono**.
+**Express 5**, **Bun.serve** native routes, **Elysia 1.4**, **Elysia 2** (beta, the `elysia2` alias),
+**Hono** and **hyper-express** (uWebSockets.js, in its own process under Node.js
+and under Bun — see [`hyper-express/README.md`](hyper-express/README.md); it does
+not load under Bun).
 
 ## Setup
 
 ```bash
 cd benchmarks
 bun install
+(cd hyper-express && npm run setup)   # optional: the hyper-express entries
 ```
 
 ## Run
@@ -21,6 +25,45 @@ bun bench.ts --route all --json > results.json # machine-readable output
 ```
 
 `bun bench.ts --help` lists every option.
+
+## Scenario benchmark with `wrk` (`wrk.ts`)
+
+`bench.ts` drives load from JavaScript in the same process, which caps it
+near 70k req/s. `wrk.ts` drives every framework with the native `wrk`, one
+fresh server process per (framework, scenario) cell (`scenarios/servers.ts`,
+the Nest app in `scenarios/nest-app.ts`), pinned to CPU 0 with `wrk` on the
+other cores. It checks each response before timing it, interleaves rounds and
+reports medians.
+
+```bash
+bun wrk.ts                                        # every target and scenario, 3 rounds
+bun wrk.ts --targets bun-common,elysia2 --scenarios json,multipart
+bun wrk.ts --rounds 5 --markdown out.md --json out.json
+```
+
+| Scenario | Request |
+|---|---|
+| `static`, `param`, `wildcard` | `GET /static`, `GET /user/42`, `GET /assets/css/app.css` |
+| `middleware` | `GET /mw/hit` through three middleware |
+| `routes-1000`, `param-random` | `GET /r999/42` among 1,000 param routes; the same with a fresh id per request |
+| `async`, `headers` | an `async` handler; three response headers set |
+| `json` | `POST /json {"n":7}` |
+| `urlencoded` | `POST /form a=1&b=two`, the parsed fields back |
+| `multipart` | `POST /upload`, a field and a 1 KiB file |
+| `binary` | `POST /binary`, 1 KiB `application/octet-stream`, its size back |
+| `text` | `POST /text`, `text/plain`, its length back |
+| `xml` | `POST /xml <root><n>7</n></root>`, the parsed value back |
+
+Every framework is measured doing the same work. bun-common and bun-nest run
+with `retainBuffer: false` (no other framework keeps a parsed body's bytes)
+and multipart's `detectFileType: false` (none sniffs an upload's type), set
+once in `scenarios/parse-body.ts`. A framework without a built-in parser for
+a kind is listed under **Not measured** with the reason, not given a
+third-party one: Express has none for multipart or XML, and only bun-common
+and bun-nest parse XML.
+
+Results are in `results/`: `scenarios-wrk.md` for the routing scenarios,
+`body-scenarios-wrk.md` for the bodies.
 
 ## What it measures
 

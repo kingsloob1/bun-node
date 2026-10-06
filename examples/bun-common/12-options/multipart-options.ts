@@ -8,6 +8,9 @@
  *
  * A few things worth knowing before reading it:
  *
+ * - `detectFileType` (default `true`) sniffs each file for
+ *   `validatedMimeType`; `false` skips it. Set it in the adapter's
+ *   `parseBody.contentTypes.multipart.opts`, where the body is parsed.
  * - The body is parsed **when the request is built**, with the request's
  *   `parseBody.contentTypes.multipart.opts`. That is where busboy's `limits`,
  *   `preservePath` and the `inflate` options take effect, so each check here
@@ -42,6 +45,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BunHttpAdapter,
   BunRequest,
   DEFAULT_UPLOAD_OPTIONS,
   DiskStorage,
@@ -1189,6 +1193,72 @@ checkEqual(
   ).files.length,
   3,
 );
+
+/* ------------------------------------------------------------------ */
+step("detectFileType: sniffing on or off where the request is parsed");
+
+// The body is parsed while the request is built, with
+// parseBody.contentTypes.multipart.opts, so detectFileType belongs there
+// (set only in a handler's options, that handler parses the body again).
+/** The start of a JPEG: what file-type sniffs it by. */
+const JPEG_HEAD = Buffer.from("ffd8ffe000104a4649460001", "hex");
+
+/** An adapter whose `/upload` answers the stored file's types. */
+async function sniffingApp(detectFileType?: boolean): Promise<BunHttpAdapter> {
+  const app = new BunHttpAdapter(0, {
+    request: {
+      parseBody: {
+        contentTypes: {
+          multipart:
+            detectFileType === undefined ? true : { opts: { detectFileType } },
+        },
+      },
+    },
+  });
+  app.post("/upload", async (req, res) => {
+    const { file } = await handleMultipartSingleFile(req, "photo", memory);
+    res.json({
+      mimetype: file?.mimetype ?? null,
+      validatedMimeType: file?.validatedMimeType ?? null,
+    });
+  });
+  await app.listen(0);
+  return app;
+}
+
+/** A form with a JPEG-headed file declared application/octet-stream. */
+function jpegForm(): FormData {
+  const form = new FormData();
+  form.set(
+    "photo",
+    new File([JPEG_HEAD], "photo.bin", { type: "application/octet-stream" }),
+  );
+  return form;
+}
+
+for (const [label, detectFileType, expected] of [
+  ["default", undefined, { ext: "jpg", mime: "image/jpeg" }],
+  ["detectFileType: false", false, null],
+] as const) {
+  const app = await sniffingApp(detectFileType);
+  const served = await fetch(`${app.url}/upload`, {
+    method: "POST",
+    body: jpegForm(),
+  });
+  const offline = await app.fetch("/upload", {
+    method: "POST",
+    body: jpegForm(),
+  });
+  checkEqual(
+    `${label}: validatedMimeType, the client's mimetype kept — served and through fetch()`,
+    [await served.json(), await offline.json()],
+    [
+      { mimetype: "application/octet-stream", validatedMimeType: expected },
+      { mimetype: "application/octet-stream", validatedMimeType: expected },
+    ],
+  );
+  await app.close();
+}
 
 /* ------------------------------------------------------------------ */
 step("Cleaning up");

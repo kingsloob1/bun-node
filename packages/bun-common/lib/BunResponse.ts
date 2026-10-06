@@ -28,7 +28,11 @@ import process from "node:process";
 import { ReadableStream } from "node:stream/web";
 import { inspect } from "node:util";
 import mime from "mime";
-import { getMimeFromStr, isNodeReadableStream } from "./utils/general";
+import {
+  getMimeFromStr,
+  isNodeReadableStream,
+  SOCKET_FREE,
+} from "./utils/general";
 import {
   appendVary,
   createDeferred,
@@ -363,6 +367,100 @@ function parseTokenList(value: string): string[] {
 const textEncoder = new TextEncoder();
 
 /**
+ * How a response tags a body with an `ETag` (see {@link BunResponse.etag}):
+ * off, on (strong), `"weak"`, `"strong"`, or a function returning the tag
+ * (or `undefined` for none), as Express's `etag` setting.
+ */
+export type EtagOption =
+  | boolean
+  | "weak"
+  | "strong"
+  | ((body: string | Uint8Array) => string | undefined);
+
+/**
+ * `option` checked: `undefined` is `false`.
+ *
+ * @throws TypeError for anything else that is not an {@link EtagOption}.
+ */
+export function normalizeEtagOption(
+  option: EtagOption | undefined,
+): EtagOption {
+  if (option === undefined) {
+    return false;
+  }
+  if (
+    typeof option === "boolean" ||
+    option === "weak" ||
+    option === "strong" ||
+    typeof option === "function"
+  ) {
+    return option;
+  }
+  throw new TypeError(
+    `etag must be a boolean, "weak", "strong" or a function; got ${String(option)}`,
+  );
+}
+
+/**
+ * The default `Content-Type` of a text body: what Bun itself writes for a
+ * string body, so a response sent with no headers and one sent with others
+ * carry the same type.
+ */
+const TEXT_CONTENT_TYPE = "text/plain;charset=utf-8";
+
+/** The `Content-Type` of a JSON body: what `Response.json` sets. */
+const JSON_CONTENT_TYPE = "application/json;charset=utf-8";
+
+/** A shared, never-written `Headers` that header reads see before any exist. */
+const NO_HEADERS = new Headers();
+
+/**
+ * Text responses sent with no `Headers` object, whose `Content-Type` Bun adds
+ * only on the wire. A socket-free `fetch()` adds it to them (see
+ * {@link toFetchResponse}) so it answers as a served request does. Only a
+ * socket-free request's are recorded (see {@link markSocketFree}): a served
+ * one never needs it, and the `WeakSet.add` cost ~115 ns per response.
+ */
+const IMPLICIT_TEXT_RESPONSES = new WeakSet<Response>();
+
+/**
+ * Marks a native `Request` as answered without a socket — by a `fetch()` —
+ * so the response to it records what {@link toFetchResponse} needs. Call it
+ * on the request before it is handled; returns the request.
+ */
+export function markSocketFree(request: Request): Request {
+  (request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] = true;
+  return request;
+}
+
+/**
+ * `response` as a served request's client would see it, for a socket-free
+ * `fetch()`: the `Content-Type` Bun writes for a text body sent without
+ * headers, and no body in answer to `HEAD` (Bun drops it on the wire).
+ *
+ * The `Content-Type` is added only to a response to a request marked with
+ * {@link markSocketFree} before it was handled (the adapters' and the
+ * router's `fetch()` mark theirs); a served request's response is never
+ * recorded for it.
+ */
+export function toFetchResponse(response: Response, method: string): Response {
+  if (
+    IMPLICIT_TEXT_RESPONSES.has(response) &&
+    !response.headers.has("content-type")
+  ) {
+    response.headers.set("Content-Type", TEXT_CONTENT_TYPE);
+  }
+  if (method.toUpperCase() !== "HEAD" || response.body === null) {
+    return response;
+  }
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/**
  * The lifecycle events emitted by {@link BunResponse}, mirroring Node's
  * `http.ServerResponse`. Declared as a `type` (not an `interface`) so it
  * satisfies `TypedEmitter`'s `Record<string, …>` constraint.
@@ -391,6 +489,67 @@ type ResEventName = keyof BunResponseEvents;
 /** The listener signature for a given {@link BunResponse} event. */
 type ResListener<E extends ResEventName> = BunResponseEvents[E];
 
+/**
+ * BunResponse's rarely-used state (see its `#state`): one object,
+ * allocated only when one of these fields is first written.
+ */
+class BunResponseState<customWebsocketDataType = unknown> {
+  /** Backs BunResponse's `_upgradeToWsData`; see its documentation there. */
+  _upgradeToWsData: WebSocketClientData<customWebsocketDataType> | undefined =
+    undefined;
+
+  /** Backs BunResponse's `_upgradeToWsHeaders`; see its documentation there. */
+  _upgradeToWsHeaders: Headers | undefined = undefined;
+  /** Backs BunResponse's `_webSocketUpgradeHeaders`; see its documentation there. */
+  _webSocketUpgradeHeaders: Headers | undefined = undefined;
+  /** Backs BunResponse's `_webSocketUpgradeData`; see its documentation there. */
+  _webSocketUpgradeData:
+    | Partial<WebSocketClientData<customWebsocketDataType>>
+    | undefined = undefined;
+
+  /** Backs BunResponse's `_isLongLived`; see its documentation there. */
+  _isLongLived: boolean = false;
+  /** Backs BunResponse's `#readableStream`; see its documentation there. */
+  readableStream: ReadableStream | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamController`; see its documentation there. */
+  readableStreamController: ReadableStreamDefaultController | undefined =
+    undefined;
+
+  /** Backs BunResponse's `#readableStreamClosePromise`; see its documentation there. */
+  readableStreamClosePromise: Promise<undefined> | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamCloseResolve`; see its documentation there. */
+  readableStreamCloseResolve: (() => void) | undefined = undefined;
+  /** Backs BunResponse's `#readableStreamEventMap`; see its documentation there. */
+  readableStreamEventMap:
+    | Map<string, string | ArrayBufferView | ArrayBufferLike>
+    | undefined = undefined;
+
+  /** Backs BunResponse's `#streamWriteNotifier`; see its documentation there. */
+  streamWriteNotifier: Deferred<void> | undefined = undefined;
+  /** Backs BunResponse's `#streamEnding`; see its documentation there. */
+  streamEnding: boolean = false;
+  /** Backs BunResponse's `#streamClosed`; see its documentation there. */
+  streamClosed: boolean = false;
+  /** Backs BunResponse's `#destroyedWith`; see its documentation there. */
+  destroyedWith: unknown = undefined;
+  /** Backs BunResponse's `#destroyed`; see its documentation there. */
+  destroyed: boolean = false;
+  /** Backs BunResponse's `#streamEndWaiters`; see its documentation there. */
+  streamEndWaiters: (() => void)[] | undefined = undefined;
+  /** Backs BunResponse's `#emitter`; see its documentation there. */
+  emitter: EventEmitter | undefined = undefined;
+  /** Backs BunResponse's `#finishEmitted`; see its documentation there. */
+  finishEmitted: boolean = false;
+  /** Backs BunResponse's `#closeEmitted`; see its documentation there. */
+  closeEmitted: boolean = false;
+  /** Backs BunResponse's `#streamedChunks`; see its documentation there. */
+  streamedChunks: BunResponseChunk[] | undefined = undefined;
+  /** Backs BunResponse's `#responseTransforms`; see its documentation there. */
+  responseTransforms: BunResponseTransform[] | undefined = undefined;
+  /** Backs BunResponse's `#transformBody`; see its documentation there. */
+  transformBody: BunResponseTransformBody | undefined = undefined;
+}
+
 export class BunResponse<
   /**
    * The `custom` data of a WebSocket this response upgrades to. `unknown`
@@ -399,24 +558,70 @@ export class BunResponse<
    */
   customWebsocketDataType = unknown,
 > implements TypedEmitter<BunResponseEvents> {
-  private _upgradeToWsData:
+  /**
+   * Rarely-used state, created on first write. Each field moved here is an
+   * accessor that reads its default until then, so a request or response that
+   * never touches it pays no per-field initialisation (about 6 ns each).
+   */
+  #state: BunResponseState<customWebsocketDataType> | undefined = undefined;
+
+  private get _upgradeToWsData():
     | WebSocketClientData<customWebsocketDataType>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._upgradeToWsData;
+  }
+
+  private set _upgradeToWsData(
+    value: WebSocketClientData<customWebsocketDataType> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._upgradeToWsData = value;
+  }
 
   /**
    * Headers for the `101` of a WebSocket upgrade, as {@link upgradeToWebsocket}
    * merged them; `undefined` when no layer had any, so the upgrade sends
    * exactly Bun's default.
    */
-  private _upgradeToWsHeaders: Headers | undefined = undefined;
+  private get _upgradeToWsHeaders(): Headers | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._upgradeToWsHeaders;
+  }
+
+  private set _upgradeToWsHeaders(value: Headers | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._upgradeToWsHeaders =
+      value;
+  }
 
   /** Per-request `101` headers — see {@link webSocketUpgradeHeaders}. */
-  private _webSocketUpgradeHeaders: Headers | undefined = undefined;
+  private get _webSocketUpgradeHeaders(): Headers | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._webSocketUpgradeHeaders;
+  }
+
+  private set _webSocketUpgradeHeaders(value: Headers | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._webSocketUpgradeHeaders =
+      value;
+  }
 
   /** Per-request `ws.data` values — see {@link webSocketUpgradeData}. */
-  private _webSocketUpgradeData:
+  private get _webSocketUpgradeData():
     | Partial<WebSocketClientData<customWebsocketDataType>>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder._webSocketUpgradeData;
+  }
+
+  private set _webSocketUpgradeData(
+    value: Partial<WebSocketClientData<customWebsocketDataType>> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._webSocketUpgradeData =
+      value;
+  }
 
   /**
    * Where router-wide upgrade defaults (`webSocketUpgradeHeaders`,
@@ -431,27 +636,187 @@ export class BunResponse<
 
   #nativeResponse: Response | undefined = undefined;
   /**
-   * Resolvers awaiting the native `Response` (see {@link getNativeResponse}).
-   * Allocated on the first waiter — a response nobody awaits costs no array.
+   * Listeners awaiting the native `Response` ({@link getNativeResponse},
+   * {@link onceResponded}); the array is allocated on the first one. A field
+   * of its own, not in the lazy {@link BunResponseState}: every asynchronous
+   * pipeline subscribes, and building that holder costs more than the wait.
    */
-  #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
-  private options: Writable<ResponseInit> = {};
-  private headersObj = new Headers();
-  private _isLongLived = false;
-  #readableStream: ReadableStream | undefined = undefined;
-  #readableStreamController: ReadableStreamDefaultController | undefined =
-    undefined;
+  #responseWaiters:
+    | ((response: Response) => void)
+    | ((response: Response) => void)[]
+    | undefined = undefined;
 
-  #readableStreamClosePromise: Promise<undefined> | undefined = undefined;
-  #readableStreamCloseResolve: (() => void) | undefined = undefined;
+  /** Adds a waiter to {@link #responseWaiters}: a lone one is held without an array. */
+  #addResponseWaiter(waiter: (response: Response) => void): void {
+    const waiters = this.#responseWaiters;
+    if (waiters === undefined) {
+      this.#responseWaiters = waiter;
+    } else if (typeof waiters === "function") {
+      this.#responseWaiters = [waiters, waiter];
+    } else {
+      waiters.push(waiter);
+    }
+  }
+
+  /** Removes a waiter not yet called from {@link #responseWaiters}. */
+  #removeResponseWaiter(waiter: (response: Response) => void): void {
+    const waiters = this.#responseWaiters;
+    if (waiters === waiter) {
+      this.#responseWaiters = undefined;
+    } else if (Array.isArray(waiters)) {
+      const index = waiters.indexOf(waiter);
+      if (index !== -1) {
+        waiters.splice(index, 1);
+      }
+    }
+  }
+
+  private options: Writable<ResponseInit> = {};
+  /**
+   * The headers set so far; `undefined` until the first write (see
+   * {@link headersObj}). A response that never sets one is sent without a
+   * `Headers` object at all — see {@link #canSkipHeaders}.
+   */
+  #headers: Headers | undefined = undefined;
+
+  /**
+   * The `Content-Type` a response sent without headers carries — the one Bun
+   * (or `Response.json`) gives it — so reading the headers after the send
+   * still reports it. `undefined` otherwise.
+   */
+  #implicitContentType: string | undefined = undefined;
+
+  /**
+   * The headers, created on first use. A response sent without headers
+   * starts them with the `Content-Type` it was sent with.
+   */
+  private get headersObj(): Headers {
+    if (this.#headers === undefined) {
+      this.#headers = new Headers();
+      if (this.#implicitContentType !== undefined) {
+        this.#headers.set("Content-Type", this.#implicitContentType);
+      }
+    }
+    return this.#headers;
+  }
+
+  /**
+   * The headers for a read: the real ones once any exist, a shared empty set
+   * otherwise — so reading (`getHeader`, `hasHeader`, …) never creates them
+   * and never takes a response off the no-headers path.
+   */
+  get #readableHeaders(): Headers {
+    if (
+      this.#headers !== undefined ||
+      this.#implicitContentType !== undefined
+    ) {
+      return this.headersObj;
+    }
+    return NO_HEADERS;
+  }
+
+  /**
+   * Whether the body can be sent without a `Headers` object: nothing set a
+   * header (or passed one in the init), no `ETag` is to be computed and no
+   * transform (`compression()`) will rewrite the response, and the request
+   * is not `HEAD`. Freshness needs a validator header, so it cannot apply
+   * either.
+   */
+  #canSkipHeaders(): boolean {
+    return (
+      this.#headers === undefined &&
+      // Bun leaves the type off a served HEAD response it has no headers
+      // for, while GET gets it; HEAD carries it explicitly instead.
+      this.req.method !== "HEAD" &&
+      this.options.headers === undefined &&
+      !this.#etagEnabled &&
+      this.#responseTransforms === undefined
+    );
+  }
+
+  /** The init for a response sent without headers: status and reason only. */
+  #initWithoutHeaders(): ResponseInit | undefined {
+    const { status, statusText } = this.options;
+    if (status === undefined && statusText === undefined) {
+      return undefined;
+    }
+    return { status, statusText };
+  }
+
+  private get _isLongLived(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder._isLongLived;
+  }
+
+  private set _isLongLived(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>())._isLongLived = value;
+  }
+
+  get #readableStream(): ReadableStream | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStream;
+  }
+
+  set #readableStream(value: ReadableStream | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStream = value;
+  }
+
+  get #readableStreamController(): ReadableStreamDefaultController | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamController;
+  }
+
+  set #readableStreamController(
+    value: ReadableStreamDefaultController | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamController =
+      value;
+  }
+
+  get #readableStreamClosePromise(): Promise<undefined> | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamClosePromise;
+  }
+
+  set #readableStreamClosePromise(value: Promise<undefined> | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamClosePromise =
+      value;
+  }
+
+  get #readableStreamCloseResolve(): (() => void) | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamCloseResolve;
+  }
+
+  set #readableStreamCloseResolve(value: (() => void) | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamCloseResolve =
+      value;
+  }
+
   /**
    * Chunks written but not yet enqueued on {@link readableStream}, keyed by an
    * arrival-ordered token. Values are text or binary (`Buffer`, typed array,
    * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
    */
-  #readableStreamEventMap:
+  get #readableStreamEventMap():
     | Map<string, string | ArrayBufferView | ArrayBufferLike>
-    | undefined = undefined;
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.readableStreamEventMap;
+  }
+
+  set #readableStreamEventMap(
+    value: Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined,
+  ) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).readableStreamEventMap =
+      value;
+  }
 
   /** The pending-chunk map, created on the first buffered write. */
   get #pendingChunks(): Map<
@@ -462,20 +827,87 @@ export class BunResponse<
   }
 
   /** Notifies a parked stream `pull` that data is available to enqueue. */
-  #streamWriteNotifier: Deferred<void> | undefined = undefined;
+  get #streamWriteNotifier(): Deferred<void> | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamWriteNotifier;
+  }
+
+  set #streamWriteNotifier(value: Deferred<void> | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamWriteNotifier =
+      value;
+  }
 
   /**
    * Set once the stream has been asked to end. The pending chunks are still
    * flushed first: by the parked `pull` when one is waiting, immediately when
    * the controller is idle, or by the first `pull` when nothing has read yet.
    */
-  #streamEnding = false;
+  get #streamEnding(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.streamEnding;
+  }
+
+  set #streamEnding(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamEnding = value;
+  }
 
   /** True once the stream's controller has been closed (closing is once-only). */
-  #streamClosed = false;
+  get #streamClosed(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.streamClosed;
+  }
 
-  /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
-  #etagEnabled: boolean;
+  set #streamClosed(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamClosed = value;
+  }
+
+  /**
+   * Why {@link destroy} ended the stream, once it has; `undefined` otherwise.
+   * A `pull` that runs later errors the stream with it.
+   */
+  get #destroyedWith(): unknown {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.destroyedWith;
+  }
+
+  set #destroyedWith(value: unknown) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).destroyedWith = value;
+  }
+
+  /** True once {@link destroy} has run. */
+  get #destroyed(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.destroyed;
+  }
+
+  set #destroyed(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).destroyed = value;
+  }
+
+  /**
+   * Called once when a streamed response ends — `end()`, the client leaving
+   * or {@link destroy}. See {@link onceStreamEnded}.
+   */
+  get #streamEndWaiters(): (() => void)[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamEndWaiters;
+  }
+
+  set #streamEndWaiters(value: (() => void)[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamEndWaiters = value;
+  }
+
+  /**
+   * How {@link send} tags a body with an `ETag` — see {@link etag}. Starts as
+   * the adapter's `etag` option (`false` by default).
+   */
+  #etag: EtagOption;
 
   /**
    * Lazily-created event bus mirroring Node's `http.ServerResponse` events
@@ -483,9 +915,35 @@ export class BunResponse<
    * only when the first listener is registered, so a response nobody listens
    * to costs nothing.
    */
-  #emitter: EventEmitter | undefined = undefined;
-  #finishEmitted = false;
-  #closeEmitted = false;
+  get #emitter(): EventEmitter | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.emitter;
+  }
+
+  set #emitter(value: EventEmitter | undefined) {
+    (this.#state ??= new BunResponseState<customWebsocketDataType>()).emitter =
+      value;
+  }
+
+  get #finishEmitted(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.finishEmitted;
+  }
+
+  set #finishEmitted(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).finishEmitted = value;
+  }
+
+  get #closeEmitted(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.closeEmitted;
+  }
+
+  set #closeEmitted(value: boolean) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).closeEmitted = value;
+  }
 
   /**
    * The response body, captured for inspection — see {@link getBody}. Holds
@@ -494,40 +952,69 @@ export class BunResponse<
    */
   #sentBody: BunResponseSentBody = undefined;
 
+  /** {@link locals}, once read or assigned. */
+  #locals: Record<string, unknown> | undefined = undefined;
+
   /**
    * Every chunk streamed so far, in order — the response's own list, reported
    * by {@link getBody}. Never a body the caller passed to `send`, which is
    * never mutated. `undefined` until the first streamed chunk.
    */
-  #streamedChunks: BunResponseChunk[] | undefined = undefined;
+  get #streamedChunks(): BunResponseChunk[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.streamedChunks;
+  }
+
+  set #streamedChunks(value: BunResponseChunk[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).streamedChunks = value;
+  }
 
   /**
    * Transforms run on the native `Response` as it is produced, in
    * registration order — see {@link addResponseTransform}. `undefined` until
    * the first is added, so a response without one pays a single check.
    */
-  #responseTransforms: BunResponseTransform[] | undefined = undefined;
+  get #responseTransforms(): BunResponseTransform[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.responseTransforms;
+  }
+
+  set #responseTransforms(value: BunResponseTransform[] | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).responseTransforms =
+      value;
+  }
 
   /**
    * The buffered body of the `Response` about to be produced, when `send`'s
    * captured body is not it (serialised JSON text, a `sendFile` slice).
    * Recorded only while a transform is registered; cleared once read.
    */
-  #transformBody: BunResponseTransformBody | undefined = undefined;
+  get #transformBody(): BunResponseTransformBody | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.transformBody;
+  }
+
+  set #transformBody(value: BunResponseTransformBody | undefined) {
+    (this.#state ??=
+      new BunResponseState<customWebsocketDataType>()).transformBody = value;
+  }
 
   constructor(
     /** The {@link BunRequest} this response is paired with (one per request). */
     public req: BunRequest,
     options?: {
       /**
-       * Enable automatic `ETag` generation for this response. Opt-in because
-       * hashing every body has a measurable per-request cost; defaults to
-       * `false`. Can also be toggled later via {@link setEtag}.
+       * How this response tags a body with an `ETag` — see {@link etag}.
+       * Opt-in because hashing every body has a measurable per-request cost;
+       * defaults to `false`. The adapters pass their `etag` option; change it
+       * per response with {@link setEtag} or {@link etag}.
        */
-      etag?: boolean;
+      etag?: EtagOption;
     },
   ) {
-    this.#etagEnabled = options?.etag ?? false;
+    this.#etag = normalizeEtagOption(options?.etag);
     // Bind the pair at construction, as Express does with `req.res`, so
     // `req.fresh` / `req.stale` can be computed from the moment the response
     // exists — not only once `send()` runs.
@@ -535,12 +1022,68 @@ export class BunResponse<
   }
 
   /**
-   * Enables (or disables) automatic `ETag` generation for this response.
-   * ETag is **opt-in** — hashing every body has a measurable per-request cost.
+   * How this response tags a body with an `ETag`, overruling the adapter's
+   * `etag` option for this response only (as Express's `etag` setting, per
+   * response):
+   *
+   * - `false` — no `ETag`;
+   * - `true` or `"strong"` — a strong tag over the body's bytes
+   *   (`"<length>-<hash>"`);
+   * - `"weak"` — the same tag, weak (`W/"<length>-<hash>"`);
+   * - a function `(body) => string | undefined` — the tag to send (quoted,
+   *   `W/` for a weak one), or `undefined` for none. It receives a text body
+   *   as a string and a binary one as bytes.
+   *
+   * A tag set by hand (`res.set("ETag", …)`) always wins. Files sent with
+   * `sendFile` get the weak size-and-mtime tag whenever this is not `false`.
+   * A request whose `If-None-Match` matches the tag is answered `304`.
    */
-  public setEtag(enabled = true): BunResponse {
-    this.#etagEnabled = enabled;
+  get etag(): EtagOption {
+    return this.#etag;
+  }
+
+  set etag(option: EtagOption) {
+    this.#etag = normalizeEtagOption(option);
+  }
+
+  /**
+   * Sets {@link etag} — how (and whether) this response is tagged — and
+   * returns the response. `setEtag()` alone turns it on; `setEtag(false)`
+   * turns it off even when the adapter's `etag` option is on.
+   */
+  public setEtag(option: EtagOption = true): BunResponse {
+    this.etag = option;
     return this;
+  }
+
+  /** Whether any `ETag` is to be generated for this response. */
+  get #etagEnabled(): boolean {
+    return this.#etag !== false;
+  }
+
+  /**
+   * The `ETag` for `body` under {@link etag}, or `undefined` for none (off,
+   * or a function that returned nothing).
+   */
+  #etagFor(
+    body: string | ArrayBufferView | ArrayBufferLike,
+  ): string | undefined {
+    const option = this.#etag;
+    if (option === false) {
+      return undefined;
+    }
+    if (typeof option === "function") {
+      const tag = option(
+        typeof body === "string"
+          ? body
+          : ArrayBuffer.isView(body)
+            ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+            : new Uint8Array(body as ArrayBuffer),
+      );
+      return typeof tag === "string" && tag !== "" ? tag : undefined;
+    }
+    const tag = etag(body);
+    return option === "weak" ? `W/${tag}` : tag;
   }
 
   /* ---------------------------------------------------------------- *
@@ -737,8 +1280,12 @@ export class BunResponse<
     if (value && this.#responseWaiters !== undefined) {
       const waiters = this.#responseWaiters;
       this.#responseWaiters = undefined;
-      for (const waiter of waiters) {
-        waiter(value);
+      if (typeof waiters === "function") {
+        waiters(value);
+      } else {
+        for (const waiter of waiters) {
+          waiter(value);
+        }
       }
     }
 
@@ -826,6 +1373,19 @@ export class BunResponse<
     this.status(code);
   }
 
+  /**
+   * Request-scoped values for the layers that follow and for rendering, as
+   * Express's `res.locals`: a null-prototype object, created on first read
+   * (most requests never use it). Assignable, as in Express.
+   */
+  get locals(): Record<string, unknown> {
+    return (this.#locals ??= Object.create(null) as Record<string, unknown>);
+  }
+
+  set locals(value: Record<string, unknown>) {
+    this.#locals = value;
+  }
+
   get statusCode() {
     return this.options.status || 200;
   }
@@ -859,7 +1419,8 @@ export class BunResponse<
   }
 
   /**
-   * Sends `body` serialised as `application/json`. Goes through the same path
+   * Sends `body` serialised as `application/json;charset=utf-8` (with no
+   * header set, through `Response.json`, without a `Headers` object). Goes through the same path
    * as a string `send()`: the automatic `ETag` (when enabled) is computed over
    * the serialisation, then freshness turns a matching conditional request
    * into a 304 — as Express's `res.json` does via `res.send`.
@@ -870,10 +1431,39 @@ export class BunResponse<
    * `JSON.stringify` cannot serialise, are rejected.)
    */
   public json<T extends BunResponseBody>(body: T): BunResponse {
-    this.options.headers = this.headersObj;
-    this.headersObj.set("Content-Type", "application/json");
     this.#sentBody = body;
+    if (this.#canSkipHeaders()) {
+      return this.#respondWithJson(body);
+    }
+    this.options.headers = this.headersObj;
+    this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
     return this.#respondWithText(JSON.stringify(body));
+  }
+
+  /**
+   * Sends `body` as JSON with no `Headers` object: `Response.json`
+   * serialises it as `JSON.stringify` does and sets
+   * `application/json;charset=utf-8` itself. Only for a response with no
+   * header set (see {@link #canSkipHeaders}).
+   */
+  #respondWithJson(body: unknown): BunResponse {
+    const code = this.options.status;
+    if (code === 204 || code === 205 || code === 304) {
+      // These strip the body: the full path handles them.
+      this.options.headers = this.headersObj;
+      this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
+      return this.#respondWithText(JSON.stringify(body));
+    }
+    this.req.setResponse(this);
+    this.#implicitContentType = JSON_CONTENT_TYPE;
+    const kind = typeof body;
+    // `JSON.stringify` gives `undefined` for `undefined`, a function or a
+    // symbol: an empty body then, as the text path sends one.
+    this.response =
+      kind === "undefined" || kind === "function" || kind === "symbol"
+        ? new Response(undefined, this.#initWithoutHeaders())
+        : Response.json(body, this.#initWithoutHeaders());
+    return this;
   }
 
   /**
@@ -892,7 +1482,7 @@ export class BunResponse<
 
     if (!this.hasHeader("Content-Type")) {
       this.set("X-Content-Type-Options", "nosniff");
-      this.set("Content-Type", "application/json");
+      this.set("Content-Type", JSON_CONTENT_TYPE);
     }
 
     if (isArray(callback)) {
@@ -948,11 +1538,36 @@ export class BunResponse<
    * `text/plain` unless a Content-Type is already set. Synchronous.
    */
   #respondWithText(text: string): BunResponse {
-    this.options.headers = this.headersObj;
     this.req.setResponse(this);
 
+    // Nothing set a header: send the text with no `Headers` object at all.
+    // Bun writes `text/plain;charset=utf-8` for a string body itself, which
+    // is the default here too. A 204/205/304 still takes the full path (it
+    // strips the body), as does anything needing a header.
+    if (this.#canSkipHeaders()) {
+      const code = this.options.status;
+      if (code !== 204 && code !== 205 && code !== 304) {
+        this.#implicitContentType = TEXT_CONTENT_TYPE;
+        const response = new Response(text, this.#initWithoutHeaders());
+        if (
+          (this.req.request as Request & { [SOCKET_FREE]?: true })[
+            SOCKET_FREE
+          ] === true
+        ) {
+          IMPLICIT_TEXT_RESPONSES.add(response);
+        }
+        this.response = response;
+        return this;
+      }
+    }
+
+    this.options.headers = this.headersObj;
+
     if (this.#etagEnabled && text && !this.hasHeader("ETag")) {
-      this.setHeader("ETag", etag(text));
+      const tag = this.#etagFor(text);
+      if (tag !== undefined) {
+        this.setHeader("ETag", tag);
+      }
     }
 
     if (this.#applyFreshnessAndStrip()) {
@@ -961,7 +1576,7 @@ export class BunResponse<
     }
 
     if (!this.headersObj.has("content-type")) {
-      this.headersObj.set("Content-Type", "text/plain");
+      this.headersObj.set("Content-Type", TEXT_CONTENT_TYPE);
     }
 
     if (this.#responseTransforms !== undefined) {
@@ -1098,7 +1713,9 @@ export class BunResponse<
    *
    * Every body type `Bun.serve` can write is accepted:
    *
-   * - `string` — sent as `text/plain` unless a Content-Type is already set.
+   * - `string` — sent as `text/plain;charset=utf-8` unless a Content-Type is
+   *   already set. With no header set at all, the response is built without
+   *   a `Headers` object (Bun writes that type itself).
    * - plain objects / arrays — serialised as `application/json`.
    * - binary: `Buffer`, any typed array, `DataView`, `ArrayBuffer`,
    *   `SharedArrayBuffer` — sent verbatim (only the view's byte window),
@@ -1175,7 +1792,12 @@ export class BunResponse<
       // SharedArrayBuffer) go to the socket verbatim — Bun writes the bytes
       // and sets Content-Length itself.
       if (this.#etagEnabled && !this.hasHeader("ETag")) {
-        this.setHeader("ETag", etag(body));
+        const tag = this.#etagFor(
+          body as string | ArrayBufferView | ArrayBufferLike,
+        );
+        if (tag !== undefined) {
+          this.setHeader("ETag", tag);
+        }
       }
 
       if (this.#applyFreshnessAndStrip()) {
@@ -1210,7 +1832,10 @@ export class BunResponse<
       ) &&
       (isObject(body) || isArray(body))
     ) {
-      this.headersObj.set("Content-Type", "application/json");
+      if (this.#canSkipHeaders()) {
+        return this.#respondWithJson(body);
+      }
+      this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
       return this.#respondWithText(JSON.stringify(body));
     }
 
@@ -1321,6 +1946,55 @@ export class BunResponse<
     this.#readableStream = undefined;
     // A streaming response finishes when its stream ends.
     this.emitFinish();
+    this.#notifyStreamEnded();
+  }
+
+  /** Calls (once) everything waiting for the stream to end. */
+  #notifyStreamEnded(): void {
+    const waiters = this.#streamEndWaiters;
+    if (waiters !== undefined) {
+      this.#streamEndWaiters = undefined;
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
+  }
+
+  /**
+   * `true` while a streamed response (`write()`, `flushHeaders()`) is open:
+   * it has started and not yet ended, been destroyed or lost its client.
+   */
+  get isStreamOpen(): boolean {
+    return this._isLongLived && !this.#streamEnding && !this.#destroyed;
+  }
+
+  /**
+   * Whether the response has ended, as Node's `writableEnded`: a body was
+   * produced (`send`, `json`, `end`, `redirect`, …) or a streamed response
+   * was asked to end.
+   */
+  get writableEnded(): boolean {
+    return this.#ended;
+  }
+
+  /**
+   * Calls `listener` once, when the open stream ends (`end()`, the client
+   * leaving, {@link destroy}) — at once if no stream is open. Returns a
+   * function that unsubscribes a listener not yet called.
+   */
+  onceStreamEnded(listener: () => void): () => void {
+    if (!this.isStreamOpen) {
+      listener();
+      return () => {};
+    }
+    (this.#streamEndWaiters ??= []).push(listener);
+    return () => {
+      const waiters = this.#streamEndWaiters;
+      const index = waiters === undefined ? -1 : waiters.indexOf(listener);
+      if (index !== -1) {
+        waiters!.splice(index, 1);
+      }
+    };
   }
 
   /**
@@ -1346,6 +2020,10 @@ export class BunResponse<
         {
           pull: async (controller) => {
             this.#readableStreamController = controller;
+            if (this.#destroyed) {
+              this.#errorController(controller);
+              return;
+            }
 
             // Park until a write (or the end) notifies us instead of
             // busy-polling.
@@ -1358,6 +2036,10 @@ export class BunResponse<
               this.#streamWriteNotifier = undefined;
             }
 
+            if (this.#destroyed) {
+              this.#errorController(controller);
+              return;
+            }
             this.#flushPendingChunks(controller);
             if (this.#streamEnding) {
               this.#closeController(controller);
@@ -1425,6 +2107,55 @@ export class BunResponse<
       );
       pending.delete(key);
     }
+  }
+
+  /** Errors `controller` with the {@link destroy} reason, once. */
+  #errorController(controller: ReadableStreamDefaultController): void {
+    if (this.#streamClosed) {
+      return;
+    }
+    this.#streamClosed = true;
+    try {
+      controller.error(this.#destroyedWith);
+    } catch {
+      // Already cancelled or errored by the client.
+    }
+  }
+
+  /**
+   * Ends the response abruptly, as Node's `res.destroy(error)`: a streamed
+   * response that is still open is cut off mid-body (the client sees the
+   * connection end without the body's end), nothing more can be written,
+   * and `close` is emitted — never `finish`. A response already complete is
+   * left as it is. `error` defaults to an `Error` saying so.
+   *
+   * It is what Express's finalhandler does to an error that arrives after
+   * the headers went out, and what {@link BunRouter.handle} does in its place.
+   */
+  destroy(error?: unknown): this {
+    if (this.#destroyed) {
+      return this;
+    }
+    this.#destroyed = true;
+    this.#destroyedWith = error ?? new Error("The response was destroyed");
+    if (this._isLongLived && !this.#streamClosed) {
+      // Nothing more may be written; a parked `pull` wakes and errors.
+      this.#streamEnding = true;
+      const notifier = this.#streamWriteNotifier;
+      if (notifier) {
+        notifier.resolve();
+      } else if (this.#readableStreamController) {
+        this.#errorController(this.#readableStreamController);
+      }
+    }
+    this.emitClose();
+    this.#notifyStreamEnded();
+    return this;
+  }
+
+  /** Whether {@link destroy} has run, as Node's `writable.destroyed`. */
+  get destroyed(): boolean {
+    return this.#destroyed;
   }
 
   /** Closes `controller` once; a stream already cancelled is ignored. */
@@ -1607,18 +2338,45 @@ export class BunResponse<
         resolve(response);
       };
 
-      (this.#responseWaiters ??= []).push(waiter);
+      this.#addResponseWaiter(waiter);
 
       if (enableTimeout) {
         timer = setTimeout(() => {
-          const index = this.#responseWaiters?.indexOf(waiter) ?? -1;
-          if (index !== -1) {
-            this.#responseWaiters?.splice(index, 1);
-          }
+          this.#removeResponseWaiter(waiter);
           reject(new Error("Request Timedout"));
         }, Number(timeout));
       }
     });
+  }
+
+  /**
+   * Calls `listener` once, with the native `Response`, when one is produced —
+   * at once (synchronously) if it already has been. Returns a function that
+   * unsubscribes a listener not yet called. Unlike {@link getNativeResponse}
+   * it allocates no promise and starts no timer, so a caller racing it
+   * against something else can drop it cleanly.
+   */
+  public onceResponded(listener: (response: Response) => void): () => void {
+    if (this.whenResponded(listener)) {
+      return () => {};
+    }
+    return () => this.#removeResponseWaiter(listener);
+  }
+
+  /**
+   * {@link onceResponded} for a listener that is never removed: calls it at
+   * once (and returns `true`) if a response exists, else holds it until one
+   * is produced (`false`). No unsubscribe function is built — the router's
+   * asynchronous pipelines, which always keep theirs, subscribe this way.
+   */
+  public whenResponded(listener: (response: Response) => void): boolean {
+    const existing = this.#nativeResponse;
+    if (existing) {
+      listener(existing);
+      return true;
+    }
+    this.#addResponseWaiter(listener);
+    return false;
   }
 
   /**
@@ -1635,27 +2393,40 @@ export class BunResponse<
     return this.#nativeResponse;
   }
 
-  get headersSent() {
-    return !!this.upgradeToWsData || !!this.response || !!this.isLongLived;
+  get headersSent(): boolean {
+    // The pipeline reads this several times per layer: the produced response
+    // first (one field), then the rarely-set upgrade and stream state straight
+    // from the holder, rather than through three accessors.
+    if (this.#nativeResponse !== undefined) {
+      return true;
+    }
+    const holder = this.#state;
+    return (
+      (holder !== undefined &&
+        (!!holder._upgradeToWsData || holder._isLongLived)) ||
+      this.req.isKeepAlive
+    );
   }
 
   setHeader(name: string, value: string | string[], replace = true) {
-    if (replace) {
-      this.headersObj.delete(name);
-    }
-
-    if (isArray(value)) {
-      value.forEach((val) => {
-        this.headersObj.append(name, val);
-      });
-    } else {
+    const headers = this.headersObj;
+    if (!isArray(value)) {
+      // `Headers#set` replaces every existing value itself: no `delete`
+      // first, which is another native call (~50 ns) per header set.
       if (replace) {
-        this.headersObj.set(name, value);
+        headers.set(name, value);
       } else {
-        this.headersObj.append(name, value);
+        headers.append(name, value);
       }
+      return this;
     }
 
+    if (replace) {
+      headers.delete(name);
+    }
+    for (const entry of value) {
+      headers.append(name, entry);
+    }
     return this;
   }
 
@@ -1734,11 +2505,12 @@ export class BunResponse<
   ): string[] | undefined;
   getHeader(name: string): string | null;
   getHeader(name: string): string | string[] | null | undefined {
+    const headers = this.#readableHeaders;
     if (name.toLowerCase() === "set-cookie") {
-      const lines = this.headersObj.getSetCookie();
+      const lines = headers.getSetCookie();
       return lines.length > 0 ? lines : undefined;
     }
-    return this.headersObj.get(name);
+    return headers.get(name);
   }
 
   /**
@@ -1747,7 +2519,7 @@ export class BunResponse<
    * In the order `Headers` iterates them, not Node's insertion order.
    */
   getHeaderNames(): string[] {
-    return Array.from(new Set(this.headersObj.keys()));
+    return Array.from(new Set(this.#readableHeaders.keys()));
   }
 
   /**
@@ -1757,11 +2529,12 @@ export class BunResponse<
    */
   getHeaders(): BunResponseHeaders {
     const headers: BunResponseHeaders = Object.create(null);
-    for (const [name, value] of this.headersObj) {
+    const source = this.#readableHeaders;
+    for (const [name, value] of source) {
       if (name !== "set-cookie") {
         headers[name] = value;
       } else if (!headers["set-cookie"]) {
-        headers["set-cookie"] = this.headersObj.getSetCookie();
+        headers["set-cookie"] = source.getSetCookie();
       }
     }
     return headers;
@@ -1797,7 +2570,7 @@ export class BunResponse<
   }
 
   hasHeader(name: string) {
-    return this.headersObj.has(name);
+    return this.#readableHeaders.has(name);
   }
 
   removeHeader(name: string) {
@@ -2142,12 +2915,13 @@ export class BunResponse<
     name: string,
     defaultVal?: string | string[],
   ): string | string[] | undefined {
+    const headers = this.#readableHeaders;
     if (name.toLowerCase() === "set-cookie") {
-      const lines = this.headersObj.getSetCookie();
+      const lines = headers.getSetCookie();
       return lines.length > 0 ? lines : defaultVal;
     }
 
-    const value = this.headersObj.get(name);
+    const value = headers.get(name);
     if (!isString(value)) {
       return defaultVal;
     }

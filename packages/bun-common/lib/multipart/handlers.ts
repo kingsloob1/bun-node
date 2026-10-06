@@ -6,6 +6,7 @@ import type {
   UploadFieldMapEntry,
 } from ".";
 import type { BunRequest } from "../BunRequest";
+import type { MultiPartFileRecord } from "../types/general";
 import { filterUpload, getBusBoyConfig, removeStorageFiles } from ".";
 import { each, isArray, keys, merge, unset } from "../utils/native";
 import { UploadError } from "./errors";
@@ -35,7 +36,10 @@ export const handleMultipartAnyFiles = async <
       Array.from(multiPartResp.files.keys()).map(async (fileRecord) => {
         const file = await options.storage.handleFile(fileRecord, req);
 
-        if (await filterUpload(options, req, file)) {
+        if (
+          options.filter == null ||
+          (await filterUpload(options, req, file))
+        ) {
           files.push(file);
         }
       }),
@@ -103,7 +107,10 @@ export const handleMultipartFileFields = async <
 
         const file = await options.storage.handleFile(fileRecord, req);
 
-        if (await filterUpload(options, req, file)) {
+        if (
+          options.filter == null ||
+          (await filterUpload(options, req, file))
+        ) {
           files[fileRecord.fieldname].push(file);
         }
       }),
@@ -185,7 +192,10 @@ export const handleMultipartMultipleFiles = async <
 
         const file = await options.storage.handleFile(fileRecord, req);
 
-        if (await filterUpload(options, req, file)) {
+        if (
+          options.filter == null ||
+          (await filterUpload(options, req, file))
+        ) {
           files.push(file);
         }
       }),
@@ -253,22 +263,31 @@ export const handleMultipartSingleFile = async <
   };
 
   try {
-    const records = Array.from(multiPartResp.files.keys());
-
     // Validate before storing: a foreign field, or a second file on ours.
-    const foreign = records.find((record) => record.fieldname !== fieldname);
-    if (foreign || records.length > 1) {
+    let foreign: MultiPartFileRecord | undefined;
+    let fileRecord: MultiPartFileRecord | undefined;
+    let count = 0;
+    for (const record of multiPartResp.files.keys()) {
+      count++;
+      fileRecord ??= record;
+      if (foreign === undefined && record.fieldname !== fieldname) {
+        foreign = record;
+      }
+    }
+    if (foreign || count > 1) {
       throw new UploadError("LIMIT_UNEXPECTED_FILE", {
         field: foreign?.fieldname ?? fieldname,
         message: `Only Field ${fieldname} accept one file`,
       });
     }
 
-    const [fileRecord] = records;
     if (fileRecord) {
       const fileHandled = await options.storage.handleFile(fileRecord, req);
 
-      if (await filterUpload(options, req, fileHandled)) {
+      if (
+        options.filter == null ||
+        (await filterUpload(options, req, fileHandled))
+      ) {
         file = fileHandled;
       }
     }

@@ -1,0 +1,383 @@
+{
+  "bun": "1.4.2",
+  "cpus": 4,
+  "threads": "2",
+  "connections": "64",
+  "duration": "5",
+  "warmup": "2",
+  "rounds": "3",
+  "routes": 1000,
+  "runs": {
+    "bun-common\twildcard": [
+      {
+        "rps": 40261.47,
+        "p50": 1.41,
+        "p99": 4.48,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 39285.71,
+        "p50": 1.37,
+        "p99": 4.5,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37985.68,
+        "p50": 1.41,
+        "p99": 4.57,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\theaders": [
+      {
+        "rps": 30460.86,
+        "p50": 1.93,
+        "p99": 4.72,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 30345.8,
+        "p50": 1.98,
+        "p99": 4.63,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 31512.69,
+        "p50": 1.89,
+        "p99": 5.47,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\twildcard": [
+      {
+        "rps": 19927.72,
+        "p50": 2.78,
+        "p99": 9.7,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23730.62,
+        "p50": 2.51,
+        "p99": 7.03,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23259.53,
+        "p50": 2.53,
+        "p99": 6.67,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\theaders": [
+      {
+        "rps": 18719.61,
+        "p50": 3.12,
+        "p99": 7.75,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20244.24,
+        "p50": 2.87,
+        "p99": 8.17,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 21111.25,
+        "p50": 2.79,
+        "p99": 7.42,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\twildcard": [
+      {
+        "rps": 13656.37,
+        "p50": 4.11,
+        "p99": 14.46,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 13777.07,
+        "p50": 4.14,
+        "p99": 14.02,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 13500.33,
+        "p50": 4.23,
+        "p99": 18.22,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\theaders": [
+      {
+        "rps": 15858.61,
+        "p50": 3.78,
+        "p99": 14.8,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 15582.34,
+        "p50": 3.75,
+        "p99": 9.45,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 14610.9,
+        "p50": 3.85,
+        "p99": 13.74,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\twildcard": [
+      {
+        "rps": 28212.12,
+        "p50": 2.16,
+        "p99": 4.1,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 27303.26,
+        "p50": 2.2,
+        "p99": 4.2,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25988.14,
+        "p50": 2.26,
+        "p99": 5.05,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\theaders": [
+      {
+        "rps": 35093.82,
+        "p50": 1.75,
+        "p99": 4.91,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37615.2,
+        "p50": 1.67,
+        "p99": 3.26,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 34226.27,
+        "p50": 1.69,
+        "p99": 4.24,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\twildcard": [
+      {
+        "rps": 30352.37,
+        "p50": 2,
+        "p99": 4.95,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 28379.92,
+        "p50": 2.11,
+        "p99": 7.29,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 29251.58,
+        "p50": 2.04,
+        "p99": 5.12,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\theaders": [
+      {
+        "rps": 30434.88,
+        "p50": 1.99,
+        "p99": 4.9,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 34145.14,
+        "p50": 1.74,
+        "p99": 4.29,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 32713.85,
+        "p50": 1.84,
+        "p99": 4.22,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\twildcard": [
+      {
+        "rps": 48848.6,
+        "p50": 1.15,
+        "p99": 3.52,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 54014.8,
+        "p50": 1.1,
+        "p99": 3.21,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 47190.13,
+        "p50": 1.26,
+        "p99": 3.29,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\theaders": [
+      {
+        "rps": 35647.79,
+        "p50": 1.67,
+        "p99": 4.29,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37713.03,
+        "p50": 1.58,
+        "p99": 4.04,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 31902.99,
+        "p50": 1.84,
+        "p99": 5.03,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\twildcard": [
+      {
+        "rps": 61083.15,
+        "p50": 0.98,
+        "p99": 2.41,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 63692.38,
+        "p50": 0.92,
+        "p99": 2.36,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 55085.66,
+        "p50": 1.06,
+        "p99": 3.05,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\theaders": [
+      {
+        "rps": 51177.21,
+        "p50": 1.14,
+        "p99": 2.89,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 44971.87,
+        "p50": 1.21,
+        "p99": 3.55,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 51679.31,
+        "p50": 1.09,
+        "p99": 3.16,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\twildcard": [
+      {
+        "rps": 31621.4,
+        "p50": 1.93,
+        "p99": 4.54,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 36750.42,
+        "p50": 1.69,
+        "p99": 3.25,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 31377.54,
+        "p50": 1.91,
+        "p99": 4.16,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\theaders": [
+      {
+        "rps": 24608.84,
+        "p50": 2.5,
+        "p99": 5.2,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25441,
+        "p50": 2.44,
+        "p99": 4.79,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25396.7,
+        "p50": 2.42,
+        "p99": 5.05,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ]
+  },
+  "skipped": {
+    "hyper-express-bun": "failed to start — TypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?"
+  }
+}

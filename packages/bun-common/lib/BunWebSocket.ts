@@ -17,8 +17,18 @@ import { BunResponse } from "./BunResponse";
 // A value import (not just a type): an instance built without a `router`
 // creates a private one on first use. `BunRouter.ts` imports this module only
 // as a type, so there is no runtime cycle.
-import { BunRouter as BunRouterClass } from "./BunRouter";
-import { get, isArray, isFunction, isObject, set } from "./utils/native";
+import {
+  awaitPipelineOrStream,
+  BunRouter as BunRouterClass,
+  isRequestTimeoutError,
+} from "./BunRouter";
+import {
+  defineHidden,
+  get,
+  isArray,
+  isFunction,
+  isObject,
+} from "./utils/native";
 import {
   mergeUpgradeHeaders,
   routeUpgradeHook,
@@ -721,18 +731,37 @@ export class BunWebSocket<
         let routeUsed: matchedRoute | true | undefined;
 
         try {
-          routeUsed = await this.router.handle({
-            requestHost: req.host,
-            requestMethod: req.method,
-            response: res,
-            request: req,
-            requestUrl: req.originalUrl,
-          });
+          const routed = await awaitPipelineOrStream(
+            this.router.handle({
+              requestHost: req.host,
+              requestMethod: req.method,
+              response: res,
+              request: req,
+              requestUrl: req.originalUrl,
+              timeout: createOpts?.responseTimeout ?? 0,
+            }),
+            res,
+            (error) => {
+              this.router.logger.error(
+                "Error after a streamed response started",
+                { error },
+              );
+            },
+          );
+          if (routed.stream !== undefined) {
+            return routed.stream;
+          }
+          routeUsed = routed.routeUsed;
         } catch (e) {
+          // A pipeline parked past the response timeout goes to the `error`
+          // callback as a timed-out response wait always did.
+          if (isRequestTimeoutError(e)) {
+            throw e;
+          }
           // Anything can be thrown; wrap a primitive so the request can ride
           // along to the `error` callback.
           const err = isObject(e) ? e : new Error(String(e));
-          set(err, "req", req);
+          defineHidden(err, "req", req);
           throw err;
         }
 

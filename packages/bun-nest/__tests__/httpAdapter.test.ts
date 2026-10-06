@@ -623,6 +623,38 @@ describe("BunHttpAdapter: a Content-Encoding refused while the request is built"
     expect(state.routed).toBe(true);
   });
 
+  it("a declared empty body with no stream is refused by the body parser, after routing starts", async () => {
+    // Bun serves `Content-Length: 0` with no body stream; such a request is
+    // built without reading its headers, so the encoding is checked when the
+    // body is first read — here by Nest's json parser — and its 415 reaches
+    // the same error handler.
+    const adapter = new BunHttpAdapter(0, {
+      request: { parseBody: { inflate: false } },
+    });
+    adapter.useBodyParser("json", false, {});
+    const state = { routed: false };
+    adapter.post("/echo", (_req, res) => {
+      state.routed = true;
+      return res.send("routed");
+    });
+    adapter.setErrorHandler((error, _req, res, _next) => {
+      return res
+        .status(Number((error as { statusCode?: number }).statusCode ?? 500))
+        .json({ status: (error as { statusCode?: number }).statusCode });
+    });
+    const refused = await adapter.fetch("/echo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip",
+        "Content-Length": "0",
+      },
+    });
+    expect(refused.status).toBe(415);
+    expect(await refused.json()).toEqual({ status: 415 });
+    expect(state.routed).toBe(false);
+  });
+
   it("a corrupt gzip body answers 400", async () => {
     const { adapter, state } = adapterWith();
     const corrupt = Buffer.from(zippedJson);
@@ -1053,6 +1085,52 @@ describe("BunHttpAdapter.fetch: a Request from before a DOM shim replaced global
     expect(await response.json()).toEqual({
       method: "POST",
       body: { title: "hello" },
+    });
+  });
+});
+
+describe("BunHttpAdapter: a JSON body and rawBody", () => {
+  const body = '{"n":7}';
+  /** A served-shaped JSON POST: it carries its Content-Length. */
+  const post = () =>
+    new Request("http://h/j", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "7" },
+      body,
+    });
+
+  it("keeps the bytes by default; retainBuffer: false reads JSON with request.json()", async () => {
+    for (const [retainBuffer, kept] of [
+      [undefined, true],
+      [false, false],
+    ] as const) {
+      const adapter = new BunHttpAdapter(0, { request: { retainBuffer } });
+      adapter.useBodyParser("json", false, {});
+      adapter.post("/j", (req, res) => {
+        res.json({ body: req.body, kept: req.buffer !== undefined });
+      });
+      expect(await (await adapter.fetch(post())).json()).toEqual({
+        body: { n: 7 },
+        kept,
+      });
+    }
+  });
+
+  it("with rawBody (Nest's rawBody: true), keeps every body's bytes", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.registerParserMiddleware(undefined, true);
+    adapter.post("/j", (req, res) => {
+      res.json({
+        body: req.body,
+        raw: (req as unknown as { rawBody?: Buffer }).rawBody?.toString(),
+      });
+    });
+    expect(adapter.requestOpts.retainBuffer).toBe(true);
+    adapter.setRequestOpts({ parseCookies: false });
+    expect(adapter.requestOpts.retainBuffer).toBe(true);
+    expect(await (await adapter.fetch(post())).json()).toEqual({
+      body: { n: 7 },
+      raw: body,
     });
   });
 });
