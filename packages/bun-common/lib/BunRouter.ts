@@ -899,7 +899,11 @@ export class BunRouter<
     }
     this.routeCacheLayers =
       this.routeCacheMax > 0
-        ? new FifoCache<MatchedLayer[]>(this.routeCacheMax)
+        ? new FifoCache<MatchedLayer[]>(this.routeCacheMax, {
+            // One-off paths (a fresh id per request) would fill it with
+            // entries never read again; see FifoCache's admission.
+            admission: true,
+          })
         : undefined;
 
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
