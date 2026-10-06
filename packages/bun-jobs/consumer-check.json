@@ -66,6 +66,8 @@
         "QueueDemand",
         "DemandCounts",
         "SummonPolicy",
+        "SummonGroup",
+        "SummonOption",
         "Summoner",
         "ProviderErrorKind",
         "SummonRequest",
@@ -131,6 +133,8 @@
       ],
       "types": [
         "SummonPolicy",
+        "SummonGroup",
+        "SummonOption",
         "Summoner",
         "SummonRequest",
         "SummonResult",
@@ -142,7 +146,7 @@
         "SummonedExit",
         "SummonedArgs"
       ],
-      "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
+      "snippet": "const summoner = m.defineSummoner({ kind: \"my-cloud\", invoke: async (request) => {\n  const _id: string = request.id;\n  const _argv: readonly string[] = request.argv;\n} });\nexport type _summoner = Expect<IsAny<typeof summoner>>;\nexport const _policy: t.SummonPolicy = { summoner, maxWorkers: 2, triggers: { poll: false } };\nexport const _groups: t.SummonOption = [{ queues: [\"a\", \"b\"], summoner, overrides: { b: { maxWorkers: 1 } } }, { c: _policy }];\nexport type _check = Expect<IsAny<Awaited<ReturnType<m.SummonController[\"check\"]>>>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/provider",
@@ -302,7 +306,13 @@
         "SummonController",
         "defineSummoner"
       ],
-      "types": ["RunSummonedOptions", "SummonedExit", "SummonPolicy"]
+      "types": [
+        "RunSummonedOptions",
+        "SummonedExit",
+        "SummonPolicy",
+        "SummonGroup",
+        "SummonOption"
+      ]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/provider",

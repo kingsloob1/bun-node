@@ -713,6 +713,26 @@ the base of `SummonControllerOptions`. The package README's
 - `fromSummoned`: optional. Whether the controller may run in a summoned
   process or a runner child. Defaults to `false`: there it is inert.
 
+### `SummonGroup`
+
+A `SummonPolicy` written once for several queues: an entry of the array form
+of `BunJobsOptions.summon`. Shorthand, not a shared controller: it expands
+into one `SummonController` per queue, each with its own marker, budget,
+backoff and circuit (a group's `budget` applies to each queue). The package
+README's [one policy for several queues](../../README.md#one-policy-for-several-queues)
+has an example.
+
+- `queues`: the queues it summons for: at least one, each named once across
+  the whole option, or a `ConfigError` naming the queue.
+- `overrides`: optional. Per-queue `Partial<SummonPolicy>` changes, keyed by
+  a queue in `queues`, merged shallowly over the group's policy.
+
+### `SummonOption`
+
+What `BunJobsOptions.summon` takes: `SummonPolicy` values keyed by queue
+name, or an array of `SummonGroup`s and such records, mixed. Every form
+expands to one `SummonController` per queue.
+
 ### `SummonController`
 
 `new SummonController(options)`: watches one queue and summons compute when

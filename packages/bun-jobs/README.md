@@ -103,6 +103,7 @@ reference.
   - [A custom target](#a-custom-target)
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [Summoning a worker](#summoning-a-worker)
+  - [One policy for several queues](#one-policy-for-several-queues)
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
   - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
@@ -1349,7 +1350,7 @@ Examples:
 | `service` | `string` | | What this service is called. Every worker created here reports it, and it is the first segment of each worker's stable key, `[service.]queue[.name\|.ordinal]`. Set it whenever several services share a backend and a namespace: otherwise a [configuration override](#controlling-workers-from-another-process) written for `mail` reaches whichever of them consumes a queue called `mail`. |
 | `workerControl` | `boolean` | `true` | Whether the workers created here obey pause, resume, stop, start and configuration overrides written by another process. It is passed as each worker's `control`, and a worker's own `control` option wins. On by default here, unlike on a `BunQueueWorker` you construct. It costs one subscription per worker where the driver pushes events, and, where it does not, one read per queue per driver instance every `control.interval` (2 seconds by default), plus each worker's two reads only when an instruction or override was written. See [Controlling workers from another process](#controlling-workers-from-another-process). |
 | `metrics` | `MetricsOptions` | everything on, per-second, 5 minutes of it | What is recorded for [analytics](#analytics). Handed to the driver the context builds from a config (a config naming its own `metrics` wins), and merged field by field under every runner and worker created here, whose own `metrics` wins. See [The `metrics` option](#the-metrics-option). |
-| `summon` | `Record<string, SummonPolicy>` | | A [summon controller](#summoning-a-worker) per queue named, built with the context and closed first by `close()`. A `ConfigError` on a driver that cannot summon (the memory driver). Inert in a summoned process or a runner child unless the policy says `fromSummoned`. |
+| `summon` | `SummonOption` | | A [summon controller](#summoning-a-worker) per queue named, built with the context and closed first by `close()`. Policies keyed by queue, or an array of [groups](#one-policy-for-several-queues) (`{ queues, …policy }`) and such records. A `ConfigError` on a driver that cannot summon (the memory driver). Inert in a summoned process or a runner child unless the policy says `fromSummoned`. |
 
 The context has these members:
 
@@ -3337,6 +3338,65 @@ Examples:
 
 - [`11-management-api/summon-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/summon-routes.ts)
 - [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-controller.ts)
+
+### One policy for several queues
+
+`summon` also takes an array of **groups**: one policy written once, with the
+`queues` it applies to. A group is shorthand, not a shared controller — it
+builds one ordinary `SummonController` per queue, exactly as if each queue had
+its own key, so each queue keeps its own marker, `maxWorkers`, backoff,
+circuit and **budget** (`perHour: 20` on a group of two queues allows 20 an
+hour for each). `overrides` changes a queue's policy within its group,
+shallowly: an override's `budget` replaces the group's whole `budget`.
+Records may sit in the same array. A queue named twice anywhere in the
+option, a group with no queues, or an override for a queue the group does not
+name is a `ConfigError` at construction, before any controller starts; each
+queue's controller is still `jobs.summonController(queue)`.
+
+```ts
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: [
+    {
+      queues: ["emails", "images"],
+      summoner,
+      jobsPerWorker: 10,
+      budget: { perHour: 20 },
+      overrides: { images: { jobsPerWorker: 2 } },
+    },
+    { reports: { summoner: other } },
+  ],
+});
+```
+
+Every attempt names its queue (`--bun-jobs-summon-queue=`), so one entry file
+can serve every queue of a group, choosing the processor by it:
+
+```ts
+// worker.ts: the one file the platform runs, for emails and for images
+import type { JobProcessor } from "@kingsleyweb/bun-jobs";
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+
+const processors: Record<string, JobProcessor> = {
+  emails: sendEmail,
+  images: resizeImage,
+};
+
+const summon = summonedFromArgs();
+const queue = summon?.queue ?? "emails";
+const processor = processors[queue];
+if (!processor) {
+  throw new Error(`no processor for queue "${queue}"`);
+}
+const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver });
+const worker = jobs.worker(queue, processor, { summon });
+await runSummoned(worker); // runs, then exits the process
+```
+
+The map may hold processor files instead (`Record<string, string>`, e.g.
+`{ emails: "./processors/email.ts" }`; see [`target`](#where-attempts-run-target)),
+so a unit loads only the code of the queue it serves.
 
 ### Summon policy
 
