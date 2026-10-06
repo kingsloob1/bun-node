@@ -6,7 +6,7 @@ import {
   encodeName,
   encodeSegment,
 } from "../lib/drivers/file-names";
-import { FileDriver } from "../lib/index";
+import { DriverError, FileDriver } from "../lib/index";
 import { compareCodePoints } from "../lib/shared/strings";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
@@ -533,6 +533,125 @@ describe("file driver: removal and writes racing a patch", () => {
     // rounds slowed evenly (none stalled) and every assertion held, so this
     // checks what survives a race, not how fast it runs.
   }, 60_000);
+
+  /**
+   * Takes `id`'s waiting marker out of the index the way another process's
+   * hold does, and answers with what puts it back. `stamp` names the hold's
+   * start, which is what `#healHolds` reads to judge a holder dead.
+   */
+  async function holdMarker(
+    root: string,
+    q: { ns: string; queue: string },
+    id: string,
+    stamp: number,
+  ) {
+    const { mkdir, readdir, rename } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const dir = join(root, q.ns, "queues", q.queue);
+    const waiting = join(dir, "index", "waiting");
+    const marker = (await readdir(waiting)).find((name) => name.includes(id));
+    if (!marker) {
+      throw new Error(`no waiting marker for ${id}`);
+    }
+
+    await mkdir(join(dir, "held"), { recursive: true });
+    let held = join(dir, "held", `${stamp}.waiting.${marker}`);
+    await rename(join(waiting, marker), held);
+
+    return {
+      /** Hands the hold on under a new start, as a next holder's would be. */
+      async restamp(next: number) {
+        const moved = join(dir, "held", `${next}.waiting.${marker}`);
+        await rename(held, moved);
+        held = moved;
+      },
+      /** Puts the marker back in the index. */
+      async release() {
+        await rename(held, join(waiting, marker));
+      },
+    };
+  }
+
+  /**
+   * Under load, sixty patches queueing for one job's marker kept a removal
+   * from it for longer than the two seconds it waited, and `removeJob` then
+   * answered `false` for a job that existed and was not active — which the
+   * contract reserves for "no such job" and "active". Contention that keeps
+   * moving is not a stuck marker, so the removal waits it out.
+   */
+  it("waits out a marker that keeps changing hands, rather than answering false", async () => {
+    const tmp = await makeTmpDir("bun-jobs-remove-busy");
+    cleanups.push(tmp.cleanup);
+
+    const driver = new FileDriver({ root: tmp.path });
+    await driver.connect();
+    const q = { ns: testNamespace(), queue: "remove-busy" };
+    await driver.addJob(q, makeJob({ id: "busy", runAt: Date.now() }));
+
+    // A holder after a holder for five seconds, never once putting the marker
+    // back where the removal could take it: longer than two whole patience
+    // windows, so a removal that merely tried twice would still miss it.
+    const hold = await holdMarker(tmp.path, q, "busy", Date.now());
+    let handing = true;
+    const handOver = (async () => {
+      const until = Date.now() + 5_000;
+      while (Date.now() < until) {
+        await Bun.sleep(200);
+        await hold.restamp(Date.now());
+      }
+      handing = false;
+      await hold.release();
+    })();
+
+    const removed = await driver.removeJob(q, "busy");
+    await handOver;
+
+    expect(handing).toBe(false);
+    expect(removed).toBe(true);
+    expect(await driver.getJob(q, "busy")).toBeNull();
+
+    await driver.purge(q.ns);
+    await driver.close();
+  }, 20_000);
+
+  /**
+   * A marker nobody hands on — a holder that is alive but stalled — is a
+   * removal that did not happen, not a job that is not there. `false` would
+   * tell a caller the job is gone; the removal says what happened instead.
+   */
+  it("throws, rather than answering false, when the marker stays held", async () => {
+    const tmp = await makeTmpDir("bun-jobs-remove-stuck");
+    cleanups.push(tmp.cleanup);
+
+    const driver = new FileDriver({ root: tmp.path });
+    await driver.connect();
+    const q = { ns: testNamespace(), queue: "remove-stuck" };
+    await driver.addJob(q, makeJob({ id: "stuck", runAt: Date.now() }));
+
+    // Stamped ahead, so healing never takes it for a dead holder's.
+    const hold = await holdMarker(tmp.path, q, "stuck", Date.now() + 60_000);
+
+    const error = await driver.removeJob(q, "stuck").then(
+      (answer) => answer,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(DriverError);
+    expect(error).toMatchObject({
+      operation: "removeJob",
+      context: { id: "stuck" },
+    });
+    expect(await driver.getJob(q, "stuck")).not.toBeNull();
+
+    // Once the holder lets go, the same removal goes through.
+    await hold.release();
+    expect(await driver.removeJob(q, "stuck")).toBe(true);
+    // And `false` still means what the contract says.
+    expect(await driver.removeJob(q, "stuck")).toBe(false);
+
+    await driver.purge(q.ns);
+    await driver.close();
+  }, 20_000);
 
   /**
    * `updateProgress` was a read and a write with nothing around it, which was
