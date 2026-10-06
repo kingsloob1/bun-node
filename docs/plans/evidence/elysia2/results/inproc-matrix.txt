@@ -1,0 +1,10 @@
+Bun 1.4.2; ns/request, median of 3 processes (each best of 5)
+
+target                  static         param    middleware   routes-1000  param-random          json
+raw                        658           782           706           879          1155          2583
+elysia2                    926          1057          1837          1234          1918          4404
+elysia1                    753           935          2830          1152          1534          4018
+bun-common                2664          2984          3418          3143          8868         10640
+bun-nest                 10670         11769         13012         12523         19657         21643
+
+raw: {"raw static":[658,668,638],"raw param":[754,798,782],"raw middleware":[676,706,709],"raw routes-1000":[867,879,914],"raw param-random":[1190,1111,1155],"raw json":[2583,2565,2595],"elysia2 static":[926,940,912],"elysia2 param":[1057,1074,1015],"elysia2 middleware":[2045,1766,1837],"elysia2 routes-1000":[1275,1230,1234],"elysia2 param-random":[1934,1918,1877],"elysia2 json":[4601,4274,4404],"elysia1 static":[757,724,753],"elysia1 param":[935,923,952],"elysia1 middleware":[2830,3157,2809],"elysia1 routes-1000":[1361,1152,1131],"elysia1 param-random":[1610,1534,1437],"elysia1 json":[4102,3915,4018],"bun-common static":[2768,2664,2340],"bun-common param":[3116,2984,2687],"bun-common middleware":[3856,3362,3418],"bun-common routes-1000":[3143,2625,3188],"bun-common param-random":[8868,9100,8069],"bun-common json":[11269,10640,10582],"bun-nest static":[10380,10726,10670],"bun-nest param":[12217,11610,11769],"bun-nest middleware":[15274,13012,12784],"bun-nest routes-1000":[12068,13018,12523],"bun-nest param-random":[20565,18846,19657],"bun-nest json":[22769,21437,21643]}

@@ -1,0 +1,8 @@
+{
+  // Evidence for docs/plans/elysia2-performance.md. Throwaway measurement
+  // code, deliberately outside scripts/typecheck.ts (see ../README.md).
+  // Its decorator options are what bun-nest's Nest app needs to load.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}
