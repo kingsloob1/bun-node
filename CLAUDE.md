@@ -64,10 +64,12 @@ bun run test               # tests, in parallel — must all pass
 
 **Tests run in parallel.** Each test suite's `test` script is
 `bun test --parallel --timings=bun-timings.json`: one worker process per CPU
-core, the slowest files started first from the suite's committed
-`bun-timings.json`. Measured serial against `bun run test`: bun-common 7.2 s →
-3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui 136 s → 22 s, bun-jobs without
-databases about 13 min → 148 s, bun-jobs with all five about 24 min → 316 s.
+core (bun-jobs and bun-jobs-ui take 4, below), the slowest files started first
+from the suite's committed `bun-timings.json`. Measured serial against
+`bun run test`: bun-common 7.2 s → 3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui
+136 s → 45 s at its 4 workers (23 s at 16), bun-jobs with all five database
+URLs about 24 min → 612–624 s at its 4 (without them, 13 min → 148 s, measured
+at 16 workers before the cap).
 The flags are in the scripts because `bunfig.toml`'s `[test]` silently ignores
 `parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2, the
 floor. So plain `bun test` is still the one-process run, as is
@@ -84,14 +86,27 @@ floor. So plain `bun test` is still the one-process run, as is
   catch one file leaking into another. `bun test --randomize --seed=N`
   (serial) is the check for that, with bun-jobs-ui's `domLeak.test.ts`; keep
   them in any gate.
-- **bun-jobs with database URLs is load-sensitive in parallel.** On a shared
-  machine its SQL-default and summon integration suites overrun their 5 s and
-  30 s budgets: 2 failures at a load of about 6, 19 at about 15, none of them
-  connection errors once `setup-databases.ts` had raised the limits. Until
-  they are made load-proof, gate bun-jobs' database suites on
-  `bun run test:serial`. Without database URLs `bun run test` is green on a
-  quiet machine (148 s); at a load of about 10 one summon integration test
-  overran its 30 s budget.
+- **bun-jobs runs 4 workers** (`--parallel=4`): its database-backed
+  suites share five servers and assert on durations, so above 4 workers the
+  failure count tracks machine load, not code. Measured on develop e20086a,
+  all five database URLs, on a shared machine: 4 workers failed nothing in
+  612–624 s (load 13–14) at both a 5 s and a 20 s default timeout; 8 failed
+  2–4 in 530–600 s (load 21–34), and one 8-worker run hung in a hook; 16
+  failed 5–16 in 428–498 s (load 25–31). A longer timeout barely helped,
+  since most of those failures are duration assertions. Serial is about
+  24 min, so 4 workers is about 2.3× faster.
+- **bun-jobs-ui runs 4 workers** (`--parallel=4`), not one per core: its
+  DOM and real-API waits time out when the machine is loaded, and several
+  sessions running suites at once is the normal state here. Measured at a
+  load of 24–88 on 16 cores: 16 workers failed 1, 11 and 16 tests (a
+  different set each time) in 78–84 s; 8 failed 3 in 82 s; 4 passed all
+  1668 in 76 s. On a quiet machine (load about 5) the cap does cost time:
+  4 workers took 44–46 s against 23–24 s for 16, both green twice. The
+  failures cost more than that, so the cap stays.
+- **One heavy run at a time.** Several sessions share this machine, so a
+  full suite, a `run-all.ts`, a consumer check or a load probe runs under
+  `flock /tmp/claude-1000/bun-node-heavy.lock <command>`; a single test file
+  or example needs no lock.
 
 **Running the examples.** Each `examples/*/run-all.ts` runs four examples at a
 time (two in `bun-jobs-ui`, where each drives Chrome). `--jobs N` or
