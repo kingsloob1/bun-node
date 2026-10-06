@@ -404,6 +404,7 @@ export {
   type matchedRoute,
   type PipelineOptions,
   type PipelineServeOutcome,
+  RequestPipelineOptions,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,

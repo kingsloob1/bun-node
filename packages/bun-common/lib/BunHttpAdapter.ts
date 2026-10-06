@@ -33,6 +33,7 @@ import {
   BunRouter,
   FETCH_STUB_SERVER,
   isRequestTimeoutError,
+  RequestPipelineOptions,
   toNativeRequest,
 } from "./BunRouter";
 import { cors } from "./cors";
@@ -441,15 +442,14 @@ export class BunHttpAdapter<
       etag: this.etagEnabled,
     });
     const router = this.instance;
-    const options = {
-      requestHost: req.host,
-      requestMethod: req.method,
-      response: res,
-      request: req,
-      requestUrl: req.originalUrl,
-      requestPath: req.path,
-      timeout: this.requestTimeout,
-    };
+    // The host and the full target are read only if a route needs them.
+    const options = new RequestPipelineOptions(
+      req,
+      res,
+      req.method,
+      req.path,
+      this.requestTimeout,
+    );
 
     // A stream's response goes out as soon as it opens (the pipeline keeps
     // running behind it); anything else once the pipeline is done.

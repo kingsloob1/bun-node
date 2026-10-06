@@ -531,6 +531,52 @@ export interface PipelineOptions {
   timeout?: number;
 }
 
+/**
+ * {@link PipelineOptions} for a request the adapters serve: `requestHost` and
+ * `requestUrl` are read from the request when something asks for them — a
+ * host-scoped route, specificity ordering, {@link BunRouter.getCacheKey} —
+ * rather than built for every request. They read as the request's `host` and
+ * `originalUrl`, as the plain object the adapters built before; assigning one
+ * replaces it, as on a plain object.
+ */
+export class RequestPipelineOptions implements PipelineOptions {
+  /** An assigned {@link requestHost}, replacing the request's. */
+  #requestHost: string | undefined = undefined;
+  /** An assigned {@link requestUrl}, replacing the request's. */
+  #requestUrl: string | undefined = undefined;
+
+  constructor(
+    /** The request the layers receive. */
+    public request: BunRequest,
+    /** The response the layers write to. */
+    public response: BunResponse,
+    /** The request method (`req.method`). */
+    public requestMethod: string,
+    /** The path alone (`req.path`). */
+    public requestPath: string,
+    /** See {@link PipelineOptions.timeout}. */
+    public timeout: number | undefined,
+  ) {}
+
+  /** The request's host (`req.host`), read on first use. */
+  get requestHost(): string {
+    return this.#requestHost ?? this.request.host;
+  }
+
+  set requestHost(value: string) {
+    this.#requestHost = value;
+  }
+
+  /** The request target (`req.originalUrl`), read on first use. */
+  get requestUrl(): string {
+    return this.#requestUrl ?? this.request.originalUrl;
+  }
+
+  set requestUrl(value: string) {
+    this.#requestUrl = value;
+  }
+}
+
 /** A pipeline's result: the matched route, `true`, or `undefined` (unhandled). */
 type PipelineOutcome = matchedRoute | true | undefined;
 
