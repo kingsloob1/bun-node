@@ -35,7 +35,7 @@ Applications listen on port `0`.
 
 | File | Shows |
 |---|---|
-| [`controllers-and-routing.ts`](./02-http-adapter/controllers-and-routing.ts) | every HTTP method decorator, parameter decorators, `@HttpCode`, `@Header`, `@Redirect`, `StreamableFile`, raw response access, `@Sse()` served and through `adapter.fetch()`, and a client hanging up |
+| [`controllers-and-routing.ts`](./02-http-adapter/controllers-and-routing.ts) | every HTTP method decorator, parameter decorators, `@HttpCode`, `@Header`, `@Redirect`, `StreamableFile`, raw response access, `@Sse()` served and through `adapter.fetch()`, a client hanging up, an `@Sse()` route failing before its first event (a 500), and a quiet `@Sse()` stream outliving `idleTimeout` |
 | [`middleware-and-versioning.ts`](./02-http-adapter/middleware-and-versioning.ts) | Nest middleware, a global prefix, every versioning type |
 | [`pipeline.ts`](./02-http-adapter/pipeline.ts) | guards, pipes, exception filters and interceptors on Bun; error and not-found handlers |
 | [`adapter-options.ts`](./02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, `fetch()` without a socket, `close()` |

@@ -25,6 +25,13 @@
  *   `adapter.fetch()` alike: one `id:`/`data:` frame per event, ending when
  *   the Observable completes. When the client disconnects, the socket shim's
  *   `close` reaches Nest, which unsubscribes.
+ * - An `@Sse()` route that fails before its first event — an Observable that
+ *   errors, or a handler that throws — is answered with Nest's JSON 500 at
+ *   once, served or through `adapter.fetch()`.
+ * - A quiet `@Sse()` stream is not cut by `Bun.serve`'s `idleTimeout` (the
+ *   adapter's `server.idleTimeout`): Nest calls `req.socket.setTimeout(0)`,
+ *   which exempts the request. A stream sent through `@Res()` without that
+ *   call is cut once it has been quiet for the idle timeout.
  * - `@Render(path)` differs from `@nestjs/platform-express`: it serves the
  *   file at `path` as-is, with no template engine behind it.
  */
@@ -34,7 +41,6 @@ import type {
   JsonValue,
 } from "@kingsleyweb/bun-common";
 import type { MessageEvent } from "@nestjs/common";
-import type { Observable } from "rxjs";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -76,8 +82,17 @@ import {
   Unlock,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { finalize, interval, map, Subject, take, takeUntil } from "rxjs";
-import { checkEqual, summary } from "../shared/check";
+import {
+  finalize,
+  interval,
+  map,
+  Observable,
+  Subject,
+  take,
+  takeUntil,
+  throwError,
+} from "rxjs";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
@@ -348,7 +363,47 @@ class EventsController {
       }),
     );
   }
+
+  /** Fails before its first event: the Observable errors as it is subscribed. */
+  @Sse("broken")
+  broken(): Observable<MessageEvent> {
+    return throwError(() => new Error("the feed is down"));
+  }
+
+  /** Fails before there is an Observable at all. */
+  @Sse("throws")
+  throws(): Observable<MessageEvent> {
+    throw new Error("thrown by the handler");
+  }
 }
+
+/** Streams that send one event and then go quiet, for the idle-timeout app. */
+@Controller("quiet")
+class QuietController {
+  /** Nest's own event stream: one event, then nothing, never completing. */
+  @Sse("sse")
+  sse(): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((subscriber) => {
+      subscriber.next({ data: "first" });
+    });
+  }
+
+  /** The same, sent through `@Res()` as a plain `ReadableStream`. */
+  @Get("sent")
+  sent(@Res() res: BunResponse): void {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.send(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+        },
+      }),
+    );
+  }
+}
+
+@Module({ controllers: [QuietController] })
+class QuietModule {}
 
 @Module({
   controllers: [
@@ -662,6 +717,111 @@ checkEqual(
   unsubscribed,
   true,
 );
+
+/* ------------------------------------------------------------------ */
+step("@Sse() routes that fail before their first event");
+
+for (const path of ["/events/broken", "/events/throws"]) {
+  for (const [how, send] of [
+    ["served", (signal: AbortSignal) => fetch(`${url}${path}`, { signal })],
+    [
+      "adapter.fetch()",
+      (signal: AbortSignal) => adapter.fetch(path, { signal }),
+    ],
+  ] as const) {
+    const { read: failed } = await readEventStream(send);
+    show(`${how} ${path}`, failed);
+    checkEqual(
+      `${how} ${path}: Nest's JSON 500, within 5s`,
+      [
+        failed.status,
+        failed.contentType?.startsWith("application/json"),
+        failed.outcome === "ended" ? JSON.parse(failed.body) : failed.outcome,
+      ],
+      [500, true, { statusCode: 500, message: "Internal server error" }],
+    );
+  }
+}
+
+/* ------------------------------------------------------------------ */
+step("idleTimeout: a quiet @Sse() stream stays open");
+
+// A second app whose server cuts idle connections. `idleTimeout` is in
+// seconds and 1 is the least Bun accepts; Bun sweeps idle connections every
+// few seconds, so a quiet connection is cut about 4s in.
+const quietAdapter = new BunHttpAdapter(0, { server: { idleTimeout: 1 } });
+const quietApp = await NestFactory.create(QuietModule, quietAdapter, {
+  logger: false,
+});
+await quietApp.listen(0);
+const quietUrl = await quietApp.getUrl();
+
+/** A quiet stream being watched, and when it was seen to close. */
+interface Watched {
+  /** Cancels the response body, once the watch is over. */
+  cancel: () => Promise<void>;
+  /** Milliseconds from the start until the stream ended or errored, if it did. */
+  closedAfter?: number;
+}
+
+const quietFrom = performance.now();
+/** Opens `path`, reads up to its first event, and notes when it closes. */
+async function watchQuiet(path: string): Promise<Watched> {
+  const response = await fetch(`${quietUrl}${path}`);
+  const reader = response.body!.getReader();
+  const watched: Watched = { cancel: async () => reader.cancel() };
+  const decoder = new TextDecoder();
+  let body = "";
+  while (!body.includes("data: first\n\n")) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      watched.closedAfter = performance.now() - quietFrom;
+      return watched;
+    }
+    body += decoder.decode(chunk.value, { stream: true });
+  }
+  const closed = () => {
+    watched.closedAfter = performance.now() - quietFrom;
+  };
+  reader.read().then(closed, closed);
+  return watched;
+}
+
+const [quietSse, quietSent] = await Promise.all([
+  watchQuiet("/quiet/sse"),
+  watchQuiet("/quiet/sent"),
+]);
+await waitFor(
+  "Bun to cut the stream nothing exempted",
+  () => quietSent.closedAfter !== undefined,
+  { timeout: 15_000 },
+).catch(() => {});
+// The two opened together, so a stream that is not exempt is cut in the same
+// sweep. Give the @Sse() one a whole further sweep before looking.
+await Bun.sleep(5000);
+/** How a watched stream stands, for the output. */
+const standing = (watched: Watched): string =>
+  watched.closedAfter === undefined
+    ? "still open"
+    : `cut at ${watched.closedAfter.toFixed(0)}ms`;
+show("the two quiet streams", {
+  "@Sse()": standing(quietSse),
+  "@Res() send(ReadableStream)": standing(quietSent),
+});
+check(
+  "a ReadableStream sent through @Res() going quiet is cut by idleTimeout",
+  quietSent.closedAfter !== undefined && quietSent.closedAfter >= 1000,
+  quietSent.closedAfter,
+);
+checkEqual(
+  "…while the quiet @Sse() stream is still open",
+  quietSse.closedAfter,
+  undefined,
+);
+for (const watched of [quietSse, quietSent]) {
+  await watched.cancel().catch(() => {});
+}
+await quietApp.close();
 
 /* ------------------------------------------------------------------ */
 step("Close");

@@ -45,10 +45,10 @@ const RUN_ALONE: string[] = [];
  * Pooled examples known to take a while, started first so the pool is not left
  * waiting on one straggler at the end. Everything else follows in folder
  * order. Rough figures only: a stale entry costs a few seconds, never a
- * failure. Empty here because no example in this package takes as much as two
- * seconds — there is no tail to shorten.
+ * failure. `controllers-and-routing.ts` is here because it waits out
+ * `Bun.serve`'s idle timeout, about 10 s.
  */
-const SLOW_FIRST: string[] = [];
+const SLOW_FIRST: string[] = ["02-http-adapter/controllers-and-routing.ts"];
 
 const args = process.argv.slice(2);
 

@@ -50,6 +50,7 @@ const RUN_ALONE: string[] = [];
 const SLOW_FIRST = [
   "12-options/websocket-options.ts",
   "09-websocket/options.ts",
+  "05-response/files-and-streams.ts",
   "12-options/native-utilities.ts",
 ];
 

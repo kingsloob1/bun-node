@@ -30,8 +30,9 @@
  * - An error raised after the response started (`res.write()`, then a throw or
  *   `next(err)`) still runs the error handlers, which see `res.headersSent`
  *   as `true` and may still `res.end()` the stream. If none handles it, the
- *   streamed response is cut off (`res.destroy(err)`) and the error logged,
- *   as Express's finalhandler destroys the socket.
+ *   streamed response is cut off (`res.destroy(err)`) once what was already
+ *   written has gone out, and the error logged, as Express's finalhandler
+ *   destroys the socket.
  * - An error nobody handles is re-thrown to the caller. A bare router's
  *   `fetch()` rejects with it. On an adapter, served or through
  *   `adapter.fetch()`, it reaches `setErrorHandler`, and without one it is
@@ -456,8 +457,9 @@ checkEqual("…and saw headersSent: true", afterSeen.splice(0), [
 ]);
 
 // Nobody handles the second one, and a 500 can no longer be sent, so the
-// stream is destroyed: the client sees the response cut off — never a hang,
-// never a complete chunked body. (Bun also prints the stream's error.)
+// stream is destroyed: the client gets what was written, then the response is
+// cut off — never a hang, never a complete chunked body. (Bun also prints the
+// stream's error.)
 const listening = await streaming.listen(0);
 const cut = await rawGet(listening.port!, "/unhandled");
 show("what the client received", JSON.stringify(cut));
@@ -469,6 +471,13 @@ check(
 check(
   "…and never ends as a complete chunked body",
   !cut.includes("\r\n0\r\n\r\n"),
+  cut,
+);
+// Since #267. Before it, a write() and an error in the same turn made Bun
+// reset the connection with nothing sent, not even the status line.
+check(
+  "…but only after the 200 and the chunk written before the error",
+  cut.startsWith("HTTP/1.1 200") && cut.includes("\r\npartial;\r\n"),
   cut,
 );
 checkEqual("…after the error handlers ran", afterSeen.splice(0), [
@@ -484,6 +493,34 @@ check(
   ),
   afterEvents.map((event) => event.message),
 );
+
+// The same through `adapter.fetch()`: the written chunk is read, then the
+// body errors rather than ending.
+const cutBody = (await streaming.fetch("/unhandled")).body!.getReader();
+const cutChunks: string[] = [];
+/** How the body stopped: it `errored`, `ended` cleanly, or is `still open`. */
+let cutEnding: "errored" | "ended" | "still open";
+for (;;) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const chunk = await Promise.race([
+    cutBody.read().catch(() => "errored" as const),
+    new Promise<"still open">((resolve) => {
+      timer = setTimeout(resolve, 3000, "still open");
+    }),
+  ]);
+  clearTimeout(timer);
+  if (typeof chunk === "string" || chunk.done) {
+    cutEnding = typeof chunk === "string" ? chunk : "ended";
+    break;
+  }
+  cutChunks.push(new TextDecoder().decode(chunk.value));
+}
+checkEqual(
+  "adapter.fetch(): the written chunk arrives, then the body errors",
+  [cutChunks.join(""), cutEnding],
+  ["partial;", "errored"],
+);
+afterSeen.splice(0);
 await streaming.close();
 
 /* ------------------------------------------------------------------ */
