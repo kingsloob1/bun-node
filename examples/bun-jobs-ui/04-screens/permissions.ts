@@ -1341,6 +1341,16 @@ const GATES = [
     reads: ["definitions.list"],
     when: ({ meta }) => meta.addableNames === null,
   },
+  {
+    name: "queue: Add flow",
+    row: "Add flow",
+    map: "queue",
+    mutations: ["jobs.add"],
+    features: ["addFlow"],
+    metaFields: ["addableNames"],
+    when: ({ meta }) =>
+      meta.addableNames === null || meta.addableNames.length > 0,
+  },
   // In the jobs table, so each needs jobs.list too.
   {
     name: "queue: bulk Retry selected",
