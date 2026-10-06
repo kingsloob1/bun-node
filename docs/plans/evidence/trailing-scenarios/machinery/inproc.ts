@@ -2,7 +2,7 @@ import * as lib from "../../../../../packages/bun-common/lib/index";
 const { Elysia } = await import("../../../../../benchmarks/node_modules/elysia2");
 const stub = { requestIP: () => null, upgrade: () => false } as never;
 const reqOpts = { retainBuffer: false, parseBody: { contentTypes: { json: true, urlencoded: true, text: true, raw: true, xml: true, multipart: { opts: { detectFileType: false } } } } };
-const ROOT = process.env.ROOT ?? "/home/user/bun-node";
+const ROOT = process.env.ROOT ?? `${import.meta.dir}/../../../../..`;
 const L = await import(`${ROOT}/packages/bun-common/lib/index.ts`);
 const adapter = new L.BunHttpAdapter(0, { request: reqOpts });
 const H = { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", vary: "Origin" };
