@@ -482,6 +482,84 @@ with this table, that keeps the basename strip and the post-parse limit
 checks. It would be worth about 17% on a small upload, and it is offered,
 not made.
 
+**A busboy-exact parser for a body in memory (`lib/multipart/buffered.ts`).**
+Every alternative was measured, as was the cost of busboy itself. bun-common
+always holds the whole body before parsing it, so busboy's streaming
+machinery (Writable, a Readable per file, streamsearch over chunks) is pure
+cost. The new parser:
+
+- finds the boundary with native `Buffer.indexOf`;
+- reads a part's whole header block, in the shape clients send it
+  (`Content-Disposition` with `name` and `filename`, at most a plain
+  `Content-Type`), with one anchored regex built from busboy's own
+  TOKEN/QDTEXT/FIELD_VCHAR tables;
+- falls back to busboy's header and parameter parsers for any other shape;
+- decodes parameters and charsets with busboy's own helpers
+  (`busboy/lib/utils.js`).
+
+Anything unusual answers `undefined`, and the request runs busboy. That
+covers a limit reached, a truncated or malformed body, junk after a boundary,
+and a header block near busboy's caps. Busboy's errors and limit events are
+therefore unchanged. A seeded differential fuzz against busboy (bodies with
+odd names, `filename*`, paths, charsets, folded headers, partial boundaries
+inside values, junk, truncation, limits) found **0 mismatches in 100,000
+cases**. A negative control (keeping file paths) is caught, and every body
+Bun's `FormData` encoder produces is answered without a hand-off. The fuzz
+also found a real ReDoS in the first header regex: a 16 KB header of blanks
+cost 820 ms. It is fixed, with a test that fails on the old regex.
+
+Every parser, from the buffered body, answers checked equal
+(`evidence/trailing-scenarios/multipart/alternatives/speed.ts`, this VM):
+
+| Upload | busboy 1.6 | @fastify/busboy 3.2 | **bun-common** | Bun `formData()` | @remix-run/multipart-parser 1.0 | @mjackson/multipart-parser 0.10 | multipasta 0.2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 field + 1 KiB file | 12.1 µs | 17.9 µs | **2.5 µs** | 3.9 µs | 9.3 µs | 8.8 µs | 13.1 µs |
+| 10 fields | 19.7 µs | 34.5 µs | **4.6 µs** | 5.0 µs | 16.2 µs | 16.1 µs | 23.2 µs |
+| 50 fields | 80.2 µs | 148.5 µs | **14.8 µs** | 16.7 µs | 71.5 µs | 88.2 µs | 105.6 µs |
+| 1 field + 100 KiB file | 116.2 µs | 29.1 µs | **13.9 µs** | 28.4 µs | 36.8 µs | 37.8 µs | 67.4 µs |
+| 1 field + 1 MiB file | 1.02 ms | 200.7 µs | **170.0 µs** | 529.6 µs | 404.0 µs | 395.0 µs | 721.2 µs |
+| 5 files × 100 KiB | 522.7 µs | 122.6 µs | **83.9 µs** | 156.1 µs | 205.0 µs | 184.9 µs | 355.4 µs |
+| 1 field + 10 MiB file | 11.68 ms | 2.59 ms | **2.46 ms** | 6.19 ms | 5.61 ms | 5.08 ms | 8.74 ms |
+
+The Remix parser (`remix-run/remix` `packages/multipart-parser`) and its
+predecessor (`mjackson/remix-the-web`, published as
+`@mjackson/multipart-parser`) answer alike. Both differ from busboy on 8 of 9
+probes (`alternatives/remix-semantics.ts`):
+
+- they keep a path in a file name;
+- they throw on a latin1 field;
+- they give no default type to a file sent without one;
+- they report `""` for an empty filename;
+- they report one "not finished" error for both truncation and a malformed
+  header.
+
+@fastify/busboy is faster than busboy only on large files.
+
+`getMultiParts` around the parser was then restructured:
+
+- the default inflators and the file-path walk became module functions,
+  instead of closures rebuilt per call;
+- the buffered path calls its handlers directly rather than through an
+  emitter;
+- the `Content-Type` is read without building the request's header object.
+
+Same machine, `wrk`, 3 rounds (`benchmarks/results/multipart-wrk.md`):
+
+| | before (`5ee4f6b`) | after |
+|---|---:|---:|
+| in process, one upload | 43 µs | 23 µs |
+| bun-common | 14,519 req/s | **21,375 req/s (+47%)** |
+| bun-nest | 8,260 req/s | **12,367 req/s (+50%)** |
+| Elysia 2 (the same runs) | 42,597 | 36,675 |
+
+bun-common went from 34% of Elysia 2 to 50–58%. What remains is spread
+across the request pipeline, with no multipart hotspot left. The parser is
+about 2.5 µs of a request.
+
+`isPartAFile`, documented as honoured, never was: busboy 1.x does not read
+it. It is now documented as ignored and deprecated, with a test pinning
+that.
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |
@@ -492,6 +570,7 @@ not made.
 | param-random / wildcard (fresh paths): radix tree route lookup | `85b6e22` | **`wrk` param-random 31,292 → 35,267 req/s (+12.7%)**; see §6 |
 | multipart: busboy fed in one write, one native read under a cap, plain-name inflation, `detectFileType` | `f5abecd` | in process **189.6 → 87.0 µs** per upload; see §7 |
 | object-form `parseBody`: resolved once per options object | `f5abecd` | 707 → 144 ns per request; the capped config no longer trails `parseBody: true` |
+| multipart: busboy-exact buffered parser; `getMultiParts` restructured | (this commit) | `wrk` multipart **14,519 → 21,375 req/s** (+47%), bun-nest +50%; parser fastest of seven candidates; see §7 |
 
 ## Recommended order
 

@@ -1361,7 +1361,8 @@ repeated names become arrays.
 | `filter` | none | `(req, file)`: `true` keeps the file, `false` drops it, a string rejects the upload with `FILTER_REJECTED`. |
 | `limits`, `preservePath`, `defCharset`, ... | busboy defaults | busboy options. `getBusBoyConfig(opts)` extracts them. |
 | `inflate` | `true` | Parse field values as JSON or urlencoded. `false` keeps the raw strings. |
-| `fieldInflator`, `fileInflator`, `isPartAFile` | none | Custom inflation, and custom file-versus-field detection. |
+| `fieldInflator`, `fileInflator` | none | Custom inflation of a field value or a file's bytes. |
+| `isPartAFile` | ignored | Deprecated: busboy 1.x never read it. A part is a file when it has a `filename` or is `application/octet-stream`. |
 | `detectFileType` | `true` | Sniff each file's bytes with `file-type` for `validatedMimeType`. `false` skips it, and `validatedMimeType` is `undefined`. |
 
 Every stored file carries `fieldname`, `originalFilename`, `mimetype`,
@@ -1398,6 +1399,21 @@ app.listen(3000);
 The object form caps bodies (100kb by default, 10mb for multipart and raw).
 Its resolved config is built once per options object and shared by every
 request, so it costs no more per request than `parseBody: true`.
+
+**The parser.** The body is always in memory by the time it is parsed, so
+bun-common parses it in place (`lib/multipart/buffered.ts`) rather than
+streaming it through busboy: a native boundary search, and the header block
+clients send read in one step. It answers exactly what busboy answers. It
+reuses busboy's own parameter and charset decoding, and a seeded
+differential fuzz against busboy holds it to that. A body with anything
+unusual (a limit reached, a malformed or truncated part, junk after a
+boundary) is handed to busboy itself, so busboy's errors and limits are
+unchanged. Against busboy on the same buffer it is about 5× faster on a
+small upload or a 50-field form and 6× on a 1 MiB file. It is also faster
+than Bun's native `Request.formData()` on every shape measured, and
+`formData()` answers differently anyway: it keeps a path in a file name,
+ignores a field's charset, and loses a `filename*` file. End to end, a small
+upload went from 14,519 to 21,375 req/s (`wrk`, same machine).
 
 A field with a plain name (letters, digits, `_` and `-`) is inflated without
 the query-string parser, and a value that cannot open a JSON text is not

@@ -1,0 +1,177 @@
+{
+  "bun": "1.4.2",
+  "cpus": 4,
+  "threads": "2",
+  "connections": "64",
+  "duration": "5",
+  "warmup": "2",
+  "rounds": "3",
+  "routes": 1000,
+  "runs": {
+    "bun-common\tmultipart": [
+      {
+        "rps": 20456.46,
+        "p50": 2.72,
+        "p99": 10.45,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22351.2,
+        "p50": 2.48,
+        "p99": 9.38,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 21374.8,
+        "p50": 2.62,
+        "p99": 9.47,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\tmultipart": [
+      {
+        "rps": 12548.05,
+        "p50": 4.42,
+        "p99": 18.75,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 11933.95,
+        "p50": 4.6,
+        "p99": 23.17,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12366.51,
+        "p50": 4.48,
+        "p99": 22.6,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\tmultipart": [
+      {
+        "rps": 39263.61,
+        "p50": 1.53,
+        "p99": 3.58,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37387.14,
+        "p50": 1.61,
+        "p99": 3.53,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37058.32,
+        "p50": 1.64,
+        "p99": 3.42,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\tmultipart": [
+      {
+        "rps": 38165.72,
+        "p50": 1.57,
+        "p99": 3.96,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 39040.05,
+        "p50": 1.55,
+        "p99": 4.06,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 36254.43,
+        "p50": 1.63,
+        "p99": 4.16,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\tmultipart": [
+      {
+        "rps": 36547.36,
+        "p50": 1.64,
+        "p99": 4.43,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 37454.76,
+        "p50": 1.56,
+        "p99": 4.24,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 36674.84,
+        "p50": 1.63,
+        "p99": 4.16,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\tmultipart": [
+      {
+        "rps": 47375.27,
+        "p50": 1.21,
+        "p99": 3.27,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 46302.14,
+        "p50": 1.27,
+        "p99": 3.2,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 47835.7,
+        "p50": 1.22,
+        "p99": 3.2,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\tmultipart": [
+      {
+        "rps": 15077.9,
+        "p50": 3.91,
+        "p99": 8.2,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16363.7,
+        "p50": 3.63,
+        "p99": 6.89,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16468.66,
+        "p50": 3.63,
+        "p99": 6.72,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ]
+  },
+  "skipped": {
+    "express\tmultipart": "not supported — no built-in multipart parser (needs multer)",
+    "hyper-express-bun": "failed to start — TypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?"
+  }
+}

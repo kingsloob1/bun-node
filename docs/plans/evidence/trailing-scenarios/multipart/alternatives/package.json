@@ -1,0 +1,12 @@
+{
+  "name": "multipart-alternatives-evidence",
+  "private": true,
+  "description": "busboy against @fastify/busboy, @remix-run/multipart-parser, multipasta, Bun formData() and bun-common's buffered parser. Install with npm (bun add cannot fetch GitHub tarballs here).",
+  "dependencies": {
+    "@fastify/busboy": "3.2.2",
+    "@mjackson/multipart-parser": "^0.10.1",
+    "@remix-run/multipart-parser": "1.0.0",
+    "busboy": "1.6.0",
+    "multipasta": "0.2.8"
+  }
+}

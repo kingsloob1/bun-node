@@ -24,6 +24,8 @@ shell exports `--smol`). The `wrk` figures themselves come from
 | `multipart/plain-names.ts` | §7 | Which field names picoquery answers unchanged (the plain-name fast path's guard) |
 | `multipart/formdata-speed.ts` | §7 | busboy against Bun's `formData()`, seven upload shapes, answers checked equal |
 | `multipart/formdata-semantics.ts` | §7 | What each answers on 20 inputs where they could differ |
+| `multipart/alternatives/speed.ts` | §7 | busboy, @fastify/busboy, bun-common's buffered parser, `formData()`, the Remix and remix-the-web parsers and multipasta, seven upload shapes, answers checked equal. Its own `package.json`: `npm install` there first |
+| `multipart/alternatives/remix-semantics.ts` | §7 | What busboy and the two Remix parsers answer on nine inputs where they could differ |
 | `urlencoded-parsers.ts` | §7 | picoquery against `formData()` and `URLSearchParams` for urlencoded bodies |
 | `parse-body-resolve.ts` | §7 | Resolving an object-form `parseBody` per request |
 

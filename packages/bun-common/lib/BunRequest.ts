@@ -1,6 +1,8 @@
 import type { SocketAddress } from "bun";
+import type { FieldInfo, FileInfo } from "busboy";
 import type { FileTypeResult } from "file-type";
 import type { IncomingMessage } from "node:http";
+import type { Readable } from "node:stream";
 import type { BunResponse } from "./BunResponse";
 import type { TypedEmitter } from "./BunWebSocket";
 import type { StorageFile } from "./multipart";
@@ -32,6 +34,7 @@ import { fileTypeFromBuffer } from "file-type";
 import { parseDomain, ParseResultType, Validation } from "parse-domain";
 import { parse as parseQueryString } from "picoquery";
 import typeIs from "type-is";
+import { parseBufferedMultipart } from "./multipart/buffered";
 import { UploadError } from "./multipart/errors";
 import { SOCKET_FREE, streamToBuffer } from "./utils/general";
 import {
@@ -612,6 +615,109 @@ function inflateJsonValue(value: string): unknown {
     return JSON.parse(text);
   } catch {
     return value;
+  }
+}
+
+/** Replaces every `valueToReplace` leaf of the query parser's tree with `replacement`. */
+function replacePlaceholder(
+  obj: Record<string, unknown>,
+  replacement: Buffer,
+  valueToReplace: string,
+): void {
+  each(obj, (value, key) => {
+    if (value === valueToReplace) {
+      obj[key] = replacement;
+    } else if (isObject(value)) {
+      replacePlaceholder(
+        value as Record<string, unknown>,
+        replacement,
+        valueToReplace,
+      );
+    }
+  });
+}
+
+/**
+ * The default `fileInflator`: the file under its name as the query-string
+ * parser nests it (`docs[passport]` → `{ docs: { passport: file } }`).
+ */
+async function defaultFileInflator(
+  fieldname: string,
+  file: Buffer,
+): Promise<Record<string, unknown>> {
+  if (PLAIN_FIELD_NAME.test(fieldname)) {
+    return plainFieldRecord(fieldname, file);
+  }
+  const parsedObj = parseQueryString(
+    `${fieldname}=x`,
+    DEFAULT_PARSE_QUERY_OPTS,
+  );
+  if (isObject(parsedObj)) {
+    replacePlaceholder(parsedObj, file, "x");
+    return parsedObj;
+  }
+  return { [fieldname]: file };
+}
+
+/**
+ * The default `fieldInflator`: the value under its name as the query-string
+ * parser nests it, each string leaf parsed as JSON when it is JSON.
+ */
+async function defaultFieldInflator(
+  fieldname: string,
+  value: string,
+): Promise<Record<string, unknown>> {
+  if (PLAIN_FIELD_NAME.test(fieldname)) {
+    return plainFieldRecord(fieldname, inflateJsonValue(value));
+  }
+  try {
+    // The value is encoded so a `&`, `=`, `+` or `%` in it survives as data.
+    const parsedData = parseQueryString(
+      `${fieldname}=${encodeURIComponent(value)}`,
+      DEFAULT_PARSE_QUERY_OPTS,
+    ) as Record<string, unknown>;
+    if (isObject(parsedData)) {
+      each(parsedData, (leaf, key) => {
+        if (isString(leaf)) {
+          parsedData[key] = inflateJsonValue(leaf);
+        }
+      });
+      return parsedData;
+    }
+    // Not an object: tried as JSON, as the value alone.
+    try {
+      return { [fieldname]: JSON.parse(value.replace(/\\\\"/g, `"`)) };
+    } catch {
+      //
+    }
+  } catch {
+    //
+  }
+  return { [fieldname]: value };
+}
+
+/**
+ * Records in `paths` every path at which `file` sits in an inflator's output
+ * (`[docs][passport]`). Keys are read directly: an inflator's key may contain
+ * brackets itself, which a path-aware `get()` would misread as nesting.
+ */
+function collectFilePaths(
+  obj: unknown,
+  file: Buffer,
+  trail: string[],
+  paths: Set<string>,
+): void {
+  try {
+    if (obj === file) {
+      paths.add(trail.reduce((prev, val) => `${prev}[${val}]`, ``));
+    } else if ((isObject(obj) || isArray(obj)) && !Buffer.isBuffer(obj)) {
+      const record = obj as Record<string, unknown>;
+      for (const key of Object.keys(record)) {
+        collectFilePaths(record[key], file, [...trail, key], paths);
+      }
+    }
+  } catch {
+    //
   }
 }
 
@@ -3155,99 +3261,9 @@ export class BunRequest<
         inflate = true;
       }
 
-      // `obj` is the query parser's untyped tree, walked by shape.
-      const recursivelyReplacePlaceholder = (
-        obj: Record<string, unknown>,
-        replacement: Buffer,
-        valueToReplace: string,
-      ) => {
-        each(obj, (value, key) => {
-          if (value === valueToReplace) {
-            obj[key] = replacement;
-          } else if (isObject(value)) {
-            recursivelyReplacePlaceholder(
-              value as Record<string, unknown>,
-              replacement,
-              valueToReplace,
-            );
-          }
-        });
-      };
-
       if (inflate) {
-        if (!fileInflator) {
-          fileInflator = async (
-            fieldname: string,
-            file: Buffer,
-            // opts: FileInfo,
-          ) => {
-            if (PLAIN_FIELD_NAME.test(fieldname)) {
-              return plainFieldRecord(fieldname, file);
-            }
-            const parsedObj = parseQueryString(
-              `${fieldname}=x`,
-              DEFAULT_PARSE_QUERY_OPTS,
-            );
-
-            if (isObject(parsedObj)) {
-              recursivelyReplacePlaceholder(parsedObj, file, "x");
-              return parsedObj;
-            }
-
-            return { [fieldname]: file };
-          };
-        }
-
-        if (!fieldInflator) {
-          fieldInflator = async (
-            fieldname: string,
-            value: string,
-            // opts: FieldInfo,
-          ) => {
-            if (PLAIN_FIELD_NAME.test(fieldname)) {
-              return plainFieldRecord(fieldname, inflateJsonValue(value));
-            }
-            try {
-              let parsedData: Record<string, unknown> | undefined;
-
-              // Attempt to inflate using the query-string parser. The value is
-              // encoded so a `&`, `=`, `+` or `%` in it survives as data.
-              if (!isObject(parsedData)) {
-                parsedData = parseQueryString(
-                  `${fieldname}=${encodeURIComponent(value)}`,
-                  DEFAULT_PARSE_QUERY_OPTS,
-                ) as Record<string, unknown>;
-              }
-
-              // Attempt to inflat using JSON.parse
-              if (!isObject(parsedData)) {
-                try {
-                  const parsedJSONstring = value.replace(/\\\\"/g, `"`);
-                  const parsedJSONValue = JSON.parse(parsedJSONstring);
-                  parsedData = { [fieldname]: parsedJSONValue };
-                } catch {
-                  //
-                }
-              } else {
-                each(parsedData, (value, key) => {
-                  if (!!parsedData && isString(value)) {
-                    parsedData[key] = inflateJsonValue(value);
-                  }
-                });
-              }
-
-              if (isObject(parsedData)) {
-                return parsedData;
-              } else {
-                throw new Error("Failed to parse form data field");
-              }
-            } catch {
-              //
-            }
-
-            return { [fieldname]: value };
-          };
-        }
+        fileInflator ??= defaultFileInflator;
+        fieldInflator ??= defaultFieldInflator;
       }
 
       /** Set once the parse has resolved or rejected; later events are ignored. */
@@ -3268,7 +3284,14 @@ export class BunRequest<
       };
 
       try {
-        const bb = busboy({ ...busBoyOpts, headers: this.headers });
+        // A body busboy would parse without complaint is parsed in place
+        // (see `multipart/buffered.ts`) and replayed through the same
+        // handlers; anything else goes to busboy, which reports it exactly.
+        const buffered = parseBufferedMultipart(
+          buffer,
+          contentTypeHeader,
+          busBoyOpts,
+        );
         // Track each file handler's promise so the `close` event can await
         // completion deterministically instead of polling state arrays.
         const filePromises: Promise<void>[] = [];
@@ -3295,22 +3318,26 @@ export class BunRequest<
         const nameTooLong = (name: string) =>
           fieldNameSize !== undefined && name.length > fieldNameSize;
 
-        bb.on("partsLimit", () => abort("LIMIT_PART_COUNT"));
-        bb.on("filesLimit", () => abort("LIMIT_FILE_COUNT"));
-        bb.on("fieldsLimit", () => abort("LIMIT_FIELD_COUNT"));
-
-        bb.on("file", (name, file, info) => {
-          file.on("limit", () => abort("LIMIT_FILE_SIZE", name));
+        // `file` is busboy's stream, or a buffered parse's bytes.
+        const onFile = (
+          name: string,
+          file: Readable | Buffer,
+          info: FileInfo,
+        ): void => {
+          const stream = Buffer.isBuffer(file) ? undefined : file;
+          stream?.on("limit", () => abort("LIMIT_FILE_SIZE", name));
           if (nameTooLong(name)) {
             abort("LIMIT_FIELD_KEY");
           }
           if (settled) {
-            file.resume();
+            stream?.resume();
             return;
           }
 
           const task = (async () => {
-            const fileBuffer = await streamToBuffer(file);
+            const fileBuffer = stream
+              ? await streamToBuffer(stream)
+              : (file as Buffer);
             const mimeTypeResp: FileTypeResult | undefined = detectFileType
               ? await fileTypeFromBuffer(fileBuffer)
               : undefined;
@@ -3331,40 +3358,8 @@ export class BunRequest<
                 const pathListInFileMap =
                   files.get(fileData) || new Set<string>();
 
-                // `obj` is `unknown`: the inflator's output is walked by
-                // shape, and a custom `fileInflator` may return anything.
-                const processNestedValuePath = (
-                  obj: unknown,
-                  paths: string[],
-                ) => {
-                  try {
-                    if (obj === fileBuffer) {
-                      const pathStr = paths.reduce(
-                        (prev, val) => `${prev}[${val}]`,
-                        ``,
-                      );
-
-                      if (!pathListInFileMap.has(pathStr)) {
-                        pathListInFileMap.add(pathStr);
-                      }
-                    } else if (
-                      (isObject(obj) || isArray(obj)) &&
-                      !Buffer.isBuffer(obj)
-                    ) {
-                      // Direct property access: an inflator's key may itself
-                      // contain brackets (`docs[passport]`), which a
-                      // path-aware `get()` would misread as nesting.
-                      const record = obj as Record<string, unknown>;
-                      Object.keys(record).forEach((key) => {
-                        processNestedValuePath(record[key], [...paths, key]);
-                      });
-                    }
-                  } catch {
-                    //
-                  }
-                };
-
-                processNestedValuePath(parsedData, []);
+                // A custom `fileInflator` may return anything: walked by shape.
+                collectFilePaths(parsedData, fileBuffer, [], pathListInFileMap);
                 files.set(fileData, pathListInFileMap);
               } catch {
                 pushFile = true;
@@ -3388,9 +3383,9 @@ export class BunRequest<
           // abort cut off from surfacing as an unhandled rejection.
           task.catch(() => {});
           filePromises.push(task);
-        });
+        };
 
-        bb.on("field", (name, val, info) => {
+        const onField = (name: string, val: string, info: FieldInfo): void => {
           // multer checks the name before the value.
           if (info.nameTruncated) {
             abort("LIMIT_FIELD_KEY");
@@ -3416,9 +3411,9 @@ export class BunRequest<
           } else {
             fieldNameAndValue.set(name, [val]);
           }
-        });
+        };
 
-        bb.on("close", async () => {
+        const onClose = async (): Promise<void> => {
           if (settled) {
             return;
           }
@@ -3479,12 +3474,31 @@ export class BunRequest<
           };
 
           resolve(this.#parsedMultipartResp);
-        });
+        };
 
-        bb.on("error", (error) => fail(error));
-        // One write rather than piping a `Readable` over the buffer: the
-        // stream machinery cost more than busboy's own parse.
-        bb.end(buffer);
+        if (buffered) {
+          // busboy's names are `undefined` for a part without one, as here.
+          for (const part of buffered) {
+            if (part.kind === "file") {
+              onFile(part.name as string, part.data, part.info as FileInfo);
+            } else {
+              onField(part.name as string, part.value as string, part.info);
+            }
+          }
+          void onClose();
+        } else {
+          const bb = busboy({ ...busBoyOpts, headers: this.headers });
+          bb.on("partsLimit", () => abort("LIMIT_PART_COUNT"));
+          bb.on("filesLimit", () => abort("LIMIT_FILE_COUNT"));
+          bb.on("fieldsLimit", () => abort("LIMIT_FIELD_COUNT"));
+          bb.on("file", onFile);
+          bb.on("field", onField);
+          bb.on("close", () => void onClose());
+          bb.on("error", (error) => fail(error));
+          // One write rather than piping a `Readable` over the buffer: the
+          // stream machinery cost more than busboy's own parse.
+          bb.end(buffer);
+        }
       } catch (err) {
         fail(err);
       }

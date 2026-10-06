@@ -1034,6 +1034,21 @@ describe("multipart: default inflation", () => {
   });
 });
 
+describe("multipart: isPartAFile (deprecated)", () => {
+  it("is ignored: a part is a file by its filename or octet-stream type alone", async () => {
+    const req = await multipartRequest((fd) => {
+      fd.append("plain", "value");
+      fd.append("upload", new File(["x"], "x.txt", { type: "text/plain" }));
+    });
+    const { fields, files } = await req.getMultiParts({
+      // Would invert both parts, were it read.
+      isPartAFile: (_name, _type, filename) => filename === undefined,
+    });
+    expect(fields).toEqual({ plain: "value" });
+    expect([...files.keys()].map((file) => file.fieldname)).toEqual(["upload"]);
+  });
+});
+
 describe("multipart: detectFileType", () => {
   /** A file whose bytes open like a JPEG, sent as `application/octet-stream`. */
   const jpeg = () =>

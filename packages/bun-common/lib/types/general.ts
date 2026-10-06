@@ -62,10 +62,11 @@ export type MultiPartOptions = BusboyConfig & {
     opts?: FileInfo,
   ) => Promise<Record<string, unknown>>;
   /**
-   * Decides whether a part is a file (`true`) or a field, given its field
-   * name, content type and file name. busboy honours it, but `@types/busboy`
-   * does not declare it. Defaults to busboy's rule: a part with a `filename`
-   * is a file.
+   * **Has no effect**, and never has with busboy 1.x, which does not read it
+   * (busboy 0.x did). A part is a file when it has a `filename` or its type
+   * is `application/octet-stream`, and a field otherwise.
+   *
+   * @deprecated Ignored by the parser; kept so existing options still type-check.
    */
   isPartAFile?: (
     fieldName: string | undefined,
