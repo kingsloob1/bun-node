@@ -189,3 +189,43 @@ describe("BunRequest: bodiless fast path", () => {
     });
   });
 });
+
+describe("BunRequest: empty query and cookie fast paths", () => {
+  const build = (url: string, init?: Record<string, string>) =>
+    BunRequest.init(
+      new Request(url, { headers: init }),
+      testServer,
+      OPTIONS,
+    ) as BunRequest;
+
+  it("gives an empty query the parser's own shape", () => {
+    const parsed = build("http://localhost/?a=1").query;
+    for (const url of ["http://localhost/", "http://localhost/?"]) {
+      const query = build(url).query;
+      expect(query).toEqual({});
+      expect(Object.getPrototypeOf(query)).toBe(Object.getPrototypeOf(parsed));
+    }
+  });
+
+  it("still runs a custom decode for an empty query", () => {
+    const seen: string[] = [];
+    const req = BunRequest.init(new Request("http://localhost/"), testServer, {
+      ...OPTIONS,
+      parseQueryOpts: {
+        decode: (raw: string) => {
+          seen.push(raw);
+          return raw;
+        },
+      },
+    }) as BunRequest;
+    expect(req.query).toEqual({});
+    expect(seen).toEqual([""]);
+  });
+
+  it("reads a Cookie header whatever its case", () => {
+    expect(build("http://localhost/", { COOKIE: "a=1" }).cookies).toEqual({
+      a: "1",
+    });
+    expect(build("http://localhost/").cookies).toEqual({});
+  });
+});

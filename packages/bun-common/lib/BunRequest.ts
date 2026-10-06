@@ -405,6 +405,18 @@ export interface BunRequestCookies {
   signedCookies: Record<string, JsonValue>;
 }
 
+/**
+ * The prototype of the objects the query parser returns (picoquery's shared,
+ * null-prototype one), so an empty query built without parsing has the same
+ * shape as a parsed one.
+ */
+const EMPTY_QUERY_PROTOTYPE: object | null = Object.getPrototypeOf(
+  parseQueryString("", {}),
+);
+
+/** What `#configuredCookieSecrets` returns when no secret is configured; never mutated. */
+const EMPTY_SECRETS: string[] = [];
+
 /** Merges query-parser options over {@link DEFAULT_PARSE_QUERY_OPTS}. */
 function withDefaultQueryOpts(opts?: QueryParserOpts): QueryParserOpts {
   return { ...DEFAULT_PARSE_QUERY_OPTS, ...opts };
@@ -1246,6 +1258,9 @@ export class BunRequest<
   /** The `cookieSecret` option as a list of non-empty secrets; `[]` when unset. */
   #configuredCookieSecrets(): string[] {
     const configured = this.options?.cookieSecret;
+    if (configured === undefined) {
+      return EMPTY_SECRETS;
+    }
     const list = isArray(configured) ? configured : [configured];
     return list.filter(
       (secret): secret is string => isString(secret) && secret !== "",
@@ -2718,12 +2733,20 @@ export class BunRequest<
    * `parseQueryOpts`) are merged over {@link DEFAULT_PARSE_QUERY_OPTS}.
    */
   public parseQuery(opts?: QueryParserOpts) {
-    const options = withDefaultQueryOpts(opts || this.options?.parseQueryOpts);
+    const given = opts || this.options?.parseQueryOpts;
+    const search = this.splitRequestUrl().search;
+
+    // No query string: the parser's answer is known — an empty object with
+    // picoquery's own prototype — so skip the option merge and the parse. A custom `decode` still runs, as it may expect to see every call.
+    if (search.length <= 1 && typeof given?.decode !== "function") {
+      this.query = Object.create(EMPTY_QUERY_PROTOTYPE) as TQuery;
+      return this.query;
+    }
 
     // The parser returns the untyped shape; `TQuery` is the caller's view of it.
     this.query = parseSearchString(
-      this.splitRequestUrl().search,
-      options,
+      search,
+      withDefaultQueryOpts(given),
     ) as TQuery;
     return this.query;
   }
@@ -2758,8 +2781,8 @@ export class BunRequest<
       reqSecret = this.secret;
     }
 
-    const cookieStr =
-      this.getHeader("cookie") || this.getHeader("Cookie") || "";
+    // `Headers#get` ignores case, so one lookup covers `Cookie` too.
+    const cookieStr = this.getHeader("cookie") || "";
 
     if (!cookieStr) {
       const empty = { cookies: {}, signedCookies: {} };
