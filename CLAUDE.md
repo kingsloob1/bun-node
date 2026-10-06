@@ -295,6 +295,14 @@ type check. It is a standalone package like the bench ones — its own
   handoff); `check-types.ts` about 25 s. The template's README is its quick
   start, so a change to what a provider must do is a change there too.
 
+## Working with other Claude sessions
+
+Several Claude sessions work on this repository at once, each owning a
+package or a role. [`docs/agentic-setup.md`](docs/agentic-setup.md) is the
+working agreement between them — who owns what, change reports, the commit,
+PR and merge rules, worktrees, the heavy-run wrapper and subagents. Read it
+before your first edit.
+
 ## Bun bugs
 
 Bun behaviour that bun-node works around is documented in
