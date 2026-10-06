@@ -115,7 +115,11 @@ export interface BufferedMultipartFile {
   kind: "file";
   /** The part's `name`, or `undefined` without one. */
   name: string | undefined;
-  /** The file's bytes, a copy (as busboy's chunks, concatenated, are). */
+  /**
+   * The file's bytes: a view of the body, not a copy (busboy's concatenated
+   * chunks are a copy). The bytes are the same; writing into them writes into
+   * the request's body too, as with a `File` from Bun's `formData()`.
+   */
   data: Buffer;
   /** busboy's file info. */
   info: {
@@ -177,8 +181,34 @@ const COMMON_BLOCK = new RegExp(
   "iy",
 );
 
-/** How far into a part the common header block is looked for. */
+/** The largest header block read as the common one. */
 const COMMON_BLOCK_WINDOW = 1024;
+
+/**
+ * Each `Content-Type` value's boundary, as busboy reads it (`undefined` when
+ * busboy would not parse it as `multipart/form-data`). A client sends one
+ * value per form, so busboy's char-by-char parse ran once per request.
+ */
+const BOUNDARIES = new Map<string, string | undefined>();
+
+function boundaryFor(contentType: string): string | undefined {
+  if (BOUNDARIES.has(contentType)) {
+    return BOUNDARIES.get(contentType);
+  }
+  const conType = utils.parseContentType(contentType);
+  const boundary =
+    conType &&
+    conType.type === "multipart" &&
+    conType.subtype === "form-data" &&
+    typeof conType.params?.boundary === "string"
+      ? conType.params.boundary
+      : undefined;
+  if (BOUNDARIES.size >= 256) {
+    BOUNDARIES.clear();
+  }
+  BOUNDARIES.set(contentType, boundary);
+  return boundary;
+}
 
 /** Each boundary's search needle, as busboy builds it (`\r\n--` + boundary, UTF-8). */
 const NEEDLES = new Map<string, Buffer>();
@@ -272,16 +302,8 @@ export function parseBufferedMultipart(
   contentType: string,
   config: BufferedMultipartConfig = {},
 ): BufferedMultipartPart[] | undefined {
-  const conType = utils.parseContentType(contentType);
-  if (
-    !conType ||
-    conType.type !== "multipart" ||
-    conType.subtype !== "form-data"
-  ) {
-    return undefined;
-  }
-  const boundary = conType.params?.boundary;
-  if (typeof boundary !== "string") {
+  const boundary = boundaryFor(contentType);
+  if (boundary === undefined) {
     return undefined;
   }
 
@@ -356,14 +378,22 @@ export function parseBufferedMultipart(
     let skip = false;
     let contentStart: number;
 
-    COMMON_BLOCK.lastIndex = 0;
-    const common = COMMON_BLOCK.exec(
-      body.toString(
-        "latin1",
-        headerStart,
-        Math.min(next, headerStart + COMMON_BLOCK_WINDOW),
-      ),
-    );
+    // The common block is read from its own bytes alone: up to the first
+    // blank line, which nothing inside it can contain.
+    const blockEnd = body.indexOf(CRLFCRLF, headerStart);
+    let common: RegExpExecArray | null = null;
+    if (
+      blockEnd !== -1 &&
+      blockEnd + 4 <= next &&
+      blockEnd + 4 - headerStart <= COMMON_BLOCK_WINDOW
+    ) {
+      const block = body.toString("latin1", headerStart, blockEnd + 4);
+      COMMON_BLOCK.lastIndex = 0;
+      common = COMMON_BLOCK.exec(block);
+      if (common !== null && COMMON_BLOCK.lastIndex !== block.length) {
+        common = null;
+      }
+    }
     if (common !== null) {
       contentStart = headerStart + COMMON_BLOCK.lastIndex;
       const name = paramDecoder(common[1], 2);
@@ -443,7 +473,7 @@ export function parseBufferedMultipart(
         parts.push({
           kind: "file",
           name: partName,
-          data: Buffer.from(body.subarray(contentStart, next)),
+          data: body.subarray(contentStart, next),
           info: { filename, encoding: partEncoding, mimeType: partType },
         });
       } else {

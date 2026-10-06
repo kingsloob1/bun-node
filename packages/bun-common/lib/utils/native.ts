@@ -464,9 +464,11 @@ export function omit(
     return result;
   }
 
-  const exclude = new Set(paths);
+  // A handful of paths, as callers pass: a scan beats building a `Set` per
+  // call (getBusBoyConfig runs on every upload).
+  const exclude = paths.length > 16 ? new Set(paths) : undefined;
   for (const key of Object.keys(obj)) {
-    if (!exclude.has(key)) {
+    if (exclude ? !exclude.has(key) : !paths.includes(key)) {
       result[key] = (obj as Record<string, unknown>)[key];
     }
   }

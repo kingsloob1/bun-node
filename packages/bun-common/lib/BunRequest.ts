@@ -61,7 +61,6 @@ import {
   jsonCookies,
   keys,
   merge,
-  omit,
   parseByteSize,
   parseContentCodings,
   parseCookie,
@@ -641,10 +640,10 @@ function replacePlaceholder(
  * The default `fileInflator`: the file under its name as the query-string
  * parser nests it (`docs[passport]` → `{ docs: { passport: file } }`).
  */
-async function defaultFileInflator(
+function inflateFileDefault(
   fieldname: string,
   file: Buffer,
-): Promise<Record<string, unknown>> {
+): Record<string, unknown> {
   if (PLAIN_FIELD_NAME.test(fieldname)) {
     return plainFieldRecord(fieldname, file);
   }
@@ -663,10 +662,10 @@ async function defaultFileInflator(
  * The default `fieldInflator`: the value under its name as the query-string
  * parser nests it, each string leaf parsed as JSON when it is JSON.
  */
-async function defaultFieldInflator(
+function inflateFieldDefault(
   fieldname: string,
   value: string,
-): Promise<Record<string, unknown>> {
+): Record<string, unknown> {
   if (PLAIN_FIELD_NAME.test(fieldname)) {
     return plainFieldRecord(fieldname, inflateJsonValue(value));
   }
@@ -2328,7 +2327,6 @@ export class BunRequest<
       );
     }
     if (
-      declaredKind === "multipart" ||
       this.parseBody !== BunRequest.prototype.parseBody ||
       this.request.bodyUsed ||
       !this.#canReadWhole(limit)
@@ -2340,8 +2338,11 @@ export class BunRequest<
     }
     return this.request.arrayBuffer().then(
       (bytes) => {
+        // A multipart parse that has to wait (busboy, sniffing, a custom
+        // inflator) answers a promise; every other parse is done here.
+        let pending: Promise<unknown> | undefined;
         try {
-          this.#parseBuffer(
+          pending = this.#parseBuffer(
             this.#acceptBody(Buffer.from(bytes), limit),
             contentTypeHeader,
             declaredKind,
@@ -2349,6 +2350,12 @@ export class BunRequest<
         } catch (error) {
           this.#bodyFailed(error);
           return;
+        }
+        if (pending !== undefined) {
+          return pending.then(
+            () => this.#bodyEnded(),
+            (error: unknown) => this.#bodyFailed(error),
+          );
         }
         this.#bodyEnded();
       },
@@ -3174,6 +3181,138 @@ export class BunRequest<
   }
 
   /**
+   * The parse {@link getMultiParts} makes, done synchronously for the common
+   * case: the in-memory parser answers (see `multipart/buffered.ts`), the
+   * inflators are the default ones (or `inflate` is off), and no file needs
+   * sniffing (`detectFileType: false`, or no file). It answers exactly what
+   * the event-driven parse below answers — the same records, paths, fields
+   * and refusals — without its promise, closures, per-file tasks and
+   * awaits. `undefined` means the full parse is needed.
+   *
+   * @throws {UploadError} `LIMIT_FIELD_KEY` for a name over `fieldNameSize`,
+   *   as the full parse rejects.
+   */
+  #multipartSync(
+    buffer: Buffer,
+    contentType: string,
+    options: MultiPartOptions,
+  ): MultiPartParseResult | undefined {
+    const {
+      inflate: inflateOption,
+      fileInflator,
+      fieldInflator,
+      detectFileType,
+      ...busBoyOpts
+    } = options;
+    if (fileInflator || fieldInflator) {
+      return undefined;
+    }
+    const parts = parseBufferedMultipart(buffer, contentType, busBoyOpts);
+    if (parts === undefined) {
+      return undefined;
+    }
+    const inflate = isBoolean(inflateOption) ? inflateOption : true;
+    if (detectFileType !== false) {
+      for (const part of parts) {
+        if (part.kind === "file") {
+          return undefined;
+        }
+      }
+    }
+    const { limits } = options;
+    const fieldNameSize =
+      limits && Object.hasOwn(limits, "fieldNameSize")
+        ? limits.fieldNameSize
+        : undefined;
+
+    const files = new Map<MultiPartFileRecord, Set<string>>();
+    const fieldNameAndValue = new Map<string, string[]>();
+    for (const part of parts) {
+      // busboy's names are `undefined` for a part without one, as here; the
+      // length check throws on one just as the full parse's does.
+      const name = part.name as string;
+      if (fieldNameSize !== undefined && name.length > fieldNameSize) {
+        throw new UploadError("LIMIT_FIELD_KEY", { field: undefined });
+      }
+      if (part.kind === "field") {
+        const value = part.value as string;
+        const valueList = fieldNameAndValue.get(name);
+        if (valueList) {
+          valueList.push(value);
+        } else {
+          fieldNameAndValue.set(name, [value]);
+        }
+        continue;
+      }
+      const fileData: MultiPartFileRecord = {
+        ...(part.info as FileInfo),
+        validatedMimeType: undefined,
+        fieldname: name,
+        originalFilename: part.info.filename as string,
+        file: part.data,
+        type: "file",
+      };
+      const paths = new Set<string>();
+      if (inflate && PLAIN_FIELD_NAME.test(name)) {
+        // What inflating and walking `{ [name]: file }` records.
+        paths.add(`[${name}]`);
+      } else if (inflate) {
+        let inflated: Record<string, unknown> | undefined;
+        try {
+          inflated = inflateFileDefault(name, part.data);
+        } catch {
+          inflated = undefined;
+        }
+        if (inflated) {
+          collectFilePaths(inflated, part.data, [], paths);
+        } else {
+          paths.add(name);
+        }
+      } else {
+        paths.add(name);
+      }
+      // Files without any path are dropped, as the full parse drops them.
+      if (paths.size > 0) {
+        files.set(fileData, paths);
+      }
+    }
+
+    let fields: Record<string, unknown> = {};
+    for (const [fieldName, values] of fieldNameAndValue) {
+      if (!inflate) {
+        fields[fieldName] = values.length > 1 ? [...values] : values[0];
+        continue;
+      }
+      if (values.length === 1) {
+        if (PLAIN_FIELD_NAME.test(fieldName)) {
+          // What merging `{ [name]: value }` does for a value that is not an
+          // object or array: assigns it as it is.
+          const value = inflateJsonValue(values[0]);
+          if (value === null || typeof value !== "object") {
+            fields[fieldName] = value;
+            continue;
+          }
+        }
+        const parsedData = inflateFieldDefault(fieldName, values[0]);
+        for (const key of Object.keys(parsedData)) {
+          fields = merge(fields, { [key]: parsedData[key] });
+        }
+        continue;
+      }
+      for (let index = 0; index < values.length; index++) {
+        const parsedData = inflateFieldDefault(
+          `${fieldName}[${index}]`,
+          values[index],
+        );
+        for (const key of Object.keys(parsedData)) {
+          fields = merge(fields, { [key]: parsedData[key] });
+        }
+      }
+    }
+    return { files, fields };
+  }
+
+  /**
    * Parses a `multipart/form-data` body with busboy.
    *
    * The body is parsed once, normally while the request is built (with
@@ -3214,6 +3353,17 @@ export class BunRequest<
   public async getMultiParts(
     options: MultiPartOptions,
   ): Promise<MultiPartParseResult> {
+    return this.#getMultiParts(options);
+  }
+
+  /**
+   * {@link getMultiParts}, answering synchronously when it can: a cached
+   * result (or refusal, thrown), or a body {@link #multipartSync} parses
+   * without anything to await. Otherwise the promise of the full parse.
+   */
+  #getMultiParts(
+    options: MultiPartOptions,
+  ): MultiPartParseResult | Promise<MultiPartParseResult> {
     if (this.#parsedMultipartResp || this.#multipartFailure) {
       if (!this.#multipartOptionsDiffer(options)) {
         if (this.#multipartFailure) {
@@ -3244,27 +3394,40 @@ export class BunRequest<
 
     const buffer = this.buffer;
     const parseOptions = options;
+    let synchronous: MultiPartParseResult | undefined;
+    try {
+      synchronous = this.#multipartSync(buffer, contentTypeHeader, options);
+    } catch (error) {
+      this.#multipartOptions = parseOptions;
+      this.#parsedMultipartResp = undefined;
+      this.#multipartFailure = { error };
+      throw error;
+    }
+    if (synchronous !== undefined) {
+      this._contentType = "multipart";
+      this.#multipartOptions = parseOptions;
+      this.#multipartFailure = undefined;
+      this.#parsedMultipartResp = synchronous;
+      return synchronous;
+    }
     return new Promise((resolve, reject) => {
       const files = new Map<MultiPartFileRecord, Set<string>>();
       const fieldNameAndValue = new Map<string, string[]>();
 
-      let { inflate, fileInflator, fieldInflator } = options;
-      const detectFileType = options.detectFileType !== false;
-      const busBoyOpts = omit(options, [
-        "inflate",
-        "fileInflator",
-        "fieldInflator",
-        "detectFileType",
-      ]);
-
-      if (!isBoolean(inflate)) {
-        inflate = true;
-      }
-
-      if (inflate) {
-        fileInflator ??= defaultFileInflator;
-        fieldInflator ??= defaultFieldInflator;
-      }
+      const {
+        inflate: inflateOption,
+        fileInflator,
+        fieldInflator,
+        detectFileType: detectOption,
+        ...busBoyOpts
+      } = options;
+      const inflate = isBoolean(inflateOption) ? inflateOption : true;
+      const detectFileType = detectOption !== false;
+      // The default inflators are synchronous; a custom one is awaited.
+      const inflateFile =
+        inflate && !fileInflator ? inflateFileDefault : undefined;
+      const inflateField =
+        inflate && !fieldInflator ? inflateFieldDefault : undefined;
 
       /** Set once the parse has resolved or rejected; later events are ignored. */
       let settled = false;
@@ -3318,6 +3481,43 @@ export class BunRequest<
         const nameTooLong = (name: string) =>
           fieldNameSize !== undefined && name.length > fieldNameSize;
 
+        /**
+         * Records one file: under the paths its inflated value puts it at,
+         * or under its own field name without inflation (or when the
+         * inflator threw). `inflated` is a custom inflator's answer, already
+         * awaited; the default one runs here.
+         */
+        const storeFile = (
+          name: string,
+          info: FileInfo,
+          fileBuffer: Buffer,
+          mimeTypeResp: FileTypeResult | undefined,
+          inflated?: { data: unknown },
+        ): void => {
+          const fileData: MultiPartFileRecord = {
+            ...info,
+            validatedMimeType: mimeTypeResp,
+            fieldname: name,
+            originalFilename: info.filename,
+            file: fileBuffer,
+            type: "file",
+          };
+          if (inflateFile) {
+            try {
+              inflated = { data: inflateFile(name, fileBuffer) };
+            } catch {
+              inflated = undefined;
+            }
+          }
+          const paths = files.get(fileData) || new Set<string>();
+          if (inflated) {
+            collectFilePaths(inflated.data, fileBuffer, [], paths);
+          } else {
+            paths.add(fileData.fieldname);
+          }
+          files.set(fileData, paths);
+        };
+
         // `file` is busboy's stream, or a buffered parse's bytes.
         const onFile = (
           name: string,
@@ -3334,6 +3534,18 @@ export class BunRequest<
             return;
           }
 
+          // Nothing to wait for (bytes in hand, no sniffing, the default
+          // inflator): stored at once, with no task for `close` to await.
+          if (!stream && !detectFileType && (!inflate || inflateFile)) {
+            try {
+              storeFile(name, info, file as Buffer, undefined);
+            } catch (error) {
+              const failed = Promise.reject(error);
+              failed.catch(() => {});
+              filePromises.push(failed);
+            }
+            return;
+          }
           const task = (async () => {
             const fileBuffer = stream
               ? await streamToBuffer(stream)
@@ -3341,43 +3553,17 @@ export class BunRequest<
             const mimeTypeResp: FileTypeResult | undefined = detectFileType
               ? await fileTypeFromBuffer(fileBuffer)
               : undefined;
-
-            const fileData: MultiPartFileRecord = {
-              ...info,
-              validatedMimeType: mimeTypeResp,
-              fieldname: name,
-              originalFilename: info.filename,
-              file: fileBuffer,
-              type: "file",
-            };
-
-            let pushFile = false;
-            if (inflate && fileInflator) {
+            let inflated: { data: unknown } | undefined;
+            if (inflate && !inflateFile) {
               try {
-                const parsedData = await fileInflator(name, fileBuffer, info);
-                const pathListInFileMap =
-                  files.get(fileData) || new Set<string>();
-
-                // A custom `fileInflator` may return anything: walked by shape.
-                collectFilePaths(parsedData, fileBuffer, [], pathListInFileMap);
-                files.set(fileData, pathListInFileMap);
+                inflated = {
+                  data: await fileInflator!(name, fileBuffer, info),
+                };
               } catch {
-                pushFile = true;
+                // Stored under its own name, as an inflator that throws is.
               }
-            } else {
-              pushFile = true;
             }
-
-            if (pushFile) {
-              const pathListInFileMap =
-                files.get(fileData) || new Set<string>();
-
-              if (!pathListInFileMap.has(fileData.fieldname)) {
-                pathListInFileMap.add(fileData.fieldname);
-              }
-
-              files.set(fileData, pathListInFileMap);
-            }
+            storeFile(name, info, fileBuffer, mimeTypeResp, inflated);
           })();
           // `close` awaits every task; this only keeps a task whose stream an
           // abort cut off from surfacing as an unhandled rejection.
@@ -3417,16 +3603,18 @@ export class BunRequest<
           if (settled) {
             return;
           }
-          const fileResults = await Promise.allSettled(filePromises);
-          if (settled) {
-            return;
-          }
-          const failedFile = fileResults.find(
-            (result) => result.status === "rejected",
-          );
-          if (failedFile && failedFile.status === "rejected") {
-            fail(failedFile.reason);
-            return;
+          if (filePromises.length > 0) {
+            const fileResults = await Promise.allSettled(filePromises);
+            if (settled) {
+              return;
+            }
+            const failedFile = fileResults.find(
+              (result) => result.status === "rejected",
+            );
+            if (failedFile && failedFile.status === "rejected") {
+              fail(failedFile.reason);
+              return;
+            }
           }
 
           // Remove file uploads without any pointers;
@@ -3439,7 +3627,7 @@ export class BunRequest<
 
           let fields: Record<string, unknown> = {};
           for (const [fieldName, values] of fieldNameAndValue) {
-            if (!(inflate && fieldInflator)) {
+            if (!inflate) {
               // Names kept exactly as sent; a repeated name is an array.
               fields[fieldName] = values.length > 1 ? [...values] : values[0];
               continue;
@@ -3455,7 +3643,9 @@ export class BunRequest<
                 : [[fieldName, values[0]]];
 
             for (const [name, value] of entries) {
-              const parsedData = await fieldInflator(name, value, undefined);
+              const parsedData = inflateField
+                ? inflateField(name, value)
+                : await fieldInflator!(name, value, undefined);
               // Direct property access: a key may contain brackets, which a
               // path-aware `get()` would read as nesting and find nothing.
               for (const key of Object.keys(parsedData)) {
@@ -4407,12 +4597,19 @@ export class BunRequest<
           }
 
           case "multipart": {
-            return this.getMultiParts(
-              this.getParserOpts("multipart") ??
-                (isObject(this.legacyOptions.parseMultiPartFormDataOpts)
-                  ? this.legacyOptions.parseMultiPartFormDataOpts
-                  : {}),
-            );
+            // Settled here when the parse is synchronous: nothing to await.
+            let parsed: MultiPartParseResult | Promise<MultiPartParseResult>;
+            try {
+              parsed = this.#getMultiParts(
+                this.getParserOpts("multipart") ??
+                  (isObject(this.legacyOptions.parseMultiPartFormDataOpts)
+                    ? this.legacyOptions.parseMultiPartFormDataOpts
+                    : {}),
+              );
+            } catch (error) {
+              return Promise.reject(error);
+            }
+            return parsed instanceof Promise ? parsed : undefined;
           }
 
           default: {

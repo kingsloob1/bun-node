@@ -9,6 +9,7 @@ import type { BufferedMultipartConfig } from "../lib/multipart/buffered";
 import { Buffer } from "node:buffer";
 import { describe, expect, it, spyOn } from "bun:test";
 import busboy from "busboy";
+import { UploadError } from "../lib";
 import * as buffered from "../lib/multipart/buffered";
 import { makeRequest } from "./helpers";
 
@@ -468,6 +469,101 @@ describe("getMultiParts: the same answer through either parser", () => {
       spy.mockRestore();
     }
   }
+
+  /** A form exercising every inflation path: plain, nested, repeated, JSON, files. */
+  const richForm = (fd: FormData) => {
+    fd.append("name", "Ada");
+    fd.append("count", "7");
+    fd.append("meta", '{"a":[1,2]}');
+    fd.append("tag", "x");
+    fd.append("tag", "x");
+    fd.append("user[langs][]", "js");
+    fd.append("user[langs][]", "ts");
+    fd.append("address.city", "London");
+    fd.append(
+      "photo",
+      new File([new Uint8Array(JPEG_HEAD)], "C:\\pics\\me.jpg", {
+        type: "application/octet-stream",
+      }),
+    );
+    fd.append("docs[]", new File(["one"], "a.txt", { type: "text/plain" }));
+    fd.append("docs[passport]", new File(["two"], "b.txt"));
+  };
+
+  it("without sniffing (the synchronous parse): every inflation path", async () => {
+    const { fast, slow } = await both(richForm, { detectFileType: false });
+    expect(fast).toEqual(slow);
+    expect(fast.files.map((file) => file.paths)).toEqual([
+      ["[photo]"],
+      ["[docs]"],
+      ["[docs][passport]"],
+    ]);
+    expect(fast.fields).toMatchObject({ count: 7, tag: ["x", "x"] });
+  });
+
+  it("without sniffing or inflation (the synchronous parse)", async () => {
+    const { fast, slow } = await both(richForm, {
+      detectFileType: false,
+      inflate: false,
+    });
+    expect(fast).toEqual(slow);
+    expect(fast.fields).toMatchObject({
+      count: "7",
+      "user[langs][]": ["js", "ts"],
+    });
+  });
+
+  it("refuses a name over fieldNameSize the same way through either parser", async () => {
+    const refusal = async () => {
+      const fd = new FormData();
+      fd.append("short", "1");
+      fd.append("a-much-longer-name", "2");
+      const req = await makeRequest({ method: "POST", body: fd });
+      const options = {
+        detectFileType: false,
+        limits: { fieldNameSize: 5 },
+      };
+      const first = await req.getMultiParts(options).catch((e: unknown) => e);
+      // Remembered: asking again with the same options refuses again.
+      const again = await req.getMultiParts(options).catch((e: unknown) => e);
+      return [first, again].map((error) =>
+        error instanceof UploadError ? [error.code, error.field] : error,
+      );
+    };
+    const fast = await refusal();
+    const spy = spyOn(buffered, "parseBufferedMultipart").mockReturnValue(
+      undefined,
+    );
+    try {
+      expect(fast).toEqual(await refusal());
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fast).toEqual([
+      ["LIMIT_FIELD_KEY", undefined],
+      ["LIMIT_FIELD_KEY", undefined],
+    ]);
+  });
+
+  it("parses while the request is built, with nothing left to await", async () => {
+    const fd = new FormData();
+    fd.append("field", "v");
+    fd.append("file", new File(["x".repeat(64)], "a.bin"));
+    const req = await makeRequest({
+      method: "POST",
+      body: fd,
+      options: {
+        parseBody: {
+          contentTypes: { multipart: { opts: { detectFileType: false } } },
+        },
+      },
+    });
+    const first = await req.getMultiParts({});
+    expect(first.fields).toEqual({ field: "v" });
+    expect([...first.files.keys()][0].file.length).toBe(64);
+    // The cached result, the very same object.
+    expect(await req.getMultiParts({})).toBe(first);
+  });
 
   it("fields, nested names, several files and sniffed types", async () => {
     const { fast, slow } = await both((fd) => {
