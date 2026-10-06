@@ -367,6 +367,28 @@ function settledOutcome(record: JobRecord): SettledOutcome {
       };
 }
 
+/**
+ * Whether `record` is a flow's top-level parent that a child buried and whose
+ * follow-through has not finished: its `removeOnFail` not yet applied.
+ *
+ * Read from the parent's own record, never from the worker's memory, so a
+ * crash heals as well as a failed write: the `markChildRecorded` that applies
+ * a top-level parent's retention is also what sets its `flow.recorded`, and a
+ * child that buries it leaves a `ChildFailedError` as its reason. A parent
+ * that died of its own processor has its own reason, and had its retention
+ * applied by that failure; `requeueParent` clears `flow.recorded` but moves
+ * the parent out of `dead`.
+ */
+function awaitsBuryFollowThrough(record: JobRecord): boolean {
+  return (
+    record.state === "dead" &&
+    Boolean(record.flow) &&
+    !record.flow?.parent &&
+    record.flow?.recorded !== true &&
+    record.failedReason?.name === ChildFailedError.name
+  );
+}
+
 /** The longest a worker held back by a concurrency limit waits before asking again. */
 const LIMITED_RECHECK_MS = 100;
 
@@ -3184,8 +3206,32 @@ export class BunQueueWorker<
    * retention. A nested parent's retention waits for its own parent to record
    * it, like any child's; its failure is delivered there, which carries it on
    * up the flow. A top-level parent applies its `removeOnFail` now.
+   *
+   * By the time this runs the child that buried the parent is marked
+   * recorded, so a failure in here cannot be healed by delivering that child
+   * again. The parent itself is remembered for another try instead, and the
+   * sweep finds a top-level one from its own record too
+   * ({@link awaitsBuryFollowThrough}); a nested one awaits its own delivery.
    */
   async #afterBury(
+    ref: QueueRef,
+    id: string,
+    reason: SerializedError | undefined,
+    options: {
+      /** Whether to emit and publish `failed` and `dead`; not on a repeat. */
+      announce: boolean;
+    },
+  ): Promise<void> {
+    try {
+      await this.#followThroughBury(ref, id, reason, options);
+    } catch (error) {
+      this.#rememberDelivery(ref.queue, id);
+      throw error;
+    }
+  }
+
+  /** The body of {@link #afterBury}, which remembers the parent when it throws. */
+  async #followThroughBury(
     ref: QueueRef,
     id: string,
     reason: SerializedError | undefined,
@@ -3247,6 +3293,23 @@ export class BunQueueWorker<
           Date.now(),
         ),
     );
+    this.#forgetDelivery(ref.queue, id);
+  }
+
+  /**
+   * Repeats the follow-through of a top-level parent's bury that a failed
+   * write or a crash left unfinished — no events, since the first attempt
+   * announced them — reporting rather than throwing, like
+   * {@link #deliverSafely}. A failure is remembered for another try.
+   */
+  async #finishBury(queue: string, id: string): Promise<void> {
+    try {
+      await this.#afterBury({ ns: this.namespace, queue }, id, undefined, {
+        announce: false,
+      });
+    } catch (error) {
+      this.#emitError(error, "flow");
+    }
   }
 
   /**
@@ -3310,6 +3373,12 @@ export class BunQueueWorker<
       return;
     }
 
+    // A parent whose bury's follow-through failed, remembered by #afterBury.
+    if (record && awaitsBuryFollowThrough(record)) {
+      await this.#finishBury(entry.queue, entry.id);
+      return;
+    }
+
     if (
       !record ||
       !awaitsDelivery(record) ||
@@ -3332,7 +3401,9 @@ export class BunQueueWorker<
    *    parent is older than the grace period, counts as failed.
    * 3. Children here that finished and were never recorded on their parent:
    *    delivered again, or released to their retention once their parent has
-   *    been missing past the grace period.
+   *    been missing past the grace period. In the same page of `dead` jobs,
+   *    top-level parents a child buried whose follow-through never finished
+   *    (see {@link awaitsBuryFollowThrough}) are finished.
    *
    * Per pass that is at most one page of {@link MAINTENANCE_BATCH} parents,
    * {@link FLOW_HEAL_LOOKUPS} child reads, and one page of finished jobs, plus
@@ -3641,7 +3712,10 @@ export class BunQueueWorker<
     return true;
   }
 
-  /** Step 3 of {@link #healFlows}: finished children never recorded. */
+  /**
+   * Step 3 of {@link #healFlows}: finished children never recorded, and
+   * top-level parents whose bury was never followed through.
+   */
   async #healChildren(): Promise<void> {
     const cursor = this.#childrenCursor;
     const page = await this.driver.listJobs(this.ref, [cursor.state], {
@@ -3669,6 +3743,13 @@ export class BunQueueWorker<
           record,
           settledOutcome(record),
         );
+      } else if (
+        awaitsBuryFollowThrough(record) &&
+        // Past one sweep interval, so a bury still being followed through
+        // elsewhere is left to finish — and to announce — on its own.
+        Date.now() - (record.finishedOn ?? 0) > this.#options.stalledInterval
+      ) {
+        await this.#finishBury(this.queueName, record.id);
       }
     }
   }
