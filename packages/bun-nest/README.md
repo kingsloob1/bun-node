@@ -43,6 +43,7 @@ Underneath, routing is
   - [CORS](#cors)
   - [Static assets](#static-assets)
   - [Body parsing and raw bodies](#body-parsing-and-raw-bodies)
+  - [Per-route parsing with `requestParsing()`](#per-route-parsing-with-requestparsing)
   - [Response compression](#response-compression)
   - [Error handling](#error-handling)
   - [Testing with `fetch()`](#testing-with-fetch)
@@ -487,6 +488,54 @@ See
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts)
 and
 [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/http-adapter-options.ts).
+
+### Per-route parsing with `requestParsing()`
+
+bun-common's `requestParsing()` (re-exported here) is functional middleware,
+so `consumer.apply()` takes it. It sets how a route's requests are parsed
+(query, cookies, body) for those requests only, and parses them that way
+before calling `next()`. The options and their semantics are bun-common's;
+see its
+[Per-route parsing](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#per-route-parsing-requestparsing).
+
+To let a route **raise** its body cap above the adapter's, two settings are
+needed:
+
+- the adapter's `deferBody` request option, so the body is read on first
+  need instead of while the request is built;
+- `bodyParser: false` in `NestFactory.create`. Otherwise Nest's own body
+  parser, registered for every route at init, reads (and caps) the body
+  before any route's middleware runs.
+
+Lowering a cap, or changing query or cookie parsing, works without either.
+
+```ts
+import type { MiddlewareConsumer } from "@nestjs/common";
+import { BunHttpAdapter, requestParsing } from "@kingsleyweb/bun-nest";
+import { Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Module({ controllers: [UploadController, WebhooksController] })
+class AppModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(requestParsing({ parseBody: { maxContentLength: "20mb" } }))
+      .forRoutes("upload");
+    consumer
+      .apply(requestParsing({ parseQuery: false, parseCookies: false }))
+      .forRoutes("webhooks");
+  }
+}
+
+const adapter = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: "100kb" }, deferBody: true },
+});
+const app = await NestFactory.create(AppModule, adapter, { bodyParser: false });
+await app.listen(3000);
+```
+
+A body over a route's cap reaches Nest's exception layer as a `413`
+`PayloadTooLargeError`, as a body-parser limit does.
 
 ### Response compression
 
@@ -1215,7 +1264,7 @@ Everything below is exported from the package root; see
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
-| Re-exported from bun-common | types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
+| Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
 

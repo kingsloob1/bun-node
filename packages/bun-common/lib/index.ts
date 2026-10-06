@@ -338,6 +338,7 @@ export {
   type ValidatorMiddleware,
 } from "./BunValidate";
 export type { StandardSchemaV1 } from "./types/standardSchema";
+export { requestParsing, type RequestParsingOptions } from "./requestParsing";
 export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 /* ------------------------------------------------------------------ *
  * Response compression (`lib/compression.ts`) — the `compression`
