@@ -27,7 +27,8 @@ export type { RepeatEveryOptions } from "./JobBuilder";
  * date phrase is read at save, as the builder reads it at `start()`, so
  * "tomorrow" means tomorrow from the save. The definition's options sit under
  * whatever is set here, as they do for `now()` and `schedule()`; whatever is
- * said last wins, as it would for two calls to the same setter.
+ * said last wins, as it would for two calls to the same setter. `toQueue()`
+ * saves it to another queue instead, with none of the definition's options.
  *
  * Where Agenda differs, this follows the package rather than Agenda:
  * `priority` is lower-runs-first and numeric only, `unique` takes an id rather
@@ -58,7 +59,10 @@ export class JobDraft<
   TResult = unknown,
   TJob extends Job<unknown, unknown> = Job<TData, TResult>,
 > {
-  /** The defined name the job is saved under. */
+  /**
+   * The name the job is saved under: a defined one from `jobs.create()`, any
+   * name from another queue's `create()`.
+   */
   readonly name: string;
 
   /** Holds the description, and adds it on save. */
@@ -80,7 +84,7 @@ export class JobDraft<
   constructor(
     /** The builder that holds the description, with the definition's defaults under it. */
     builder: JobBuilder<TData, TResult, TJob>,
-    /** The defined name the job is saved under. */
+    /** The name the job is saved under. */
     name: string,
   ) {
     this.#builder = builder;
@@ -95,6 +99,31 @@ export class JobDraft<
   /** The job the successful save returned, or `undefined` before one. */
   get job(): TJob | undefined {
     return this.#saved;
+  }
+
+  /**
+   * Saves the job to the named queue, in the same namespace, instead of the
+   * registry's — exactly as the builder's `toQueue()` does, which it is.
+   *
+   * ```ts
+   * await jobs.create("resize", { id }).toQueue("images").priority(1).save();
+   * ```
+   *
+   * A registry definition's defaults (attempts, backoff, timeout, …) do not
+   * follow the job, because that queue's own worker runs it. Naming the
+   * registry queue brings its rules back. Called after a save began, it is a
+   * change like any setter, and the next `save()` refuses it. To send a name
+   * the registry doesn't define, use `jobs.queue(name).create()`.
+   *
+   * @throws {ConfigError} as `JobBuilder.toQueue` does.
+   */
+  toQueue<TQueueData = unknown, TQueueResult = unknown>(
+    /** The queue's name, in the same namespace. */
+    queue: string,
+  ): JobDraft<TQueueData, TQueueResult> {
+    this.#edit((builder) => builder.toQueue(queue));
+    // The same draft, its builder moved: only the types change.
+    return this as unknown as JobDraft<TQueueData, TQueueResult>;
   }
 
   /** Sets what the job carries, replacing what `create()` was given. */
@@ -262,7 +291,8 @@ export class JobDraft<
   }
 
   /**
-   * Adds the job to the queue its definition routes to, and answers with it.
+   * Adds the job to the registry's queue, or the one `toQueue()` named, and
+   * answers with it.
    *
    * A combination the queue refuses — `repeatEvery` with `debounce`,
    * `debounce` with `throttle`, `unique` with either — is refused here, as a
