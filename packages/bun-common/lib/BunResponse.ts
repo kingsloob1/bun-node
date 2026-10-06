@@ -436,6 +436,11 @@ export function markSocketFree(request: Request): Request {
  * `response` as a served request's client would see it, for a socket-free
  * `fetch()`: the `Content-Type` Bun writes for a text body sent without
  * headers, and no body in answer to `HEAD` (Bun drops it on the wire).
+ *
+ * The `Content-Type` is added only to a response to a request marked with
+ * {@link markSocketFree} before it was handled (the adapters' and the
+ * router's `fetch()` mark theirs); a served request's response is never
+ * recorded for it.
  */
 export function toFetchResponse(response: Response, method: string): Response {
   if (
