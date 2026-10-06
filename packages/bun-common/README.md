@@ -205,7 +205,9 @@ wildcard is exposed as both the positional key and the name.
   `handle()` its `async` form. The adapters pass a `RequestPipelineOptions`,
   whose `requestHost` and `requestUrl` read the request's `host` and
   `originalUrl` only when a host-scoped route (or specificity ordering) asks:
-  most requests never slice the host out of the URL.
+  most requests never slice the host out of the URL. They are prototype
+  getters, so `{ ...options }` (in a hook or an overridden `handle()`) leaves
+  them out; read or assign them instead.
 - An error raised after the response started still runs the error handlers,
   which see `res.headersSent` as `true`. If none handles it, a streamed
   response is cut off (`res.destroy(err)`) and the error is logged, as
