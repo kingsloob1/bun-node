@@ -350,6 +350,45 @@ describe("a request's Headers are built on first read", () => {
     expect(second.reads()).toBe(1);
   });
 
+  it("a body's framing headers are read once each while the request is built", async () => {
+    // Counted by wrapping the native method (a spy does not see these calls).
+    const names: string[] = [];
+    const proto = Headers.prototype as { get: (name: string) => string | null };
+    const original = proto.get;
+    proto.get = function (this: Headers, name: string) {
+      names.push(name.toLowerCase());
+      return original.call(this, name);
+    };
+    let req: BunRequest;
+    try {
+      req = await BunRequest.init(
+        new Request("http://h/", {
+          method: "POST",
+          body: '{"n":7}',
+          headers: {
+            "content-type": "application/json",
+            "content-length": "7",
+          },
+        }),
+        testServer,
+        { parseBody: { contentTypes: { json: true } }, retainBuffer: false },
+      );
+    } finally {
+      proto.get = original;
+    }
+    expect(req.body).toEqual({ n: 7 });
+    // Before: Content-Length three times and Transfer-Encoding twice.
+    expect(names.sort()).toEqual([
+      "content-encoding",
+      "content-length",
+      "content-type",
+      "transfer-encoding",
+    ]);
+    // Read fresh after the build: a handler may change them.
+    req.headersObj.set("content-length", "99");
+    expect(req.get("content-length")).toBe("99");
+  });
+
   it("are built once, on the first header read", () => {
     const { request, reads } = counted("http://h/", {
       headers: { "x-a": "1" },

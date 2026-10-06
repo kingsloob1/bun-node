@@ -1074,6 +1074,9 @@ export interface BunRequestSocket {
   readonly localFamily: SocketAddress["family"] | undefined;
 }
 
+/** Answers nothing: `ready()`'s body task settles with `undefined`, as before. */
+function noop(): void {}
+
 /** Whether a text parser `encoding` decodes as UTF-8 (unset is UTF-8). */
 function isUtf8Encoding(encoding: string | undefined): boolean {
   if (encoding === undefined) {
@@ -1556,7 +1559,42 @@ export class BunRequest<
    * which never rejects (a failure settles the body as errored) — or
    * `undefined` when initialisation finished synchronously.
    */
-  #initPending: Promise<void> | undefined = undefined;
+  #initPending: Promise<this> | undefined = undefined;
+
+  /**
+   * Set while the body's handling is decided in the constructor. Meanwhile
+   * `Content-Length` and `Transfer-Encoding` are read once each and held:
+   * that decision consulted them up to five times, and served, each native
+   * header read costs about 0.2 µs. Outside it they are read fresh, as a
+   * handler may change the headers.
+   */
+  #building = false;
+  /** `Content-Length` as first read while {@link #building}; `undefined` before. */
+  #lengthHeader: string | null | undefined = undefined;
+  /** `Transfer-Encoding` as first read while {@link #building}; `undefined` before. */
+  #transferHeader: string | null | undefined = undefined;
+
+  /** The request's `Content-Length` (held while {@link #building}). */
+  #contentLength(): string | null {
+    if (!this.#building) {
+      return this.getHeader("Content-Length");
+    }
+    if (this.#lengthHeader === undefined) {
+      this.#lengthHeader = this.getHeader("Content-Length");
+    }
+    return this.#lengthHeader;
+  }
+
+  /** The request's `Transfer-Encoding` (held while {@link #building}). */
+  #transferEncoding(): string | null {
+    if (!this.#building) {
+      return this.getHeader("Transfer-Encoding");
+    }
+    if (this.#transferHeader === undefined) {
+      this.#transferHeader = this.getHeader("Transfer-Encoding");
+    }
+    return this.#transferHeader;
+  }
 
   /** Whether {@link options} is this request's own copy (see #writableOptions). */
   #ownsOptions = false;
@@ -2115,6 +2153,7 @@ export class BunRequest<
 
     if (this.options.parseBody) {
       scheduled |= INIT_BODY;
+      this.#building = true;
       const absent = this.#finishAbsentBody();
       if (!absent) {
         this.#resolvedBodyConfig();
@@ -2132,6 +2171,8 @@ export class BunRequest<
       } else {
         this.#initPending = this.#readInitialBody();
       }
+      // Read fresh from here on: a handler may change the headers.
+      this.#building = false;
     }
 
     // cookie-parser sets `req.secret = secrets[0]` on every request.
@@ -2175,11 +2216,7 @@ export class BunRequest<
     const method = this.method;
     const headerFree = method === "GET" || method === "HEAD";
     if (!headerFree) {
-      const headers = this.headersObj;
-      if (
-        headers.get("content-length") !== null ||
-        headers.get("transfer-encoding") !== null
-      ) {
+      if (this.#contentLength() !== null || this.#transferEncoding() !== null) {
         return false;
       }
     }
@@ -2309,7 +2346,7 @@ export class BunRequest<
    * the parse, one promise in all. Anything else, and a subclass overriding
    * `parseBody`, goes through {@link parseBody}.
    */
-  #readInitialBody(): Promise<void> {
+  #readInitialBody(): Promise<this> {
     const contentTypeHeader = this.getHeader("Content-Type");
     const declaredKind = contentTypeHeader
       ? this.detectParserKind(contentTypeHeader)
@@ -2319,11 +2356,8 @@ export class BunRequest<
       this.parseBody === BunRequest.prototype.parseBody &&
       this.#canReadDirect(declaredKind, limit)
     ) {
-      return this.#readDirectBody(
+      return this.#readDirectInitial(
         declaredKind as "json" | "text" | "urlencoded" | "xml",
-      ).then(
-        () => this.#bodyEnded(),
-        (error: unknown) => this.#bodyFailed(error),
       );
     }
     if (
@@ -2332,8 +2366,8 @@ export class BunRequest<
       !this.#canReadWhole(limit)
     ) {
       return this.parseBody().then(
-        () => this.#bodyEnded(),
-        (error: unknown) => this.#bodyFailed(error),
+        () => this.#ended(),
+        (error: unknown) => this.#failed(error),
       );
     }
     return this.request.arrayBuffer().then(
@@ -2348,18 +2382,17 @@ export class BunRequest<
             declaredKind,
           );
         } catch (error) {
-          this.#bodyFailed(error);
-          return;
+          return this.#failed(error);
         }
         if (pending !== undefined) {
           return pending.then(
-            () => this.#bodyEnded(),
-            (error: unknown) => this.#bodyFailed(error),
+            () => this.#ended(),
+            (error: unknown) => this.#failed(error),
           );
         }
-        this.#bodyEnded();
+        return this.#ended();
       },
-      (error: unknown) => this.#bodyFailed(error),
+      (error: unknown) => this.#failed(error),
     );
   }
 
@@ -2420,11 +2453,11 @@ export class BunRequest<
     if (encoding && parseContentCodings(encoding).length > 0) {
       return false;
     }
-    const length = this.getHeader("Content-Length");
+    const length = this.#contentLength();
     if (limit !== undefined) {
       return (
         length !== null &&
-        this.getHeader("Transfer-Encoding") === null &&
+        this.#transferEncoding() === null &&
         (this.request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] !==
           true &&
         this.#canReadWhole(limit) &&
@@ -2432,7 +2465,7 @@ export class BunRequest<
       );
     }
     return length === null
-      ? this.getHeader("Transfer-Encoding") !== null
+      ? this.#transferEncoding() !== null
       : Number(length) > 0;
   }
 
@@ -2503,6 +2536,72 @@ export class BunRequest<
     this.#readDirect = true;
   }
 
+  /** {@link #bodyEnded}, answering the request: the initial read's settlement. */
+  #ended(): this {
+    this.#bodyEnded();
+    return this;
+  }
+
+  /** {@link #bodyFailed}, answering the request: the initial read never rejects. */
+  #failed(error: unknown): this {
+    this.#bodyFailed(error);
+    return this;
+  }
+
+  /**
+   * The initial read of a body read without its bytes (see
+   * {@link #readDirectBody}), in one step: the native read, then the parse
+   * and the body's settlement in its one callback, resolving with the
+   * request. A body is read this way on most POSTs, so each promise between
+   * the read and the route counts: served, the chain of an `async` read, a
+   * settling `then` and `init`'s own `then` cost about as much as the read.
+   */
+  #readDirectInitial(
+    kind: "json" | "text" | "urlencoded" | "xml",
+  ): Promise<this> {
+    if (kind === "json") {
+      return this.request.json().then(
+        (value: unknown) => {
+          this._body = value as DefaultRequestBody;
+          this._contentType = "json";
+          this.#bodyParsed = true;
+          this.#readDirect = true;
+          return this.#ended();
+        },
+        (error: unknown) =>
+          this.#failed(
+            error instanceof SyntaxError
+              ? this.#refuseBody(
+                  httpError(400, error.message),
+                  "entity.parse.failed",
+                  undefined,
+                )
+              : error,
+          ),
+      );
+    }
+    return this.request.text().then(
+      (text) => {
+        try {
+          if (kind === "text") {
+            this._body = text;
+            this._contentType = "text";
+          } else if (kind === "urlencoded") {
+            this.handleUrlFormEncodingParsing(text);
+          } else {
+            this.handleXmlBodyParsing(text);
+          }
+        } catch (error) {
+          return this.#failed(error);
+        }
+        this.#bodyParsed = true;
+        this.#readDirect = true;
+        return this.#ended();
+      },
+      (error: unknown) => this.#failed(error),
+    );
+  }
+
   /**
    * The body has been fully received: releases the `data`/`end` events to
    * any listener (or arms them for a later subscriber).
@@ -2542,8 +2641,8 @@ export class BunRequest<
       return req;
     }
     // Every other task finished in the constructor, and this one never
-    // rejects, so it alone is awaited — not `ready()`'s `allSettled`.
-    return pending.then(() => req);
+    // rejects and resolves with the request, so it is the answer as it is.
+    return pending;
   }
 
   /**
@@ -2572,7 +2671,7 @@ export class BunRequest<
       tasks.push(
         scheduled & INIT_BODY_DEFERRED
           ? this.readDeferredBody()
-          : this.#initPending,
+          : this.#initPending?.then(noop),
       );
     }
     if (scheduled & INIT_COOKIES) {
@@ -3843,8 +3942,8 @@ export class BunRequest<
     if (limit === undefined) {
       return true;
     }
-    const declared = this.getHeader("Content-Length");
-    if (!declared || this.getHeader("Transfer-Encoding")) {
+    const declared = this.#contentLength();
+    if (!declared || this.#transferEncoding()) {
       return false;
     }
     const length = Number(declared);
