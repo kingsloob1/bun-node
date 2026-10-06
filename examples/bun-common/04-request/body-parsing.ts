@@ -74,7 +74,13 @@
  *   lands in `req.bodyDecodingError` when the body is read, and a body
  *   parser or `parseBody()` rejects with it (415), so `next(err)` answers.
  *   Any other method checks first and is refused before routing.
- * - `req.buffer` always holds the exact bytes received — the "raw body" a
+ * - A plain JSON body (no encoding, no cap, no reviver, a Content-Length) is
+ *   parsed with one native `request.json()` call and keeps no bytes:
+ *   `req.buffer` is undefined, a `data` listener gets only `end`, and an
+ *   invalid body's 400 has no `err.body`. `retainBuffer: true` (a request
+ *   option, or `requestParsing({ retainBuffer })` for a deferred body) reads
+ *   every body as bytes; a body parser registered with `rawBody` turns it on.
+ * - Otherwise `req.buffer` holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
 import type {
@@ -1132,6 +1138,197 @@ checkEqual(
     response: { body: { e: 1 } },
     delivered: { bytes: '{"e":1}', ended: true },
   },
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "A plain JSON body is read with request.json(); retainBuffer keeps the bytes",
+);
+
+// A body declared JSON with no Content-Encoding, no cap (a boolean
+// parseBody), no reviver and a Content-Length is parsed in one native
+// request.json() call, which gives no bytes back. A served request always
+// has a Content-Length; an in-process Request needs one set explicitly,
+// or it is read as bytes.
+
+/** A JSON POST to `path` carrying an explicit Content-Length. */
+function jsonRequest(path: string, text: string): Request {
+  return new Request(`http://localhost${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(text)),
+    },
+    body: text,
+  });
+}
+
+/** An adapter whose `/echo` reports body, buffer and body events. */
+function jsonApp(request: BunRequestOptions): BunHttpAdapter {
+  const app = new BunHttpAdapter(0, { request });
+  adapters.push(app);
+  app.setLogger(createTestLogger().logger);
+  app.post("/echo", (req, res) => {
+    const events: string[] = [];
+    req.on("data", () => events.push("data"));
+    req.on("end", () => {
+      events.push("end");
+      res.json({
+        body: req.body ?? null,
+        buffer: req.buffer === undefined ? "undefined" : req.buffer.toString(),
+        events,
+      });
+    });
+  });
+  app.setErrorHandler(((error, _req, res, _next) => {
+    const parseError = error as Error & {
+      status: number;
+      type: string;
+      body?: string;
+    };
+    res.status(parseError.status).json({
+      type: parseError.type,
+      body: parseError.body ?? null,
+    });
+  }) satisfies RouterErrorMiddlewareHandler);
+  return app;
+}
+
+const nativeJson = jsonApp({ parseBody: true });
+await nativeJson.listen(0);
+const viaJson = { body: { a: 1 }, buffer: "undefined", events: ["end"] };
+checkEqual(
+  "parseBody: true — parsed, no req.buffer, a data listener gets only end",
+  [
+    await (
+      await fetch(
+        `${nativeJson.url}/echo`,
+        bodyInit("application/json", '{"a":1}'),
+      )
+    ).json(),
+    await (await nativeJson.fetch(jsonRequest("/echo", '{"a":1}'))).json(),
+  ],
+  [viaJson, viaJson],
+);
+checkEqual(
+  "…an in-process Request without a Content-Length is read as bytes",
+  await (
+    await nativeJson.fetch("/echo", bodyInit("application/json", '{"a":1}'))
+  ).json(),
+  { body: { a: 1 }, buffer: '{"a":1}', events: ["data", "end"] },
+);
+checkEqual(
+  "…invalid JSON is still a 400 entity.parse.failed, without err.body",
+  await (await nativeJson.fetch(jsonRequest("/echo", '{"a":'))).json(),
+  { type: "entity.parse.failed", body: null },
+);
+
+const retained = jsonApp({ parseBody: true, retainBuffer: true });
+await retained.listen(0);
+const viaBytes = { body: { a: 1 }, buffer: '{"a":1}', events: ["data", "end"] };
+checkEqual(
+  "retainBuffer: true — the exact bytes in req.buffer, and data events",
+  [
+    await (
+      await fetch(
+        `${retained.url}/echo`,
+        bodyInit("application/json", '{"a":1}'),
+      )
+    ).json(),
+    await (await retained.fetch(jsonRequest("/echo", '{"a":1}'))).json(),
+  ],
+  [viaBytes, viaBytes],
+);
+checkEqual(
+  "…and invalid JSON carries its text in err.body",
+  await (await retained.fetch(jsonRequest("/echo", '{"a":'))).json(),
+  { type: "entity.parse.failed", body: '{"a":' },
+);
+const cappedJson = jsonApp({ parseBody: { maxContentLength: "1kb" } });
+checkEqual(
+  "a cap (the object form) reads as bytes too",
+  (
+    (await (
+      await cappedJson.fetch(jsonRequest("/echo", '{"a":1}'))
+    ).json()) as {
+      buffer: string;
+    }
+  ).buffer,
+  '{"a":1}',
+);
+
+// A deferred body: requestParsing() can ask for the bytes, and its cap and
+// a body parser's limit are checked against Content-Length.
+const deferredJson = new BunHttpAdapter(0, {
+  request: { parseBody: true, deferBody: true },
+});
+adapters.push(deferredJson);
+deferredJson.setLogger(createTestLogger().logger);
+deferredJson.use(
+  "/capped",
+  requestParsing({ parseBody: { maxContentLength: 8 } }),
+);
+deferredJson.use(
+  "/kept",
+  requestParsing({ parseBody: true, retainBuffer: true }),
+);
+deferredJson.post("/*", (req, res) => {
+  res.json({ body: req.body ?? null, buffer: req.buffer?.toString() ?? null });
+});
+deferredJson.use(((error, _req, res, _next) => {
+  res.status((error as { status: number }).status).send("refused");
+}) satisfies RouterErrorMiddlewareHandler);
+const seventeen = '{"a":"123456789"}';
+checkEqual(
+  "requestParsing({ parseBody: { maxContentLength: 8 } }): 413 from Content-Length",
+  (await deferredJson.fetch(jsonRequest("/capped", seventeen))).status,
+  413,
+);
+checkEqual(
+  "requestParsing({ retainBuffer: true }) on a deferred body: the bytes kept",
+  await (await deferredJson.fetch(jsonRequest("/kept", seventeen))).json(),
+  { body: { a: "123456789" }, buffer: seventeen },
+);
+checkEqual(
+  "…elsewhere: parsed with no bytes",
+  await (await deferredJson.fetch(jsonRequest("/plain", seventeen))).json(),
+  { body: { a: "123456789" }, buffer: null },
+);
+const limited = new BunHttpAdapter(0, {
+  request: { parseBody: true, deferBody: true },
+});
+adapters.push(limited);
+limited.setLogger(createTestLogger().logger);
+limited.useBodyParser("json", false, { limit: 8 });
+limited.post("/x", (req, res) => res.json({ body: req.body ?? null }));
+checkEqual(
+  "a body parser's limit of 8: 413 from Content-Length",
+  (await limited.fetch(jsonRequest("/x", seventeen))).status,
+  413,
+);
+
+// A body parser registered with rawBody turns retainBuffer on for good.
+const raw = new BunHttpAdapter(0);
+adapters.push(raw);
+const retainBefore = raw.requestOpts.retainBuffer === true;
+raw.useBodyParser("json", true, {});
+const retainAfter = raw.requestOpts.retainBuffer === true;
+raw.setRequestOpts({ parseBody: true });
+checkEqual(
+  "useBodyParser(type, rawBody: true) sets retainBuffer, kept after setRequestOpts()",
+  [retainBefore, retainAfter, raw.requestOpts.retainBuffer === true],
+  [false, true, true],
+);
+raw.post("/raw", (req, res) => {
+  res.json({
+    rawBody: req.rawBody?.toString() ?? null,
+    body: req.body ?? null,
+  });
+});
+checkEqual(
+  "…so req.rawBody keeps working for a JSON body with a Content-Length",
+  await (await raw.fetch(jsonRequest("/raw", '{"b":2}'))).json(),
+  { rawBody: '{"b":2}', body: { b: 2 } },
 );
 
 /* ------------------------------------------------------------------ */

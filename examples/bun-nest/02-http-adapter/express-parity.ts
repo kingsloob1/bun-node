@@ -38,6 +38,7 @@ import type {
 import type { Observable } from "rxjs";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import {
+  Body,
   Controller,
   Get,
   Header,
@@ -186,6 +187,12 @@ class AsyncController {
   @HttpCode(200)
   rawPost(@Req() req: RawBodyRequest<BunRequest>) {
     return { rawBody: req.rawBody?.toString() ?? null };
+  }
+
+  @Post("body")
+  @HttpCode(200)
+  parsedBody(@Body() body: unknown) {
+    return body;
   }
 }
 
@@ -396,6 +403,55 @@ checkEqual(
   ).json(),
   { rawBody: '{"n": 1}' },
 );
+// Served-shaped: a JSON POST with a Content-Length, the request.json() path
+// without rawBody. rawBody: true keeps the bytes; without it the body is
+// still parsed, with no bytes kept.
+/** A JSON POST to `path` carrying an explicit Content-Length. */
+function servedShapedTo(path: string, text: string): Request {
+  return new Request(`http://localhost${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": String(text.length),
+    },
+    body: text,
+  });
+}
+/** The same, to `/async/raw`. */
+function servedShaped(text: string): Request {
+  return servedShapedTo("/async/raw", text);
+}
+checkEqual(
+  "rawBody: true — a JSON POST with a Content-Length still has req.rawBody",
+  [
+    await (await asyncAdapter.fetch(servedShaped('{"n": 2}'))).json(),
+    await (
+      await fetch(`${asyncBase}/async/raw`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: '{"n": 2}',
+      })
+    ).json(),
+  ],
+  [{ rawBody: '{"n": 2}' }, { rawBody: '{"n": 2}' }],
+);
 await asyncApp.close();
+
+const plainAdapter = new BunHttpAdapter();
+const plainApp = await NestFactory.create(AsyncModule, plainAdapter, {
+  logger: false,
+});
+await plainApp.init();
+checkEqual(
+  "without rawBody: no req.rawBody, and the controller still gets the parsed body",
+  [
+    await (await plainAdapter.fetch(servedShaped('{"n": 3}'))).json(),
+    await (
+      await plainAdapter.fetch(servedShapedTo("/async/body", '{"n": 3}'))
+    ).json(),
+  ],
+  [{ rawBody: null }, { n: 3 }],
+);
+await plainApp.close();
 
 summary();
