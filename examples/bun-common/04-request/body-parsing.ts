@@ -64,11 +64,14 @@
  *   to `next(err)`. A body with no `Content-Type` is only *tried* as JSON.
  * - The final handler logs a 4xx at `warn` and a 5xx at `error` (nothing
  *   under `NODE_ENV=test`); `err.req` is attached non-enumerable.
+ * - A body-parser middleware (`useBodyParser`, `registerParserMiddleware`,
+ *   what Nest's body parser calls) passes a request without a body
+ *   (`req.hasBody`) straight on, before its type or encoding is looked at,
+ *   and leaves `req.rawBody` unset for it.
  * - `req.buffer` always holds the exact bytes received — the "raw body" a
  *   webhook signature is computed over.
  */
 import type {
-  BunRequest,
   BunRequestOptions,
   DefaultRequestBody,
   JsonValue,
@@ -86,11 +89,13 @@ import {
 } from "node:zlib";
 import {
   BunHttpAdapter,
+  BunRequest,
   compressionDictionaryHash,
   createTestLogger,
   DEFAULT_MAX_CONTENT_LENGTH,
   DEFAULT_MAX_CONTENT_LENGTH_BY_KIND,
   dictionaryCompressedHeader,
+  FETCH_STUB_SERVER,
   parseXmlToObject,
   PayloadTooLargeError,
   requestParsing,
@@ -732,6 +737,79 @@ check(
   "adapter.requestOpts is exactly as it was",
   Bun.deepEquals(shared.requestOpts, sharedBefore, true),
   { before: sharedBefore, after: shared.requestOpts },
+);
+
+/* ------------------------------------------------------------------ */
+step("Body-parser middleware passes a request with no body straight on");
+
+// useBodyParser / registerParserMiddleware are what Nest's body parser
+// calls. As body-parser's read() does, a request without a body (no
+// Content-Length, no Transfer-Encoding, no body stream: `req.hasBody`) is
+// passed on synchronously, before its type or encoding is looked at.
+const parsers = new BunHttpAdapter(0);
+adapters.push(parsers);
+parsers.setLogger(createTestLogger().logger);
+parsers.useBodyParser("json", true, { inflate: false, limit: 32 });
+parsers.all("/echo", (req, res) => {
+  res.json({
+    hasBody: req.hasBody,
+    body: describeBody(req),
+    rawBody: req.rawBody === undefined ? "undefined" : req.rawBody.toString(),
+  });
+});
+const bodilessGzip = await parsers.fetch("/echo", {
+  headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+});
+checkEqual(
+  "a GET claiming gzip with inflate: false — no body, so 200, not 415",
+  [bodilessGzip.status, await bodilessGzip.json()],
+  [200, { hasBody: false, body: null, rawBody: "undefined" }],
+);
+checkEqual(
+  "a POST: parsed, and rawBody holds its bytes",
+  await (
+    await parsers.fetch("/echo", bodyInit("application/json", '{"a":1}'))
+  ).json(),
+  { hasBody: true, body: { a: 1 }, rawBody: '{"a":1}' },
+);
+checkEqual(
+  "a gzip POST with inflate: false: 415",
+  (
+    await parsers.fetch(
+      "/echo",
+      bodyInit("application/json", gzipSync('{"a":1}'), {
+        "Content-Encoding": "gzip",
+      }),
+    )
+  ).status,
+  415,
+);
+checkEqual(
+  "a POST over its limit of 32: 413",
+  (
+    await parsers.fetch(
+      "/echo",
+      bodyInit("application/json", JSON.stringify({ pad: "x".repeat(60) })),
+    )
+  ).status,
+  413,
+);
+const inProcess = (await BunRequest.init(
+  new Request("http://localhost/", { method: "POST", body: "x" }),
+  FETCH_STUB_SERVER,
+  { parseBody: false },
+)) as BunRequest;
+checkEqual(
+  "req.hasBody: true for an in-process Request with a body stream, false without",
+  [
+    inProcess.hasBody,
+    (
+      BunRequest.init(new Request("http://localhost/"), FETCH_STUB_SERVER, {
+        parseBody: false,
+      }) as BunRequest
+    ).hasBody,
+  ],
+  [true, false],
 );
 
 /* ------------------------------------------------------------------ */
