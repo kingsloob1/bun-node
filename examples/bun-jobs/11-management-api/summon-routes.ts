@@ -153,7 +153,10 @@ function mount(config: Partial<JobsApiConfig> = {}) {
     return { status: response.status, body: (await response.json()) as any };
   }
 
-  /** The summon routes this API registered, by operation id. */
+  /**
+   * The summon routes this API registered, by operation id: a queue's three
+   * and `GET /summon`, the list of every controller.
+   */
   const summonRoutes = () =>
     api.routes
       .filter((route) => route.path.includes("/summon"))
@@ -172,9 +175,9 @@ step(
 
 const plainApi = mount();
 checkEqual(
-  "the default API registers the status route alone",
+  "the default API registers the two reads alone: a queue's status and the list",
   plainApi.summonRoutes(),
-  ["getQueueSummon"],
+  ["getQueueSummon", "listSummonControllers"],
 );
 checkEqual(
   "GET …/summon 200; both POSTs 404 ROUTE_NOT_FOUND; the summoner was never called",
@@ -195,27 +198,34 @@ checkEqual(
 
 const readOnlyApi = mount({ actions: SUMMON_ACTIONS, readOnly: true });
 checkEqual(
-  "readOnly removes the two writes even when actions names queues.summon, and keeps the read",
+  "readOnly removes the two writes even when actions names queues.summon, and keeps the reads",
   [
     readOnlyApi.summonRoutes(),
     (await readOnlyApi.call("GET", "/queues/reports/summon")).status,
     (await readOnlyApi.call("POST", "/queues/reports/summon")).status,
     recorded.length,
   ],
-  [["getQueueSummon"], 200, 404, 0],
+  [["getQueueSummon", "listSummonControllers"], 200, 404, 0],
 );
 
 const panel = mount({ actions: SUMMON_ACTIONS });
 checkEqual(
-  "opted in: status, summon now and reset, the two writes marked as mutations",
+  "opted in: the two reads, summon now and reset, the two writes marked as mutations",
   panel.summonRoutes(),
-  ["getQueueSummon", "resetQueueSummon (mutation)", "summonQueue (mutation)"],
+  [
+    "getQueueSummon",
+    "listSummonControllers",
+    "resetQueueSummon (mutation)",
+    "summonQueue (mutation)",
+  ],
 );
 
 /* ------------------------------------------------------------------ */
 step("2. GET /queues/:queue/summon: the shared state and the summoner");
 
+const readFrom = Date.now();
 const before = await panel.call("GET", "/queues/reports/summon");
+const readTo = Date.now();
 const status: SummonStatusDto = before.body;
 show("GET /queues/reports/summon", status);
 checkEqual(
@@ -238,8 +248,29 @@ checkEqual(
     [],
     0,
     null,
-    { hour: 0, perHour: 30, day: 0, perDay: 300 },
+    {
+      hour: 0,
+      perHour: 30,
+      day: 0,
+      perDay: 300,
+      hourResetsAt: status.budget?.hourResetsAt,
+      dayResetsAt: status.budget?.dayResetsAt,
+    },
   ],
+);
+// The budget counts attempts per UTC hour and UTC day; each window's end
+// comes with it, epoch ms, so a panel can say when the count starts over.
+/** The end of the UTC window of `size` ms holding `at`. */
+const windowEnd = (at: number, size: number) =>
+  Math.floor(at / size) * size + size;
+check(
+  "hourResetsAt is the next UTC hour, and dayResetsAt the next UTC midnight",
+  [readFrom, readTo].some(
+    (at) =>
+      status.budget?.hourResetsAt === windowEnd(at, 3_600_000) &&
+      status.budget?.dayResetsAt === windowEnd(at, 86_400_000),
+  ),
+  status.budget,
 );
 // `readiness` says whether the summoner can be called: a `defineSummoner`
 // has no config to wait for, so it is "ready" at once, and that is why
