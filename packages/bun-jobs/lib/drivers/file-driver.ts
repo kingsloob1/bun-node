@@ -3404,7 +3404,31 @@ export class FileDriver implements JobsDriver {
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
-    return await this.#deleteJob(q, id, (record) => record.state !== "active");
+    for (let attempt = 0; ; attempt++) {
+      if (await this.#deleteJob(q, id, (record) => record.state !== "active")) {
+        return true;
+      }
+
+      // `#deleteJob` answers `false` for three things, and the contract's
+      // `false` is only two of them: no such job, or an active one. Answering
+      // it for the third — the marker stayed out of reach — tells the caller a
+      // job that is still there has gone.
+      const current = await this.#readJob(this.#jobPath(q, id));
+      if (!current || current.state === "active") {
+        return false;
+      }
+
+      // Or it settled between the refusal and the read above. Once more, then
+      // give up loudly rather than guess, as `clearJobLogs` does.
+      if (attempt >= 1) {
+        throw new DriverError(
+          "file",
+          "removeJob",
+          new Error("the job's marker stayed held"),
+          { id },
+        );
+      }
+    }
   }
 
   async retryJob(
@@ -4635,14 +4659,23 @@ export class FileDriver implements JobsDriver {
   /**
    * Takes a job's marker out of the index for as long as the caller needs the
    * job to stand still, and answers with the record as read under the hold —
-   * or `null` when there is no such job, `accept` refuses it, or somebody else
-   * kept hold of it past `HOLD_PATIENCE_MS`.
+   * or `null` when there is no such job, `accept` refuses it, or the marker
+   * stayed out of reach (below).
    *
    * The caller owns the hold it gets back, and must end it: put the marker
    * back with `#place`/`#release`, or delete it along with the job.
    *
    * `accept` is asked twice, once before taking anything and once of the copy
    * read under the hold, so it must not have side effects.
+   *
+   * **Patience runs from the last sign of progress, not from the start.** A
+   * marker out of reach for `HOLD_PATIENCE_MS` with nothing happening to it is
+   * stuck: a dead holder's hold is healed well inside that. But a marker that
+   * keeps changing hands — a new hold of it, or the record moving on — is busy,
+   * and under load sixty patches queueing for one job held a removal off for
+   * longer than that, which then answered as if the job were not there. So each
+   * sign of progress starts the patience again, up to `LOCK_WAIT_MS` in all, the
+   * bound on any merely contended lock here.
    */
   async #holdJob(
     q: QueueRef,
@@ -4651,7 +4684,14 @@ export class FileDriver implements JobsDriver {
     known?: JobRecord,
   ): Promise<HeldJob | null> {
     const path = this.#jobPath(q, id);
-    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    const giveUp = Date.now() + LOCK_WAIT_MS;
+    let deadline = Date.now() + HOLD_PATIENCE_MS;
+    /** The newest hold of the marker seen so far, by its start. */
+    let seen = 0;
+    /** Somebody did something with the job: the patience starts again. */
+    const progressed = (): void => {
+      deadline = Math.min(giveUp, Date.now() + HOLD_PATIENCE_MS);
+    };
     let first: JobRecord | undefined = known;
 
     for (;;) {
@@ -4680,8 +4720,14 @@ export class FileDriver implements JobsDriver {
           fresh.state === record.state &&
           this.#markerFor(fresh) === marker
         ) {
-          await this.#healHolds(q);
+          const newest = await this.#healHolds(q, record.state, marker);
+          if (newest > seen) {
+            seen = newest;
+            progressed();
+          }
           await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+        } else {
+          progressed();
         }
         continue;
       }
@@ -4792,14 +4838,31 @@ export class FileDriver implements JobsDriver {
     );
   }
 
-  /** Files every hold older than `LOCK_STALE_MS` by its job's record. */
-  async #healHolds(q: QueueRef): Promise<void> {
+  /**
+   * Files every hold older than `LOCK_STALE_MS` by its job's record, and
+   * answers with the start of the newest live hold of `marker` in `state` —
+   * `0` when there is none, or none was asked about. A waiter reads progress
+   * off it from the same listing the healing needs.
+   */
+  async #healHolds(
+    q: QueueRef,
+    state?: JobState,
+    marker?: string,
+  ): Promise<number> {
     const dir = this.#heldDir(q);
     const now = Date.now();
+    let newest = 0;
 
     for (const name of await this.#list(dir)) {
       const hold = parseHold(name);
-      if (!hold || now - hold.stamp <= LOCK_STALE_MS) {
+      if (!hold) {
+        continue;
+      }
+
+      if (now - hold.stamp <= LOCK_STALE_MS) {
+        if (hold.state === state && hold.marker === marker) {
+          newest = Math.max(newest, hold.stamp);
+        }
         continue;
       }
 
@@ -4815,6 +4878,8 @@ export class FileDriver implements JobsDriver {
 
       await this.#place(q, path, record);
     }
+
+    return newest;
   }
 
   /**
