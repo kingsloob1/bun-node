@@ -432,6 +432,52 @@ while streaming (so which limit is reported when several are exceeded can
 differ), and `isPartAFile`, `fieldSize` truncation and the charsets options
 have no equivalent. It is a decision, not a refactor, so it has not been made.
 
+**`formData()` against busboy, measured.** Both parsers started from the
+buffered body, as `BunRequest` holds it, and both answers were checked equal
+before timing:
+
+| Upload | busboy | `formData()` | ratio |
+|---|---:|---:|---:|
+| 1 field + 1 KiB file (the wrk scenario) | 24.8 µs | 9.5 µs | 2.6× |
+| 10 fields, no file | 33.3 µs | 12.7 µs | 2.6× |
+| 50 fields, no file | 150.8 µs | 38.8 µs | 3.9× |
+| 1 field + 100 KiB file | 132.0 µs | 94.7 µs | 1.4× |
+| 1 field + 1 MiB file | 1.26 ms | 918.5 µs | 1.4× |
+| 5 files × 100 KiB | 628.9 µs | 417.6 µs | 1.5× |
+| 1 field + 10 MiB file | 12.93 ms | 11.46 ms | 1.1× |
+
+For the wrk upload that is ~15 µs of the ~87 µs request (about 17%). For
+large files it shrinks to ~10%, because copying the bytes dominates both.
+
+The two parsers answer the same bytes differently:
+
+| Input | busboy (today) | `formData()` |
+|---|---|---|
+| UTF-8 part name / filename, raw | latin1 mojibake (`cafÃ©`) unless `defParamCharset: "utf8"` | UTF-8 (`café`) |
+| RFC 5987 `filename*=UTF-8''…` | a file named `naïve.txt` | **a text field; the file is lost** |
+| `filename="C:\dir\x.txt"` | basename `x.txt` (unless `preservePath`) | **the full path**: a path-traversal hazard for disk storage |
+| part with no `filename` but a file `Content-Type` | a file | a text field |
+| field with `Content-Type: text/plain; charset=latin1` | decoded (`é`) | **mis-decoded (`�`)** |
+| file with no `Content-Type` | `text/plain` (RFC 7578) | `application/octet-stream` |
+| a file's type | `text/plain` | `text/plain;charset=utf-8` |
+| `Content-Transfer-Encoding` | reported as `encoding` | not reported |
+| part with no `name` | kept, under `undefined` | dropped |
+| truncated or garbage body | `Unexpected end of form` | `TypeError: … missing final boundary` |
+| CRLF / LF in values, repeated names, preamble, quoted boundary | same | same |
+
+The parse options have no `formData()` equivalent either: `limits` (it would
+check them after the parse, and could report a different one when several
+are exceeded), `isPartAFile`, `preservePath`, `defCharset`,
+`defParamCharset`.
+
+**Verdict: not a replacement.** Three of the differences lose data or open a
+hazard (`filename*`, a charset-tagged field, a path in a filename). `limits`,
+`isPartAFile` and the charsets are documented options that would stop
+working. A native path is defensible only as an **opt-in** parser, documented
+with this table, that keeps the basename strip and the post-parse limit
+checks. It would be worth about 17% on a small upload, and it is offered,
+not made.
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |

@@ -1,0 +1,965 @@
+{
+  "bun": "1.4.2",
+  "cpus": 4,
+  "threads": "2",
+  "connections": "64",
+  "duration": "5",
+  "warmup": "2",
+  "rounds": "3",
+  "routes": 1000,
+  "runs": {
+    "bun-common\tjson": [
+      {
+        "rps": 19050.63,
+        "p50": 3.04,
+        "p99": 7.15,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20198.43,
+        "p50": 2.91,
+        "p99": 6.9,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20674.96,
+        "p50": 2.83,
+        "p99": 8.07,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\turlencoded": [
+      {
+        "rps": 18180.2,
+        "p50": 3.16,
+        "p99": 8.17,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 18199.84,
+        "p50": 3.17,
+        "p99": 8.58,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 17466.05,
+        "p50": 3.24,
+        "p99": 8.64,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\tmultipart": [
+      {
+        "rps": 5796.53,
+        "p50": 8.9,
+        "p99": 35.06,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 6089.58,
+        "p50": 8.43,
+        "p99": 43.07,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 5837.83,
+        "p50": 8.78,
+        "p99": 39.69,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\tbinary": [
+      {
+        "rps": 18865.03,
+        "p50": 3.05,
+        "p99": 10.6,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 18167.19,
+        "p50": 3.1,
+        "p99": 9.78,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 18972.72,
+        "p50": 2.99,
+        "p99": 10.06,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\ttext": [
+      {
+        "rps": 22557.13,
+        "p50": 2.77,
+        "p99": 5.78,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20467.35,
+        "p50": 2.92,
+        "p99": 6.66,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20085.6,
+        "p50": 2.92,
+        "p99": 6.67,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-common\txml": [
+      {
+        "rps": 20014.44,
+        "p50": 2.97,
+        "p99": 6.99,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19851.85,
+        "p50": 3.04,
+        "p99": 7.09,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19915.61,
+        "p50": 3,
+        "p99": 7.45,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\tjson": [
+      {
+        "rps": 13580.83,
+        "p50": 4.33,
+        "p99": 11.1,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 13587.36,
+        "p50": 4.36,
+        "p99": 9.35,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12877.21,
+        "p50": 4.58,
+        "p99": 11.53,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\turlencoded": [
+      {
+        "rps": 13415.71,
+        "p50": 4.45,
+        "p99": 10.05,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12599.12,
+        "p50": 4.64,
+        "p99": 10.14,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12889.96,
+        "p50": 4.59,
+        "p99": 10.17,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\tmultipart": [
+      {
+        "rps": 3305.3,
+        "p50": 16.07,
+        "p99": 52.15,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 2840.61,
+        "p50": 19.35,
+        "p99": 58.2,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 3148.61,
+        "p50": 16.76,
+        "p99": 55.57,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\tbinary": [
+      {
+        "rps": 12068.2,
+        "p50": 4.67,
+        "p99": 17.33,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 11418.74,
+        "p50": 4.84,
+        "p99": 17.64,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 11477.08,
+        "p50": 4.88,
+        "p99": 14.23,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\ttext": [
+      {
+        "rps": 13714.99,
+        "p50": 4.28,
+        "p99": 10.36,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 13436.21,
+        "p50": 4.37,
+        "p99": 9.91,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 13303.91,
+        "p50": 4.43,
+        "p99": 12.3,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-nest\txml": [
+      {
+        "rps": 12911.62,
+        "p50": 4.62,
+        "p99": 10.94,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12191.35,
+        "p50": 4.7,
+        "p99": 13.86,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 12629.69,
+        "p50": 4.58,
+        "p99": 12.82,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\tjson": [
+      {
+        "rps": 8644.24,
+        "p50": 6.22,
+        "p99": 28.82,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 8598.04,
+        "p50": 6.04,
+        "p99": 39.11,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 8355.4,
+        "p50": 6.28,
+        "p99": 42.08,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\turlencoded": [
+      {
+        "rps": 7627.4,
+        "p50": 6.89,
+        "p99": 47.28,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 7439.85,
+        "p50": 6.75,
+        "p99": 59.53,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 7146.06,
+        "p50": 6.76,
+        "p99": 72.03,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\tbinary": [
+      {
+        "rps": 9709.22,
+        "p50": 5.74,
+        "p99": 40.01,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 8946.01,
+        "p50": 5.99,
+        "p99": 52.91,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 8832.46,
+        "p50": 5.89,
+        "p99": 68.54,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "express\ttext": [
+      {
+        "rps": 8668.66,
+        "p50": 6.17,
+        "p99": 55.08,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 9672.14,
+        "p50": 5.63,
+        "p99": 37.95,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 9250.9,
+        "p50": 5.84,
+        "p99": 61.4,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\tjson": [
+      {
+        "rps": 21796.52,
+        "p50": 2.8,
+        "p99": 6.98,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22652.14,
+        "p50": 2.7,
+        "p99": 5.74,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23438.14,
+        "p50": 2.65,
+        "p99": 4.79,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\turlencoded": [
+      {
+        "rps": 19441.17,
+        "p50": 3.12,
+        "p99": 7.75,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19311.36,
+        "p50": 3.09,
+        "p99": 6.63,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19293.05,
+        "p50": 3.09,
+        "p99": 11.93,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\tmultipart": [
+      {
+        "rps": 16834.44,
+        "p50": 3.62,
+        "p99": 6.72,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16928.26,
+        "p50": 3.51,
+        "p99": 7.61,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16512.48,
+        "p50": 3.61,
+        "p99": 17.87,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\tbinary": [
+      {
+        "rps": 21976.13,
+        "p50": 2.8,
+        "p99": 5.72,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23280.87,
+        "p50": 2.66,
+        "p99": 5.64,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22857.68,
+        "p50": 2.67,
+        "p99": 6.04,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hono\ttext": [
+      {
+        "rps": 24232.69,
+        "p50": 2.58,
+        "p99": 5.59,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25047.29,
+        "p50": 2.53,
+        "p99": 4.48,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23906.24,
+        "p50": 2.61,
+        "p99": 4.84,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\tjson": [
+      {
+        "rps": 24093.57,
+        "p50": 2.51,
+        "p99": 7.88,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24691.97,
+        "p50": 2.42,
+        "p99": 5.99,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24562.19,
+        "p50": 2.49,
+        "p99": 6.48,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\turlencoded": [
+      {
+        "rps": 23431.62,
+        "p50": 2.54,
+        "p99": 7.14,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24793.81,
+        "p50": 2.45,
+        "p99": 5.99,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24814.28,
+        "p50": 2.46,
+        "p99": 5.69,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\tmultipart": [
+      {
+        "rps": 15847.48,
+        "p50": 3.77,
+        "p99": 10.19,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16528.05,
+        "p50": 3.56,
+        "p99": 8.38,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16634.29,
+        "p50": 3.58,
+        "p99": 7.81,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\tbinary": [
+      {
+        "rps": 22451,
+        "p50": 2.55,
+        "p99": 7.64,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22864.21,
+        "p50": 2.56,
+        "p99": 6.87,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22603.19,
+        "p50": 2.58,
+        "p99": 7.5,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia\ttext": [
+      {
+        "rps": 26099.75,
+        "p50": 2.27,
+        "p99": 6.32,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24833.26,
+        "p50": 2.38,
+        "p99": 6.15,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 27011.44,
+        "p50": 2.27,
+        "p99": 5.16,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\tjson": [
+      {
+        "rps": 24861.02,
+        "p50": 2.53,
+        "p99": 6.26,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25620.34,
+        "p50": 2.41,
+        "p99": 5.35,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24210.32,
+        "p50": 2.5,
+        "p99": 5.8,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\turlencoded": [
+      {
+        "rps": 23048.65,
+        "p50": 2.52,
+        "p99": 6.74,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24836.9,
+        "p50": 2.46,
+        "p99": 5.29,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 23899.8,
+        "p50": 2.52,
+        "p99": 5.74,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\tmultipart": [
+      {
+        "rps": 16893.72,
+        "p50": 3.48,
+        "p99": 8.27,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16497.63,
+        "p50": 3.53,
+        "p99": 7.6,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 16932.16,
+        "p50": 3.47,
+        "p99": 7.51,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\tbinary": [
+      {
+        "rps": 22078.52,
+        "p50": 2.6,
+        "p99": 7.91,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22204.74,
+        "p50": 2.64,
+        "p99": 7.68,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 21931.95,
+        "p50": 2.63,
+        "p99": 7.4,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "elysia2\ttext": [
+      {
+        "rps": 25442.17,
+        "p50": 2.38,
+        "p99": 5.48,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 24878.77,
+        "p50": 2.39,
+        "p99": 6,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25452.86,
+        "p50": 2.38,
+        "p99": 5.76,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\tjson": [
+      {
+        "rps": 29780.46,
+        "p50": 2.07,
+        "p99": 4.86,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 30231.17,
+        "p50": 2.09,
+        "p99": 3.83,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 30507.81,
+        "p50": 2.03,
+        "p99": 4.39,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\turlencoded": [
+      {
+        "rps": 25410.31,
+        "p50": 2.38,
+        "p99": 5.34,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 26033.32,
+        "p50": 2.38,
+        "p99": 4.4,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 25809,
+        "p50": 2.36,
+        "p99": 5.02,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\tmultipart": [
+      {
+        "rps": 20182.38,
+        "p50": 2.88,
+        "p99": 9.07,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 22440.33,
+        "p50": 2.71,
+        "p99": 5.55,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20830.97,
+        "p50": 2.81,
+        "p99": 6.66,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\tbinary": [
+      {
+        "rps": 26510.28,
+        "p50": 2.2,
+        "p99": 6.33,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 26412.73,
+        "p50": 2.23,
+        "p99": 32.37,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 28215.73,
+        "p50": 2.1,
+        "p99": 7.5,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "bun-serve\ttext": [
+      {
+        "rps": 30113.41,
+        "p50": 2.01,
+        "p99": 5.1,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 30744.33,
+        "p50": 2.04,
+        "p99": 3.88,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 30080.47,
+        "p50": 2.03,
+        "p99": 4.38,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\tjson": [
+      {
+        "rps": 19369.7,
+        "p50": 3.12,
+        "p99": 6.45,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19311.93,
+        "p50": 3.1,
+        "p99": 6.27,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19592.68,
+        "p50": 3.08,
+        "p99": 5.52,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\turlencoded": [
+      {
+        "rps": 19644.12,
+        "p50": 3.13,
+        "p99": 5.34,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19513.86,
+        "p50": 3.12,
+        "p99": 5.77,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 19327.61,
+        "p50": 3.16,
+        "p99": 5.61,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\tmultipart": [
+      {
+        "rps": 7952.61,
+        "p50": 7.58,
+        "p99": 14.48,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 7881.53,
+        "p50": 7.51,
+        "p99": 15.5,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 6969.79,
+        "p50": 8.73,
+        "p99": 16.32,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\tbinary": [
+      {
+        "rps": 18407.05,
+        "p50": 3.17,
+        "p99": 7.36,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20035.39,
+        "p50": 3.04,
+        "p99": 5.73,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20216.97,
+        "p50": 2.98,
+        "p99": 5.91,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ],
+    "hyper-express-node\ttext": [
+      {
+        "rps": 20144.61,
+        "p50": 2.96,
+        "p99": 5.95,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 20304.02,
+        "p50": 2.98,
+        "p99": 5.7,
+        "non2xx": 0,
+        "errors": 0
+      },
+      {
+        "rps": 21145.35,
+        "p50": 2.93,
+        "p99": 5.11,
+        "non2xx": 0,
+        "errors": 0
+      }
+    ]
+  },
+  "skipped": {
+    "express\tmultipart": "not supported — no built-in multipart parser (needs multer)",
+    "express\txml": "not supported — no built-in XML parser",
+    "hono\txml": "not supported — no built-in XML parser",
+    "elysia\txml": "not supported — no built-in XML parser",
+    "elysia2\txml": "not supported — no built-in XML parser",
+    "bun-serve\txml": "not supported — no built-in XML parser",
+    "hyper-express-node\txml": "not supported — no built-in XML parser",
+    "hyper-express-bun": "failed to start — TypeError: symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?"
+  }
+}
