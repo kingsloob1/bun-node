@@ -30,10 +30,20 @@
  * - A stream's headers go out as soon as it opens: an async handler that
  *   writes and then awaits does not hold its first chunk back. An open
  *   stream is never cut short by the adapter's request timeout.
+ * - `Bun.serve`'s `idleTimeout` (the adapter's `server.idleTimeout`) cuts a
+ *   connection that goes quiet, a stream included. `req.socket.setTimeout(0)`
+ *   exempts a request from it, as Node's "no timeout" idiom does, and
+ *   `write()` and `flushHeaders()` call it themselves, so a `write()` stream
+ *   is never cut for being quiet. A `ReadableStream` handed to `send()` is
+ *   not exempt unless the handler calls it.
+ * - `req.socket.setKeepAlive(true)`, which SSE helpers call up front, sends
+ *   nothing: `res.headersSent` stays `false`, so an error raised before the
+ *   first event is still answered with a status (a 500), not left hanging.
  * - `res.isStreamOpen`, `res.writableEnded` and `res.onceStreamEnded()` say
  *   where a stream is; `awaitPipelineOrStream()` is how the adapters and
  *   `fetch()` hand a stream's `Response` back while the pipeline runs on.
  */
+import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -376,6 +386,161 @@ checkEqual(
 );
 check("…running its full ~400ms", longTook >= 350, longTook);
 await live.close();
+
+/* ------------------------------------------------------------------ */
+step("An event stream that fails before its first event is still answered");
+
+/** Resolves `pending`, or `"no answer"` once `ms` pass first. */
+async function within<T>(
+  pending: Promise<T>,
+  ms: number,
+): Promise<T | "no answer"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<"no answer">((resolve) => {
+        timer = setTimeout(resolve, ms, "no answer");
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const feed = new BunHttpAdapter(0);
+/** `res.headersSent` as each call of the error handler saw it. */
+const feedSaw: boolean[] = [];
+feed.get("/feed", (req) => {
+  // What an SSE helper does first (NestJS's `SseStream` among them). It
+  // sends nothing, so nothing is committed yet.
+  req.socket.setKeepAlive(true);
+  throw new Error("feed unavailable");
+});
+feed.use(((error, _req, res, next) => {
+  feedSaw.push(res.headersSent);
+  if (res.headersSent) {
+    // Once headers are out a status cannot be sent: delegate (Express's rule).
+    next(error as Error);
+    return;
+  }
+  res.status(500).json({ error: (error as Error).message });
+}) satisfies RouterErrorMiddlewareHandler);
+await feed.listen(0);
+
+for (const [how, get] of [
+  ["served", () => fetch(`${feed.url}/feed`)],
+  ["adapter.fetch()", () => feed.fetch("/feed")],
+] as const) {
+  const answered = await within(get(), 5000);
+  checkEqual(
+    `${how}: setKeepAlive(true), then a throw: a 500 within 5s`,
+    answered === "no answer"
+      ? answered
+      : [answered.status, await answered.json()],
+    [500, { error: "feed unavailable" }],
+  );
+}
+checkEqual(
+  "…and the error handler saw headersSent: false, both times",
+  feedSaw,
+  [false, false],
+);
+await feed.close();
+
+/* ------------------------------------------------------------------ */
+step("idleTimeout: which quiet streams Bun cuts, and which stay open");
+
+// `idleTimeout` is in seconds, and 1 is the least Bun accepts; Bun sweeps
+// idle connections every few seconds, so a quiet connection is cut about 4s
+// in. Each route sends one comment line and then nothing.
+const quietServer = new BunHttpAdapter(0, { server: { idleTimeout: 1 } });
+/** One SSE comment line, then silence: a stream that never closes. */
+const quietStream = () =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(": open\n\n"));
+    },
+  });
+quietServer.get("/sent", (_req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.send(quietStream());
+});
+quietServer.get("/sent-exempt", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  req.socket.setTimeout(0);
+  res.send(quietStream());
+});
+quietServer.get("/written", (_req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.write(": open\n\n");
+});
+await quietServer.listen(0);
+
+/** A quiet stream being watched, and when it was seen to close. */
+interface Watched {
+  /** Cancels the response body, once the watch is over. */
+  cancel: () => Promise<void>;
+  /** Milliseconds from the start until the stream ended or errored, if it did. */
+  closedAfter?: number;
+}
+
+const quietFrom = performance.now();
+/** Opens `path`, reads its first chunk, and notes when the stream closes. */
+async function watchQuiet(path: string): Promise<Watched> {
+  const response = await fetch(`${quietServer.url}${path}`);
+  const reader = response.body!.getReader();
+  const watched: Watched = { cancel: async () => reader.cancel() };
+  await reader.read();
+  const closed = () => {
+    watched.closedAfter = performance.now() - quietFrom;
+  };
+  reader.read().then(closed, closed);
+  return watched;
+}
+
+const [sentQuiet, exemptQuiet, writtenQuiet] = await Promise.all([
+  watchQuiet("/sent"),
+  watchQuiet("/sent-exempt"),
+  watchQuiet("/written"),
+]);
+await waitFor(
+  "Bun to cut the stream nothing exempted",
+  () => sentQuiet.closedAfter !== undefined,
+  { timeout: 15_000 },
+).catch(() => {});
+// The three opened together, so a stream that is not exempt is cut in the
+// same sweep. Give the others a whole further sweep before looking.
+await Bun.sleep(5000);
+/** How a watched stream stands, for the output. */
+const standing = (watched: Watched): string =>
+  watched.closedAfter === undefined
+    ? "still open"
+    : `cut at ${watched.closedAfter.toFixed(0)}ms`;
+show("the three quiet streams", {
+  "/sent": standing(sentQuiet),
+  "/sent-exempt": standing(exemptQuiet),
+  "/written": standing(writtenQuiet),
+});
+check(
+  "res.send(ReadableStream) going quiet is cut by idleTimeout",
+  sentQuiet.closedAfter !== undefined && sentQuiet.closedAfter >= 1000,
+  sentQuiet.closedAfter,
+);
+checkEqual(
+  "…but after req.socket.setTimeout(0) the same stream is still open",
+  exemptQuiet.closedAfter,
+  undefined,
+);
+checkEqual(
+  "…and a write() stream is still open, exempt by itself",
+  writtenQuiet.closedAfter,
+  undefined,
+);
+for (const watched of [sentQuiet, exemptQuiet, writtenQuiet]) {
+  await watched.cancel().catch(() => {});
+}
+await quietServer.close();
 
 /* ------------------------------------------------------------------ */
 step("isStreamOpen, writableEnded, onceStreamEnded(), awaitPipelineOrStream()");
