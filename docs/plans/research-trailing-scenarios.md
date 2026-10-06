@@ -19,7 +19,7 @@ not timed) or **[est]** (an estimate from the measurements around it).
 
 In process — the same request through each framework's handler, no socket,
 fresh `Request` per call, 7 interleaved rounds, medians
-(`scratchpad/research-inproc.ts`):
+(`evidence/trailing-scenarios/research-inproc.ts`):
 
 | Scenario | bun-common | Elysia 2 | Gap | Gap beyond static's |
 |---|---:|---:|---:|---:|
@@ -32,7 +32,7 @@ fresh `Request` per call, 7 interleaved rounds, medians
 | wildcard (fresh path per request) | 4,479 ns | 1,798 ns | 2,681 ns | **~2,000 ns** |
 
 (The headers and wildcard rows come from a second harness run,
-`scratchpad/research-wh2.ts`, whose static gap was 689 ns; ranges are two runs.)
+`evidence/trailing-scenarios/research-wh2.ts`, whose static gap was 689 ns; ranges are two runs.)
 
 The "beyond static" column is what each scenario adds on top of the fixed
 per-request cost every bun-common request pays (the request and response
@@ -218,7 +218,7 @@ builds the **request's** `Headers` and reads `If-Modified-Since` and
 `If-None-Match`; `has("content-type")`; and `new Response(text, options)`
 with the `Headers`.
 
-**Measured** (micro-benchmarks on this machine, `scratchpad/research-hdr.ts`):
+**Measured** (micro-benchmarks on this machine, `evidence/trailing-scenarios/research-hdr.ts`):
 
 | Step | Time |
 |---|---:|
@@ -379,6 +379,10 @@ random tables × 2 case modes × 60 paths, exact captures). Request level:
 | in process param-random, 2 runs | 5,271 / 5,610 ns | 5,056 / 5,410 ns (−4%) |
 
 ## 7. Body scenarios — urlencoded, multipart, binary, text, xml
+
+Scripts: `evidence/trailing-scenarios/multipart/`, `urlencoded-parsers.ts`,
+`parse-body-resolve.ts` and `profiling/` (indexed in that directory's
+`README.md`).
 
 The `wrk` harness gained five body scenarios beside `json`. bun-common and
 bun-nest run them with `retainBuffer: false` and multipart's
