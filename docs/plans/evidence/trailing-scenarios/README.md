@@ -29,6 +29,8 @@ shell exports `--smol`). The `wrk` figures themselves come from
 | `upload/stages.ts`, `upload/pipeline.ts` | §8 | An upload in process, stage by stage, ours against Elysia 2; sync, async and upload handlers on the adapter |
 | `upload/served-layers.ts` | §8 | One served layer at a time (`LAYER=`): body read variants, `formData()`, our parser, `BunRequest.init`, the helper, the adapter |
 | `upload/layer-ab.sh`, `upload/gcrun.sh` | §8 | Interleaved `wrk` rounds of layers; GC time per request from `BUN_JSC_logGC` |
+| `machinery/inproc.ts`, `machinery/stages.ts`, `machinery/async-*.ts` | §9 | Each scenario in process against Elysia 2; a GET stage by stage; async handlers by awaits |
+| `machinery/served-layers.ts`, `machinery/layer-ab.sh`, `machinery/gcrun.sh`, `machinery/alloc*` | §9 | Served layers for a GET and a JSON POST (`LAYER=`), interleaved; GC per request; the served cost of per-request allocation |
 | `urlencoded-parsers.ts` | §7 | picoquery against `formData()` and `URLSearchParams` for urlencoded bodies |
 | `parse-body-resolve.ts` | §7 | Resolving an object-form `parseBody` per request |
 

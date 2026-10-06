@@ -658,6 +658,111 @@ needs the general per-request work (`BunRequest` and `BunResponse`
 construction, the pipeline's async wait, the response): task C of the Elysia
 plan, "construction + dispatch".
 
+## 9. The request machinery: construction and dispatch
+
+Scripts: `evidence/trailing-scenarios/machinery/`. In process:
+
+- `inproc.ts`: each scenario against Elysia 2;
+- `stages.ts`: a GET, stage by stage;
+- `async-shapes.ts`, `async-slope.ts`: async handlers by number of awaits.
+
+Served under `wrk`:
+
+- `served-layers.ts` with `layer-ab.sh`, interleaved;
+- `gcrun.sh`;
+- `alloc.ts`: the cost of per-request allocation.
+
+**Baseline on this machine** (`wrk`, 3 rounds, bun-common as a share of
+Elysia 2):
+
+| static | param | middleware | async | headers | json | text | multipart |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 83% | 89% | 98% | 79% | 89% | 74% | 79% | 64% |
+
+**Where a request's time goes.** In process, a GET with a route param is
+831 ns:
+
+- `new Request`: 182 ns;
+- `BunRequest.init`: 152 ns;
+- `new BunResponse`: 73 ns;
+- the options and route match: 31 ns;
+- `send()` and the native `Response`: 275 ns, of which a bare `Response` is
+  147 ns;
+- the pipeline loop and the adapter's hooks: 118 ns.
+
+Beyond the `Request` and `Response` both frameworks pay, that is about
+500 ns against Elysia 2's roughly 340.
+
+Served, JavaScript costs about 2.7× its in-process time, in both
+frameworks alike (ours 2.8×, Elysia 2.6×), so in-process savings carry
+over. Allocation does not: six extra 32-field objects per request stayed
+within noise served (`alloc.ts`), and GC per request was 0.92 µs against
+0.59 µs (static) and 0.95 against 0.73 µs (json), small next to the gaps.
+
+**The json request: the largest gap, now cut.** Served, `BunRequest.init` for
+a JSON POST cost 3.9 µs more than a bare `req.json().then(...)`. The causes:
+
+- **four promise hops:** an `async` `#readDirectBody`, a settling `then`,
+  `init`'s own `then(() => req)`, and the adapter's `then`;
+- **seven native header reads**, at about 0.2 µs each served:
+  `Content-Length` three times, `Transfer-Encoding` twice, `Content-Type`
+  and `Content-Encoding`.
+
+Now the read is one native call with one callback, which parses, settles
+and resolves with the request, and `init` returns it as it is (`1d5bc1c`).
+`Content-Length` and `Transfer-Encoding` are read once each while the
+constructor decides how to read the body, and fresh afterwards. Each
+`Content-Type` value's parser kind is kept, except multipart values with
+their per-form boundary (`5372bbd`). Served json, adapter: 20.75 →
+17.81 µs per request.
+
+**Static is not a fair fight.** Elysia 2 serves a constant handler
+(`() => "ok"`) as a Bun native static route: no JavaScript runs at all.
+Served, its whole request (10.43 µs) costs less than a bare `Bun.serve`
+that only reads `request.url` (10.66 µs; reading the URL alone costs
+0.76 µs served). The comparable routes are the dynamic ones.
+
+**Async.** Per `await`, we and Elysia 2 cost the same (`async-slope.ts`). Our
+async-specific overhead is about 130 ns more than Elysia's (a pipeline
+promise, the response listener, the wait record, the `then` on the
+handler's promise, and the resume microtask). The microtask is required
+by Express semantics: a handler may `send()` and then `next(err)` in the
+same tick. The rest of the async gap is the per-request base gap every
+route has.
+
+**Headers.** `res.send` checks freshness as Express does. That reads
+`If-None-Match` and `If-Modified-Since`, and so builds the request's
+`Headers`, which costs real time served. It cannot be skipped from the
+response side alone: `If-None-Match: *` makes a response fresh with no
+validator at all. Elysia 2 has no conditional-GET handling.
+
+**After** (`wrk`, 3 rounds, same machine, `benchmarks/results/machinery-wrk.md`):
+
+| | static | param | middleware | async | headers | json | text | multipart |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| req/s before | 77,422 | 79,574 | 73,595 | 70,127 | 69,058 | 47,550 | 48,338 | 26,908 |
+| req/s after | 73,686 | 77,745 | 72,955 | 68,498 | 66,616 | **52,469** | **55,559** | **29,518** |
+| share of Elysia 2 after | 77% | 86% | 100% | 85% | 89% | **87%** | **92%** | **76%** |
+
+Bodies gained 10–15%: json +10%, text +15%, multipart +10%. The bodiless
+routes are unchanged, within the 5–8% spread between runs; Elysia's own
+numbers moved by as much between the two runs.
+
+**What is left is spread thin.** Per request, in process, bun-common is
+100–170 ns behind Elysia 2 on a bodiless dynamic route. The cost is in
+work Express semantics require:
+
+- a request and a response object with their accessors;
+- the layer loop with a `next` per layer;
+- `req.params`, `req.route` and `req.baseUrl` per layer;
+- the freshness check;
+- the response hooks.
+
+No single item is above about 50 ns, and the earlier sections took the
+large ones. Going further means either a compiled per-route fast path
+(Elysia's approach: one function per route with its middleware inlined),
+or opt-outs of Express behaviour a given app does not use.
+
 ## Status of the fixes (2026-10-04)
 
 | Fix | Commit | Result |
@@ -670,6 +775,7 @@ plan, "construction + dispatch".
 | object-form `parseBody`: resolved once per options object | `f5abecd` | 707 → 144 ns per request; the capped config no longer trails `parseBody: true` |
 | multipart: busboy-exact buffered parser; `getMultiParts` restructured | `7ef403f` | `wrk` multipart **14,519 → 21,375 req/s** (+47%), bun-nest +50%; parser fastest of seven candidates; see §7 |
 | upload: synchronous multipart build, one-call read for multipart, header-block slice, content-type regex | `b3cfffe` + next | in process 15.2 → 9.9 µs; `wrk` multipart **21,375 → 27,932 req/s** (75% of Elysia 2); see §8 |
+| machinery: one-promise body read, framing headers read once, parser kind and secret caches | `1d5bc1c`, `5372bbd` | `wrk` json 47,550 → 52,469 (+10%), text 48,338 → 55,559 (+15%), multipart +10%; see §9 |
 
 ## Recommended order
 
