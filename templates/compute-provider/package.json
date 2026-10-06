@@ -21,7 +21,9 @@
   "scripts": {
     "build": "bun scripts/build.ts",
     "prepack": "bun scripts/build.ts",
-    "test": "bun test",
+    "test": "bun test --parallel --timings=bun-timings.json",
+    "test:serial": "bun test",
+    "test:timings": "rm -f bun-timings.json && bun test --parallel --timings=bun-timings.json --update-timings",
     "check-types": "bun scripts/check-types.ts"
   },
   "peerDependencies": {

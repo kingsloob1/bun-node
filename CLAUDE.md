@@ -59,8 +59,39 @@ Then, in each affected package directory:
 
 ```bash
 bunx eslint .              # lint — must have 0 errors
-bun test                   # tests — must all pass
+bun run test               # tests, in parallel — must all pass
 ```
+
+**Tests run in parallel.** Each test suite's `test` script is
+`bun test --parallel --timings=bun-timings.json`: one worker process per CPU
+core, the slowest files started first from the suite's committed
+`bun-timings.json`. Measured serial against `bun run test`: bun-common 7.2 s →
+3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui 136 s → 22 s, bun-jobs without
+databases about 13 min → 148 s, bun-jobs with all five about 24 min → 316 s.
+The flags are in the scripts because `bunfig.toml`'s `[test]` silently ignores
+`parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2, the
+floor. So plain `bun test` is still the one-process run, as is
+`bun run test:serial`.
+
+- **`bun run test:timings`** re-measures and rewrites `bun-timings.json`. The
+  file goes stale as tests are added, renamed or slowed: refresh it now and
+  then, and commit it with the change that made it stale. Stale costs only
+  scheduling — an entry for a deleted file is ignored, and a file with no
+  entry runs **first**, not last. A malformed file (`{}`, a merge conflict)
+  fails `bun run test`, and `--update-timings` merges rather than repairs, so
+  the script deletes the file before measuring.
+- **`--parallel` implies `--isolate`**, a fresh global per file, so it cannot
+  catch one file leaking into another. `bun test --randomize --seed=N`
+  (serial) is the check for that, with bun-jobs-ui's `domLeak.test.ts`; keep
+  them in any gate.
+- **bun-jobs with database URLs is load-sensitive in parallel.** On a shared
+  machine its SQL-default and summon integration suites overrun their 5 s and
+  30 s budgets: 2 failures at a load of about 6, 19 at about 15, none of them
+  connection errors once `setup-databases.ts` had raised the limits. Until
+  they are made load-proof, gate bun-jobs' database suites on
+  `bun run test:serial`. Without database URLs `bun run test` is green on a
+  quiet machine (148 s); at a load of about 10 one summon integration test
+  overran its 30 s budget.
 
 **Running the examples.** Each `examples/*/run-all.ts` runs four examples at a
 time (two in `bun-jobs-ui`, where each drives Chrome). `--jobs N` or
@@ -113,7 +144,7 @@ own lint config and its own tests; after touching one, check it from there:
 
 ```bash
 cd scripts && bunx eslint .   # 0 errors, and 0 warnings
-cd scripts && bun test        # scripts/__tests__/
+bun run test:scripts          # scripts/__tests__/, from the root
 ```
 
 It is the packages' config except that `no-console` and
@@ -223,7 +254,7 @@ type check. It is a standalone package like the bench ones — its own
 
   ```bash
   cd templates/compute-provider
-  bun install && bun test && bun scripts/check-types.ts
+  bun install && bun run test && bun scripts/check-types.ts
   CI=1 bunx eslint .
   ```
 
@@ -425,7 +456,9 @@ through `Bun.WebView`, against a real `createJobsApi`; they skip visibly when
 no Chrome is found (`BUN_CHROME_PATH` points at one).
 
 **Pre-merge gate:** `bun scripts/typecheck.ts`; `CI=1 bunx eslint .` in the
-package; `bun test` plus `bun test --randomize` with a couple of seeds; and
+package; `bun run test` plus `bun test --randomize` with a couple of seeds
+(serial — the only check left for order leaks, since `--parallel` isolates
+files); and
 `bun run-all.ts` in both `examples/bun-jobs-ui` and `examples/bun-nest`.
 
 ## Dependency policy

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/jobsApiModule.nest.test.ts": 1063,
+    "__tests__/websocketGatewayPorts.nest.test.ts": 888,
+    "__tests__/websocketAdapter.test.ts": 860,
+    "__tests__/httpAdapter.test.ts": 859,
+    "__tests__/jobsApiGatewayCoexistence.nest.test.ts": 766,
+    "__tests__/websocketGatewayAck.nest.test.ts": 676,
+    "__tests__/websocketNewInstanceAdapter.nest.test.ts": 642,
+    "__tests__/httpAdapterBodyParser.nest.test.ts": 638,
+    "__tests__/jobsApiBarrelIsolation.nest.test.ts": 613,
+    "__tests__/websocketGatewayFeatures.nest.test.ts": 604,
+    "__tests__/websocketCustomAdapter.nest.test.ts": 595,
+    "__tests__/websocketGatewayBinding.nest.test.ts": 589,
+    "__tests__/websocketGateway.nest.test.ts": 588,
+    "__tests__/packaging.test.ts": 526,
+    "__tests__/websocketAdapter.e2e.test.ts": 490,
+    "__tests__/wsOnUpgrade.test.ts": 451,
+    "__tests__/express-use.test.ts": 421,
+    "__tests__/interceptors.test.ts": 416,
+    "__tests__/sse.nest.test.ts": 352,
+    "__tests__/upgradeHeaders.test.ts": 325,
+    "__tests__/wsOnUpgradeGateway.nest.test.ts": 322,
+    "__tests__/websocketAdapterSwap.nest.test.ts": 280,
+    "__tests__/index.test.ts": 166
+  }
+}

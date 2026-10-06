@@ -14,6 +14,7 @@ test/fake-platform.ts    a fake of Acme's API, for the kit
 test/conformance.test.ts runProviderConformance + assertConformance, green
 scripts/build.ts         dist/: the bundle and the declarations
 scripts/check-types.ts   packs, installs outside, type-checks as a user would
+bun-timings.json         per-file test durations: bun run test's schedule
 ```
 
 The summon facet only: bun-jobs has no execute facet yet.
@@ -75,9 +76,15 @@ The summon facet only: bun-jobs has no execute facet yet.
 
     ```bash
     bun install
-    bun test                    # the conformance kit, green
+    bun run test                # the conformance kit, green
     bun scripts/check-types.ts  # the shipped declarations, as a user sees them
     ```
+
+    `bun run test` runs the test files in parallel, slowest first by
+    `bun-timings.json`: scheduling hints only, safe to delete or leave stale
+    (a test file it does not list still runs). `bun run test:timings`
+    re-measures it; run it after adding or renaming a test file. `bun run test:serial` is a plain
+    `bun test`, in one process, for debugging.
 
 11. **Publish**: the peer range is one bun-jobs minor while the plugin API is
     `0.x`. Publishing the kit's report (`report.toMarkdown()`) tells users
