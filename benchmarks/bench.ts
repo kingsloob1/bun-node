@@ -7,7 +7,8 @@
  *   - Express 5      — the Express 5 router on Bun
  *   - Bun.serve      — Bun's native `routes` table
  *   - Bun.serve      — a hand-written dispatcher in `fetch` (the dispatch floor)
- *   - Elysia         — the Elysia framework
+ *   - Elysia         — the Elysia framework (1.4)
+ *   - Elysia 2       — the Elysia 2 beta (the `elysia2` alias in package.json)
  *   - Hono           — the Hono framework (served via `Bun.serve`)
  *
  * Every framework registers the same logical routes; `autocannon` then
@@ -77,6 +78,7 @@ const ALL_FRAMEWORK_IDS = [
   "bun-serve",
   "bun-fetch",
   "elysia",
+  "elysia2",
   "hono",
 ] as const;
 
@@ -112,7 +114,7 @@ Options:
   -r, --route <names>        Scenario(s): comma list or 'all'(default: static)
                              static|param|deep|wildcard|middleware|notfound|mixed
   -f, --frameworks <ids>     Framework(s): comma list or 'all'
-                             bun-router|express|bun-serve|bun-fetch|elysia|hono
+                             bun-router|express|bun-serve|bun-fetch|elysia|elysia2|hono
       --method <verb>        HTTP method                     (default: GET)
       --middleware-count <n> Middlewares in the chain route  (default: 5)
       --workers <n>          autocannon worker threads       (default: 0)
@@ -370,30 +372,57 @@ const expressFramework: Framework = {
   },
 };
 
-const elysiaFramework: Framework = {
-  id: "elysia",
-  label: "Elysia",
-  async start(port, middlewareCount) {
-    const { Elysia } = (await import("elysia")) as { Elysia: any };
-    const beforeHandle = Array.from({ length: middlewareCount }, () => () => {});
+/** Elysia 1.4 or the Elysia 2 beta, registering the same routes. */
+function elysiaFrameworkFor(
+  id: "elysia" | "elysia2",
+  label: string,
+  load: () => Promise<{ Elysia: any }>,
+): Framework {
+  return {
+    id,
+    label,
+    async start(port, middlewareCount) {
+      const { Elysia } = await load();
+      const beforeHandle = Array.from(
+        { length: middlewareCount },
+        () => () => {},
+      );
 
-    const app = new Elysia()
-      .get("/ping", () => "ok")
-      .get("/user/:id", ({ params }: any) => params.id)
-      .get(
-        "/api/v1/users/:userId/books/:bookId",
-        ({ params }: any) => `${params.userId}/${params.bookId}`,
-      )
-      .get("/assets/*", () => "ok")
-      .get("/chain", () => "ok", { beforeHandle })
-      .listen(port);
+      let app = new Elysia()
+        .get("/ping", () => "ok")
+        .get("/user/:id", ({ params }: any) => params.id)
+        .get(
+          "/api/v1/users/:userId/books/:bookId",
+          ({ params }: any) => `${params.userId}/${params.bookId}`,
+        )
+        .get("/assets/*", () => "ok");
+      // Elysia 2 takes the hook before the handler; 1.x after it.
+      const chainHandler = () => "ok";
+      app =
+        id === "elysia2"
+          ? app.get("/chain", { beforeHandle }, chainHandler)
+          : app.get("/chain", chainHandler, { beforeHandle });
+      app.listen(port);
 
-    return {
-      url: `http://127.0.0.1:${app.server?.port ?? port}`,
-      stop: () => app.stop(),
-    };
-  },
-};
+      return {
+        url: `http://127.0.0.1:${app.server?.port ?? port}`,
+        stop: () => app.stop(),
+      };
+    },
+  };
+}
+
+const elysiaFramework = elysiaFrameworkFor(
+  "elysia",
+  "Elysia 1.4",
+  async () => (await import("elysia")) as { Elysia: any },
+);
+
+const elysia2Framework = elysiaFrameworkFor(
+  "elysia2",
+  "Elysia 2 (beta)",
+  async () => (await import("elysia2")) as { Elysia: any },
+);
 
 const honoFramework: Framework = {
   id: "hono",
@@ -430,6 +459,7 @@ const FRAMEWORKS: Record<string, Framework> = {
   "bun-serve": bunServeFramework,
   "bun-fetch": bunFetchFramework,
   "elysia": elysiaFramework,
+  "elysia2": elysia2Framework,
   "hono": honoFramework,
 };
 

@@ -1,7 +1,7 @@
 # Router benchmarks
 
 Throughput comparison of **BunRouter** (`@kingsleyweb/bun-common`) against
-**Express 5**, **Bun.serve** native routes, **Elysia** and **Hono**.
+**Express 5**, **Bun.serve** native routes, **Elysia 1.4**, **Elysia 2** (beta, the `elysia2` alias) and **Hono**.
 
 ## Setup
 
