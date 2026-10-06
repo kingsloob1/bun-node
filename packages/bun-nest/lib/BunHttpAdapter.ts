@@ -64,6 +64,7 @@ import {
   set,
   toFetchResponse,
   toNativeRequest,
+  validateParseBodyOption,
   waitUntil,
 } from "@kingsleyweb/bun-common";
 import {
@@ -620,7 +621,11 @@ export class BunHttpAdapter<
    * before, so an option left out returns to its default.
    */
   set requestOpts(opts: Partial<BunRequestOptions>) {
-    this.#requestOpts = mergeBunRequestOptions(opts);
+    const merged = mergeBunRequestOptions(opts);
+    // Requests resolve `parseBody` lazily (only one with a body does), so a
+    // misconfiguration is caught here instead of on the first such request.
+    validateParseBodyOption(merged.parseBody);
+    this.#requestOpts = merged;
   }
 
   /**

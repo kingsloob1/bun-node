@@ -309,6 +309,7 @@ export {
   PayloadTooLargeError,
   type QueryParserOpts,
   type RawMultiPartFields,
+  validateParseBodyOption,
 } from "./BunRequest";
 export {
   type BunCookieOptions,

@@ -834,6 +834,187 @@ export interface BunRequestSocket {
   readonly localFamily: SocketAddress["family"] | undefined;
 }
 
+/**
+ * The `parseBody` options resolved for one request (caps, allowlist, body
+ * decoding): built by `normalizeParseBodyOptions`, on the first read or
+ * write of any of them — so a request whose body is never read never builds
+ * it.
+ */
+class BodyParseConfig {
+  /** Backs BunRequest's `#allowedParsers`; see its documentation there. */
+  allowedParsers: Set<ContentParserType> | undefined = undefined;
+  /** Backs BunRequest's `#bodyCapsEnabled`; see its documentation there. */
+  bodyCapsEnabled: boolean = false;
+  /** Backs BunRequest's `#maxContentLength`; see its documentation there. */
+  maxContentLength: number | undefined = undefined;
+  /** Backs BunRequest's `#perTypeConfig`; see its documentation there. */
+  perTypeConfig: Map<ContentParserType, PerTypeParserConfig> | undefined =
+    undefined;
+
+  /** Backs BunRequest's `#inflate`; see its documentation there. */
+  inflate: boolean = true;
+  /** Backs BunRequest's `#decompressionFastPathLimit`; see its documentation there. */
+  decompressionFastPathLimit: number = DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+  /** Backs BunRequest's `#contentEncodings`; see its documentation there. */
+  contentEncodings: ContentEncodingAllowlist = "*";
+  /** Backs BunRequest's `#maxContentCodings`; see its documentation there. */
+  maxContentCodings: number = DEFAULT_MAX_CONTENT_CODINGS;
+  /** Backs BunRequest's `#compressionDictionaries`; see its documentation there. */
+  compressionDictionaries: CompressionDictionaries | undefined = undefined;
+}
+
+/**
+ * Resolves `parseBody` (with the deprecated `allowedContentTypes` fallback,
+ * which `contentTypes` overrides) into a {@link BodyParseConfig}: the
+ * allowlist, the caps and the decoding options.
+ *
+ * @throws RangeError or TypeError for an invalid size or decoding option.
+ */
+function resolveBodyParseConfig(
+  parseBody: ParseBodyOption | undefined,
+  legacyAllowed: ContentParserType[] | undefined,
+): BodyParseConfig {
+  const resolved = new BodyParseConfig();
+
+  // Deprecated allowlist fallback (overridden below by `contentTypes`).
+  // Invalid/empty entries are dropped; an allowlist that filters down to
+  // nothing means "no restriction" rather than "block every kind".
+  if (isArray(legacyAllowed)) {
+    const allowed = new Set(
+      legacyAllowed.filter((kind) => VALID_PARSER_KINDS.has(kind)),
+    );
+    resolved.allowedParsers = allowed.size ? allowed : undefined;
+  }
+
+  // Boolean form (or default): uncapped, every kind allowed.
+  if (!isObject(parseBody) || isArray(parseBody)) {
+    return resolved;
+  }
+
+  const config = parseBody as ParseBodyConfig;
+
+  // Object form: body-size caps apply. Store the explicit config-level cap
+  // (if any); when unset, the per-kind defaults are used at resolve time.
+  resolved.bodyCapsEnabled = true;
+  resolved.maxContentLength =
+    config.maxContentLength !== undefined
+      ? parseByteSize(config.maxContentLength)
+      : undefined;
+  // Body decoding, resolved here with the caps so it reaches the parse the
+  // constructor schedules — which reads the body before any middleware.
+  resolved.inflate = config.inflate !== false;
+  resolved.decompressionFastPathLimit = resolveDecompressionFastPathLimit(
+    config.decompressionFastPathLimit,
+  );
+  resolved.contentEncodings = resolveContentEncodings(config.encodings);
+  resolved.maxContentCodings = resolveMaxContentCodings(
+    config.maxContentCodings,
+  );
+  resolved.compressionDictionaries = resolveCompressionDictionaries(
+    config.compressionDictionaries,
+  );
+
+  const contentTypes = config.contentTypes;
+  // `"all"` (or omitted) → no kind restriction beyond any deprecated
+  // allowlist already resolved above.
+  if (contentTypes === undefined || contentTypes === "all") {
+    return resolved;
+  }
+
+  if (!isObject(contentTypes)) {
+    return resolved;
+  }
+
+  const allowed = new Set<ContentParserType>();
+  const perType = new Map<ContentParserType, PerTypeParserConfig>();
+
+  for (const key of keys(contentTypes) as ContentParserType[]) {
+    // Ignore unrecognized keys entirely.
+    if (!VALID_PARSER_KINDS.has(key)) {
+      continue;
+    }
+
+    const value = contentTypes[key];
+    // `false`/`null`/`undefined` → kind explicitly disallowed.
+    if (value === false || isNull(value) || isUndefined(value)) {
+      continue;
+    }
+
+    allowed.add(key);
+
+    // An object entry both allows the kind and configures it.
+    if (isObject(value) && !isBoolean(value)) {
+      const typeConfig = value as ParseBodyContentTypeConfig;
+      const max =
+        typeConfig.maxContentLength !== undefined
+          ? parseByteSize(typeConfig.maxContentLength)
+          : undefined;
+      perType.set(key, { opts: typeConfig.opts, maxContentLength: max });
+    }
+  }
+
+  resolved.allowedParsers = allowed;
+  if (perType.size) {
+    resolved.perTypeConfig = perType;
+  }
+  return resolved;
+}
+
+/**
+ * Checks a request options object's `parseBody` the way every request with a
+ * body resolves it, so a misconfiguration fails where it is configured (an
+ * adapter's request options, `requestParsing()`) rather than on the first
+ * request carrying a body. Bodiless requests never resolve it.
+ *
+ * @throws RangeError or TypeError for an invalid size or decoding option.
+ */
+export function validateParseBodyOption(
+  parseBody: ParseBodyOption | undefined,
+): void {
+  resolveBodyParseConfig(parseBody, undefined);
+}
+
+/**
+ * BunRequest's rarely-used state (see its `#state`): one object,
+ * allocated only when one of these fields is first written.
+ */
+class BunRequestState {
+  /** Backs BunRequest's `#headers`; see its documentation there. */
+  headers: Record<string, string | string[]> | undefined = undefined;
+  /** Backs BunRequest's `#parsedUrl`; see its documentation there. */
+  parsedUrl: URL | undefined = undefined;
+  /** Backs BunRequest's `maxHeadersCount`; see its documentation there. */
+  maxHeadersCount: number = 0;
+  /** Backs BunRequest's `reusedSocket`; see its documentation there. */
+  reusedSocket: boolean = false;
+  /** Backs BunRequest's `rawBody`; see its documentation there. */
+  rawBody: Buffer | undefined = undefined;
+  /** Backs BunRequest's `#payloadTooLarge`; see its documentation there. */
+  payloadTooLarge: { limit: number; length?: number } | undefined = undefined;
+  /** Backs BunRequest's `#parsedMultipartResp`; see its documentation there. */
+  parsedMultipartResp: MultiPartParseResult | undefined = undefined;
+  /** Backs BunRequest's `#multipartOptions`; see its documentation there. */
+  multipartOptions: MultiPartOptions | undefined = undefined;
+  /** Backs BunRequest's `#multipartFailure`; see its documentation there. */
+  multipartFailure: { error: unknown } | undefined = undefined;
+  /** Backs BunRequest's `#bodyDecodingError`; see its documentation there. */
+  bodyDecodingError: BunHttpClientError | undefined = undefined;
+  /** Backs BunRequest's `#storageFiles`; see its documentation there. */
+  storageFiles: StorageFile[] | Record<string, StorageFile[]> | undefined =
+    undefined;
+
+  /** Backs BunRequest's `#subdomains`; see its documentation there. */
+  subdomains: string[] | undefined = undefined;
+  /** Backs BunRequest's `#emitter`; see its documentation there. */
+  emitter: EventEmitter | undefined = undefined;
+  /** Backs BunRequest's `#bodyError`; see its documentation there. */
+  bodyError: unknown = undefined;
+  /** Backs BunRequest's `#bodyEventsEmitted`; see its documentation there. */
+  bodyEventsEmitted: boolean = false;
+  /** Backs BunRequest's `#socket`; see its documentation there. */
+  socket: BunRequestSocket | undefined = undefined;
+}
+
 export class BunRequest<
   /**
    * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
@@ -852,12 +1033,49 @@ export class BunRequest<
     BunRequestInterface<TParams, TQuery, TBody>,
     TypedEmitter<BunRequestEvents>
 {
+  /**
+   * The resolved `parseBody` options; `undefined` until first needed (see
+   * {@link BodyParseConfig}).
+   */
+  #bodyConfig: BodyParseConfig | undefined = undefined;
+
+  /** The resolved `parseBody` options, built from the current options on first use. */
+  #resolvedBodyConfig(): BodyParseConfig {
+    if (this.#bodyConfig === undefined) {
+      this.normalizeParseBodyOptions();
+    }
+    return this.#bodyConfig!;
+  }
+
+  /**
+   * Rarely-used state, created on first write. Each field moved here is an
+   * accessor that reads its default until then, so a request or response that
+   * never touches it pays no per-field initialisation (about 6 ns each).
+   */
+  #state: BunRequestState | undefined = undefined;
+
   private bunResponse: BunResponse | undefined = undefined;
   public headersObj: InstanceType<typeof Headers>;
   /** Lazily-built plain-object header view (see the `headers` getter). */
-  #headers: Record<string, string | string[]> | undefined = undefined;
+  get #headers(): Record<string, string | string[]> | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.headers;
+  }
+
+  set #headers(value: Record<string, string | string[]> | undefined) {
+    (this.#state ??= new BunRequestState()).headers = value;
+  }
+
   /** Lazily-parsed request URL (see the `parsedUrl` getter). */
-  #parsedUrl: URL | undefined = undefined;
+  get #parsedUrl(): URL | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.parsedUrl;
+  }
+
+  set #parsedUrl(value: URL | undefined) {
+    (this.#state ??= new BunRequestState()).parsedUrl = value;
+  }
+
   /**
    * Memoized `{ host, path, search, hash }` split of the request URL (no
    * `new URL`). `path` is the pathname only; `search`/`hash` keep their
@@ -867,8 +1085,24 @@ export class BunRequest<
     | { host: string; path: string; search: string; hash: string }
     | undefined = undefined;
 
-  public maxHeadersCount = 0;
-  public reusedSocket = false;
+  public get maxHeadersCount(): number {
+    const holder = this.#state;
+    return holder === undefined ? 0 : holder.maxHeadersCount;
+  }
+
+  public set maxHeadersCount(value: number) {
+    (this.#state ??= new BunRequestState()).maxHeadersCount = value;
+  }
+
+  public get reusedSocket(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.reusedSocket;
+  }
+
+  public set reusedSocket(value: boolean) {
+    (this.#state ??= new BunRequestState()).reusedSocket = value;
+  }
+
   /**
    * The exact bytes of the request body, as Nest's `rawBody: true` keeps them
    * (body-parser's `verify` hook). Set by the adapter's parser middleware
@@ -876,7 +1110,15 @@ export class BunRequest<
    * when that parser read a body; `undefined` otherwise — including for a
    * request no such parser handled. See also {@link buffer}.
    */
-  public rawBody?: Buffer = undefined;
+  public get rawBody(): Buffer | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.rawBody;
+  }
+
+  public set rawBody(value: Buffer | undefined) {
+    (this.#state ??= new BunRequestState()).rawBody = value;
+  }
+
   /**
    * Init tasks, lazily allocated only when body/cookie/query parsing runs:
    * the parsed query, the body parse (settled, no value) and the cookies.
@@ -963,45 +1205,93 @@ export class BunRequest<
    * by `parseBody.contentTypes`. `undefined` means "no restriction" — every
    * kind is parsed (the default).
    */
-  #allowedParsers: Set<ContentParserType> | undefined = undefined;
+  get #allowedParsers(): Set<ContentParserType> | undefined {
+    return this.#resolvedBodyConfig().allowedParsers;
+  }
+
+  set #allowedParsers(value: Set<ContentParserType> | undefined) {
+    this.#resolvedBodyConfig().allowedParsers = value;
+  }
 
   /**
    * `true` when the object form of `parseBody` is in effect, so body-size caps
    * apply. Boolean `parseBody` leaves this `false` (parsing is uncapped).
    */
-  #bodyCapsEnabled = false;
+  get #bodyCapsEnabled(): boolean {
+    return this.#resolvedBodyConfig().bodyCapsEnabled;
+  }
+
+  set #bodyCapsEnabled(value: boolean) {
+    this.#resolvedBodyConfig().bodyCapsEnabled = value;
+  }
 
   /**
    * The explicit config-level `parseBody.maxContentLength` in bytes, or
    * `undefined` when unset (in which case the per-kind defaults apply — see
    * {@link DEFAULT_MAX_CONTENT_LENGTH_BY_KIND}).
    */
-  #maxContentLength: number | undefined = undefined;
+  get #maxContentLength(): number | undefined {
+    return this.#resolvedBodyConfig().maxContentLength;
+  }
+
+  set #maxContentLength(value: number | undefined) {
+    this.#resolvedBodyConfig().maxContentLength = value;
+  }
 
   /**
    * Per-content-type parser `opts` and `maxContentLength` overrides, parsed
    * from the object form of `parseBody.contentTypes`. Lazily allocated — only
    * present when at least one kind supplies an object config.
    */
-  #perTypeConfig: Map<ContentParserType, PerTypeParserConfig> | undefined =
-    undefined;
+  get #perTypeConfig():
+    | Map<ContentParserType, PerTypeParserConfig>
+    | undefined {
+    return this.#resolvedBodyConfig().perTypeConfig;
+  }
+
+  set #perTypeConfig(
+    value: Map<ContentParserType, PerTypeParserConfig> | undefined,
+  ) {
+    this.#resolvedBodyConfig().perTypeConfig = value;
+  }
 
   /**
    * Set when {@link parseBody} aborts because the body exceeded its cap. The
    * adapter reads {@link isPayloadTooLarge} after `init` to short-circuit with
    * an HTTP 413 before routing.
    */
-  #payloadTooLarge: { limit: number; length?: number } | undefined = undefined;
+  get #payloadTooLarge(): { limit: number; length?: number } | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.payloadTooLarge;
+  }
+
+  set #payloadTooLarge(value: { limit: number; length?: number } | undefined) {
+    (this.#state ??= new BunRequestState()).payloadTooLarge = value;
+  }
 
   /** The cached multipart parse (see {@link getMultiParts}). */
-  #parsedMultipartResp?: MultiPartParseResult | undefined = undefined;
+  get #parsedMultipartResp(): MultiPartParseResult | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.parsedMultipartResp;
+  }
+
+  set #parsedMultipartResp(value: MultiPartParseResult | undefined) {
+    (this.#state ??= new BunRequestState()).parsedMultipartResp = value;
+  }
 
   /**
    * The options {@link #parsedMultipartResp} was parsed with, so a later
    * {@link getMultiParts} call whose options differ re-parses instead of
    * returning a result that ignores them.
    */
-  #multipartOptions: MultiPartOptions | undefined = undefined;
+  get #multipartOptions(): MultiPartOptions | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.multipartOptions;
+  }
+
+  set #multipartOptions(value: MultiPartOptions | undefined) {
+    (this.#state ??= new BunRequestState()).multipartOptions = value;
+  }
 
   /**
    * Set when the multipart parse was refused (a busboy limit, or a parser
@@ -1011,7 +1301,14 @@ export class BunRequest<
    * a handler cannot slip past the request's own `limits` by calling again.
    * `unknown`, as a parser may reject with anything.
    */
-  #multipartFailure: { error: unknown } | undefined = undefined;
+  get #multipartFailure(): { error: unknown } | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.multipartFailure;
+  }
+
+  set #multipartFailure(value: { error: unknown } | undefined) {
+    (this.#state ??= new BunRequestState()).multipartFailure = value;
+  }
 
   /** `true` once {@link parseBody} has run, even for a body left `undefined`. */
   #bodyParsed = false;
@@ -1025,7 +1322,13 @@ export class BunRequest<
    * {@link setParseBodyOptions} runs, and overridden by the `inflate` option
    * of {@link handleBodyParsing}; either affects only a body not yet read.
    */
-  #inflate = true;
+  get #inflate(): boolean {
+    return this.#resolvedBodyConfig().inflate;
+  }
+
+  set #inflate(value: boolean) {
+    this.#resolvedBodyConfig().inflate = value;
+  }
 
   /**
    * The most memory, in bytes, one uncapped Bun gunzip/inflate of the body may
@@ -1036,7 +1339,13 @@ export class BunRequest<
    * and overridden by the option of the same name on
    * {@link handleBodyParsing}; either affects only a body not yet read.
    */
-  #decompressionFastPathLimit = DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+  get #decompressionFastPathLimit(): number {
+    return this.#resolvedBodyConfig().decompressionFastPathLimit;
+  }
+
+  set #decompressionFastPathLimit(value: number) {
+    this.#resolvedBodyConfig().decompressionFastPathLimit = value;
+  }
 
   /**
    * The `Content-Encoding` codings a body may use: `"*"` (the default) for
@@ -1044,7 +1353,13 @@ export class BunRequest<
    * {@link #inflate}, from `parseBody.encodings` and overridden by the option
    * of the same name on {@link handleBodyParsing}.
    */
-  #contentEncodings: ContentEncodingAllowlist = "*";
+  get #contentEncodings(): ContentEncodingAllowlist {
+    return this.#resolvedBodyConfig().contentEncodings;
+  }
+
+  set #contentEncodings(value: ContentEncodingAllowlist) {
+    this.#resolvedBodyConfig().contentEncodings = value;
+  }
 
   /**
    * The most codings one `Content-Encoding` may stack. Default
@@ -1052,7 +1367,13 @@ export class BunRequest<
    * `parseBody.maxContentCodings` and overridden by the option of the same
    * name on {@link handleBodyParsing}; either affects only a body not yet read.
    */
-  #maxContentCodings = DEFAULT_MAX_CONTENT_CODINGS;
+  get #maxContentCodings(): number {
+    return this.#resolvedBodyConfig().maxContentCodings;
+  }
+
+  set #maxContentCodings(value: number) {
+    this.#resolvedBodyConfig().maxContentCodings = value;
+  }
 
   /**
    * Dictionaries `dcb`/`dcz` bodies may name; `undefined` (the default)
@@ -1061,7 +1382,13 @@ export class BunRequest<
    * same name on {@link handleBodyParsing}; either affects only a body not yet
    * read.
    */
-  #compressionDictionaries: CompressionDictionaries | undefined = undefined;
+  get #compressionDictionaries(): CompressionDictionaries | undefined {
+    return this.#resolvedBodyConfig().compressionDictionaries;
+  }
+
+  set #compressionDictionaries(value: CompressionDictionaries | undefined) {
+    this.#resolvedBodyConfig().compressionDictionaries = value;
+  }
 
   /**
    * The 415 or 400 a `Content-Encoding` could not be decoded with (inflation
@@ -1072,18 +1399,43 @@ export class BunRequest<
    * no body. A decompression bomb is not here: it is a 413, see
    * {@link isPayloadTooLarge}.
    */
-  #bodyDecodingError: BunHttpClientError | undefined = undefined;
+  get #bodyDecodingError(): BunHttpClientError | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.bodyDecodingError;
+  }
+
+  set #bodyDecodingError(value: BunHttpClientError | undefined) {
+    (this.#state ??= new BunRequestState()).bodyDecodingError = value;
+  }
 
   private _buffer: Buffer | undefined = undefined;
   /** Uploaded files — lazily allocated; only multipart requests populate it. */
-  #storageFiles: StorageFile[] | Record<string, StorageFile[]> | undefined =
-    undefined;
+  get #storageFiles():
+    | StorageFile[]
+    | Record<string, StorageFile[]>
+    | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.storageFiles;
+  }
+
+  set #storageFiles(
+    value: StorageFile[] | Record<string, StorageFile[]> | undefined,
+  ) {
+    (this.#state ??= new BunRequestState()).storageFiles = value;
+  }
 
   /**
    * Lazily-computed subdomains. `parseDomain` (a public-suffix-list lookup) is
    * comparatively expensive, so it runs only on first access of `subdomains`.
    */
-  #subdomains: string[] | undefined = undefined;
+  get #subdomains(): string[] | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.subdomains;
+  }
+
+  set #subdomains(value: string[] | undefined) {
+    (this.#state ??= new BunRequestState()).subdomains = value;
+  }
 
   /**
    * Lazily-created event bus mirroring Node's `IncomingMessage` events
@@ -1091,7 +1443,14 @@ export class BunRequest<
    * listener is registered — a routing-only request nobody listens to costs
    * nothing, and the connection-abort bridge is wired only then.
    */
-  #emitter: EventEmitter | undefined = undefined;
+  get #emitter(): EventEmitter | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.emitter;
+  }
+
+  set #emitter(value: EventEmitter | undefined) {
+    (this.#state ??= new BunRequestState()).emitter = value;
+  }
 
   /**
    * Set by {@link BunResponse} (via {@link markResponded}) once a response
@@ -1106,7 +1465,14 @@ export class BunRequest<
    * The error captured when {@link #bodyState} is `"errored"` — `unknown`,
    * since it is whatever the body parse rejected with.
    */
-  #bodyError: unknown = undefined;
+  get #bodyError(): unknown {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.bodyError;
+  }
+
+  set #bodyError(value: unknown) {
+    (this.#state ??= new BunRequestState()).bodyError = value;
+  }
 
   /**
    * The `Bun.serve` server this request arrived on (see the `server` getter).
@@ -1114,10 +1480,24 @@ export class BunRequest<
    */
   readonly #server: BunServer | undefined;
   /** True once the `data`/`end`/`error` body events have been emitted. */
-  #bodyEventsEmitted = false;
+  get #bodyEventsEmitted(): boolean {
+    const holder = this.#state;
+    return holder === undefined ? false : holder.bodyEventsEmitted;
+  }
+
+  set #bodyEventsEmitted(value: boolean) {
+    (this.#state ??= new BunRequestState()).bodyEventsEmitted = value;
+  }
 
   /** Memoized Node-compatible socket shim (see the `socket` getter). */
-  #socket: BunRequestSocket | undefined = undefined;
+  get #socket(): BunRequestSocket | undefined {
+    const holder = this.#state;
+    return holder === undefined ? undefined : holder.socket;
+  }
+
+  set #socket(value: BunRequestSocket | undefined) {
+    (this.#state ??= new BunRequestState()).socket = value;
+  }
 
   constructor(
     /** The native Bun/Web `Request` this instance wraps. */
@@ -1256,9 +1636,10 @@ export class BunRequest<
       this.#writableOptions().parseQuery = true;
     }
 
-    // Resolve the `parseBody` config (size caps + per-content-type allowlist),
-    // honouring the deprecated `allowedContentTypes` as a fallback.
-    this.normalizeParseBodyOptions();
+    // The `parseBody` config (size caps, allowlist, decoding) is resolved
+    // below only for a request that has a body, so a misconfiguration still
+    // throws here; a bodiless request, the common case, never builds it (see
+    // #resolvedBodyConfig).
 
     // The query and cookie parses are synchronous, and so is the body's when
     // the request has none: each finishes here, and only a body still to be
@@ -1268,7 +1649,11 @@ export class BunRequest<
     }
 
     if (this.options?.parseBody) {
-      if (this.#finishAbsentBody()) {
+      const absent = this.#finishAbsentBody();
+      if (!absent) {
+        this.#resolvedBodyConfig();
+      }
+      if (absent) {
         (this.#initTasks ??= []).push(undefined);
       } else if (this.options.deferBody === true) {
         // Read on first need (see `deferBody`); `ready()` reads it too.
@@ -2478,106 +2863,14 @@ export class BunRequest<
   }
 
   /**
-   * Resolves the object form of `parseBody` into the internal `#allowedParsers`
-   * allowlist, `#maxContentLength` cap and `#perTypeConfig` overrides. The
-   * deprecated `allowedContentTypes` option is honoured as a fallback when the
-   * new `contentTypes` map is absent.
+   * Resolves the current `parseBody` options into the request's body config
+   * (see {@link resolveBodyParseConfig}). Re-run by `setParseBodyOptions`.
    */
   private normalizeParseBodyOptions(): void {
-    // Reset derived state so this is safe to re-run (see setParseBodyOptions).
-    this.#allowedParsers = undefined;
-    this.#perTypeConfig = undefined;
-    this.#maxContentLength = undefined;
-    this.#bodyCapsEnabled = false;
-    this.#inflate = true;
-    this.#decompressionFastPathLimit = DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
-    this.#contentEncodings = "*";
-    this.#maxContentCodings = DEFAULT_MAX_CONTENT_CODINGS;
-    this.#compressionDictionaries = undefined;
-
-    // Deprecated allowlist fallback (overridden below by `contentTypes`).
-    // Invalid/empty entries are dropped; an allowlist that filters down to
-    // nothing means "no restriction" rather than "block every kind".
-    const legacyAllowed = this.legacyOptions.allowedContentTypes;
-    if (isArray(legacyAllowed)) {
-      const allowed = new Set(
-        legacyAllowed.filter((kind) => VALID_PARSER_KINDS.has(kind)),
-      );
-      this.#allowedParsers = allowed.size ? allowed : undefined;
-    }
-
-    const parseBody = this.options.parseBody;
-    // Boolean form (or default): uncapped, every kind allowed.
-    if (!isObject(parseBody) || isArray(parseBody)) {
-      return;
-    }
-
-    const config = parseBody as ParseBodyConfig;
-
-    // Object form: body-size caps apply. Store the explicit config-level cap
-    // (if any); when unset, the per-kind defaults are used at resolve time.
-    this.#bodyCapsEnabled = true;
-    this.#maxContentLength =
-      config.maxContentLength !== undefined
-        ? parseByteSize(config.maxContentLength)
-        : undefined;
-    // Body decoding, resolved here with the caps so it reaches the parse the
-    // constructor schedules — which reads the body before any middleware.
-    this.#inflate = config.inflate !== false;
-    this.#decompressionFastPathLimit = resolveDecompressionFastPathLimit(
-      config.decompressionFastPathLimit,
+    this.#bodyConfig = resolveBodyParseConfig(
+      this.options.parseBody,
+      this.legacyOptions.allowedContentTypes,
     );
-    this.#contentEncodings = resolveContentEncodings(config.encodings);
-    this.#maxContentCodings = resolveMaxContentCodings(
-      config.maxContentCodings,
-    );
-    this.#compressionDictionaries = resolveCompressionDictionaries(
-      config.compressionDictionaries,
-    );
-
-    const contentTypes = config.contentTypes;
-    // `"all"` (or omitted) → no kind restriction beyond any deprecated
-    // allowlist already resolved above.
-    if (contentTypes === undefined || contentTypes === "all") {
-      return;
-    }
-
-    if (!isObject(contentTypes)) {
-      return;
-    }
-
-    const allowed = new Set<ContentParserType>();
-    const perType = new Map<ContentParserType, PerTypeParserConfig>();
-
-    for (const key of keys(contentTypes) as ContentParserType[]) {
-      // Ignore unrecognized keys entirely.
-      if (!VALID_PARSER_KINDS.has(key)) {
-        continue;
-      }
-
-      const value = contentTypes[key];
-      // `false`/`null`/`undefined` → kind explicitly disallowed.
-      if (value === false || isNull(value) || isUndefined(value)) {
-        continue;
-      }
-
-      allowed.add(key);
-
-      // An object entry both allows the kind and configures it.
-      if (isObject(value) && !isBoolean(value)) {
-        const typeConfig = value as ParseBodyContentTypeConfig;
-        const max =
-          typeConfig.maxContentLength !== undefined
-            ? parseByteSize(typeConfig.maxContentLength)
-            : undefined;
-        perType.set(key, { opts: typeConfig.opts, maxContentLength: max });
-      }
-    }
-
-    this.#allowedParsers = allowed;
-    if (perType.size) {
-      this.#perTypeConfig = perType;
-    }
   }
 
   /**
