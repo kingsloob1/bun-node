@@ -1,5 +1,9 @@
 import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
-import type { BunJobs, DriverConfig } from "@kingsleyweb/bun-jobs";
+import type {
+  BunJobs,
+  DriverConfig,
+  SummonFailure,
+} from "@kingsleyweb/bun-jobs";
 import type { Fault } from "./compute/platform";
 import process from "node:process";
 import { LocalCompute } from "./compute/platform";
@@ -35,6 +39,11 @@ import { localCompute, storeSecret } from "./compute/provider";
  * panel shows how each answer is counted; the cycle is in {@link FAULT_CYCLE},
  * `PLAYGROUND_SUMMON_FAULTS=off` turns it off, and `/local-compute` queues
  * any fault by hand.
+ *
+ * Every failure the controller reports through `onSummonFailed` is printed
+ * and kept as a job on `summon-alerts` (no worker: they stay waiting, one
+ * per failure, so the queue's job list is the alert log).
+ * `PLAYGROUND_SUMMON_BUDGET=off` runs `renders` with `budget: false`.
  */
 
 /** Options for {@link startSummoning}. */
@@ -78,6 +87,9 @@ const FAULT_CYCLE: readonly (Fault | undefined)[] = [
   undefined,
   "die",
 ];
+
+/** The queue `onSummonFailed` records each failure on. Nothing consumes it. */
+const ALERTS = "summon-alerts";
 
 /** Scenes a render job renders. */
 const SCENES = ["hero-banner", "product-spin", "intro-titles", "map-flyover"];
@@ -138,6 +150,22 @@ export function mountSummoning(
       }
 
       const renders = jobs.queue("renders");
+      const alerts = jobs.queue(ALERTS);
+      // What a pager hook would do: say so, and keep a record. Never awaited
+      // by the controller; a rejection here is logged by it at `warn`.
+      const onSummonFailed = async (failure: SummonFailure): Promise<void> => {
+        console.warn(
+          `playground summoning: ${failure.queue} ${failure.outcome}${
+            failure.detail === undefined ? "" : ` (${failure.detail})`
+          }${
+            failure.until === undefined
+              ? ""
+              : ` until ${new Date(failure.until).toISOString()}`
+          }`,
+        );
+        await alerts.add(failure.outcome, failure);
+      };
+      const budgetOff = process.env.PLAYGROUND_SUMMON_BUDGET === "off";
       jobs.summonController("renders", {
         summoner: primary,
         // A big burst gets a second worker.
@@ -150,7 +178,9 @@ export function mountSummoning(
         cooldown: 5_000,
         backoff: { initial: 5_000, max: 30_000 },
         circuit: { failures: 3, resetAfter: 60_000 },
-        budget: { perHour: 240, perDay: 2_000 },
+        // `PLAYGROUND_SUMMON_BUDGET=off`: no limit, the usage still shown.
+        budget: budgetOff ? false : { perHour: 240, perDay: 2_000 },
+        onSummonFailed,
         maxLifetime: 600_000,
         // Static, the same for every attempt: how a unit reaches the backend.
         env: { PLAYGROUND_SUMMON_DRIVER: JSON.stringify(options.driver) },

@@ -5,7 +5,10 @@ import type { ResolvedJobsApiConfig } from "./config";
 import { RunnerController } from "../runner/RunnerController";
 import { ConfigError } from "../shared/errors";
 import { assertSegment } from "../shared/keys";
-import { FIND_SUMMON_CONTROLLER } from "../summon/controller";
+import {
+  FIND_SUMMON_CONTROLLER,
+  LIST_SUMMON_CONTROLLERS,
+} from "../summon/controller";
 import { ApiError } from "./errors";
 
 /**
@@ -342,6 +345,30 @@ export class QueueSource {
       );
     }
     return controller;
+  }
+
+  /**
+   * Every summon controller the `jobs` context runs in this process, on a
+   * queue this API can reach, sorted by queue name: what `GET /summon`
+   * lists. Reachability as {@link summonController} decides it, without a
+   * backend read: with `queues: "all"` a controller proves its queue; a
+   * configured list keeps its members only. Empty without `jobs`.
+   */
+  summonControllers(): SummonController[] {
+    const jobs = this.#config.jobs;
+    if (!jobs) {
+      return [];
+    }
+    const configured =
+      this.#known === undefined
+        ? (this.#config.queues as ReadonlyMap<string, unknown>)
+        : undefined;
+    return jobs[LIST_SUMMON_CONTROLLERS]()
+      .filter(
+        (controller) =>
+          configured === undefined || configured.has(controller.queue),
+      )
+      .sort((a, b) => (a.queue < b.queue ? -1 : a.queue > b.queue ? 1 : 0));
   }
 
   /** Forgets the cached queue list, so the next check reads the backend. */

@@ -269,10 +269,21 @@ function SummonState({ status }: { status: SummonStatusDto }) {
           label: "Budget",
           value: (
             <span data-testid="summon-budget">
-              {formatNumber(status.budget.hour)} of{" "}
-              {formatNumber(status.budget.perHour)} this hour,{" "}
-              {formatNumber(status.budget.day)} of{" "}
-              {formatNumber(status.budget.perDay)} today (UTC)
+              {status.budget.off === true ||
+              status.budget.perHour === undefined ||
+              status.budget.perDay === undefined ? (
+                <>
+                  Off: {formatNumber(status.budget.hour)} this hour,{" "}
+                  {formatNumber(status.budget.day)} today (UTC), no limit
+                </>
+              ) : (
+                <>
+                  {formatNumber(status.budget.hour)} of{" "}
+                  {formatNumber(status.budget.perHour)} this hour,{" "}
+                  {formatNumber(status.budget.day)} of{" "}
+                  {formatNumber(status.budget.perDay)} today (UTC)
+                </>
+              )}
             </span>
           ),
         },

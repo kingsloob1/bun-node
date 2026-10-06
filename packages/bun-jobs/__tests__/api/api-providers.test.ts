@@ -40,7 +40,7 @@ import {
   configuredProvider,
   configuredProviders,
 } from "../../lib/provider/registry";
-import { makeTmpDir, testNamespace } from "../helpers";
+import { makeTmpDir, testNamespace, waitFor } from "../helpers";
 import { harness, openHarnesses } from "./fixtures";
 
 /**
@@ -1767,11 +1767,21 @@ describe("a summon status's providerId and readiness", () => {
       controller: ReturnType<BunJobs["summonController"]>,
     ) => Promise<void>,
   ) {
-    let answer: (valid: boolean) => void = () => {};
+    // Each validation's resolver, in the order they started. A validation is
+    // answered only once it has started: answering after a fixed sleep hit
+    // the previous, settled one whenever the check or the preflight took
+    // longer than the sleep to get there (as under `bun test --parallel`),
+    // leaving the new one to hang until `summonTimeout` and the test's own.
+    const started: ((valid: boolean) => void)[] = [];
+    let answered = 0;
+    const answerNext = async (valid: boolean): Promise<void> => {
+      await waitFor(() => started.length > answered, { timeout: 20_000 });
+      started[answered++]!(valid);
+    };
     const make = acme({
       asyncConfig: () =>
         new Promise<boolean>((resolve) => {
-          answer = resolve;
+          started.push(resolve);
         }),
       preflight: async () => [],
     });
@@ -1779,22 +1789,25 @@ describe("a summon status's providerId and readiness", () => {
     const id = `${make.definition.name}@1.0.0~1`;
     const jobs = summoning({ ...configured });
     const h = api({ jobs });
-    answer(false);
+    await answerNext(false);
     await configured.ready.catch(() => {});
     await jobs.queue("work").add("x", {});
     const controller = jobs.summonController("work");
     const checking = controller
       .check({ reason: "manual", force: true })
       .catch(() => {});
-    await Bun.sleep(20);
-    answer(false);
+    // The check's own validation of the config, rejected.
+    await answerNext(false);
     await checking;
     const failed = await h.call("GET", "/queues/work/summon");
     const { summoner: _before, ...before } = failed.body;
     const validating = h.call("POST", path(id, "/validate"));
-    await Bun.sleep(20);
+    // The preflight's validation: `during` runs while it is in flight.
+    await waitFor(() => started.length > answered, { timeout: 20_000 });
     await during?.(controller);
-    answer(true);
+    await answerNext(true);
+    // Exactly the three validations: the config's, the check's, the preflight's.
+    expect(started).toHaveLength(3);
     const verdict = (await validating).body;
     const after = await h.call("GET", "/queues/work/summon");
     const { summoner, ...rest } = after.body;

@@ -25,6 +25,8 @@ export type {
   SummonerFunction,
   SummonEventPayload,
   SummonFacet,
+  SummonFailure,
+  SummonFailureOutcome,
   SummonLastOutcome,
   SummonMarker,
   SummonOutcomeKind,

@@ -109,6 +109,9 @@ export const DRIVER_FEATURES = {
   demand: [],
   // The provider routes: no driver method, the same rule as `demand`.
   providers: [],
+  // The summon reset's `budget` body: no driver method either; whether a
+  // queue has a controller is the route's own 409.
+  summonResetBudget: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -220,6 +223,8 @@ export const FEATURE_ROUTES = {
   // backend, so only the API's mode turns the flag off, as for `demand`.
   // Their actions are opt-in, which a flag deliberately ignores.
   providers: ["listProviders", "validateProvider", "getProviderSchema"],
+  // The reset route, whose body takes `budget` since this flag existed.
+  summonResetBudget: ["resetQueueSummon"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**

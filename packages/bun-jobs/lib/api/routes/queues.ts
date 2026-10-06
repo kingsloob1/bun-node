@@ -73,11 +73,17 @@ import {
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
+  SummonListSchema,
   SummonNowBodySchema,
+  SummonResetBodySchema,
   SummonStatusSchema,
   ThroughputSchema,
 } from "../schemas/queues";
-import { toSummonCheckDto, toSummonStatusDto } from "../serialize";
+import {
+  toSummonCheckDto,
+  toSummonListItemDto,
+  toSummonStatusDto,
+} from "../serialize";
 import { overviewAnalytics, requestedRange, resolveRange } from "./analytics";
 import { defineRoute } from "./define";
 import { DRIVER_FEATURES, driverImplements } from "./meta";
@@ -853,6 +859,42 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
     }),
     defineRoute({
       method: "GET",
+      path: "/summon",
+      operationId: "listSummonControllers",
+      action: "queues.read",
+      mode: "jobs",
+      summary:
+        "Every summon controller the API can read, with its budget usage",
+      description: `One item per summon controller running in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — on a queue the API can reach, by queue name: the namespace and queue, the summoner's kind and readiness, the last outcome, and the budget usage with its limits (absent, with \`off: true\`, while the policy turns the budget off) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A controller running in another process is not listed. An empty list, never 409, when none runs here. Reads one summon state per controller; spends nothing.\n\nWith \`listQueues: "authorized"\`, a controller is listed only when \`authorize\` allows \`queues.read\` on its queue, asked as \`GET /queues/{queue}\` would ask — the queue list's rule.`,
+      tags: ["Queues"],
+      responses: { 200: SummonListSchema },
+      handler: async ({ req, services }) => {
+        const controllers = services.queues.summonControllers();
+        const visible = new Set(
+          await visibleQueueNames(
+            services,
+            req,
+            controllers.map((controller) => controller.queue),
+          ),
+        );
+        const shown = controllers.filter((controller) =>
+          visible.has(controller.queue),
+        );
+        const statuses = await mapBounded(
+          shown,
+          async (controller) => await controller.status(),
+        );
+        return {
+          body: {
+            controllers: shown.map((controller, index) =>
+              toSummonListItemDto(controller.namespace, statuses[index]!),
+            ),
+          },
+        };
+      },
+    }),
+    defineRoute({
+      method: "GET",
       path: "/queues/:queue/summon",
       operationId: "getQueueSummon",
       action: "queues.read",
@@ -906,15 +948,17 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "queues.summon",
       mode: "jobs",
       summary: "Clear a queue's summon failures, backoff and open circuit",
-      description: `Resets the queue's shared summon state as \`controller.reset()\` does: consecutive failures to 0, the backoff and an open circuit cleared, attempts in flight kept. Answers the status after it. 409 \`SUMMON_MARKER_CONTENDED\` when other controllers won every write it tried; try again.\n\n\`queues.summon\`, like "summon now": opt-in, and removed by \`readOnly\`.\n\n${SUMMON_NOTE}`,
+      description: `Resets the queue's shared summon state as \`controller.reset({ budget })\` does: consecutive failures to 0, the backoff and an open circuit cleared, attempts in flight kept, and — with \`{ "budget": true }\` — the attempts counted against the budget this UTC hour and day set to 0 in the same write (\`/meta.features.summonResetBudget\` advertises the body). Without a body, or with \`budget\` false, the budget usage is kept. Answers the status after it. 409 \`SUMMON_MARKER_CONTENDED\` when other controllers won every write it tried; try again.\n\n\`queues.summon\`, like "summon now": opt-in, and removed by \`readOnly\`.\n\n${SUMMON_NOTE}`,
       tags: ["Queues"],
       params: QueueParams,
+      body: SummonResetBodySchema,
+      bodyOptional: true,
       responses: { 200: SummonStatusSchema },
       errors: [...SUMMON_ERRORS, "SUMMON_MARKER_CONTENDED"],
       target: ({ params }) => queueTarget(params.queue),
-      handler: async ({ params, services }) => {
+      handler: async ({ params, body, services }) => {
         const controller = await services.queues.summonController(params.queue);
-        await controller.reset();
+        await controller.reset({ budget: body.budget });
         return {
           body: toSummonStatusDto(
             await controller.status(),

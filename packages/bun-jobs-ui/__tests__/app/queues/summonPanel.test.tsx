@@ -70,7 +70,14 @@ function statusFixture(
       },
     ],
     failures: 0,
-    budget: { hour: 3, perHour: 30, day: 12, perDay: 300 },
+    budget: {
+      hour: 3,
+      perHour: 30,
+      day: 12,
+      perDay: 300,
+      hourResetsAt: Date.UTC(2026, 0, 1, 1),
+      dayResetsAt: Date.UTC(2026, 0, 2),
+    },
     last: { id: "s-1", outcome: "started", at: NOW - 20_000 },
     ...overrides,
   };
@@ -190,6 +197,25 @@ describe("the Summon panel", () => {
     expectAbsent(within(panel).queryByTestId("summon-circuit"));
     // No handles sent: no column, nothing marks them withheld.
     expect(panel.textContent).not.toMatch(/handle/i);
+  });
+
+  it("shows a budget the policy turned off as counts with no limit", async () => {
+    const { panel } = await openPanel(
+      granted(
+        statusFixture({
+          budget: {
+            hour: 41,
+            day: 120,
+            off: true,
+            hourResetsAt: Date.UTC(2026, 0, 1, 1),
+            dayResetsAt: Date.UTC(2026, 0, 2),
+          },
+        }),
+      ),
+    );
+    expect(within(panel).getByTestId("summon-budget").textContent).toBe(
+      "Off: 41 this hour, 120 today (UTC), no limit",
+    );
   });
 
   it("shows a backoff and an open circuit while they run, and the failures that caused them", async () => {

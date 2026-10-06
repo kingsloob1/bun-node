@@ -12,6 +12,7 @@ PLAYGROUND_DRIVER=sqlite bun playground/index.ts     # keeps its state in playgr
 PLAYGROUND_DRIVER=memory bun playground/index.ts     # nothing on disk, and no summoning
 PLAYGROUND_DRIVER=redis PLAYGROUND_URL=redis://localhost:6379/12 bun playground/index.ts
 PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
+PLAYGROUND_SUMMON_BUDGET=off bun playground/index.ts # renders summons with budget: false
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -85,6 +86,7 @@ than piled onto one (each is commented where it is set):
 | `webhooks` | 2 at a time, rate-limited 20/min | retries with exponential backoff; `umbrella` always fails, so dead jobs pile up |
 | `images` | none in `api` — its only worker is `mailer.images.thumbs` (see above) | a backlog that drains slowly, one job at a time; pause that worker and it only grows |
 | `renders` | none always on — summoned on demand (`summoning.ts`) | a burst of 4–16 jobs every minute, a worker (or two) summoned for it, and back to no worker at all |
+| `summon-alerts` | none, by design (`summoning.ts`) | one waiting job per summon failure `renders`' `onSummonFailed` is told of: the alert log |
 
 Also on `emails`: two repeat series (`weekly-digest`, `daily-summary`: try
 Disable/Enable), a delayed `reminder-tomorrow`, and a flow
@@ -218,6 +220,19 @@ and exits once there is nothing left for it.
   exits.
 - **`/local-compute`**: the platform's own page — every unit, its pid, state,
   exit code and detail, and buttons that queue a fault.
+- **`summon-alerts`** (`/jobs/queues/summon-alerts`): the policy's
+  `onSummonFailed` adds one job per failure it is told of — `failed`,
+  `lost`, `unavailable`, `budget-exhausted`, and `circuit-open` once per
+  opening — named after the outcome, with the failure as its data (id,
+  detail, `until` for the circuit, the usage and limits for the budget). It
+  also prints a line. Nothing consumes the queue, so its waiting jobs are
+  the alert log.
+- **Budget**: `renders` allows 240 attempts an hour; start with
+  `PLAYGROUND_SUMMON_BUDGET=off` for `budget: false` — no limit, and the
+  Summon panel shows the usage as "Off". Reset with the usage cleared from
+  API docs → HTTP: `POST /queues/renders/summon/reset` with
+  `{ "budget": true }`; `GET /summon` lists the controller with its budget
+  and when each window resets.
 
 **One cycle.** Every minute (`PLAYGROUND_SUMMON_EVERY_MS`) a burst of 4–16
 render jobs arrives. The add triggers a check, the controller summons (two
@@ -288,7 +303,7 @@ that: its units then exit on their own once idle.
 - Try any operation from API docs → HTTP, and watch the screens follow.
 - Open Providers in the first 12 s: `…~1` and `…~3` say Pending. Then press Test connection on each of the three.
 - Open `renders` when a burst lands: a pending attempt, then registered, then a worker under `compute` on the Workers page; a minute later, no worker at all.
-- Queue `auth` on `/local-compute`, then press "Summon now" on `renders`: the circuit opens at once. Reset closes it.
+- Queue `auth` on `/local-compute`, then press "Summon now" on `renders`: the circuit opens at once. Reset closes it. `summon-alerts` gains a `failed` job and one `circuit-open` job, whose `until` is the panel's "Circuit open until".
 - Queue `crash`, add a job to `renders`, and watch the attempt go from pending to lost 20 s later, with the unit's own reason as its detail.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 
