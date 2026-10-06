@@ -1,6 +1,14 @@
 import type { Logger, UnitStatus } from "../../provider/index";
 import type { LocalComputeConfig } from "./config";
-import { closeSync, openSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
 import { allowlisted } from "./config";
 
@@ -21,8 +29,8 @@ export interface LocalUnit {
   readonly proc: Bun.Subprocess<"ignore", "pipe" | "ignore", "pipe">;
   /** When it was started, epoch ms. */
   readonly startedAt: number;
-  /** When the host-side lifetime backstop kills it, epoch ms. */
-  readonly killAt: number;
+  /** When its lifetime ends and it is sent the stop signal, epoch ms. */
+  readonly expiresAt: number;
   /** The stop signal its provider uses. */
   readonly signal: "SIGTERM" | "SIGINT";
   /** The grace after the stop signal, in ms. */
@@ -31,6 +39,10 @@ export interface LocalUnit {
   lastStderr?: string;
   /** Why this host stopped it, when it did. */
   stopped?: StopReason;
+  /** Set when its lifetime timer fired: what `status()` reads to say `max-lifetime`. */
+  lifetimeExpired?: boolean;
+  /** Its own cgroup, inside the configured one, when one is set. */
+  readonly cgroup?: string;
   /** Resolves once the process has exited, with its code (`143` for SIGTERM, `137` for SIGKILL). */
   readonly exited: Promise<number>;
   /** Resolves once both output streams have ended: everything it wrote has been read. */
@@ -44,6 +56,14 @@ const DETAIL_MAX = 200;
 
 /** The longest line the output pump buffers before cutting it, in bytes. */
 const LINE_MAX = 16_384;
+
+/**
+ * How long after the lifetime's `SIGKILL` `Bun.spawn`'s own `timeout` kills
+ * the unit's process, in ms: a last backstop for a host whose event loop is
+ * too busy to run the lifetime timer. It reaches the process only, not its
+ * group.
+ */
+const NATIVE_BACKSTOP_MS = 5_000;
 
 /** A unit's state, as `status()` reports it. */
 export function unitStatus(unit: LocalUnit): UnitStatus {
@@ -63,14 +83,14 @@ export function unitStatus(unit: LocalUnit): UnitStatus {
     };
   }
   const signal = unit.proc.signalCode;
-  const lifetime = signal === "SIGKILL" && Date.now() >= unit.killAt - 50;
   return {
     handle: unit.handle,
     state: "failed",
     exitCode: code,
-    detail: lifetime
-      ? "max-lifetime"
-      : (unit.lastStderr ?? (signal === null ? `exit ${code}` : signal)),
+    detail:
+      unit.lifetimeExpired === true
+        ? "max-lifetime"
+        : (unit.lastStderr ?? (signal === null ? `exit ${code}` : signal)),
   };
 }
 
@@ -82,8 +102,15 @@ interface LineSink {
   close: () => void;
 }
 
-/** The sink for a unit's output, per the config. */
-function sinkFor(config: LocalComputeConfig, handle: string): LineSink {
+/**
+ * The sink for a unit's output, per the config. `warnOnce` is told when a
+ * file cannot be opened or written, so output is never dropped silently.
+ */
+function sinkFor(
+  config: LocalComputeConfig,
+  handle: string,
+  warnOnce: (message: string, error: unknown) => void,
+): LineSink {
   const output = config.output;
   switch (output.kind) {
     case "ignore":
@@ -116,16 +143,24 @@ function sinkFor(config: LocalComputeConfig, handle: string): LineSink {
       let fd: number | undefined;
       try {
         fd = openSync(output.path, "a");
-      } catch {
+      } catch (error) {
         fd = undefined;
+        warnOnce(
+          `localCompute cannot open its output file ${output.path}: units' output is dropped`,
+          error,
+        );
       }
       return {
         line: (_stream, text) => {
           if (fd !== undefined) {
             try {
               writeSync(fd, `${text}\n`);
-            } catch {
+            } catch (error) {
               // A full disk or a removed file: the unit carries on.
+              warnOnce(
+                `localCompute cannot write its output file ${output.path}: units' output is dropped`,
+                error,
+              );
             }
           }
         },
@@ -179,24 +214,98 @@ const HOST_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 /** Whether the guard's listeners are installed. */
 let guarded = false;
 
-/** Whether a host signal has started stopping every unit. */
+/** Whether a host signal has started stopping every unit: summons start nothing while it has. */
 let stopping = false;
 
-/** Kills every live unit at once: the host is exiting and cannot wait. */
+/**
+ * Whether the host has begun stopping its units on a signal. While it has,
+ * a summon starts nothing: a unit started in the shutdown grace would be
+ * stopped at once, or outlive the host.
+ */
+export function hostStopping(): boolean {
+  return stopping;
+}
+
+/** Whether a unit's process has not exited yet: its pid, and so its group id, is still its own. */
+function alive(unit: LocalUnit): boolean {
+  return (
+    unit.exitCode === undefined &&
+    unit.proc.exitCode === null &&
+    unit.proc.signalCode === null
+  );
+}
+
+/**
+ * Sends `signal` to everything a unit started: its process group (it is
+ * spawned detached, as the group's leader), and with `SIGKILL` its own
+ * cgroup, which also holds what left the group. The group is signalled only
+ * while the unit is alive: once it has exited and been reaped, its group id
+ * could be reused, so then only the cgroup (a path, not a number) is. Best
+ * effort: what is already gone is not an error.
+ */
+export function signalUnit(unit: LocalUnit, signal: NodeJS.Signals): void {
+  if (alive(unit)) {
+    try {
+      process.kill(-unit.proc.pid, signal);
+    } catch {
+      // The group could not be signalled: the leader, at least.
+      try {
+        unit.proc.kill(signal);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+  if (signal === "SIGKILL" && unit.cgroup !== undefined) {
+    killCgroup(unit.cgroup);
+  }
+}
+
+/** `cgroup.kill` (Linux 5.14+): `SIGKILL` to every process in the cgroup and below. */
+function killCgroup(path: string): void {
+  try {
+    if (existsSync(join(path, "cgroup.kill"))) {
+      writeFileSync(join(path, "cgroup.kill"), "1");
+    }
+  } catch {
+    // Already gone, or an older kernel: the process group was signalled.
+  }
+}
+
+/**
+ * Removes a unit's own cgroup and any cgroup the unit made inside it, deepest
+ * first (`removeTree`: the `./provider` entry's `removeCgroupTree`), retrying
+ * while the killed processes are reaped (`EBUSY`), at most `budgetMs`. Never
+ * throws: a cgroup that will not go is left behind, empty or holding a stuck
+ * process.
+ */
+async function removeCgroup(
+  path: string,
+  removeTree: (path: string) => boolean,
+  budgetMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (!removeTree(path) && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+}
+
+/** Kills everything every live unit started: the host is exiting and cannot wait. */
 function onHostExit(): void {
   for (const unit of LIVE) {
     unit.stopped ??= "host-shutdown";
-    unit.proc.kill("SIGKILL");
+    signalUnit(unit, "SIGKILL");
   }
 }
 
 /**
  * A host signal: every unit is sent its stop signal and killed after its
- * grace. When this guard is the signal's only listener, it owns the
- * signal's default action too: it waits for the units (at most the longest
- * grace), then raises the signal again with its listeners removed, so the
- * host ends as it would have. Otherwise the host's own listener decides when
- * it ends, and `exit` kills whatever is left.
+ * grace, and no new unit starts. When this guard is the signal's only
+ * listener, it owns the signal's default action too: it waits for the units
+ * (at most the longest grace), then raises the signal again with its
+ * listeners removed, so the host ends as it would have. Otherwise the host's
+ * own listener decides when it ends, `exit` kills whatever is left, and
+ * summons resume once every unit has stopped (the host chose to live on).
  */
 function onHostSignal(signal: NodeJS.Signals): void {
   const units = [...LIVE];
@@ -209,18 +318,23 @@ function onHostSignal(signal: NodeJS.Signals): void {
   }
   stopping = true;
   const longest = Math.max(0, ...units.map((unit) => unit.graceMs));
-  for (const unit of units) {
-    void stopUnit(unit, "host-shutdown");
-  }
+  const stopped = Promise.all(
+    units.map(async (unit) => await stopUnit(unit, "host-shutdown")),
+  );
   const sole = process.listenerCount(signal) === 1;
   if (!sole) {
-    stopping = false;
+    void stopped.then(() => {
+      stopping = false;
+      if (LIVE.size === 0) {
+        unguard();
+      }
+    });
     return;
   }
   void (async () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
-      Promise.all(units.map(async (unit) => await unit.exited)),
+      stopped,
       new Promise<void>((done) => {
         timer = setTimeout(done, longest + 100);
       }),
@@ -228,7 +342,6 @@ function onHostSignal(signal: NodeJS.Signals): void {
     clearTimeout(timer);
     onHostExit();
     unguard();
-    stopping = false;
     process.kill(process.pid, signal);
   })();
 }
@@ -258,9 +371,10 @@ function unguard(): void {
 }
 
 /**
- * Sends a unit its stop signal and, if it is still running after its
- * grace, `SIGKILL`. Resolves once it has exited. A unit already stopping
- * keeps its first reason and its first escalation timer.
+ * Sends a unit's process group its stop signal and, if the unit is still
+ * running after its grace, `SIGKILL` to the group and its cgroup. Resolves
+ * once the unit has exited. A unit already stopping keeps its first reason
+ * and its first escalation timer.
  */
 export async function stopUnit(
   unit: LocalUnit,
@@ -271,10 +385,10 @@ export async function stopUnit(
   }
   if (unit.stopped === undefined) {
     unit.stopped = reason;
-    unit.proc.kill(unit.signal);
+    signalUnit(unit, unit.signal);
     const escalate = setTimeout(() => {
       if (unit.exitCode === undefined) {
-        unit.proc.kill("SIGKILL");
+        signalUnit(unit, "SIGKILL");
       }
     }, unit.graceMs);
     void unit.exited.then(() => clearTimeout(escalate));
@@ -294,6 +408,20 @@ export interface UnitStart {
   lifetimeMs: number;
   /** Called once it has exited. */
   onExit: (unit: LocalUnit) => void;
+  /** Warns, once per configured instance, that its output could not be written. */
+  warnOnce: (message: string, error: unknown) => void;
+  /**
+   * Runs `fn` in the configured instance's own async context, not the
+   * calling `summon`'s: the lifetime timers belong to the unit, which
+   * outlives the call (`AsyncResource.runInAsyncScope`).
+   */
+  instanceScope: <T>(fn: () => T) => T;
+  /**
+   * The `./provider` entry's `removeCgroupTree`, passed in: this module must
+   * not import that entry at run time (it loads `../local.ts`, which loads
+   * this module).
+   */
+  removeCgroupTree: (path: string) => boolean;
 }
 
 /**
@@ -301,19 +429,37 @@ export interface UnitStart {
  * be started (a missing executable, a cgroup it cannot join), and that is
  * left to the caller to map.
  *
- * The lifetime is enforced by `Bun.spawn`'s own `timeout`: `SIGKILL` at the
- * lifetime plus the grace, a backstop behind `runSummoned`, which stops the
- * worker itself before its deadline. No timer is left in the host for it.
+ * It is spawned **detached**, so it leads a process group of its own, and
+ * with a cgroup configured, in a cgroup of its own inside it: every stop
+ * reaches what it started, not only the unit's own process. Detached, it no
+ * longer receives the terminal's Ctrl-C with the host; the host's guard
+ * stops it instead.
+ *
+ * Its lifetime is a backstop behind `runSummoned`, which stops the worker
+ * itself before its deadline: at `lifetimeMs` its group is sent the stop
+ * signal, and `SIGKILL` after the grace, by timers that belong to the unit
+ * and are cleared when it exits. `Bun.spawn`'s own `timeout` kills the
+ * process {@link NATIVE_BACKSTOP_MS} later still, should the host's event
+ * loop be too busy to run them. With a cgroup, what the unit left in it is
+ * killed when it exits; without one, a process it started and left behind
+ * in a group of its own outlives it.
  */
 export function startUnit(
   config: LocalComputeConfig,
   start: UnitStart,
 ): LocalUnit {
-  const sink = sinkFor(config, start.handle);
-  const timeout = start.lifetimeMs + config.graceMs;
+  const sink = sinkFor(config, start.handle, start.warnOnce);
+  const timeout = start.lifetimeMs + config.graceMs + NATIVE_BACKSTOP_MS;
   const now = Date.now();
+  let cgroup: string | undefined;
   let proc: Bun.Subprocess<"ignore", "pipe" | "ignore", "pipe">;
   try {
+    if (config.cgroup !== undefined) {
+      // A leaf of the configured cgroup: its limits bind every unit
+      // together, and this unit's processes can be killed as one.
+      cgroup = join(config.cgroup, start.handle);
+      mkdirSync(cgroup);
+    }
     proc = Bun.spawn({
       // Under the allowlist, Bun must not load a `.env` from the unit's cwd
       // behind it.
@@ -331,10 +477,14 @@ export function startUnit(
       stderr: "pipe",
       timeout,
       killSignal: "SIGKILL",
-      ...(config.cgroup === undefined ? {} : { cgroup: config.cgroup }),
+      detached: true,
+      ...(cgroup === undefined ? {} : { cgroup }),
     }) as Bun.Subprocess<"ignore", "pipe" | "ignore", "pipe">;
   } catch (error) {
     sink.close();
+    if (cgroup !== undefined) {
+      void removeCgroup(cgroup, start.removeCgroupTree, 0);
+    }
     throw error;
   }
   let finish: (code: number) => void = () => {};
@@ -349,11 +499,12 @@ export function startUnit(
     handle: start.handle,
     proc,
     startedAt: now,
-    killAt: now + timeout,
+    expiresAt: now + start.lifetimeMs,
     signal: config.signal,
     graceMs: config.graceMs,
     exited,
     drained,
+    ...(cgroup === undefined ? {} : { cgroup }),
   };
   const pumps: Promise<void>[] = [
     pump(proc.stderr, (text) => {
@@ -368,6 +519,23 @@ export function startUnit(
   }
   LIVE.add(unit);
   guard();
+  let lifetimeKill: ReturnType<typeof setTimeout> | undefined;
+  const lifetime = start.instanceScope(() => {
+    const timer = setTimeout(() => {
+      if (!alive(unit)) {
+        return;
+      }
+      unit.lifetimeExpired = true;
+      signalUnit(unit, unit.signal);
+      lifetimeKill = setTimeout(() => {
+        signalUnit(unit, "SIGKILL");
+      }, unit.graceMs);
+      lifetimeKill.unref();
+    }, start.lifetimeMs);
+    // The host's life is its own: a unit's timer never holds it open.
+    timer.unref();
+    return timer;
+  });
   // The output ends on its own; a grandchild holding a pipe open only keeps
   // the sink (and a file) open longer. No timer is left for it.
   void Promise.all(pumps).then(() => {
@@ -375,6 +543,14 @@ export function startUnit(
     drainedNow();
   });
   void proc.exited.then((code) => {
+    clearTimeout(lifetime);
+    clearTimeout(lifetimeKill);
+    // What it left in its own cgroup goes with it: a path, so safe after the
+    // reap, unlike its group id.
+    if (cgroup !== undefined) {
+      killCgroup(cgroup);
+      void removeCgroup(cgroup, start.removeCgroupTree);
+    }
     unit.exitCode = code;
     LIVE.delete(unit);
     if (LIVE.size === 0 && !stopping) {

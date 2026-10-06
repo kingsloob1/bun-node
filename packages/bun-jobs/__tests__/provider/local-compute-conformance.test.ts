@@ -46,6 +46,7 @@ const MUST_PASS = [
   "summon.timeouts.no-timer-left",
   "summon.status.knows-handles",
   "summon.status.cancel-stops-pending",
+  "summon.lifetime.enforced",
   "summon.describe.facts",
   "summon.validate.healthy",
   "summon.handoff.started",
@@ -84,6 +85,7 @@ describe("localCompute conforms", () => {
               path: "passEnv",
             },
           ],
+          platform: "none",
           driver: backend.config,
         });
         assertConformance(report);
@@ -97,7 +99,13 @@ describe("localCompute conforms", () => {
 });
 
 /** What a broken self-hosted provider gets wrong. */
-type Defect = "drops-argv" | "ignores-abort" | "leaves-timer" | "no-status";
+type Defect =
+  | "drops-argv"
+  | "ignores-abort"
+  | "leaves-timer"
+  | "no-status"
+  | "fetches"
+  | "claims-lifetime";
 
 /**
  * A minimal self-hosted provider, written the way a third party would:
@@ -133,11 +141,16 @@ function selfHosted(defect?: Defect) {
           bootBudgetMs: 30_000,
           shutdown: { signal: "SIGTERM", graceMs: 1_000 },
           maxLifetimeMs: null,
-          enforcesLifetime: false,
+          // Declared, and then not done: the lifetime check must catch it.
+          enforcesLifetime: defect === "claims-lifetime",
         },
         summon: async (request, context) => {
           if (defect !== "ignores-abort" && context.signal.aborted) {
             throw new Error("aborted");
+          }
+          if (defect === "fetches") {
+            // A provider with a platform after all, run as self-hosted.
+            await context.fetch("http://127.0.0.1:9/").catch(() => {});
           }
           const known = tokens.get(request.dedupeKey);
           if (known !== undefined) {
@@ -201,6 +214,7 @@ async function run(
 ): Promise<ConformanceReport> {
   return await runProviderConformance(selfHosted(defect), {
     config: { entry: CONFORMANCE_WORKER },
+    platform: "none",
     skip: skip.map((id) => ({ id, reason: "not this test's point" })),
   });
 }
@@ -218,6 +232,7 @@ describe("the kit's self-hosted mode (negative controls)", () => {
     expect(failed(report)).toEqual([]);
     expect(statusOf(report, "summon.handoff.drained")).toBe("pass");
     expect(statusOf(report, "summon.routing.through-ctx-fetch")).toBe("skip");
+    expect(statusOf(report, "summon.lifetime.enforced")).toBe("skip");
     expect(
       report.checks.find((check) => check.id === "summon.errors.auth")?.detail,
     ).toContain("no platform");
@@ -250,6 +265,31 @@ describe("the kit's self-hosted mode (negative controls)", () => {
       "summon.cas.one-call",
     ]);
     expect(failed(report)).toEqual(["summon.timeouts.no-timer-left"]);
+  });
+
+  it("fails routing for one that calls ctx.fetch, so a forgotten fake cannot pass", async () => {
+    const report = await run("fetches", [
+      "summon.handoff.started",
+      "summon.handoff.released",
+      "summon.handoff.drained",
+      "summon.cas.one-call",
+    ]);
+    expect(failed(report)).toEqual(["summon.routing.through-ctx-fetch"]);
+    expect(
+      report.checks.find(
+        (check) => check.id === "summon.routing.through-ctx-fetch",
+      )?.detail,
+    ).toContain("give the kit a fake");
+  });
+
+  it("fails lifetime for one that declares enforcesLifetime and does not enforce it", async () => {
+    const report = await run("claims-lifetime", [
+      "summon.handoff.started",
+      "summon.handoff.released",
+      "summon.handoff.drained",
+      "summon.cas.one-call",
+    ]);
+    expect(failed(report)).toEqual(["summon.lifetime.enforced"]);
   });
 
   it("fails the handoff of one with no status(), which nothing else can follow", async () => {

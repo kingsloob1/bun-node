@@ -1,5 +1,6 @@
 import type { Subprocess } from "bun";
 import process from "node:process";
+import { textRedactor } from "../redact";
 
 /**
  * The handoff's spawning half: starts a worker script as a real, separate
@@ -133,6 +134,23 @@ export function unitSpawner(
 export const SCRIPT_CAP_MS = 120_000;
 
 /**
+ * An error and its chain of causes, on one line: `DriverError: … (cause:
+ * Error: Too many connections)`. At most four deep.
+ */
+export function describeFailure(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current !== undefined; depth++) {
+    parts.push(String(current));
+    current =
+      current instanceof Error && "cause" in current
+        ? current.cause
+        : undefined;
+  }
+  return parts.join(" (cause: ") + ")".repeat(parts.length - 1);
+}
+
+/**
  * Runs a script's `main` and exits 1, with the error on stderr, if it
  * rejects. A timer holds the process open until `main` settles: on Bun
  * 1.4.3, a MySQL or MariaDB query issued after a transaction has committed
@@ -164,7 +182,9 @@ export function runScript(
   cap.unref();
   main()
     .catch((error: unknown) => {
-      process.stderr.write(`${String(error)}\n`);
+      // The cause on the same line: the kit reports a script's last lines,
+      // and a driver's "failed during migrate" says nothing without it.
+      process.stderr.write(`${textRedactor([])(describeFailure(error))}\n`);
       process.exit(1);
     })
     .finally(() => {

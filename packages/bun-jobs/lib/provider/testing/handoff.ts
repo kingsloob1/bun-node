@@ -19,6 +19,7 @@ import { BunQueue } from "../../queue/BunQueue";
 import { ConfigError } from "../../shared/errors";
 import { SummonController } from "../../summon/controller";
 import { PROVIDER_FETCH_PROBE } from "../context";
+import { textRedactor } from "../redact";
 import { VERDICT_POLICY } from "./checks";
 import { RACER, RACER_ENV } from "./racer";
 import { describeThrown, fakeOf, kitLifetime, randomHex } from "./run";
@@ -343,7 +344,7 @@ export async function handoffChecks(run: KitRun): Promise<void> {
       const stderr = (await within(units[0]!.process.errors, 1_000)) ?? "";
       fail(
         2,
-        `the worker exited ${bad}${stderr === "" ? "" : `: ${stderr.trim().split("\n").slice(-3).join(" | ")}`}`,
+        `the worker exited ${bad}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-3).join(" | "))}`}`,
       );
       return;
     }
@@ -839,7 +840,7 @@ export async function casChecks(run: KitRun): Promise<void> {
           }
           const stderr = (await within(racers[0]!.errors, 1_000)) ?? "";
           failures.push(
-            `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${stderr.trim().split("\n").slice(-2).join(" | ")}`}`,
+            `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-2).join(" | "))}`}`,
           );
           break;
         }

@@ -16,6 +16,7 @@
  * ({@link COMPUTE_PROVIDER_API}): any `0.x` minor may change it.
  */
 export type { QueueDemand } from "../drivers/index";
+export { removeCgroupTree } from "../shared/cgroup";
 export { CHILD_BASE_ENV } from "../shared/childEnv";
 export { ConfigError, JobsError } from "../shared/errors";
 export type {

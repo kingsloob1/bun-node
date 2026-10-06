@@ -41,9 +41,9 @@ export {
 
 /**
  * The kit's fixture worker, an absolute path: the script a self-hosted
- * provider (one with no platform API, run with no `platform`) must be
- * configured to start for the handoff check, e.g.
- * `runProviderConformance(localCompute, { config: { entry: CONFORMANCE_WORKER } })`.
+ * provider (one with no platform API, run with `platform: "none"`) must be
+ * configured to start for the handoff and lifetime checks, e.g.
+ * `runProviderConformance(localCompute, { config: { entry: CONFORMANCE_WORKER }, platform: "none" })`.
  * It reads its summon arguments from `argv` and its test settings from the
  * environment the kit passes as the policy's `env`; with none, it runs on
  * the memory driver and exits once idle (about a third of a second).

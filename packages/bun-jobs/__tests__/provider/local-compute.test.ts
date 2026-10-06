@@ -9,6 +9,7 @@ import type {
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmdirSync,
   writeFileSync,
@@ -35,9 +36,12 @@ import {
   CHILD_BASE_ENV,
   localCompute,
   ProviderError,
+  removeCgroupTree,
 } from "../../lib/provider/index";
 import { factProblem } from "../../lib/provider/redact";
-import { liveUnits } from "../../lib/providers/local/units";
+import { unitEnv } from "../../lib/providers/local/config";
+import { liveUnits, startUnit } from "../../lib/providers/local/units";
+import { buildChildEnv } from "../../lib/shared/childEnv";
 import { SUMMON_ARGS } from "../../lib/summon/args";
 import { makeTmpDir } from "../helpers";
 
@@ -53,6 +57,17 @@ setDefaultTimeout(60_000);
 
 const UNIT = join(import.meta.dir, "../fixtures/local/unit.ts");
 const HOST = join(import.meta.dir, "../fixtures/local/host.ts");
+const ENV_HOST = join(import.meta.dir, "../fixtures/local/env-host.ts");
+
+/** Host processes a test started, killed after it if still running. */
+const hosts: Bun.Subprocess[] = [];
+afterEach(() => {
+  for (const proc of hosts.splice(0)) {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      proc.kill("SIGKILL");
+    }
+  }
+});
 
 const cleanups: (() => Promise<void>)[] = [];
 afterAll(async () => {
@@ -80,6 +95,24 @@ afterEach(async () => {
     }
   }
 });
+
+/** The pid of the `sleep 987` a spawner unit started, from its log. */
+async function childPid(file: string, withinMs = 20_000): Promise<number> {
+  const by = Date.now() + withinMs;
+  while (Date.now() < by) {
+    const log = existsSync(`${file}.log`)
+      ? readFileSync(`${file}.log`, "utf8")
+      : "";
+    const match = /^child (\d+)$/m.exec(log);
+    if (match !== null) {
+      const pid = Number(match[1]);
+      pids.push(pid);
+      return pid;
+    }
+    await Bun.sleep(20);
+  }
+  throw new Error(`no child pid in ${file}.log within ${withinMs} ms`);
+}
 
 /** A call context with a live signal, or `signal`. */
 function context(signal?: AbortSignal): ProviderCallContext {
@@ -255,6 +288,8 @@ describe("localCompute: loading", () => {
   for (const first of [
     "@kingsleyweb/bun-jobs/provider",
     "@kingsleyweb/bun-jobs/lib/providers/local.ts",
+    "@kingsleyweb/bun-jobs/lib/providers/local/config.ts",
+    "@kingsleyweb/bun-jobs/lib/providers/local/units.ts",
     "@kingsleyweb/bun-jobs",
   ]) {
     it(`loads when ${first} is the first module`, async () => {
@@ -374,7 +409,7 @@ describe("localCompute: options", () => {
 });
 
 describe("localCompute: declarations", () => {
-  it("declares a launch style, in-process token dedupe, argv, its budget, shutdown and capacity", () => {
+  it("declares a launch style, per-instance token dedupe, argv, its budget, shutdown and capacity", () => {
     const local = localCompute({
       entry: UNIT,
       maxUnits: 3,
@@ -391,7 +426,7 @@ describe("localCompute: declarations", () => {
         kind: "token",
         maxLength: 64,
         charset: "A-Za-z0-9-",
-        scope: "process",
+        scope: "instance",
         ttlMs: 3_600_000,
         strict: false,
       },
@@ -519,6 +554,64 @@ describe("localCompute: a unit", () => {
     }
   });
 
+  it("builds the same environment as the child-process target's buildChildEnv", () => {
+    // One table through both builders, so they cannot drift apart again.
+    const source: Record<string, string | undefined> = {
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      TZ: "UTC",
+      SECRET: "s3cret",
+      LISTED: "listed",
+      EMPTY: "",
+      GONE: undefined,
+    };
+    const cases: {
+      env?: "inherit" | Record<string, string | undefined>;
+      passEnv?: string[];
+    }[] = [
+      {},
+      { passEnv: ["LISTED", "MISSING", "GONE", "EMPTY"] },
+      // Inherited from Object.prototype, not variables: never copied.
+      { passEnv: ["toString", "constructor", "hasOwnProperty", "valueOf"] },
+      { env: { GIVEN: "given", TZ: undefined, HOME: "/elsewhere" } },
+      { env: { LISTED: undefined }, passEnv: ["LISTED"] },
+      { env: "inherit" },
+    ];
+    for (const policy of cases) {
+      const { config } = localCompute({ entry: UNIT, ...policy });
+      expect(unitEnv(config, {}, CHILD_BASE_ENV, source)).toEqual(
+        buildChildEnv(policy, source),
+      );
+    }
+    const prototypeNames = unitEnv(
+      localCompute({ entry: UNIT, passEnv: ["toString", "constructor"] })
+        .config,
+      {},
+      CHILD_BASE_ENV,
+    );
+    expect(Object.hasOwn(prototypeNames, "toString")).toBe(false);
+    expect(Object.hasOwn(prototypeNames, "constructor")).toBe(false);
+  });
+
+  it("never passes a variable the host started with and then deleted, whatever the policy", async () => {
+    const dir = await tmp();
+    for (const mode of ["allowlist", "inherit"]) {
+      const file = join(dir, `${mode}.json`);
+      const proc = Bun.spawn({
+        cmd: [process.execPath, ENV_HOST, file, mode],
+        env: { ...process.env, LOCAL_TEST_STARTUP: "from-startup" },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "inherit",
+      });
+      hosts.push(proc);
+      expect(await proc.exited).toBe(0);
+      const seen = await report(file);
+      expect(seen.env.LOCAL_TEST_STARTUP).toBeUndefined();
+      expect(seen.env.PATH).toBe(process.env.PATH!);
+    }
+  });
+
   it("keeps a .env in the unit's cwd out under the allowlist, not under inherit", async () => {
     const dir = await tmp();
     writeFileSync(join(dir, ".env"), "LOCAL_TEST_DOTENV=from-dotenv\n");
@@ -550,6 +643,44 @@ describe("localCompute: a unit", () => {
       exitCode: 3,
       detail: "fatal: cannot open libvk.so.1",
     });
+  });
+
+  it("says SIGKILL, not max-lifetime, for a unit that killed itself, then and later", async () => {
+    const file = join(await tmp(), "r.json");
+    const local = unitProvider("selfkill", file);
+    const [handle] = handlesOf(
+      await summon(local.summon, request({ maxLifetimeMs: 1_000 })),
+    );
+    const expected: UnitStatus = {
+      handle: handle!,
+      state: "failed",
+      exitCode: 137,
+      detail: "SIGKILL",
+    };
+    expect(
+      await statusUntil(
+        local.summon,
+        handle!,
+        (unit) => unit.state !== "running",
+      ),
+    ).toEqual(expected);
+    // Past the lifetime: still the unit's own death, not the backstop's.
+    await Bun.sleep(1_500);
+    expect((await local.summon.status!([handle!], context()))[0]).toEqual(
+      expected,
+    );
+  });
+
+  it("refuses a request for no units, rather than starting one", async () => {
+    const file = join(await tmp(), "r.json");
+    const local = unitProvider("exit", file);
+    for (const count of [0, -1, 1.5]) {
+      await expect(
+        local.summon.summon(request({ count }), context()),
+      ).rejects.toBeInstanceOf(ConfigError);
+    }
+    await Bun.sleep(200);
+    expect(existsSync(file)).toBe(false);
   });
 
   it("answers unknown for a handle it never started", async () => {
@@ -620,6 +751,73 @@ describe("localCompute: cancel", () => {
     await cancelling;
     // The escalation goes on without the call.
     expect(await gone(pid)).toBe(true);
+  });
+});
+
+describe("localCompute: what a unit starts", () => {
+  it("cancel stops the unit's own children too", async () => {
+    const file = join(await tmp(), "r.json");
+    const local = unitProvider("spawner", file);
+    const [handle] = handlesOf(await summon(local.summon));
+    const child = await childPid(file);
+    expect(alive(child)).toBe(true);
+    await local.summon.cancel!([handle!], context());
+    expect(await gone(child)).toBe(true);
+  });
+
+  it("the lifetime kill stops the unit's own children too", async () => {
+    const file = join(await tmp(), "r.json");
+    const local = unitProvider("stubborn-spawner", file, {
+      shutdown: { graceMs: 200 },
+    });
+    // Long enough for a loaded machine to start the unit and its child
+    // before the lifetime ends.
+    const [handle] = handlesOf(
+      await summon(local.summon, request({ maxLifetimeMs: 3_000 })),
+    );
+    const child = await childPid(file);
+    const { pid } = await report(file);
+    expect(await gone(pid)).toBe(true);
+    expect(await gone(child)).toBe(true);
+    expect(
+      await statusUntil(
+        local.summon,
+        handle!,
+        (unit) => unit.state !== "running",
+      ),
+    ).toMatchObject({ state: "failed", exitCode: 137, detail: "max-lifetime" });
+  });
+
+  it("sends no signal to a unit's group once it has exited: not on cancel, not at its lifetime", async () => {
+    const file = join(await tmp(), "r.json");
+    const local = unitProvider("exit", file);
+    // A lifetime long enough for a loaded machine to start the unit and see
+    // it exit first; the check then waits past it and its grace.
+    const startedAt = Date.now();
+    const [handle] = handlesOf(
+      await summon(local.summon, request({ maxLifetimeMs: 2_000 })),
+    );
+    const { pid } = await report(file);
+    await statusUntil(
+      local.summon,
+      handle!,
+      (unit) => unit.state !== "running",
+    );
+    const sent: [number, unknown][] = [];
+    const original = process.kill;
+    process.kill = ((target: number, signal?: string | number) => {
+      sent.push([target, signal]);
+      return original.call(process, target, signal);
+    }) as typeof process.kill;
+    try {
+      await local.summon.cancel!([handle!], context());
+      // Past the lifetime and its grace (500 ms): the timers went with the
+      // unit.
+      await Bun.sleep(Math.max(0, startedAt + 2_000 + 500 + 500 - Date.now()));
+    } finally {
+      process.kill = original;
+    }
+    expect(sent.filter(([target]) => Math.abs(target) === pid)).toEqual([]);
   });
 });
 
@@ -738,12 +936,14 @@ describe("localCompute: lifetime", () => {
       shutdown: { graceMs: 200 },
     });
     const before = Date.now();
+    // Long enough for a loaded machine to start the unit before it ends.
     const [handle] = handlesOf(
-      await summon(local.summon, request({ maxLifetimeMs: 400 })),
+      await summon(local.summon, request({ maxLifetimeMs: 2_000 })),
     );
     const { pid } = await report(file);
     expect(await gone(pid)).toBe(true);
-    expect(Date.now() - before).toBeGreaterThanOrEqual(590);
+    expect(Date.now() - before).toBeGreaterThanOrEqual(2_190);
+    expect(readFileSync(`${file}.log`, "utf8")).toContain("ignored SIGTERM");
     expect(
       await statusUntil(
         local.summon,
@@ -815,6 +1015,40 @@ describe("localCompute: output", () => {
   });
 });
 
+describe("localCompute: output that cannot be written", () => {
+  it("warns once, and the unit still runs", async () => {
+    const dir = await tmp();
+    const file = join(dir, "r.json");
+    const local = unitProvider("exit", file, {
+      output: { file: join(dir, "missing", "units.log") },
+    });
+    const warned: string[] = [];
+    for (let n = 0; n < 2; n++) {
+      const unit = startUnit(local.config, {
+        handle: `local-test-out-${n}`,
+        argv: [],
+        env: { PATH: process.env.PATH ?? "" },
+        lifetimeMs: 60_000,
+        onExit: () => {},
+        warnOnce: (() => {
+          let once = false;
+          return (message: string) => {
+            if (!once) {
+              once = true;
+              warned.push(message);
+            }
+          };
+        })(),
+        instanceScope: (fn) => fn(),
+        removeCgroupTree,
+      });
+      expect(await unit.exited).toBe(0);
+    }
+    expect(warned).toHaveLength(2);
+    expect(warned[0]).toContain("cannot open its output file");
+  });
+});
+
 describe("localCompute: validate", () => {
   it("passes a healthy config, warning that a unit is not a sandbox", async () => {
     const checks = await localCompute({ entry: UNIT, maxUnits: 2 }).validate();
@@ -828,6 +1062,21 @@ describe("localCompute: validate", () => {
     expect(checks.find((check) => check.id === "bun")?.detail).toBe(
       `bun ${Bun.version}`,
     );
+  });
+
+  it("checks an output file can be written, creating nothing", async () => {
+    const dir = await tmp();
+    const ok = await localCompute({
+      entry: UNIT,
+      output: { file: join(dir, "units.log") },
+    }).validate();
+    expect(ok.find((check) => check.id === "output")?.status).toBe("pass");
+    expect(existsSync(join(dir, "units.log"))).toBe(false);
+    const bad = await localCompute({
+      entry: UNIT,
+      output: { file: join(dir, "missing", "units.log") },
+    }).validate();
+    expect(bad.find((check) => check.id === "output")?.status).toBe("fail");
   });
 
   it("fails a missing entry and a missing bun", async () => {
@@ -855,41 +1104,72 @@ describe("localCompute: validate", () => {
 });
 
 /**
- * A cgroup this user may create and join, when the machine delegates one
- * (systemd's user slice), or `undefined`.
+ * Where this user may create cgroups, when the machine delegates a subtree
+ * (systemd's user slice), or `undefined`. Probed by creating and removing
+ * one, so registering the tests leaves nothing behind.
  */
-function delegatedCgroup(): string | undefined {
+function delegatedBase(): string | undefined {
   if (process.platform !== "linux") {
     return undefined;
   }
   const uid = process.getuid?.();
   const base = `/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/app.slice`;
-  const dir = join(base, `bun-jobs-local-test-${process.pid}`);
+  const probe = join(base, `bun-jobs-local-probe-${process.pid}`);
   try {
-    mkdirSync(dir);
-    return dir;
+    mkdirSync(probe);
+    rmdirSync(probe);
+    return base;
   } catch {
     return undefined;
   }
 }
 
-describe("localCompute: cgroup", () => {
-  const cgroup = delegatedCgroup();
-  afterAll(() => {
-    if (cgroup !== undefined) {
+/** Removes every empty cgroup below `path`, deepest first, then `path`. */
+function removeDepthFirst(path: string): void {
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
       try {
-        rmdirSync(cgroup);
+        removeDepthFirst(join(path, entry.name));
       } catch {
-        // A unit still in it: removed by the system once empty.
+        // Still emptying.
       }
     }
-  });
+  }
+  rmdirSync(path);
+}
+
+/** Removes this file's test cgroup and everything the tests left in it, retrying while it empties. */
+async function removeTestCgroup(path: string): Promise<void> {
+  const by = Date.now() + 10_000;
+  while (existsSync(path) && Date.now() < by) {
+    try {
+      removeDepthFirst(path);
+    } catch {
+      await Bun.sleep(50);
+    }
+  }
+}
+
+describe("localCompute: cgroup", () => {
+  const base = delegatedBase();
+  let made: string | undefined;
+  /** This file's test cgroup, made on first use and removed after the file. */
+  const testCgroup = (): string => {
+    if (made === undefined) {
+      made = join(base!, `bun-jobs-local-test-${process.pid}`);
+      mkdirSync(made);
+      const path = made;
+      cleanups.push(async () => await removeTestCgroup(path));
+    }
+    return made;
+  };
+  const cgroup = base;
 
   it.skipIf(cgroup === undefined)(
     "starts a unit in a delegated cgroup, unprivileged",
     async () => {
       const file = join(await tmp(), "r.json");
-      const local = unitProvider("exit", file, { cgroup: cgroup! });
+      const local = unitProvider("exit", file, { cgroup: testCgroup() });
       expect(
         (await local.validate()).find((check) => check.id === "cgroup"),
       ).toMatchObject({ status: "pass" });
@@ -907,16 +1187,43 @@ describe("localCompute: cgroup", () => {
   );
 
   it.skipIf(cgroup === undefined)(
+    "removes a unit's cgroup even when the unit made a cgroup inside it",
+    async () => {
+      const file = join(await tmp(), "r.json");
+      const local = unitProvider("subcgroup", file, { cgroup: testCgroup() });
+      const [handle] = handlesOf(await summon(local.summon));
+      const child = await childPid(file);
+      await statusUntil(
+        local.summon,
+        handle!,
+        (unit) => unit.state !== "running",
+      );
+      const own = /^cgroup (.+)$/m.exec(
+        readFileSync(`${file}.log`, "utf8"),
+      )![1]!;
+      expect(own).toBe(join(testCgroup(), handle!));
+      // Its cgroup was killed with it, the inner one included.
+      expect(await gone(child)).toBe(true);
+      const by = Date.now() + 10_000;
+      while (existsSync(own) && Date.now() < by) {
+        await Bun.sleep(50);
+      }
+      expect(existsSync(join(own, "inner"))).toBe(false);
+      expect(existsSync(own)).toBe(false);
+    },
+  );
+
+  it.skipIf(cgroup === undefined)(
     "holds a unit to the cgroup's memory.max",
     async () => {
-      writeFileSync(join(cgroup!, "memory.max"), String(64 * 1024 * 1024));
+      writeFileSync(join(testCgroup(), "memory.max"), String(64 * 1024 * 1024));
       try {
-        writeFileSync(join(cgroup!, "memory.swap.max"), "0");
+        writeFileSync(join(testCgroup(), "memory.swap.max"), "0");
       } catch {
         // No swap controller: memory.max alone binds.
       }
       const file = join(await tmp(), "r.json");
-      const local = unitProvider("hog", file, { cgroup: cgroup! });
+      const local = unitProvider("hog", file, { cgroup: testCgroup() });
       const [handle] = handlesOf(await summon(local.summon));
       expect(
         await statusUntil(
@@ -948,8 +1255,10 @@ describe("localCompute: no unit outlives its host", () => {
       env: { ...process.env },
       stdin: "ignore",
       stdout: "pipe",
-      stderr: "inherit",
+      // An uncaught throw's report goes to stderr: kept out of the output.
+      stderr: "ignore",
     });
+    hosts.push(proc);
     const lines: string[] = [];
     void (async () => {
       const decoder = new TextDecoder();
@@ -965,9 +1274,9 @@ describe("localCompute: no unit outlives its host", () => {
     const found = await Promise.all(
       [1, 2].map(async (n) => (await report(join(dir, `unit-${n}.json`))).pid),
     );
-    // A host in `exit` mode is already ending: its units' reports are what
-    // show they ran.
-    if (hostMode !== "exit") {
+    // A host in `exit`, `throw` or `reject` mode is already ending: its
+    // units' reports are what show they ran.
+    if (!["exit", "throw", "reject"].includes(hostMode)) {
       for (const pid of found) {
         expect(alive(pid)).toBe(true);
       }
@@ -1024,6 +1333,67 @@ describe("localCompute: no unit outlives its host", () => {
     expect(proc.exitCode).toBeNull();
     proc.kill("SIGKILL");
     await proc.exited;
+  });
+
+  for (const [signal, code] of [
+    ["SIGINT", 130],
+    ["SIGHUP", 129],
+  ] as const) {
+    it(`stops every unit on the host's ${signal} too, units being detached from its terminal`, async () => {
+      const { proc, pids: units, dir } = await host("sleep", "wait");
+      proc.kill(signal);
+      expect(await proc.exited).toBe(code);
+      for (const pid of units) {
+        expect(await gone(pid)).toBe(true);
+      }
+      expect(readFileSync(join(dir, "unit-1.json.log"), "utf8")).toContain(
+        "signal SIGTERM",
+      );
+    });
+  }
+
+  for (const mode of ["throw", "reject"]) {
+    it(`kills every unit when the host dies of an uncaught ${mode === "throw" ? "throw" : "rejection"}`, async () => {
+      const { proc, pids: units } = await host("sleep", mode);
+      expect(await proc.exited).toBe(1);
+      for (const pid of units) {
+        expect(await gone(pid)).toBe(true);
+      }
+    });
+  }
+
+  it("kills what the units started when the host exits", async () => {
+    const { proc, dir } = await host("spawner", "exit");
+    expect(await proc.exited).toBe(0);
+    for (const n of [1, 2]) {
+      expect(await gone(await childPid(join(dir, `unit-${n}.json`)))).toBe(
+        true,
+      );
+    }
+  });
+
+  it("starts nothing once the host is stopping on a signal", async () => {
+    const { proc, lines } = await host("stubborn", "summoning", 1_500);
+    const answers = (): { status: string; at: number }[] =>
+      lines
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line) as { status: string; at: number });
+    const by = Date.now() + 20_000;
+    while (
+      answers().filter((answer) => answer.status === "started").length < 2 &&
+      Date.now() < by
+    ) {
+      await Bun.sleep(20);
+    }
+    proc.kill("SIGTERM");
+    expect(await proc.exited).toBe(143);
+    const all = answers();
+    const first = all.findIndex((answer) => answer.status === "unavailable");
+    // The grace is 1.5 s and a summon comes every 200 ms: some are refused.
+    expect(first).toBeGreaterThan(0);
+    expect(
+      all.slice(first).filter((answer) => answer.status !== "unavailable"),
+    ).toEqual([]);
   });
 
   it("removes its listeners once no unit runs", async () => {

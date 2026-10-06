@@ -7,8 +7,12 @@ import { availableParallelism } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { resolveLogger } from "@kingsleyweb/bun-common";
-import { CHILD_BASE_ENV, toStandardSchema } from "../../provider/index";
+// No runtime import of the `./provider` entry here: that entry loads
+// `../local.ts`, which reads this module's exports as it loads, so a runtime
+// import back would make loading this module first a TDZ error. Types are
+// erased; `toStandardSchema` comes from bun-common, where it is defined;
+// `CHILD_BASE_ENV` is passed in by `local.ts`.
+import { resolveLogger, toStandardSchema } from "@kingsleyweb/bun-common";
 
 /**
  * `localCompute`'s config: what a user passes, what the facets receive, and
@@ -101,10 +105,12 @@ export interface LocalComputeOptions {
         logger: LoggerLike;
       };
   /**
-   * A cgroup directory each unit is started in (Linux only), so the limits
-   * set on it (`memory.max`, `pids.max`, `cpu.max`) bind the unit and
-   * everything it spawns. It must exist: bun-jobs neither creates nor
-   * configures it. Without root it must sit in a subtree delegated to the
+   * A cgroup directory the units are started under (Linux only): each unit
+   * gets a cgroup of its own inside it, so the limits set on this one
+   * (`memory.max`, `pids.max`, `cpu.max`) bind all the units together, and
+   * every process a unit starts stays in its cgroup, however it detaches.
+   * Stopping a unit then kills its whole cgroup (`cgroup.kill`, Linux 5.14+).
+   * It must exist: bun-jobs neither creates nor configures it. Without root it must sit in a subtree delegated to the
    * host's user, e.g. under `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/`.
    */
   cgroup?: string;
@@ -437,27 +443,34 @@ export const localComputeSchema: StandardSchemaV1<
 });
 
 /**
- * A unit's environment: the allowlist and `passEnv` (or everything, under
- * `"inherit"`), the config's literal values, then the request's (the summon
- * policy's `env`), all
- * read from the live `process.env` — `Bun.spawn` with no `env` would hand
- * the child the environment the host *started* with instead.
+ * A unit's environment: the allowlist (`baseEnv`, `CHILD_BASE_ENV`) and
+ * `passEnv`, or everything under `"inherit"`, read from `source` (the live
+ * `process.env` by default: `Bun.spawn` with no `env` would hand the child
+ * the environment the host *started* with); then the config's literal
+ * values; then the request's (the summon policy's `env`).
+ *
+ * The same rules as the child-process target's `buildChildEnv`, which a
+ * test runs side by side with this over one table: own string values only
+ * (`process.env.toString` is inherited, not a variable), and `undefined`
+ * removes one. `BUN_JOBS_CHILD` is then always removed.
  */
 export function unitEnv(
   config: LocalComputeConfig,
   requestEnv: Readonly<Record<string, string>>,
+  baseEnv: readonly string[],
+  source: Readonly<Record<string, string | undefined>> = process.env,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   if (config.env === "inherit") {
-    for (const [name, value] of Object.entries(process.env)) {
-      if (value !== undefined) {
+    for (const [name, value] of Object.entries(source)) {
+      if (typeof value === "string") {
         env[name] = value;
       }
     }
   } else {
-    for (const name of [...CHILD_BASE_ENV, ...config.passEnv]) {
-      const value = process.env[name];
-      if (value !== undefined) {
+    for (const name of [...baseEnv, ...config.passEnv]) {
+      const value = Object.hasOwn(source, name) ? source[name] : undefined;
+      if (typeof value === "string") {
         env[name] = value;
       }
     }

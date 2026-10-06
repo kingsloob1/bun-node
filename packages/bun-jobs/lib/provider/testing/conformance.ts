@@ -104,7 +104,6 @@ const NO_PLATFORM =
 /** The checks a self-hosted run skips: each reads a fake platform. */
 const SELF_HOSTED_SKIPS: readonly string[] = [
   "summon.capabilities.platform-limits",
-  "summon.routing.through-ctx-fetch",
   "summon.purity.identical-requests",
   "summon.dedupe.token-is-key",
   "summon.errors.transient",
@@ -115,7 +114,6 @@ const SELF_HOSTED_SKIPS: readonly string[] = [
   "summon.errors.conflict",
   "summon.errors.capacity-200",
   "summon.errors.platform-code",
-  "summon.lifetime.enforced",
   "summon.validate.auth-fails",
   "summon.validate.starts-nothing",
 ];
@@ -285,21 +283,26 @@ export interface ConformanceOptions<TInput = unknown> {
     path: string;
   }[];
   /**
-   * The fake platform, from `fakePlatform()`. Omit it only for a provider
+   * The fake platform, from `fakePlatform()`, or `"none"` for a provider
    * with no platform API, which starts its units itself on this machine
-   * (`localCompute`): the kit then knows units by the handles `summon`
-   * answers and by `status()`, skips each check that needs a platform to
-   * inject a fault into or record a request on (routing, purity, the
-   * dedupe token, errors, lifetime, and validate's `auth-fails` and
-   * `starts-nothing`), checks timeouts with a signal already aborted (it
-   * must reject and start nothing) and a call that answers (it must leave
-   * no timer), cancels every unit it started when it ends, and
-   * runs the handoff with the provider starting the kit's fixture worker,
-   * which it must be configured to run ({@link CONFORMANCE_WORKER}). The
-   * worker's test settings reach it as the summon policy's `env`, so the
-   * provider must pass `request.env` to its units.
+   * (`localCompute`). Required, so a forgotten fake is a type error rather
+   * than a quietly thinner run.
+   *
+   * With `"none"` the kit knows units by the handles `summon` answers and by
+   * `status()`; skips each check that needs a fake to inject a fault into or
+   * record a request on (purity, the dedupe token, errors, and validate's
+   * `auth-fails` and `starts-nothing`); fails routing if the provider calls
+   * `ctx.fetch` at all (it has a platform after all); checks timeouts with a
+   * signal already aborted (it must reject and start nothing) and a call
+   * that answers (it must leave no timer); checks a declared
+   * `enforcesLifetime` by a unit that ignores its deadline and must be ended
+   * anyway; cancels every unit it started when it ends; and runs the handoff
+   * with the provider starting the kit's fixture worker, which it must be
+   * configured to run ({@link CONFORMANCE_WORKER}). The worker's test
+   * settings reach it as `request.env` (the policy's `env` in the handoff),
+   * so the provider must pass that to its units.
    */
-  platform?: FakePlatform;
+  platform: FakePlatform | "none";
   /** Checks to skip, each with a reason printed in the report. */
   skip?: readonly {
     /** The check id. */
@@ -344,7 +347,7 @@ export interface ConformanceOptions<TInput = unknown> {
  * restored): code elsewhere in the process that captured them before still
  * works, and timers it creates meanwhile are not counted.
  *
- * @throws {ConfigError} when `platform` is given and is not from `fakePlatform()`,
+ * @throws {ConfigError} when `platform` is neither `"none"` nor from `fakePlatform()`,
  *   `driver` names a backend other processes cannot share (the memory
  *   driver), or `provider` is neither a provider nor a summoner; each
  *   before any check runs.
@@ -353,10 +356,8 @@ export async function runProviderConformance<TInput, TConfig>(
   provider: ComputeProvider<TInput, TConfig, boolean> | Summoner,
   options: ConformanceOptions<TInput>,
 ): Promise<ConformanceReport> {
-  const internals =
-    options.platform === undefined
-      ? undefined
-      : fakeInternals(options.platform);
+  const fake = options.platform === "none" ? undefined : options.platform;
+  const internals = fake === undefined ? undefined : fakeInternals(fake);
   if (options.driver !== undefined) {
     await assertSharedDriver(options.driver);
   }
@@ -380,7 +381,7 @@ export async function runProviderConformance<TInput, TConfig>(
   const skipped = new Map(
     (options.skip ?? []).map((entry) => [entry.id, entry.reason]),
   );
-  if (options.platform === undefined) {
+  if (fake === undefined) {
     // A self-hosted provider: nothing to inject a fault into, hold a
     // response on or record a request on, so what these checks read does
     // not exist.
@@ -592,7 +593,7 @@ export async function runProviderConformance<TInput, TConfig>(
   const run = createRun({
     identity,
     summoner,
-    platform: options.platform,
+    platform: fake,
     internals,
     driver: options.driver,
     fresh,
@@ -609,7 +610,7 @@ export async function runProviderConformance<TInput, TConfig>(
       (id) => groupOf(id) === group && !skipped.has(id) && !outcome.has(id),
     );
 
-  capabilityChecks(run, options.platform?.limits);
+  capabilityChecks(run, fake?.limits);
   // The end-to-end groups need a controller, which refuses what the
   // capabilities and brand checks refuse: they are skipped, not failed, so
   // one defect fails one group.
@@ -676,18 +677,28 @@ export async function runProviderConformance<TInput, TConfig>(
     }
   }
 
-  // Routing: every request the fake saw came through `ctx.fetch`.
+  // Routing: every request the fake saw came through `ctx.fetch`; a
+  // self-hosted provider makes none at all.
   const requests = internals?.requests ?? [];
   const unrouted = requests.filter((record) => !record.routed);
-  set(
-    "summon.routing.through-ctx-fetch",
-    requests.length > 0 && unrouted.length === 0 ? "pass" : "fail",
-    requests.length === 0
-      ? "the fake received no request"
-      : unrouted.length === 0
-        ? undefined
-        : `${unrouted.length} of ${requests.length} platform requests did not go through ctx.fetch (first: ${unrouted[0]!.method} ${unrouted[0]!.path})`,
-  );
+  if (run.selfHosted) {
+    set(
+      "summon.routing.through-ctx-fetch",
+      run.fetchCalls() === 0 ? "skip" : "fail",
+      run.fetchCalls() === 0
+        ? `skipped: ${NO_PLATFORM}, and it made no ctx.fetch call`
+        : `platform "none", but the provider called ctx.fetch ${run.fetchCalls()} time(s): it has a platform, so give the kit a fake of it`,
+    );
+  } else
+    set(
+      "summon.routing.through-ctx-fetch",
+      requests.length > 0 && unrouted.length === 0 ? "pass" : "fail",
+      requests.length === 0
+        ? "the fake received no request"
+        : unrouted.length === 0
+          ? undefined
+          : `${unrouted.length} of ${requests.length} platform requests did not go through ctx.fetch (first: ${unrouted[0]!.method} ${unrouted[0]!.path})`,
+    );
   if (run.selfHosted) {
     await stopUnits(run);
   }

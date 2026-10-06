@@ -1,4 +1,10 @@
-import { appendFileSync, writeFileSync, writeSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import process from "node:process";
 import { summonedFromArgs } from "../../../lib/index";
 
@@ -19,7 +25,15 @@ import { summonedFromArgs } from "../../../lib/index";
  *   waits for a SIGKILL;
  * - `crash`: writes two lines to stderr and exits 3;
  * - `chatty`: writes two lines to stdout and two to stderr, and exits 0;
- * - `hog`: allocates 640 MiB, 16 MiB at a time, and exits 0 if it can.
+ * - `hog`: allocates 640 MiB, 16 MiB at a time, and exits 0 if it can;
+ * - `selfkill`: sends itself `SIGKILL` after 300 ms;
+ * - `spawner`: starts `sleep 987` (appending `child <pid>` to the log), then
+ *   waits as `sleep` does, exiting 0 on a stop signal without touching it;
+ * - `stubborn-spawner`: starts `sleep 987` likewise, then waits as
+ *   `stubborn` does;
+ * - `subcgroup`: makes a cgroup `inner` inside its own, starts `sleep 987`
+ *   in it (appending `child <pid>` and `cgroup <path>` to the log), and
+ *   exits 0, leaving both behind.
  */
 
 const [mode, report] = process.argv.slice(2);
@@ -75,6 +89,54 @@ switch (mode) {
       held.push(new Uint8Array(16 * 1024 * 1024).fill(1));
     }
     log(`held ${held.length}`);
+    process.exit(0);
+    break;
+  }
+  case "selfkill":
+    setTimeout(() => process.kill(process.pid, "SIGKILL"), 300);
+    setInterval(() => {}, 1 << 30);
+    break;
+  case "spawner":
+  case "stubborn-spawner": {
+    // A plain child: in this unit's process group, as a job's tool would be.
+    const child = Bun.spawn({
+      cmd: ["sleep", "987"],
+      env: { PATH: process.env.PATH ?? "" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    log(`child ${child.pid}`);
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.on(signal, () => {
+        log(`signal ${signal}`);
+        if (mode === "spawner") {
+          // Leaves its child behind on purpose: the provider must not.
+          process.exit(0);
+        }
+      });
+    }
+    setInterval(() => {}, 1 << 30);
+    break;
+  }
+  case "subcgroup": {
+    const own = readFileSync("/proc/self/cgroup", "utf8")
+      .trim()
+      .split("\n")
+      .find((line) => line.startsWith("0::"))!
+      .slice(3);
+    const inner = `/sys/fs/cgroup${own}/inner`;
+    mkdirSync(inner);
+    const child = Bun.spawn({
+      cmd: ["sleep", "987"],
+      env: { PATH: process.env.PATH ?? "" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      cgroup: inner,
+    });
+    log(`child ${child.pid}`);
+    log(`cgroup /sys/fs/cgroup${own}`);
     process.exit(0);
     break;
   }

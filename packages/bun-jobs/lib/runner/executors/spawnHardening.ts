@@ -1,18 +1,16 @@
-import type { Dirent } from "node:fs";
 import type { SpawnCgroupOptions, SpawnOptions } from "../types";
 import {
   accessSync,
   constants,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import process from "node:process";
 import { parseByteSize, sleep } from "@kingsleyweb/bun-common";
+import { removeCgroupTree, rmdirQuietly } from "../../shared/cgroup";
 import { checkChildEnv } from "../../shared/childEnv";
 import { ConfigError } from "../../shared/errors";
 
@@ -346,32 +344,5 @@ export async function closeChildCgroup(path: string): Promise<boolean> {
     }
     // EBUSY while the killed processes are still being reaped.
     await sleep(10);
-  }
-}
-
-/** Removes a cgroup and every cgroup below it, deepest first; `true` when it is gone. */
-function removeCgroupTree(path: string): boolean {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(path, { withFileTypes: true });
-  } catch (error) {
-    return (error as { code?: string }).code === "ENOENT";
-  }
-  for (const entry of entries) {
-    // A cgroup's own files are never directories; its children always are.
-    if (entry.isDirectory()) {
-      removeCgroupTree(join(path, entry.name));
-    }
-  }
-  return rmdirQuietly(path);
-}
-
-/** Removes an empty cgroup directory; `true` when it is gone. */
-function rmdirQuietly(path: string): boolean {
-  try {
-    rmdirSync(path);
-    return true;
-  } catch (error) {
-    return (error as { code?: string }).code === "ENOENT";
   }
 }

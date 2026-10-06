@@ -91,6 +91,8 @@ export interface KitRun {
   readonly selfHosted: boolean;
   /** Every handle a call answered, in order: a self-hosted run's units, stopped when it ends. */
   readonly handles: Set<string>;
+  /** How many times the provider called `ctx.fetch`: a self-hosted provider must not at all. */
+  fetchCalls: () => number;
   /** The backend the handoff and the compare-and-set check run on, when given. */
   readonly driver: DriverConfig | undefined;
   /**
@@ -129,6 +131,8 @@ export interface KitRun {
     target?: number;
     /** The worker's longest life, in ms. */
     maxLifetimeMs?: number;
+    /** The request's `env` (the policy's static environment). Defaults to `{}`. */
+    env?: Readonly<Record<string, string>>;
   }) => SummonRequest;
   /** Records a check's outcome. */
   set: (
@@ -215,11 +219,13 @@ export function createRun(input: {
   input.internals?.namespaces.push(namespace);
   let version = 0;
 
+  let fetchCalls = 0;
   const kitFetch = Object.assign(
     async (
       target: Parameters<typeof fetch>[0],
       init?: Parameters<typeof fetch>[1],
     ): Promise<Response> => {
+      fetchCalls++;
       const request =
         target instanceof Request
           ? new Request(target, init)
@@ -251,6 +257,7 @@ export function createRun(input: {
     internals: input.internals,
     selfHosted: input.platform === undefined,
     handles,
+    fetchCalls: () => fetchCalls,
     driver: input.driver,
     fresh: input.fresh,
     secrets: input.secrets,
@@ -298,7 +305,7 @@ export function createRun(input: {
             dedupeKey: dedupeKeyFor(capabilities.dedupe),
             graceMs: capabilities.shutdown.graceMs,
             maxLifetime: options.maxLifetimeMs ?? kitLifetime(capabilities),
-            env: {},
+            env: { ...options.env },
           },
         ),
         demand: demandFor(count),

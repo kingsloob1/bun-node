@@ -1,5 +1,6 @@
 import type {
   ComputeProvider,
+  Logger,
   ProviderCallContext,
   ProviderCheck,
   SummonCapabilities,
@@ -10,16 +11,30 @@ import type {
 } from "../provider/index";
 import type { LocalComputeConfig, LocalComputeOptions } from "./local/config";
 import type { LocalUnit } from "./local/units";
-import { accessSync, constants, statSync } from "node:fs";
+import { AsyncResource } from "node:async_hooks";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  statSync,
+} from "node:fs";
 import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import {
+  CHILD_BASE_ENV,
   COMPUTE_PROVIDER_API,
+  ConfigError,
   defineComputeProvider,
   ProviderError,
+  removeCgroupTree,
 } from "../provider/index";
 import { localComputeSchema, unitEnv } from "./local/config";
-import { startUnit, stopUnit, unitStatus } from "./local/units";
+import { hostStopping, startUnit, stopUnit, unitStatus } from "./local/units";
+
+/** What `summon` answers while the host is stopping its units on a signal. */
+const HOST_SHUTDOWN_REASON = "host-shutdown: the host is stopping";
 
 export type {
   LocalComputeConfig,
@@ -175,8 +190,20 @@ function pruneTokens(table: UnitTable, now: number): void {
 const TABLES = new WeakMap<LocalComputeConfig, UnitTable>();
 
 /** The summon facet for one validated config. */
-function localFacet(config: LocalComputeConfig): SummonFacet {
+function localFacet(config: LocalComputeConfig, logger: Logger): SummonFacet {
   const table: UnitTable = { units: new Map(), exited: [], tokens: new Map() };
+  // The instance's own async context, made now, outside any call: a unit's
+  // lifetime timers run in it, since they belong to the unit, not the call
+  // that started it.
+  const scope = new AsyncResource("localCompute");
+  const instanceScope = <T>(fn: () => T): T => scope.runInAsyncScope(fn);
+  let warned = false;
+  const warnOnce = (message: string, error: unknown): void => {
+    if (!warned) {
+      warned = true;
+      logger.warn(message, { error });
+    }
+  };
 
   const capabilities: SummonCapabilities = {
     style: "launch",
@@ -184,7 +211,7 @@ function localFacet(config: LocalComputeConfig): SummonFacet {
       kind: "token",
       maxLength: 64,
       charset: "A-Za-z0-9-",
-      scope: "process",
+      scope: "instance",
       ttlMs: TOKEN_TTL_MS,
       strict: false,
     },
@@ -216,6 +243,17 @@ function localFacet(config: LocalComputeConfig): SummonFacet {
     if (known !== undefined) {
       return { status: "deduped", handles: [...known.handles] };
     }
+    // The controller never asks for fewer than one (it summons only when a
+    // worker is wanted); a direct call that does is refused, not rounded up.
+    if (!Number.isSafeInteger(request.count) || request.count < 1) {
+      throw new ConfigError(
+        "localCompute: request.count must be a whole number of 1 or more",
+        { count: request.count },
+      );
+    }
+    if (hostStopping()) {
+      return { status: "unavailable", reason: HOST_SHUTDOWN_REASON };
+    }
     const problem = cwdProblem(config) ?? entryProblem(config);
     if (problem !== undefined) {
       throw problem;
@@ -227,8 +265,8 @@ function localFacet(config: LocalComputeConfig): SummonFacet {
         reason: `max-units: ${config.maxUnits} of ${config.maxUnits} running`,
       };
     }
-    const count = Math.min(Math.max(1, request.count), free);
-    const env = unitEnv(config, request.env);
+    const count = Math.min(request.count, free);
+    const env = unitEnv(config, request.env, CHILD_BASE_ENV);
     const lifetimeMs =
       config.maxLifetimeMs === null
         ? request.maxLifetimeMs
@@ -243,6 +281,9 @@ function localFacet(config: LocalComputeConfig): SummonFacet {
           env,
           lifetimeMs,
           onExit,
+          warnOnce,
+          instanceScope,
+          removeCgroupTree,
         });
       } catch (error) {
         if (handles.length === 0) {
@@ -304,24 +345,60 @@ function localFacet(config: LocalComputeConfig): SummonFacet {
   return { capabilities, summon, status, cancel };
 }
 
-/** Runs `bun --version` the way a unit is started, in the cgroup when one is set. */
+/** Whether units' output can be appended to `path`: the file writable, or its directory when it does not exist yet. Creates nothing. */
+function outputCheck(path: string): ProviderCheck {
+  const target = existsSync(path) ? path : dirname(path);
+  try {
+    accessSync(target, constants.W_OK);
+    return { id: "output", status: "pass", detail: path };
+  } catch (error) {
+    return {
+      id: "output",
+      status: "fail",
+      detail: `units' output cannot be written to ${path} (${errnoOf(error) ?? "error"})`,
+    };
+  }
+}
+
+/** A probe's own cgroup, so it never runs in the configured one beside units' cgroups (cgroup v2 allows processes only in leaves there). */
+let probeSeq = 0;
+
+/**
+ * Runs `bun --version` the way a unit is started: with a cgroup configured,
+ * in a cgroup of its own inside it, created and removed here. So it checks
+ * that `bun` starts and that the cgroup can hold a unit's.
+ */
 async function probeBun(
   config: LocalComputeConfig,
   context: ProviderCallContext,
 ): Promise<ProviderCheck[]> {
   const checks: ProviderCheck[] = [];
+  let leaf: string | undefined;
+  if (config.cgroup !== undefined && process.platform === "linux") {
+    const path = join(config.cgroup, `validate-${process.pid}-${++probeSeq}`);
+    try {
+      mkdirSync(path);
+      leaf = path;
+    } catch (error) {
+      checks.push({
+        id: "cgroup",
+        status: "fail",
+        detail: `${config.cgroup} cannot hold a unit's cgroup (${errnoOf(error) ?? "error"}): it must exist and sit in a subtree this user may write`,
+      });
+    }
+  }
   try {
     const proc = Bun.spawn({
       cmd: [config.bun, "--version"],
       cwd: config.cwd,
-      env: unitEnv(config, {}),
+      env: unitEnv(config, {}, CHILD_BASE_ENV),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "ignore",
       timeout: PROBE_TIMEOUT_MS,
       killSignal: "SIGKILL",
       signal: context.signal,
-      ...(config.cgroup === undefined ? {} : { cgroup: config.cgroup }),
+      ...(leaf === undefined ? {} : { cgroup: leaf }),
     });
     const [code, version] = await Promise.all([
       proc.exited,
@@ -336,41 +413,36 @@ async function probeBun(
             detail: `${config.bun} --version exited ${code}`,
           },
     );
-    if (config.cgroup !== undefined) {
+    if (leaf !== undefined) {
       checks.push(
         code === 0
           ? {
               id: "cgroup",
               status: "pass",
-              detail: `a process started in ${config.cgroup}`,
+              detail: `a process started in a cgroup inside ${config.cgroup}`,
             }
           : {
               id: "cgroup",
               status: "fail",
-              detail: `no process could run in ${config.cgroup}`,
+              detail: `no process could run in a cgroup inside ${config.cgroup}`,
             },
       );
     }
   } catch (error) {
     const code = errnoOf(error) ?? "error";
-    if (config.cgroup !== undefined && process.platform === "linux") {
-      // posix_spawn names the executable; clone3 (or an open of the
-      // directory) the cgroup.
-      const syscall = (error as { syscall?: unknown }).syscall;
-      const cgroupFailed = syscall !== "posix_spawn";
+    // posix_spawn names the executable; clone3 (or an open of the
+    // directory) the cgroup.
+    const syscall = (error as { syscall?: unknown }).syscall;
+    if (leaf !== undefined && syscall !== "posix_spawn") {
       checks.push({
         id: "bun",
-        status: cgroupFailed ? "warn" : "fail",
-        detail: cgroupFailed
-          ? "not checked: the cgroup refused the probe"
-          : `${config.bun} could not be started (${code})`,
+        status: "warn",
+        detail: "not checked: the cgroup refused the probe",
       });
       checks.push({
         id: "cgroup",
-        status: cgroupFailed ? "fail" : "warn",
-        detail: cgroupFailed
-          ? `${config.cgroup} cannot be joined (${code}): it must exist and sit in a subtree this user may write`
-          : "not checked: bun could not be started",
+        status: "fail",
+        detail: `a cgroup inside ${config.cgroup} cannot be joined (${code})`,
       });
     } else {
       checks.push({
@@ -378,6 +450,11 @@ async function probeBun(
         status: "fail",
         detail: `${config.bun} could not be started (${code})`,
       });
+    }
+  } finally {
+    if (leaf !== undefined) {
+      // Still being reaped at worst: an empty cgroup left behind, harmless.
+      removeCgroupTree(leaf);
     }
   }
   return checks;
@@ -409,10 +486,13 @@ async function probeBun(
  *   unless `env` says otherwise; the summon policy's `env` is added on top.
  * - **`maxUnits`** caps the units running at once (by default the CPU
  *   count); a summon with none free answers `unavailable`.
- * - **No orphans**: every unit is killed when the host exits, and sent its
- *   stop signal (then `SIGKILL` after the grace) when the host is
- *   signalled. A host killed with `SIGKILL` cannot clean up: its units then
- *   end on their own, at `runSummoned`'s idle exit or deadline.
+ * - **No orphans while the host lives**: each unit leads its own process
+ *   group (and with `cgroup`, its own cgroup), and is killed with what it
+ *   started when the host exits, or sent its stop signal (then `SIGKILL`
+ *   after the grace) when the host is signalled; meanwhile no new unit
+ *   starts. A host killed with `SIGKILL` or by the OOM killer cannot clean
+ *   up: its units keep consuming the queue until their idle exit or
+ *   deadline, and a restarted host's `maxUnits` does not count them.
  * - **Not a sandbox**: a unit runs as the host's user, with its files and
  *   network. `cgroup` bounds its memory, CPU and processes; nothing bounds
  *   what it may read.
@@ -467,6 +547,9 @@ export const localCompute: ComputeProvider<
         detail: "ignored: cgroups exist on Linux only",
       });
     }
+    if (config.output.kind === "file") {
+      checks.push(outputCheck(config.output.path));
+    }
     const table = TABLES.get(config);
     const running = table === undefined ? 0 : liveCount(table);
     checks.push({
@@ -482,5 +565,5 @@ export const localCompute: ComputeProvider<
     });
     return checks;
   },
-  summon: (config) => localFacet(config),
+  summon: (config, context) => localFacet(config, context.logger),
 });

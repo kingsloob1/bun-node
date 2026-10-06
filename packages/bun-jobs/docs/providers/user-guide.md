@@ -316,6 +316,11 @@ nothing to install: a VM with spare cores, a single server, or your laptop.
 It is written on the same plugin API as any provider, and passes the same
 conformance kit.
 
+One thing changes in your host while a unit runs: unless your process
+handles `SIGINT` itself, **Ctrl-C waits for the units to stop**, up to
+`shutdown.graceMs` (10 s by default), before the host exits, since bun-jobs
+stops its units first.
+
 ```ts
 import { BunJobs } from "@kingsleyweb/bun-jobs";
 import { localCompute } from "@kingsleyweb/bun-jobs/provider";
@@ -389,23 +394,37 @@ A summon starts what fits; with nothing free it answers `unavailable`
 error. Keep the policies' `maxWorkers` within it.
 
 **Stopping.** A unit stops itself: `runSummoned` exits on idle, at the
-policy's `maxLifetime`, or on the stop signal. Behind that, bun-jobs kills a
-unit with `SIGKILL` at its lifetime plus the grace (`shutdown.graceMs`,
-default 10 s), and `cancel()` sends the stop signal (`shutdown.signal`,
-`SIGTERM`) and then `SIGKILL` after the grace.
+policy's `maxLifetime`, or on the stop signal. Behind that, at its lifetime
+bun-jobs sends the unit its stop signal (`shutdown.signal`, `SIGTERM`) and
+`SIGKILL` after the grace (`shutdown.graceMs`, default 10 s); `cancel()`
+does the same at once. Each unit leads a process group of its own, and the
+signals go to the whole group, so a tool a job started stops with it; with
+a `cgroup`, so does anything that left the group, and anything a unit
+leaves behind when it exits. Once a unit has exited nothing is sent to it.
 
-**No orphans.** When the host exits, every unit is killed. When the host is
-sent `SIGINT`, `SIGTERM` or `SIGHUP`, every unit gets its stop signal and,
-after its grace, `SIGKILL`; if nothing else listens for the signal, the host
-waits for its units and then ends by the signal as it would have. Only a
-host killed with `SIGKILL` cannot clean up: its units then end on their own,
-at their idle exit or their lifetime.
+**No orphans while the host is alive.** When the host exits, including on an
+uncaught exception or an unhandled rejection, every unit is killed. When the
+host is sent `SIGINT`, `SIGTERM` or `SIGHUP`, every unit gets its stop
+signal and, after its grace, `SIGKILL`, and no new unit is started (a
+summon answers `unavailable`, `host-shutdown: the host is stopping`); if
+nothing else listens for the signal, the host waits for its units and then
+ends by the signal as it would have. Units are detached from the host's
+terminal, so its Ctrl-C reaches them only this way.
+
+**Orphans after a host killed outright.** A host killed with `SIGKILL`, or
+by the kernel's OOM killer, runs none of that. Its units keep running and
+keep consuming the queue until their idle exit or their deadline; a
+restarted host's `maxUnits` does not count them, so for a while there can
+be more units than it allows; and, detached, they also miss the terminal's
+`SIGHUP` when it closes. Keep `maxLifetime` and `runSummoned`'s `idleFor`
+modest where that matters.
 
 **What `status()` shows.** A unit is `running` while its process lives, and
 `exited` with code `0` once it ends cleanly. A crash is `failed`, with its
 exit code and its last stderr line as the detail (the attempt's `lost`
 detail, on the status route and in the UI): `fatal: cannot open
-libvk.so.1`, or `max-lifetime` when the backstop killed it.
+libvk.so.1`, `max-lifetime` when its lifetime ran out, or the signal
+(`SIGKILL`) when there was no line.
 
 **Output.** By default a unit's stdout and stderr go to the host's, line by
 line. `output: "ignore"` drops them, `output: { file: "units.log" }` appends
@@ -413,9 +432,11 @@ them to a file, and `output: { logger }` logs each line (stdout at `info`,
 stderr at `warn`) bound with the unit's handle.
 
 **Resource limits, with a cgroup** (Linux). `cgroup` names an existing
-cgroup directory each unit starts in, so its `memory.max`, `pids.max` and
-`cpu.max` bind the unit and everything it starts. bun-jobs neither creates
-nor configures it. No root is needed in a subtree systemd delegates to your
+cgroup directory; each unit starts in a cgroup of its own inside it,
+removed when the unit exits. The limits you set on the directory
+(`memory.max`, `pids.max`, `cpu.max`) bind all the units together, and
+every process a unit starts stays in its cgroup, where stopping the unit
+kills it. bun-jobs neither creates nor configures the directory. No root is needed in a subtree systemd delegates to your
 user: measured on Ubuntu with cgroup v2, an unprivileged host started units
 in one, and a unit that allocated past its 64 MiB `memory.max` was killed
 (`failed`, exit code 137):
@@ -429,7 +450,8 @@ echo 64 > "$dir/pids.max"
 
 A cgroup outside that subtree fails to join with `EACCES`, and a missing one
 with `ENOENT`: both are `misconfigured`, which opens the circuit at once.
-`validate()` starts `bun --version` in it, so "Test connection" says which.
+`validate()` starts `bun --version` in a cgroup of its own inside it, so
+"Test connection" says which.
 
 **Preflight.** `validate()` checks the `cwd`, that the entry is a readable
 file, that `bun` starts (in the cgroup, when one is set), the capacity, and

@@ -1,6 +1,6 @@
 import type { SummonResult } from "../../summon/types";
 import type { ProviderCallContext } from "../context";
-import type { ProviderCheck, SummonCapabilities } from "../define";
+import type { ProviderCheck, SummonCapabilities, UnitStatus } from "../define";
 import type { ProviderErrorKind } from "../errors";
 import type { FactProblem } from "../redact";
 import type { FakePlatform, FakeRequestRecord } from "./fake";
@@ -12,6 +12,7 @@ import { ProviderError, providerErrorFacts } from "../errors";
 import { factProblem } from "../redact";
 import { describeThrown, DIRECT_QUEUE, fakeOf, KIT_TIMERS } from "./run";
 import { trackTimers } from "./scan";
+import { FIXTURE_ENV } from "./worker";
 
 /**
  * The summon kit's direct check groups (plugins §12.2): each calls the facet
@@ -763,13 +764,120 @@ export async function scaleChecks(run: KitRun): Promise<void> {
   );
 }
 
+/** The lifetime a self-hosted lifetime check asks for, in ms. */
+const SELF_HOSTED_LIFETIME_MS = 1_500;
+
+/** How long past its lifetime and grace a self-hosted unit may take to end, in ms. */
+const SELF_HOSTED_LIFETIME_SLACK_MS = 5_000;
+
+/** The longest a self-hosted lifetime check waits, in ms: a longer grace skips it. */
+const SELF_HOSTED_LIFETIME_MAX_MS = 60_000;
+
+/**
+ * The lifetime check for a self-hosted provider, which has no platform
+ * request to carry the figure: a unit of the kit's fixture worker that
+ * ignores its deadline and its stop signal ({@link FIXTURE_ENV}`.holdMs`)
+ * must still be ended by the provider, within its lifetime plus its
+ * declared grace (and some slack), as `status()` reports.
+ */
+async function selfHostedLifetimeCheck(run: KitRun): Promise<void> {
+  const id = "summon.lifetime.enforced";
+  const { status } = run.facet;
+  if (status === undefined) {
+    run.set(
+      id,
+      "skip",
+      "a self-hosted provider without status(): nothing can say when its unit ended",
+    );
+    return;
+  }
+  const cap = run.capabilities.maxLifetimeMs;
+  const lifetime =
+    cap === null
+      ? SELF_HOSTED_LIFETIME_MS
+      : Math.min(SELF_HOSTED_LIFETIME_MS, cap);
+  const budget =
+    lifetime +
+    run.capabilities.shutdown.graceMs +
+    SELF_HOSTED_LIFETIME_SLACK_MS;
+  if (budget > SELF_HOSTED_LIFETIME_MAX_MS) {
+    run.set(
+      id,
+      "skip",
+      `its grace of ${run.capabilities.shutdown.graceMs} ms makes the wait longer than ${SELF_HOSTED_LIFETIME_MAX_MS} ms`,
+    );
+    return;
+  }
+  const started = Date.now();
+  const outcome = await run.call(
+    async (context) =>
+      await run.facet.summon(
+        run.request({
+          maxLifetimeMs: lifetime,
+          env: { [FIXTURE_ENV.holdMs]: String(budget + 30_000) },
+        }),
+        context,
+      ),
+  );
+  const handles = outcome.ok ? handlesOf(outcome.value) : [];
+  if (!outcome.ok || handles.length === 0) {
+    run.set(
+      id,
+      "fail",
+      outcome.ok
+        ? "summon answered no handle to follow"
+        : `summon threw ${describeThrown(outcome.error)}`,
+    );
+    return;
+  }
+  const live = (unit: UnitStatus): boolean =>
+    unit.state === "pending" || unit.state === "running";
+  let units: readonly UnitStatus[] = [];
+  while (Date.now() - started < budget) {
+    const answer = await run.call(
+      async (context) => await status(handles, context),
+    );
+    units = answer.ok ? answer.value : units;
+    if (answer.ok && !units.some(live)) {
+      break;
+    }
+    await new Promise<void>((resolve) => {
+      KIT_TIMERS.setTimeout(resolve, 100);
+    });
+  }
+  const took = Date.now() - started;
+  if (units.length === 0 || units.some(live)) {
+    run.set(
+      id,
+      "fail",
+      `a unit that ignores its deadline was still running ${took} ms after a summon with maxLifetimeMs ${lifetime} (grace ${run.capabilities.shutdown.graceMs} ms): the provider does not enforce request.maxLifetimeMs`,
+    );
+  } else if (took < lifetime - 250) {
+    run.set(
+      id,
+      "fail",
+      `the unit ended after ${took} ms, before its lifetime of ${lifetime} ms: is the provider configured to start CONFORMANCE_WORKER?`,
+    );
+  } else {
+    run.set(
+      id,
+      "pass",
+      `ended ${took} ms after a summon with maxLifetimeMs ${lifetime}`,
+    );
+  }
+}
+
 /** The lifetime group: with `enforcesLifetime`, the request carries `maxLifetimeMs`. */
 export async function lifetimeChecks(run: KitRun): Promise<void> {
-  const fake = fakeOf(run);
   if (!run.capabilities.enforcesLifetime) {
     run.set("summon.lifetime.enforced", "skip", "enforcesLifetime is false");
     return;
   }
+  if (run.selfHosted) {
+    await selfHostedLifetimeCheck(run);
+    return;
+  }
+  const fake = fakeOf(run);
   // A figure no other field would carry by chance.
   const cap = run.capabilities.maxLifetimeMs;
   const lifetime = cap === null ? 5_432_000 : Math.min(5_432_000, cap);
