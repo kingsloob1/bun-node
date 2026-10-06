@@ -619,6 +619,26 @@ for (const [path, type] of [
 await typed.close();
 
 /* ------------------------------------------------------------------ */
+step("Untouched stream state reads as its defaults");
+
+const untouched = await makeRes();
+checkEqual(
+  "isStreamOpen, writableEnded, headersSent, destroyed: all false",
+  [
+    untouched.isStreamOpen,
+    untouched.writableEnded,
+    untouched.headersSent,
+    untouched.destroyed,
+  ],
+  [false, false, false, false],
+);
+let endedAtOnce = false;
+untouched.onceStreamEnded(() => {
+  endedAtOnce = true;
+});
+check("onceStreamEnded() with no stream: called at once", endedAtOnce);
+
+/* ------------------------------------------------------------------ */
 step("getNativeResponse(), settledResponse, getBody()");
 
 const pending = await makeRes();

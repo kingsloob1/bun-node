@@ -1764,6 +1764,29 @@ checkEqual(
   [uploads.files, uploads.file],
   [[], undefined],
 );
+// Rarely-read state is created on first write; untouched, it reads as the
+// defaults it always had.
+checkEqual(
+  "untouched defaults: rawBody, maxHeadersCount, reusedSocket, storageFiles, payload flags",
+  {
+    rawBody: uploads.rawBody,
+    maxHeadersCount: uploads.maxHeadersCount,
+    reusedSocket: uploads.reusedSocket,
+    storageFiles: uploads.storageFiles,
+    isPayloadTooLarge: uploads.isPayloadTooLarge,
+    payloadTooLarge: uploads.payloadTooLarge,
+    bodyDecodingError: uploads.bodyDecodingError,
+  },
+  {
+    rawBody: undefined,
+    maxHeadersCount: 0,
+    reusedSocket: false,
+    storageFiles: [],
+    isPayloadTooLarge: false,
+    payloadTooLarge: undefined,
+    bodyDecodingError: undefined,
+  },
+);
 /** An `avatar` upload named `originalFilename`, as `MemoryStorage` stores it. */
 function storedAvatar(originalFilename: string): MemoryStorageFile {
   return {

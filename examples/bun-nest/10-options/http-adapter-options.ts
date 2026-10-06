@@ -42,6 +42,7 @@ import {
   BunHttpAdapter,
   BunNestHttpAdapter,
   BunNestWebsocketAdapter,
+  requestParsing,
 } from "@kingsleyweb/bun-nest";
 import {
   Controller,
@@ -212,6 +213,38 @@ step("constructor: request");
   checkEqual("setRequestOpts() applies to later requests", after.cookies, {
     theme: "dark",
   });
+
+  // A bad decoding option fails where it is configured, before Nest starts.
+  const badParseBody = { encodings: ["gzip", "lzma"] } as never;
+  await checkRejects(
+    "a bad parseBody coding: the constructor throws, so NestFactory.create never runs",
+    async () =>
+      NestFactory.create(
+        TourModule,
+        new BunHttpAdapter(0, { request: { parseBody: badParseBody } }),
+        { logger: false },
+      ),
+    { name: "RangeError", message: /lzma/ },
+  );
+  const capped = new BunHttpAdapter(0, {
+    request: { parseBody: { maxContentLength: 16 } },
+  });
+  capped.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+  await checkRejects(
+    "setRequestOpts() with it throws",
+    async () => capped.setRequestOpts({ parseBody: badParseBody }),
+    { name: "RangeError" },
+  );
+  checkEqual(
+    "…and keeps the previous 16-byte cap: 413",
+    (await capped.fetch("/echo", postJson({ text: "x".repeat(64) }))).status,
+    413,
+  );
+  await checkRejects(
+    "requestParsing({ parseBody }) throws at creation, before consumer.apply()",
+    async () => requestParsing({ parseBody: badParseBody }),
+    { name: "RangeError" },
+  );
 
   // parseQuery and parseCookies take options in place of `true`, as parseBody.
   const shaped = new BunHttpAdapter(0, {
