@@ -1,5 +1,6 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "bun:test";
+import { requestParsing } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
 import { testServer } from "./helpers";
@@ -128,5 +129,57 @@ describe("body parser middleware: a request with no body", () => {
       body: gzipSync('{"a":1}'),
     });
     expect(gzipped.status).toBe(415);
+  });
+});
+
+describe("parseBody: false is the master switch", () => {
+  const post = (app: BunHttpAdapter, path: string, body: string) =>
+    app.fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+
+  it("a registered parser parses nothing, and applies no limit, while it is off", async () => {
+    const app = new BunHttpAdapter(0, { request: { parseBody: false } });
+    app.useBodyParser("json", true, { limit: 8 });
+    app.registerParserMiddleware(undefined, true);
+    app.post("/x", (req, res) => {
+      res.json({ body: req.body ?? null, raw: req.rawBody ?? null });
+    });
+    const response = await post(
+      app,
+      "/x",
+      JSON.stringify({ big: "x".repeat(50) }),
+    );
+    expect([response.status, await response.json()]).toEqual([
+      200,
+      { body: null, raw: null },
+    ]);
+  });
+
+  it("requestParsing() turns it on for its routes, and a parser after it then runs", async () => {
+    const app = new BunHttpAdapter(0, { request: { parseBody: false } });
+    app.use("/on", requestParsing({ parseBody: { maxContentLength: 64 } }));
+    app.useBodyParser("json", true, { limit: 32 });
+    app.post("/on/x", (req, res) => {
+      res.json({
+        body: req.body ?? null,
+        raw: req.rawBody?.toString() ?? null,
+      });
+    });
+    app.post("/off", (req, res) => res.json({ body: req.body ?? null }));
+    expect(await (await post(app, "/on/x", '{"a":1}')).json()).toEqual({
+      body: { a: 1 },
+      raw: '{"a":1}',
+    });
+    // Over the parser's own limit, now that it parses.
+    expect(
+      (await post(app, "/on/x", JSON.stringify({ v: "x".repeat(30) }))).status,
+    ).toBe(413);
+    // Other routes stay off.
+    expect(await (await post(app, "/off", '{"a":1}')).json()).toEqual({
+      body: null,
+    });
   });
 });
