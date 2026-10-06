@@ -10,7 +10,41 @@ import {
   readRecurrence,
 } from "../shared/humanTime";
 import { addDefinedJob, splitDefinitionDefaults } from "./BunQueue";
+import { JOB_ROUTER } from "./jobRouter";
 import { assertTimeZone } from "./repeat";
+
+/**
+ * Where a builder's job goes for one queue name, and what that queue applies.
+ *
+ * Internal: made by a {@link JobRouter}, which `BunJobs` hands every queue and
+ * builder it creates. `toQueue()` asks for one each time it is called.
+ */
+export interface JobRoute {
+  /** The queue the job is added to. */
+  queue: BunQueue<unknown, unknown, string>;
+  /**
+   * A `define()` definition's options, applied under the builder's own: the
+   * registry queue's, for a defined name; nothing on any other queue.
+   */
+  defaults: JobOptions;
+}
+
+/**
+ * Resolves a queue name, for a job name, to its {@link JobRoute}.
+ *
+ * Internal: `BunJobs` makes one, so the registry's rules — `define()`
+ * checks and defaults on its own queue, only what the call says on any other
+ * — live in one place for every builder, whichever spelling made it. Throws
+ * `ConfigError` at once for a name the registry never defined, bound for the
+ * registry queue: the verb, or the `toQueue()` that named it, is the call
+ * that fails.
+ */
+export type JobRouter = (
+  /** The queue the job is to go to. */
+  queue: string,
+  /** The name the job is added under. */
+  name: string,
+) => JobRoute;
 
 /**
  * Everything a job can be told, in one object — all of it except the name.
@@ -125,12 +159,21 @@ export class JobBuilder<
   TResult = unknown,
   TJob extends Job<unknown, unknown> = Job<TData, TResult>,
 > {
-  /** The queue the job will be added to. */
-  readonly #queue: BunQueue<TData, TResult, string>;
+  /** The queue the job will be added to; `toQueue()` changes it. */
+  #queue: BunQueue<TData, TResult, string>;
   /** The name it is added under. */
   readonly #name: string;
-  /** Defaults from the job's definition, under whatever this builder sets. */
-  readonly #defaults: JobOptions;
+  /**
+   * Defaults from the job's definition, under whatever this builder sets.
+   * Empty once `toQueue()` names a queue other than the registry's.
+   */
+  #defaults: JobOptions;
+  /**
+   * How `toQueue()` resolves a name, set by the `BunJobs` that made this
+   * builder; `undefined` for one made directly or by a standalone queue, when
+   * `toQueue()` falls back to the router its queue carries, if any.
+   */
+  #router: JobRouter | undefined;
   /** What the job carries. */
   #data: TData | undefined;
   /** What this builder has been told, so far. */
@@ -180,6 +223,86 @@ export class JobBuilder<
     this.#name = name;
     this.#data = data;
     this.#defaults = defaults;
+  }
+
+  /**
+   * Routes this builder through a `BunJobs` context's rules. Internal; see
+   * {@link JOB_ROUTER}. Applies the route for the queue it already names.
+   */
+  [JOB_ROUTER](
+    /** The context's router, kept for `toQueue()`. */
+    router: JobRouter,
+  ): this {
+    this.#router = router;
+    this.#apply(router(this.#queue.name, this.#name));
+    return this;
+  }
+
+  /** Makes a route this builder's: its queue and its defaults. */
+  #apply(route: JobRoute): void {
+    this.#queue = route.queue as BunQueue<TData, TResult, string>;
+    this.#defaults = route.defaults;
+  }
+
+  /**
+   * Sends the job to the named queue, in the same namespace, instead of the
+   * one it was bound for.
+   *
+   * ```ts
+   * await jobs.schedule("resize", { id }).toQueue("images").in("5m").start();
+   * ```
+   *
+   * Whatever works that queue runs the job. A registry definition's
+   * defaults (attempts, backoff, timeout, …) do not follow the job to another
+   * queue, because that queue's own worker runs it: it takes only what this
+   * builder is told, before `toQueue()` or after. Naming the registry queue
+   * itself brings back its rules. The last `toQueue()` stands.
+   *
+   * `jobs.schedule()` still refuses a name the registry never defined, at
+   * once, before `toQueue()` is reached — typed or not. To send a name the
+   * registry doesn't define, use `jobs.queue(name).<verb>`:
+   * `jobs.queue("images").schedule("resize", data)`.
+   *
+   * After `toQueue()` the builder is a plain one, typed by its arguments
+   * (`toQueue<Payload>("images")`), as `jobs.queue<Payload>()` is. That holds
+   * for the registry queue too: `toQueue("jobs")` brings back its runtime
+   * checks and defaults, but not the map's types.
+   *
+   * The queue is resolved at the call, through `jobs.queue(name)`, so a queue
+   * the context has not made yet is made here, with the context's options.
+   * **Configure a queue with `jobs.queue(name, options)` before sending to
+   * it**: a later call answers with the instance already made, and its options
+   * are ignored. A `toQueue()` that a later one replaces —
+   * `toQueue("x").toQueue("jobs")` — still leaves the `x` instance on the
+   * context, followed by its notifiers like any other queue.
+   *
+   * @throws {ConfigError} for a queue name a queue cannot have (empty, longer
+   *   than 200 characters, or with characters other than letters, digits,
+   *   `_`, `.` and `-`); naming the registry queue for a name it does not
+   *   define (from `jobs.queue(other).schedule(name)`); and on a builder whose
+   *   queue no `BunJobs` made — a standalone `BunQueue`'s verbs, or
+   *   `new JobBuilder` on one — for any queue but its own, since there is no
+   *   context to find it in.
+   */
+  toQueue<TQueueData = unknown, TQueueResult = unknown>(
+    /** The queue's name, in the same namespace. */
+    queue: string,
+  ): JobBuilder<TQueueData, TQueueResult> {
+    // A builder made directly on a context's queue was never routed, but its
+    // queue carries the context's router all the same.
+    const router = this.#router ?? this.#queue[JOB_ROUTER];
+
+    if (router) {
+      this.#apply(router(queue, this.#name));
+    } else if (queue !== this.#queue.name) {
+      throw new ConfigError(
+        `toQueue("${queue}") needs a builder made by a BunJobs context, which knows the other queues; this one can only add to "${this.#queue.name}"`,
+        { queue, current: this.#queue.name, name: this.#name },
+      );
+    }
+
+    // The same object: only the types change, to the named queue's.
+    return this as unknown as JobBuilder<TQueueData, TQueueResult>;
   }
 
   /**

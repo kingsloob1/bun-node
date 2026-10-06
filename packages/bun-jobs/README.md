@@ -85,6 +85,7 @@ reference.
   - [Defining and adding jobs](#defining-and-adding-jobs)
   - [Typed jobs](#typed-jobs)
   - [Builder methods](#builder-methods)
+  - [Sending a job to another queue](#sending-a-job-to-another-queue)
   - [Saved drafts](#saved-drafts)
   - [Registry polling](#registry-polling)
   - [Dates in words](#dates-in-words)
@@ -567,6 +568,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `add(name, data, opts?)` | Adds a job, and returns a `Job`. |
 | `addBulk([{ name, data, opts? }])` | Adds several jobs in one call. Entries with `repeat` are added one at a time. |
 | `addFlow(node)` | Adds a job together with the jobs it waits on. See [Flows](#flows). |
+| `schedule(name, data?)` / `run(...)`, `now(name, data?, opts?)`, `create(name, data?)` | The registry's builder verbs, bound for this queue. See [Sending a job to another queue](#sending-a-job-to-another-queue). |
 | `getJob(id)` | Returns one job, or `null`. |
 | `list(state \| states, { offset, limit = 100, order = "asc", sort = "natural" })` | Returns jobs in the given state or states. Also takes `name`, `search`, and the worker and finish-time filters `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. See [Who ran a job](#who-ran-a-job-worker-attribution). `sort: "createdAt"` orders by creation time on memory, SQL and MongoDB; see [sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `walk(state \| states, { limit, order, after? })` | A page read with a **keyset cursor** — the same filters as `list()`, plus `after`, and answering `{ jobs, offset, next }`. This is how a list is *walked*; `list()` and `page()` are how it is *sampled*. `next` is `null` exactly when the walk is complete. Measured on a draining queue, an `asc` offset walk lost 20 of the 59 jobs that never left the list and the cursor walk lost none; see [Pagination](#pagination-filtering-and-include). Refused for `active` alone, whose key every lock renewal rewrites. |
@@ -1401,7 +1403,8 @@ it is added from. `concurrency` is stored as the name's limit when you call
 `start()`.
 
 Defining a name again replaces the earlier definition. Adding a name that
-was never defined throws `ConfigError`. A worker that claims a name its process
+was never defined throws `ConfigError`; to send one to another queue, see
+[Sending a job to another queue](#sending-a-job-to-another-queue). A worker that claims a name its process
 does not define fails the job, leaving it for a deployment that does define
 it.
 
@@ -1583,10 +1586,60 @@ await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, atte
 | `unique(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)`, `keepLogs(n)` | Job options. |
 | `withOptions(obj)` | All of the above as one object. It accepts builder names and raw `JobOptions` names. Giving both `in` and `delay`, `on` and `runAt`, or `unique` and `jobId` throws. |
+| `toQueue(name)` | Adds the job to that queue instead of the registry's. See [Sending a job to another queue](#sending-a-job-to-another-queue). |
 | `start()` | Adds the job. |
 
 Example:
 [`03-job-registry/builder-with-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/builder-with-options.ts).
+
+### Sending a job to another queue
+
+The builder adds to the registry queue unless you name another, in either of
+two ways. Both produce the same builder:
+
+```ts
+await jobs.schedule("resize", { id }).toQueue("images").in("5 minutes").start();
+await jobs.queue("images").schedule("resize", { id }).in("5 minutes").start();
+
+await jobs.create("resize", { id }).toQueue("images").save();
+await jobs.queue("images").now("thumbnail", { id }, { priority: 1 });
+```
+
+- **One rule for names: to send a name the registry doesn't define, use
+  `jobs.queue(name).<verb>`.** `jobs.schedule()`, `run()`, `process()` and
+  `create()` refuse an undefined name at the call, with `ConfigError`, before
+  `toQueue()` is reached. On a typed context the map refuses it at compile
+  time too. So `toQueue()` moves a defined name's job, and
+  `jobs.queue("images").schedule("anything", data)` takes any name.
+- **Whatever works that queue runs the job.** The registry's own worker never
+  sees it.
+- **Only what the call passes applies.** A registry definition's defaults
+  (attempts, backoff, timeout and the rest) do not follow the job to another
+  queue, because that queue's own worker runs it. That holds even when the
+  name is defined in the registry.
+- **The registry queue, named explicitly, is the plain builder.**
+  `jobs.queue("jobs").schedule(...)` and `.toQueue("jobs")` check the
+  definition and apply its defaults, exactly as `jobs.schedule(...)` does.
+  This follows `registryQueue` if you renamed it.
+- **Verbs.** `jobs.queue(name)` has `schedule`, `run`, `now` and `create`.
+  `toQueue()` is on the builder (from `schedule`/`run`/`process`) and on the
+  draft (from `create`). `now()` adds at once and has no builder, so send it
+  elsewhere with `jobs.queue(name).now(...)`. The last `toQueue()` wins.
+- **Types.** On a typed context `jobs.queue("jobs")` keeps every check the
+  map gives `jobs.schedule()`. `toQueue()` returns a plain builder whatever it
+  names, `toQueue("jobs")` included: the registry's runtime checks and
+  defaults come back, but not the map's types. After `toQueue()`, and on
+  `jobs.queue(other)`, any payload is accepted, typed like `jobs.queue<T>()`:
+  `toQueue<Payload>("images")` or `jobs.queue<Payload>("images")`.
+- **Configure a queue with `jobs.queue(name, options)` before sending to
+  it.** `toQueue()`, like `jobs.queue(name)`, makes the queue if the context
+  has not, with the context's options, and a later `jobs.queue(name, options)`
+  answers with that instance and ignores its options. Each `toQueue()` makes
+  its queue when called, so one a later `toQueue()` replaces, as in
+  `toQueue("x").toQueue("jobs")`, still leaves an `x` queue on the context,
+  followed by its notifiers.
+- A standalone `new BunQueue(...)` has the verbs too. Its builders can only
+  `toQueue()` their own queue, since no context knows the others.
 
 ### Saved drafts
 
@@ -1615,6 +1668,7 @@ export const job = await draft.save();
 | `removeOnComplete(r)`, `removeOnFail(r)`, `keepStacktraces(n)`, `keepLogs(n)` | Retention. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)` | Job options. |
 | `withOptions(obj)` | The builder's `withOptions`. |
+| `toQueue(name)` | Saves the job to that queue instead of the registry's. See [Sending a job to another queue](#sending-a-job-to-another-queue). |
 | `save()` | Adds the job. |
 | `isSaved`, `job` | Whether a save has succeeded, and the job it returned. |
 

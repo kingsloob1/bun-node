@@ -343,6 +343,11 @@
       "values": ["BunQueue"]
     },
     {
+      "spelling": "@kingsleyweb/bun-jobs/lib/queue/JobBuilder",
+      "values": ["JobBuilder"],
+      "types": ["JobBuilderOptions", "RepeatEveryOptions"]
+    },
+    {
       "spelling": "@kingsleyweb/bun-jobs/lib/shared/errors",
       "values": ["ConfigError"]
     }

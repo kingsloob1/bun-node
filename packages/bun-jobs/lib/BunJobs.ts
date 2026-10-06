@@ -29,6 +29,7 @@ import type {
   UntypedJobName,
   WhenDeclared,
 } from "./queue/index";
+import type { JobRoute, JobRouter } from "./queue/JobBuilder";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
@@ -51,6 +52,7 @@ import {
 } from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
+import { JOB_ROUTER } from "./queue/jobRouter";
 import { BunRunnerManager } from "./runner/index";
 import { mapConcurrent } from "./shared/bounded";
 import { ConfigError, NotSupportedError } from "./shared/errors";
@@ -353,6 +355,12 @@ export class BunJobs<
   readonly #backoffs = new BackoffStrategies();
   /** The queue the defined jobs are added to and consumed from. */
   readonly #registryQueue: string;
+  /**
+   * Where a builder's job goes for a queue name: this context's rules, in one
+   * place for `jobs.schedule()`, `toQueue()` and every queue's verbs. See
+   * `#routeJob`.
+   */
+  readonly #router: JobRouter = (queue, name) => this.#routeJob(queue, name);
   /** Reads dates in phrases for queues created here, when one was given. */
   readonly #dateParser: DateParser | undefined;
   /** Whether what is created here publishes its events. */
@@ -529,6 +537,11 @@ export class BunJobs<
    * `jobs.queue<Payload>("mail")` names its types. A name only known at
    * runtime, a plain `string`, is not the registry's either — it could be
    * anything.
+   *
+   * Its builder verbs — `schedule`, `run`, `now`, `create` — follow this
+   * context's rules: on the registry queue exactly `jobs.schedule()`'s (a
+   * defined name, the definition's defaults); on any other, any name, with
+   * only the options the call passes, for that queue's own worker to run.
    */
   queue(
     name: WhenDeclared<TJobs, TRegistryQueue>,
@@ -569,6 +582,8 @@ export class BunJobs<
       dateParser: options?.dateParser ?? this.#dateParser,
     });
 
+    // Its verbs, and every builder's toQueue(), route through this context.
+    queue[JOB_ROUTER] = this.#router;
     this.#queues.set(name, queue);
     this.#summonControllers.get(name)?.[ATTACH_QUEUE](queue);
     this.#followInNotifiers("queue", name);
@@ -792,6 +807,11 @@ export class BunJobs<
    * because which one reads better depends on the sentence and none of them
    * is worth making the caller remember. Nothing is added until `start()`.
    *
+   * The job goes to the registry queue, where the name must be defined — a
+   * `ConfigError` here otherwise. `.toQueue(name)` sends a defined name's job
+   * to another queue instead, without the definition's defaults. To send a
+   * name the registry doesn't define, use `jobs.queue(name).<verb>`.
+   *
    * This replaced a positional form — `schedule(when, name, data, options)` —
    * that put the least interesting argument first and gave every variation of
    * "when" its own method with the same four parameters in a different order.
@@ -826,6 +846,32 @@ export class BunJobs<
    * parameter. Every internal caller goes through here instead.
    */
   #schedule(name: string, data?: unknown): JobBuilder<unknown, unknown> {
+    return new JobBuilder<unknown, unknown>(
+      this.queue<unknown, unknown>(this.#registryQueue),
+      name,
+      data,
+    )[JOB_ROUTER](this.#router);
+  }
+
+  /**
+   * Where a job of `name` goes on the queue named `queue`, and what applies.
+   *
+   * - **The registry queue.** The name must be defined — otherwise this
+   *   throws `ConfigError`, so the verb (or `toQueue()`) is the call that
+   *   fails — and the definition's options sit under whatever the builder is
+   *   told, so a caller changing one thing does not lose the rest.
+   * - **Any other queue.** Whatever works it runs the job, so any name goes,
+   *   and the job takes only what the call passes: a registry definition's
+   *   defaults are this service's worker's policy, and another queue's worker
+   *   decides its own. Applying them instead would be this one line.
+   */
+  #routeJob(queue: string, name: string): JobRoute {
+    const target = this.queue<unknown, unknown>(queue);
+
+    if (queue !== this.#registryQueue) {
+      return { queue: target, defaults: {} };
+    }
+
     const definition = this.#definitions.get(name);
 
     if (!definition) {
@@ -835,16 +881,8 @@ export class BunJobs<
       );
     }
 
-    // The definition's options sit under whatever the builder is told, so a
-    // caller changing one thing does not lose the rest.
     const { concurrency: _concurrency, ...defaults } = definition.options;
-
-    return new JobBuilder<unknown, unknown>(
-      this.queue<unknown, unknown>(this.#registryQueue),
-      name,
-      data,
-      defaults,
-    );
+    return { queue: target, defaults };
   }
 
   /** {@link BunJobs.schedule}, for a sentence that reads better as "run". */
@@ -889,7 +927,9 @@ export class BunJobs<
    * Adds a job to run as soon as something claims it.
    *
    * The one case short enough not to need a sentence:
-   * `jobs.run(name, data).start()` says the same thing in more words.
+   * `jobs.run(name, data).start()` says the same thing in more words. It has
+   * no builder to call `toQueue()` on, so another queue is
+   * `jobs.queue(name).now(...)`.
    */
   now<TName extends TypedJobName<TJobs>>(
     name: TName,
@@ -925,8 +965,9 @@ export class BunJobs<
    * Nothing is written until `save()`, which adds it to the registry's queue
    * with the definition's options under whatever the draft set — the same
    * precedence as `now()` and `schedule()`. A name with no definition is a
-   * `ConfigError` here, as it is for them. See `JobDraft` for what saving the
-   * same draft twice does.
+   * `ConfigError` here, as it is for them; to send one to another queue, use
+   * `jobs.queue(name).create()`. See `JobDraft` for what saving the same
+   * draft twice does.
    */
   create<TName extends TypedJobName<TJobs>>(
     name: TName,

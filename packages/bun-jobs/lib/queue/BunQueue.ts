@@ -20,6 +20,7 @@ import type {
 import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
 import type { JobEvent, JobHooks } from "./Job";
+import type { JobRouter } from "./JobBuilder";
 import type {
   JobDefaultsPatch,
   JobDefaultsUpdate,
@@ -48,6 +49,7 @@ import type {
   JobMapResult,
   JobName,
   JobOptions,
+  JobResultOf,
   JobsPage,
   JobsWalkPage,
   ListJobsOptions,
@@ -106,6 +108,7 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { noteScheduled } from "./delayedHints";
 import { Job } from "./Job";
+import { JobBuilder } from "./JobBuilder";
 import {
   describeJobDefaults,
   isJobDefaultKey,
@@ -118,6 +121,8 @@ import {
   supportsJobDefaults,
   writeJobDefaults,
 } from "./jobDefaults";
+import { JobDraft } from "./JobDraft";
+import { JOB_ROUTER } from "./jobRouter";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import {
   assertJobId,
@@ -413,6 +418,14 @@ export class BunQueue<
    * set — the usual case, which costs the add path one property read.
    */
   [LOCAL_ADD_HOOKS]: ((job: LocalAddedJob) => void)[] | undefined;
+  /**
+   * The router of the `BunJobs` context that created this queue, which the
+   * builder verbs (`schedule`, `run`, `now`, `create`) route through — so the
+   * registry queue keeps its `define()` checks and defaults, and `toQueue()`
+   * can find another queue. `undefined` on a standalone queue. Internal; see
+   * {@link JOB_ROUTER}.
+   */
+  [JOB_ROUTER]: JobRouter | undefined;
   /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
   /** Whether this queue announces its events to other processes. */
@@ -786,6 +799,128 @@ export class BunQueue<
         });
       }
     }
+  }
+
+  /* --- the builder verbs ---------------------------------------------- */
+
+  /**
+   * Describes a job to add to this queue, and answers with a builder — the
+   * same builder `jobs.schedule()` gives, bound for this queue.
+   *
+   * ```ts
+   * await jobs.queue("images").schedule("resize", { id }).in("5m").start();
+   * ```
+   *
+   * On a queue a `BunJobs` context created, the context's rules apply. Its
+   * registry queue behaves exactly as `jobs.schedule()`: the name must be
+   * defined, and the definition's options sit under the builder's. Any other
+   * queue is worked by whatever worker is on it, so any name is accepted and
+   * a registry definition's defaults do not follow the job there — it takes
+   * only what the builder is told. A standalone queue takes any name too.
+   * Nothing is added until `start()`.
+   */
+  schedule<TVerbName extends TypedJobName<TJobs>>(
+    name: TVerbName,
+    data?: JobDataOf<TJobs, TVerbName>,
+  ): JobBuilder<
+    JobDataOf<TJobs, TVerbName>,
+    JobResultOf<TJobs, TVerbName>,
+    TypedJob<TJobs, TVerbName>
+  >;
+  /**
+   * Describes a job on a queue with no declared registry: any name the queue
+   * accepts, with its payload type.
+   */
+  schedule(
+    name: UntypedJobName<TJobs> & TName,
+    data?: TData,
+  ): JobBuilder<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  schedule(name: string, data?: unknown): JobBuilder<any, any, any> {
+    return this.#builder(name, data);
+  }
+
+  /** {@link BunQueue.schedule}, for a sentence that reads better as "run". */
+  run<TVerbName extends TypedJobName<TJobs>>(
+    name: TVerbName,
+    data?: JobDataOf<TJobs, TVerbName>,
+  ): JobBuilder<
+    JobDataOf<TJobs, TVerbName>,
+    JobResultOf<TJobs, TVerbName>,
+    TypedJob<TJobs, TVerbName>
+  >;
+  /** {@link BunQueue.schedule}, on a queue with no declared registry. */
+  run(
+    name: UntypedJobName<TJobs> & TName,
+    data?: TData,
+  ): JobBuilder<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  run(name: string, data?: unknown): JobBuilder<any, any, any> {
+    return this.#builder(name, data);
+  }
+
+  /**
+   * Adds a job to this queue as soon as something claims it — `jobs.now()`,
+   * bound for this queue, under the rules {@link BunQueue.schedule} gives.
+   *
+   * Unlike `add()`, on a context's registry queue the name must be defined
+   * and the definition's options apply; on any other queue it is `add()`
+   * read through the builder's vocabulary, with one difference: given both
+   * `repeat` and `jobId`, `now()` makes `jobId` the series key (unless
+   * `repeat.key` is set), as the builder's `unique()` does on a series,
+   * while `add()` drops it and derives the key from the name and schedule.
+   */
+  now<TVerbName extends TypedJobName<TJobs>>(
+    name: TVerbName,
+    ...args: JobAddArgs<JobDataOf<TJobs, TVerbName>>
+  ): Promise<TypedJob<TJobs, TVerbName>>;
+  /** {@link BunQueue.now}, on a queue with no declared registry. */
+  now(
+    name: UntypedJobName<TJobs> & TName,
+    ...args: JobAddArgs<TData>
+  ): Promise<Job<TData, TResult>>;
+  // Implementation-signature widening; callers only ever see the two above.
+  async now(name: string, ...args: unknown[]): Promise<Job<any, any>> {
+    const [data, options] = args as [unknown, JobOptions | undefined];
+    const builder = this.#builder(name, data);
+    return await (options ? builder.withOptions(options) : builder).start();
+  }
+
+  /**
+   * Makes a job to set up and save explicitly, in Agenda's shape —
+   * `jobs.create()`, bound for this queue, under the rules
+   * {@link BunQueue.schedule} gives. Nothing is written until `save()`.
+   */
+  create<TVerbName extends TypedJobName<TJobs>>(
+    name: TVerbName,
+    data?: JobDataOf<TJobs, TVerbName>,
+  ): JobDraft<
+    JobDataOf<TJobs, TVerbName>,
+    JobResultOf<TJobs, TVerbName>,
+    TypedJob<TJobs, TVerbName>
+  >;
+  /** {@link BunQueue.create}, on a queue with no declared registry. */
+  create(
+    name: UntypedJobName<TJobs> & TName,
+    data?: TData,
+  ): JobDraft<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  create(name: string, data?: unknown): JobDraft<any, any, any> {
+    return new JobDraft(this.#builder(name, data), name);
+  }
+
+  /**
+   * The builder behind every verb: bound for this queue, and routed through
+   * the creating context's rules when there is one.
+   */
+  #builder(name: string, data: unknown): JobBuilder<unknown, unknown> {
+    const builder = new JobBuilder<unknown, unknown>(
+      this as unknown as BunQueue<unknown, unknown, string>,
+      name,
+      data,
+    );
+    const router = this[JOB_ROUTER];
+    return router ? builder[JOB_ROUTER](router) : builder;
   }
 
   /* --- reading -------------------------------------------------------- */
