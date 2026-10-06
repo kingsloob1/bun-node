@@ -4685,7 +4685,8 @@ export class BunRouter<
    */
   private matchRoute(
     route: Route,
-    requestHost: string,
+    /** Holds the host, read only for a route with a host pattern. */
+    hostSource: { readonly requestHost: string },
     requestMethod: string,
     requestPath: string,
   ): matchedRoute | false {
@@ -4726,7 +4727,7 @@ export class BunRouter<
     const params: Record<string, string> = {};
     const hostRegexp = route.hostRegexp;
     if (hostRegexp) {
-      const hostMatch = hostRegexp.exec(requestHost);
+      const hostMatch = hostRegexp.exec(hostSource.requestHost);
       if (hostMatch === null) {
         return false;
       }
@@ -4895,7 +4896,9 @@ export class BunRouter<
       try {
         matched = this.matchRoute(
           route,
-          options.requestHost,
+          // The options, not their host: it is read, perhaps through a
+          // getter (RequestPipelineOptions), only for a host-scoped route.
+          options,
           options.requestMethod,
           requestPath,
         );
