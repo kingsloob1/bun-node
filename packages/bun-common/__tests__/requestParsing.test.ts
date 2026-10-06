@@ -297,10 +297,7 @@ describe("requestParsing: body", () => {
 describe("requestParsing: query and cookies", () => {
   it("re-parses the query with the route's options", async () => {
     const adapter = new BunHttpAdapter(0);
-    adapter.use(
-      "/flat",
-      requestParsing({ parseQueryOpts: { nesting: false } }),
-    );
+    adapter.use("/flat", requestParsing({ parseQuery: { nesting: false } }));
     adapter.use("/off", requestParsing({ parseQuery: false }));
     for (const path of ["/flat", "/off", "/nested"]) {
       adapter.get(path, (req, res) => res.json(req.query));
@@ -316,7 +313,10 @@ describe("requestParsing: query and cookies", () => {
 
   it("verifies signed cookies with the route's secret, and only on that route", async () => {
     const adapter = new BunHttpAdapter(0);
-    adapter.use("/secure", requestParsing({ cookieSecret: ["new", "old"] }));
+    adapter.use(
+      "/secure",
+      requestParsing({ parseCookies: { secret: ["new", "old"] } }),
+    );
     for (const path of ["/secure", "/plain"]) {
       adapter.get(path, (req, res) => {
         const { cookies, signedCookies: signed, secret } = req;
@@ -338,6 +338,24 @@ describe("requestParsing: query and cookies", () => {
     });
   });
 
+  it("parseCookies: true parses again with no secret, even if the adapter has one", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      request: { parseCookies: { secret: "s" } },
+    });
+    adapter.use("/plain", requestParsing({ parseCookies: true }));
+    adapter.get("/plain", (req, res) => {
+      res.json({ signed: req.signedCookies, secret: req.secret ?? null });
+    });
+    adapter.get("/secure", (req, res) => {
+      res.json({ signed: req.signedCookies });
+    });
+    const cookie = `sid=s:${signCookie("abc", "s")}`;
+    const plain = await adapter.fetch("/plain", { headers: { cookie } });
+    expect(await plain.json()).toEqual({ signed: {}, secret: null });
+    const secure = await adapter.fetch("/secure", { headers: { cookie } });
+    expect(await secure.json()).toEqual({ signed: { sid: "abc" } });
+  });
+
   it("parseCookies: false empties the cookies for its route", async () => {
     const adapter = new BunHttpAdapter(0);
     adapter.use("/nocookies", requestParsing({ parseCookies: false }));
@@ -352,7 +370,7 @@ describe("requestParsing: query and cookies", () => {
     const adapter = new BunHttpAdapter(0);
     adapter.use(
       requestParsing({
-        cookieParseOptions: { decode: (value: string) => value.toUpperCase() },
+        parseCookies: { decode: (value: string) => value.toUpperCase() },
       }),
     );
     adapter.get("/c", (req, res) => res.json(req.cookies));
@@ -366,12 +384,16 @@ describe("requestParsing: options", () => {
     const bad: unknown[] = [
       null,
       { parseQuery: "yes" },
+      { parseQuery: [] },
       { parseCookies: 1 },
-      { parseQueryOpts: "x" },
-      { cookieParseOptions: null },
-      { cookieSecret: 5 },
-      { cookieSecret: ["a", 1] },
+      { parseCookies: { secret: 5 } },
+      { parseCookies: { secret: ["a", 1] } },
+      { parseCookies: { decode: "x" } },
       { parseBody: "all" },
+      // The request options' deprecated spellings are not options here.
+      { parseQueryOpts: { nesting: false } },
+      { cookieParseOptions: {} },
+      { cookieSecret: "s" },
     ];
     for (const options of bad) {
       expect(() => requestParsing(options as never)).toThrow(TypeError);
@@ -389,8 +411,8 @@ describe("requestParsing: options", () => {
     adapter.use(
       requestParsing({
         parseBody: true,
-        cookieSecret: "other",
-        parseQueryOpts: { nesting: false },
+        parseCookies: { secret: "other" },
+        parseQuery: { nesting: false },
       }),
     );
     adapter.post("/x", (_req, res) => res.send("ok"));

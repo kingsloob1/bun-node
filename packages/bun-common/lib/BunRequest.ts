@@ -245,6 +245,38 @@ export interface ParseBodyConfig extends BodyDecodingOptions {
  */
 export type ParseBodyOption = boolean | ParseBodyConfig;
 
+/**
+ * The object form of the `parseCookies` request option: cookie parsing on,
+ * with these settings.
+ */
+export interface ParseCookiesConfig {
+  /**
+   * The secret(s) signed cookies are verified with, as
+   * `cookieParser(secret)`: a string, or an array for rotation (newest first —
+   * the first signs, every one verifies). `req.secret` is its first entry
+   * from the moment the request is built, so `res.cookie(name, value,
+   * { signed: true })` signs with it, and `req.signedCookies` holds the
+   * verified values (a cookie no secret verifies becomes `false`). Unset (or
+   * `""`/`[]`): no secret, and `s:` cookies stay in `req.cookies`.
+   */
+  secret?: string | string[];
+  /**
+   * Decodes each cookie value, as the `cookie` package's `decode`: given the
+   * raw value (quotes stripped), it returns the value to keep; a decoder that
+   * throws keeps the raw value. Defaults to standard percent-decoding.
+   */
+  decode?: (value: string) => string;
+}
+
+/** The `parseCookies` request option: on, off, or on with settings. */
+export type ParseCookiesOption = boolean | ParseCookiesConfig;
+
+/**
+ * The `parseQuery` request option: on (with {@link DEFAULT_PARSE_QUERY_OPTS}),
+ * off, or on with these parser options merged over the defaults.
+ */
+export type ParseQueryOption = boolean | QueryParserOpts;
+
 /** The options a {@link BunRequest} is built with (its third constructor argument). */
 type BunRequestInitOptions = NonNullable<
   ConstructorParameters<typeof BunRequest>[2]
@@ -262,9 +294,10 @@ export const DEFAULT_ADAPTER_REQUEST_OPTIONS: Readonly<BunRequestInitOptions> =
  * Merges request options over `base` (by default
  * {@link DEFAULT_ADAPTER_REQUEST_OPTIONS}), so a partial object such as
  * `{ cookieSecret }` keeps body and cookie parsing on. A key set to
- * `undefined` keeps the base value. `parseBody` merges too when both sides
- * are objects (a boolean on either side replaces), and so does its
- * `contentTypes` map. Neither argument is modified.
+ * `undefined` keeps the base value. `parseBody`, `parseQuery` and
+ * `parseCookies` merge too when both sides are objects (a boolean on either
+ * side replaces), and so does `parseBody`'s `contentTypes` map. Neither
+ * argument is modified.
  */
 export function mergeBunRequestOptions(
   overrides: Partial<BunRequestInitOptions> | undefined,
@@ -277,6 +310,16 @@ export function mergeBunRequestOptions(
   for (const [key, value] of Object.entries(overrides)) {
     if (value !== undefined) {
       Object.assign(merged, { [key]: value });
+    }
+  }
+
+  // An object `parseQuery`/`parseCookies` merges over an object base, as
+  // `parseBody` does; a boolean on either side replaces.
+  for (const key of ["parseQuery", "parseCookies"] as const) {
+    const baseValue = base[key];
+    const value = overrides[key];
+    if (isObject(baseValue) && isObject(value)) {
+      Object.assign(merged, { [key]: { ...baseValue, ...value } });
     }
   }
 
@@ -1097,17 +1140,28 @@ export class BunRequest<
        * from a middleware, before the body is parsed).
        */
       parseBody: ParseBodyOption;
-      /** Parse the `Cookie` header into `req.cookies`. Defaults to `true`. */
-      parseCookies?: boolean;
       /**
-       * Parse the URL query string into `req.query`. Defaults to `true`.
+       * Parse the `Cookie` header into `req.cookies` and
+       * `req.signedCookies`. `true` (the default) parses with the standard
+       * decoding and no secret; `false` parses nothing; a
+       * {@link ParseCookiesConfig} object parses with its `secret` (signed
+       * cookies, as `cookieParser(secret)`) and `decode`.
        */
-      parseQuery?: boolean;
+      parseCookies?: ParseCookiesOption;
       /**
-       * Options for the query-string parser (`picoquery`), **merged over**
-       * {@link DEFAULT_PARSE_QUERY_OPTS} (`nestingSyntax: "js"`,
-       * `arrayRepeat: true`), so a partial object keeps the other defaults.
-       * Set a default explicitly to opt out (`{ nesting: false }`).
+       * Parse the URL query string into `req.query`. `true` (the default)
+       * parses with {@link DEFAULT_PARSE_QUERY_OPTS}; `false` parses nothing;
+       * a {@link QueryParserOpts} object parses with those options, **merged
+       * over** the defaults (`{ nesting: false }` opts out of one).
+       */
+      parseQuery?: ParseQueryOption;
+      /**
+       * Options for the query-string parser, merged over
+       * {@link DEFAULT_PARSE_QUERY_OPTS}.
+       *
+       * @deprecated Pass them as `parseQuery` instead
+       * (`parseQuery: { nesting: false }`). Still honoured when `parseQuery`
+       * is `true`; an object `parseQuery` wins.
        */
       parseQueryOpts?: QueryParserOpts;
       /**
@@ -1135,17 +1189,20 @@ export class BunRequest<
        * `parseBody.contentTypes` is absent.
        */
       allowedContentTypes?: ContentParserType[];
-      /** Options for the cookie parser, applied when `parseCookies` is on. */
+      /**
+       * Options for the cookie parser.
+       *
+       * @deprecated Pass them as `parseCookies` instead
+       * (`parseCookies: { decode }`). Still honoured when `parseCookies` is
+       * `true` or an object without `decode`.
+       */
       cookieParseOptions?: CookieParseOptions;
       /**
-       * The secret(s) signed cookies are verified with, as
-       * `cookieParser(secret)`: a string, or an array for rotation (newest
-       * first — the first signs, every one verifies). When set, `req.secret`
-       * is its first entry from the moment the request is built, so
-       * `res.cookie(name, value, { signed: true })` signs with it, and the
-       * build-time cookie parse fills `req.signedCookies` (a cookie no secret
-       * verifies becomes `false`). Unset (or `""`/`[]`): no secret, and `s:`
-       * cookies stay in `req.cookies` until `parseCookies({ secret })` runs.
+       * The secret(s) signed cookies are verified with.
+       *
+       * @deprecated Pass it as `parseCookies: { secret }` instead. Still
+       * honoured when `parseCookies` is `true` or an object without
+       * `secret`.
        */
       cookieSecret?: string | string[];
       /**
@@ -1167,9 +1224,6 @@ export class BunRequest<
       parseBody: true,
       parseCookies: true,
       parseQuery: true,
-      parseQueryOpts: {
-        ...DEFAULT_PARSE_QUERY_OPTS,
-      },
       parseMultiPartFormDataOpts: {},
     },
   ) {
@@ -1188,11 +1242,17 @@ export class BunRequest<
       this.#writableOptions().parseBody = true;
     }
 
-    if (!isBoolean(this.options.parseCookies)) {
+    if (
+      !isBoolean(this.options.parseCookies) &&
+      !isObject(this.options.parseCookies)
+    ) {
       this.#writableOptions().parseCookies = true;
     }
 
-    if (!isBoolean(this.options.parseQuery)) {
+    if (
+      !isBoolean(this.options.parseQuery) &&
+      !isObject(this.options.parseQuery)
+    ) {
       this.#writableOptions().parseQuery = true;
     }
 
@@ -1204,9 +1264,7 @@ export class BunRequest<
     // the request has none: each finishes here, and only a body still to be
     // read leaves a promise for `init()` to await.
     if (this.options?.parseQuery) {
-      (this.#initTasks ??= []).push(
-        this.parseQuery(this.options.parseQueryOpts),
-      );
+      (this.#initTasks ??= []).push(this.parseQuery());
     }
 
     if (this.options?.parseBody) {
@@ -1301,9 +1359,50 @@ export class BunRequest<
     return this.options;
   }
 
-  /** The `cookieSecret` option as a list of non-empty secrets; `[]` when unset. */
+  /**
+   * The query parser options in force: an object `parseQuery`, else the
+   * deprecated `parseQueryOpts`. Merged over the defaults when parsing.
+   */
+  #configuredQueryOpts(): QueryParserOpts | undefined {
+    const query = this.options?.parseQuery;
+    return isObject(query) ? query : this.legacyQueryOptions.parseQueryOpts;
+  }
+
+  /**
+   * The cookie parser options in force: an object `parseCookies`'s `decode`,
+   * else the deprecated `cookieParseOptions`.
+   */
+  #configuredCookieParseOptions(): CookieParseOptions | undefined {
+    const cookies = this.options?.parseCookies;
+    if (isObject(cookies) && cookies.decode !== undefined) {
+      return { decode: cookies.decode };
+    }
+    return this.legacyCookieOptions.cookieParseOptions;
+  }
+
+  /**
+   * Non-`@deprecated` views of the deprecated query and cookie options, for
+   * the library's own fallback reads (see {@link legacyOptions}).
+   */
+  private get legacyQueryOptions(): { parseQueryOpts?: QueryParserOpts } {
+    return this.options;
+  }
+
+  /** See {@link legacyQueryOptions}. */
+  private get legacyCookieOptions(): {
+    cookieParseOptions?: CookieParseOptions;
+    cookieSecret?: string | string[];
+  } {
+    return this.options;
+  }
+
+  /** The cookie secrets in force (an object `parseCookies`'s `secret`, else the deprecated `cookieSecret`) as a list of non-empty secrets; `[]` when unset. */
   #configuredCookieSecrets(): string[] {
-    const configured = this.options?.cookieSecret;
+    const cookies = this.options?.parseCookies;
+    const configured =
+      isObject(cookies) && cookies.secret !== undefined
+        ? cookies.secret
+        : this.legacyCookieOptions.cookieSecret;
     if (configured === undefined) {
       return EMPTY_SECRETS;
     }
@@ -2813,11 +2912,16 @@ export class BunRequest<
     secret?: string | string[];
   }): this {
     const own = this.#writableOptions();
-    if (options.parseOptions !== undefined) {
-      own.cookieParseOptions = options.parseOptions;
-    }
+    const current = own.parseCookies;
+    // Written into the object form, which wins over the deprecated options.
+    own.parseCookies = {
+      ...(isObject(current) ? current : {}),
+      ...(options.parseOptions?.decode !== undefined
+        ? { decode: options.parseOptions.decode }
+        : {}),
+      ...(options.secret !== undefined ? { secret: options.secret } : {}),
+    };
     if (options.secret !== undefined) {
-      own.cookieSecret = options.secret;
       const secrets = this.#configuredCookieSecrets();
       this.secret = secrets.length ? secrets[0] : undefined;
     }
@@ -2873,7 +2977,9 @@ export class BunRequest<
 
   /** Replaces `parseQueryOpts`; merged over the defaults when parsing. */
   public setQueryParserOptions(opts: QueryParserOpts) {
-    this.#writableOptions().parseQueryOpts = opts;
+    // The object form both enables parsing and carries the options; it wins
+    // over the deprecated `parseQueryOpts`.
+    this.#writableOptions().parseQuery = opts;
     return this;
   }
 
@@ -2882,7 +2988,7 @@ export class BunRequest<
    * `parseQueryOpts`) are merged over {@link DEFAULT_PARSE_QUERY_OPTS}.
    */
   public parseQuery(opts?: QueryParserOpts) {
-    const given = opts || this.options?.parseQueryOpts;
+    const given = opts || this.#configuredQueryOpts();
     const search = this.splitRequestUrl().search;
 
     // No query string: the parser's answer is known — an empty object with
@@ -2959,7 +3065,7 @@ export class BunRequest<
 
     const cookies = parseCookie(
       cookieStr,
-      this.options.cookieParseOptions,
+      this.#configuredCookieParseOptions(),
     ) as Record<string, string>;
     let signedCookiesObj: Record<string, JsonValue> = {};
 

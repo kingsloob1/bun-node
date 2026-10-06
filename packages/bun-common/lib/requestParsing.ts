@@ -1,10 +1,11 @@
 import type {
   BunRequest,
   ParseBodyOption,
-  QueryParserOpts,
+  ParseCookiesConfig,
+  ParseCookiesOption,
+  ParseQueryOption,
 } from "./BunRequest";
 import type { RouterHandler } from "./types/general";
-import type { CookieParseOptions } from "./utils/native";
 
 /**
  * What {@link requestParsing} sets for the requests it sees. Every field is
@@ -13,27 +14,18 @@ import type { CookieParseOptions } from "./utils/native";
  */
 export interface RequestParsingOptions {
   /**
-   * Parse the query string into `req.query`. `false` leaves `req.query`
-   * empty; `true` re-parses it (with {@link parseQueryOpts} when given).
+   * Query parsing for the route: `false` leaves `req.query` empty, `true`
+   * parses it again with the defaults, a `QueryParserOpts` object parses
+   * it again with those options (merged over the defaults).
    */
-  parseQuery?: boolean;
+  parseQuery?: ParseQueryOption;
   /**
-   * Query parser options, merged over the defaults as the adapter's are.
-   * Giving them re-parses the query.
+   * Cookie parsing for the route: `false` leaves `req.cookies` and
+   * `req.signedCookies` empty, `true` parses them again with no secret and the
+   * standard decoding, a {@link ParseCookiesConfig} object parses them again
+   * with its `secret` (`req.secret` becomes the first) and `decode`.
    */
-  parseQueryOpts?: QueryParserOpts;
-  /**
-   * Parse the `Cookie` header into `req.cookies`/`req.signedCookies`.
-   * `false` leaves both empty; `true` re-parses them.
-   */
-  parseCookies?: boolean;
-  /** Cookie parser options. Giving them re-parses the cookies. */
-  cookieParseOptions?: CookieParseOptions;
-  /**
-   * Secret(s) signed cookies verify with (the first is `req.secret`). Giving
-   * them re-parses the cookies.
-   */
-  cookieSecret?: string | string[];
+  parseCookies?: ParseCookiesOption;
   /**
    * Body parsing for the route: `false` parses nothing more, `true` parses
    * with no cap, a config object sets caps and an allowlist as the adapter's
@@ -56,6 +48,8 @@ export interface RequestParsingOptions {
  *   request: { parseBody: { maxContentLength: "100kb" }, deferBody: true },
  * });
  * app.use("/upload", requestParsing({ parseBody: { maxContentLength: "20mb" } }));
+ * app.use("/account", requestParsing({ parseCookies: { secret: ["new", "old"] } }));
+ * app.use("/search", requestParsing({ parseQuery: { nesting: false } }));
  * app.use("/webhooks", requestParsing({ parseCookies: false, parseQuery: false }));
  * ```
  *
@@ -69,28 +63,16 @@ export interface RequestParsingOptions {
  */
 export function requestParsing(options: RequestParsingOptions): RouterHandler {
   validateOptions(options);
-  const {
-    parseQuery,
-    parseQueryOpts,
-    parseCookies,
-    cookieParseOptions,
-    cookieSecret,
-    parseBody,
-  } = options;
-  const touchesQuery = parseQuery !== undefined || parseQueryOpts !== undefined;
-  const touchesCookies =
-    parseCookies !== undefined ||
-    cookieParseOptions !== undefined ||
-    cookieSecret !== undefined;
+  const { parseQuery, parseCookies, parseBody } = options;
 
   return (req, _res, next) => {
     const request = req as BunRequest;
     try {
-      if (touchesQuery) {
-        applyQuery(request, parseQuery, parseQueryOpts);
+      if (parseQuery !== undefined) {
+        applyQuery(request, parseQuery);
       }
-      if (touchesCookies) {
-        applyCookies(request, parseCookies, cookieParseOptions, cookieSecret);
+      if (parseCookies !== undefined) {
+        applyCookies(request, parseCookies);
       }
     } catch (error) {
       next(error as Error);
@@ -109,36 +91,29 @@ export function requestParsing(options: RequestParsingOptions): RouterHandler {
 }
 
 /** Sets and re-runs (or empties) the query parse for one request. */
-function applyQuery(
-  req: BunRequest,
-  parseQuery: boolean | undefined,
-  parseQueryOpts: QueryParserOpts | undefined,
-): void {
+function applyQuery(req: BunRequest, parseQuery: ParseQueryOption): void {
   if (parseQuery === false) {
     req.query = {};
     return;
   }
-  if (parseQueryOpts !== undefined) {
-    req.setQueryParserOptions(parseQueryOpts);
-  }
+  // `true` re-parses with the defaults, an object with its options.
+  req.setQueryParserOptions(parseQuery === true ? {} : parseQuery);
   req.parseQuery();
 }
 
 /** Sets and re-runs (or empties) the cookie parse for one request. */
-function applyCookies(
-  req: BunRequest,
-  parseCookies: boolean | undefined,
-  parseOptions: CookieParseOptions | undefined,
-  secret: string | string[] | undefined,
-): void {
-  if (parseOptions !== undefined || secret !== undefined) {
-    req.setCookieOptions({ parseOptions, secret });
-  }
+function applyCookies(req: BunRequest, parseCookies: ParseCookiesOption): void {
   if (parseCookies === false) {
     req.cookies = {};
     req.signedCookies = {};
     return;
   }
+  // `true` means no secret and the standard decoding, for this route.
+  const config: ParseCookiesConfig = parseCookies === true ? {} : parseCookies;
+  req.setCookieOptions({
+    parseOptions: { decode: config.decode },
+    secret: config.secret ?? [],
+  });
   const secrets = req.configuredCookieSecrets;
   req.parseCookies({
     forceUpdateRequest: true,
@@ -151,38 +126,46 @@ function validateOptions(options: RequestParsingOptions): void {
   if (typeof options !== "object" || options === null) {
     throw new TypeError("requestParsing() takes an options object");
   }
-  for (const key of ["parseQuery", "parseCookies"] as const) {
-    const value = options[key];
-    if (value !== undefined && typeof value !== "boolean") {
-      throw new TypeError(`requestParsing(): ${key} must be a boolean`);
+  for (const key of ["parseQuery", "parseCookies", "parseBody"] as const) {
+    const value: unknown = options[key];
+    if (
+      value !== undefined &&
+      typeof value !== "boolean" &&
+      (typeof value !== "object" || value === null || Array.isArray(value))
+    ) {
+      throw new TypeError(
+        `requestParsing(): ${key} must be a boolean or an options object`,
+      );
     }
   }
-  for (const key of ["parseQueryOpts", "cookieParseOptions"] as const) {
-    const value = options[key];
-    if (value !== undefined && (typeof value !== "object" || value === null)) {
-      throw new TypeError(`requestParsing(): ${key} must be an object`);
+  for (const key of ["parseQueryOpts", "cookieParseOptions", "cookieSecret"]) {
+    if (key in options) {
+      throw new TypeError(
+        `requestParsing(): ${key} is not an option here; use ${
+          key === "parseQueryOpts" ? "parseQuery: { … }" : "parseCookies: { … }"
+        }`,
+      );
     }
   }
-  const { cookieSecret, parseBody } = options;
-  if (
-    cookieSecret !== undefined &&
-    typeof cookieSecret !== "string" &&
-    !(
-      Array.isArray(cookieSecret) &&
-      cookieSecret.every((secret) => typeof secret === "string")
-    )
-  ) {
-    throw new TypeError(
-      "requestParsing(): cookieSecret must be a string or an array of strings",
-    );
-  }
-  if (
-    parseBody !== undefined &&
-    typeof parseBody !== "boolean" &&
-    (typeof parseBody !== "object" || parseBody === null)
-  ) {
-    throw new TypeError(
-      "requestParsing(): parseBody must be a boolean or a config object",
-    );
+  const cookies = options.parseCookies;
+  if (typeof cookies === "object" && cookies !== null) {
+    const { secret, decode } = cookies;
+    if (
+      secret !== undefined &&
+      typeof secret !== "string" &&
+      !(
+        Array.isArray(secret) &&
+        secret.every((entry) => typeof entry === "string")
+      )
+    ) {
+      throw new TypeError(
+        "requestParsing(): parseCookies.secret must be a string or an array of strings",
+      );
+    }
+    if (decode !== undefined && typeof decode !== "function") {
+      throw new TypeError(
+        "requestParsing(): parseCookies.decode must be a function",
+      );
+    }
   }
 }
