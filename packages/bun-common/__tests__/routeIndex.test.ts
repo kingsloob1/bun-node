@@ -8,7 +8,9 @@ import {
   ADMISSION_SAMPLE,
   ADMISSION_WINDOW,
   FifoCache,
+  requestPathBounds,
   RouteCandidateIndex,
+  splitRequestPath,
 } from "../lib/utils/routeIndex";
 
 /** A small seeded PRNG (mulberry32), so a failure names a reproducible seed. */
@@ -573,5 +575,51 @@ describe("BunRouter route cache admission", () => {
     expect(await (await router.fetch("/static")).text()).toBe("static");
     expect(await (await router.fetch("/r7/abc")).text()).toBe("r7:abc");
     expect((await router.fetch("/nope")).status).toBe(404);
+  });
+});
+
+describe("requestPathBounds", () => {
+  const fromBounds = (path: string) => {
+    const bounds = requestPathBounds(path);
+    const out: string[] = [];
+    for (let i = 0; i + 1 < bounds.length; i++) {
+      out.push(path.slice(bounds[i], bounds[i + 1] - 1));
+    }
+    return out;
+  };
+
+  it("describes exactly the segments splitRequestPath gives", () => {
+    const fixed = [
+      "",
+      "/",
+      "//",
+      "///",
+      "/a",
+      "/a/",
+      "/a//",
+      "/a/b",
+      "/a//b",
+      "/a/b/",
+      "x",
+      "x/",
+      "/A/b%2F/c",
+      "/é/ü",
+    ];
+    const random = prng(7);
+    const alphabet = ["/", "a", "B", "%", "é", "-"];
+    for (let n = 0; n < 2000; n++) {
+      let path = "/";
+      const length = Math.floor(random() * 12);
+      for (let i = 0; i < length; i++) {
+        path += alphabet[Math.floor(random() * alphabet.length)];
+      }
+      fixed.push(path);
+    }
+    for (const path of fixed) {
+      expect({ path, segments: fromBounds(path) }).toEqual({
+        path,
+        segments: splitRequestPath(path),
+      });
+    }
   });
 });
