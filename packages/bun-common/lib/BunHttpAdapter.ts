@@ -194,6 +194,21 @@ export function finalErrorResponse(
   });
 }
 
+/**
+ * `error` with the request riding on it, for `handleRequestError`, which
+ * needs it to run the error handlers; a thrown primitive is wrapped to carry
+ * it. A pipeline parked past the request timeout is passed on as is: it is
+ * answered as a timed-out response wait always was, without the request.
+ */
+function carryRequest(error: unknown, req: BunRequest): unknown {
+  if (isRequestTimeoutError(error)) {
+    return error;
+  }
+  const carrier: object = isObject(error) ? error : new Error(String(error));
+  set(carrier, "req", req);
+  return carrier;
+}
+
 export class BunHttpAdapter<
   customWebsocketDataType = unknown,
   routesType extends string = never,
@@ -351,13 +366,47 @@ export class BunHttpAdapter<
     nativeRequest: Request,
     server: BunServer<WebSocketClientData<customWebsocketDataType>>,
   ): Promise<Response | undefined> {
-    // `BunRequest.init` returns the instance synchronously when no body
-    // or cookie parsing was scheduled. Branching (rather than awaiting
-    // unconditionally) is what banks the saving — `await` on a plain
-    // value still costs a microtask tick.
-    const created = BunRequest.init(nativeRequest, server, this.requestOpts);
-    const req = created instanceof BunRequest ? created : await created;
+    return this.serveNativeRequest(nativeRequest, server);
+  }
 
+  /**
+   * {@link handleNativeRequest}, without the promise when none is needed: a
+   * request whose body is absent and whose layers all finish synchronously
+   * gets its `Response` back directly, which `Bun.serve` writes without
+   * resolving a promise. Anything asynchronous along the way (a body to read,
+   * an async handler, a parked `next()`, a not-found handler, an upgrade)
+   * makes the result a promise from that point. An error is always a
+   * rejection, never a synchronous throw, as from {@link handleNativeRequest}.
+   *
+   * `Bun.serve`'s `fetch` calls this unless a subclass overrides
+   * {@link handleNativeRequest}, in which case the override is called.
+   */
+  protected serveNativeRequest(
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
+    try {
+      // `BunRequest.init` returns the instance synchronously when nothing is
+      // left to read (no body, see BunRequest). Branching rather than
+      // awaiting is what keeps the whole request synchronous.
+      const created = BunRequest.init(nativeRequest, server, this.requestOpts);
+      if (created instanceof BunRequest) {
+        return this.#routeRequest(created, nativeRequest, server);
+      }
+      return created.then((req) =>
+        this.#routeRequest(req, nativeRequest, server),
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  /** Runs a built request through the payload guard and the router. */
+  #routeRequest(
+    req: BunRequest,
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
     // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
     // rejected with 413 before any route handler or middleware runs.
     if (req.isPayloadTooLarge) {
@@ -378,101 +427,115 @@ export class BunHttpAdapter<
     const res = new BunResponse<customWebsocketDataType>(req, {
       etag: this.etagEnabled,
     });
-    let routeUsed: matchedRoute | true | undefined;
+    const router = this.instance;
+    const options = {
+      requestHost: req.host,
+      requestMethod: req.method,
+      response: res,
+      request: req,
+      requestUrl: req.originalUrl,
+      timeout: this.requestTimeout,
+    };
 
+    let routed: ReturnType<BunRouter["dispatch"]>;
     try {
-      routeUsed = await this.instance.handle({
-        requestHost: req.host,
-        requestMethod: req.method,
-        response: res,
-        request: req,
-        requestUrl: req.originalUrl,
-        timeout: this.requestTimeout,
-      });
+      // A router whose `handle` was overridden is run through the override.
+      routed =
+        router.handle === BunRouter.prototype.handle
+          ? router.dispatch(options)
+          : router.handle(options);
     } catch (error) {
-      // A pipeline parked past the request timeout is answered as a timed-out
-      // response wait always was: by the final handling, without the request.
-      if (isRequestTimeoutError(error)) {
-        throw error;
-      }
-      // The request rides on the error to `handleRequestError`, which needs it
-      // to run the error handlers. A thrown primitive is wrapped to carry it.
-      const carrier: object = isObject(error)
-        ? error
-        : new Error(String(error));
-      set(carrier, "req", req);
-      throw carrier;
+      throw carryRequest(error, req);
     }
-
-    let hasNativeResponse = false;
-    if (routeUsed) {
-      hasNativeResponse = true;
-    } else if (this._notFoundHandlers.length) {
-      let continueProcessingHandlers = true;
-      const next: NextFunction = (err) => {
-        if (!(isUndefined(err) || isNull(err))) {
-          continueProcessingHandlers = false;
-        }
-      };
-
-      for await (const handler of this._notFoundHandlers) {
-        if (!continueProcessingHandlers) {
-          break;
-        }
-
-        const resp = await handler(req, res, next);
-        continueProcessingHandlers = !!resp;
-      }
-
-      hasNativeResponse = true;
+    if (routed instanceof Promise) {
+      return routed.then(
+        (routeUsed) =>
+          this.#respond(req, res, routeUsed, nativeRequest, server),
+        (error: unknown) => {
+          throw carryRequest(error, req);
+        },
+      );
     }
+    return this.#respond(req, res, routed, nativeRequest, server);
+  }
 
-    if (hasNativeResponse) {
-      const upgradeData = res.upgradeToWsData;
-      if (upgradeData) {
-        const success = server.upgrade(nativeRequest, {
-          // The port of the server that accepted the client, unless the
-          // upgrade already named one. A socket-free stub has no port.
-          data: { ...upgradeData, port: upgradeData.port ?? server.port },
-          // Only headers the upgrade was explicitly given; the key is left out
-          // otherwise so the 101 is exactly Bun's default.
-          ...(res.upgradeToWsHeaders
-            ? { headers: res.upgradeToWsHeaders }
-            : {}),
+  /** Produces the response once the router is done with the request. */
+  #respond(
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+    routeUsed: matchedRoute | true | undefined,
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
+    if (!routeUsed) {
+      if (!this._notFoundHandlers.length) {
+        return new Response(undefined, {
+          status: 404,
+          statusText: "Not Found",
         });
+      }
+      return this.#runNotFoundHandlers(req, res).then(() =>
+        this.#produceResponse(res, nativeRequest, server),
+      );
+    }
+    return this.#produceResponse(res, nativeRequest, server);
+  }
 
-        if (success) {
-          return undefined;
-        }
+  /** Runs the not-found handlers, as when no route answered the request. */
+  async #runNotFoundHandlers(
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+  ): Promise<void> {
+    let continueProcessingHandlers = true;
+    const next: NextFunction = (err) => {
+      if (!(isUndefined(err) || isNull(err))) {
+        continueProcessingHandlers = false;
+      }
+    };
 
-        let response = new Response(
-          "An error occurred while upgrading websocket",
-          {
-            status: 400,
-          },
-        );
-        try {
-          response = await res.getNativeResponse(100);
-        } catch {
-          //
-        }
-
-        return response;
+    for await (const handler of this._notFoundHandlers) {
+      if (!continueProcessingHandlers) {
+        break;
       }
 
-      // A handler that called `send()` has already produced the native
-      // response synchronously; taking it directly avoids a
-      // `Promise.resolve` plus a microtask tick on the common path.
-      return (
-        res.settledResponse ??
-        (await res.getNativeResponse(this.requestTimeout))
+      const resp = await handler(req, res, next);
+      continueProcessingHandlers = !!resp;
+    }
+  }
+
+  /** The native response the handlers produced, or the WebSocket upgrade. */
+  #produceResponse(
+    res: BunResponse<customWebsocketDataType>,
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
+    const upgradeData = res.upgradeToWsData;
+    if (upgradeData) {
+      const success = server.upgrade(nativeRequest, {
+        // The port of the server that accepted the client, unless the
+        // upgrade already named one. A socket-free stub has no port.
+        data: { ...upgradeData, port: upgradeData.port ?? server.port },
+        // Only headers the upgrade was explicitly given; the key is left out
+        // otherwise so the 101 is exactly Bun's default.
+        ...(res.upgradeToWsHeaders ? { headers: res.upgradeToWsHeaders } : {}),
+      });
+
+      if (success) {
+        return undefined;
+      }
+
+      return res.getNativeResponse(100).catch(
+        () =>
+          new Response("An error occurred while upgrading websocket", {
+            status: 400,
+          }),
       );
     }
 
-    return new Response(undefined, {
-      status: 404,
-      statusText: "Not Found",
-    });
+    // A handler that called `send()` has already produced the native
+    // response synchronously; taking it directly avoids a promise and a
+    // microtask tick on the common path.
+    return res.settledResponse ?? res.getNativeResponse(this.requestTimeout);
   }
 
   /**
@@ -1127,7 +1190,11 @@ export class BunHttpAdapter<
         hostname,
         development: Bun.env.NODE_ENV !== "production",
         async fetch(nativeRequest: Request, server) {
-          return that.handleNativeRequest(nativeRequest, server);
+          // The synchronous path, unless a subclass replaced the handler.
+          return that.handleNativeRequest ===
+            BunHttpAdapter.prototype.handleNativeRequest
+            ? that.serveNativeRequest(nativeRequest, server)
+            : that.handleNativeRequest(nativeRequest, server);
         },
         websocket: this.buildServerWebSocketHandler(),
         error(err) {

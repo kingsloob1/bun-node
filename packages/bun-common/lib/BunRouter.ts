@@ -489,6 +489,65 @@ export function withoutHeadBody(response: Response, method: string): Response {
   });
 }
 
+/** What {@link BunRouter.handle} and {@link BunRouter.dispatch} take. */
+export interface PipelineOptions {
+  /** The request's host, as routes with a `host` pattern match it. */
+  requestHost: string;
+  /** The request method; `HEAD` also matches GET routes. */
+  requestMethod: string;
+  /** The request target (path and query), as `req.originalUrl`. */
+  requestUrl: string;
+  /** The request the layers receive. */
+  request: BunRequest;
+  /** The response the layers write to. */
+  response: BunResponse;
+  /**
+   * How long, in ms, a parked pipeline (a layer that neither responded nor
+   * called `next()` yet) may wait before failing with `Request Timedout`.
+   * `0` or unset waits for as long as it takes. The adapters pass their
+   * request timeout.
+   */
+  timeout?: number;
+}
+
+/** A pipeline's result: the matched route, `true`, or `undefined` (unhandled). */
+type PipelineOutcome = matchedRoute | true | undefined;
+
+/** {@link PipelineOutcome}, synchronously or once async layers settle. */
+type PipelineResult = PipelineOutcome | Promise<PipelineOutcome>;
+
+/** One request's progress through its layers, carried across async layers. */
+interface PipelineState {
+  /** What the pipeline was started with. */
+  options: PipelineOptions;
+  /** The matched layers, in run order. */
+  layers: MatchedLayer[];
+  /** The layer running, or next to run. */
+  index: number;
+  /** Whether the pipeline is in error mode. */
+  hasError: boolean;
+  /** The error being handled, in error mode. */
+  currentError: unknown;
+  /** The route handler that ran last, for the result. */
+  matchedRoute: matchedRoute | undefined;
+  /** Mounted sub-routers left via `next('router')`; allocated on first use. */
+  exitedRouters: Set<number> | undefined;
+  /** The route whose params are bound to the request; `-1` for none yet. */
+  paramsBoundToRoute: number;
+}
+
+/** What one layer did: what it passed to `next()`, and what it returned. */
+interface LayerStep {
+  /** Whether `next()` has been called. */
+  nextCalled: boolean;
+  /** The argument `next()` was called with. */
+  nextArg: Parameters<NextFunction>[0];
+  /** Wakes the parked pipeline when `next()` is called late. */
+  wake: (() => void) | undefined;
+  /** The layer's return value, for the debug log only. */
+  returned: unknown;
+}
+
 /** Errors {@link BunRouter.handle} raised for a parked pipeline's timeout. */
 const requestTimeoutErrors = new WeakSet<object>();
 
@@ -4741,55 +4800,75 @@ export class BunRouter<
    *   logged, since the status line has already gone out;
    * - an unhandled error is re-thrown for the adapter's final error handler.
    */
-  override async handle(options: {
-    requestHost: string;
-    requestMethod: string;
-    requestUrl: string;
-    request: BunRequest;
-    response: BunResponse;
-    /**
-     * How long, in ms, a parked pipeline (a layer that neither responded nor
-     * called `next()` yet) may wait before failing with `Request Timedout`.
-     * `0` or unset waits for as long as it takes. The adapters pass their
-     * request timeout.
-     */
-    timeout?: number;
-  }): Promise<matchedRoute | true | undefined> {
-    const { request, response } = options;
+  override async handle(
+    options: PipelineOptions,
+  ): Promise<matchedRoute | true | undefined> {
+    return this.dispatch(options);
+  }
+
+  /**
+   * {@link handle}, without the promise when none is needed: the result comes
+   * back synchronously when every layer that ran finished synchronously
+   * (responded or called `next()` before returning), and as a promise from the
+   * first layer that did not — an async handler, or one parked on a later
+   * `next()`. Errors follow the same split: thrown synchronously, or as a
+   * rejection. Semantics are otherwise identical; the adapters call this so a
+   * synchronous request reaches `Bun.serve` as a `Response`, with no promise
+   * or microtask in between.
+   */
+  dispatch(
+    options: PipelineOptions,
+  ):
+    | matchedRoute
+    | true
+    | undefined
+    | Promise<matchedRoute | true | undefined> {
     const layers = this.getMatchedLayers(options);
     // Where a bare `res.upgradeToWebsocket()` reads router-wide upgrade
     // defaults: the outermost router running the request.
-    response.webSocketUpgradeDefaults ??= this;
+    options.response.webSocketUpgradeDefaults ??= this;
+    return this.#runPipeline({
+      options,
+      layers,
+      index: 0,
+      hasError: false,
+      currentError: undefined,
+      matchedRoute: undefined,
+      exitedRouters: undefined,
+      paramsBoundToRoute: -1,
+    });
+  }
 
-    let hasError = false;
-    let currentError: unknown;
-    let matchedRoute: matchedRoute | undefined;
-    // Ids of mounted sub-routers exited via next('router'); lazily allocated
-    // since next('router') is rare — no cost on the common path.
-    let exitedRouters: Set<number> | undefined;
-    // Index of the route whose params are currently bound to the request, so
-    // params are rebound when the pipeline moves to a different route and not
-    // between callbacks of the same one. `-1` means nothing is bound yet.
-    let paramsBoundToRoute = -1;
+  /**
+   * Runs layers from `state.index` until the pipeline ends, or until a layer
+   * has not finished when it returns; the rest then runs from that layer's
+   * promise (or its parked `next()`), and the result is a promise.
+   */
+  #runPipeline(state: PipelineState): PipelineResult {
+    const { layers } = state;
+    const { request, response } = state.options;
 
-    for (let index = 0; index < layers.length; index++) {
+    for (; state.index < layers.length; state.index++) {
       // A sent response ends the pipeline — unless an error is pending, which
       // the error handlers still see, as in Express.
-      if (response.headersSent && !hasError) {
+      if (response.headersSent && !state.hasError) {
         break;
       }
 
-      const layer = layers[index];
+      const layer = layers[state.index];
 
       // A sub-router exited via next('router') is fully skipped — including
       // its error handlers — wherever specificity ordering placed its layers.
-      if (exitedRouters !== undefined && exitedRouters.has(layer.routerId)) {
+      if (
+        state.exitedRouters !== undefined &&
+        state.exitedRouters.has(layer.routerId)
+      ) {
         continue;
       }
 
       // Error-mode gate: regular layers run only when there is no active
       // error; error handlers run only when there is one.
-      if (hasError !== layer.isErrorHandler) {
+      if (state.hasError !== layer.isErrorHandler) {
         continue;
       }
 
@@ -4803,28 +4882,30 @@ export class BunRouter<
         // Note the bound object comes from the matched-pipeline cache and is
         // therefore shared by every request with the same signature: replace
         // `req.params` wholesale, never mutate it in place.
-        if (layer.routeIndex !== paramsBoundToRoute) {
+        if (layer.routeIndex !== state.paramsBoundToRoute) {
           request.params = layer.matched.params as Record<string, string>;
           // Express sets `req.route` on entering a route. `req.subdomains` is
           // left alone: it is the request's subdomain list (a `string[]`),
           // while a `domain()` pattern's captures are already in `params`.
           request.route = layer.matched;
-          paramsBoundToRoute = layer.routeIndex;
+          state.paramsBoundToRoute = layer.routeIndex;
         }
-        matchedRoute = layer.matched;
+        state.matchedRoute = layer.matched;
       }
 
-      let nextCalled = false;
-      let nextArg: Parameters<NextFunction>[0];
-      // Set while the pipeline is parked on this layer; a late next() wakes it.
-      let wake: (() => void) | undefined;
+      const step: LayerStep = {
+        nextCalled: false,
+        nextArg: undefined,
+        wake: undefined,
+        returned: undefined,
+      };
       const next: NextFunction = (arg) => {
-        if (nextCalled) {
+        if (step.nextCalled) {
           return;
         }
-        nextCalled = true;
-        nextArg = arg;
-        wake?.();
+        step.nextCalled = true;
+        step.nextArg = arg;
+        step.wake?.();
       };
 
       // Express sets both on entering each layer: `baseUrl` to the layer's
@@ -4833,142 +4914,210 @@ export class BunRouter<
       request.baseUrl = layer.baseUrl;
       request.next = next;
 
-      // A handler's return value is ignored, so it stays opaque.
-      let returned: unknown;
-      // Anything can be thrown.
-      let thrownError: unknown;
-      let didThrow = false;
+      let invoked: unknown;
       try {
-        const invoked = layer.isErrorHandler
+        invoked = layer.isErrorHandler
           ? (layer.callback as RouterErrorMiddlewareHandler)(
-              currentError,
+              state.currentError,
               request,
               response,
               next,
             )
           : (layer.callback as RouterHandler)(request, response, next);
-        // Only pay a microtask hop when the handler is genuinely async; a
-        // synchronous handler resolves the layer without one.
-        returned =
-          invoked != null &&
-          typeof (invoked as { then?: unknown }).then === "function"
-            ? await (invoked as Promise<unknown>)
-            : invoked;
       } catch (error) {
-        didThrow = true;
-        thrownError = error;
+        if (this.#settleLayer(state, step, true, error)) {
+          return this.#finishPipeline(state);
+        }
+        continue;
       }
+
+      // A genuinely async handler: the rest of the pipeline continues from
+      // its promise. A synchronous one resolves the layer without a hop.
+      if (
+        invoked != null &&
+        typeof (invoked as { then?: unknown }).then === "function"
+      ) {
+        return Promise.resolve(invoked as PromiseLike<unknown>).then(
+          (returned) => {
+            step.returned = returned;
+            return this.#afterLayer(state, step);
+          },
+          (error: unknown) => {
+            if (this.#settleLayer(state, step, true, error)) {
+              return this.#finishPipeline(state);
+            }
+            state.index++;
+            return this.#runPipeline(state);
+          },
+        );
+      }
+      step.returned = invoked;
 
       // The layer has not finished: it neither responded nor called next().
       // Park until it does one or the other, as Express waits for a `next`
       // handed to a callback.
-      if (!didThrow && !nextCalled && !response.headersSent) {
-        const outcome = await parkPipeline(
-          response,
-          (resume) => {
-            wake = resume;
-          },
-          options.timeout,
-        );
-        wake = undefined;
-        if (outcome === "timeout") {
-          throw createRequestTimeoutError();
-        }
+      if (!step.nextCalled && !response.headersSent) {
+        return this.#parkLayer(state, step);
       }
 
-      if (this.localOptions?.debug) {
-        this.logger.debug("pipeline layer executed", {
-          state: layer.isErrorHandler
-            ? "error_handler"
-            : layer.isRouteHandler
-              ? "route_handler"
-              : "middleware",
-          path: matchedRoute?.path,
-          hasSentHeaders: response.headersSent,
-          nextFnCalled: nextCalled,
-          sentResp: !!returned,
-        });
-      }
-
-      // 1. A synchronous throw or a rejected promise enters error mode.
-      if (didThrow) {
-        hasError = true;
-        currentError = thrownError;
-        continue;
-      }
-
-      // next(err): anything but nothing, `null`, or a control string.
-      const nextError =
-        nextCalled &&
-        !isUndefined(nextArg) &&
-        !isNull(nextArg) &&
-        nextArg !== "skip" &&
-        nextArg !== "route" &&
-        nextArg !== "router";
-
-      // 2. The layer produced the response itself (and raised no error). An
-      //    error handler that responds has handled its error.
-      if (response.headersSent && !nextError) {
-        if (layer.isErrorHandler) {
-          hasError = false;
-        }
-        break;
-      }
-
-      // 3. next('router') — exit the current router. From a mounted
-      //    sub-router (routerId > 0) this skips every remaining layer of that
-      //    mount and hands off to the next matching router / the parent's own
-      //    routes. From the router's own routes (routerId 0) it abandons the
-      //    whole pipeline, exactly like Express.
-      if (nextArg === "router") {
-        if (layer.routerId === 0) {
-          break;
-        }
-        (exitedRouters ??= new Set<number>()).add(layer.routerId);
-        continue;
-      }
-
-      // 4. next('route') — skip the remaining callbacks of the current route.
-      if (nextArg === "route") {
-        hasError = false;
-        const { routeIndex } = layer;
-        while (
-          index + 1 < layers.length &&
-          layers[index + 1].routeIndex === routeIndex
-        ) {
-          index++;
-        }
-        continue;
-      }
-
-      // 5. next(err) — an explicit error; hand off to error handlers.
-      if (nextError) {
-        hasError = true;
-        currentError = isError(nextArg) ? nextArg : new Error(String(nextArg));
-        continue;
-      }
-
-      // 6. next() / next('skip') — clear any active error and continue.
-      if (nextCalled) {
-        hasError = false;
+      if (this.#settleLayer(state, step, false, undefined)) {
+        return this.#finishPipeline(state);
       }
     }
 
+    return this.#finishPipeline(state);
+  }
+
+  /** After an async layer settled without throwing: park it, or move on. */
+  #afterLayer(state: PipelineState, step: LayerStep): PipelineResult {
+    if (!step.nextCalled && !state.options.response.headersSent) {
+      return this.#parkLayer(state, step);
+    }
+    if (this.#settleLayer(state, step, false, undefined)) {
+      return this.#finishPipeline(state);
+    }
+    state.index++;
+    return this.#runPipeline(state);
+  }
+
+  /**
+   * Waits for a layer that returned without finishing — for its `next()`, a
+   * response, or the `timeout` — then moves on as if it had finished then.
+   */
+  #parkLayer(state: PipelineState, step: LayerStep): Promise<PipelineOutcome> {
+    return parkPipeline(
+      state.options.response,
+      (resume) => {
+        step.wake = resume;
+      },
+      state.options.timeout,
+    ).then((outcome) => {
+      step.wake = undefined;
+      if (outcome === "timeout") {
+        throw createRequestTimeoutError();
+      }
+      if (this.#settleLayer(state, step, false, undefined)) {
+        return this.#finishPipeline(state);
+      }
+      state.index++;
+      return this.#runPipeline(state);
+    });
+  }
+
+  /**
+   * Applies a finished layer's outcome to `state` — a throw, a response, or
+   * what it passed to `next()` — and reports whether the pipeline ends here.
+   * On `false` the caller moves to the layer after `state.index` (which
+   * `next('route')` may already have advanced).
+   */
+  #settleLayer(
+    state: PipelineState,
+    step: LayerStep,
+    threw: boolean,
+    thrownError: unknown,
+  ): boolean {
+    const { response } = state.options;
+    const layer = state.layers[state.index];
+    const { nextCalled, nextArg } = step;
+
+    if (this.localOptions?.debug) {
+      this.logger.debug("pipeline layer executed", {
+        state: layer.isErrorHandler
+          ? "error_handler"
+          : layer.isRouteHandler
+            ? "route_handler"
+            : "middleware",
+        path: state.matchedRoute?.path,
+        hasSentHeaders: response.headersSent,
+        nextFnCalled: nextCalled,
+        sentResp: !!step.returned,
+      });
+    }
+
+    // 1. A synchronous throw or a rejected promise enters error mode.
+    if (threw) {
+      state.hasError = true;
+      state.currentError = thrownError;
+      return false;
+    }
+
+    // next(err): anything but nothing, `null`, or a control string.
+    const nextError =
+      nextCalled &&
+      !isUndefined(nextArg) &&
+      !isNull(nextArg) &&
+      nextArg !== "skip" &&
+      nextArg !== "route" &&
+      nextArg !== "router";
+
+    // 2. The layer produced the response itself (and raised no error). An
+    //    error handler that responds has handled its error.
+    if (response.headersSent && !nextError) {
+      if (layer.isErrorHandler) {
+        state.hasError = false;
+      }
+      return true;
+    }
+
+    // 3. next('router') — exit the current router. From a mounted
+    //    sub-router (routerId > 0) this skips every remaining layer of that
+    //    mount and hands off to the next matching router / the parent's own
+    //    routes. From the router's own routes (routerId 0) it abandons the
+    //    whole pipeline, exactly like Express.
+    if (nextArg === "router") {
+      if (layer.routerId === 0) {
+        return true;
+      }
+      (state.exitedRouters ??= new Set<number>()).add(layer.routerId);
+      return false;
+    }
+
+    // 4. next('route') — skip the remaining callbacks of the current route.
+    if (nextArg === "route") {
+      state.hasError = false;
+      const { routeIndex } = layer;
+      const { layers } = state;
+      while (
+        state.index + 1 < layers.length &&
+        layers[state.index + 1].routeIndex === routeIndex
+      ) {
+        state.index++;
+      }
+      return false;
+    }
+
+    // 5. next(err) — an explicit error; hand off to error handlers.
+    if (nextError) {
+      state.hasError = true;
+      state.currentError = isError(nextArg)
+        ? nextArg
+        : new Error(String(nextArg));
+      return false;
+    }
+
+    // 6. next() / next('skip') — clear any active error and continue.
+    state.hasError = false;
+    return false;
+  }
+
+  /** The pipeline's result once no layer is left to run (or one ended it). */
+  #finishPipeline(state: PipelineState): matchedRoute | true | undefined {
+    const { response } = state.options;
     if (response.headersSent) {
-      if (hasError) {
+      if (state.hasError) {
         // No error handler took it, and the status line is gone: as Express's
         // finalhandler, cut a streamed response off rather than let it hang
         // open, and log what happened.
         this.logger.error("Unhandled error after the response was sent", {
-          error: currentError,
+          error: state.currentError,
         });
-        response.destroy(currentError);
+        response.destroy(state.currentError);
       }
-      return matchedRoute ?? true;
+      return state.matchedRoute ?? true;
     }
 
-    if (hasError) {
-      this.throwError(currentError);
+    if (state.hasError) {
+      this.throwError(state.currentError);
     }
 
     // The pipeline ran to exhaustion via next() (or nothing matched): the
