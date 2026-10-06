@@ -41,7 +41,7 @@ with no socket at all.
 | [`fetch-testing.ts`](./02-routing/fetch-testing.ts) | every `fetch()` input form, router vs adapter `fetch`, parity with a served request, a `//x/y` path served and socket-free |
 | [`serving-async.ts`](./02-routing/serving-async.ts) | an asynchronous pipeline served and through `adapter.fetch()`: async middleware chains, a response sent before its handler finishes, `res.send(); next(err)` in one tick, a late rejection logged, a stream returned as it opens, the request timeout (`setTimeout()`), an overridden `handle()`, `res.locals` per request; `router.serveRequest()` with custom `ServeHooks` |
 | [`route-cache.ts`](./02-routing/route-cache.ts) | the route cache and `routeCacheMax`, named routes, `RouteClass`, `routeModulePath`, `toNativeRequest` (and `//` paths), a 1,000-route table with high-cardinality ids and a tiny or no cache, `routeIndex`, GET and POST on one cached path, `getMatchedLayers({ requestPath })` |
-| [`synchronous-dispatch.ts`](./02-routing/synchronous-dispatch.ts) | `BunRequest.init()` returning the request itself without a body, `dispatch()` returning synchronously until a layer is async, `handle()` always a promise, the pipeline `timeout` and `isRequestTimeoutError` |
+| [`synchronous-dispatch.ts`](./02-routing/synchronous-dispatch.ts) | `BunRequest.init()` returning the request itself without a body, `dispatch()` returning synchronously until a layer is async, `handle()` always a promise, the pipeline `timeout` and `isRequestTimeoutError`, and why code driving `handle()` itself must end every layer with `next()` or a finished response (a stream only once it ends) |
 
 ### 03 — The HTTP adapter
 
