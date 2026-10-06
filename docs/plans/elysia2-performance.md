@@ -531,6 +531,32 @@ with a refused `Content-Encoding` is routed and refused when read rather than
 before routing. `wrk`: bun-common static +27%, param +14%, routes-1000 +8%,
 param-random +13%, async +12% (`results/wrk-lazy-headers.md`).
 
+**Also done (`8910d9f`, `b6c10db`):** the adapters pass a
+`RequestPipelineOptions` whose `requestHost`/`requestUrl` read `req.host` and
+`req.originalUrl` only when a host-scoped route or specificity ordering asks,
+and the URL split slices the host on first read. `wrk`: static +9%, param
++3%, routes-1000 +6% (`results/wrk-lazy-host.md`); a first version read the
+host once per candidate route on a cache miss and cost param-random ~10%,
+which `b6c10db` removed by handing `matchRoute` the options instead.
+
+**Measured next candidates (not done)** [M], in process at `85e0ff3`
+(`scen.ts`): Elysia 2's async route costs 309 ns over its static one, ours
+626 ns; param-random costs Elysia 816 ns over static, us 1,464 ns.
+
+- *Route-cache size while admission is off.* A `Map.get` miss with a fresh
+  key costs ~55 ns at 1,000 entries and ~110 ns at 50,000 (`mapsize.ts`); a
+  stream of fresh paths fills the cache to its cap at the 1-in-64 sample
+  rate. Bounding it while admission is off would save ~50 ns (~2.5% of
+  param-random), but the ring FIFO cannot shrink without stale slots that
+  would later delete a re-added key, so it needs a different eviction
+  structure first.
+- *Allocations per parked layer.* An async layer allocates the pipeline
+  record, its promise and executor, the `whenResponded` closure, the wait
+  record, a `step.wake` closure, two `then` callbacks plus the derived
+  promise, and a `queueMicrotask` closure — about ten objects. Folding the
+  wait into the pipeline (a generation counter instead of wait identity) and
+  waking from `next()` without a per-park closure would remove three or four.
+
 ### 4.2 Routing without a per-path cache
 
 **What.** Elysia: static dictionary + radix tree, nothing cached (§3.3).
