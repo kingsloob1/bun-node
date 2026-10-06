@@ -14,6 +14,11 @@
  *   config can be handed to a child, so only then is `driverConfig` set.
  * - **Defined jobs share one queue** (`registryQueue`, `"jobs"` by default),
  *   dispatched by name — one worker for every kind of job.
+ * - **A queue's options apply when it is created**, by the first
+ *   `queue(name, options)` or by whatever reaches the name first (a registry
+ *   verb included). A later call gets that same queue unchanged; if its
+ *   options differ, the context's logger warns, once per name until the
+ *   context closes.
  * - **Option precedence, bottom to top:** `defaultJobOptions`, then the
  *   definition's options, then the call's. `runnerDefaults` sit under a
  *   runner's own options; `publishEvents` under a queue's own `publish`.
@@ -211,6 +216,128 @@ step("queue(): same instance, defaultJobOptions, dateParser");
       }),
     { name: "ConfigError", code: "CONFIG" },
   );
+}
+
+/* ------------------------------------------------------------------ */
+step("queue(name, options) again: the options are ignored, with one warning");
+
+{
+  // A context of its own, in a namespace of its own: the warnings in its log
+  // are its own, and the registry queue it fills is not the tour's.
+  const warnNamespace = exampleNamespace("bunjobs-options-warn");
+  const warnLog = createTestLogger();
+  const contextDefaults = { attempts: 4 };
+  const context = new BunJobs({
+    namespace: warnNamespace,
+    driver: shared,
+    logger: warnLog.logger,
+    defaultJobOptions: contextDefaults,
+  });
+  /** The ignored-options warnings `log` holds for one queue name. */
+  const warnedFor = (log: typeof warnLog, name: string) =>
+    log.events.filter(
+      (event) =>
+        event.level === "warn" &&
+        event.fields.queue === name &&
+        event.fields.ignoredOptions !== undefined,
+    );
+
+  const mail = context.queue("mail", {
+    defaultJobOptions: { attempts: 2 },
+    jobDefaultsRefreshInterval: 250,
+  });
+  const again = context.queue("mail", {
+    jobDefaultsRefreshInterval: 50,
+    defaultJobOptions: { attempts: 9 },
+  });
+  check("a later call returns the same instance", again === mail);
+  checkEqual(
+    "the options it was created with stay in force",
+    [
+      (await again.add("welcome", {})).opts.attempts,
+      again.jobDefaultsRefreshInterval,
+    ],
+    [2, 250],
+  );
+  const [warning] = warnedFor(warnLog, "mail");
+  checkEqual(
+    "one warning naming the queue and the ignored keys, sorted",
+    [warnedFor(warnLog, "mail").length, warning?.message, warning?.fields],
+    [
+      1,
+      `Queue "mail" already exists, so these options passed for it are ignored: defaultJobOptions, jobDefaultsRefreshInterval. A queue's options apply only when it is created`,
+      {
+        queue: "mail",
+        ignoredOptions: ["defaultJobOptions", "jobDefaultsRefreshInterval"],
+      },
+    ],
+  );
+
+  context.queue("mail", { subscribe: true });
+  checkEqual(
+    "other differing options later: no second warning for that name",
+    warnedFor(warnLog, "mail").length,
+    1,
+  );
+
+  // Fresh names, so a warning already given cannot hide one.
+  context.queue("reordered", {
+    defaultJobOptions: { attempts: 2, backoff: { type: "fixed", delay: 5 } },
+  });
+  context.queue("reordered", {
+    defaultJobOptions: { backoff: { delay: 5, type: "fixed" }, attempts: 2 },
+  });
+  checkEqual(
+    "equal options in another key order: quiet",
+    warnedFor(warnLog, "reordered"),
+    [],
+  );
+
+  context.queue("defaults");
+  context.queue("defaults", {
+    subscribe: false,
+    publish: false,
+    jobDefaultsRefreshInterval: 1000,
+    defaultJobOptions: { ...contextDefaults },
+  });
+  checkEqual(
+    "the queue's own defaults and the context's, spelled out: quiet",
+    warnedFor(warnLog, "defaults"),
+    [],
+  );
+
+  // `now()` creates the registry queue ("jobs" by default) with no options.
+  context.define("ping", () => null);
+  const pinged = await context.now("ping", {});
+  const registry = context.queue("jobs", {
+    defaultJobOptions: { attempts: 7 },
+  });
+  checkEqual(
+    "a queue a registry verb created, reached with differing options, warns too",
+    [
+      pinged.queue.queue,
+      registry.name,
+      warnedFor(warnLog, "jobs").map((event) => event.fields.ignoredOptions),
+    ],
+    ["jobs", "jobs", [["defaultJobOptions"]]],
+  );
+
+  await context.close();
+  const nextLog = createTestLogger();
+  const next = new BunJobs({
+    namespace: warnNamespace,
+    driver: shared,
+    logger: nextLog.logger,
+  });
+  next.queue("mail", { defaultJobOptions: { attempts: 2 } });
+  next.queue("mail", { defaultJobOptions: { attempts: 9 } });
+  checkEqual(
+    "after close(), a new context warns for that name again",
+    warnedFor(nextLog, "mail").map((event) => event.fields.ignoredOptions),
+    [["defaultJobOptions"]],
+  );
+  await next.close();
+  await shared.purge(warnNamespace);
 }
 
 /* ------------------------------------------------------------------ */
