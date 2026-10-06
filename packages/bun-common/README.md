@@ -431,7 +431,9 @@ owns a `Bun.serve` server. Each request goes through one method,
 `handleNativeRequest`, which does the following in order:
 
 1. builds the `BunRequest`;
-2. applies the payload guard (413) and the body-decoding check (415 or 400);
+2. applies the payload guard (413) and the body-decoding check (415 or 400) to
+   a body read while the request was built (see
+   [how the body is read](#body-decoding) for an empty one);
 3. runs the router;
 4. runs the not-found handlers;
 5. performs any WebSocket upgrade;
@@ -895,6 +897,22 @@ body) it streams under the cap and stops at the first byte past it. Either way
 the decoded length is checked against the cap afterwards, which also catches an
 in-process `Request` whose `Content-Length` understates its body. Multipart
 bodies, and a subclass overriding `parseBody()`, go through `parseBody()`.
+
+**A request without a body stream reads no header.** Bun serves a bodiless
+request, and an empty one, with no body stream, and builds its `Headers` only
+when something reads them — a cost of up to a tenth of a small request. So such
+a request finishes as bodiless while it is built, without looking at
+`Content-Length` or `Transfer-Encoding`; the first read of the body's state
+(`req.body`, `buffer`, `isBodyParsed`, `complete`, `parseBody()`, `ready()`, a
+body parser, the body events) checks those headers, and parses a declared empty
+body exactly as before: `{}` for JSON and urlencoded, `""` for text, an empty
+`Buffer` for raw. A handler that reads no header, cookie or body never builds
+them. One case changed: a declared empty body (`Content-Length: 0`, or chunked
+with no data) whose `Content-Encoding` is refused is now **routed**, and the
+refusal is recorded in `bodyDecodingError` when the body is first read (a body
+parser or `parseBody()` rejects with it, so `next(err)` still answers 415 or
+400); it used to be answered before routing. A body with data is refused before
+routing, as always.
 
 How a failure is answered:
 

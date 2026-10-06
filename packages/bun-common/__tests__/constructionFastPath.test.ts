@@ -306,3 +306,149 @@ describe("cookies are parsed on first touch, as if while the request was built",
     expect(reads.filter((name) => name === "cookie")).toEqual(["cookie"]);
   });
 });
+
+describe("a request's Headers are built on first read", () => {
+  /** A native request whose `headers` reads are counted. */
+  function counted(url: string, init?: RequestInit) {
+    let reads = 0;
+    class Counted extends Request {
+      override get headers(): Headers {
+        reads++;
+        return super.headers;
+      }
+    }
+    return { request: new Counted(url, init), reads: () => reads };
+  }
+
+  it("a GET answered without reading a header never builds them", async () => {
+    /** Opens the entry point `Bun.serve` calls. */
+    class Served extends BunHttpAdapter {
+      serve(request: Request) {
+        return this.handleNativeRequest(request, testServer as never);
+      }
+    }
+    const app = new Served(0);
+    app.get("/u/:id", (req, res) => {
+      res.json({ id: req.params.id, q: req.query, path: req.path });
+    });
+    const { request, reads } = counted("http://h/u/7?x=1");
+    // The served entry point: fetch() would copy the request, headers and all.
+    const response = (await app.serve(request))!;
+    expect(await response.json()).toEqual({
+      id: "7",
+      q: { x: "1" },
+      path: "/u/7",
+    });
+    expect(reads()).toBe(0);
+    // Reading the body reads them: only they tell no body from an empty one.
+    const second = counted("http://h/");
+    const req = BunRequest.init(second.request, testServer, {
+      parseBody: true,
+    }) as BunRequest;
+    expect(req.body).toBeUndefined();
+    expect(second.reads()).toBe(1);
+  });
+
+  it("are built once, on the first header read", () => {
+    const { request, reads } = counted("http://h/", {
+      headers: { "x-a": "1" },
+    });
+    const req = BunRequest.init(request, testServer, {
+      parseBody: true,
+    }) as BunRequest;
+    expect(reads()).toBe(0);
+    expect(req.get("x-a")).toBe("1");
+    expect(req.headersObj.get("x-a")).toBe("1");
+    expect(reads()).toBe(1);
+  });
+
+  it("a declared empty body still parses as one, on first read", () => {
+    // Served, a `Content-Length: 0` body has no stream: only its headers
+    // tell it from no body, and they are read when the body is.
+    const declared = (headers: Record<string, string>) => {
+      const req = new BunRequest(
+        {
+          url: "http://h/",
+          method: "POST",
+          body: null,
+          bodyUsed: false,
+          headers: new Headers({ "content-length": "0", ...headers }),
+          signal: new AbortController().signal,
+        } as unknown as Request,
+        testServer,
+        { parseBody: true },
+      );
+      return req;
+    };
+    expect(declared({ "content-type": "application/json" }).body).toEqual({});
+    expect(
+      declared({ "content-type": "application/x-www-form-urlencoded" }).body,
+    ).toEqual({});
+    expect(declared({ "content-type": "text/plain" }).body).toBe("");
+    const raw = declared({ "content-type": "application/octet-stream" });
+    expect(raw.isBodyParsed).toBe(true);
+    expect(declared({}).body).toBeUndefined();
+    expect(declared({ "content-type": "application/json" }).complete).toBe(
+      true,
+    );
+  });
+
+  it("a declared empty body with a bad Content-Encoding is routed, refused when read", async () => {
+    // The one change the lazy headers make: before, this was answered 415
+    // before routing; now the handler runs, and reading the body records
+    // the refusal (and a parser rejects with it).
+    const app = new BunHttpAdapter(0);
+    app.post("/e", async (req, res) => {
+      const before = req.bodyDecodingError;
+      const body = req.body;
+      const error = req.bodyDecodingError;
+      let rejected: unknown;
+      await req.parseBody().catch((caught: unknown) => {
+        rejected = caught;
+      });
+      res.json({
+        before: before ?? null,
+        body: body ?? null,
+        status: error?.statusCode,
+        complete: req.complete,
+        rejected: (rejected as { statusCode?: number })?.statusCode,
+      });
+    });
+    const response = await app.fetch("/e", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-encoding": "nope",
+        "content-length": "0",
+      },
+      // No body stream, as Bun serves an empty body.
+    });
+    expect(await response.json()).toEqual({
+      before: null,
+      body: null,
+      status: 415,
+      complete: false,
+      rejected: 415,
+    });
+  });
+
+  it("a body assigned before the first read is kept", () => {
+    const req = new BunRequest(
+      {
+        url: "http://h/",
+        method: "POST",
+        body: null,
+        bodyUsed: false,
+        headers: new Headers({
+          "content-length": "0",
+          "content-type": "application/json",
+        }),
+        signal: new AbortController().signal,
+      } as unknown as Request,
+      testServer,
+      { parseBody: true },
+    );
+    req.body = { set: true };
+    expect(req.body).toEqual({ set: true });
+  });
+});

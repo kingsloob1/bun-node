@@ -623,6 +623,38 @@ describe("BunHttpAdapter: a Content-Encoding refused while the request is built"
     expect(state.routed).toBe(true);
   });
 
+  it("a declared empty body with no stream is refused by the body parser, after routing starts", async () => {
+    // Bun serves `Content-Length: 0` with no body stream; such a request is
+    // built without reading its headers, so the encoding is checked when the
+    // body is first read — here by Nest's json parser — and its 415 reaches
+    // the same error handler.
+    const adapter = new BunHttpAdapter(0, {
+      request: { parseBody: { inflate: false } },
+    });
+    adapter.useBodyParser("json", false);
+    const state = { routed: false };
+    adapter.post("/echo", (_req, res) => {
+      state.routed = true;
+      return res.send("routed");
+    });
+    adapter.setErrorHandler((error, _req, res, _next) => {
+      return res
+        .status(Number((error as { statusCode?: number }).statusCode ?? 500))
+        .json({ status: (error as { statusCode?: number }).statusCode });
+    });
+    const refused = await adapter.fetch("/echo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip",
+        "Content-Length": "0",
+      },
+    });
+    expect(refused.status).toBe(415);
+    expect(await refused.json()).toEqual({ status: 415 });
+    expect(state.routed).toBe(false);
+  });
+
   it("a corrupt gzip body answers 400", async () => {
     const { adapter, state } = adapterWith();
     const corrupt = Buffer.from(zippedJson);

@@ -481,6 +481,16 @@ const INIT_COOKIES = 8;
  * never reads the header.
  */
 const COOKIES_PENDING = 16;
+/**
+ * The body was found absent from the request object alone (no stream, never
+ * read) and finished as empty without reading a header. A `Content-Length:
+ * 0` or `Transfer-Encoding` would make it a *declared* empty body — `{}` for
+ * JSON, `""` for text, its `Content-Encoding` checked — so the first read of
+ * the body's state settles that (see `#settleEmptyBody`). Until then the
+ * request's `Headers` are never built: for a bodiless GET, building them was
+ * up to a tenth of the whole request.
+ */
+const EMPTY_BODY_UNSETTLED = 32;
 
 /**
  * The body of every request that has none: zero-length, so nothing can be
@@ -1096,7 +1106,22 @@ export class BunRequest<
   #state: BunRequestState | undefined = undefined;
 
   private bunResponse: BunResponse | undefined = undefined;
-  public headersObj: InstanceType<typeof Headers>;
+  /** Backing field for {@link headersObj}, built on first read. */
+  #headersObj: InstanceType<typeof Headers> | undefined = undefined;
+
+  /**
+   * The native request's `Headers`. Read on first use: Bun builds the object
+   * only when `request.headers` is read, and a request whose handlers read no
+   * header never pays for it.
+   */
+  get headersObj(): InstanceType<typeof Headers> {
+    return (this.#headersObj ??= this.request.headers as Headers);
+  }
+
+  set headersObj(value: InstanceType<typeof Headers>) {
+    this.#headersObj = value;
+  }
+
   /** Lazily-built plain-object header view (see the `headers` getter). */
   get #headers(): Record<string, string | string[]> | undefined {
     const holder = this.#state;
@@ -1648,7 +1673,6 @@ export class BunRequest<
     },
   ) {
     this.#server = server;
-    this.headersObj = request.headers as Headers;
 
     // Normalize invalid options. The object is the caller's — an adapter
     // hands the same one to every request — so it is copied before the first
@@ -1711,7 +1735,8 @@ export class BunRequest<
         this.#resolvedBodyConfig();
       }
       if (absent) {
-        // Finished: nothing to read.
+        // Finished: nothing to read, unless its headers declare an empty body.
+        scheduled |= EMPTY_BODY_UNSETTLED;
       } else if (this.options.deferBody === true) {
         // Read on first need (see `deferBody`); `ready()` reads it too.
         this.#bodyDeferred = true;
@@ -1735,24 +1760,21 @@ export class BunRequest<
   }
 
   /**
-   * Finishes the body parse synchronously for a request that has **no body**
-   * — no stream, no `Content-Length` and no `Transfer-Encoding` (as `type-is`
-   * defines a body) — and returns `true`; returns `false`, changing nothing,
-   * for any other request.
+   * Finishes the body parse synchronously for a request with **no body
+   * stream** that was never read, and returns `true`; returns `false`,
+   * changing nothing, for any other request.
    *
-   * It reaches exactly the state the full parse reaches for such a request
-   * (an empty buffer, `req.body` `undefined`, the body counted as parsed and
-   * ended), without reading a stream that does not exist: the read, the
-   * encoding check and the size checks all have nothing to act on. That read
-   * was the largest single cost of a bodiless GET.
+   * It reaches exactly the state the full parse reaches for a request with
+   * no body (an empty buffer, `req.body` `undefined`, the body counted as
+   * parsed and ended), without reading a stream that does not exist — that
+   * read was the largest single cost of a bodiless GET — and without reading
+   * a header. A served `Content-Length: 0` body has no stream either; its
+   * headers make it a declared empty body, settled on first read (see
+   * {@link EMPTY_BODY_UNSETTLED}).
    */
   #finishAbsentBody(): boolean {
-    // The headers first: reading `request.body` of a request that has one
-    // would build its stream for nothing.
     const request = this.request;
     if (
-      this.headersObj.get("content-length") !== null ||
-      this.headersObj.get("transfer-encoding") !== null ||
       this._buffer !== undefined ||
       this.#bodyParsed ||
       request.body !== null ||
@@ -1765,6 +1787,46 @@ export class BunRequest<
     this._body = undefined;
     this.#bodyState = "ended";
     return true;
+  }
+
+  /**
+   * Settles a body {@link #finishAbsentBody} finished without looking at the
+   * headers: one whose `Content-Length` or `Transfer-Encoding` declares an
+   * empty body is parsed as the build-time read parses it (`{}` for JSON and
+   * urlencoded, `""` for text, an empty `Buffer` for raw), its
+   * `Content-Encoding` checked — a refusal is recorded in
+   * {@link bodyDecodingError} and fails the body, as a read would. Callers
+   * test the bit first; this clears it.
+   */
+  #settleEmptyBody(): void {
+    this.#scheduled &= ~EMPTY_BODY_UNSETTLED;
+    const headers = this.headersObj;
+    if (
+      headers.get("content-length") === null &&
+      headers.get("transfer-encoding") === null
+    ) {
+      return;
+    }
+    this.#resolvedBodyConfig();
+    const contentTypeHeader = this.getHeader("Content-Type");
+    const declaredKind = contentTypeHeader
+      ? this.detectParserKind(contentTypeHeader)
+      : undefined;
+    const limit = this.resolveContentLimit(declaredKind);
+    try {
+      // Synchronous for an empty buffer, multipart included.
+      void this.#parseBuffer(
+        this.#acceptBody(EMPTY_BODY_BUFFER, limit),
+        contentTypeHeader,
+        declaredKind,
+      );
+    } catch (error) {
+      // As a failed read leaves it: nothing parsed, so a parseBody() (or a
+      // body parser) reads the empty body again and rejects with the error.
+      this._buffer = undefined;
+      this.#bodyParsed = false;
+      this.#bodyFailed(error);
+    }
   }
 
   /**
@@ -1928,6 +1990,9 @@ export class BunRequest<
   async ready(): Promise<
     PromiseSettledResult<TQuery | BunRequestCookies | void>[]
   > {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     const scheduled = this.#scheduled;
     // Avoid the `Promise.allSettled` allocation when nothing was scheduled.
     if (scheduled === 0) {
@@ -2011,6 +2076,9 @@ export class BunRequest<
 
   /** `true` once the request body has been fully received (Node `complete`). */
   get complete(): boolean {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     return this.#bodyState === "ended";
   }
 
@@ -2020,6 +2088,9 @@ export class BunRequest<
    * has finished parsing and an emitter exists.
    */
   #flushBodyEvents(): void {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     if (
       this.#bodyEventsEmitted ||
       !this.#emitter ||
@@ -2399,6 +2470,9 @@ export class BunRequest<
   }
 
   get buffer() {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     return this._buffer;
   }
 
@@ -2413,10 +2487,15 @@ export class BunRequest<
    * Otherwise the parsed value (object, array, string or `Buffer`).
    */
   get body(): TBody {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     return this._body as TBody;
   }
 
   set body(data: TBody) {
+    // An assignment wins over a settle still to come.
+    this.#scheduled &= ~EMPTY_BODY_UNSETTLED;
     this._body = data as DefaultRequestBody;
   }
 
@@ -3358,6 +3437,10 @@ export class BunRequest<
    * encoding). Affects this request only.
    */
   async applyParseBodyOptions(parseBody: ParseBodyOption): Promise<void> {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      // Under the options the request was built with, as at build time.
+      this.#settleEmptyBody();
+    }
     this.setParseBodyOptions(parseBody);
     if (!parseBody) {
       if (this.isBodyParsed) {
@@ -3611,6 +3694,9 @@ export class BunRequest<
     fresh: boolean,
     limitOverride: number | undefined,
   ): Promise<ParsedBodyResult> {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     // The first read of a deferred body claims it, and settles the body
     // state (`complete`, the `data`/`end`/`error` events) as the build-time
     // read does.
@@ -3980,6 +4066,9 @@ export class BunRequest<
 
   /** `true` once the body has been parsed (a body left `undefined` included). */
   get isBodyParsed() {
+    if (this.#scheduled & EMPTY_BODY_UNSETTLED) {
+      this.#settleEmptyBody();
+    }
     return this.#bodyParsed || !!this._contentType;
   }
 
@@ -4011,7 +4100,10 @@ export class BunRequest<
    * parsed while the request was built is read before any middleware, so the
    * adapter passes this error to its error handling (body-parser's
    * `next(err)`), answering with its status instead of routing a request
-   * whose body is missing.
+   * whose body is missing. A declared empty body on a request with no body
+   * stream (a served `Content-Length: 0`) is checked on the first read of the
+   * body instead (see {@link EMPTY_BODY_UNSETTLED}), so its refusal appears
+   * here only after that read, and the request is routed.
    */
   get bodyDecodingError(): BunHttpClientError | undefined {
     return this.#bodyDecodingError;
