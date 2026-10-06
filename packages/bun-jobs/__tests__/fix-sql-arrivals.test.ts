@@ -146,12 +146,31 @@ describe.skipIf(!URL)("SQL driver: Postgres wait after a missed NOTIFY", () => {
       await worker.connect();
       await producer.connect();
 
-      // A first empty claim and wait, so the worker is listening.
+      // A first empty claim, then a wait that a notification ends, so the
+      // worker is listening for certain. Not a short `waitForJob` alone: that
+      // races its poll against the `LISTEN` it starts, and a poll that ends
+      // first returns while the registration is still in flight (tens of ms
+      // on a loaded machine). A claim marked then records nothing, rightly,
+      // since a notification sent before `LISTEN` lands is lost, and the
+      // wait after it polls.
       const claim = { workerId: "w", token: "t", lockMs: 30_000 };
+      const channel = `bunjobs_${Bun.hash(`${q.ns}:${q.queue}`).toString(36)}`;
       expect(
         await worker.claimJob(q, { ...claim, now: Date.now() }),
       ).toBeNull();
-      await worker.waitForJob(q, 5);
+      // Nothing is due, so only a notification ends this wait early; its own
+      // 15 s timeout would end it too, which the bound below rules out.
+      const wake = { done: false };
+      const waitStarted = performance.now();
+      const live = worker.waitForJob(q, 15_000).then(() => {
+        wake.done = true;
+      });
+      for (let probe = 0; !wake.done && probe < 200; probe++) {
+        await client`SELECT pg_notify(${channel}, 'probe')`;
+        await Bun.sleep(50);
+      }
+      await live;
+      expect(performance.now() - waitStarted).toBeLessThan(12_000);
 
       // The worker's claim comes back empty...
       expect(
@@ -165,7 +184,6 @@ describe.skipIf(!URL)("SQL driver: Postgres wait after a missed NOTIFY", () => {
       // listener on a connection of its own, plus a fixed grace, raced the
       // worker's under load.)
       let heard = false;
-      const channel = `bunjobs_${Bun.hash(`${q.ns}:${q.queue}`).toString(36)}`;
       const listening = await client.listen(channel, () => {
         heard = true;
       });
