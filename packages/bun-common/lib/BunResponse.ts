@@ -2021,7 +2021,7 @@ export class BunResponse<
           pull: async (controller) => {
             this.#readableStreamController = controller;
             if (this.#destroyed) {
-              this.#errorController(controller);
+              await this.#pullDestroyed(controller);
               return;
             }
 
@@ -2037,7 +2037,7 @@ export class BunResponse<
             }
 
             if (this.#destroyed) {
-              this.#errorController(controller);
+              await this.#pullDestroyed(controller);
               return;
             }
             this.#flushPendingChunks(controller);
@@ -2109,6 +2109,30 @@ export class BunResponse<
     }
   }
 
+  /**
+   * A `pull` on a destroyed stream: what was written before {@link destroy}
+   * goes out first — the error waits for the next pull, which comes once the
+   * reader has taken it — and the error itself waits for a timer, i.e. the
+   * next turn of the event loop. Bun answers a body stream that errors before
+   * it has written the chunk it just read with a connection reset, headers
+   * and chunk lost, so a handler that wrote an event and then threw would
+   * send nothing at all. What matters is the loop turn, not the duration:
+   * on the first request of a fresh server (whose `Response` the adapter
+   * hands Bun synchronously), erroring at once lost it 50 of 50 times and
+   * after one `setImmediate` (same turn) 6 of 15, while two `setImmediate`s,
+   * `setTimeout(0)` and this 1 ms timer (each the next turn) lost 0 of 40,
+   * also with four processes at once. Load only delays the timer, which is
+   * harmless: the stream is already closed to writes.
+   */
+  async #pullDestroyed(controller: ReadableStreamDefaultController) {
+    if ((this.#readableStreamEventMap?.size ?? 0) > 0) {
+      this.#flushPendingChunks(controller);
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    this.#errorController(controller);
+  }
+
   /** Errors `controller` with the {@link destroy} reason, once. */
   #errorController(controller: ReadableStreamDefaultController): void {
     if (this.#streamClosed) {
@@ -2139,13 +2163,21 @@ export class BunResponse<
     this.#destroyed = true;
     this.#destroyedWith = error ?? new Error("The response was destroyed");
     if (this._isLongLived && !this.#streamClosed) {
-      // Nothing more may be written; a parked `pull` wakes and errors.
+      // Nothing more may be written. A parked `pull` wakes and errors, after
+      // flushing what was written (see `#pullDestroyed`); with no pull
+      // parked, the next one does, unless the controller is idle with
+      // nothing queued, which is errored here (a macrotask later, likewise).
       this.#streamEnding = true;
       const notifier = this.#streamWriteNotifier;
+      const controller = this.#readableStreamController;
       if (notifier) {
         notifier.resolve();
-      } else if (this.#readableStreamController) {
-        this.#errorController(this.#readableStreamController);
+      } else if (
+        controller !== undefined &&
+        (this.#readableStreamEventMap?.size ?? 0) === 0 &&
+        (controller.desiredSize ?? 0) > 0
+      ) {
+        void this.#pullDestroyed(controller);
       }
     }
     this.emitClose();
@@ -2393,6 +2425,14 @@ export class BunResponse<
     return this.#nativeResponse;
   }
 
+  /**
+   * Whether the response has been committed, as Node's `headersSent`: a body
+   * was produced, a stream was opened (`write`/`flushHeaders`), or a WebSocket
+   * upgrade was accepted. `req.socket.setKeepAlive(true)` does not count — on
+   * Node it sends nothing, and counting it made an exception filter's answer
+   * to a failed `@Sse()` route go nowhere (the request hung until the idle
+   * timeout).
+   */
   get headersSent(): boolean {
     // The pipeline reads this several times per layer: the produced response
     // first (one field), then the rarely-set upgrade and stream state straight
@@ -2402,9 +2442,7 @@ export class BunResponse<
     }
     const holder = this.#state;
     return (
-      (holder !== undefined &&
-        (!!holder._upgradeToWsData || holder._isLongLived)) ||
-      this.req.isKeepAlive
+      holder !== undefined && (!!holder._upgradeToWsData || holder._isLongLived)
     );
   }
 

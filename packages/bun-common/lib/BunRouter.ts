@@ -382,10 +382,13 @@ const FETCH_DEFAULT_ORIGIN = "http://localhost";
  * A stand-in for the `Bun.serve` server that {@link BunRouter.fetch} passes to
  * `BunRequest`. There is no socket, so there is no peer address, and an
  * upgrade cannot succeed — reporting that honestly is better than pretending.
+ * Nor is there an idle timeout, so exempting a request from it
+ * (`req.socket.setTimeout(0)`) is a no-op that succeeds, as it does served.
  */
-const fetchStubServer: Pick<BunServer, "requestIP" | "upgrade"> = {
+const fetchStubServer: Pick<BunServer, "requestIP" | "upgrade" | "timeout"> = {
   requestIP: () => null,
   upgrade: () => false,
+  timeout: () => {},
 };
 
 export const FETCH_STUB_SERVER = fetchStubServer as Parameters<
