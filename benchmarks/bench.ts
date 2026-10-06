@@ -10,6 +10,8 @@
  *   - Elysia         — the Elysia framework (1.4)
  *   - Elysia 2       — the Elysia 2 beta (the `elysia2` alias in package.json)
  *   - Hono           — the Hono framework (served via `Bun.serve`)
+ *   - hyper-express  — on uWebSockets.js, in its own process under Node.js
+ *                      and under Bun (see hyper-express/README.md)
  *
  * Every framework registers the same logical routes; `autocannon` then
  * hammers one (or several) of them and reports requests/sec and latency.
@@ -80,6 +82,8 @@ const ALL_FRAMEWORK_IDS = [
   "elysia",
   "elysia2",
   "hono",
+  "hyper-express-node",
+  "hyper-express-bun",
 ] as const;
 
 /** Concrete URL paths autocannon targets for each scenario. */
@@ -114,7 +118,8 @@ Options:
   -r, --route <names>        Scenario(s): comma list or 'all'(default: static)
                              static|param|deep|wildcard|middleware|notfound|mixed
   -f, --frameworks <ids>     Framework(s): comma list or 'all'
-                             bun-router|express|bun-serve|bun-fetch|elysia|elysia2|hono
+                             bun-router|express|bun-serve|bun-fetch|elysia|elysia2|hono|
+                             hyper-express-node|hyper-express-bun
       --method <verb>        HTTP method                     (default: GET)
       --middleware-count <n> Middlewares in the chain route  (default: 5)
       --workers <n>          autocannon worker threads       (default: 0)
@@ -366,8 +371,7 @@ const expressFramework: Framework = {
     await new Promise<void>((resolve) => server.once("listening", resolve));
     return {
       url: `http://127.0.0.1:${port}`,
-      stop: () =>
-        new Promise<void>((resolve) => server.close(() => resolve())),
+      stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
     };
   },
 };
@@ -453,14 +457,91 @@ const honoFramework: Framework = {
   },
 };
 
+/** The hyper-express server script, a project of its own (see its README). */
+const HYPER_EXPRESS_DIR = new URL("./hyper-express/", import.meta.url).pathname;
+
+/**
+ * hyper-express in its own process under `runtime`. uWebSockets.js is a
+ * native addon for Node.js, so it cannot share the benchmark's Bun process;
+ * the child prints `listening <port>` once it accepts connections, and any
+ * failure to start (a missing install, a runtime that cannot load the addon)
+ * is reported with the child's own error.
+ */
+function hyperExpressFramework(runtime: "node" | "bun"): Framework {
+  return {
+    id: `hyper-express-${runtime}`,
+    label: `hyper-express (${runtime === "node" ? "Node.js" : "Bun"})`,
+    async start(port, middlewareCount) {
+      if (
+        !(await Bun.file(
+          `${HYPER_EXPRESS_DIR}node_modules/hyper-express/package.json`,
+        ).exists())
+      ) {
+        throw new Error(
+          "not installed: run `npm run setup` in benchmarks/hyper-express",
+        );
+      }
+      const child = Bun.spawn(
+        [
+          runtime === "node" ? "node" : process.execPath,
+          "server.mjs",
+          String(port),
+          String(middlewareCount),
+        ],
+        { cwd: HYPER_EXPRESS_DIR, stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = child.stdout.getReader();
+      let output = "";
+      const started = await Promise.race([
+        (async () => {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) {
+              return false;
+            }
+            output += new TextDecoder().decode(value);
+            if (output.includes("listening")) {
+              return true;
+            }
+          }
+        })(),
+        child.exited.then(() => false),
+        Bun.sleep(15_000).then(() => false),
+      ]);
+      if (!started) {
+        child.kill();
+        const stderr = await new Response(child.stderr).text();
+        // The last `...Error: message` line: the child's own error.
+        const reason =
+          stderr
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => /^\w*Error: /.test(line))
+            .at(-1) ?? "it did not start listening";
+        throw new Error(reason);
+      }
+      reader.releaseLock();
+      return {
+        url: `http://127.0.0.1:${port}`,
+        stop: async () => {
+          child.kill();
+          await child.exited;
+        },
+      };
+    },
+  };
+}
+
 const FRAMEWORKS: Record<string, Framework> = {
   "bun-router": bunRouterFramework,
-  "express": expressFramework,
+  express: expressFramework,
   "bun-serve": bunServeFramework,
   "bun-fetch": bunFetchFramework,
-  "elysia": elysiaFramework,
-  "elysia2": elysia2Framework,
-  "hono": honoFramework,
+  elysia: elysiaFramework,
+  elysia2: elysia2Framework,
+  hono: honoFramework,
+  "hyper-express-node": hyperExpressFramework("node"),
+  "hyper-express-bun": hyperExpressFramework("bun"),
 };
 
 /* ------------------------------------------------------------------ *
@@ -577,7 +658,9 @@ function printScenarioTable(scenario: ScenarioName, rows: BenchResult[]): void {
       `${row.throughputMB.toFixed(2)} MB/s`,
       ratio <= 1.001 ? "1.00x (best)" : `${ratio.toFixed(2)}x`,
     ]);
-    console.log(flags.length ? `${line}${COLUMN_GAP}${flags.join(", ")}` : line);
+    console.log(
+      flags.length ? `${line}${COLUMN_GAP}${flags.join(", ")}` : line,
+    );
   }
 }
 

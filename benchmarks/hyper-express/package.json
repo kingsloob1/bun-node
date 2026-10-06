@@ -1,0 +1,17 @@
+{
+  "name": "bun-node-benchmarks-hyper-express",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "hyper-express (uWebSockets.js) for ../bench.ts, run under Node.js and Bun",
+  "scripts": {
+    "setup": "git clone --depth 1 -b v20.69.0 https://github.com/uNetworking/uWebSockets.js vendor/uWebSockets.js && npm install"
+  },
+  "dependencies": {
+    "hyper-express": "^7.0.2",
+    "uWebSockets.js": "file:./vendor/uWebSockets.js"
+  },
+  "overrides": {
+    "uWebSockets.js": "$uWebSockets.js"
+  }
+}

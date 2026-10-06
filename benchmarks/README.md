@@ -1,13 +1,17 @@
 # Router benchmarks
 
 Throughput comparison of **BunRouter** (`@kingsleyweb/bun-common`) against
-**Express 5**, **Bun.serve** native routes, **Elysia 1.4**, **Elysia 2** (beta, the `elysia2` alias) and **Hono**.
+**Express 5**, **Bun.serve** native routes, **Elysia 1.4**, **Elysia 2** (beta, the `elysia2` alias),
+**Hono** and **hyper-express** (uWebSockets.js, in its own process under Node.js
+and under Bun — see [`hyper-express/README.md`](hyper-express/README.md); it does
+not load under Bun).
 
 ## Setup
 
 ```bash
 cd benchmarks
 bun install
+(cd hyper-express && npm run setup)   # optional: the hyper-express entries
 ```
 
 ## Run
