@@ -119,6 +119,26 @@ floor. So plain `bun test` is still the one-process run, as is
     concurrent-copy loops and load probes. **Not heavy, run directly:** the
     bun-common and bun-nest suites and `run-all.ts` (seconds each), single
     test files and examples, lint, typecheck and the template's test.
+  - **Waiting costs nothing, so never poll for it.** Waiters block in the
+    kernel on a turnstile lock, and only the head of the line tries the
+    slots. Start a heavy job with the Bash tool's `run_in_background` and a
+    ticket, then stop: the completion notification says when it ended. No
+    `sleep`, polling, `tail` or "still waiting" turns, in agents above all.
+    ```bash
+    HEAVY_TICKET=<session>-<task> /tmp/claude-1000/bun-node-heavy-run.sh \
+      timeout 2400 bun run-all.ts > <log> 2>&1
+    ```
+  - **A ticket survives a usage limit.** Re-issuing the same command with
+    the same `HEAVY_TICKET` attaches to the job still queued or running and
+    exits with its status, or returns the recorded status at once if it has
+    finished (`HEAVY_RERUN=1` runs it again). A ticket whose job died is free
+    at once, and the next call runs it.
+  - **Exclusive jobs cannot starve ordinary ones:** once one exclusive job has
+    started since the last ordinary one, the next steps back while ordinary
+    jobs wait, so the two kinds alternate.
+  - `/tmp/claude-1000/bun-node-heavy-queue.sh` lists every job holding or
+    waiting for a slot: its state, how long it has waited, its session and
+    ticket. Session names come from `/tmp/claude-1000/bun-node-sessions`.
   - Wrap the heavy command, not a script that also installs or sleeps, and
     give it a `timeout`. Never `flock -o` on these locks: on this machine it
     drops the lock while the command runs.
