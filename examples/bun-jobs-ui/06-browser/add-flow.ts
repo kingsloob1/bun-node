@@ -35,9 +35,14 @@
  *   `fieldset[data-testid="flow-node"]`, and a message under its Queue
  *   field), but still lets the API decide: the flow goes out, the API
  *   answers 403 `FORBIDDEN` naming the queue in `context.queue`, nothing is
- *   written, and the dialog puts the refusal on that child's Queue field and
- *   keeps the tree as typed, so changing the queue and pressing Add flow
- *   again adds it.
+ *   written, and the dialog puts the refusal on the Queue field of every job
+ *   going there (the child, and its own child taking its parent's queue) and
+ *   keeps the tree as typed.
+ * - **A refusal lasts while its queue does.** The API's message shows only
+ *   while the job still goes where it was sent. Editing the child's data
+ *   keeps it; retyping the child's queue drops it, from the child and from
+ *   its child that follows it, before anything is sent. Add flow then adds
+ *   the flow.
  * - **Checked before sending.** A job with no name is not sent; Add child
  *   is disabled at `limits.maxFlowDepth` (10) with the reason beside it, and
  *   Remove takes a node with everything below it.
@@ -98,6 +103,10 @@ const SEED_STOCK = "existing-stock";
 const PRECHECK = `You may not add jobs to “${PAYROLL}”: the API will refuse this flow.`;
 /** What it says on that child once the API has refused the flow. */
 const REFUSED = `You may not add jobs to “${PAYROLL}”.`;
+/** The data of the refused child's own child, which takes its parent's queue. */
+const GRANDCHILD_DATA = '{"site":"south"}';
+/** The refused child's data once edited, after the refusal. */
+const EDITED_DATA = '{"region":"apac"}';
 
 /* --- the server: one host, four API + UI pairs ---------------------- */
 
@@ -476,13 +485,27 @@ async function openDialog(): Promise<boolean> {
 }
 
 /**
+ * Runs page-side `steps` in order, stopping at the first that finds nothing
+ * to act on. Resolves whether every one did.
+ */
+async function runSteps(steps: string[]): Promise<boolean> {
+  for (const one of steps) {
+    if ((await view.evaluate<boolean | null>(one)) !== true) {
+      show("this step found nothing to act on", one.slice(0, 200));
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Fills a flow in the open dialog: the top job, then a child going to
  * `warehouse` (picked from the list) and a second child whose queue is
  * `secondQueue`, typed under "Another queue…" — or left as its parent's when
  * `secondQueue` is `""`. Resolves whether every field was found.
  */
 async function buildFlow(secondQueue: string): Promise<boolean> {
-  const steps = [
+  return runSteps([
     setNode(0, "Name", "build-report"),
     setNode(0, "Data", '{"month":"2026-09"}'),
     button(NODES, "Add child to Top job", true),
@@ -498,28 +521,30 @@ async function buildFlow(secondQueue: string): Promise<boolean> {
           setNode(2, "Queue", "\u0000other"),
           setNode(2, "Another queue", secondQueue),
         ]),
-  ];
-  for (const one of steps) {
-    if ((await view.evaluate<boolean | null>(one)) !== true) {
-      show("this step found nothing to act on", one.slice(0, 200));
-      return false;
-    }
-  }
-  return true;
+  ]);
 }
 
 /**
- * Reads a flow's top job and its children back through the API: the top
- * job's state, its pending count and whether its own flow record lists
- * exactly the children the dialog reported, then each child's queue, name,
- * state and whether its parent is that top job.
+ * Reads a flow the dialog reported back through the API: the top job's
+ * state, its pending count and whether its own flow record lists exactly the
+ * jobs whose parent it is, then every other job's queue, name, state and
+ * parent, as its index in the dialog's result (`0` for the top job, `-1` for
+ * one not there).
  */
 async function readFlow(result: ResultView | null): Promise<unknown> {
-  const [top, ...children] = result?.jobs ?? [];
-  if (!top) {
+  const listed = result?.jobs ?? [];
+  const [parent, ...children] = await Promise.all(
+    listed.map(([, queue, id]) => readJob(queue, id)),
+  );
+  if (!parent) {
     return null;
   }
-  const parent = await readJob(top[1], top[2]);
+  /** Where `job`'s parent is in the dialog's result. */
+  const parentOf = (job: JobDto): number =>
+    listed.findIndex(
+      ([, queue, id]) =>
+        job.flow?.parent?.queue === queue && job.flow?.parent?.id === id,
+    );
   return {
     top: [
       parent.queue,
@@ -528,21 +553,18 @@ async function readFlow(result: ResultView | null): Promise<unknown> {
       parent.flow?.pending,
       Bun.deepEquals(
         parent.flow?.children.map((ref) => `${ref.queue}:${ref.id}`).sort(),
-        children.map(([, queue, id]) => `${queue}:${id}`).sort(),
+        children
+          .filter((child) => parentOf(child) === 0)
+          .map((child) => `${child.queue}:${child.id}`)
+          .sort(),
       ),
     ],
-    children: await Promise.all(
-      children.map(async ([, queue, id]) => {
-        const child = await readJob(queue, id);
-        return [
-          child.queue,
-          child.name,
-          child.state,
-          child.flow?.parent?.queue === top[1] &&
-            child.flow?.parent?.id === top[2],
-        ];
-      }),
-    ),
+    children: children.map((child) => [
+      child.queue,
+      child.name,
+      child.state,
+      parentOf(child),
+    ]),
   };
 }
 
@@ -758,8 +780,8 @@ try {
     {
       top: [REPORTS, "build-report", "waiting-children", 2, true],
       children: [
-        [WAREHOUSE, "count-stock", "waiting", true],
-        [REPORTS, "total-sales", "waiting", true],
+        [WAREHOUSE, "count-stock", "waiting", 0],
+        [REPORTS, "total-sales", "waiting", 0],
       ],
     },
   );
@@ -797,16 +819,27 @@ try {
     "the same flow, the second child's queue typed as payroll",
     await buildFlow(PAYROLL),
   );
+  check(
+    "and a child under it, left in its parent's queue",
+    await runSteps([
+      button(NODES, "Add child to Child 2", true),
+      setNode(3, "Name", "count-stock"),
+      setNode(3, "Data", GRANDCHILD_DATA),
+    ]),
+  );
   const marked = await view.evaluate<NodeView[] | null>(
-    treeWhen(`tree.length === 3 && tree[2].refused === "true"`),
+    treeWhen(
+      `tree.length === 4 && tree[2].refused === "true" && tree[3].refused === "true"`,
+    ),
   );
   checkEqual(
-    "only that child is marked data-refused, with the message under its queue",
+    "only the jobs going to payroll are marked data-refused, that child and the one taking its queue, each with the message under its queue",
     marked?.map((node) => [node.label, node.refused, node.errors]),
     [
       ["Top job", null, []],
       ["Child 1", null, []],
       ["Child 2", "true", [PRECHECK]],
+      ["Child 2.1", "true", [PRECHECK]],
     ],
   );
   check(
@@ -841,17 +874,20 @@ try {
     1,
   );
   const afterRefusal = await view.evaluate<NodeView[] | null>(
-    treeWhen(`tree[2]?.errors.includes(${JSON.stringify(REFUSED)})`),
+    treeWhen(
+      `tree[2]?.errors.includes(${JSON.stringify(REFUSED)}) && tree[3]?.errors.includes(${JSON.stringify(REFUSED)})`,
+    ),
   );
   checkEqual(
-    "the dialog shows the refusal on that child's Queue field, and no result",
+    "the dialog shows the refusal on the Queue field of both jobs going to payroll, and no result",
     [
       afterRefusal?.[2]?.errors,
+      afterRefusal?.[3]?.errors,
       await view.evaluate<boolean>(
         `!document.querySelector('[data-testid="flow-result"]') && !document.querySelector("dialog[open] .problem-banner")`,
       ),
     ],
-    [[REFUSED], true],
+    [[REFUSED], [REFUSED], true],
   );
   checkEqual(
     "and keeps the tree as typed: every node's name, data and queue",
@@ -866,6 +902,7 @@ try {
       ["Top job", "build-report", '{"month":"2026-09"}', REPORTS, null],
       ["Child 1", "count-stock", '{"site":"north"}', WAREHOUSE, null],
       ["Child 2", "total-sales", '{"region":"emea"}', "\u0000other", PAYROLL],
+      ["Child 2.1", "count-stock", GRANDCHILD_DATA, "", null],
     ],
   );
   checkEqual(
@@ -875,7 +912,22 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
-  step("Fix the refused child's queue and send it again");
+  step("A refusal shows while the job still goes where it was sent");
+
+  const editsBefore = flowPosts().length;
+  check(
+    "the refused child's data edited, its queue left alone",
+    (await view.evaluate<boolean | null>(setNode(2, "Data", EDITED_DATA))) ===
+      true,
+  );
+  const dataEdited = await view.evaluate<NodeView[] | null>(
+    treeWhen(`tree[2]?.data === ${JSON.stringify(EDITED_DATA)}`),
+  );
+  checkEqual(
+    "both refusals stay: an untouched queue keeps the API's message, on the child and on the one taking its queue",
+    [dataEdited?.[2]?.data, dataEdited?.[2]?.errors, dataEdited?.[3]?.errors],
+    [EDITED_DATA, [REFUSED], [REFUSED]],
+  );
 
   check(
     "the child's queue retyped as archive, a queue nobody has used yet",
@@ -898,13 +950,39 @@ try {
     ),
   );
   checkEqual(
-    "once archive's map allows jobs.add, the child is no longer marked data-refused",
-    [fixed?.[2]?.otherQueue, fixed?.[2]?.refused],
-    [ARCHIVE, null],
+    "once archive's map allows jobs.add, neither the child nor the one taking its queue is marked data-refused",
+    [fixed?.[2]?.otherQueue, fixed?.[2]?.refused, fixed?.[3]?.refused],
+    [ARCHIVE, null, null],
   );
-  // What the API said about the previous send stays on the node it was
-  // about until the next send replaces it.
-  show("the child's field errors before sending again", fixed?.[2]?.errors);
+  // The API's refusal was about payroll, and neither job goes there now. A
+  // refusal that stays fails this check once the wait runs out, showing the
+  // tree as it is then.
+  const cleared =
+    (await view.evaluate<NodeView[] | null>(
+      treeWhen(
+        `tree.length === 4 && !tree[2].errors.includes(${JSON.stringify(REFUSED)}) && !tree[3].errors.includes(${JSON.stringify(REFUSED)})`,
+      ),
+    )) ?? (await view.evaluate<NodeView[]>(READ_TREE));
+  checkEqual(
+    "the refusal is gone from the child and from the one taking its queue, before anything is sent again",
+    [
+      cleared?.[2]?.errors,
+      cleared?.[3]?.errors,
+      flowPosts().length - editsBefore,
+    ],
+    [[], [], 0],
+  );
+  checkEqual(
+    "and neither node's text still contains it",
+    await view.evaluate<boolean[]>(
+      `[...document.querySelectorAll(${JSON.stringify(NODES)})].slice(2).map((node) => node.textContent.includes(${JSON.stringify(REFUSED)}))`,
+    ),
+    [false, false],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("Send the fixed flow again");
+
   const fixBefore = flowPosts().length;
   check(
     "Add flow sends it again",
@@ -915,22 +993,25 @@ try {
   const resentPost = flowPosts().at(-1);
   const resentBody = resentPost?.body as AddFlowBody | undefined;
   checkEqual(
-    "one more POST, answered 201, with the child now in archive",
+    "one more POST, answered 201, with the child now in archive, its edited data, and its own child naming no queue",
     [
       flowPosts().length - fixBefore,
       resentPost?.status,
       resentBody?.children?.[1]?.queue,
+      resentBody?.children?.[1]?.data,
+      resentBody?.children?.[1]?.children?.[0]?.queue,
     ],
-    [1, 201, ARCHIVE],
+    [1, 201, ARCHIVE, JSON.parse(EDITED_DATA), undefined],
   );
   checkEqual(
-    "read back through the API: the flow is there, the second child in archive",
+    "read back through the API: the flow is there, the second child in archive and its own child there with it",
     await readFlow(resent),
     {
       top: [REPORTS, "build-report", "waiting-children", 2, true],
       children: [
-        [WAREHOUSE, "count-stock", "waiting", true],
-        [ARCHIVE, "total-sales", "waiting", true],
+        [WAREHOUSE, "count-stock", "waiting", 0],
+        [ARCHIVE, "total-sales", "waiting-children", 0],
+        [ARCHIVE, "count-stock", "waiting", 2],
       ],
     },
   );
