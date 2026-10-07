@@ -44,7 +44,10 @@ import {
   containerOutputCutNotice,
 } from "./container/executor";
 import { AttemptLogWriter } from "./container/logWriter";
-import { resolveContainerTarget } from "./container/target";
+import {
+  checkMountedSockets,
+  resolveContainerTarget,
+} from "./container/target";
 
 /**
  * Where a worker's attempts run: the `target` option.
@@ -660,6 +663,18 @@ export const TARGET_CLOSE_REAP = TARGET_CLOSE_MARGIN / 2;
  */
 export const TARGET_CLOSE_GRACE = DEFAULT_CLOSE_TIMEOUT - TARGET_CLOSE_MARGIN;
 
+/**
+ * How long a `container` target's `close()` waits for killed containers to
+ * be gone, in place of `TARGET_CLOSE_REAP`: 3000 ms. A container is gone when
+ * the engine has destroyed it, which took 0.3–0.7 s for one and longer for a
+ * dozen killed at once, far past half a second. The worker's bound on such a
+ * target's `close()` grows by the difference (see
+ * {@link FileTargetExecutor.closeBound}), so the timeline above keeps its
+ * order: a graceful close kills at `TARGET_CLOSE_GRACE`, has seen the
+ * containers gone by 7000 ms, and the worker gives up at 7500 ms.
+ */
+export const CONTAINER_CLOSE_REAP = 3_000;
+
 /** Who is running an attempt off-thread, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
@@ -937,14 +952,27 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     } finally {
       signal.removeEventListener("abort", stop);
       // The container's output is written before the attempt reports back,
-      // so the worker's settle sees it on the attempt's lane.
-      await logWriter?.drain();
+      // so the worker's settle sees it on the attempt's lane — for at most
+      // the target's closeTimeout, since a store that never answers a log
+      // write must not hold a finished attempt open for good.
+      if (
+        logWriter &&
+        target.kind === "container" &&
+        !(await logWriter.drain(target.closeTimeout))
+      ) {
+        context.logger.warn(
+          `The container's output was still being written to the job's log ${target.closeTimeout} ms after the attempt ended; the attempt settled without waiting further`,
+          { closeTimeout: target.closeTimeout },
+        );
+      }
     }
   }
 
   /**
    * The container target's start-up checks, run by `worker.run()` before the
-   * worker claims anything (I5): the engine answers, the runtime is listed,
+   * worker claims anything (I5): no mount holds a socket at any depth (a
+   * `ConfigError`, see `checkMountedSockets`), the engine answers, the
+   * runtime is listed,
    * the image is present or pulled, and a probe container with the exact
    * flags runs. Throws `IsolationUnavailableError` when one fails — never a
    * fallback. Then removes this worker key's containers whose worker is not
@@ -969,6 +997,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     this.#prepared ??= (async () => {
       const executor = this.#containerExecutor(target);
       const owner = this.#owner();
+      // Every socket anywhere in a mount, before the engine is asked
+      // anything: a walk too long for the constructor.
+      await checkMountedSockets(target.mounts);
       await executor.engine.probe(target, {
         owner,
         processor: this.file,
@@ -1169,7 +1200,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
   /**
    * Resolves once killed runs have stopped, or after `TARGET_CLOSE_REAP` at
-   * most. The kills are already sent; this is seeing the children reaped and
+   * most (`CONTAINER_CLOSE_REAP` for containers, gone meaning destroyed). The kills are already sent; this is seeing the children reaped and
    * the threads gone, so `close()` resolves with nothing alive. Its timer is
    * ref'd for the same reason as the deadline's, and bounded so the wait ends
    * strictly inside the worker's own bound.
@@ -1188,7 +1219,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     const inTime = await Promise.race([
       FileTargetExecutor.#stopped(handles).then(() => true),
       new Promise<false>((resolve) => {
-        timer = setTimeout(resolve, TARGET_CLOSE_REAP, false);
+        timer = setTimeout(resolve, this.#reapMs, false);
       }),
     ]);
     clearTimeout(timer);
@@ -1197,22 +1228,30 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     }
   }
 
+  /** How long a close waits for killed runs to be gone, for this kind. */
+  get #reapMs(): number {
+    return this.name === "container" ? CONTAINER_CLOSE_REAP : TARGET_CLOSE_REAP;
+  }
+
   /**
-   * Logs one `warn` for the `worker-thread` runs among `handles` whose thread
-   * has still not stopped, leaving out any already warned about. A child that
-   * is slow to be reaped is not reported: that wait is what it always was.
-   *
-   * Nor is a `container` run. Removing a killed container (`docker kill`,
-   * then `docker rm --force`) takes about a second, against a reap allowance
-   * of `TARGET_CLOSE_REAP` that must end inside the worker's own bound, so a
-   * warning would fire on every forced close and say nothing. The removal
-   * goes on after `close()` resolves, in CLI processes that outlive the
-   * worker if it exits, and the orphan sweep covers one that never lands.
+   * How long the worker gives this target's `close()` before giving up on
+   * it: `DEFAULT_CLOSE_TIMEOUT`, plus for a container the longer reap it
+   * waits ({@link CONTAINER_CLOSE_REAP}). Internal.
+   */
+  get closeBound(): number {
+    return DEFAULT_CLOSE_TIMEOUT + (this.#reapMs - TARGET_CLOSE_REAP);
+  }
+
+  /**
+   * Logs one `warn` for the runs among `handles` that have still not
+   * stopped — a `worker-thread` run whose thread is still running, or a
+   * `container` run whose container the engine has not yet destroyed —
+   * leaving out any already warned about. A child that is slow to be reaped
+   * is not reported: that wait is what it always was. A container still
+   * there after {@link CONTAINER_CLOSE_REAP} is removed later by the `kill`
+   * and `rm` already under way, or by the orphan sweep.
    */
   #warnOverrun(handles: ExecutorHandle[]): void {
-    if (this.name === "container") {
-      return;
-    }
     const runIds: string[] = [];
     for (const handle of handles) {
       const runId = this.#live.get(handle);
@@ -1229,11 +1268,14 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     if (runIds.length === 0) {
       return;
     }
+    const runs = runIds.length === 1 ? "run" : "runs";
     this.#logger.warn(
-      `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
+      this.name === "container"
+        ? `container ${runs} ${runIds.join(", ")} had not been removed ${this.#reapMs} ms after being killed; the target's close resolved without waiting further (the removal goes on)`
+        : `worker-thread ${runs} ${runIds.join(", ")} had not stopped ${this.#reapMs} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
       {
         runIds,
-        reapMs: TARGET_CLOSE_REAP,
+        reapMs: this.#reapMs,
         file: this.file,
         workerId: this.#runner.workerId,
       },

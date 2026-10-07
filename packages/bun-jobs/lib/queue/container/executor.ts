@@ -9,6 +9,7 @@ import type { ContainerOwner, ResolvedContainerTarget } from "./target";
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createDeferred, serializeError } from "@kingsleyweb/bun-common";
+import { FrameDecoder } from "../../runner/bootstrap/container-frames";
 import { toSerializable } from "../../runner/executors/spawn";
 import {
   CHILD_ENV,
@@ -53,25 +54,30 @@ const DRAIN_GRACE = 2_000;
  * Runs one attempt per container: the parent half of the stdio channel.
  *
  * **The channel.** The container's stdin carries the worker's messages, one
- * JSON line each. Its stdout carries the runner's messages, each line
- * starting with a random prefix generated per container and passed on its
- * command line: `<prefix> <json>`, each on a line of its own, and found
- * wherever it starts in a line. Any stdout text without the prefix is the
- * job's own output — a stray `console.log`, a subprocess — and becomes a job
- * log line, as stderr's lines do, so neither can corrupt the channel. A job
- * can forge channel lines, but only for its own attempt, whose result it
- * could misreport anyway. The messages are the child channel's, unchanged.
+ * JSON line each. Its stdout carries the runner's messages, in frames of at
+ * most 4096 bytes, each written whole on a line of its own starting with a
+ * random prefix generated per container and passed on its command line
+ * (`container-frames.ts`), so nothing else writing to stdout can land inside
+ * one. Every other line — one containing the prefix included — is the job's
+ * own output (a stray `console.log`, a subprocess) and becomes a job log
+ * line, as stderr's lines do. A job can forge frames, but only for its own
+ * attempt, whose result it could misreport anyway. The messages are the
+ * child channel's, unchanged.
  *
  * **Bounds.** Every message sent is bounded by `stringifyBounded`, and every
- * line read by {@link CONTAINER_MAX_MESSAGE_BYTES}: a channel message past it
- * fails the attempt for good (an `UnrecoverableJobError`), never truncated.
+ * message read by {@link CONTAINER_MAX_MESSAGE_BYTES}, from its first frame's
+ * count: a message past it fails the attempt for good (an
+ * `UnrecoverableJobError`), never truncated.
  * The job's own output is kept up to the target's `maxLogBytes`.
  *
  * **Stopping.** `stop` sends `close` on the channel; after `closeTimeout` the
  * container is killed by name (`kill`, then `rm --force`), which also covers
  * a container still being created: removal is retried until the CLI exits.
  * A forced `stop` kills at once, with no `close` first. A `stop` that lands
- * after the result arrived kills nothing: the runner is already exiting.
+ * after the result arrived kills nothing: the runner is already exiting. One
+ * that lands before it decides the attempt (`killed`); if the processor
+ * still finished and its container exited 0 before the kill took, the
+ * outcome is `killed` with exit code 0 — what happened, both halves of it.
  * The CLI process itself is never the thing killed while it has a container,
  * since killing it leaves the container running. A killed attempt reports
  * exit code 137, as the container's own kill does.
@@ -320,36 +326,55 @@ export class ContainerExecutor {
       }
     };
 
+    const frames = new FrameDecoder(
+      marker.trimEnd(),
+      CONTAINER_MAX_MESSAGE_BYTES,
+    );
     const stdout = new LineReader(
       CONTAINER_MAX_MESSAGE_BYTES,
       (line) => {
-        // The marker is looked for anywhere in the line, not only at its
-        // start: output the processor wrote without a newline ("working...")
-        // runs straight into the next channel line, and that line must still
-        // be read. The runner also starts every channel line on a line of its
-        // own, so this is the second of two guards.
-        const at = line.indexOf(marker);
-        if (at === -1) {
-          // The runner's own newline before each channel line leaves an
-          // empty line whenever the output before it had ended its own.
+        // A channel frame is a whole line starting with the prefix
+        // (`container-frames.ts`); every other line — a line the processor
+        // printed with the prefix in it included — is its output.
+        const read = frames.push(line);
+        if (read === undefined) {
+          return;
+        }
+        if ("text" in read) {
+          // The runner's own newline before each frame leaves an empty line
+          // whenever the output before it had ended its own.
           if (line.length > 0) {
             output("stdout", line);
           }
           return;
         }
-        if (at > 0) {
-          output("stdout", line.slice(0, at));
+        if ("tooLarge" in read) {
+          reported ??= fail(
+            tooLarge("a message from the container", read.tooLarge),
+          );
+          void kill();
+          return;
+        }
+        if ("broken" in read) {
+          events.onLog(
+            "warn",
+            "A message on the container channel was cut off and dropped",
+            {
+              runId,
+            },
+          );
+          return;
         }
         let message: ChildToParent;
         try {
-          message = JSON.parse(line.slice(at + marker.length)) as ChildToParent;
+          message = JSON.parse(read.message) as ChildToParent;
         } catch {
           events.onLog(
             "warn",
-            "An unreadable line on the container channel was dropped",
+            "An unreadable message on the container channel was dropped",
             {
               runId,
-              bytes: line.length,
+              bytes: read.message.length,
             },
           );
           return;
@@ -357,11 +382,7 @@ export class ContainerExecutor {
         onChannel(message);
       },
       (head, bytes) => {
-        if (head.includes(marker)) {
-          reported ??= fail(tooLarge("a message from the container", bytes));
-          void kill();
-          return;
-        }
+        // No frame is this long: whatever its start, it is output.
         output("stdout", `${head}… [a line of ${bytes} bytes, cut]`);
       },
     );

@@ -14,6 +14,7 @@ import {
 import { parseCreated } from "../lib/queue/container/engine";
 import { LineReader } from "../lib/queue/container/lines";
 import {
+  checkMountedSockets,
   CONTAINER_BOOTSTRAP,
   containerRunArgs,
   resolveContainerTarget,
@@ -419,6 +420,67 @@ describe("the refusals, with no escape hatch", () => {
     }
   });
 
+  it("refuses a symlink to a directory holding a socket, followed before checking", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-sockln-"));
+    const server = createServer();
+    mkdirSync(join(dir, "sd"));
+    await new Promise<void>((resolve) =>
+      server.listen(join(dir, "sd", "docker.sock"), resolve),
+    );
+    symlinkSync(join(dir, "sd"), join(dir, "link"));
+    try {
+      expect(
+        refusal({ mounts: [{ source: join(dir, "link"), target: "/m" }] })
+          .message,
+      ).toMatch(/a directory holding a socket/);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a symlink straight to a socket file, followed before checking", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-sockfile-"));
+    const server = createServer();
+    await new Promise<void>((resolve) =>
+      server.listen(join(dir, "engine"), resolve),
+    );
+    symlinkSync(join(dir, "engine"), join(dir, "harmless-name"));
+    try {
+      expect(
+        refusal({
+          mounts: [{ source: join(dir, "harmless-name"), target: "/m" }],
+        }).message,
+      ).toMatch(/may not mount a socket/);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a mount holding the engine's endpoint when the endpoint is named through a symlink", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-ephost-"));
+    const previous = process.env.DOCKER_HOST;
+    try {
+      mkdirSync(join(dir, "real", "run"), { recursive: true });
+      symlinkSync(join(dir, "real"), join(dir, "alias"));
+      // DOCKER_HOST names the endpoint through the alias; the mount names
+      // the real directory. Only resolving both sides sees they are one.
+      process.env.DOCKER_HOST = `unix://${join(dir, "alias", "run", "docker.sock")}`;
+      expect(
+        refusal({ mounts: [{ source: join(dir, "real"), target: "/m" }] })
+          .message,
+      ).toMatch(/nor a directory holding it/);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.DOCKER_HOST;
+      } else {
+        process.env.DOCKER_HOST = previous;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a socket found at the mount's path, whatever it is called", async () => {
     const dir = mkdtempSync(join(tmpdir(), "bun-jobs-sock-"));
     const path = join(dir, "engine");
@@ -617,5 +679,105 @@ describe("an engine's Created timestamp", () => {
       Date.parse("2026-10-01T09:20:01.123Z"),
     );
     expect(parseCreated("nonsense")).toBeUndefined();
+  });
+});
+
+describe("the mounts' socket walk at run()", () => {
+  /** A tree with a socket `levels` directories down, and its cleanup. */
+  async function tree(levels: number) {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-deep-"));
+    const deep = join(
+      dir,
+      ...Array.from({ length: levels }, (_, i) => `d${i}`),
+    );
+    mkdirSync(deep, { recursive: true });
+    const server = createServer();
+    await new Promise<void>((resolve) =>
+      server.listen(join(deep, "app.sock"), resolve),
+    );
+    return {
+      dir,
+      close: () => {
+        server.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  const mountsOf = (source: string) =>
+    resolveContainerTarget({
+      kind: "container",
+      image: "img",
+      mounts: [{ source, target: "/m" }],
+    }).mounts;
+
+  it("finds a socket four levels down, which the constructor's check does not", async () => {
+    const { dir, close } = await tree(4);
+    try {
+      // Accepted at construction: the socket is not directly inside.
+      const mounts = mountsOf(dir);
+      await expect(checkMountedSockets(mounts)).rejects.toThrow(
+        /a directory holding a socket, at any depth/,
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("refuses, rather than passes, a tree past its entry or depth bound", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-big-"));
+    try {
+      mkdirSync(join(dir, "a", "b", "c", "d"), { recursive: true });
+      for (let i = 0; i < 20; i++) {
+        mkdirSync(join(dir, `e${i}`));
+      }
+      await expect(
+        checkMountedSockets(mountsOf(dir), { entries: 10 }),
+      ).rejects.toThrow(/too large to check for sockets/);
+      await expect(
+        checkMountedSockets(mountsOf(dir), { depth: 2 }),
+      ).rejects.toThrow(/too deep to check for sockets/);
+      await expect(checkMountedSockets(mountsOf(dir))).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not follow a symlink loop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-loop-"));
+    try {
+      mkdirSync(join(dir, "a"));
+      symlinkSync(dir, join(dir, "a", "up"));
+      await expect(checkMountedSockets(mountsOf(dir))).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is what worker.run() refuses with, before the engine is asked anything", async () => {
+    const { dir, close } = await tree(4);
+    const worker = new BunQueueWorker("q", "/app/p.ts", {
+      namespace: testNamespace(),
+      driver: new MemoryDriver(),
+      logger: noopLogger,
+      target: {
+        kind: "container",
+        image: "img",
+        processor: "/app/p.ts",
+        engine: { host: "unix:///nowhere/i1-never-reached.sock" },
+        mounts: [{ source: dir, target: "/m" }],
+      },
+    });
+    try {
+      const error = await worker.run().then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as Error).message).toMatch(/at any depth/);
+    } finally {
+      await worker.close({ force: true });
+      close();
+    }
   });
 });

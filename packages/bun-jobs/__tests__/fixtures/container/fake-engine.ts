@@ -30,7 +30,12 @@ import process from "node:process";
  * `run` exits with instead of 137: a code, or `"signal"` to die of SIGKILL
  * itself, as a CLI that is killed would), and `exitDelayMs` (how long `run`
  * stays up after its container has exited), and `commandExitDelayMs` (how
- * long `kill` and `rm` take to return after doing their work).
+ * long `kill` and `rm` take to return after doing their work), and
+ * `destroyDelayMs` (how long a container whose process has ended stays
+ * listed before the engine destroys it and `run` returns), `killDelayMs`
+ * (how long `kill` and `rm` wait before acting), and `missingLabelText` (what
+ * `inspect` prints for a label a container lacks: Docker's own templates
+ * print `<no value>` there). `flood <bytes>` writes that many bytes to stdout.
  */
 
 interface Config {
@@ -44,6 +49,9 @@ interface Config {
   killedExit?: number | "signal";
   exitDelayMs?: number;
   commandExitDelayMs?: number;
+  destroyDelayMs?: number;
+  killDelayMs?: number;
+  missingLabelText?: string;
 }
 
 interface Container {
@@ -51,6 +59,7 @@ interface Container {
   labels: Record<string, string>;
   created: number;
   pid?: number;
+  cli?: number;
   killed?: boolean;
 }
 
@@ -117,6 +126,10 @@ function remove(name: string): void {
   if (alive(container.pid)) {
     process.kill(container.pid!, "SIGKILL");
   }
+  // With a destroy delay, the `run` still attached destroys it, late.
+  if (config.destroyDelayMs && alive(container.cli)) {
+    return;
+  }
   rmSync(recordPath(name), { force: true });
 }
 
@@ -163,7 +176,19 @@ switch (command) {
     );
     break;
   }
+  case "flood": {
+    const chunk = "f".repeat(64 * 1024);
+    let left = Number(rest[0] ?? 0);
+    while (left > 0) {
+      await Bun.write(Bun.stdout, chunk.slice(0, Math.min(left, chunk.length)));
+      left -= chunk.length;
+    }
+    break;
+  }
   case "kill": {
+    if (config.killDelayMs) {
+      await Bun.sleep(config.killDelayMs);
+    }
     await finishLater();
     const name = rest.at(-1)!;
     const container = read(name);
@@ -178,6 +203,9 @@ switch (command) {
     break;
   }
   case "rm": {
+    if (config.killDelayMs) {
+      await Bun.sleep(config.killDelayMs);
+    }
     await finishLater();
     for (const name of rest.filter((arg) => !arg.startsWith("-"))) {
       remove(name);
@@ -210,7 +238,7 @@ switch (command) {
           .toISOString()
           .replace("Z", "123456Z");
         console.log(
-          `/${container.name}\t${container.labels["bun-jobs.worker-id"] ?? ""}\t${created}`,
+          `/${container.name}\t${container.labels["bun-jobs.worker-id"] ?? config.missingLabelText ?? ""}\t${created}`,
         );
       }
     }
@@ -279,9 +307,12 @@ async function run(argv: string[]): Promise<void> {
   if (!current || current.killed) {
     child.kill("SIGKILL");
   } else {
-    write({ ...current, pid: child.pid });
+    write({ ...current, pid: child.pid, cli: process.pid });
   }
   const code = await child.exited;
+  if (config.destroyDelayMs) {
+    await Bun.sleep(config.destroyDelayMs);
+  }
   const record = read(name);
   // Removed (`rm --force`) or killed while it ran: what the engine reports
   // for a container it killed.

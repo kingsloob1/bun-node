@@ -1,4 +1,5 @@
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { posix } from "node:path";
 import process from "node:process";
@@ -109,7 +110,8 @@ export interface ContainerTarget {
   env?: Record<string, string>;
   /**
    * Bind mounts, read-only unless `readOnly: false`. Refused: a socket, a
-   * directory with a socket directly in it, `/`, `/proc`, `/sys`, `/dev`,
+   * directory holding one at any depth (walked at `run()`, bounded — see
+   * `checkMountedSockets`), `/`, `/proc`, `/sys`, `/dev`,
    * `/etc`, `/run`, `/var/run`, where an engine keeps its sockets or data
    * (the target's `engine.host`, `DOCKER_HOST`, `~/.docker`, `~/.colima`,
    * `/var/lib/docker`, `/var/snap/docker` and the like), and any directory
@@ -383,12 +385,17 @@ function checkMountSource(source: string, host: string | undefined): void {
   }
 
   try {
-    if (lstatSync(source).isSocket()) {
+    // `statSync`, which follows a symlink: the engine binds what the path
+    // resolves to, so a link to a socket, or to a directory holding one, is
+    // that socket or that directory.
+    const stats = statSync(source);
+    if (stats.isSocket()) {
       throw refuse(`mounts may not mount a socket (${source})`, { source });
     }
     // A read-only bind does not stop connect(): a socket directly inside the
-    // directory is as reachable as the socket itself.
-    if (lstatSync(source).isDirectory()) {
+    // directory is as reachable as the socket itself. Deeper ones are found
+    // by `checkMountedSockets` at `run()`, which walks the whole tree.
+    if (stats.isDirectory()) {
       for (const entry of readdirSync(source, { withFileTypes: true })) {
         if (entry.isSocket() || ENGINE_SOCKET.test(`/${entry.name}`)) {
           throw refuse(
@@ -401,6 +408,90 @@ function checkMountSource(source: string, host: string | undefined): void {
   } catch (error) {
     if (error instanceof ConfigError) {
       throw error;
+    }
+  }
+}
+
+/** How deep {@link checkMountedSockets} looks into a mount: 32 directories. */
+export const MOUNT_SCAN_DEPTH = 32;
+
+/**
+ * How many entries {@link checkMountedSockets} reads across a target's
+ * mounts before refusing them as too large to check: 250,000 — this
+ * repository with its `node_modules` is about 110,000.
+ */
+export const MOUNT_SCAN_ENTRIES = 250_000;
+
+/**
+ * Refuses a target whose mounts hold a socket anywhere inside them, with a
+ * `ConfigError` naming it: a read-only bind does not stop a `connect()`, so a
+ * socket deep in a mounted tree is as reachable as one at its top, to a user
+ * its permissions let in. Run by `worker.run()` before the start-up probe,
+ * since a large tree takes a while to walk.
+ *
+ * Bounded, and refusing rather than passing when a bound is reached: more
+ * than {@link MOUNT_SCAN_ENTRIES} entries in all, or a directory deeper than
+ * {@link MOUNT_SCAN_DEPTH}, is a `ConfigError` asking for a narrower mount.
+ * Each mount is walked from its resolved path; symlinks inside are not
+ * followed (a link can only reach what is mounted, and is checked where it
+ * leads if that is in the tree), so a loop cannot trap the walk. A directory
+ * this process may not read is skipped: the container's user, which is not
+ * this one, may still read it — so mount only what this process can list.
+ */
+export async function checkMountedSockets(
+  /** The resolved target's mounts. */
+  mounts: ResolvedContainerTarget["mounts"],
+  /** The bounds; for tests. */
+  bounds: { entries?: number; depth?: number } = {},
+): Promise<void> {
+  const maxEntries = bounds.entries ?? MOUNT_SCAN_ENTRIES;
+  const maxDepth = bounds.depth ?? MOUNT_SCAN_DEPTH;
+  let seen = 0;
+  for (const mount of mounts) {
+    let root: string;
+    try {
+      root = realpathSync(mount.source);
+    } catch {
+      // Not on this host (a remote engine's): nothing here to walk.
+      continue;
+    }
+    if (!statSync(root).isDirectory()) {
+      continue;
+    }
+    const queue: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
+    while (queue.length > 0) {
+      const { path, depth } = queue.shift()!;
+      let entries;
+      try {
+        entries = await readdir(path, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      seen += entries.length;
+      if (seen > maxEntries) {
+        throw refuse(
+          `mounts: ${mount.source} is too large to check for sockets (more than ${maxEntries} entries across the mounts); mount a narrower directory`,
+          { source: mount.source, maxEntries },
+        );
+      }
+      for (const entry of entries) {
+        const child = posix.join(path, entry.name);
+        if (entry.isSocket()) {
+          throw refuse(
+            `mounts may not mount a directory holding a socket, at any depth (${child}, in ${mount.source})`,
+            { source: mount.source, socket: child },
+          );
+        }
+        if (entry.isDirectory()) {
+          if (depth + 1 > maxDepth) {
+            throw refuse(
+              `mounts: ${mount.source} is too deep to check for sockets (more than ${maxDepth} levels); mount a narrower directory`,
+              { source: mount.source, maxDepth },
+            );
+          }
+          queue.push({ path: child, depth: depth + 1 });
+        }
+      }
     }
   }
 }
@@ -445,13 +536,30 @@ function enginePaths(host: string | undefined): string[] {
       continue;
     }
     out.add(trimSlash(posix.normalize(path)));
-    try {
-      out.add(trimSlash(realpathSync(path)));
-    } catch {
-      // Not on this host: its spelling is still refused.
-    }
+    out.add(trimSlash(resolveExisting(path)));
   }
   return [...out];
+}
+
+/**
+ * `path` with symlinks resolved as far as it exists: the deepest existing
+ * ancestor resolved, the rest appended. An engine's socket need not exist
+ * when the target is checked, but the directory that will hold it usually
+ * does, and a symlink there must not hide it.
+ */
+function resolveExisting(path: string): string {
+  const normal = posix.normalize(path);
+  const rest: string[] = [];
+  let head = normal;
+  while (head !== "/" && head !== ".") {
+    try {
+      return posix.join(realpathSync(head), ...rest.reverse());
+    } catch {
+      rest.push(posix.basename(head));
+      head = posix.dirname(head);
+    }
+  }
+  return normal;
 }
 
 /** A path option: absolute, NUL-free, and free of the `--mount` separator. */

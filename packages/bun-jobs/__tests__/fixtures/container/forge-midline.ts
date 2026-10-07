@@ -1,10 +1,10 @@
 import process from "node:process";
 
 /**
- * Writes "50%" and then, on the same line, a channel `log` message with the
- * prefix from its argv: what an older runner, which started a channel line
- * without a newline, produced after a partial write. The worker must read it
- * as a message. Returns `"ok"`.
+ * Writes "50%" and then, on the same line, the prefix from its argv and a
+ * channel-looking `log` message: a processor printing its own argv, or a
+ * forgery. Not a frame, so the worker must keep the whole line as output.
+ * Returns `"ok"`.
  */
 export default async () => {
   const prefix = process.argv.at(-2);

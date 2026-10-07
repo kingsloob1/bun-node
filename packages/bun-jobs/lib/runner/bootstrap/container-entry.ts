@@ -6,6 +6,7 @@ import process from "node:process";
 import { serializeError } from "@kingsleyweb/bun-common/lib/utils/native";
 import { RunKilledError } from "../../shared/errors";
 import { CHILD_ENV, CLOSE_EXIT_CODE } from "../protocol";
+import { encodeFrames, writeWhole } from "./container-frames";
 
 /**
  * `@kingsleyweb/bun-jobs/container-entry`: the runner inside a `container`
@@ -19,11 +20,14 @@ import { CHILD_ENV, CLOSE_EXIT_CODE } from "../protocol";
  * container's stdio:
  *
  * - **stdin** carries the worker's messages, one JSON line each;
- * - **stdout** carries this runner's messages, each on a line of its own —
- *   a newline first, so output the processor left without one cannot run
- *   into it — as `<prefix> <json>`. The prefix is random per container and
- *   given on the command line, so a line the processor itself prints — which
- *   has none — is taken for its output, never for a message.
+ * - **stdout** carries this runner's messages, cut into frames of at most
+ *   4096 bytes (`container-frames.ts`), each written in one `write(2)` on a
+ *   line of its own: `<prefix> <id> <index> <count> <part>`. A pipe keeps a
+ *   write that size whole, so nothing the processor prints — on either
+ *   thread, or from a subprocess sharing its stdout — can land inside one.
+ *   The prefix is random per container and given on the command line, so a
+ *   line the processor itself prints is taken for its output, never for a
+ *   message, even one that contains the prefix.
  *
  * **Two threads.** The processor runs in a `Worker` (`container-runtime.ts`),
  * and this module, on the main thread, only relays the channel and watches.
@@ -68,9 +72,8 @@ if (
 
 /** Relays the child protocol between stdio and the runtime's `Worker`. */
 function serve(linePrefix: string): void {
-  /** Writes still on their way to stdout, which an exit waits for. */
-  let pending = 0;
-  let flushed: (() => void) | undefined;
+  /** The id of the last message sent, for its frames. */
+  let messageId = 0;
   /** Whether `start` has arrived. */
   let started = false;
   /** The run id `start` named, for a close the watchdog sends. */
@@ -100,17 +103,31 @@ function serve(linePrefix: string): void {
     if (message.t === "done" || message.t === "error") {
       reported = true;
     }
-    pending++;
-    process.stdout.write(`\n${linePrefix} ${JSON.stringify(message)}\n`, () => {
-      pending--;
-      if (pending === 0) {
-        flushed?.();
+    // Frames of at most PIPE_BUF bytes, each in one write, so nothing the
+    // processor prints meanwhile can land inside one (`container-frames.ts`).
+    // Synchronous: a message is out, whole, before anything else is written.
+    try {
+      for (const frame of encodeFrames(
+        linePrefix,
+        ++messageId,
+        JSON.stringify(message),
+      )) {
+        writeWhole(1, frame);
       }
-    });
+    } catch {
+      // Nobody reads stdout any more (the pipe broke, or stayed full past
+      // `writeWhole`'s patience): the worker is gone, and so is the run.
+      process.exit(CLOSE_EXIT_CODE);
+    }
   };
 
-  /** Ends the process once every channel line has been written. */
+  /** Set by the first `exit`: the process ends once, with the first code. */
+  let exiting = false;
   const exit = (code: number): void => {
+    if (exiting) {
+      return;
+    }
+    exiting = true;
     // A stopped run whose processor never let go — the runtime exiting
     // itself, or the watchdog — still ends as stopped, for anyone reading.
     if (terminated && started && !reported && runId !== undefined) {
@@ -120,14 +137,8 @@ function serve(linePrefix: string): void {
         error: serializeError(new RunKilledError("SIGTERM", { runId })),
       });
     }
-    const end = () => process.exit(terminated ? CLOSE_EXIT_CODE : code);
-    if (pending === 0) {
-      end();
-      return;
-    }
-    flushed = end;
-    // A stdout nobody reads any more must not keep a finished run alive.
-    setTimeout(end, 2_000).unref?.();
+    // Every frame is already out: `send` writes synchronously.
+    process.exit(terminated ? CLOSE_EXIT_CODE : code);
   };
 
   // The same last two arguments as this process, so a processor reading its
@@ -150,6 +161,16 @@ function serve(linePrefix: string): void {
     // reports every processor failure itself.
     exit(1);
   };
+  // The processor's thread ended on its own — a processor that calls
+  // `process.exit(n)` ends only the thread it runs on — so the process ends
+  // with its code, as a `child-process` attempt's would: a result already
+  // written stands, and none written reads as a child that exited before
+  // reporting, whatever the code (0 included). An exit the runtime asked for
+  // has already been handled, and this is then a no-op.
+  runtime.addEventListener("close", (event) => {
+    const code = (event as Event & { code?: unknown }).code;
+    exit(typeof code === "number" ? code : 1);
+  });
 
   const toRuntime = (message: ParentToChild): void => {
     if (message?.t === "start") {

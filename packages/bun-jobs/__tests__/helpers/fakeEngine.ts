@@ -50,6 +50,12 @@ export interface FakeEngineConfig {
   exitDelayMs?: number;
   /** How long `kill` and `rm` take to return after doing their work, in ms. */
   commandExitDelayMs?: number;
+  /** How long a container whose process ended stays listed before it is destroyed, in ms. */
+  destroyDelayMs?: number;
+  /** How long `kill` and `rm` wait before acting, in ms. */
+  killDelayMs?: number;
+  /** What `inspect` prints for a missing label; Docker prints `<no value>`. */
+  missingLabelText?: string;
 }
 
 /** One recorded CLI call. */

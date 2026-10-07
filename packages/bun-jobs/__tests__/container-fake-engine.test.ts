@@ -16,6 +16,7 @@ import {
   IsolationUnavailableError,
   MemoryDriver,
 } from "../lib/index";
+import { ContainerEngine } from "../lib/queue/container/engine";
 import {
   ContainerExecutor,
   containerMarkers,
@@ -24,6 +25,7 @@ import {
   CONTAINER_BOOTSTRAP,
   resolveContainerTarget,
 } from "../lib/queue/container/target";
+import { FrameDecoder } from "../lib/runner/bootstrap/container-frames";
 import { testNamespace, waitFor } from "./helpers";
 import { installFakeEngine } from "./helpers/fakeEngine";
 
@@ -429,6 +431,47 @@ describe("a container attempt, end to end", () => {
     expect(lines.every((line) => line === "x")).toBe(true);
   }, 60_000);
 
+  it("settles a job whose log write never returns, within closeTimeout, with one warning", async () => {
+    engine();
+    const driver = new MemoryDriver();
+    // A store that takes the write and never answers.
+    driver.addJobLog = async () => await new Promise<number>(() => {});
+    const { logger, events } = createTestLogger();
+    const namespace = testNamespace("i1");
+    const queue = new BunQueue("boxed", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    const worker = new BunQueueWorker("boxed", fixture("partial-write"), {
+      namespace,
+      driver,
+      key: `i1test-${namespace}`,
+      logger,
+      pollInterval: 5,
+      target: { kind: "container", image: "fake/bun:1", closeTimeout: 1000 },
+    });
+    cleanups.push(
+      () => queue.close(),
+      () => worker.close({ force: true }),
+    );
+    void worker.run();
+    const job = await queue.add(
+      "p",
+      {},
+      { removeOnComplete: false, attempts: 1 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect(stored.returnValue).toBe("ok");
+    const warned = events.filter((event) =>
+      String(event.message).includes(
+        "was still being written to the job's log",
+      ),
+    );
+    expect(warned).toHaveLength(1);
+  }, 30_000);
+
   it("retries an ordinary failure, rebuilt from the container", async () => {
     engine();
     const { queue, worker } = setup("fail");
@@ -555,6 +598,18 @@ describe("the start-up probe fails fast, never degrades", () => {
   }, 30_000);
 });
 
+describe("the engine's CLI", () => {
+  it("reads at most 1 MiB of a command's output, and drains the rest", async () => {
+    engine();
+    const result = await new ContainerEngine({
+      cli: "docker",
+      host: undefined,
+    }).exec(["flood", String(3 * 1024 * 1024)]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.length).toBe(1024 * 1024);
+  }, 30_000);
+});
+
 describe("the orphan sweep", () => {
   it("removes this key's old containers whose worker is not live, and nothing else", async () => {
     const fake = engine();
@@ -626,6 +681,30 @@ describe("the orphan sweep", () => {
       "unlabelled",
       "young",
     ]);
+  }, 30_000);
+
+  it("keeps a container whose missing worker id the engine prints as <no value>", async () => {
+    // As Docker's own template prints a label a container lacks.
+    const fake = engine({ missingLabelText: "<no value>" });
+    const { queue, worker, namespace } = setup(
+      "echo",
+      {},
+      { key: "i1test-novalue" },
+    );
+    fake.addContainer({
+      name: "no-worker-id",
+      labels: {
+        "bun-jobs.worker-key": "i1test-novalue",
+        "bun-jobs.namespace": namespace,
+        "bun-jobs.queue": "boxed",
+      },
+      created: Date.now() - 10 * 60_000,
+    });
+    void worker.run();
+    await waitFor(async () => (await queue.listWorkers()).length === 1, {
+      timeout: 10_000,
+    });
+    expect(fake.containers()).toEqual(["no-worker-id"]);
   }, 30_000);
 
   it("keeps the containers of a worker that is live", async () => {
@@ -989,7 +1068,16 @@ describe("stopping an attempt", () => {
     await handle.exited;
   }, 60_000);
 
-  it("reads a channel message that starts in the middle of a line", async () => {
+  it("keeps a line that starts with the prefix but is no frame as output, whole", async () => {
+    engine();
+    const { handle, output } = start(executor("print-prefix"));
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "success", result: "ok" });
+    expect(output.some((line) => line.includes(" is my argv: "))).toBe(true);
+    await handle.exited;
+  }, 30_000);
+
+  it("keeps a line with the prefix in it as the processor's output, not a message", async () => {
     engine();
     const logs: string[] = [];
     const container = executor("forge-midline");
@@ -1006,10 +1094,68 @@ describe("stopping an attempt", () => {
     });
     const outcome = await handle.done;
     expect(outcome.status).toBe("success");
-    expect(logs).toContain("forged-midline");
-    expect(output).toContain("50%");
-    expect(output.join("\n")).not.toContain("forged-midline");
+    // Not read as a message, and not lost: the whole line is output.
+    expect(logs).not.toContain("forged-midline");
+    expect(
+      output.some(
+        (line) => line.startsWith("50%") && line.includes("forged-midline"),
+      ),
+    ).toBe(true);
     await handle.exited;
+  }, 30_000);
+
+  it.each([
+    ["exit3", 3],
+    ["exit0", 0],
+  ])(
+    "ends a run whose processor calls process.exit (%s) as a child that exited before reporting",
+    async (processor, code) => {
+      engine();
+      const started = performance.now();
+      const { handle } = start(executor(processor, { closeTimeout: 30_000 }));
+      const outcome = await handle.done;
+      expect(outcome.status).toBe("failed");
+      expect(outcome.error?.name).toBe("ChildExitError");
+      expect(outcome.exitCode).toBe(code);
+      // Not a hang ended by some timeout: closeTimeout is 30 s.
+      expect(performance.now() - started).toBeLessThan(15_000);
+      await handle.exited;
+    },
+    30_000,
+  );
+
+  it("fails a run whose processor throws while it is imported, with its error", async () => {
+    engine();
+    const started = performance.now();
+    const { handle } = start(
+      executor("throw-import", { closeTimeout: 30_000 }),
+    );
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.message).toBe("boom at import");
+    expect(performance.now() - started).toBeLessThan(15_000);
+    await handle.exited;
+  }, 30_000);
+
+  it("reports killed with exit 0 when the processor finished before a forced kill took", async () => {
+    // The kill waits 2 s before acting; the processor ends in 0.4 s.
+    engine({ killDelayMs: 2000 });
+    const dir = markers();
+    const container = executor(
+      "slow-ok",
+      { closeTimeout: 30_000 },
+      { MARKER_DIR: dir },
+    );
+    const { handle } = start(container);
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 15_000 });
+    handle.stop("close", { force: true });
+    const outcome = await handle.done;
+    // The stop decided the attempt; the container still exited cleanly.
+    expect(outcome.status).toBe("killed");
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.signal).toBeNull();
+    await handle.exited;
+    await Promise.all(container.removals);
   }, 30_000);
 
   it("ends a run whose processor sends itself SIGTERM, rather than hanging", async () => {
@@ -1077,6 +1223,54 @@ describe("stopping an attempt", () => {
   }, 30_000);
 });
 
+describe("a forced worker close", () => {
+  /** A worker whose one attempt spins, started, with its logger's events. */
+  async function spinning(config: FakeEngineConfig) {
+    const fake = engine(config);
+    const dir = markers();
+    const { logger, events } = createTestLogger();
+    const { queue, worker } = setup(
+      "spin",
+      { env: { MARKER_DIR: dir } },
+      { logger },
+    );
+    void worker.run();
+    await queue.add("s", {}, { attempts: 1 });
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 15_000 });
+    return { fake, worker, events };
+  }
+
+  it("resolves only once its killed container is gone, when that takes over a second", async () => {
+    const { fake, worker, events } = await spinning({ destroyDelayMs: 1500 });
+    await worker.close({ force: true });
+    // Gone when close() resolved, not 1.5 s later.
+    expect(fake.containers()).toEqual([]);
+    expect(
+      events.some((event) =>
+        String(event.message).includes("had not been removed"),
+      ),
+    ).toBe(false);
+  }, 30_000);
+
+  it("warns, once, about a container still there after the container reap", async () => {
+    const { fake, worker, events } = await spinning({ destroyDelayMs: 6000 });
+    const started = performance.now();
+    await worker.close({ force: true });
+    const took = performance.now() - started;
+    // Waited the container reap (3 s), not the destroy (6 s).
+    expect(took).toBeGreaterThan(2500);
+    expect(took).toBeLessThan(5500);
+    expect(fake.containers()).toHaveLength(1);
+    const warned = events.filter((event) =>
+      String(event.message).includes(
+        "had not been removed 3000 ms after being killed",
+      ),
+    );
+    expect(warned).toHaveLength(1);
+    await waitFor(() => fake.containers().length === 0, { timeout: 15_000 });
+  }, 40_000);
+});
+
 describe("the channel's bounds", () => {
   it("fails an oversize result for good, with no retry", async () => {
     engine();
@@ -1093,6 +1287,32 @@ describe("the channel's bounds", () => {
     expect(stored.failedReason?.message).toContain(
       "over its limit of 16777216",
     );
+  }, 60_000);
+
+  it("keeps a large result whole while the processor's own output races it", async () => {
+    engine();
+    const { queue, worker } = setup("noisy-big-result", {
+      maxLogBytes: 64 * 1024,
+    });
+    void worker.run();
+    for (const bytes of [128 * 1024, 512 * 1024, 2 * 1024 * 1024]) {
+      const job = await queue.add(
+        "n",
+        { bytes },
+        { removeOnComplete: false, attempts: 1 },
+      );
+      const stored = await settled(queue, job.id);
+      expect({
+        bytes,
+        state: stored.state,
+        error: stored.failedReason?.message,
+      }).toEqual({
+        bytes,
+        state: "completed",
+        error: undefined,
+      });
+      expect((stored.returnValue as string).length).toBe(bytes);
+    }
   }, 60_000);
 
   it("keeps a result under the limit whole", async () => {
@@ -1178,12 +1398,12 @@ describe("the container entry", () => {
     });
     const reader = proc.stdout.getReader();
     const { value } = await reader.read();
-    // Every channel line starts on a line of its own: after a newline.
+    // Every frame starts on a line of its own: after a newline.
     const text = new TextDecoder().decode(value);
     expect(text.startsWith("\n")).toBe(true);
     const line = text.split("\n").find((part) => part.length > 0)!;
     expect(line.startsWith(`${prefix} `)).toBe(true);
-    expect(JSON.parse(line.slice(33))).toMatchObject({
+    expect(messages(text, prefix)[0]).toMatchObject({
       t: "ready",
       protocol: 1,
     });
@@ -1239,12 +1459,15 @@ describe("the container entry", () => {
     stdout: string,
     prefix: string,
   ): { t: string; error?: { name?: string } }[] {
-    return stdout
-      .split("\n")
-      .filter((line) => line.startsWith(`${prefix} `))
-      .map(
-        (line) => JSON.parse(line.slice(prefix.length + 1)) as { t: string },
-      );
+    const decoder = new FrameDecoder(prefix, 16 * 1024 * 1024);
+    const out: { t: string; error?: { name?: string } }[] = [];
+    for (const line of stdout.split("\n")) {
+      const read = decoder.push(line);
+      if (read && "message" in read) {
+        out.push(JSON.parse(read.message) as { t: string });
+      }
+    }
+    return out;
   }
 
   it("closes a started run when its stdin ends, as a worker that died would leave it", async () => {

@@ -3065,7 +3065,7 @@ typed options alone; there is no raw-argument option.
 
 **Refused with a `ConfigError`**, with no escape hatch: privileged mode, added
 capabilities and devices, the host's network, PID, IPC or UTS namespace, a
-mount of a socket, of a directory with a socket directly in it, of `/`,
+mount of a socket or of a directory holding one at any depth, of `/`,
 `/proc`, `/sys`, `/dev`, `/etc`, `/run` or `/var/run`, of where an engine
 keeps its sockets or data — the target's `engine.host` and the CLI's
 `DOCKER_HOST`/`CONTAINER_HOST`, `~/.docker`, `~/.colima`, `~/.lima`, `~/.rd`,
@@ -3073,10 +3073,16 @@ keeps its sockets or data — the target's `engine.host` and the CLI's
 `$XDG_RUNTIME_DIR/docker.sock` and `podman`, `/var/lib/docker`,
 `/var/lib/containerd`, `/var/lib/containers`, `/var/snap/docker` — or of any
 directory holding one of those, each compared after resolving symlinks (a
-read-only bind does not stop a `connect()` to a socket; a socket deeper in a
-mounted tree is reachable only to a user its permissions let in), `seccomp` or
+read-only bind does not stop a `connect()` to a socket), `seccomp` or
 `apparmor` `"unconfined"`, unlimited memory, pids or tmpfs, an env variable
 without a value, and uid 0 or gid 0 unless `allowRoot`.
+
+The socket check walks each mount when `worker.run()` starts, before the
+probe: up to 250,000 entries across the mounts and 32 levels deep, without
+following symlinks (one can only reach what is mounted). A tree past either
+bound is refused as too large to check, never passed unchecked: mount a
+narrower directory. A directory this process cannot list is skipped, so
+mount only what it can read.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -3115,19 +3121,30 @@ the container in the snap daemon's own profile — broader than
 `docker-default`. Snap Docker also cannot read `/tmp`, so mount only paths
 under `$HOME` or `/srv`. A non-snap engine has neither problem.
 
-**The channel** is the container's stdin and stdout, one JSON message a
-line. Each message the runner writes starts with a random prefix generated
-for that container, on a line of its own, and the worker finds the prefix
-wherever it starts — so output the processor leaves without a newline
-(`process.stdout.write("working...")`) cannot swallow the next message.
-Anything the processor prints — which has no prefix — becomes a **job log
-line** instead of corrupting the channel, and so does its stderr, up to
-`maxLogBytes`. Those lines are written one write at a time per attempt: the
-lines that arrive while a write is in flight are joined into the next log
-entry, so a chatty processor costs the store a few writes, not one per line. Every message is bounded: one over 16 MiB (a
-result too big, say) fails the attempt with an `UnrecoverableJobError`, with
-no retry, rather than being cut. Store big outputs elsewhere and return a
-key.
+**The channel** is the container's stdin and stdout. The worker writes one
+JSON message a line to stdin. The runner cuts each of its messages into
+**frames** of at most 4096 bytes — the most a pipe keeps whole in one write —
+each written in one write, on a line of its own, starting with a random
+prefix generated for that container: `<prefix> <id> <index> <count> <part>`.
+So nothing that shares stdout with the runner can land inside one: not the
+processor's `console.log` on its timer while a 2 MiB result goes out, not
+output it left without a newline (`process.stdout.write("working...")`), not
+a subprocess that inherited stdout. Every other line — one that merely
+contains the prefix included, such as the processor printing its own argv —
+is the processor's output, and becomes a **job log line**, as its stderr
+does, up to `maxLogBytes`. Those lines are written one write at a time per
+attempt: the lines that arrive while a write is in flight are joined into the
+next log entry, so a chatty processor costs the store a few writes, not one
+per line, and a batch is never written twice. When the attempt ends, its
+output gets up to `closeTimeout` to be written; a store that never answers
+leaves the rest unwritten, with one warning. Every message is bounded: one
+over 16 MiB (a result too big, say) fails the attempt with an
+`UnrecoverableJobError`, with no retry, rather than being cut. Store big
+outputs elsewhere and return a key.
+
+A processor that calls `process.exit(n)` ends the attempt the way a
+`child-process` one does: with its code, and, without a result, as a
+`ChildExitError` — exit 0 included.
 
 **Stopping.** A timeout, a lost lock or a close sends `close` on the channel;
 after `closeTimeout` the container is killed (`docker kill`, then
@@ -3136,7 +3153,10 @@ it). A close that lands before the container has started is honoured as
 `child-process` honours one: the processor is never imported. A killed
 attempt reports exit code 137; a runner that stopped itself, 143; an attempt
 whose result had already arrived reports that result, whatever stopped it
-afterwards. A forced close kills at once, with no `close` first. A
+afterwards. The reverse race is also told as it happened: a stop that lands
+before the result decides the attempt (`killed`), and if the processor still
+finished and its container exited cleanly before the kill took, the exit
+code reported is that clean 0 — killed, though the processor ran to the end. A forced close kills at once, with no `close` first. A
 `docker stop` from outside is handled as a close: the runner inside asks the
 processor to stop, the attempt fails with `RunKilledError`, and the container
 exits 143 by `closeTimeout` at the latest; a processor that sends itself

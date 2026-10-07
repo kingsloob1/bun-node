@@ -2132,7 +2132,7 @@ export class BunQueueWorker<
     try {
       return await Promise.race([
         closing.then(() => "closed" as const),
-        sleep(DEFAULT_CLOSE_TIMEOUT, {
+        sleep(this.#targetCloseBound(), {
           unref: true,
           signal: bound.signal,
         }).then(
@@ -2156,11 +2156,23 @@ export class BunQueueWorker<
     outcome: "closed" | "timeout" | "escalated",
   ): void {
     if (outcome === "timeout") {
+      const timeout = this.#targetCloseBound();
       this.#logger.warn(
-        `Target "${name}" did not close within ${DEFAULT_CLOSE_TIMEOUT}ms; closing without it`,
-        { target: name, timeout: DEFAULT_CLOSE_TIMEOUT },
+        `Target "${name}" did not close within ${timeout}ms; closing without it`,
+        { target: name, timeout },
       );
     }
+  }
+
+  /**
+   * The worker's bound on its target's `close()`: `DEFAULT_CLOSE_TIMEOUT`,
+   * or a built-in target's own (a container target waits longer for its
+   * killed containers to be gone, and is given that much more).
+   */
+  #targetCloseBound(): number {
+    return this.#target instanceof FileTargetExecutor
+      ? this.#target.closeBound
+      : DEFAULT_CLOSE_TIMEOUT;
   }
 
   /**

@@ -38,10 +38,29 @@ export class AttemptLogWriter {
     });
   }
 
-  /** Resolves once every line pushed so far has been written. Never rejects. */
-  async drain(): Promise<void> {
-    while (this.#pumping) {
-      await this.#pumping;
+  /**
+   * Resolves `true` once every line pushed so far has been written, or
+   * `false` when `timeoutMs` ran out first: a store that never answers a
+   * write must not hold the attempt open for ever. Never rejects. Lines still
+   * queued then are written if the store comes back, after the attempt.
+   */
+  async drain(timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ranOut = new Promise<false>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs, false);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          while (this.#pumping) {
+            await this.#pumping;
+          }
+          return true as const;
+        })(),
+        ranOut,
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

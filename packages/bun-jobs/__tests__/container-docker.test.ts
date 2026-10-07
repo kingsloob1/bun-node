@@ -472,6 +472,80 @@ describe.skipIf(skipReason !== undefined)(
       }
     }, 120_000);
 
+    it("fails a run whose processor calls process.exit, with its code, rather than hanging", async () => {
+      for (const [processor, code] of [
+        ["exit3", 3],
+        ["exit0", 0],
+      ] as const) {
+        const { queue, worker } = setup(processor);
+        void worker.run();
+        const started = performance.now();
+        const job = await queue.add("x", {}, { attempts: 1, timeout: 120_000 });
+        const stored = await settled(queue, job.id);
+        expect({ processor, state: stored.state }).toEqual({
+          processor,
+          state: "dead",
+        });
+        expect(stored.failedReason?.name).toBe("ChildExitError");
+        expect(stored.failedReason?.message).toContain(`code ${code}`);
+        expect(performance.now() - started).toBeLessThan(30_000);
+      }
+    }, 120_000);
+
+    it("keeps a large result whole while the processor's own output races it", async () => {
+      const { queue, worker } = setup("noisy-big-result", {
+        maxLogBytes: 64 * 1024,
+        limits: { memory: "512m" },
+      });
+      void worker.run();
+      for (const bytes of [128 * 1024, 512 * 1024, 2 * 1024 * 1024]) {
+        const job = await queue.add(
+          "n",
+          { bytes },
+          {
+            removeOnComplete: false,
+            attempts: 1,
+          },
+        );
+        const stored = await settled(queue, job.id);
+        expect({
+          bytes,
+          state: stored.state,
+          error: stored.failedReason?.message,
+        }).toEqual({
+          bytes,
+          state: "completed",
+          error: undefined,
+        });
+        expect((stored.returnValue as string).length).toBe(bytes);
+      }
+    }, 120_000);
+
+    it("reaps orphaned processes (the fixed --init): no zombies left behind", async () => {
+      const { queue, worker } = setup("zombies");
+      void worker.run();
+      const job = await queue.add(
+        "z",
+        {},
+        { removeOnComplete: false, attempts: 1 },
+      );
+      const stored = await settled(queue, job.id);
+      expect(stored.state).toBe("completed");
+      // Bun as PID 1 left all ten (measured); an init reaps them.
+      expect(stored.returnValue).toBe(0);
+    }, 120_000);
+
+    it("fails a run whose processor throws while it is imported, at once", async () => {
+      const { queue, worker } = setup("throw-import");
+      void worker.run();
+      const started = performance.now();
+      const job = await queue.add("t", {}, { attempts: 1, timeout: 120_000 });
+      const stored = await settled(queue, job.id);
+      expect(stored.state).toBe("dead");
+      expect(stored.failedReason?.message).toBe("boom at import");
+      expect(performance.now() - started).toBeLessThan(30_000);
+    }, 120_000);
+
     it("ends a run whose processor sends itself SIGTERM, rather than hanging", async () => {
       const { queue, worker } = setup("sigterm-self");
       void worker.run();
