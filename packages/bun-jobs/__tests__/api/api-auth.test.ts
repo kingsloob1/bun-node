@@ -96,6 +96,7 @@ describe("route-level authorization", () => {
     setQueueLimits: { concurrency: 2 },
     retryAllJobs: { state: "dead" },
     addJob: { name: "send", data: {} },
+    addFlow: { name: "send", data: {} },
     updateJob: { priority: 1 },
     failJob: { reason: "stopped by hand" },
     rescheduleRunner: { schedule: null },
@@ -258,7 +259,7 @@ describe("route-level authorization", () => {
     expect(byDefault).not.toContain("updateJob");
     expect(
       ids((await setup({ actions: ["jobs.add", "meta.read"] })).api.routes),
-    ).toEqual(["getMeta", "getPermissions", "addJob", "addTest"]);
+    ).toEqual(["getMeta", "getPermissions", "addJob", "addFlow", "addTest"]);
   });
 
   it("runs middleware before authorize, mapping a thrown { status: 401 }", async () => {

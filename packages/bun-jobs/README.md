@@ -5021,6 +5021,28 @@ createJobsApi({ ...options, actions: [...JOBS_API_ACTIONS] }); // everything
 `jobs.definitions()`). The queue it names need not exist yet: the first job
 added creates it, as `BunQueue.add` does. With `queues` set to a list, a
 queue outside the list is still 404 `QUEUE_NOT_FOUND`.
+
+`POST /queues/:queue/flows` is [`addFlow`](#flows) over HTTP, under the same
+action and the same `addableNames`: a job (`name`, `data`, `opts`) and the
+jobs it waits on (`children`, to any depth), each going in its own `queue` or
+its parent's, the top one in the path's. Each takes the options
+`POST /queues/:queue/jobs` accepts, plus `ignoreFailure` on a child.
+`authorize` is asked about `jobs.add` once for every queue the flow writes
+to, and a refusal for any of them is 403 with the queue in `context.queue`.
+Everything is checked before anything is written. At most 100 jobs, nested
+at most 10 levels (`limits.maxFlowNodes`, `limits.maxFlowDepth`), no
+`ignoreFailure` on the top job, a `jobId` bun-jobs accepts, and no `queue:id`
+twice: each refusal is 400 `VALIDATION` whose issues give the path into the
+body, such as `children.1.children.0.opts.jobId` (both paths, for a repeated
+id). Only a body that passes those has its names checked: the first job, in
+body order, whose name is not addable is 403 `NAME_NOT_ADDABLE`, as for a
+single job, with `context` `{ name, queue, path }` — `path` being that job's
+name, such as `children.1.name`. It answers 201 with `{ added, job, children }`
+for every job, in body order, or 200 when the top `jobId` already existed,
+which is returned with nothing added below it. `features.addFlow` says whether
+the backend can add flows; like every flag it ignores `actions` and
+`readOnly`.
+
 `GET /meta/permissions` evaluates the whole table for the caller, so a UI can
 hide what it may not do. Its `actions` is typed
 `Partial<Record<JobsApiAction, boolean>>`: an action whose routes are pruned
@@ -5091,7 +5113,7 @@ needs a `jobs` source without one. A pruned route answers the API's JSON 404,
 never a 405.
 
 `/meta` reports what the backend supports and this API serves
-(`features.logs`, `update`, `limits`, `flows`, `search`, `workers`,
+(`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
 `providers`, and `analytics` beside `features` for what the analytics routes
 can serve), so
@@ -5165,6 +5187,7 @@ driver support is present. Paths are relative to `basePath`.
 | POST | `/queues/:queue/jobs/promote` | `jobs.promote` | yes |
 | POST | `/queues/:queue/jobs/retry-all` | `jobs.retryAll` | yes |
 | POST | `/queues/:queue/jobs` | `jobs.add` | yes |
+| POST | `/queues/:queue/flows` | `jobs.add` | yes |
 | GET | `/queues/:queue/repeatables` | `repeatables.list` | no |
 | DELETE | `/queues/:queue/repeatables/:key` | `repeatables.remove` | yes |
 | POST | `/queues/:queue/repeatables/:key/disable` | `repeatables.disable` | yes |
@@ -6020,11 +6043,13 @@ The socket has its own (`websocket`): `maxConnections` `1000`,
 
 `GET /meta` reports every cap above except `queueCacheMs` as `limits`, read
 from the very values the routes enforce, so a client can size pages and bulk
-selections without meeting a 400. Two more are reported there though they are
-not options: `defaultClean`, the `limit` a `clean` uses when none is given
-(`min(1000, maxClean)`), and `maxRetryAllIds`, the most ids a `retry-all`
-answers with (`1000`; past it `ids` holds the first `1000` and `truncated` is
-`true`).
+selections without meeting a 400. Four more are reported there though they
+are not options: `defaultClean`, the `limit` a `clean` uses when none is given
+(`min(1000, maxClean)`); `maxRetryAllIds`, the most ids a `retry-all` answers
+with (`1000`; past it `ids` holds the first `1000` and `truncated` is
+`true`); and `maxFlowNodes` and `maxFlowDepth`, the most jobs a
+`POST /queues/:queue/flows` body may hold (`100`, the top job included) and
+the most levels it may nest (`10`, the top job being level 1).
 
 ### Writing a client
 
@@ -6034,9 +6059,10 @@ answers with (`1000`; past it `ids` holds the first `1000` and `truncated` is
   (lower case, or `null`), and whether every `POST` must be sent as
   `Content-Type: application/json` *even with no body*;
 - `limits` — the caps above;
-- `addableNames` — the names `POST /queues/:queue/jobs` accepts right now:
-  `null` for any name, `[]` when adding is not routed, else the list (by
-  default, the names of `jobs.definitions()`);
+- `addableNames` — the names `POST /queues/:queue/jobs` (and every job of
+  `POST /queues/:queue/flows`) accepts right now: `null` for any name, `[]`
+  when adding is not routed, else the list (by default, the names of
+  `jobs.definitions()`);
 - `runnerTriggerArgs` — whether a trigger may carry `args`;
 - `analytics` — what the [analytics routes](#analytics-routes) can serve, or
   `null` when the backend records none;
@@ -6109,6 +6135,7 @@ cannot" from "you may not":
 | `update` | `PATCH /jobs/:id` | `updateJob` |
 | `limits` | `/queues/:queue/limits` | queue state |
 | `flows` | `/jobs/:id/children` | `recordChild` |
+| `addFlow` | `POST /queues/:queue/flows` (its action, `jobs.add`, is off by default) | `recordChild`, `requeueParent` and `markChildRecorded` |
 | `search` | `?search=` on job lists | `findJobs` |
 | `workers` | `/workers`, `/queues/:queue/workers`, `/queues/:queue/workers/:worker` | worker records |
 | `workerControl` | `/queues/:queue/workers/:worker/pause`, `resume`, `stop` and `start`; `/queues/:queue/worker-configs` and `/queues/:queue/worker-configs/:key` | worker records and queue state (`getQueueState`, `setQueueState`, `listQueueState`) |

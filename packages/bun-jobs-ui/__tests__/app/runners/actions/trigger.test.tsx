@@ -135,6 +135,8 @@ describe("trigger", () => {
           maxHistory: 200,
           maxJobDataBytes: 10,
           maxQueues: 500,
+          maxFlowNodes: 100,
+          maxFlowDepth: 10,
         },
       },
     });

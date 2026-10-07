@@ -19,7 +19,12 @@ import { decide, denialError } from "../auth";
 import { JOBS_API_ACTIONS } from "../config";
 import { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
 import { builtInRoutes } from "../createJobsApi";
-import { RETRY_ALL_MAX_IDS } from "../schemas/jobs";
+import {
+  FLOW_ADD_METHODS,
+  MAX_FLOW_DEPTH,
+  MAX_FLOW_NODES,
+  RETRY_ALL_MAX_IDS,
+} from "../schemas/jobs";
 import {
   MetaSchema,
   PermissionsQuerySchema,
@@ -64,6 +69,9 @@ export const DRIVER_FEATURES = {
   update: ["updateJob"],
   limits: ["getQueueState", "setQueueState"],
   flows: ["recordChild"],
+  // Exactly what `BunQueue.addFlow` requires before it writes anything, and
+  // what the route `requires`.
+  addFlow: FLOW_ADD_METHODS,
   search: ["findJobs"],
   workers: ["listWorkers"],
   workerControl: ["getQueueState", "setQueueState", "listQueueState"],
@@ -187,6 +195,10 @@ export const FEATURE_ROUTES = {
   update: ["updateJob"],
   limits: ["getQueueLimits", "setQueueLimits"],
   flows: ["getJobChildren"],
+  // Its action is opt-in, which a flag deliberately ignores, as for
+  // `providers`: the route `requires` `DRIVER_FEATURES.addFlow`, so only the
+  // driver and the mode turn the flag off.
+  addFlow: ["addFlow"],
   search: ["listJobs"],
   workers: ["listQueueWorkers", "listWorkers", "getWorker"],
   workerControl: [
@@ -380,6 +392,8 @@ export function limitsOf(
     maxJobDataBytes: limits.maxJobDataBytes,
     maxQueues: limits.maxQueues,
     maxApplyDefaults: limits.maxApplyDefaults,
+    maxFlowNodes: MAX_FLOW_NODES,
+    maxFlowDepth: MAX_FLOW_DEPTH,
   };
 }
 

@@ -448,7 +448,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  78 + addedByState,
+  79 + addedByState,
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
@@ -520,7 +520,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 62 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 63 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -634,8 +634,9 @@ checkEqual(
     "runners.configure",
   ],
 );
-/** The fourteen routes those nine actions authorize. */
+/** The fifteen routes those nine actions authorize. */
 const OPT_IN_ROUTES = [
+  "addFlow",
   "addJob",
   "updateJob",
   "setJobDefaults",
@@ -652,7 +653,7 @@ const OPT_IN_ROUTES = [
   "resetRunnerConfig",
 ];
 check(
-  "so none of their fourteen routes is registered",
+  "so none of their fifteen routes is registered",
   OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
   idsOf(byDefault.api),
 );
@@ -667,7 +668,7 @@ const narrow = mount({ actions: ["meta.read", "jobs.add"] });
 checkEqual(
   "an allow-list registers exactly its actions",
   idsOf(narrow.api).sort(),
-  ["addJob", "getMeta", "getPermissions"],
+  ["addFlow", "addJob", "getMeta", "getPermissions"],
 );
 checkEqual(
   "a route outside the list is a 404",
@@ -679,16 +680,16 @@ checkEqual(
 // is the default plus them.
 const onlyOptIns = mount({ actions: ["jobs.add", "jobs.update"] });
 checkEqual(
-  "actions: [jobs.add, jobs.update] alone is those two routes and nothing else",
+  "actions: [jobs.add, jobs.update] alone is their three routes and nothing else",
   [
     idsOf(onlyOptIns.api).sort(),
     (await onlyOptIns.call("GET", "/meta")).status,
   ],
-  [["addJob", "updateJob"], 404],
+  [["addFlow", "addJob", "updateJob"], 404],
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and all fourteen opt-in routes",
+  "while [...JOBS_API_ACTIONS] is the default and all fifteen opt-in routes",
   idsOf(everything.api)
     .filter((id) => !idsOf(byDefault.api).includes(id))
     .sort(),
@@ -1979,9 +1980,11 @@ checkEqual(
 // limits: every cap the routes enforce, read from the same values. Two are
 // derived rather than configured: `defaultClean` is the `limit` a clean uses
 // when none is given, min(1000, maxClean); `maxRetryAllIds` is how many ids a
-// `retry-all` answers with before it reports `truncated`, fixed at 1000.
+// `retry-all` answers with before it reports `truncated`, fixed at 1000. Two
+// more are fixed and not configurable: a flow added through the API holds at
+// most `maxFlowNodes` (100) jobs, nested at most `maxFlowDepth` (10) deep.
 checkEqual(
-  "limits: each configured cap, the defaults for the rest, and the two derived",
+  "limits: each configured cap, the defaults for the rest, the two derived and the two fixed",
   (await limited.call("GET", "/meta")).body.limits,
   {
     defaultPageSize: 2,
@@ -1996,6 +1999,8 @@ checkEqual(
     maxJobDataBytes: 64,
     maxQueues: 1,
     maxApplyDefaults: DEFAULT_JOBS_API_LIMITS.maxApplyDefaults,
+    maxFlowNodes: 100,
+    maxFlowDepth: 10,
   },
 );
 checkEqual(

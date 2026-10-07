@@ -2,7 +2,7 @@ import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import type { JsonSchema } from "../../lib/api/schema/validate";
 import { BunRouter, validate, ValidationError } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
-import { s, toJsonSchema } from "../../lib/api/schema/builder";
+import { recursiveSchema, s, toJsonSchema } from "../../lib/api/schema/builder";
 import {
   coerceArray,
   coerceBoolean,
@@ -108,6 +108,61 @@ describe("schema builder", () => {
       /both named "Item"/,
     );
     expect(() => s.named("bad name", s.string())).toThrow(/may only contain/);
+  });
+
+  it("builds a schema that holds itself: validated to any depth, emitted as a self-referencing component", () => {
+    /** A tree node, as the schema validates it. */
+    interface Node {
+      /** The node's label. */
+      label: string;
+      /** Nodes below it. */
+      children?: Node[];
+    }
+    const Leaf = s.named("Leaf", s.object({ id: s.string() }));
+    const Tree = recursiveSchema<Node & { leaf?: { id: string } }>(
+      "Tree",
+      (self) =>
+        s.object({
+          label: s.string({ minLength: 1 }),
+          leaf: s.optional(Leaf),
+          children: s.optional(s.array(self)),
+        }),
+    );
+
+    // The cycle is in the node itself, so validation follows it as deep as
+    // the value goes, with paths the whole way down.
+    expect(Tree.json.properties!.children!.items).toBe(Tree.json);
+    expect(Object.isFrozen(Tree.json)).toBe(true);
+    const tree = {
+      label: "a",
+      children: [{ label: "b" }, { label: "c", children: [{ label: "d" }] }],
+    };
+    expect(valueOf(run(Tree, tree))).toEqual(tree);
+    expect(
+      issuesOf(
+        run(Tree, {
+          label: "a",
+          children: [{ label: "b" }, { label: "c", children: [{ label: "" }] }],
+        }),
+      ),
+    ).toEqual(["children.1.children.0.label: Expected at least 1 characters"]);
+
+    // Emitted once, referencing itself; a named schema inside keeps its name.
+    const components = new Map<string, JsonSchema>();
+    expect(toJsonSchema(Tree, { components })).toEqual({
+      $ref: "#/components/schemas/Tree",
+    });
+    expect([...components.keys()].sort()).toEqual(["Leaf", "Tree"]);
+    const emitted = components.get("Tree")!;
+    expect(emitted.properties!.children!.items).toEqual({
+      $ref: "#/components/schemas/Tree",
+    });
+    expect(emitted.properties!.leaf).toEqual({
+      $ref: "#/components/schemas/Leaf",
+    });
+    expect(() => recursiveSchema("bad name", () => s.string())).toThrow(
+      /may only contain/,
+    );
   });
 
   it("refuses patterns it cannot express, and unusable bounds", () => {

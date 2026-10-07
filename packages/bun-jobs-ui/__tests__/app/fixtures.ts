@@ -76,6 +76,9 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       update: true,
       limits: true,
       flows: true,
+      // A backend capability, like `flows`: whether adding is enabled is
+      // `addableNames` below (`[]`, so nothing can be added).
+      addFlow: true,
       search: true,
       workers: true,
       workerControl: true,
@@ -142,6 +145,8 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       maxHistory: 200,
       maxJobDataBytes: 1048576,
       maxQueues: 500,
+      maxFlowNodes: 100,
+      maxFlowDepth: 10,
     },
     addableNames: [],
     runnerTriggerArgs: false,

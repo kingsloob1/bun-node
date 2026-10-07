@@ -267,3 +267,68 @@
   gap: var(--space-1) var(--space-2);
   overflow-wrap: anywhere;
 }
+
+/* The add-flow dialog: the tree of jobs, each a fieldset, children indented. */
+.flow-count {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.flow-tree {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-children {
+  margin-top: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--border);
+}
+
+.flow-node {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.flow-node > legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+
+.flow-node[data-refused] {
+  border-color: var(--danger);
+}
+
+.flow-node-queue > p {
+  margin: 0;
+}
+
+.flow-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.flow-node-blocked {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.flow-result {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.flow-result > p,
+.flow-result-list {
+  margin: 0;
+}

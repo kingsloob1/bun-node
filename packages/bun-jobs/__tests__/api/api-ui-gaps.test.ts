@@ -195,6 +195,8 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
       maxJobDataBytes: 1_048_576,
       maxQueues: 500,
       maxApplyDefaults: 1000,
+      maxFlowNodes: 100,
+      maxFlowDepth: 10,
     });
   });
 
@@ -204,12 +206,14 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
       addableNames: "any",
     });
     const reported = (await meta(h)).limits;
-    // Two are not options: the clean default follows maxClean, and the id cap
-    // of a retry-all's answer is fixed.
+    // Four are not options: the clean default follows maxClean, and the id
+    // cap of a retry-all's answer and a flow's two bounds are fixed.
     expect(reported).toEqual({
       ...limits,
       defaultClean: Math.min(1000, limits.maxClean),
       maxRetryAllIds: 1000,
+      maxFlowNodes: 100,
+      maxFlowDepth: 10,
     });
 
     const queue = h.jobs.queue("mail");
@@ -357,6 +361,65 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
           truncated: true,
         });
         expect(over.body.ids).toHaveLength(reported.maxRetryAllIds);
+      },
+      maxFlowNodes: async () => {
+        // A hundred jobs outgrow this API's small body cap, so the bound is
+        // probed on one with the default cap, over the same backend.
+        const roomy = closing({
+          jobs: h.jobs,
+          limits: { queueCacheMs: 0 },
+          addableNames: "any",
+        });
+        const flowOf = (count: number) => ({
+          name: "send",
+          data: 0,
+          children: Array.from({ length: count - 1 }, () => ({
+            name: "send",
+            data: 0,
+          })),
+        });
+        await edge(
+          () =>
+            roomy.call(
+              "POST",
+              "/queues/flow-wide/flows",
+              flowOf(reported.maxFlowNodes),
+            ),
+          () =>
+            roomy.call(
+              "POST",
+              "/queues/flow-wide/flows",
+              flowOf(reported.maxFlowNodes + 1),
+            ),
+          400,
+          "VALIDATION",
+        );
+      },
+      maxFlowDepth: async () => {
+        /** A flow `levels` deep, each job the only child of the one above. */
+        const flowOf = (levels: number) => {
+          let node: Record<string, unknown> = { name: "send", data: 0 };
+          for (let level = 1; level < levels; level++) {
+            node = { name: "send", data: 0, children: [node] };
+          }
+          return node;
+        };
+        await edge(
+          () =>
+            h.call(
+              "POST",
+              "/queues/flow-deep/flows",
+              flowOf(reported.maxFlowDepth),
+            ),
+          () =>
+            h.call(
+              "POST",
+              "/queues/flow-deep/flows",
+              flowOf(reported.maxFlowDepth + 1),
+            ),
+          400,
+          "VALIDATION",
+        );
       },
       maxApplyDefaults: async () => {
         const { seq } = await queue.setJobDefaults({ attempts: 4 });

@@ -522,6 +522,92 @@ export const s = {
   },
 };
 
+/**
+ * A named schema that holds itself — a tree node whose `children` are nodes
+ * of the same shape. `build` receives a stand-in for the schema being built
+ * and returns its body; every place the stand-in appears becomes a reference
+ * back to the root, so the JSON node is cyclic. The specs emit it once, as a
+ * component that `$ref`s itself, and the validator walks it as deep as the
+ * value goes — so a caller bounds the value's depth first (a route body is
+ * bounded by its size, but not by its nesting).
+ *
+ * Kept off `s` on purpose: one route needs it, and a cyclic node is a hazard
+ * for any code that walks `Schema.json` without following names. `T` is the
+ * output type, given explicitly — TypeScript cannot infer a recursive one.
+ */
+export function recursiveSchema<T>(
+  name: string,
+  build: (self: Schema<T>) => Schema<T, any>,
+): Schema<T> {
+  if (!COMPONENT_NAME.test(name)) {
+    throw new ConfigError(
+      `Schema name "${name}" may only contain letters, digits, "_", "." and "-"`,
+      { name },
+    );
+  }
+  const marker: JsonSchema = {};
+  const body = build(make<T>(marker)).json;
+
+  /** Whether a node leads to the stand-in, by node: those are copied to point at the root. */
+  const leads = new Map<JsonSchema, boolean>();
+  const reaches = (node: JsonSchema): boolean => {
+    if (node === marker) {
+      return true;
+    }
+    const known = leads.get(node);
+    if (known !== undefined) {
+      return known;
+    }
+    leads.set(node, false);
+    const children = [
+      ...Object.values(node.properties ?? {}),
+      ...(node.items ? [node.items] : []),
+      ...(node.anyOf ?? []),
+      ...(typeof node.additionalProperties === "object"
+        ? [node.additionalProperties]
+        : []),
+    ];
+    const found = children.some(reaches);
+    leads.set(node, found);
+    return found;
+  };
+
+  const root: Record<string, unknown> = {};
+  // Only the nodes leading to the stand-in are copied; everything else keeps
+  // its identity, so the components and enum hints registered on it survive.
+  const rebuild = (node: JsonSchema): JsonSchema => {
+    if (node === marker) {
+      return root as JsonSchema;
+    }
+    if (!reaches(node)) {
+      return node;
+    }
+    const copy: Record<string, unknown> = { ...node };
+    if (node.properties) {
+      copy.properties = Object.fromEntries(
+        Object.entries(node.properties).map(([key, child]) => [
+          key,
+          rebuild(child),
+        ]),
+      );
+    }
+    if (node.items) {
+      copy.items = rebuild(node.items);
+    }
+    if (node.anyOf) {
+      copy.anyOf = node.anyOf.map(rebuild);
+    }
+    if (typeof node.additionalProperties === "object") {
+      copy.additionalProperties = rebuild(node.additionalProperties);
+    }
+    return copy as JsonSchema;
+  };
+  Object.assign(root, rebuild(body));
+  const json = deepFreeze(root) as JsonSchema;
+  NAMED.set(json, name);
+  return make<T>(json, { ref: name });
+}
+
 /** Options for {@link toJsonSchema}. */
 export interface ToJsonSchemaOptions {
   /** Prefix a component name is appended to. Defaults to `"#/components/schemas/"`. */

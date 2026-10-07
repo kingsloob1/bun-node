@@ -41,6 +41,7 @@ import {
 } from "../schemas/jobs";
 import { JOB_LIST_INCLUDE, JOB_READ_INCLUDE, toJobDto } from "../serialize";
 import { defineRoute } from "./define";
+import { addFlowRoute } from "./flows";
 import {
   bulkIds,
   jobNotFound,
@@ -988,5 +989,6 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         };
       },
     }),
+    addFlowRoute(config),
   ];
 }
