@@ -32,6 +32,8 @@ import {
   playgroundDriver,
   removeTempData,
 } from "./backend";
+import { LocalCompute } from "./compute/platform";
+import { localCompute } from "./compute/provider";
 import { startMailer } from "./mailer";
 import { startRunners } from "./runners";
 import { startSimulation } from "./simulation";
@@ -122,7 +124,64 @@ const server = await app.listen(port, "127.0.0.1");
 const origin = `http://localhost:${server.port}`;
 // The platform's API is called from this process, so by the address it
 // listens on: `localhost` may resolve to `::1`, where nothing listens.
-summoning.start(`http://127.0.0.1:${server.port}`);
+summoning.start(`${origin}`);
+
+const localComputeForObinnaQueueWorker = new LocalCompute({
+  basePath: "/obinna-local-compute",
+  tokens: ["admin"],
+  entry: new URL("./compute/obinna-queue-worker.ts", import.meta.url).pathname,
+  maxUnits: 4,
+});
+
+localComputeForObinnaQueueWorker.mount(app);
+
+const obinnaQueue = jobs.queue("obinna-queue");
+// Add a schedule that runs every 5 seconds
+obinnaQueue.add(
+  "ping-obinna",
+  { dataId: `data-${Date.now()}` },
+  {
+    repeat: { every: "5 seconds", key: "ping-obinna", catchUp: false },
+  },
+);
+
+const localComputeSummoner = localCompute({
+  url: `${origin}${localComputeForObinnaQueueWorker.basePath}`,
+  region: "obinna-queue-compute-summoner",
+  pool: "obinna-queue",
+  apiToken: "admin",
+});
+
+jobs.summonController("obinna-queue", {
+  summoner: localComputeSummoner,
+  // A big burst gets a second worker.
+  maxWorkers: 5,
+  jobsPerWorker: 8,
+  // Tighter than the defaults, so a playground session sees the whole
+  // cycle: a check every 5 s, a retry within seconds, and a circuit
+  // that closes again after a minute.
+  triggers: { poll: 5_000 },
+  cooldown: 5_000,
+  backoff: { initial: 5_000, max: 30_000 },
+  circuit: { failures: 3, resetAfter: 60_000 },
+  budget: { perHour: 20_000, perDay: 500_000 },
+  // budget: { perHour: 240, perDay: 2_000 },
+  maxLifetime: 3_600_000, // 1 hour
+  // Static, the same for every attempt: how a unit reaches the backend.
+  env: { PLAYGROUND_SUMMON_DRIVER: JSON.stringify(playgroundDriver()) },
+});
+
+// Use fluent API to add jobs to the obinnaQueue
+// jobs.define("call-obinna", async (job: Job<{ dataId: string }>) => {
+//   await job.log(`calling obinna with ${job.data.dataId}`);
+//   await sleep(between(500, 1_000));
+//   if (Math.random() < 0.2) {
+//     throw new Error(`obinna refused ${job.data.dataId}`);
+//   }
+
+//   await job.log(`Called obinna with ${job.data.dataId}`);
+//   return { result: `obinna processed ${job.data.dataId}` };
+// });
 
 console.log(`
 bun-node playground (${playgroundBackend()} driver)
@@ -149,14 +208,18 @@ async function shutdown(): Promise<void> {
   }
   stopping = true;
   console.log("\nstopping…");
-  await simulation.stop();
+
   // Every summoned worker process, before the backend they use closes.
-  await summoning.stop();
-  await mailer.stop();
-  await stopRunners();
-  await api.close();
-  await app.close();
-  await jobs.close();
+  await Promise.allSettled([
+    localComputeForObinnaQueueWorker.stop(),
+    simulation.stop(),
+    summoning.stop(),
+    mailer.stop(),
+    stopRunners(),
+  ]);
+
+  // The backend, after every summoned worker process has stopped.
+  await Promise.allSettled([api.close(), app.close(), jobs.close()]);
   removeTempData("mine");
   process.exit(0);
 }

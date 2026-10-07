@@ -115,6 +115,8 @@ interface Unit {
 
 /** Options for {@link LocalCompute}. */
 export interface LocalComputeOptions {
+  /** The base path for the API routes. */
+  basePath?: string;
   /** The API tokens it accepts. */
   tokens: readonly string[];
   /** The worker entry each unit runs. */
@@ -153,7 +155,7 @@ function escapeHtml(text: string): string {
 /** The platform: its units, its fault queue, and its HTTP API. */
 export class LocalCompute {
   /** Where its routes are mounted on the playground's adapter. */
-  readonly basePath = "/local-compute";
+  readonly basePath: string = "/local-compute";
   /** Every unit it started, by handle, newest last. */
   readonly #units = new Map<string, Unit>();
   /** The handles each token started. */
@@ -165,13 +167,15 @@ export class LocalCompute {
   /** Set once {@link stop} began: no more units start. */
   #stopping = false;
   /** Its options, defaulted. */
-  readonly #options: Required<LocalComputeOptions>;
+  readonly #options: Required<Omit<LocalComputeOptions, "basePath">>;
 
   constructor(
     /** What it accepts, runs, and allows. */
     options: LocalComputeOptions,
   ) {
-    this.#options = { maxUnits: 4, graceMs: 10_000, ...options };
+    const { basePath, ...otherOptions } = options;
+    this.basePath = basePath ?? this.basePath;
+    this.#options = { maxUnits: 4, graceMs: 10_000, ...otherOptions };
   }
 
   /** Queues a fault for the next start. */

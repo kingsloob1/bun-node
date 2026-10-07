@@ -93,7 +93,7 @@ export function mountSummoning(
   options: SummoningOptions,
 ): Summoning {
   const platform = new LocalCompute({
-    tokens: [TOKEN],
+    tokens: [TOKEN, "admin"],
     entry: new URL("./compute/worker.ts", import.meta.url).pathname,
     maxUnits: 4,
   });
@@ -194,6 +194,7 @@ export function mountSummoning(
     stop: async () => {
       clearInterval(burst);
       await platform.stop();
+      providers.length = 0;
     },
     killAll: () => platform.killAll(),
   };
