@@ -188,6 +188,42 @@ const QUEUE_READ_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
   Object.freeze({ method: "GET", path: "/queues/:queue" });
 
 /**
+ * The route `GET /queues/:queue/summon` reports to `authorize`: what
+ * `GET /summon` asks about each controller's queue, so the list is never
+ * looser than the per-queue status it summarises.
+ */
+const SUMMON_READ_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
+  Object.freeze({ method: "GET", path: "/queues/:queue/summon" });
+
+/**
+ * The queues of `names` whose summon status the caller may read: those
+ * `authorize` allows `queues.read` on, asked exactly as
+ * `GET /queues/:queue/summon` asks it (`queue`, `transport: "http"`, its
+ * route) — whatever `listQueues` says, since a summon status carries more
+ * than a queue's name (its last outcome's detail, its budget). At most
+ * `FAN_OUT` at a time; order kept. A throwing `authorize` rejects.
+ */
+async function readableSummonQueues(
+  services: RouteServices,
+  req: BunRequest,
+  names: readonly string[],
+): Promise<string[]> {
+  const allowed = await mapBounded(
+    names,
+    async (queue) =>
+      (
+        await decide(services.config, req, {
+          action: "queues.read",
+          transport: "http",
+          queue,
+          route: SUMMON_READ_ROUTE,
+        })
+      ).allow,
+  );
+  return names.filter((_, index) => allowed[index]);
+}
+
+/**
  * `queues.read` decisions already asked during a request, by queue: a request
  * never asks `authorize` twice about one queue, however many of its reads
  * filter. Keyed weakly, so a finished request's decisions go with it.
@@ -861,17 +897,17 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       method: "GET",
       path: "/summon",
       operationId: "listSummonControllers",
-      action: "queues.read",
+      action: "queues.list",
       mode: "jobs",
       summary:
         "Every summon controller the API can read, with its budget usage",
-      description: `One item per summon controller running in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — on a queue the API can reach, by queue name: the namespace and queue, the summoner's kind and readiness, the last outcome, and the budget usage with its limits (absent, with \`off: true\`, while the policy turns the budget off) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A controller running in another process is not listed. An empty list, never 409, when none runs here. Reads one summon state per controller; spends nothing.\n\nWith \`listQueues: "authorized"\`, a controller is listed only when \`authorize\` allows \`queues.read\` on its queue, asked as \`GET /queues/{queue}\` would ask — the queue list's rule.`,
+      description: `One item per summon controller running in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — on a queue the API can reach, by queue name: the namespace and queue, the summoner's kind and readiness, the last outcome, and the budget usage with its limits (absent, with \`off: true\`, while the policy turns the budget off) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A controller running in another process is not listed. An empty list, never 409, when none runs here. Reads one summon state per controller; spends nothing.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each controller is then listed only when \`authorize\` allows \`queues.read\` on its queue, asked as \`GET /queues/{queue}/summon\` asks it (one call per controller, whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
       tags: ["Queues"],
       responses: { 200: SummonListSchema },
       handler: async ({ req, services }) => {
         const controllers = services.queues.summonControllers();
         const visible = new Set(
-          await visibleQueueNames(
+          await readableSummonQueues(
             services,
             req,
             controllers.map((controller) => controller.queue),

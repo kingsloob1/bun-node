@@ -63,6 +63,29 @@ export const withOverrides: SummonOption = [
     overrides: { images: { jobsPerWorker: 2 } },
   },
 ];
+// `budget: false` in a group, in an override, and an override's budget over
+// a group's `false`: each a SummonPolicy value, so each type-checks.
+export const budgetOffOverride: SummonOption = [
+  {
+    queues: ["a", "b"],
+    summoner,
+    budget: { perHour: 20, perDay: 100 },
+    overrides: { a: { budget: false } },
+  },
+];
+export const budgetOnOverride: SummonOption = [
+  {
+    queues: ["a", "b"],
+    summoner,
+    budget: false,
+    overrides: { a: { budget: { perHour: 5 } } },
+  },
+];
+export const budgetOffRecord: SummonOption = { a: { summoner, budget: false } };
+export const budgetTrueRefused: SummonOption = [
+  // @ts-expect-error `true` is not a budget: only `false` or an object.
+  { queues: ["a"], summoner, budget: true },
+];
 export const mixed: SummonOption = [
   { queues: ["emails", "images"], summoner },
   { reports: { summoner } },

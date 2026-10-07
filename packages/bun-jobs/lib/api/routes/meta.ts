@@ -120,6 +120,9 @@ export const DRIVER_FEATURES = {
   // The summon reset's `budget` body: no driver method either; whether a
   // queue has a controller is the route's own 409.
   summonResetBudget: [],
+  // The summon list: no driver method either — it lists this process's
+  // controllers — so only the mode turns it off.
+  summonList: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -237,6 +240,9 @@ export const FEATURE_ROUTES = {
   providers: ["listProviders", "validateProvider", "getProviderSchema"],
   // The reset route, whose body takes `budget` since this flag existed.
   summonResetBudget: ["resetQueueSummon"],
+  // `GET /summon`. Its action, `queues.list`, is on by default, but like
+  // every flag this one ignores permissions.
+  summonList: ["listSummonControllers"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**

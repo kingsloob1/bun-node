@@ -72,6 +72,7 @@ import {
   budgetResets,
   clearBudget,
   dedupeKeyFor,
+  markCounted,
   readMarker,
   refundBudget,
   rollBudget,
@@ -1489,6 +1490,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     marker.lastAttemptAt = now;
     marker.budget.hour++;
     marker.budget.day++;
+    markCounted(marker, id);
     const written = await setReservedState(
       this.#driver,
       this.#ref,
@@ -1995,15 +1997,29 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }
 
   /**
-   * Calls `onSummonFailed`, if set, without waiting for it: a slow hook never
-   * holds a check. A synchronous throw and a rejection are each logged once,
-   * at `warn`, with the error; neither reaches the check.
+   * Calls `onSummonFailed`, if set, on a later turn of the event loop
+   * (`setImmediate`) and without waiting for it: a slow hook never holds a
+   * check, synchronous work included. A microtask would not do: the check's
+   * caller resumes in a microtask queued after it, so a hook that blocked
+   * there would still delay the check's return. Calls keep their order. A
+   * synchronous throw and a rejection are each logged once, at `warn`, with
+   * the error; neither reaches the check.
    */
   #notifyFailure(failure: SummonFailure): void {
     const hook = this.#policy.onSummonFailed;
     if (hook === undefined) {
       return;
     }
+    setImmediate(() => {
+      this.#callHook(hook, failure);
+    });
+  }
+
+  /** Runs `onSummonFailed` once, logging what it throws or rejects with. */
+  #callHook(
+    hook: (failure: SummonFailure) => void | Promise<void>,
+    failure: SummonFailure,
+  ): void {
     const warn = (error: unknown): void => {
       this.#logger.warn("onSummonFailed threw; summoning goes on", {
         error,
@@ -2307,6 +2323,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   ): Promise<T> {
     const abort = new AbortController();
     const ms = this.#policy.summonTimeout;
+    // The context first: building it can throw (a logger whose `child`
+    // throws), and a timer armed before it would then never be cleared —
+    // its rejection would surface, unhandled, `summonTimeout` later.
+    const context: ProviderCallContext = providerCallContext(
+      abort.signal,
+      this.#providerLogger(id === undefined ? {} : { attempt: id }),
+      this.#fetch,
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
@@ -2315,11 +2339,6 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         reject(error);
       }, ms);
     });
-    const context: ProviderCallContext = providerCallContext(
-      abort.signal,
-      this.#providerLogger(id === undefined ? {} : { attempt: id }),
-      this.#fetch,
-    );
     try {
       return await Promise.race([fn(context), timeout]);
     } finally {
@@ -2336,8 +2355,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * attempt stays in `pending` exactly as claimed — no handles, `last`
    * unchanged, the failure not counted — and is settled like any other, by a
    * registration or as `lost` once its `until` passes. The outcome is still
-   * returned, emitted and logged here, with a `warn` saying it was not
-   * recorded. Nothing is lost for good; a failed call is only counted late.
+   * returned and logged here, with a `warn` saying it was not recorded, but
+   * **not announced**: no `summon` event, no `onSummonFailed`. Whoever
+   * settles the attempt reports it, once — as `lost`, for a call that failed
+   * — so one attempt is never reported twice. What remains: the failure is
+   * counted then, as one lost attempt, and an attempt whose provider was
+   * never called keeps its budget count.
+   *
+   * **An attempt already gone** (purged, or settled by another check while
+   * the call ran) is not announced here either: it was reported where it
+   * was settled.
    *
    * **A timeout is not a definite failure.** A call that ran past
    * `summonTimeout` may still have started the unit, so the attempt is kept
@@ -2425,9 +2452,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       opened = undefined;
       newlyOpened = false;
       const openAtRead = circuitOpen(marker, now);
-      if (claimedAt !== undefined) {
-        refundBudget(marker, claimedAt);
-      }
+      // The claim's mark settles here either way: a call made keeps its
+      // count; one never made gives it back, unless a budget reset already
+      // cleared it with the counts.
+      refundBudget(marker, id, claimedAt);
       if (timedOut) {
         // A call that timed out may still have started the unit: the
         // attempt stays on its way until it registers, or until its `until`
@@ -2498,20 +2526,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     this.#noteThrottled(mapping?.kind === "throttled");
     this.#providerVerdict(mapping, id, detail, written ? opened : undefined);
-    this.#announce(
-      [
-        {
-          id,
-          outcome,
-          kind,
-          count,
-          reason,
-          ...(handles === undefined ? {} : { handles: [...handles] }),
-          ...(detail === undefined ? {} : { detail }),
-        },
-      ],
-      decidedAt,
-    );
+    // Announced only by the write that recorded it: an answer that did not
+    // land is reported by whoever settles the attempt, so never twice.
+    if (written) {
+      this.#announce(
+        [
+          {
+            id,
+            outcome,
+            kind,
+            count,
+            reason,
+            ...(handles === undefined ? {} : { handles: [...handles] }),
+            ...(detail === undefined ? {} : { detail }),
+          },
+        ],
+        decidedAt,
+      );
+    }
     if (written && newlyOpened && opened !== undefined) {
       this.#announceOpening(
         { id, ...(detail === undefined ? {} : { detail }) },

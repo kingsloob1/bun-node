@@ -244,6 +244,16 @@ export function readMarker(
   } else {
     delete marker.watching;
   }
+  // The same for the budget's marks: anything but a list of ids is none
+  // (a refund is then skipped, which keeps a count rather than losing one).
+  const counted: unknown = marker.budget.counted;
+  if (
+    counted !== undefined &&
+    (!Array.isArray(counted) ||
+      !counted.every((one: unknown) => typeof one === "string"))
+  ) {
+    delete marker.budget.counted;
+  }
   // The same for `lossStreak`: absent, or not a count, is `0`.
   const streak: unknown = marker.lossStreak;
   if (
@@ -292,12 +302,49 @@ export function rollBudget(marker: SummonMarker, now: number): void {
 }
 
 /**
- * Gives back the one attempt an attempt claimed at `claimedAt` counted
- * against the budget, when the provider was never called for it. Only in a
- * window that is still the claim's: a window that has rolled on since
- * dropped the count with it. Never below `0`.
+ * Marks attempt `id` as counted against the budget by its claim, so its
+ * count can be given back if its provider is never called. Drops the marks
+ * of attempts no longer pending first, so the list stays as short as
+ * `pending`.
  */
-export function refundBudget(marker: SummonMarker, claimedAt: number): void {
+export function markCounted(marker: SummonMarker, id: string): void {
+  const pending = new Set(marker.pending.map((attempt) => attempt.id));
+  marker.budget.counted = [
+    ...(marker.budget.counted ?? []).filter((one) => pending.has(one)),
+    id,
+  ];
+}
+
+/**
+ * Settles attempt `id`'s mark: removes it, and — when the provider was never
+ * called (`claimedAt` given) and the mark was still there — gives back the
+ * one attempt its claim counted. Only in a window that is still the claim's:
+ * a window that has rolled on since dropped the count with it. Never below
+ * `0`. Idempotent: the mark goes with the first call.
+ *
+ * The mark is what makes it safe against a budget reset: `clearBudget`
+ * empties the marks with the counts, so a claim counted before a reset is
+ * never refunded out of the attempts counted after it. Comparing times would
+ * compare two processes' clocks; the mark is decided by the same
+ * compare-and-set as the counts.
+ */
+export function refundBudget(
+  marker: SummonMarker,
+  id: string,
+  claimedAt: number | undefined,
+): void {
+  const counted = marker.budget.counted;
+  const index = counted?.indexOf(id) ?? -1;
+  if (index === -1) {
+    return;
+  }
+  counted!.splice(index, 1);
+  if (counted!.length === 0) {
+    delete marker.budget.counted;
+  }
+  if (claimedAt === undefined) {
+    return;
+  }
   const hourStart = Math.floor(claimedAt / HOUR_MS) * HOUR_MS;
   const dayStart = Math.floor(claimedAt / DAY_MS) * DAY_MS;
   if (marker.budget.hourStart === hourStart && marker.budget.hour > 0) {
@@ -324,11 +371,15 @@ export function budgetResets(marker: SummonMarker): {
   };
 }
 
-/** Zeroes the budget's counts in the windows `now` falls in. */
+/**
+ * Zeroes the budget's counts in the windows `now` falls in, and the marks of
+ * attempts counted in them: what was cleared can no longer be given back.
+ */
 export function clearBudget(marker: SummonMarker, now: number): void {
   rollBudget(marker, now);
   marker.budget.hour = 0;
   marker.budget.day = 0;
+  delete marker.budget.counted;
 }
 
 /** The wait after the `failures`th consecutive failure: `initial`, doubling, at most `max`. */

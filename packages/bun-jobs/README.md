@@ -3340,7 +3340,9 @@ one queue, in any number of processes, call it once per outcome between
 them. `budget-exhausted` is the exception: like its event, each controller
 that hits the limit reports it once per budget window. The argument carries
 the same secret-free `detail` as the event and `status().last`. It is
-**never awaited**: a slow hook delays no check and no `close()`, and a throw
+**never awaited**, and called on a later turn of the event loop than the
+check that decided it: a slow hook — synchronous work included — delays no
+check and no `close()`, and a throw
 or a rejection is logged once at `warn` with the error and changes nothing
 else. It is a policy option, so it works from `BunJobsOptions.summon`,
 `jobs.summonController(queue, policy)` and `new SummonController()` alike.
@@ -3364,7 +3366,7 @@ builds one:
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/summon` | `queues.read` | `SummonListDto`: every controller running in the API's process, by queue — its namespace, the summoner's `kind` and `readiness`, the last outcome and the budget usage — less the queues the caller cannot see (the queue list's rule, `listQueues: "authorized"` included). An empty list, never 409, when none runs here |
+| GET | `/summon` | `queues.list` | `SummonListDto`: every controller running in the API's process, by queue — its namespace, the summoner's `kind`, `readiness` and `inert`, the last outcome and the budget usage. Each is listed only where `authorize` allows `queues.read` on its queue, asked as `GET /queues/:queue/summon` asks it, whatever `listQueues` says: the list never shows what that route refuses. An empty list, never 409, when none runs here |
 | GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, and the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
 | POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset({ budget })`, then the `SummonStatusDto` after it. The optional body `{ "budget": true }` also clears the budget's usage (`/meta.features.summonResetBudget` says it is accepted); without it the usage is kept |
@@ -3439,7 +3441,9 @@ where the group and the override both hold an object — `triggers`,
 over the group's and the rest are kept; anything else (`summoner`, a
 function, a number, `false`) replaces the group's value whole. So with the
 group below, `images` gets `{ perHour: 5, perDay: 100 }` and
-`{ onAdd: false, poll: false }`.
+`{ onAdd: false, poll: false }`. A `budget: false` override turns the budget
+off, and a `budget` object over a group's `budget: false` turns it on with
+only the override's values (the controller's defaults for the rest).
 
 ```ts
 export const jobs = new BunJobs({
@@ -3518,8 +3522,21 @@ so a unit loads only the code of the queue it serves.
 **The budget's counts live in the queue's shared state, not in the policy.**
 An attempt counts when it is claimed — so controllers racing for the last
 place cannot pass the limit — and is given back if the provider was never
-called (its `ready` failed). A real call counts whatever it answered,
-`unavailable` and `failed` included. Because the counts outlive the policy,
+called (its `ready` failed, or its request could not be built). A real call
+counts whatever it answered, `unavailable` and `failed` included. The give-back
+is marked on the claim, in the same shared state, so a budget reset in
+between clears it with the counts: a claim made before the reset is never
+given back out of the attempts made after it.
+
+**When a controller cannot record a call's answer** — other controllers won
+all three of its writes — it announces nothing: no `summon` event, no
+`onSummonFailed`. The attempt stays pending and is reported once, by
+whichever check settles it: as `lost` after its `bootBudget` (or
+`registered`, if a worker turns up). So one attempt is never reported twice,
+but such an attempt counts as one failure only when it is lost, and keeps
+its budget count even when its provider was never called.
+
+Because the counts outlive the policy,
 lowering a limit, or removing `budget` so the defaults apply, meets the
 counts a larger limit left: with 40 attempts this hour, the default 30 holds
 everything back until the hour turns. `budget: false` lifts the limit, and
@@ -5182,7 +5199,7 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-`providers`, `summonResetBudget`, and `analytics` beside `features` for what the analytics routes
+`providers`, `summonResetBudget`, `summonList`, and `analytics` beside `features` for what the analytics routes
 can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
@@ -5203,7 +5220,7 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/overview/added` | `metrics.read` | no |
 | GET | `/queues` | `queues.list` | no |
 | GET | `/demand` | `queues.list` | no |
-| GET | `/summon` | `queues.read` | no |
+| GET | `/summon` | `queues.list` | no |
 | GET | `/queues/:queue` | `queues.read` | no |
 | GET | `/queues/:queue/counts` | `queues.read` | no |
 | GET | `/queues/:queue/counts/added` | `queues.read` | no |
@@ -6217,6 +6234,7 @@ cannot" from "you may not":
 | `demand` | `/queues/:queue/demand`, `/demand` | nothing: a driver without `countDemand` is served from a fallback, and says so with `exact: false` in each answer |
 | `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
+| `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under
@@ -6585,7 +6603,8 @@ app.use(scalerApi.basePath, scalerApi.router);
 So it reads queue figures, settings and summon status, never a
 job, a payload, a worker or a runner; it has no docs, no socket and no
 mutation (a `POST /queues/emails/pause` is 404), and a missing or wrong token
-is 403. With `actions: ["queues.read"]` alone, `/queues` and `/demand` go too.
+is 403. With `actions: ["queues.read"]` alone, `/queues`, `/demand` and
+`/summon` go too.
 `authorize` is `(req, context)`, and a `BunRequest` reads a header with
 `getHeader(name)`.
 

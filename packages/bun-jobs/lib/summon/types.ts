@@ -314,9 +314,12 @@ export interface SummonPolicy {
    * between them (`budget-exhausted` is the exception: each controller that
    * hits the limit calls it once per budget window, as it emits the event).
    *
-   * Never awaited: a slow hook does not delay the next check. A throw or a
-   * rejection is logged at `warn` with the error, once per call, and changes
-   * nothing else. The argument is secret-free: the same `detail` the
+   * Never awaited, and called on a later turn of the event loop than the
+   * check that decided it: a slow hook, synchronous work included, delays
+   * no check. An answer the controller could not record (other controllers
+   * won every write) is not reported by it; the attempt is reported once,
+   * as `lost`, by whoever settles it. A throw or a rejection is logged at
+   * `warn` with the error, once per call, and changes nothing else. The argument is secret-free: the same `detail` the
    * `summon` event and `status().last` carry, never a credential.
    */
   onSummonFailed?: (failure: SummonFailure) => void | Promise<void>;
@@ -586,6 +589,13 @@ export interface SummonMarker {
     dayStart: number;
     /** Attempts started in it. */
     day: number;
+    /**
+     * Ids of attempts whose claim counted them and whose provider may not
+     * have been called yet: only these can be given back (when the call
+     * never happens). A budget reset empties it with the counts. Optional,
+     * with `v` unchanged: absent is none.
+     */
+    counted?: string[];
   };
   /** The most recent outcome, for the status route and the UI. */
   last?: SummonLastOutcome;

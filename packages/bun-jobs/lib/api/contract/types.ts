@@ -1389,6 +1389,13 @@ export interface SummonListItemDto {
   kind: string;
   /** Whether the summoner can be called, as `SummonStatusDto.summoner.readiness` has it. */
   readiness: "ready" | "pending" | "failed";
+  /**
+   * Whether the controller is inert, as `SummonStatusDto.inert` has it: it
+   * summons nothing, whatever `readiness` says.
+   */
+  inert: boolean;
+  /** Why it is inert, when it is, as `SummonStatusDto.inertReason` has it. */
+  inertReason?: "summoned-process" | "newer-marker";
   /** The most recent outcome, as `SummonStatusDto.last` has it. */
   last?: SummonLastOutcomeDto;
   /** Budget usage, the limits and the window reset times, as `SummonStatusDto.budget` has them. */
@@ -1396,10 +1403,12 @@ export interface SummonListItemDto {
 }
 
 /**
- * `GET /summon` (operation `listSummonControllers`, action `queues.read`):
+ * `GET /summon` (operation `listSummonControllers`, action `queues.list`):
  * every summon controller the API can read — today the ones running in the
- * API's process — less the queues the caller cannot see (as the queue list
- * filters them). An empty list when none runs here, never a 409.
+ * API's process — each only where `authorize` allows `queues.read` on its
+ * queue, asked as `GET /queues/{queue}/summon` asks it (whatever
+ * `listQueues` says), so the list is never looser than that route. An empty
+ * list when none runs here, never a 409.
  */
 export interface SummonListDto {
   /** The controllers, by queue name. */
@@ -3854,6 +3863,14 @@ export interface MetaDto {
      * the route's own answer (409 `SUMMON_NOT_CONFIGURED`).
      */
     summonResetBudget: boolean;
+    /**
+     * `GET /summon` (`SummonListDto`) is served. It needs no driver method,
+     * so this is `false` only in `runner` mode; an API older than the route
+     * leaves it out. Like every flag it ignores permissions: the route asks
+     * `queues.list`, then `queues.read` per controller. Whether any
+     * controller runs is the route's own answer, an empty list.
+     */
+    summonList: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

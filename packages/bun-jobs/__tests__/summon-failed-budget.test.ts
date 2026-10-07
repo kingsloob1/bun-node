@@ -10,6 +10,7 @@ import type {
 } from "../lib/index";
 import type { SummonCapabilities, SummonFacet } from "../lib/provider/index";
 import { join } from "node:path";
+import process from "node:process";
 import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -21,7 +22,14 @@ import {
   SummonController,
 } from "../lib/index";
 import { defineComputeProvider, toStandardSchema } from "../lib/provider/index";
-import { freshMarker, refundBudget, SUMMON_MARKER } from "../lib/summon/marker";
+import { setReservedState } from "../lib/queue/windows";
+import {
+  clearBudget,
+  freshMarker,
+  markCounted,
+  refundBudget,
+  SUMMON_MARKER,
+} from "../lib/summon/marker";
 import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 
 /**
@@ -126,6 +134,14 @@ function recorder(
   return { calls, summoner };
 }
 
+/**
+ * Lets the hooks the controller has scheduled run: it calls them on a later
+ * turn of the event loop, never inside the check.
+ */
+async function hooksRan(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 /** A hook that records what it is told. */
 function recording() {
   const failures: SummonFailure[] = [];
@@ -160,6 +176,7 @@ describe("onSummonFailed", () => {
     const before = Date.now();
     const result = await summon.check();
     expect(result).toMatchObject({ action: "summoned", outcome: "failed" });
+    await hooksRan();
     expect(hook.failures).toEqual([
       {
         outcome: "failed",
@@ -172,6 +189,7 @@ describe("onSummonFailed", () => {
         at: expect.any(Number),
       },
     ]);
+    await hooksRan();
     expect(hook.failures[0]!.at).toBeGreaterThanOrEqual(before);
     // The same detail the event and the marker carry; the message never.
     expect(events.at(-1)!.detail).toBe("E_REFUSED");
@@ -189,6 +207,7 @@ describe("onSummonFailed", () => {
     const { controller: summon } = controller({ summoner, ...hook });
     await queue.add("a", {});
     await summon.check();
+    await hooksRan();
     expect(hook.failures).toMatchObject([
       { outcome: "unavailable", detail: "no capacity", reason: "manual" },
     ]);
@@ -205,13 +224,16 @@ describe("onSummonFailed", () => {
     });
     await queue.add("a", {});
     expect(await summon.check()).toMatchObject({ outcome: "started" });
+    await hooksRan();
     expect(hook.failures).toEqual([]);
     await Bun.sleep(60);
     await summon.check();
+    await hooksRan();
     expect(hook.failures).toMatchObject([
       { outcome: "lost", id: calls[0]!.id },
     ]);
     // A lost event carries no reason, so neither does the hook's argument.
+    await hooksRan();
     expect(hook.failures[0]).not.toHaveProperty("reason");
   });
 
@@ -235,6 +257,7 @@ describe("onSummonFailed", () => {
     await Bun.sleep(3);
     expect(await summon.check()).toMatchObject({ reason: "budget" });
     expect(await summon.check()).toMatchObject({ reason: "budget" });
+    await hooksRan();
     const exhausted = hook.failures.filter(
       (failure) => failure.outcome === "budget-exhausted",
     );
@@ -269,11 +292,13 @@ describe("onSummonFailed", () => {
       expect(await summon.check()).toMatchObject({ reason: "circuit-open" });
     }
     const status = await summon.status();
+    await hooksRan();
     expect(hook.failures.map((failure) => failure.outcome)).toEqual([
       "failed",
       "failed",
       "circuit-open",
     ]);
+    await hooksRan();
     expect(hook.failures[2]).toMatchObject({
       outcome: "circuit-open",
       id: calls[1]!.id,
@@ -285,6 +310,7 @@ describe("onSummonFailed", () => {
     await summon.check();
     await Bun.sleep(3);
     await summon.check();
+    await hooksRan();
     expect(
       hook.failures.filter((failure) => failure.outcome === "circuit-open"),
     ).toHaveLength(2);
@@ -304,6 +330,7 @@ describe("onSummonFailed", () => {
     await Bun.sleep(60);
     expect(await summon.check()).toMatchObject({ reason: "circuit-open" });
     expect(await summon.check()).toMatchObject({ reason: "circuit-open" });
+    await hooksRan();
     expect(hook.failures).toMatchObject([
       { outcome: "lost", id: calls[0]!.id },
       {
@@ -312,6 +339,7 @@ describe("onSummonFailed", () => {
         until: (await summon.status()).circuitOpenUntil,
       },
     ]);
+    await hooksRan();
     expect(hook.failures).toHaveLength(2);
   });
 
@@ -341,6 +369,7 @@ describe("onSummonFailed", () => {
     expect(await summon.check()).toMatchObject({ reason: "circuit-open" });
     // The loss pushed the circuit's end on: an extension, not an opening.
     expect((await summon.status()).circuitOpenUntil).toBeGreaterThan(opened);
+    await hooksRan();
     expect(hook.failures.map((failure) => failure.outcome)).toEqual([
       "failed",
       "circuit-open",
@@ -391,6 +420,7 @@ describe("onSummonFailed", () => {
     for (let i = 0; i < 3; i++) {
       await Promise.all([a.controller.check(), b.controller.check()]);
     }
+    await hooksRan();
 
     const keys = told.map(
       ({ failure }) => `${failure.outcome}:${failure.id ?? ""}`,
@@ -492,6 +522,7 @@ describe("onSummonFailed", () => {
     await summon.check();
     expect(performance.now() - started).toBeLessThan(900);
     expect(calls).toHaveLength(2);
+    await hooksRan();
     expect(told).toBe(2);
     // close() does not wait for it either.
     const closing = performance.now();
@@ -533,9 +564,11 @@ describe("onSummonFailed", () => {
         ...fromCall,
       })
       .check();
+    await hooksRan();
     expect(fromOption.failures).toMatchObject([
       { outcome: "failed", queue: "work" },
     ]);
+    await hooksRan();
     expect(fromCall.failures).toMatchObject([
       { outcome: "failed", queue: "other" },
     ]);
@@ -576,6 +609,7 @@ describe("budget: false", () => {
     expect(events.map((event) => event.outcome)).not.toContain(
       "budget-exhausted",
     );
+    await hooksRan();
     expect(
       hook.failures.filter((failure) => failure.outcome === "budget-exhausted"),
     ).toEqual([]);
@@ -726,6 +760,7 @@ describe("reset", () => {
     await summon.check();
     await Bun.sleep(2);
     expect(await summon.check()).toMatchObject({ reason: "budget" });
+    await hooksRan();
     expect(
       hook.failures.filter((failure) => failure.outcome === "budget-exhausted"),
     ).toHaveLength(2);
@@ -819,18 +854,460 @@ describe("counting an attempt only once the provider is called", () => {
     expect((await summon.status()).budget).toMatchObject({ hour: 1, day: 1 });
   });
 
-  it("gives back nothing in a window that has rolled on since the claim, and never goes below 0", () => {
+  it("gives back nothing in a window that has rolled on since the claim, never goes below 0, and only once per mark", () => {
     const now = Date.now();
     const marker = freshMarker(now);
     marker.budget.hour = 2;
     marker.budget.day = 5;
+    const claim = (id: string) => {
+      marker.pending.push({ id, at: now, until: now + 1, count: 1, kind: "k" });
+      markCounted(marker, id);
+    };
     // Claimed an hour (and a day) ago: those windows' counts are gone.
-    refundBudget(marker, now - DAY);
+    claim("a");
+    refundBudget(marker, "a", now - DAY);
     expect(marker.budget).toMatchObject({ hour: 2, day: 5 });
-    refundBudget(marker, now);
+    claim("b");
+    refundBudget(marker, "b", now);
     expect(marker.budget).toMatchObject({ hour: 1, day: 4 });
+    // The mark went with the refund: a second one gives nothing back.
+    refundBudget(marker, "b", now);
+    expect(marker.budget).toMatchObject({ hour: 1, day: 4 });
+    claim("c");
     marker.budget.hour = 0;
-    refundBudget(marker, now);
+    refundBudget(marker, "c", now);
     expect(marker.budget).toMatchObject({ hour: 0, day: 3 });
+    // A call made settles the mark without a refund.
+    claim("d");
+    refundBudget(marker, "d", undefined);
+    expect(marker.budget).toMatchObject({ hour: 0, day: 3 });
+    expect(marker.budget.counted).toBeUndefined();
+    // A budget reset clears the marks with the counts.
+    claim("e");
+    marker.budget.day = 9;
+    clearBudget(marker, now);
+    marker.budget.day = 1;
+    refundBudget(marker, "e", now);
+    expect(marker.budget.day).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Round 2: races and paths the review found untested.
+ * ------------------------------------------------------------------ */
+
+/** What a provider declares here: one worker per call, so two controllers can each claim one. */
+const ONE_PER_CALL: SummonCapabilities = {
+  style: "launch",
+  dedupe: { kind: "none" },
+  passes: "argv",
+  bootBudgetMs: 20_000,
+  maxCountPerCall: 1,
+  shutdown: { signal: "SIGTERM", graceMs: 10_000 },
+  maxLifetimeMs: null,
+  enforcesLifetime: false,
+};
+
+/** A ready provider with `ONE_PER_CALL`, whose calls `answer` decides. */
+function onePerCall(
+  answer: (n: number) => Promise<SummonResult>,
+  bootBudgetMs = 20_000,
+) {
+  let n = 0;
+  const provider = defineComputeProvider({
+    name: `test-one-per-call-${++unique}`,
+    version: "1.0.0",
+    kind: "one",
+    apiVersion: { core: "0.1", summon: "0.1" },
+    summon: (): SummonFacet => ({
+      capabilities: { ...ONE_PER_CALL, bootBudgetMs },
+      summon: async () => await answer(++n),
+    }),
+  });
+  return { summoner: provider(), calls: () => n };
+}
+
+/** The driver hooks a test can put between a controller and its backend. */
+interface DriverHooks {
+  /** Runs before each `getQueueState`; may wait. */
+  beforeRead?: () => Promise<void> | void;
+  /**
+   * Decides each `setQueueState`: `"write"` passes it on, `"lose"` answers
+   * `null` without writing, as a write another controller beat would.
+   */
+  write?: (value: unknown) => "write" | "lose";
+  /** Told of each write that landed. */
+  wrote?: (value: unknown) => void;
+}
+
+/** `driver`, with `hooks` around its queue-state reads and writes. */
+function wrapped(driver: JobsDriver, hooks: DriverHooks): JobsDriver {
+  return new Proxy(driver, {
+    get(target, key) {
+      if (key === "getQueueState") {
+        return async (
+          ...args: Parameters<NonNullable<JobsDriver["getQueueState"]>>
+        ) => {
+          await hooks.beforeRead?.();
+          return await target.getQueueState!(...args);
+        };
+      }
+      if (key === "setQueueState") {
+        return async (
+          ...args: Parameters<NonNullable<JobsDriver["setQueueState"]>>
+        ) => {
+          if (hooks.write?.(args[2]) === "lose") {
+            return null;
+          }
+          const written = await target.setQueueState!(...args);
+          if (written !== null) {
+            hooks.wrote?.(args[2]);
+          }
+          return written;
+        };
+      }
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** Whether a written queue-state value is a summon marker holding attempt `id` pending. */
+function holdsPending(value: unknown, id?: string): boolean {
+  const pending = (value as { pending?: { id: string }[] } | null)?.pending;
+  return (
+    Array.isArray(pending) &&
+    (id === undefined
+      ? pending.length > 0
+      : pending.some((one) => one.id === id))
+  );
+}
+
+/**
+ * A logger whose `child` throws for an attempt's bindings: the call
+ * context's logger cannot be built, so the attempt fails before its
+ * provider is called.
+ */
+function throwsForAttempts(base = noopLogger): typeof noopLogger {
+  return new Proxy(base, {
+    get(target, key) {
+      if (key === "child") {
+        return (
+          bindings?: Record<string, unknown>,
+          options?: { name?: string },
+        ) => {
+          if (bindings !== undefined && "attempt" in bindings) {
+            throw new Error("no logger for an attempt");
+          }
+          return throwsForAttempts(target.child(bindings ?? {}, options));
+        };
+      }
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+describe("the refund and a budget reset (S2)", () => {
+  it("never gives back a claim counted before a reset out of a real call counted after it", async () => {
+    const { driver, queue, controller } = await setup();
+    // A: its call context cannot be built, so its attempt is never called.
+    // Its record's first read is held while B resets and makes a real call.
+    const a = onePerCall(async () => ({ status: "started", handles: [] }));
+    let hold: Promise<void> | undefined;
+    let release: () => void = () => {};
+    let armed = true;
+    let claimed = false;
+    const aDriver = wrapped(driver, {
+      wrote: (value) => {
+        if (armed && holdsPending(value)) {
+          armed = false;
+          claimed = true;
+          hold = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      },
+      beforeRead: async () => {
+        const waiting = hold;
+        hold = undefined;
+        await waiting;
+      },
+    });
+    const policy = {
+      maxWorkers: 2,
+      jobsPerWorker: 1,
+      circuit: { failures: 100 },
+    };
+    const first = controller(
+      { ...policy, summoner: a.summoner, logger: throwsForAttempts() },
+      aDriver,
+    ).controller;
+    const b = onePerCall(async () => ({
+      status: "unavailable",
+      reason: "busy",
+    }));
+    const second = controller({ ...policy, summoner: b.summoner }).controller;
+    await queue.add("a", {});
+    await queue.add("b", {});
+
+    const checking = first.check();
+    await waitFor(() => claimed, { timeout: 5_000 });
+    // A's claim is counted; B clears the budget, then makes a real call.
+    expect((await second.status()).budget).toMatchObject({ hour: 1, day: 1 });
+    await second.reset({ budget: true });
+    expect(await second.check()).toMatchObject({ outcome: "unavailable" });
+    expect(b.calls()).toBe(1);
+    expect((await second.status()).budget).toMatchObject({ hour: 1, day: 1 });
+    // A's record lands now: its provider was never called, but its count
+    // was cleared by the reset, so nothing is given back.
+    release();
+    expect(await checking).toMatchObject({
+      action: "summoned",
+      outcome: "failed",
+    });
+    expect(a.calls()).toBe(0);
+    expect((await second.status()).budget).toMatchObject({ hour: 1, day: 1 });
+  });
+});
+
+describe("a record whose writes all lose (S3)", () => {
+  it("announces nothing, and the attempt is reported once, as lost, by whoever settles it", async () => {
+    const { driver, queue, controller } = await setup();
+    // Every call throws; the attempt's boot budget is short, so it is lost soon.
+    const shared = onePerCall(async () => {
+      throw new Error("down");
+    }, 60);
+    let claimedId: string | undefined;
+    let toLose = 0;
+    const aDriver = wrapped(driver, {
+      write: () => {
+        if (toLose > 0) {
+          toLose--;
+          return "lose";
+        }
+        return "write";
+      },
+      wrote: (value) => {
+        if (claimedId === undefined && holdsPending(value)) {
+          claimedId = (value as { pending: { id: string }[] }).pending[0]!.id;
+          // Every one of the record's writes loses.
+          toLose = 3;
+        }
+      },
+    });
+    const told: { by: string; failure: SummonFailure }[] = [];
+    const policy = {
+      summoner: shared.summoner,
+      circuit: { failures: 1, resetAfter: 60_000 },
+    };
+    const a = controller(
+      {
+        ...policy,
+        onSummonFailed: (failure) => void told.push({ by: "a", failure }),
+      },
+      aDriver,
+    );
+    const b = controller({
+      ...policy,
+      onSummonFailed: (failure) => void told.push({ by: "b", failure }),
+    });
+    await queue.add("a", {});
+
+    // The call failed, but its answer was never recorded: the check still
+    // answers it, and nothing is announced.
+    expect(await a.controller.check()).toMatchObject({
+      action: "summoned",
+      outcome: "failed",
+    });
+    expect(toLose).toBe(0);
+    await hooksRan();
+    expect(a.events).toEqual([]);
+    expect(told).toEqual([]);
+    const pending = await b.controller.status();
+    expect(pending.pending.map((one) => one.id)).toEqual([claimedId!]);
+    expect(pending.failures).toBe(0);
+
+    // Past its boot budget it is lost, reported by the check that says so.
+    await Bun.sleep(80);
+    expect(await b.controller.check()).toMatchObject({
+      reason: "circuit-open",
+    });
+    await hooksRan();
+    expect(
+      [...a.events, ...b.events].map((event) => `${event.outcome}:${event.id}`),
+    ).toEqual([`lost:${claimedId}`]);
+    expect(
+      told.map(({ failure }) => `${failure.outcome}:${failure.id}`),
+    ).toEqual([`lost:${claimedId}`, `circuit-open:${claimedId}`]);
+    // What remains: one failure, counted as the loss, and the count kept.
+    const after = await b.controller.status();
+    expect(after.failures).toBe(1);
+    expect(after.budget).toMatchObject({ hour: 1, day: 1 });
+  });
+});
+
+describe("the review's untested paths (M1, M2)", () => {
+  it("says circuit-open once when a second call fails into a circuit the first just opened", async () => {
+    const { queue, controller } = await setup();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const shared = onePerCall(async (n) => {
+      if (n === 1) {
+        await slow;
+      }
+      throw new Error("down");
+    });
+    const told: SummonFailure[] = [];
+    const policy = {
+      summoner: shared.summoner,
+      maxWorkers: 2,
+      jobsPerWorker: 1,
+      circuit: { failures: 1, resetAfter: 60_000 },
+      onSummonFailed: (failure: SummonFailure) => void told.push(failure),
+    };
+    const a = controller(policy).controller;
+    const b = controller(policy).controller;
+    await queue.add("a", {});
+    await queue.add("b", {});
+
+    // A's call hangs; B's fails at once and opens the circuit.
+    const first = a.check();
+    await waitFor(() => shared.calls() === 1, { timeout: 5_000 });
+    expect(await b.check()).toMatchObject({ outcome: "failed" });
+    expect((await b.status()).circuitOpenUntil).toBeGreaterThan(Date.now());
+    // A's call then fails into the open circuit: an extension, not an opening.
+    release();
+    expect(await first).toMatchObject({ outcome: "failed" });
+    await hooksRan();
+    expect(told.map((failure) => failure.outcome).sort()).toEqual([
+      "circuit-open",
+      "failed",
+      "failed",
+    ]);
+  });
+
+  it("gives back the count of an attempt whose request could not be built", async () => {
+    const { queue, controller } = await setup();
+    const { calls, summoner } = recorder();
+    const { controller: summon, events } = controller({
+      summoner,
+      logger: throwsForAttempts(),
+    });
+    await queue.add("a", {});
+    expect(await summon.check()).toMatchObject({
+      action: "summoned",
+      outcome: "failed",
+    });
+    expect(calls).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({ outcome: "failed", detail: "Error" });
+    expect((await summon.status()).budget).toMatchObject({ hour: 0, day: 0 });
+    // Control: the same check with a logger that works is counted.
+    const { calls: made, summoner: working } = recorder(async () => ({
+      status: "unavailable",
+      reason: "busy",
+    }));
+    await summon.close();
+    const { controller: plain } = controller({ summoner: working });
+    await Bun.sleep(2);
+    await plain.check();
+    expect(made).toHaveLength(1);
+    expect((await plain.status()).budget).toMatchObject({ hour: 1, day: 1 });
+  });
+
+  it("leaves no timer behind when the call context cannot be built", async () => {
+    const { queue, controller } = await setup();
+    const { calls, summoner } = recorder();
+    // A short summonTimeout: a timer armed for a call never made would
+    // reject, unhandled, inside this test rather than in a later one.
+    const { controller: summon } = controller({
+      summoner,
+      summonTimeout: 50,
+      logger: throwsForAttempts(),
+    });
+    const unhandled: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onRejection);
+    try {
+      await queue.add("a", {});
+      expect(await summon.check()).toMatchObject({ outcome: "failed" });
+      expect(calls).toHaveLength(0);
+      await Bun.sleep(150);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(unhandled.map((reason) => (reason as Error).name)).toEqual([]);
+  });
+
+  it("tells budget-exhausted's hour and day apart", async () => {
+    const { driver, namespace, queue, controller } = await setup();
+    // Ten attempts already counted today, in an earlier hour.
+    const now = Date.now();
+    const marker = freshMarker(now);
+    marker.budget.day = 10;
+    expect(
+      await setReservedState(
+        driver,
+        { ns: namespace, queue: "work" },
+        SUMMON_MARKER,
+        marker,
+        null,
+      ),
+    ).not.toBeNull();
+    const { summoner } = recorder(async () => ({
+      status: "unavailable",
+      reason: "busy",
+    }));
+    const hook = recording();
+    const { controller: summon } = controller({
+      summoner,
+      ...hook,
+      budget: { perHour: 2, perDay: 50 },
+      circuit: { failures: 100 },
+    });
+    await queue.add("a", {});
+    await summon.check();
+    await Bun.sleep(2);
+    await summon.check();
+    await Bun.sleep(2);
+    expect(await summon.check()).toMatchObject({ reason: "budget" });
+    await hooksRan();
+    expect(
+      hook.failures.find((failure) => failure.outcome === "budget-exhausted")
+        ?.budget,
+    ).toEqual({ hour: 2, perHour: 2, day: 12, perDay: 50 });
+  });
+
+  it("never delays a check's return, even for a hook that blocks synchronously", async () => {
+    const { queue, controller } = await setup();
+    const { summoner } = recorder(async () => ({
+      status: "unavailable",
+      reason: "busy",
+    }));
+    let ran = 0;
+    const BLOCK_MS = 1_000;
+    const { controller: summon } = controller({
+      summoner,
+      circuit: { failures: 100 },
+      onSummonFailed: () => {
+        const until = performance.now() + BLOCK_MS;
+        while (performance.now() < until) {
+          // Busy: a hook doing synchronous work.
+        }
+        ran++;
+      },
+    });
+    await queue.add("a", {});
+    const started = performance.now();
+    expect(await summon.check()).toMatchObject({ outcome: "unavailable" });
+    const took = performance.now() - started;
+    expect(ran).toBe(0);
+    expect(took).toBeLessThan(BLOCK_MS * 0.8);
+    await hooksRan();
+    expect(ran).toBe(1);
   });
 });

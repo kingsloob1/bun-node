@@ -732,6 +732,16 @@ export const SummonListItemSchema = s.object({
   readiness: ProviderReadinessSchema(
     "Whether the summoner can be called, as `GET /queues/{queue}/summon` has it: `ready`, `pending` while its provider's config is still validating, or `failed`.",
   ),
+  inert: s.boolean({
+    description:
+      "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says.",
+  }),
+  inertReason: s.optional(
+    s.enum(["summoned-process", "newer-marker"], {
+      description:
+        "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
+    }),
+  ),
   last: s.optional(SummonLastSchema),
   budget: SummonBudgetSchema,
 });

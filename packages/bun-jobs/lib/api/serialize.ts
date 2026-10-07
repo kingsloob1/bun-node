@@ -1011,6 +1011,10 @@ export function toSummonListItemDto(
     queue: status.queue,
     kind: status.summoner?.provider.kind ?? "",
     readiness: status.summoner?.readiness ?? "ready",
+    inert: status.inert,
+    ...(status.inertReason === undefined
+      ? {}
+      : { inertReason: status.inertReason }),
     ...(full.last === undefined ? {} : { last: full.last }),
     // `status()` always reports the budget; the fallback keeps the type total.
     budget: full.budget ?? {

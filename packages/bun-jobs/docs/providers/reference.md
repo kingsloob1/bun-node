@@ -944,7 +944,10 @@ the base of `SummonControllerOptions`. The package README's
   `budget-exhausted`, though attempts are still counted. The counts live in
   the queue's shared state, so a smaller limit meets the counts a larger one
   left; `controller.reset({ budget: true })` clears them. An attempt whose
-  provider was never called (its `ready` failed) is not counted.
+  provider was never called (its `ready` failed) is not counted, unless a
+  reset cleared its count first. An attempt whose answer could not be
+  recorded (other controllers won every write) is announced only when it is
+  settled, once, as `lost`: one failure then, and its count kept.
 - `maxLifetime`: optional. The longest a summoned worker may live. Defaults
   to `3_600_000`.
 - `servedBy`: optional. `"any-worker"` (default) or `"summoned-only"`.
@@ -1156,7 +1159,9 @@ The shared summon state of one queue, in the reserved queue-state entry
 - `lossStreak`: optional. Counted failures since the last proven success.
 - `backoffUntil`: optional. No attempt before this.
 - `circuitOpenUntil`: optional. While in the future, nothing is summoned.
-- `budget`: attempts in the current hour and day.
+- `budget`: attempts in the current hour and day, and `counted`: the ids of
+  attempts whose count can still be given back (provider not yet called),
+  emptied by a budget reset.
 - `last`: optional. The most recent outcome.
 
 ### `PendingSummon`
