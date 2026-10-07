@@ -63,13 +63,14 @@ bun run test               # tests, in parallel — must all pass
 ```
 
 **Tests run in parallel.** Each test suite's `test` script is
-`bun test --parallel --timings=bun-timings.json`: one worker process per CPU
-core (bun-jobs and bun-jobs-ui take 4, below), the slowest files started first
-from the suite's committed `bun-timings.json`. Measured serial against
-`bun run test`: bun-common 7.2 s → 3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui
-136 s → 45 s at its 4 workers (23 s at 16), bun-jobs with all five database
-URLs about 24 min → 612–624 s at its 4 (without them, 13 min → 148 s, measured
-at 16 workers before the cap).
+`bun test --parallel=16 --timings=bun-timings.json` — sixteen worker
+processes, the slowest files started first from the suite's committed
+`bun-timings.json` — except bun-jobs, which runs 4 (below). The heavy-run
+wrapper now decides how many heavy jobs share the machine, so a suite no
+longer has to hold back for other sessions' runs (the user's decision,
+2026-10-07). Measured serial against `bun run test`: bun-common 7.2 s →
+3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui 136 s → 22–46 s at 16 workers,
+bun-jobs with all five database URLs about 24 min → 458–498 s at its 4.
 The flags are in the scripts because `bunfig.toml`'s `[test]` silently ignores
 `parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2, the
 floor. So plain `bun test` is still the one-process run, as is
@@ -86,23 +87,22 @@ floor. So plain `bun test` is still the one-process run, as is
   catch one file leaking into another. `bun test --randomize --seed=N`
   (serial) is the check for that, with bun-jobs-ui's `domLeak.test.ts`; keep
   them in any gate.
-- **bun-jobs runs 4 workers** (`--parallel=4`): its database-backed
-  suites share five servers and assert on durations, so above 4 workers the
-  failure count tracks machine load, not code. Measured on develop e20086a,
-  all five database URLs, on a shared machine: 4 workers failed nothing in
-  612–624 s (load 13–14) at both a 5 s and a 20 s default timeout; 8 failed
-  2–4 in 530–600 s (load 21–34), and one 8-worker run hung in a hook; 16
-  failed 5–16 in 428–498 s (load 25–31). A longer timeout barely helped,
-  since most of those failures are duration assertions. Serial is about
-  24 min, so 4 workers is about 2.3× faster.
-- **bun-jobs-ui runs 4 workers** (`--parallel=4`), not one per core: its
-  DOM and real-API waits time out when the machine is loaded, and several
-  sessions running suites at once is the normal state here. Measured at a
-  load of 24–88 on 16 cores: 16 workers failed 1, 11 and 16 tests (a
-  different set each time) in 78–84 s; 8 failed 3 in 82 s; 4 passed all
-  1668 in 76 s. On a quiet machine (load about 5) the cap does cost time:
-  4 workers took 44–46 s against 23–24 s for 16, both green twice. The
-  failures cost more than that, so the cap stays.
+- **bun-jobs runs 4 workers** (`--parallel=4`): its database-backed tests
+  share five servers and assert on durations, and at 16 they fail even with
+  the machine to themselves. Measured 2026-10-07, all five database URLs,
+  each run exclusive under the heavy-run wrapper, seeds 1–3: 16 workers
+  failed 5, 4, 6 and 1 tests in 316–382 s (a plain run and the three
+  seeds); 4 workers failed 0, 0 and 1 in 458–498 s. The failures vary by
+  run — the postgres and mariadb event contracts, `countDemand`, job
+  attribution, job-defaults rewrites, a cross-process file test — so they
+  are contention, not a bug in one test. It moves to 16 once those tests
+  are load-proofed and a three-seed re-measure is clean. (Earlier, on a
+  shared machine: 4 workers failed none in 612–624 s; 16 failed 5–16.)
+- **bun-jobs-ui runs 16 workers**: measured 2026-10-07 under the wrapper,
+  three runs, one beside a second heavy job (load peaking at 51): 1716 of
+  1716 each time, in 22–46 s. Its earlier cap at 4 came from several
+  unwrapped suites running at once (load 24–88), which the wrapper now
+  prevents. Its serial `--randomize` seeds stay in the gate.
 - **Heavy runs take a slot.** Several sessions share this machine, so a
   heavy job runs through `/tmp/claude-1000/bun-node-heavy-run.sh <command>`,
   installed from this repo's `scripts/heavy-run.sh` (below):
@@ -111,18 +111,19 @@ floor. So plain `bun test` is still the one-process run, as is
   on a busy one. Slot 1 is the old `/tmp/claude-1000/bun-node-heavy.lock`, so
   a plain `flock` on it still counts. The command's exit status is passed
   through; giving up after `HEAVY_WAIT` (default 90 min) exits 75.
-  - **A bun-jobs suite with database URLs runs alone**: the full suite, its
-    `--randomize` run, any directory-wide run with database URLs. Prefix
-    `HEAVY_EXCLUSIVE=1`. Those suites share five servers and assert on
-    durations, and the 4-worker figures above were measured one at a time.
+  - **bun-jobs' full suite with database URLs runs alone**: `bun run test`
+    and its `--randomize` run. Prefix `HEAVY_EXCLUSIVE=1`. It shares five
+    servers and asserts on durations.
   - **Heavy:** full suites, every bun-jobs-ui test (they drive the DOM and
     Chrome), the bun-jobs and bun-jobs-ui `run-all.ts`, `check-types.ts`,
     benches, and repeat, concurrent-copy and load loops.
   - **Not heavy, run directly:** lint in any directory,
-    `bun scripts/typecheck.ts`, `bun scripts/consumer-check.ts` (heavy until
-    2026-10-07), specific named test files in any package except bun-jobs-ui,
+    `bun scripts/typecheck.ts`, `bun scripts/consumer-check.ts`, and every
+    **targeted** test run in any package except bun-jobs-ui — named files,
+    directories or filters, with or without database URLs
+    (`bun test __tests__/summon __tests__/api`, `bun test summon provider`);
     the bun-common and bun-nest suites and `run-all.ts` (seconds each), single
-    examples and the template's test.
+    examples and the template's test. (The user's rulings of 2026-10-07.)
   - **Waiting costs nothing, so never poll for it.** Waiters block in the
     kernel on a turnstile lock, and only the head of the line tries the
     slots. Start a heavy job with the Bash tool's `run_in_background` and a
