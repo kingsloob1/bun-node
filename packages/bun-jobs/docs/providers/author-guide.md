@@ -885,7 +885,8 @@ it("passes the conformance kit", async () => {
   the unit has exited, with `removeCgroupTree` from
   `@kingsleyweb/bun-jobs/provider`: deepest first, so a cgroup the unit made
   inside it does not keep it. It never kills: write `"1"` to the cgroup's
-  `cgroup.kill` before it, and retry while it answers `false`.
+  `cgroup.kill` before it, and retry while it answers `false`. It refuses
+  (a `ConfigError`) a relative path or a directory that is not a cgroup.
 - **A provider with no platform API**, one that starts processes itself on
   the host (as `localCompute` does), has nothing to fake: pass
   `platform: "none"` and configure it to start `CONFORMANCE_WORKER`. The kit

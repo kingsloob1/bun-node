@@ -398,15 +398,20 @@ policy's `maxLifetime`, or on the stop signal. Behind that, at its lifetime
 bun-jobs sends the unit its stop signal (`shutdown.signal`, `SIGTERM`) and
 `SIGKILL` after the grace (`shutdown.graceMs`, default 10 s); `cancel()`
 does the same at once. Each unit leads a process group of its own, and the
-signals go to the whole group, so a tool a job started stops with it; with
-a `cgroup`, so does anything that left the group, and anything a unit
-leaves behind when it exits. Once a unit has exited nothing is sent to it.
+signals go to the whole group, so a tool a job started stops with it, and
+a stopped unit that exits inside its grace takes its group with it at once,
+a tool that ignores `SIGTERM` included. Without a `cgroup`, a process that
+left the group, or one a unit leaves behind when it exits on its own,
+survives it: **if your jobs run tools of their own, set `cgroup`**, which
+catches those too. Once a unit has exited nothing is sent to its group.
 
 **No orphans while the host is alive.** When the host exits, including on an
 uncaught exception or an unhandled rejection, every unit is killed. When the
 host is sent `SIGINT`, `SIGTERM` or `SIGHUP`, every unit gets its stop
-signal and, after its grace, `SIGKILL`, and no new unit is started (a
-summon answers `unavailable`, `host-shutdown: the host is stopping`); if
+signal and, after its grace, `SIGKILL`, and from then on no new unit is
+started in that process, even if your own shutdown keeps it running for a
+while (a summon answers `unavailable`, `host-shutdown: the host is
+stopping`); if
 nothing else listens for the signal, the host waits for its units and then
 ends by the signal as it would have. Units are detached from the host's
 terminal, so its Ctrl-C reaches them only this way.

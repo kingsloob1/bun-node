@@ -31,6 +31,9 @@ import { summonedFromArgs } from "../../../lib/index";
  *   waits as `sleep` does, exiting 0 on a stop signal without touching it;
  * - `stubborn-spawner`: starts `sleep 987` likewise, then waits as
  *   `stubborn` does;
+ * - `trap-spawner`: starts `sleep 987` with `SIGTERM` ignored (a tool that
+ *   handles the stop signal), logs `child <pid>`, and exits 0 on a stop
+ *   signal itself;
  * - `subcgroup`: makes a cgroup `inner` inside its own, starts `sleep 987`
  *   in it (appending `child <pid>` and `cgroup <path>` to the log), and
  *   exits 0, leaving both behind.
@@ -114,6 +117,24 @@ switch (mode) {
           // Leaves its child behind on purpose: the provider must not.
           process.exit(0);
         }
+      });
+    }
+    setInterval(() => {}, 1 << 30);
+    break;
+  }
+  case "trap-spawner": {
+    const child = Bun.spawn({
+      cmd: ["sh", "-c", "trap '' TERM; exec sleep 987"],
+      env: { PATH: process.env.PATH ?? "" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    log(`child ${child.pid}`);
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.on(signal, () => {
+        log(`signal ${signal}`);
+        process.exit(0);
       });
     }
     setInterval(() => {}, 1 << 30);

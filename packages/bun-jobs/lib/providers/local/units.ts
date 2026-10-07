@@ -23,7 +23,7 @@ export type StopReason = "cancelled" | "host-shutdown";
 
 /** One child process this host started. */
 export interface LocalUnit {
-  /** The handle `summon` answered for it: `local-<pid>-<n>`. */
+  /** The handle `summon` answered for it: `local-<pid>-<nonce>-<n>`. */
   readonly handle: string;
   /** The process. */
   readonly proc: Bun.Subprocess<"ignore", "pipe" | "ignore", "pipe">;
@@ -214,16 +214,21 @@ const HOST_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 /** Whether the guard's listeners are installed. */
 let guarded = false;
 
-/** Whether a host signal has started stopping every unit: summons start nothing while it has. */
+/** Whether a host signal is stopping every unit now: a second signal then kills at once. */
 let stopping = false;
 
+/** Whether a host signal has ever arrived in this process: from then on, summons start nothing. */
+let signalled = false;
+
 /**
- * Whether the host has begun stopping its units on a signal. While it has,
- * a summon starts nothing: a unit started in the shutdown grace would be
- * stopped at once, or outlive the host.
+ * Whether a host signal (`SIGINT`, `SIGTERM`, `SIGHUP`) has arrived while a
+ * unit ran. From then on, for the rest of the process, a summon starts
+ * nothing, even when an app listener keeps the host alive through a
+ * shutdown of its own: a unit started then would be stopped at once, or be
+ * left running when the app's shutdown ends with a `SIGKILL`.
  */
 export function hostStopping(): boolean {
-  return stopping;
+  return signalled;
 }
 
 /** Whether a unit's process has not exited yet: its pid, and so its group id, is still its own. */
@@ -304,8 +309,8 @@ function onHostExit(): void {
  * listener, it owns the signal's default action too: it waits for the units
  * (at most the longest grace), then raises the signal again with its
  * listeners removed, so the host ends as it would have. Otherwise the host's
- * own listener decides when it ends, `exit` kills whatever is left, and
- * summons resume once every unit has stopped (the host chose to live on).
+ * own listener decides when it ends, and `exit` kills whatever is left.
+ * Either way, no summon starts a unit again in this process.
  */
 function onHostSignal(signal: NodeJS.Signals): void {
   const units = [...LIVE];
@@ -317,6 +322,7 @@ function onHostSignal(signal: NodeJS.Signals): void {
     return;
   }
   stopping = true;
+  signalled = true;
   const longest = Math.max(0, ...units.map((unit) => unit.graceMs));
   const stopped = Promise.all(
     units.map(async (unit) => await stopUnit(unit, "host-shutdown")),
@@ -457,8 +463,11 @@ export function startUnit(
     if (config.cgroup !== undefined) {
       // A leaf of the configured cgroup: its limits bind every unit
       // together, and this unit's processes can be killed as one.
-      cgroup = join(config.cgroup, start.handle);
-      mkdirSync(cgroup);
+      const leaf = join(config.cgroup, start.handle);
+      // Ours only once made: a leaf that already exists (EEXIST) is someone
+      // else's, and the catch below never removes it.
+      mkdirSync(leaf);
+      cgroup = leaf;
     }
     proc = Bun.spawn({
       // Under the allowlist, Bun must not load a `.env` from the unit's cwd
@@ -550,6 +559,18 @@ export function startUnit(
     if (cgroup !== undefined) {
       killCgroup(cgroup);
       void removeCgroup(cgroup, start.removeCgroupTree);
+    } else if (unit.stopped !== undefined || unit.lifetimeExpired === true) {
+      // It was being stopped, and it exited inside its grace: what it
+      // started may ignore the stop signal, and the escalation below the
+      // unit's own exit would never come. A group with members keeps its id
+      // from being reused, so `-pid` still names this unit's group; an empty
+      // one answers ESRCH. Without a cgroup, what left the group is beyond
+      // reach.
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        // Empty: nothing was left.
+      }
     }
     unit.exitCode = code;
     LIVE.delete(unit);

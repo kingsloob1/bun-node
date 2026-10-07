@@ -57,8 +57,17 @@ const TOKEN_MAX = 4_096;
 /** Exited units kept for `status()`, per configured instance; the oldest goes first. */
 const EXITED_MAX = 256;
 
-/** A process-wide counter, so two handles never repeat even when a pid does. */
+/** A process-wide counter: the last part of a handle. */
 let unitSeq = 0;
+
+/**
+ * This process's nonce, random per process: part of every handle, since a
+ * pid repeats across restarts (PID 1 in every container), and a handle, or
+ * the unit cgroup named after it, must never be a previous host's.
+ */
+const PROCESS_NONCE = Array.from(crypto.getRandomValues(new Uint8Array(5)))
+  .map((byte) => byte.toString(36).padStart(2, "0"))
+  .join("");
 
 /** How long `validate()` waits for `bun --version`, in ms. */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -71,8 +80,14 @@ function errnoOf(error: unknown): string | undefined {
     : undefined;
 }
 
-/** Codes that mean the host is short of a resource for now, not misconfigured. */
+/**
+ * Codes that mean the host is short of a resource for now, not misconfigured.
+ * `EEXIST` is a unit cgroup already there: a leftover of a host killed
+ * outright, which it is not this config's fault, and which the next attempt
+ * (a new handle) does not meet.
+ */
 const TRANSIENT_ERRNO = new Set([
+  "EEXIST",
   "EAGAIN",
   "EMFILE",
   "ENFILE",
@@ -81,8 +96,8 @@ const TRANSIENT_ERRNO = new Set([
   "EINTR",
 ]);
 
-/** A spawn that threw, as a `ProviderError`. */
-function spawnFailure(
+/** Internal: a spawn that threw, as a `ProviderError`. Exported for tests. */
+export function spawnFailure(
   error: unknown,
   config: LocalComputeConfig,
 ): ProviderError {
@@ -276,7 +291,7 @@ function localFacet(config: LocalComputeConfig, logger: Logger): SummonFacet {
       let unit: LocalUnit;
       try {
         unit = startUnit(config, {
-          handle: `local-${process.pid}-${++unitSeq}`,
+          handle: `local-${process.pid}-${PROCESS_NONCE}-${++unitSeq}`,
           argv: request.argv,
           env,
           lifetimeMs,
@@ -539,13 +554,6 @@ export const localCompute: ComputeProvider<
     );
     if (cwd === undefined) {
       checks.push(...(await probeBun(config, context)));
-    }
-    if (config.cgroup !== undefined && process.platform !== "linux") {
-      checks.push({
-        id: "cgroup",
-        status: "warn",
-        detail: "ignored: cgroups exist on Linux only",
-      });
     }
     if (config.output.kind === "file") {
       checks.push(outputCheck(config.output.path));

@@ -465,12 +465,15 @@ and validates them at once, with no I/O: a malformed option is a
 - **`summon`** starts `min(count, free units)`, and answers `unavailable`
   (reason `max-units: N of N running`) when none is free: the host answered
   normally, so it is not a `ProviderError`, and the controller counts it as
-  it would a `quota` error. While the host is stopping its units on a
-  signal it starts nothing and answers `unavailable` (reason `host-shutdown:
-  the host is stopping`). A missing or unreadable entry, a missing `cwd`,
-  and a `bun` or `cgroup` that cannot be used are `misconfigured`, with the
-  errno as `platformCode` (`ENOENT`, `EACCES`); a spawn short of a resource
-  (`EAGAIN`, `EMFILE`, `ENOMEM`) or with no errno is `transient`. A call
+  it would a `quota` error. Once a host signal has arrived, for the rest of
+  the process (even when an app listener keeps the host alive), it starts
+  nothing and answers `unavailable` (reason `host-shutdown: the host is
+  stopping`). A missing or unreadable entry, a missing `cwd`, and a `bun` or
+  `cgroup` that cannot be used are `misconfigured`, with the errno as
+  `platformCode` (`ENOENT`, `EACCES`); a spawn short of a resource
+  (`EAGAIN`, `EMFILE`, `ENOMEM`), a unit cgroup that already exists
+  (`EEXIST`: a leftover, never removed, since this process did not make it)
+  or a failure with no errno is `transient`. A call
   whose signal has aborted rejects and starts nothing, and a `count` under 1
   is a `ConfigError` (the controller never asks for one).
 - **Every unit is spawned detached**, as the leader of a process group of
@@ -478,8 +481,14 @@ and validates them at once, with no I/O: a malformed option is a
   signal or a `SIGKILL` goes to the whole group (only while the unit is
   alive, since a reaped unit's group id may be reused), and a `SIGKILL` also
   to its cgroup (`cgroup.kill`, Linux 5.14+). What a unit starts in its own
-  group is stopped with it; with a cgroup, so is what it starts in a new
-  session, and what it leaves behind when it exits. Detached, a unit no
+  group is stopped with it: when a stopped unit exits inside its grace, its
+  group is sent `SIGKILL` at once, so a child that ignores the stop signal
+  does not outlive it. With a cgroup, so is what it starts in a new
+  session, and what it leaves behind when it exits; without one, a process
+  that left the group, or one a unit leaves behind when it exits on its own,
+  is beyond reach: **use `cgroup` for jobs that run tools of their own**.
+  A handle is `local-<pid>-<nonce>-<n>`, the nonce random per host process,
+  so neither a handle nor a unit cgroup is ever a previous host's. Detached, a unit no
   longer receives the terminal's Ctrl-C or `SIGHUP` with the host: the
   host's signal guard forwards a stop instead.
 - **`status`** answers `running` while the process lives; `exited` with code
@@ -513,7 +522,7 @@ and validates them at once, with no I/O: a malformed option is a
 - **`validate()`** checks `cwd`, `entry` (a readable file), `bun` (runs
   `bun --version` the way a unit starts, in a cgroup of its own inside the
   configured one, when one is set), `cgroup` (fails when no unit's cgroup
-  can be made or joined there; a `warn` off Linux, where it is ignored),
+  can be made or joined there),
   `output` (with `{ file }`: the file, or its directory, can be written; it
   creates nothing), `capacity` (a `warn` when every unit is busy), and
   `isolation` (always a `warn`: a unit is not a sandbox). It starts no unit.
@@ -560,7 +569,8 @@ What `localCompute` takes.
   relative to `cwd`), or `{ logger }` (each line, stdout at `info`, stderr at
   `warn`, bound with `unit`). Stderr is read in every case, for `status()`.
 - `cgroup`: optional. An existing cgroup directory the units start under
-  (Linux only): each gets a cgroup of its own inside it, removed when it
+  (Linux only: elsewhere a `ConfigError`, since Bun would ignore it): each
+  gets a cgroup of its own inside it, removed when it
   exits, so the limits on this one (`memory.max`, `pids.max`, `cpu.max`)
   bind all the units together, and every process a unit starts stays where
   stopping it kills it. Without root it must sit in a subtree delegated to the
@@ -604,10 +614,15 @@ that gives each unit a cgroup of its own, as `localCompute` and the
 It **never kills, only removes**: a cgroup still holding a process is busy
 (`EBUSY`) and stays, with everything above it. So write `"1"` to its
 `cgroup.kill` first (Linux 5.14+; it reaches every cgroup below too), and
-call this again while the killed processes are reaped. It never throws: it
-answers `true` once `path` is gone (removed now, or never there) and
-`false` when something kept it (a busy cgroup, a permission, an unreadable
-directory), for the caller to retry within a budget of its own.
+call this again while the killed processes are reaped. It answers `true`
+once `path` is gone (removed now, or never there) and `false` when
+something kept it (a busy cgroup, a permission, an unreadable directory),
+for the caller to retry within a budget of its own.
+
+Since it deletes directories, it **refuses what is not a cgroup**: a `path`
+that is not absolute (`""`, `"."` included), or a directory with no
+`cgroup.procs` file, throws a `ConfigError` before anything is removed.
+That is its only throw.
 
 ### `CHILD_BASE_ENV`
 

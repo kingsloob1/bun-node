@@ -3,6 +3,7 @@ import type { SummonFacet, UnitStatus } from "../../lib/provider/index";
 import type { ConformanceReport } from "../../lib/provider/testing/index";
 import process from "node:process";
 import { afterAll, describe, expect, it, setDefaultTimeout } from "bun:test";
+import { ConfigError } from "../../lib/index";
 import {
   COMPUTE_PROVIDER_API,
   defineComputeProvider,
@@ -227,6 +228,15 @@ function failed(report: ConformanceReport): string[] {
 }
 
 describe("the kit's self-hosted mode (negative controls)", () => {
+  it("refuses a run with no platform at all, rather than running self-hosted", async () => {
+    // What plain JavaScript, or a cast, can still pass.
+    await expect(
+      runProviderConformance(selfHosted(), {
+        config: { entry: CONFORMANCE_WORKER },
+      } as never),
+    ).rejects.toBeInstanceOf(ConfigError);
+  });
+
   it("passes a correct self-hosted provider, and skips what needs a platform", async () => {
     const report = await run();
     expect(failed(report)).toEqual([]);

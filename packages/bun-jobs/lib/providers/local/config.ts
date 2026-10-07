@@ -105,7 +105,8 @@ export interface LocalComputeOptions {
         logger: LoggerLike;
       };
   /**
-   * A cgroup directory the units are started under (Linux only): each unit
+   * A cgroup directory the units are started under (Linux only; elsewhere a
+   * `ConfigError`, since Bun would ignore it): each unit
    * gets a cgroup of its own inside it, so the limits set on this one
    * (`memory.max`, `pids.max`, `cpu.max`) bind all the units together, and
    * every process a unit starts stays in its cgroup, however it detaches.
@@ -405,6 +406,12 @@ function validate(input: unknown): StandardSchemaV1.Result<LocalComputeConfig> {
     if (typeof given.cgroup !== "string" || !isAbsolute(given.cgroup)) {
       issues.push({
         message: "cgroup must be an absolute path to a cgroup directory",
+        path: ["cgroup"],
+      });
+    } else if (process.platform !== "linux") {
+      // Bun ignores a cgroup elsewhere: a unit would run unbounded.
+      issues.push({
+        message: "cgroup is Linux only",
         path: ["cgroup"],
       });
     } else {

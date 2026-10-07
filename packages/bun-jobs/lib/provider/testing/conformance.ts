@@ -347,7 +347,7 @@ export interface ConformanceOptions<TInput = unknown> {
  * restored): code elsewhere in the process that captured them before still
  * works, and timers it creates meanwhile are not counted.
  *
- * @throws {ConfigError} when `platform` is neither `"none"` nor from `fakePlatform()`,
+ * @throws {ConfigError} when `platform` is missing, or neither `"none"` nor from `fakePlatform()`,
  *   `driver` names a backend other processes cannot share (the memory
  *   driver), or `provider` is neither a provider nor a summoner; each
  *   before any check runs.
@@ -356,6 +356,13 @@ export async function runProviderConformance<TInput, TConfig>(
   provider: ComputeProvider<TInput, TConfig, boolean> | Summoner,
   options: ConformanceOptions<TInput>,
 ): Promise<ConformanceReport> {
+  // The type requires it; plain JavaScript or a cast can still leave it out,
+  // and a run with no fake must be asked for, never fallen into.
+  if ((options.platform as unknown) === undefined) {
+    throw new ConfigError(
+      'runProviderConformance: platform is required: a fakePlatform() or "none"',
+    );
+  }
   const fake = options.platform === "none" ? undefined : options.platform;
   const internals = fake === undefined ? undefined : fakeInternals(fake);
   if (options.driver !== undefined) {

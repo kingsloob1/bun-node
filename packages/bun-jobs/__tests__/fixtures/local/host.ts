@@ -22,7 +22,9 @@ import { localCompute } from "../../../lib/provider/index";
  *   `host-signal` and keeps the host alive; `throw` throws an uncaught error
  *   and `reject` leaves a rejection unhandled, 100 ms after `ready`;
  *   `summoning` waits like `wait`, and summons one more unit every 200 ms,
- *   printing each answer as `{"status":…,"at":…}`.
+ *   printing each answer as `{"status":…,"at":…}`; `listen-summoning` does
+ *   the same with its own `SIGTERM` listener (printing `host-signal`), so
+ *   the host lives on after the signal.
  */
 
 const [unitMode, dir, hostMode, grace] = process.argv.slice(2) as [
@@ -91,7 +93,7 @@ function unitReady(n: number): boolean {
 while (![1, 2].every(unitReady)) {
   await Bun.sleep(20);
 }
-if (hostMode === "listen") {
+if (hostMode === "listen" || hostMode === "listen-summoning") {
   process.on("SIGTERM", () => {
     process.stdout.write("host-signal\n");
   });
@@ -110,7 +112,7 @@ if (hostMode === "reject") {
     void Promise.reject(new Error("the host's promise was rejected"));
   }, 100);
 }
-if (hostMode === "summoning") {
+if (hostMode === "summoning" || hostMode === "listen-summoning") {
   let n = 2;
   setInterval(() => {
     n++;
