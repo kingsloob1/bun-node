@@ -284,16 +284,17 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
   instead of a new place at the back. Its state is in
   `/tmp/claude-1000/bun-node-heavy-jobs/<ticket>.status`.
 
-- **Exclusive** (`HEAVY_EXCLUSIVE=1`): a bun-jobs suite or directory-wide run
-  with database URLs — the full suite, `--randomize`, multi-file database
-  runs.
+- **Exclusive** (`HEAVY_EXCLUSIVE=1`): bun-jobs' full suite with database
+  URLs, and its `--randomize` run.
 - **Wrapper:** full suites, every bun-jobs-ui test (DOM and Chrome), the
   bun-jobs and bun-jobs-ui run-alls, `check-types.ts`, benches, and repeat,
   concurrent-copy and load loops.
 - **Direct, no wrapper:** lint in any directory, `bun scripts/typecheck.ts`,
-  `bun scripts/consumer-check.ts` (no longer heavy, since 2026-10-07),
-  specific named test files in any package except bun-jobs-ui, the bun-common
-  and bun-nest suites and run-alls, single examples, the template test.
+  `bun scripts/consumer-check.ts`, every targeted test run in any package
+  except bun-jobs-ui (named files, directories or filters, with or without
+  database URLs, e.g. `bun test __tests__/summon __tests__/api`), the
+  bun-common and bun-nest suites and run-alls, single examples, the template
+  test. (The user's rulings, 2026-10-07.)
 - Wrap the heavy command, not a script that also installs or sleeps; give it a
   `timeout`; never `flock -o` (it drops the lock while the command runs).
 - **The wrapper decides how a job runs from its history** (`HEAVY_MODE=auto`,
