@@ -81,6 +81,9 @@ const SLOW_FIRST = [
   "10-options/draft-and-process-every.ts",
   "10-options/job-options.ts",
   "02-queues/custom-provider.ts",
+  // 11.5 to 14.6 s, measured on a busy machine: most of it the conformance
+  // kit, which starts 16 units at once.
+  "02-queues/local-compute.ts",
   "05-flow-control/rate-and-concurrency-limits.ts",
 ];
 
