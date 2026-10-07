@@ -448,7 +448,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  79 + addedByState,
+  80 + addedByState,
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
@@ -520,7 +520,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 63 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 64 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
