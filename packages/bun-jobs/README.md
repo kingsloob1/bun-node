@@ -3384,9 +3384,7 @@ where the group and the override both hold an object — `triggers`,
 over the group's and the rest are kept; anything else (`summoner`, a
 function, a number, `false`) replaces the group's value whole. So with the
 group below, `images` gets `{ perHour: 5, perDay: 100 }` and
-`{ onAdd: false, poll: false }`. A `budget: false` override turns the budget
-off, and a `budget` object over a group's `budget: false` turns it on with
-only the override's values (the controller's defaults for the rest).
+`{ onAdd: false, poll: false }`.
 
 ```ts
 export const jobs = new BunJobs({

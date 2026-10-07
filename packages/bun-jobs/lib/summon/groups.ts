@@ -36,10 +36,7 @@ export interface SummonGroup extends SummonPolicy {
    * plain object — `triggers`, `backoff`, `circuit`, `budget`, `scaleDown`,
    * `env` — the override's fields go over the group's, so
    * `{ budget: { perHour: 5 } }` keeps a `perDay` the group set. Anything
-   * else replaces the group's value whole: `summoner`, a function, a number,
-   * `false`. So a `budget: false` override turns the budget off, and a
-   * `budget` object over a group's `budget: false` turns it on with only the
-   * override's values.
+   * else replaces the group's value whole: `summoner`, a function, a number.
    */
   overrides?: Readonly<Record<string, Partial<SummonPolicy>>>;
 }
