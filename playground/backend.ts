@@ -12,9 +12,10 @@ import process from "node:process";
  *   `memory` because summoning (`summoning.ts`) needs a backend **another
  *   process** can reach: a summoned worker is a separate process, and the
  *   memory driver is refused by the summon controller.
- * - `memory`: nothing on disk at all, and events are only this process's own
- *   (the badge says `events: local`). Summoning is skipped: the providers are
- *   still listed, but no worker is summoned for `renders`.
+ * - `memory`: nothing on disk at all (not even `.data/`), and events are only
+ *   this process's own (the badge says `events: local`). Summoning is
+ *   skipped: the providers are still listed, but no worker is summoned for
+ *   any of the summoned queues.
  * - `file` / `sqlite`: kept in `playground/.data/`, so a restart keeps every
  *   queue, job and runner.
  * - `postgres`, `mysql`, `mariadb`, `redis`, `mongodb`: need
@@ -66,7 +67,11 @@ export function unitsLogFile(): string {
   return join(DATA_DIR, `units-${process.pid}.log`);
 }
 
-/** This process's files of one kind in `.data/` (`temp-<pid>.db*`, `units-<pid>.log`), with the pid each belongs to. */
+/**
+ * Every playground's files of one kind in `.data/` (`temp-<pid>.db*` or
+ * `units-<pid>.log`, by `pattern`, whose first group is the pid), this
+ * process's and any other's, with the pid each belongs to.
+ */
 function pidFiles(pattern: RegExp): { file: string; pid: number }[] {
   let names: string[];
   try {

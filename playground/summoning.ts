@@ -7,13 +7,19 @@ import type {
 } from "@kingsleyweb/bun-jobs";
 import type { Fault } from "./compute/units";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { consoleSink, createLogger } from "@kingsleyweb/bun-common";
 import { defineSummoner } from "@kingsleyweb/bun-jobs";
 import { localCompute } from "@kingsleyweb/bun-jobs/provider";
 import { unitsLogFile } from "./backend";
 import { playgroundCgroup } from "./compute/cgroup";
+import { stopLeftoverUnits } from "./compute/leftovers";
 import { defineVaultCompute, storeSecret } from "./compute/provider";
-import { UnitBoard } from "./compute/units";
+import {
+  ALL_PROVIDER_FAULTS,
+  ALL_UNIT_FAULTS,
+  UnitBoard,
+} from "./compute/units";
 
 /**
  * Summoning: queues nobody serves until a worker is **summoned** for them,
@@ -74,8 +80,16 @@ export interface Summoning {
 /** The token Vault Compute accepts: made up. A declared secret. */
 const TOKEN = "vc_live_9f3b7c21e4d85a60";
 
+/** One fault the cycle queues before a burst. */
+interface CycleFault {
+  /** The queue whose next start it goes to. */
+  queue: string;
+  /** The fault: one that queue takes (see the `addQueue` calls below). */
+  kind: Fault;
+}
+
 /** The fault queued before each burst, for one queue, in turn; `undefined` for none. */
-const FAULT_CYCLE: readonly ({ queue: string; kind: Fault } | undefined)[] = [
+const FAULT_CYCLE: readonly (CycleFault | undefined)[] = [
   undefined,
   { queue: "renders", kind: "crash" },
   undefined,
@@ -122,8 +136,24 @@ export async function createSummoning(
   options: SummoningOptions,
 ): Promise<Summoning> {
   const board = new UnitBoard();
-  const cgroup = await playgroundCgroup();
   const here = import.meta.dir;
+  const groupEntry = new URL("./compute/worker.ts", import.meta.url);
+  const obinnaEntry = new URL(
+    "./compute/obinna-queue-worker.ts",
+    import.meta.url,
+  );
+  // Units a `bun --watch` reload left running (`compute/leftovers.ts`), before
+  // anything is summoned; then the cgroup, sweeping what earlier runs left.
+  const leftover = await stopLeftoverUnits([
+    fileURLToPath(groupEntry),
+    fileURLToPath(obinnaEntry),
+  ]);
+  if (leftover > 0) {
+    console.warn(
+      `playground: stopped ${leftover} summoned unit${leftover === 1 ? "" : "s"} an earlier run of this process left (a --watch reload)`,
+    );
+  }
+  const cgroup = await playgroundCgroup();
 
   // Two host variables, for `env` and `passEnv` to choose between. Read live
   // at each spawn: localCompute() never hands a unit the startup environment.
@@ -142,13 +172,15 @@ export async function createSummoning(
    * and `PLAYGROUND_POOL`; and, with `PLAYGROUND_CGROUP`, a cgroup.
    */
   const media = localCompute({
-    entry: new URL("./compute/worker.ts", import.meta.url),
+    entry: groupEntry,
     cwd: here,
     args: ["--tier=standard"],
     maxUnits: 5,
     bootBudget: 15_000,
     shutdown: { signal: "SIGTERM", graceMs: 3_000 },
-    output: { file: unitsLogFile() },
+    // On the memory driver nothing is summoned, so nothing is written, and
+    // `.data/` is not made either.
+    output: options.driver === undefined ? "ignore" : { file: unitsLogFile() },
     env: { PLAYGROUND_POOL: "media" },
     passEnv: ["PLAYGROUND_REGION"],
     ...(cgroup.path === undefined ? {} : { cgroup: cgroup.path }),
@@ -161,7 +193,7 @@ export async function createSummoning(
    * 5 minutes on any unit's life that the policy's `maxLifetime` must fit.
    */
   const obinna = localCompute({
-    entry: new URL("./compute/obinna-queue-worker.ts", import.meta.url),
+    entry: obinnaEntry,
     cwd: here,
     maxUnits: 1,
     maxLifetime: 300_000,
@@ -178,7 +210,7 @@ export async function createSummoning(
 
   /** `ledger`'s replicas: the same entry, two at most, output dropped. */
   const ledger = localCompute({
-    entry: new URL("./compute/worker.ts", import.meta.url),
+    entry: groupEntry,
     cwd: here,
     args: ["--tier=replica"],
     maxUnits: 2,
@@ -252,20 +284,25 @@ export async function createSummoning(
     },
   });
 
-  // Faults can be queued for every summoned queue; provider faults only where
-  // the vault summons.
+  // The faults each queue takes: what its units' entry acts on, plus the
+  // provider faults where the vault summons. `compute/worker.ts` knows all
+  // four unit faults (on brittle, one replaces its override's `crash` for
+  // that start); `obinna-queue-worker.ts` only `crash` and `die`.
   for (const queue of [
     "renders",
     "transcodes",
     "thumbnails",
     "marathon",
     "brittle",
-    "obinna-queue",
     "ledger",
   ]) {
-    board.addQueue(queue);
+    board.addQueue(queue, ALL_UNIT_FAULTS);
   }
-  board.addQueue("secure-exports", { providerFaults: true });
+  board.addQueue("obinna-queue", ["crash", "die"]);
+  board.addQueue("secure-exports", [
+    ...ALL_UNIT_FAULTS,
+    ...ALL_PROVIDER_FAULTS,
+  ]);
 
   /** Static, the same for every attempt: how a unit reaches the backend. */
   const env: Record<string, string> =
@@ -505,9 +542,13 @@ export async function createSummoning(
       for (const timeout of timeouts) {
         clearTimeout(timeout);
       }
-      const stopped = await board.stop();
-      await cgroup.release();
-      return stopped;
+      try {
+        return await board.stop();
+      } finally {
+        // Even when stopping the units failed: the cgroup's release kills
+        // whatever is left in it before removing it.
+        await cgroup.release();
+      }
     },
   };
 }

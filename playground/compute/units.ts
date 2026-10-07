@@ -67,6 +67,40 @@ export const PROVIDER_FAULTS: Readonly<Record<ProviderFault, string>> = {
   transient: "ProviderError transient: failed, counted, backoff",
 };
 
+/** Every unit fault, in the order the control page lists them. */
+export const ALL_UNIT_FAULTS: readonly UnitFault[] = [
+  "crash",
+  "die",
+  "slow-boot",
+  "ignore-stop",
+];
+
+/** Every provider fault, in the order the control page lists them. */
+export const ALL_PROVIDER_FAULTS: readonly ProviderFault[] = [
+  "throttled",
+  "quota",
+  "auth",
+  "transient",
+];
+
+/** Whether `kind` names a unit fault: an own key, so `toString` and `__proto__` are not. */
+export function isUnitFault(kind: string): kind is UnitFault {
+  return Object.hasOwn(UNIT_FAULTS, kind);
+}
+
+/** Whether `kind` names a provider fault: an own key, so `toString` and `__proto__` are not. */
+export function isProviderFault(kind: string): kind is ProviderFault {
+  return Object.hasOwn(PROVIDER_FAULTS, kind);
+}
+
+/** What a fault does, for the page and the 400 answers. */
+function faultText(kind: Fault): string {
+  return isUnitFault(kind) ? UNIT_FAULTS[kind] : PROVIDER_FAULTS[kind];
+}
+
+/** The most faults one queue may have queued at once: a POST past it is refused. */
+export const MAX_QUEUED_PER_QUEUE = 3;
+
 /** One unit the playground saw started. */
 interface UnitRecord {
   /** Which configured instance started it: the facet that answers its `status()`. */
@@ -93,7 +127,11 @@ export interface UnitView extends UnitStatus {
   startedAt: string;
 }
 
-/** The most unit records kept for the page; the oldest exited ones go first. */
+/**
+ * The unit records kept past which the oldest **exited** ones are dropped,
+ * once a status read has said they exited. A running unit's record is never
+ * dropped: it is what {@link UnitBoard.stop} stops.
+ */
 const KEEP = 200;
 
 /** A call context for the board's own facet calls (status, cancel), bounded by `ms`. */
@@ -125,44 +163,42 @@ export class UnitBoard {
   readonly #units: UnitRecord[] = [];
   /** The raw facet of each instrumented instance, by pool name: what answers `status()` and `cancel()`. */
   readonly #facets = new Map<string, SummonFacet>();
-  /** The queues summoned for, and whether each takes provider faults. */
-  readonly #queues = new Map<string, { providerFaults: boolean }>();
+  /** The queues summoned for, each with the faults its units (or provider) act on. */
+  readonly #queues = new Map<string, readonly Fault[]>();
   /** Set by {@link stop}: from then on no start goes through. */
   #stopping = false;
 
   /**
-   * Names a queue the board accepts faults for. `providerFaults` is `true`
-   * for a queue the vault provider summons for.
+   * Names a queue the board accepts faults for, and which: only the faults
+   * its units' entry acts on (`obinna-queue-worker.ts` knows `crash` and
+   * `die` alone), plus the provider faults where the vault provider
+   * summons. Any other is refused, naming these.
    */
-  addQueue(queue: string, options: { providerFaults?: boolean } = {}): void {
-    this.#queues.set(queue, {
-      providerFaults: options.providerFaults ?? false,
-    });
+  addQueue(queue: string, faults: readonly Fault[]): void {
+    this.#queues.set(queue, [...faults]);
   }
 
-  /** Queues a fault for the next start for `queue`, or says why not. */
+  /** Queues a fault for the next start for `queue`, or says why not (the 400's text). */
   inject(queue: string, kind: string): string | undefined {
-    const known = this.#queues.get(queue);
-    if (known === undefined) {
+    const allowed = this.#queues.get(queue);
+    if (allowed === undefined) {
       return `queue must be one of ${[...this.#queues.keys()].join(", ")}`;
     }
-    if (kind in UNIT_FAULTS) {
-      this.#push(queue, kind as UnitFault);
-      return undefined;
+    if (!isUnitFault(kind) && !isProviderFault(kind)) {
+      return `kind must be one of ${[...ALL_UNIT_FAULTS, ...ALL_PROVIDER_FAULTS].join(", ")}`;
     }
-    if (kind in PROVIDER_FAULTS) {
-      if (!known.providerFaults) {
-        return `${kind} is a provider fault: localCompute never answers it. Queue it on ${[
-          ...this.#queues,
-        ]
-          .filter(([, value]) => value.providerFaults)
-          .map(([name]) => name)
-          .join(", ")}, which the vault provider summons for`;
-      }
-      this.#push(queue, kind as ProviderFault);
-      return undefined;
+    if (!allowed.includes(kind)) {
+      const why = isProviderFault(kind)
+        ? `${kind} is a provider fault, which localCompute never answers`
+        : `${queue}'s units do not act on ${kind}`;
+      return `${why}: ${queue} takes ${allowed.join(", ")}`;
     }
-    return `kind must be one of ${[...Object.keys(UNIT_FAULTS), ...Object.keys(PROVIDER_FAULTS)].join(", ")}`;
+    const queued = this.#faults.get(queue)?.length ?? 0;
+    if (queued >= MAX_QUEUED_PER_QUEUE) {
+      return `${queue} already has ${queued} faults queued, the most it takes: wait for a start to spend one, or clear them`;
+    }
+    this.#push(queue, kind);
+    return undefined;
   }
 
   /** Every queued fault, by queue. */
@@ -199,7 +235,7 @@ export class UnitBoard {
   ): K | undefined {
     const list = this.#faults.get(queue);
     const next = list?.[0];
-    if (next === undefined || !(next in kinds)) {
+    if (next === undefined || !Object.hasOwn(kinds, next)) {
       return undefined;
     }
     list!.shift();
@@ -276,11 +312,32 @@ export class UnitBoard {
     return { ...instance, summon: wrapped };
   }
 
-  /** Records a started unit, dropping the oldest records past {@link KEEP}. */
+  /** Records a started unit. Old records go in {@link #prune}. */
   #record(unit: UnitRecord): void {
     this.#units.push(unit);
-    if (this.#units.length > KEEP) {
-      this.#units.splice(0, this.#units.length - KEEP);
+  }
+
+  /**
+   * Past {@link KEEP} records, drops the oldest whose unit a status read has
+   * just said is no longer running; a running unit's record always stays.
+   */
+  #prune(statuses: readonly UnitStatus[]): void {
+    if (this.#units.length <= KEEP) {
+      return;
+    }
+    const ended = new Set(
+      statuses
+        .filter((status) => status.state !== "running")
+        .map((status) => status.handle),
+    );
+    let excess = this.#units.length - KEEP;
+    for (let index = 0; index < this.#units.length && excess > 0; ) {
+      if (ended.has(this.#units[index]!.handle)) {
+        this.#units.splice(index, 1);
+        excess--;
+      } else {
+        index++;
+      }
     }
   }
 
@@ -296,6 +353,7 @@ export class UnitBoard {
         units.map((unit) => unit.handle),
         callContext(5_000),
       );
+      this.#prune(statuses);
       units.forEach((unit, index) => {
         views.push({
           ...(statuses[index] ?? { handle: unit.handle, state: "unknown" }),
@@ -322,6 +380,7 @@ export class UnitBoard {
       return [];
     }
     const statuses = await facet.status(handles, callContext(5_000));
+    this.#prune(statuses);
     return statuses
       .filter((status) => status.state === "running")
       .map((status) => status.handle);
@@ -371,11 +430,11 @@ export class UnitBoard {
     const form = (queue: string, kind: string, text: string): string =>
       `<form method="post" action="${this.basePath}/faults?kind=${kind}&amp;queue=${encodeURIComponent(queue)}"><button>${kind}</button> <span>${escapeHtml(text)}</span></form>`;
     const sections = queues
-      .map(([queue, { providerFaults }]) => {
-        const kinds: [string, string][] = [
-          ...Object.entries(UNIT_FAULTS),
-          ...(providerFaults ? Object.entries(PROVIDER_FAULTS) : []),
-        ];
+      .map(([queue, allowed]) => {
+        const kinds = allowed.map((kind): [string, string] => [
+          kind,
+          faultText(kind),
+        ]);
         return `<details><summary><a href="/jobs/queues/${queue}">${queue}</a>${
           pending[queue] === undefined
             ? ""

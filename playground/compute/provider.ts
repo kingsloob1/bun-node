@@ -214,6 +214,14 @@ function faultError(fault: ProviderFault): ProviderError {
       return new ProviderError("vault compute is unavailable", "transient", {
         platformCode: "ServiceUnavailable",
       });
+    default: {
+      // Unreachable while `ProviderFault` lists only the four above; a fifth
+      // added there without a case here fails the typecheck on `never`, and
+      // anything else that reaches here at run time is a clear error rather
+      // than a `throw undefined`.
+      const unknown: never = fault;
+      throw new Error(`vault compute: no answer for fault ${String(unknown)}`);
+    }
   }
 }
 

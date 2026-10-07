@@ -149,32 +149,44 @@ bun-node playground (${playgroundBackend()} driver)
 `);
 
 let stopping = false;
-/** Stops everything cleanly, once. */
+/**
+ * Stops everything cleanly, once. Whatever fails on the way, the `finally`
+ * still removes this run's own files (the `temp` database, the units log) and
+ * exits; the units and the cgroup are `summoning.stop()`'s, first of all.
+ */
 async function shutdown(): Promise<void> {
   if (stopping) {
     return;
   }
   stopping = true;
   console.log("\nstopping…");
-  // First, every summoned worker process, awaited to its exit: the units are
-  // what must not outlive the playground, and they need the backend open
-  // until they have closed their workers.
-  const units = await summoning.stop();
-  console.log(
-    `waited for ${units} summoned unit${units === 1 ? "" : "s"} to exit`,
-  );
-  await simulation.stop();
-  await mailer.stop();
-  await stopRunners();
-  await api.close();
-  await app.close();
-  await jobs.close();
-  removeTempData("mine");
-  process.exit(0);
+  let code = 0;
+  try {
+    // First, every summoned worker process, awaited to its exit: the units
+    // are what must not outlive the playground, and they need the backend
+    // open until they have closed their workers.
+    const units = await summoning.stop();
+    console.log(
+      `waited for ${units} summoned unit${units === 1 ? "" : "s"} to exit`,
+    );
+    await simulation.stop();
+    await mailer.stop();
+    await stopRunners();
+    await api.close();
+    await app.close();
+    await jobs.close();
+  } catch (error) {
+    code = 1;
+    console.error("playground: stopping failed:", error);
+  } finally {
+    removeTempData("mine");
+    process.exit(code);
+  }
 }
-// No `exit` handler of our own is needed for the units: `localCompute()` kills
-// every unit it started when the process exits, however it exits (short of
-// SIGKILL), and stops them on SIGINT/SIGTERM/SIGHUP as well; `shutdown()`
-// then waits for each to exit.
-process.on("SIGINT", () => void shutdown());
-process.on("SIGTERM", () => void shutdown());
+// SIGHUP too (a closed terminal): `localCompute()`'s guard listens for it,
+// and as that signal's only listener it would stop the units and re-raise
+// it, ending the process without this shutdown. Every unit is killed on
+// `exit` by the guard as well, however the process ends (short of SIGKILL).
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => void shutdown());
+}
