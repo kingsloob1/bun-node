@@ -6,6 +6,7 @@ import type {
   SummonOption,
 } from "@kingsleyweb/bun-jobs";
 import type { Fault } from "./compute/units";
+import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { consoleSink, createLogger } from "@kingsleyweb/bun-common";
@@ -13,7 +14,11 @@ import { defineSummoner } from "@kingsleyweb/bun-jobs";
 import { localCompute } from "@kingsleyweb/bun-jobs/provider";
 import { unitsLogFile } from "./backend";
 import { playgroundCgroup } from "./compute/cgroup";
-import { stopLeftoverUnits } from "./compute/leftovers";
+import {
+  stopRecordedUnits,
+  UnitPidFile,
+  unitPidFilePath,
+} from "./compute/leftovers";
 import { defineVaultCompute, storeSecret } from "./compute/provider";
 import {
   ALL_PROVIDER_FAULTS,
@@ -135,25 +140,31 @@ function work(min: number, max: number): { subject: string; steps: number } {
 export async function createSummoning(
   options: SummoningOptions,
 ): Promise<Summoning> {
-  const board = new UnitBoard();
   const here = import.meta.dir;
   const groupEntry = new URL("./compute/worker.ts", import.meta.url);
   const obinnaEntry = new URL(
     "./compute/obinna-queue-worker.ts",
     import.meta.url,
   );
-  // Units a `bun --watch` reload left running (`compute/leftovers.ts`), before
-  // anything is summoned; then the cgroup, sweeping what earlier runs left.
-  const leftover = await stopLeftoverUnits([
+  // Every unit this run starts is recorded (pid, start time, command line) in
+  // one file per checkout, so a later run can stop what a killed run, or a
+  // `--watch` reload, left behind (`compute/leftovers.ts`). That happens
+  // first, before anything is summoned; then the cgroup, sweeping what
+  // earlier runs left in theirs.
+  const pids = new UnitPidFile(unitPidFilePath(join(here, "..")), [
     fileURLToPath(groupEntry),
     fileURLToPath(obinnaEntry),
   ]);
+  const leftover = await stopRecordedUnits(pids.file);
   if (leftover > 0) {
     console.warn(
-      `playground: stopped ${leftover} summoned unit${leftover === 1 ? "" : "s"} an earlier run of this process left (a --watch reload)`,
+      `playground: stopped ${leftover} summoned unit${leftover === 1 ? "" : "s"} an earlier run left running (killed, or a --watch reload)`,
     );
   }
+  const board = new UnitBoard(() => pids.record());
   const cgroup = await playgroundCgroup();
+  /** Every instance's units in the run's cgroup, when there is one, so `cgroup.kill` reaches them all. */
+  const inCgroup = cgroup.path === undefined ? {} : { cgroup: cgroup.path };
 
   // Two host variables, for `env` and `passEnv` to choose between. Read live
   // at each spawn: localCompute() never hands a unit the startup environment.
@@ -183,7 +194,7 @@ export async function createSummoning(
     output: options.driver === undefined ? "ignore" : { file: unitsLogFile() },
     env: { PLAYGROUND_POOL: "media" },
     passEnv: ["PLAYGROUND_REGION"],
-    ...(cgroup.path === undefined ? {} : { cgroup: cgroup.path }),
+    ...inCgroup,
   });
 
   /**
@@ -196,6 +207,7 @@ export async function createSummoning(
     entry: obinnaEntry,
     cwd: here,
     maxUnits: 1,
+    ...inCgroup,
     maxLifetime: 300_000,
     shutdown: { signal: "SIGINT", graceMs: 5_000 },
     env: "inherit",
@@ -214,6 +226,7 @@ export async function createSummoning(
     cwd: here,
     args: ["--tier=replica"],
     maxUnits: 2,
+    ...inCgroup,
     shutdown: { signal: "SIGTERM", graceMs: 3_000 },
     output: "ignore",
     env: { PLAYGROUND_POOL: "ledger" },
@@ -230,6 +243,7 @@ export async function createSummoning(
     entry: "compute/not-built-yet.ts",
     cwd: here,
     maxUnits: 1,
+    ...inCgroup,
   });
 
   const mediaUnits = board.instrument(media, "media");
@@ -543,7 +557,10 @@ export async function createSummoning(
         clearTimeout(timeout);
       }
       try {
-        return await board.stop();
+        const stopped = await board.stop();
+        // Every unit has exited: nothing of this run's for a later one to stop.
+        pids.forgetMine();
+        return stopped;
       } finally {
         // Even when stopping the units failed: the cgroup's release kills
         // whatever is left in it before removing it.

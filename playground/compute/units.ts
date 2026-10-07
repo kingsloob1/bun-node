@@ -168,6 +168,15 @@ export class UnitBoard {
   /** Set by {@link stop}: from then on no start goes through. */
   #stopping = false;
 
+  constructor(
+    /**
+     * Called after every start that started a unit, once the unit is
+     * spawned: the playground records the new units' pids there
+     * (`leftovers.ts`), so a later run can stop them if this one is killed.
+     */
+    readonly onStarted: () => void = () => {},
+  ) {}
+
   /**
    * Names a queue the board accepts faults for, and which: only the faults
    * its units' entry acts on (`obinna-queue-worker.ts` knows `crash` and
@@ -278,6 +287,7 @@ export class UnitBoard {
         throw error;
       }
       if (result.status === "started") {
+        this.onStarted();
         for (const handle of result.handles) {
           this.#record({
             pool,

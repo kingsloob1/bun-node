@@ -5,7 +5,7 @@ import { removeCgroupTree } from "@kingsleyweb/bun-jobs/provider";
 import { isAlive } from "../backend";
 
 /**
- * The cgroup the media `localCompute()` instance starts its units under, when
+ * The cgroup every `localCompute()` instance starts its units under, when
  * `PLAYGROUND_CGROUP` asks for one. Off by default: `localCompute()`'s
  * `cgroup` is optional, and needs Linux with cgroup v2 and a subtree the user
  * may write.

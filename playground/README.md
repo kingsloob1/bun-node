@@ -226,12 +226,13 @@ with its own Summon panel, marker, budget, backoff and circuit.
 | `compute/units.ts` | the playground's wrapper around each instance's summon facet (a spread of a configured provider keeps its brand and its Providers id): it records the units, injects a fault into one queue's next start, and on shutdown stops every unit and awaits its exit. It also serves `/playground/compute` |
 | `compute/provider.ts` | "Vault Compute", a third-party provider made with `defineComputeProvider` whose units are started by the `media` `localCompute()` underneath. It shows what `localCompute()` cannot: a declared secret, an asynchronous config (and so Pending and Failed readiness), and the `throttled`/`quota`/`auth`/`transient` answers of a remote platform |
 | `compute/cgroup.ts` | the run's cgroup when `PLAYGROUND_CGROUP` asks for one |
+| `compute/leftovers.ts` | records every unit this run starts, and at startup stops the units a killed run (or a `--watch` reload) left running |
 
 **The `localCompute()` instances** (Providers screen, `@kingsleyweb/bun-jobs:local@0.1.0~1` to `~4`):
 
 | Instance | Options | What to see |
 |---|---|---|
-| `~1` `media` | `entry: compute/worker.ts`, `cwd: playground/`, `args: ["--tier=standard"]`, `maxUnits: 5`, `bootBudget: 15_000`, `shutdown: { signal: "SIGTERM", graceMs: 3_000 }`, `output: { file: ".data/units-<pid>.log" }`, `env: { PLAYGROUND_POOL: "media" }`, `passEnv: ["PLAYGROUND_REGION"]`, and `cgroup` with `PLAYGROUND_CGROUP` | five units at once across six queues, so a big burst meets `unavailable` (`max-units: 5 of 5 running`); every unit's stdout and stderr in `playground/.data/units-<pid>.log` (`tail -f` it); a job's `returnValue.env` has `region` (passed by name) and `pool` (set), and `hostSecret: "kept out"` — the playground sets `PLAYGROUND_HOST_SECRET` in its own environment, and the allowlist never hands it on; `tier: "standard"` from `args` |
+| `~1` `media` | `entry: compute/worker.ts`, `cwd: playground/`, `args: ["--tier=standard"]`, `maxUnits: 5`, `bootBudget: 15_000`, `shutdown: { signal: "SIGTERM", graceMs: 3_000 }`, `output: { file: ".data/units-<pid>.log" }`, `env: { PLAYGROUND_POOL: "media" }`, `passEnv: ["PLAYGROUND_REGION"]`, and (like every instance) `cgroup` with `PLAYGROUND_CGROUP` | five units at once across six queues, so a big burst meets `unavailable` (`max-units: 5 of 5 running`); every unit's stdout and stderr in `playground/.data/units-<pid>.log` (`tail -f` it); a job's `returnValue.env` has `region` (passed by name) and `pool` (set), and `hostSecret: "kept out"` — the playground sets `PLAYGROUND_HOST_SECRET` in its own environment, and the allowlist never hands it on; `tier: "standard"` from `args` |
 | `~2` `obinna` | `entry: compute/obinna-queue-worker.ts`, `maxUnits: 1`, `maxLifetime: 300_000` (the platform's cap: a policy `maxLifetime` above it is a `ConfigError`), `shutdown: { signal: "SIGINT", graceMs: 5_000 }`, `env: "inherit"`, `output: { logger }` | each unit's `obinna unit up…` line in the playground's terminal, logged by the `obinna-units` logger with the unit's handle; a job's `returnValue.hostEnv` is `"inherited"`: the whole host environment, secret included |
 | `~3` `ledger` | the group's entry again, `args: ["--tier=replica"]`, `maxUnits: 2`, `output: "ignore"` | driven by a scale-style summoner, below |
 | `~4` | `entry: "compute/not-built-yet.ts"` | it configures (the schema reads no file), and **Test connection** fails its `entry` check. Nothing summons with it: a summon would be a `misconfigured` `ProviderError`, which opens a circuit at once |
@@ -258,7 +259,7 @@ with its own Summon panel, marker, budget, backoff and circuit.
 | `shutdown` signal and grace | `media` SIGTERM / 3 s, `obinna` SIGINT / 5 s (`summoning.ts`; not on screen yet) | `runSummoned` handles either signal and exits 0 (`exited 0` on `/playground/compute`); with `ignore-stop`, the grace running out: `failed 137` | Ctrl+C, or `ignore-stop` |
 | `output` | `media` → file, `obinna` → logger, `ledger` → ignore | `playground/.data/units-<pid>.log`; the playground's terminal; nothing | always on |
 | `env` vs `passEnv` | `media` (allowlist + `passEnv`) vs `obinna` (`"inherit"`) | a completed job's `returnValue`: `env.hostSecret: "kept out"` vs `hostEnv: "inherited"` | open any completed job |
-| `cgroup` | `media`, with `PLAYGROUND_CGROUP` | Providers → `…~1`: a `cgroup` fact, and Test connection's `cgroup` check passes; each unit in a cgroup of its own under `…/app.slice/bun-node-playground-<pid>` (`memory.max` 1 GiB, `pids.max` 512). Where that cannot be made (no systemd user slice, no cgroup v2, no permission), one warning at startup and the units run without a cgroup | `PLAYGROUND_CGROUP=auto` (Linux, cgroup v2, a user-delegated subtree; `PLAYGROUND_CGROUP_SLICE` names another parent), or a path to an existing cgroup |
+| `cgroup` | every instance, with `PLAYGROUND_CGROUP` | Providers → each `Local processes` card: a `cgroup` fact, and Test connection's `cgroup` check passes; each unit in a cgroup of its own under `…/app.slice/bun-node-playground-<pid>` (`memory.max` 1 GiB, `pids.max` 512, binding every unit of the run together). Where that cannot be made (no systemd user slice, no cgroup v2, no permission), one warning at startup and the units run without a cgroup | `PLAYGROUND_CGROUP=auto` (Linux, cgroup v2, a user-delegated subtree; `PLAYGROUND_CGROUP_SLICE` names another parent), or a path to an existing cgroup |
 | `.toQueue()` (#278) | `obinna-queue` | each burst's `ping-obinna` job: added through the registry's builder, `jobs.schedule("ping-obinna", data).toQueue("obinna-queue")`. Its definition's `attempts: 5` does **not** follow it: the job has the queue's default | always on |
 | `jobs.queue(name).schedule()` (#278) | `obinna-queue` | a delayed `ping-obinna` 20 s after each burst, and the `obinna-heartbeat` series (Repeatables: every 2 minutes), each summoning a unit | always on |
 | A third-party provider: readiness, a declared secret, platform answers | `secure-exports`, Vault Compute `~1` | Providers: `…vault-compute@0.1.0~1` Pending until the slow secret store answers (`PLAYGROUND_SECRET_DELAY_MS`, default 12 s), then Ready; `~2` Ready but Test connection `auth` (`InvalidToken`); `~3` Pending, then Failed. Test connection on `~1` names the token as `[REDACTED]` and lists the `media` instance's own checks. The queue's Summon panel shows the same readiness | `?kind=throttled&queue=secure-exports` (also `quota`, `auth`, `transient`; only on this queue) |
@@ -306,22 +307,34 @@ units to exit`, removes `.data/units-<pid>.log` and, with
 `PLAYGROUND_CGROUP=auto`, its cgroup; if any step of the shutdown fails, the
 files and the cgroup are still removed. No unit outlives the playground.
 
-Killed with `SIGKILL` itself, it cannot do that: its units then exit on their
-own once idle, or at their lifetime (a `ledger` replica only at its
-lifetime). The next start removes the log it left and, under
-`PLAYGROUND_CGROUP=auto`, kills whatever still runs in the cgroup it left
-(`cgroup.kill`) before removing it; without a cgroup, those units run on
-until they exit by themselves.
+**Units an earlier run left.** Killed with `SIGKILL` itself (or by the OOM
+killer), the playground runs no shutdown, and its units are detached (each
+leads a process group of its own), so they are re-parented and keep running:
+until idle, or, for a `ledger` replica (`until-stopped`), up to its hour-long
+lifetime. A `bun run dev` (`--watch`) reload is the same: it re-executes the
+playground in place, with the same pid, and runs no shutdown; measured, four
+of the earlier incarnation's units still ran after a reload.
 
-**`bun run dev` (`--watch`).** A reload re-executes the playground in place,
-with the same pid, and runs no shutdown at all, and the units are detached:
-measured, an earlier incarnation's units kept running after a reload (four
-of them, here). So each start looks for children of its own pid running a
-unit entry and stops them (`SIGTERM`, `SIGKILL` 5 s later), printing
-`stopped N summoned units an earlier run of this process left`, and under
-`PLAYGROUND_CGROUP=auto` also kills and removes the cgroup of its own pid
-(`compute/leftovers.ts`, `compute/cgroup.ts`). Between the reload and that
-sweep, the old units may still take a job or two.
+So every run **records each unit it starts** — pid, start time (`ps -o
+lstart`) and command line, with its own pid — in one file per checkout,
+`os.tmpdir()/bun-node-playground-<hash of the checkout path>/units.pid`.
+Not under `.data/`, which the memory backend never makes; one per checkout,
+so two worktrees never stop each other's units; a reboot clearing it is
+fine, since a reboot ends the units too. Each start, before it summons
+anything, stops every recorded unit whose playground is gone, or is itself (a
+reload): `SIGTERM` to the unit's process group, `SIGKILL` 5 s later, printing
+`stopped N summoned units an earlier run left running`. **Only a process
+whose pid, start time and command line all match its record is signalled**,
+so a pid the system has since given to something else is never touched.
+Then it drops those records; another playground still running from the same
+checkout keeps its own. A clean stop drops its records too
+(`compute/leftovers.ts`). Between the kill (or the reload) and the next
+start, the old units may still take a job or two.
+
+With `PLAYGROUND_CGROUP=auto`, every instance's units (`media`, `obinna`,
+`ledger`) are in the run's cgroup, and the next start also kills whatever
+still runs in a cgroup an earlier run left (`cgroup.kill`) and removes it,
+and removes the units log it left.
 
 **Stopping counts against a queue.** Once the shutdown begins, a check that
 still runs is answered `unavailable` ("the playground is stopping") by the
