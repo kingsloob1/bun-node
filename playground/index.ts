@@ -38,14 +38,14 @@ import { startSimulation } from "./simulation";
 import { createSummoning } from "./summoning";
 
 /**
- * The port to listen on (`PORT`, default 4000). Chosen before listening even
- * for `PORT=0`, because the summoning platform's URL is configured first.
+ * The port to listen on (`PORT`, default 4000; `PORT=0` picks a free one
+ * before listening).
  */
 const port = Number(process.env.PORT ?? 4000) || (await getPort());
 /** How often the simulation adds a job (`PLAYGROUND_INTERVAL_MS`, default 2000; 0 = never). */
 const intervalMs = Number(process.env.PLAYGROUND_INTERVAL_MS ?? 2_000);
 
-// A `temp` database a killed playground left behind.
+// A `temp` database, or a units log, a killed playground left behind.
 removeTempData("stale");
 
 /**
@@ -55,11 +55,10 @@ removeTempData("stale");
  */
 const driver = createDriver(playgroundDriver());
 
-// Summoning (`summoning.ts`): its providers, and the summon group naming one,
-// exist before the context, whose `summon` option the group is. Its platform
-// is called where the playground will listen.
-const summoning = createSummoning({
-  origin: `http://127.0.0.1:${port}`,
+// Summoning (`summoning.ts`): its `localCompute()` instances, and the summon
+// groups and records naming them, exist before the context, whose `summon`
+// option they are.
+const summoning = await createSummoning({
   // What a summoned worker process opens: the same backend, as a config.
   driver: isCrossProcess() ? playgroundDriver() : undefined,
 });
@@ -72,7 +71,7 @@ const jobs = new BunJobs({
   driver,
   // Every queue, worker and runner publishes its events, so the UI goes live.
   publishEvents: true,
-  // `renders` and `transcodes`, summoned on demand under one policy.
+  // Groups and records: every summoned queue, by `localCompute()` units.
   summon: summoning.summon,
   logger: noopLogger,
 });
@@ -119,7 +118,7 @@ const ui = jobsUi({
 });
 
 const app = new BunHttpAdapter();
-// The summoning platform's routes (`/local-compute`) go on this adapter.
+// The summoned units' control page (`/playground/compute`) goes on this adapter.
 summoning.mount(app);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
@@ -129,8 +128,8 @@ api.websocket?.attach(app);
 
 const server = await app.listen(port, "127.0.0.1");
 const origin = `http://localhost:${server.port}`;
-// The bursts of `renders` and `transcodes` jobs, now the platform answers.
-summoning.start(jobs);
+// The bursts of jobs for the summoned queues.
+await summoning.start(jobs);
 
 console.log(`
 bun-node playground (${playgroundBackend()} driver)
@@ -142,8 +141,8 @@ bun-node playground (${playgroundBackend()} driver)
   Events        ${origin}${ui.basePath}/events
   API docs      ${origin}${ui.basePath}/docs
   Providers     ${origin}${ui.basePath}/providers
-  Summoning     ${origin}${ui.basePath}/queues/renders, …/queues/transcodes${isCrossProcess() ? "" : "   (off: the memory driver cannot summon)"}
-  Faults        ${origin}/local-compute
+  Summoning     ${origin}${ui.basePath}/queues/renders, …/obinna-queue, …/ledger${isCrossProcess() ? "" : "   (off: the memory driver cannot summon)"}
+  Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
@@ -157,9 +156,14 @@ async function shutdown(): Promise<void> {
   }
   stopping = true;
   console.log("\nstopping…");
+  // First, every summoned worker process, awaited to its exit: the units are
+  // what must not outlive the playground, and they need the backend open
+  // until they have closed their workers.
+  const units = await summoning.stop();
+  console.log(
+    `waited for ${units} summoned unit${units === 1 ? "" : "s"} to exit`,
+  );
   await simulation.stop();
-  // Every summoned worker process, before the backend they use closes.
-  await summoning.stop();
   await mailer.stop();
   await stopRunners();
   await api.close();
@@ -168,8 +172,9 @@ async function shutdown(): Promise<void> {
   removeTempData("mine");
   process.exit(0);
 }
-// The last resort: no summoned worker outlives the playground, however it
-// exits.
-process.on("exit", () => summoning.killAll());
+// No `exit` handler of our own is needed for the units: `localCompute()` kills
+// every unit it started when the process exits, however it exits (short of
+// SIGKILL), and stops them on SIGINT/SIGTERM/SIGHUP as well; `shutdown()`
+// then waits for each to exit.
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
