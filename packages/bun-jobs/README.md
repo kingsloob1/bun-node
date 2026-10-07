@@ -2236,7 +2236,11 @@ order, and adds `--bun-jobs-summon-group=<name>`: `summon.queues` lists the
 queues (repeats dropped), `summon.queue` is the first, and the group is
 written on each worker's record as `summon.group`, so a Workers page can say
 which group's unit it belongs to. A one-queue summon passes exactly the
-arguments it always has, and answers `queues: [queue]`. **Call
+arguments it always has, and answers `queues: [queue]`. On a command line
+that repeats a flag, `--bun-jobs-summon-queue=` collects every value (the
+first is `summon.queue`) and every other flag, the group included, takes its
+last value; a group must be a key segment like a queue name, or
+`summonedFromArgs()` throws. **Call
 `summonedFromArgs()` in the main thread:** Bun gives a `Worker` thread an
 empty `argv`, so there it answers `undefined`. A worker's `target` option
 runs its jobs in threads and leaves the worker itself in the main thread.

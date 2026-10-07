@@ -50,7 +50,11 @@ import { findSecrets } from "./scan";
  * every check in a fixed order.
  */
 
-/** Every check, in report order, with its level. `purity` is `must` only under a strict token. */
+/**
+ * Every check, in report order, with its level. `purity` is `must` only
+ * under a strict token, and `argv.round-trip` only for a provider declaring
+ * summon `0.2` or later.
+ */
 const CHECKS: readonly (readonly [string, ConformanceCheck["level"]])[] = [
   ["summon.identity.name", "must"],
   ["summon.identity.version", "must"],
@@ -91,6 +95,7 @@ const CHECKS: readonly (readonly [string, ConformanceCheck["level"]])[] = [
   ["summon.validate.auth-fails", "must"],
   ["summon.validate.starts-nothing", "must"],
   ["summon.secrets.no-leak", "must"],
+  // `must` from summon 0.2, `should` for a provider declaring 0.1.
   ["summon.argv.round-trip", "must"],
   ["summon.handoff.started", "must"],
   ["summon.handoff.released", "must"],
@@ -129,6 +134,24 @@ const SEMVER =
 
 /** A `"major.minor"` API version. */
 const API_VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+
+/**
+ * The summon API version from which `summon.argv.round-trip` is a `must`:
+ * the one that added shared units. Below it the check is a `should`.
+ */
+const ROUND_TRIP_MUST_FROM = "0.2";
+
+/** Whether `declared` is a well-formed `"major.minor"` at or above `from`. */
+function declaresAtLeast(declared: unknown, from: string): boolean {
+  const match =
+    typeof declared === "string" ? API_VERSION.exec(declared) : null;
+  if (match === null) {
+    return false;
+  }
+  const [major, minor] = from.split(".").map(Number) as [number, number];
+  const [givenMajor, givenMinor] = [Number(match[1]), Number(match[2])];
+  return givenMajor > major || (givenMajor === major && givenMinor >= minor);
+}
 
 /** The group of a check id: its second segment. */
 function groupOf(id: string): string {
@@ -614,6 +637,15 @@ export async function runProviderConformance<TInput, TConfig>(
   const purity = checks.get("summon.purity.identical-requests")!;
   const { dedupe } = run.capabilities;
   purity.level = dedupe.kind === "token" && dedupe.strict ? "must" : "should";
+  // The round trip is what a shared unit (summon 0.2) needs: a must for a
+  // provider declaring 0.2 or later, a should for one written for 0.1, so
+  // nothing that conformed before starts failing.
+  const roundTrip = checks.get("summon.argv.round-trip")!;
+  const roundTripMust = declaresAtLeast(
+    identity.apiVersion?.summon,
+    ROUND_TRIP_MUST_FROM,
+  );
+  roundTrip.level = roundTripMust ? "must" : "should";
 
   const wanted = (group: string): boolean =>
     [...checks.keys()].some(
@@ -682,6 +714,9 @@ export async function runProviderConformance<TInput, TConfig>(
   } else {
     if (wanted("argv")) {
       await argvChecks(run);
+      if (!roundTripMust && roundTrip.status === "warn") {
+        roundTrip.detail = `${roundTrip.detail ?? "failed"} (a should for a provider declaring summon ${String(identity.apiVersion?.summon)}; a must from summon ${ROUND_TRIP_MUST_FROM}, and a shared unit needs it)`;
+      }
     }
     if (wanted("handoff")) {
       await handoffChecks(run);

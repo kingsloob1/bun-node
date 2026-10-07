@@ -97,7 +97,7 @@ is the host's, and copying it would make the check meaningless.
 
 The plugin API versions this build of bun-jobs speaks: `{ core: "0.1",
 summon: "0.2" }`. Summon `0.2` added `SummonRequest.queues`, `.group` and
-`.demands` and `SummonReleaseRequest.queues`, all additive: a provider
+`.demands` and `SummonReleaseRequest.queues` and `.group`, all additive: a provider
 written for `0.1` runs unchanged, negotiated at `0.1`. At definition, a different major is a `ConfigError`. At
 registration (when a controller is handed a provider), a newer minor, the
 API being `0.x`, and a second version of the same provider name in one
@@ -313,13 +313,18 @@ What `summon()` answers when the platform answered normally, by `status`:
 
 ### `SummonReleaseRequest`
 
-What a scale-style summoner's `release` is asked to do.
+What a scale-style summoner's `release` is asked to do. **`queues` plus
+`group` identify the unit:** a release names the queues, in order, and the
+group of the `SummonRequest` that summoned the unit.
 
 - `namespace`: the queue's namespace.
 - `queue`: the queue; for a unit serving several queues, the first of
   `queues`.
 - `queues`: optional in the type, always set by the controller (summon
-  `0.2`). Every queue the unit serves: `[queue]` for one queue.
+  `0.2`). Every queue the unit serves: `[queue]` for one queue. Read it as
+  `request.queues ?? [request.queue]`.
+- `group`: optional (summon `0.2`). The unit's summon group, set only when
+  it serves more than one queue.
 - `target`: the count to set; `0` scales to zero.
 
 ### `SummonReason`
@@ -686,11 +691,23 @@ by a canary whatever its length, and the canary is looked for.
 
 The report lists the groups in a fixed order: identity, config,
 capabilities, routing, purity, dedupe, concurrency, errors, timeouts, scale,
-status, lifetime, describe, validate, secrets, the argument round trip (a
-request repeating `--bun-jobs-summon-queue=` three times reaches the unit's
-process whole and in order; skipped under `passes: "none"`), the handoff to
-a real worker process, and two controllers in two processes racing for one backlog. They
-do not run in that order.
+status, lifetime, describe, validate, secrets, the argument round trip, the
+handoff to a real worker process, and two controllers in two processes
+racing for one backlog. They do not run in that order.
+
+**The argument round trip** (`summon.argv.round-trip`) sends a request for a
+unit serving three queues, repeating `--bun-jobs-summon-queue=`, and needs
+every argument of `request.argv` to reach the unit's process in order (the
+platform may add arguments of its own around them, but not drop or reorder
+one), and `summonedFromArgs()` there to read the three queues and the group.
+It is a `must` for a provider declaring summon `0.2` or later, and a
+`should` (a warning, `ok` stays true) for one declaring `0.1`, so a provider
+that conformed before still does. On a scale platform the kit then releases
+the unit it summoned, naming its queues and group, back to the count before;
+a release that throws fails the check. It is skipped under `passes: "none"`,
+and when a scale or wake platform answers `already-running` and starts no
+unit; a launch platform answering that fails it, since a launch starts a
+unit per attempt.
 
 **Some `must` checks skip, and a skip leaves `ok` true.** A report can be
 `ok` with these not run, so read its skips:
@@ -1185,8 +1202,10 @@ written `--bun-jobs-summon-<key>=<value>`: `id`, `kind`, `mode`,
 `namespace`, `group`, `queue`, `maxLifetimeMs`, `graceMs`. `queue` is
 repeated once per queue for a unit serving several, in the policy's order,
 and `group` is written only then: a one-queue summon's arguments are what
-they always were. Arguments, never environment variables: an environment
-leaks to every descendant process.
+they always were. Given more than once, `queue` collects every value (the
+first is `queue`) and every other flag takes its last value: see
+[`SummonedArgs`](#summonedargs). Arguments, never environment variables: an
+environment leaks to every descendant process.
 
 ### `summonedFromArgs`
 
@@ -1207,6 +1226,14 @@ What `summonedFromArgs` answers: the worker's provenance (`id`, and `kind`,
   dropped: one worker per queue. `[queue]` for one queue.
 - `maxLifetimeMs`: optional. The longest the worker may live.
 - `graceMs`: optional. The platform's grace after its stop signal.
+
+**A flag given more than once.** `--bun-jobs-summon-queue=` collects every
+value in order, repeats dropped, so `queue` is the **first**. Every other
+flag, `--bun-jobs-summon-group=` included, takes its **last** value. A
+summon repeats only the queue; the rule matters for a command line edited by
+hand. `group` must be a key segment, as a queue name is (letters, digits,
+`_`, `.`, `-`, at most 200 characters): any other value is a `ConfigError`
+at startup, as an unknown mode is.
 
 ### `runSummoned`
 

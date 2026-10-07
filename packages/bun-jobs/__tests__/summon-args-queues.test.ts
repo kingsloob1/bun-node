@@ -232,6 +232,73 @@ describe("wireRequest: the 8 KiB argument limit (Q10)", () => {
     expect(bytes(base(exact))).toBe(8192);
     expect(() => base([...short, "x".repeat(room + 1)])).toThrow(ConfigError);
   });
+
+  it("counts bytes, not characters: a multibyte group at 8192 bytes passes, at 8193 is refused", () => {
+    // Three-byte characters: in UTF-16 code units the argv is far shorter
+    // than 8 KiB, so counting `.length` would accept both.
+    const queues = ["renders", "thumbs"];
+    const withGroup = (group: string) =>
+      wireRequest(
+        { id: PINNED_ID, count: 1, target: 1 },
+        { ...ONE, queue: queues[0]!, queues, group },
+      );
+    const fixed = bytes(withGroup("g").argv) - 1;
+    const room = 8192 - fixed;
+    const euros = Math.floor(room / 3);
+    const group = "€".repeat(euros) + "x".repeat(room - 3 * euros);
+    expect(Buffer.byteLength(group)).toBe(room);
+    const argv = withGroup(group).argv;
+    expect(bytes(argv)).toBe(8192);
+    expect(argv.reduce((sum, arg) => sum + arg.length + 1, 0)).toBeLessThan(
+      4096,
+    );
+    let thrown: unknown;
+    try {
+      withGroup(`${group}x`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).context).toEqual({
+      bytes: 8193,
+      limit: 8192,
+      queues: 2,
+    });
+  });
+
+  it("names the group's size when the group is what pushes it over", () => {
+    let thrown: unknown;
+    try {
+      wireRequest(
+        { id: PINNED_ID, count: 1, target: 1 },
+        {
+          ...ONE,
+          queue: "renders",
+          queues: ["renders", "thumbs"],
+          group: "g".repeat(9000),
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as ConfigError).message).toEndWith(
+      "split the group, or shorten its queue names or the group's name (9000 bytes)",
+    );
+    // Without a group, only the queue names are named.
+    let plain: unknown;
+    try {
+      const queues = names(45, 200);
+      wireRequest(
+        { id: PINNED_ID, count: 1, target: 1 },
+        { ...ONE, queue: queues[0]!, queues },
+      );
+    } catch (error) {
+      plain = error;
+    }
+    expect((plain as ConfigError).message).toEndWith(
+      "split the group, or shorten its queue names",
+    );
+  });
 });
 
 /* --- summonedFromArgs ------------------------------------------------------ */
@@ -269,6 +336,74 @@ describe("summonedFromArgs: several queues and a group", () => {
     expect(
       summonedFromArgs([`${SUMMON_ARGS.id}=a1`, "--bun-jobs-summon-group="]),
     ).toEqual({ id: "a1" });
+  });
+
+  it("a repeated flag: the queues keep the first as `queue`, every other flag takes its last value", () => {
+    const summon = parseSummonArgs(
+      [
+        `${SUMMON_ARGS.id}=first-id`,
+        `${SUMMON_ARGS.namespace}=ns-a`,
+        `${SUMMON_ARGS.group}=group-a`,
+        `${SUMMON_ARGS.queue}=q-a`,
+        `${SUMMON_ARGS.kind}=kind-a`,
+        `${SUMMON_ARGS.mode}=exit-on-idle`,
+        `${SUMMON_ARGS.graceMs}=1`,
+        `${SUMMON_ARGS.maxLifetimeMs}=10`,
+        `${SUMMON_ARGS.queue}=q-b`,
+        `${SUMMON_ARGS.id}=last-id`,
+        `${SUMMON_ARGS.namespace}=ns-b`,
+        `${SUMMON_ARGS.group}=group-b`,
+        `${SUMMON_ARGS.kind}=kind-b`,
+        `${SUMMON_ARGS.mode}=until-stopped`,
+        `${SUMMON_ARGS.graceMs}=2`,
+        `${SUMMON_ARGS.maxLifetimeMs}=20`,
+        `${SUMMON_ARGS.queue}=q-a`,
+      ],
+      undefined,
+    );
+    const { deadlineAt: _deadline, ...rest } = summon!;
+    expect(rest).toEqual({
+      id: "last-id",
+      kind: "kind-b",
+      mode: "until-stopped",
+      namespace: "ns-b",
+      group: "group-b",
+      queue: "q-a",
+      queues: ["q-a", "q-b"],
+      maxLifetimeMs: 20,
+      graceMs: 2,
+    });
+  });
+
+  it("refuses a group that is not a key segment, naming the argument", () => {
+    for (const group of [
+      "me:dia",
+      "a/b",
+      "..",
+      "media group",
+      "é",
+      "x".repeat(201),
+    ]) {
+      let thrown: unknown;
+      try {
+        summonedFromArgs([
+          `${SUMMON_ARGS.id}=a1`,
+          `${SUMMON_ARGS.group}=${group}`,
+        ]);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, group).toBeInstanceOf(ConfigError);
+      expect((thrown as ConfigError).message, group).toContain(
+        SUMMON_ARGS.group,
+      );
+    }
+    expect(
+      summonedFromArgs([
+        `${SUMMON_ARGS.id}=a1`,
+        `${SUMMON_ARGS.group}=me.d-i_a2`,
+      ])?.group,
+    ).toBe("me.d-i_a2");
   });
 
   it("round-trips what wireRequest writes", () => {
@@ -381,8 +516,8 @@ describe("summon.group on the record", () => {
     expect("group" in (await record()).summon!).toBe(false);
   });
 
-  it("refuses a group that is not a non-empty string", () => {
-    for (const group of ["", 7, null]) {
+  it("refuses a group that is not a non-empty string, or not a key segment", () => {
+    for (const group of ["", 7, null, "me:dia", "a/b", ".."]) {
       expect(
         () =>
           new BunQueueWorker("q", async () => null, {

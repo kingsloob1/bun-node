@@ -494,7 +494,7 @@ export function wireRequest(
   const bytes = argvBytes(argv);
   if (bytes > SUMMON_ARGV_MAX_BYTES) {
     throw new ConfigError(
-      `A summon's arguments for ${queues.length} queues come to ${bytes} bytes, over the 8 KiB a summon may pass: split the group, or shorten its queue names`,
+      `A summon's arguments for ${queues.length} queues come to ${bytes} bytes, over the 8 KiB a summon may pass: split the group, or shorten ${group === undefined ? "its queue names" : `its queue names or the group's name (${Buffer.byteLength(group)} bytes)`}`,
       { bytes, limit: SUMMON_ARGV_MAX_BYTES, queues: queues.length },
     );
   }

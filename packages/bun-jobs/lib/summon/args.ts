@@ -2,6 +2,7 @@ import type { WorkerSummonProvenance } from "../shared/workers";
 import process from "node:process";
 import { CHILD_ENV } from "../runner/protocol";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 import { isSummonMode, SUMMON_MODES } from "./provenance";
 
 /**
@@ -17,6 +18,11 @@ import { isSummonMode, SUMMON_MODES } from "./provenance";
  * Bun gives a `Worker` thread an empty `argv` too (unlike Node, which copies
  * the parent's). So a summon's identity reaches the one process it was
  * addressed to.
+ *
+ * **A flag given more than once:** `queue` collects every value, in order,
+ * with repeats dropped, so `summon.queue` is the **first**; every other flag
+ * (`group` included) takes its **last** value. A summon never repeats any
+ * but `queue`; the rule is for a command line someone edited by hand.
  */
 export const SUMMON_ARGS = {
   /** The summon attempt's id. Required: without it a process is not summoned. Comes back as `summon.id`. */
@@ -37,7 +43,8 @@ export const SUMMON_ARGS = {
   /**
    * The summon group the unit was started for, written only when it serves
    * more than one queue. Comes back as `summon.group`, and is written on the
-   * worker's record.
+   * worker's record. A key segment, like a queue name (letters, digits, `_`,
+   * `.` and `-`): anything else is refused.
    */
   group: "--bun-jobs-summon-group",
   /** The longest the worker may live, as a duration in ms (never a timestamp). */
@@ -149,9 +156,15 @@ export function parseSummonArgs(
     );
   }
   const namespace = read(SUMMON_ARGS.namespace, argv);
+  // Last wins, like every flag but the queue. Written on the record and
+  // shown by the API, so held to a queue name's rule.
   const group = read(SUMMON_ARGS.group, argv);
-  // Every queue, in order: a unit serving several queues gets one argument
-  // per queue. With one, this is the single value `read` would give.
+  if (group !== undefined) {
+    assertSegment(group, SUMMON_ARGS.group);
+  }
+  // Every queue, in order, repeats dropped: a unit serving several queues
+  // gets one argument per queue, and the first is `queue` (first wins, where
+  // every other flag's last value wins).
   const queues = readAll(SUMMON_ARGS.queue, argv);
   const maxLifetimeMs = duration(
     SUMMON_ARGS.maxLifetimeMs,
@@ -214,9 +227,13 @@ export function parseSummonArgs(
  *   copies the parent's, and bun-jobs does not rely on that behaviour alone.
  *   It also keeps a runner child's own arguments from reading as a summon.
  *
+ * - **A repeated flag:** `queue` collects every value, in order, and
+ *   `queue` is the first; every other flag's last value wins.
+ *
  * @throws {ConfigError} when a summon argument is malformed (an unknown mode,
- *   a duration that is not a whole number): a misconfigured summon fails at
- *   startup rather than recording nonsense.
+ *   a duration that is not a whole number, a group that is not a key
+ *   segment): a misconfigured summon fails at startup rather than recording
+ *   nonsense.
  */
 export function summonedFromArgs(
   /** The command line to read. Defaults to `process.argv`. */

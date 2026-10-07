@@ -1,5 +1,6 @@
 import type { WorkerSummonProvenance } from "../shared/workers";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 
 /**
  * A summoned worker's provenance: the modes a summoner can request, and the
@@ -59,7 +60,8 @@ function optionalText(
  * summoner did not request stays absent.
  *
  * @throws {ConfigError} on a malformed value (`id` is required: it is what
- *   makes a worker summoned), when the worker could never report — with
+ *   makes a worker summoned; a `group` must be a key segment, as a queue
+ *   name is), when the worker could never report — with
  *   `reportInterval: 0`, or on a driver that cannot store worker records —
  *   since then it could never release its attempt, and on a driver without
  *   queue state, where it could not claim its attempt once.
@@ -139,6 +141,10 @@ export function resolveSummonProvenance(
   const kind = optionalText(given, "kind");
   const handle = optionalText(given, "handle");
   const group = optionalText(given, "group");
+  if (group !== undefined) {
+    // Written on the record and served by the API: a queue name's rule.
+    assertSegment(group, "summon.group");
+  }
 
   return Object.freeze({
     id,

@@ -6,7 +6,11 @@ import type {
   SummonResult,
 } from "../../../lib/provider/index";
 import type { FakePlatform } from "../../../lib/provider/testing/index";
-import type { Summoner } from "../../../lib/summon/index";
+import type {
+  Summoner,
+  SummonReleaseRequest,
+  SummonRequest,
+} from "../../../lib/summon/index";
 import { Buffer } from "node:buffer";
 import {
   COMPUTE_PROVIDER_API,
@@ -85,7 +89,11 @@ export type AcmeDefect =
   | "retry-huge" // a retry-after of about 63 years
   | "prose-code" // a platformCode that is a sentence
   | "handoff" // identity dropped under passes "argv"
-  | "argv"; // arguments keyed by flag: a repeated argument keeps only its last value
+  | "argv" // arguments keyed by flag: a repeated argument keeps only its last value
+  | "argv-drop-grace" // drops --bun-jobs-summon-grace-ms, every other argument intact
+  | "argv-sorted" // passes every argument, sorted: the queues keep their order
+  | "release-shared" // release() throws for a unit serving several queues
+  | "already-running"; // answers already-running to a unit serving several queues, starting nothing
 
 /** How to build an Acme provider. */
 export interface AcmeOptions {
@@ -97,6 +105,14 @@ export interface AcmeOptions {
   defect?: AcmeDefect;
   /** Validate the config asynchronously, so `ready` settles later. */
   asyncConfig?: boolean;
+  /** The summon API version it declares. Defaults to the host's. */
+  summonApi?: string;
+  /** A spy: called with every `summon` and `release` request, before the platform is. */
+  onCall?: (
+    call:
+      | { kind: "summon"; request: SummonRequest }
+      | { kind: "release"; request: SummonReleaseRequest },
+  ) => void;
 }
 
 /** The platform's answer to a run request. */
@@ -198,7 +214,7 @@ export function acmeProvider(
     kind: "acme",
     apiVersion: {
       core: COMPUTE_PROVIDER_API.core,
-      summon: COMPUTE_PROVIDER_API.summon,
+      summon: options.summonApi ?? COMPUTE_PROVIDER_API.summon,
     },
     config: toStandardSchema<AcmeConfig, AcmeConfig>((input) =>
       options.asyncConfig === true
@@ -301,6 +317,11 @@ export function acmeProvider(
       return {
         capabilities,
         summon: async (request, ctx) => {
+          options.onCall?.({ kind: "summon", request });
+          const shared = (request.queues ?? [request.queue]).length > 1;
+          if (defect === "already-running" && shared) {
+            return { status: "already-running" };
+          }
           if (defect === "timeouts") {
             ctx.signal.addEventListener("abort", () => {
               // A retry nobody cancels.
@@ -326,7 +347,13 @@ export function acmeProvider(
                         request.argv.map((arg) => [arg.split("=")[0], arg]),
                       ).values(),
                     ]
-                  : [...request.argv];
+                  : defect === "argv-drop-grace"
+                    ? request.argv.filter(
+                        (arg) => !arg.startsWith("--bun-jobs-summon-grace-ms="),
+                      )
+                    : defect === "argv-sorted"
+                      ? [...request.argv].sort()
+                      : [...request.argv];
           const token =
             defect === "dedupe"
               ? `acme-${request.dedupeKey}`
@@ -355,6 +382,16 @@ export function acmeProvider(
         ...(capabilities.style === "scale" && defect !== "capabilities"
           ? {
               release: async (request, ctx) => {
+                options.onCall?.({ kind: "release", request });
+                if (
+                  defect === "release-shared" &&
+                  (request.queues ?? [request.queue]).length > 1
+                ) {
+                  throw new ProviderError(
+                    "Acme cannot release a shared unit",
+                    "transient",
+                  );
+                }
                 const response = await call(ctx, "PUT", "/v1/service", {
                   count: request.target,
                   args: [],

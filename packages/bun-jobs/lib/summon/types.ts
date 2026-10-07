@@ -150,7 +150,14 @@ export interface SummonRequest {
   maxLifetimeMs: number;
 }
 
-/** What a scale-style summoner is asked to do when demand has gone. */
+/**
+ * What a scale-style summoner is asked to do when demand has gone.
+ *
+ * **`queues` plus `group` identify the unit**, as they did on the
+ * `SummonRequest` that summoned it: a release names the same queues, in the
+ * same order, and the same group. Read them as
+ * `request.queues ?? [request.queue]` and `request.group`.
+ */
 export interface SummonReleaseRequest {
   /** The namespace of the queue. */
   namespace: string;
@@ -159,9 +166,16 @@ export interface SummonReleaseRequest {
   /**
    * Every queue the unit serves, in the policy's order: `[queue]` for one
    * queue (summon API `0.2`). Set by the controller; optional here only so a
-   * request built by hand still type-checks.
+   * request built by hand, or by an older host, still type-checks: read it
+   * as `request.queues ?? [request.queue]`.
    */
   queues?: readonly string[];
+  /**
+   * The summon group of the unit, when it serves more than one queue
+   * (summon API `0.2`): the `group` its `SummonRequest` carried. With
+   * `queues`, what identifies a shared unit. Absent for one queue.
+   */
+  group?: string;
   /** The count to set. `0` scales to zero. */
   target: number;
 }

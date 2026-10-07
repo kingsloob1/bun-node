@@ -3,7 +3,8 @@ import type {
   ConformanceReport,
   FakePlatform,
 } from "../../../lib/provider/testing/index";
-import type { AcmeDefect } from "./acme";
+import type { SummonRequest } from "../../../lib/summon/index";
+import type { AcmeDefect, AcmeOptions } from "./acme";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,7 +126,9 @@ describe("a known-good provider conforms", () => {
     expect(
       report.checks.find((check) => check.id === "summon.argv.round-trip")
         ?.detail,
-    ).toBe("3 repeated arguments arrived in order");
+    ).toBe(
+      "all 10 arguments arrived in order, the 3 repeated --bun-jobs-summon-queue= among them",
+    );
     expect(
       report.checks.find((check) => check.id === "summon.handoff.released")
         ?.detail,
@@ -152,8 +155,42 @@ describe("a known-good provider conforms", () => {
   });
 
   it("scale: a target set twice is one count, release sets zero, and an idle controller scales down", async () => {
-    const report = await acme({ style: "scale" });
+    const calls: Parameters<NonNullable<AcmeOptions["onCall"]>>[0][] = [];
+    /** The fake's live count when the round trip's summon reached the provider. */
+    let liveBefore: number | undefined;
+    const report = await acme({
+      style: "scale",
+      onCall: (call) => {
+        calls.push(call);
+        if (
+          call.kind === "summon" &&
+          (call.request.queues?.length ?? 1) > 1 &&
+          liveBefore === undefined
+        ) {
+          liveBefore = fakeInternals(platforms.at(-1)!).liveCount();
+        }
+      },
+    });
     expect(failed(report), report.toMarkdown()).toEqual([]);
+    // The round trip's count goes back by releasing the unit it summoned:
+    // its queues and group, to the count before it.
+    const roundTrip = calls.findIndex(
+      (call) => call.kind === "summon" && call.request.queues?.length === 3,
+    );
+    expect(roundTrip).toBeGreaterThanOrEqual(0);
+    expect(liveBefore).toBeDefined();
+    const summoned = calls[roundTrip]!.request as SummonRequest;
+    expect(summoned.target).toBe(liveBefore! + 1);
+    const released = calls
+      .slice(roundTrip + 1)
+      .find((call) => call.kind === "release");
+    expect(released?.request).toEqual({
+      namespace: summoned.namespace,
+      queue: "work",
+      queues: ["work", "work.b", "work_c-2"],
+      group: "conformance",
+      target: liveBefore!,
+    });
     const status = Object.fromEntries(
       report.checks.map((check) => [check.id, check.status]),
     );
@@ -237,6 +274,9 @@ describe("a provider broken in one way fails exactly that group", () => {
     ["secrets", "secrets", "summon.secrets.no-leak"],
     ["handoff", ["argv", "handoff"], "summon.handoff.released"],
     ["argv", "argv", "summon.argv.round-trip"],
+    ["argv-drop-grace", "argv", "summon.argv.round-trip"],
+    ["argv-sorted", "argv", "summon.argv.round-trip"],
+    ["already-running", "argv", "summon.argv.round-trip"],
   ];
   for (const [defect, group, check] of cases) {
     it(`${defect}: fails ${check}, and no group but ${[group].flat().join(" and ")}`, async () => {
@@ -389,6 +429,50 @@ describe("a provider broken in one way fails exactly that group", () => {
     expect(transient.detail).not.toContain("did not count");
   });
 
+  it("argv: every argument of request.argv must arrive, in order, not only the queues", async () => {
+    const detail = async (defect: AcmeDefect): Promise<string> => {
+      const report = await acme(
+        { defect },
+        { skip: [{ id: "summon.cas.one-call", reason: "not under test" }] },
+      );
+      const check = report.checks.find(
+        (one) => one.id === "summon.argv.round-trip",
+      );
+      return check?.detail ?? "";
+    };
+    expect(await detail("argv-drop-grace")).toBe(
+      "the unit never received argument 10 of 10 (--bun-jobs-summon-grace-ms=): pass request.argv to the unit whole and in order",
+    );
+    expect(await detail("argv-sorted")).toContain(
+      "the unit received request.argv out of order",
+    );
+  });
+
+  it("argv, scale: a release of the round trip's unit that throws fails the check, and only it", async () => {
+    const report = await acme({ style: "scale", defect: "release-shared" });
+    expect(failed(report), report.toMarkdown()).toEqual([
+      "summon.argv.round-trip",
+    ]);
+    expect(
+      report.checks.find((check) => check.id === "summon.argv.round-trip")
+        ?.detail,
+    ).toBe(
+      "the release of the round trip's unit (target 0) threw ProviderError (PROVIDER_TRANSIENT), so the count was not restored",
+    );
+  });
+
+  it("argv, scale: already-running is a skip, since a scale platform's unit may be up", async () => {
+    const report = await acme({ style: "scale", defect: "already-running" });
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(
+      report.checks.find((check) => check.id === "summon.argv.round-trip"),
+    ).toMatchObject({
+      status: "skip",
+      detail:
+        "the platform answered already-running and started no unit, so no arguments reached one",
+    });
+  });
+
   it("capabilities: the groups a controller would refuse are skipped, not failed", async () => {
     const report = await acme({ defect: "capabilities" });
     for (const check of report.checks.filter((one) =>
@@ -397,6 +481,55 @@ describe("a provider broken in one way fails exactly that group", () => {
       expect(check.status, check.id).toBe("skip");
       expect(check.detail).toContain("summon.capabilities.scale-has-release");
     }
+  });
+});
+
+/**
+ * The round trip is what a shared unit needs (summon 0.2): a `must` for a
+ * provider declaring 0.2, and a `should` for one written for 0.1, so a
+ * provider that conformed before still does (the user's decision, Q1).
+ */
+describe("the round trip's level follows the declared summon API", () => {
+  const notUnderTest = {
+    skip: [{ id: "summon.cas.one-call", reason: "not under test" }],
+  };
+  const roundTrip = (report: ConformanceReport) =>
+    report.checks.find((check) => check.id === "summon.argv.round-trip")!;
+
+  it("summon 0.2: a broken round trip is a failed must", async () => {
+    const report = await acme(
+      { defect: "argv", summonApi: "0.2" },
+      notUnderTest,
+    );
+    expect(roundTrip(report)).toMatchObject({ level: "must", status: "fail" });
+    expect(report.ok).toBe(false);
+    expect(() => assertConformance(report)).toThrow("summon.argv.round-trip");
+  });
+
+  it("summon 0.1: a broken round trip is a should warning, and the report still passes", async () => {
+    const report = await acme(
+      { defect: "argv", summonApi: "0.1" },
+      notUnderTest,
+    );
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(roundTrip(report)).toMatchObject({
+      level: "should",
+      status: "warn",
+    });
+    expect(roundTrip(report).detail).toContain(
+      "(a should for a provider declaring summon 0.1; a must from summon 0.2, and a shared unit needs it)",
+    );
+    expect(report.ok).toBe(true);
+    expect(() => assertConformance(report)).not.toThrow();
+  });
+
+  it("summon 0.1: a sound round trip passes, as a should", async () => {
+    const report = await acme({ summonApi: "0.1" }, notUnderTest);
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(roundTrip(report)).toMatchObject({
+      level: "should",
+      status: "pass",
+    });
   });
 });
 
