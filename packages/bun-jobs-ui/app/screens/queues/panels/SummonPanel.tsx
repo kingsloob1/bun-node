@@ -23,12 +23,14 @@ import { Table } from "../../../components/Table";
 import { useApiClient } from "../../../context";
 import { displayText, formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
-import { useCan, useMeta } from "../../../meta/hooks";
+import { useCan, useFeature, useMeta } from "../../../meta/hooks";
 import { providerReadiness } from "../../providers/providerText";
 import { TestConnection } from "../../providers/TestConnection";
 import { formatMs } from "../duration";
 import { useCanMutate } from "../gating";
 import { useRefreshInterval } from "../live";
+import { budgetUsedText } from "./budgetText";
+import { SummonBudget } from "./SummonBudget";
 import {
   summonActionsOffered,
   summonCheckSummary,
@@ -62,6 +64,10 @@ export function SummonPanel({ queue }: SummonPanelProps) {
   const refetchInterval = useRefreshInterval("summon");
   const [confirming, setConfirming] = useState<"summon" | "reset" | null>(null);
   const [force, setForce] = useState(true);
+  // Off each time the dialog opens: clearing the budget is never carried over.
+  const [clearBudget, setClearBudget] = useState(false);
+  // The API takes `{ budget: true }` (and serves `GET /summon`) only where it says so.
+  const canClearBudget = useFeature("summonResetBudget") === true;
   const status = useQuery({
     queryKey: summonKeys.status(queue),
     queryFn: ({ signal }) => getSummonStatus(api, queue, signal),
@@ -70,6 +76,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
   });
   const invalidate = [
     summonKeys.status(queue),
+    summonKeys.list,
     demandKeys.queue(queue),
     queueKeys.workers(queue),
   ];
@@ -80,8 +87,12 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     toastErrors: false,
   });
   const reset = useApiMutation({
-    mutationFn: () => resetSummon(api, queue),
-    successMessage: `Reset the summon state of ${queue}: failures, backoff and circuit cleared`,
+    mutationFn: (budget: boolean) =>
+      resetSummon(api, queue, budget ? { budget: true } : {}),
+    successMessage: (_result, budget) =>
+      budget
+        ? `Reset the summon state of ${queue}: failures, backoff, circuit and budget usage cleared`
+        : `Reset the summon state of ${queue}: failures, backoff and circuit cleared`,
     invalidate,
     toastErrors: false,
   });
@@ -159,7 +170,10 @@ export function SummonPanel({ queue }: SummonPanelProps) {
             Summon now…
           </Button>
           <Button
-            onClick={() => setConfirming("reset")}
+            onClick={() => {
+              setClearBudget(false);
+              setConfirming("reset");
+            }}
             disabled={reset.isPending}
           >
             Reset…
@@ -188,8 +202,17 @@ export function SummonPanel({ queue }: SummonPanelProps) {
         description="Clears the consecutive failures, the backoff and an open circuit, so the next check may summon. Attempts already on their way are kept."
         variant="danger"
         confirmLabel="Reset"
-        onConfirm={() => reset.mutateAsync()}
-      />
+        onConfirm={() => reset.mutateAsync(canClearBudget && clearBudget)}
+      >
+        {canClearBudget && (
+          <Checkbox
+            checked={clearBudget}
+            onChange={setClearBudget}
+            label="Also clear budget usage"
+            hint="Sets the attempts counted this UTC hour and today back to 0, so the budget allows its full limits again. Every controller on the queue shares the counts."
+          />
+        )}
+      </ConfirmDialog>
     </div>
   );
 }
@@ -268,24 +291,13 @@ function SummonState({ status }: { status: SummonStatusDto }) {
           key: "budget",
           label: "Budget",
           value: (
-            <span data-testid="summon-budget">
-              {status.budget.off === true ||
-              status.budget.perHour === undefined ||
-              status.budget.perDay === undefined ? (
-                <>
-                  Off: {formatNumber(status.budget.hour)} this hour,{" "}
-                  {formatNumber(status.budget.day)} today (UTC), no limit
-                </>
-              ) : (
-                <>
-                  {formatNumber(status.budget.hour)} of{" "}
-                  {formatNumber(status.budget.perHour)} this hour,{" "}
-                  {formatNumber(status.budget.day)} of{" "}
-                  {formatNumber(status.budget.perDay)} today (UTC)
-                </>
-              )}
-            </span>
+            <SummonBudget
+              budget={status.budget}
+              testId="summon-budget"
+            />
           ),
+          // The row shows what is left; the counts used stay in view here.
+          hint: budgetUsedText(status.budget),
         },
       ]}
     />
