@@ -453,8 +453,11 @@ echo $((512 * 1024 * 1024)) > "$dir/memory.max"
 echo 64 > "$dir/pids.max"
 ```
 
-A cgroup outside that subtree fails to join with `EACCES`, and a missing one
-with `ENOENT`: both are `misconfigured`, which opens the circuit at once.
+A path that is not a cgroup v2 directory (missing, or an ordinary
+directory) is a `ConfigError` when you configure the provider. A cgroup
+outside that subtree fails to join with `EACCES`, and one removed after
+configure with `ENOENT`: both are `misconfigured`, which opens the circuit
+at once.
 `validate()` starts `bun --version` in a cgroup of its own inside it, so
 "Test connection" says which.
 

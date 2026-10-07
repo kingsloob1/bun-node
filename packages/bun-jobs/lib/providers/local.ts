@@ -31,7 +31,13 @@ import {
   removeCgroupTree,
 } from "../provider/index";
 import { localComputeSchema, unitEnv } from "./local/config";
-import { hostStopping, startUnit, stopUnit, unitStatus } from "./local/units";
+import {
+  hostStopping,
+  rmdirQuietly,
+  startUnit,
+  stopUnit,
+  unitStatus,
+} from "./local/units";
 
 /** What `summon` answers while the host is stopping its units on a signal. */
 const HOST_SHUTDOWN_REASON = "host-shutdown: the host is stopping";
@@ -469,7 +475,14 @@ async function probeBun(
   } finally {
     if (leaf !== undefined) {
       // Still being reaped at worst: an empty cgroup left behind, harmless.
-      removeCgroupTree(leaf);
+      // A configured directory that is no longer a cgroup is refused by
+      // removeCgroupTree; the probe's own empty directory then gets a plain
+      // rmdir, so validate() answers its checks rather than throwing.
+      try {
+        removeCgroupTree(leaf);
+      } catch {
+        rmdirQuietly(leaf);
+      }
     }
   }
   return checks;

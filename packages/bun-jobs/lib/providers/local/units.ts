@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  rmdirSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -281,8 +282,9 @@ function killCgroup(path: string): void {
  * Removes a unit's own cgroup and any cgroup the unit made inside it, deepest
  * first (`removeTree`: the `./provider` entry's `removeCgroupTree`), retrying
  * while the killed processes are reaped (`EBUSY`), at most `budgetMs`. Never
- * throws: a cgroup that will not go is left behind, empty or holding a stuck
- * process.
+ * rejects: a cgroup that will not go is left behind, empty or holding a
+ * stuck process, and a path that is no longer a cgroup gets one plain
+ * `rmdir`.
  */
 async function removeCgroup(
   path: string,
@@ -290,8 +292,30 @@ async function removeCgroup(
   budgetMs = 2_000,
 ): Promise<void> {
   const deadline = Date.now() + budgetMs;
-  while (!removeTree(path) && Date.now() < deadline) {
+  for (;;) {
+    let gone: boolean;
+    try {
+      gone = removeTree(path);
+    } catch {
+      // `removeCgroupTree` refuses a path that is no longer a cgroup (the
+      // configured directory replaced since): what is left is not ours to
+      // walk, so only the leaf itself is tried.
+      rmdirQuietly(path);
+      return;
+    }
+    if (gone || Date.now() >= deadline) {
+      return;
+    }
     await Bun.sleep(10);
+  }
+}
+
+/** Removes an empty directory this code just made; never throws. */
+export function rmdirQuietly(path: string): void {
+  try {
+    rmdirSync(path);
+  } catch {
+    // Already gone, or not empty: left as it is.
   }
 }
 
@@ -492,7 +516,9 @@ export function startUnit(
   } catch (error) {
     sink.close();
     if (cgroup !== undefined) {
-      void removeCgroup(cgroup, start.removeCgroupTree, 0);
+      // Made just now, and the spawn failed: it is empty, so a plain rmdir,
+      // whatever the configured directory has become.
+      rmdirQuietly(cgroup);
     }
     throw error;
   }

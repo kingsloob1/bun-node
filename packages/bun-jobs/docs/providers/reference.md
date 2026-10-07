@@ -569,7 +569,9 @@ What `localCompute` takes.
   relative to `cwd`), or `{ logger }` (each line, stdout at `info`, stderr at
   `warn`, bound with `unit`). Stderr is read in every case, for `status()`.
 - `cgroup`: optional. An existing cgroup directory the units start under
-  (Linux only: elsewhere a `ConfigError`, since Bun would ignore it): each
+  (Linux only: elsewhere a `ConfigError`, since Bun would ignore it, and so
+  is a path that is not a cgroup v2 directory, one with no
+  `cgroup.controllers`, checked when configured): each
   gets a cgroup of its own inside it, removed when it
   exits, so the limits on this one (`memory.max`, `pids.max`, `cpu.max`)
   bind all the units together, and every process a unit starts stays where

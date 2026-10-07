@@ -3,8 +3,9 @@ import type {
   LoggerLike,
   StandardSchemaV1,
 } from "../../provider/index";
+import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 // No runtime import of the `./provider` entry here: that entry loads
@@ -16,9 +17,10 @@ import { resolveLogger, toStandardSchema } from "@kingsleyweb/bun-common";
 
 /**
  * `localCompute`'s config: what a user passes, what the facets receive, and
- * the schema between them. The schema does no I/O: whether the entry exists
- * is a summon-time `ProviderError` (`misconfigured`) and a `validate()`
- * check, so a config written before the file is built still configures.
+ * the schema between them. The schema reads one thing, whether a `cgroup`
+ * is a cgroup v2 directory; nothing else: whether the entry exists is a
+ * summon-time `ProviderError` (`misconfigured`) and a `validate()` check, so
+ * a config written before the file is built still configures.
  */
 
 /** What a user passes to `localCompute({ … })`. */
@@ -105,8 +107,9 @@ export interface LocalComputeOptions {
         logger: LoggerLike;
       };
   /**
-   * A cgroup directory the units are started under (Linux only; elsewhere a
-   * `ConfigError`, since Bun would ignore it): each unit
+   * A cgroup v2 directory the units are started under (Linux only; elsewhere,
+   * or a directory with no `cgroup.controllers`, a `ConfigError` at
+   * configure time): each unit
    * gets a cgroup of its own inside it, so the limits set on this one
    * (`memory.max`, `pids.max`, `cpu.max`) bind all the units together, and
    * every process a unit starts stays in its cgroup, however it detaches.
@@ -412,6 +415,14 @@ function validate(input: unknown): StandardSchemaV1.Result<LocalComputeConfig> {
       // Bun ignores a cgroup elsewhere: a unit would run unbounded.
       issues.push({
         message: "cgroup is Linux only",
+        path: ["cgroup"],
+      });
+    } else if (!existsSync(join(given.cgroup, "cgroup.controllers"))) {
+      // A cgroup v2 directory always has cgroup.controllers; a missing
+      // directory, a v1 hierarchy or an ordinary directory does not. The
+      // one read the schema makes, as the child-process target's check does.
+      issues.push({
+        message: `cgroup ${given.cgroup} is not a cgroup v2 directory (it has no cgroup.controllers)`,
         path: ["cgroup"],
       });
     } else {

@@ -961,21 +961,6 @@ describe("localCompute: failures", () => {
     await Bun.sleep(300);
     expect(existsSync(file)).toBe(false);
   });
-
-  it.skipIf(process.platform !== "linux")(
-    "maps a cgroup that cannot be joined to misconfigured",
-    async () => {
-      const local = localCompute({
-        entry: UNIT,
-        cgroup: "/sys/fs/cgroup/bun-jobs-local-test-missing",
-      });
-      expect(
-        await local.summon
-          .summon(request(), context())
-          .catch((e: unknown) => e),
-      ).toMatchObject({ kind: "misconfigured", platformCode: "ENOENT" });
-    },
-  );
 });
 
 describe("localCompute: lifetime", () => {
@@ -1137,19 +1122,6 @@ describe("localCompute: validate", () => {
     expect(checks.find((check) => check.id === "entry")?.status).toBe("fail");
     expect(checks.find((check) => check.id === "bun")?.status).toBe("fail");
   });
-
-  it.skipIf(process.platform !== "linux")(
-    "fails a cgroup that cannot be joined",
-    async () => {
-      const checks = await localCompute({
-        entry: UNIT,
-        cgroup: "/sys/fs/cgroup/bun-jobs-local-test-missing",
-      }).validate();
-      expect(checks.find((check) => check.id === "cgroup")).toMatchObject({
-        status: "fail",
-      });
-    },
-  );
 });
 
 /**
@@ -1308,6 +1280,78 @@ describe("localCompute: cgroup", () => {
       Object.defineProperty(process, "platform", platform);
     }
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "refuses a cgroup option that is not a cgroup v2 directory when it is configured",
+    async () => {
+      const plain = await tmp();
+      expect(
+        issuePaths(() => localCompute({ entry: UNIT, cgroup: plain })),
+      ).toEqual(["cgroup"]);
+      expect(
+        issuePaths(() =>
+          localCompute({
+            entry: UNIT,
+            cgroup: "/sys/fs/cgroup/bun-jobs-local-test-missing",
+          }),
+        ),
+      ).toEqual(["cgroup"]);
+    },
+  );
+
+  it.skipIf(cgroup === undefined)(
+    "a cgroup that stopped being one after configure: misconfigured, no unhandled rejection, nothing left",
+    async () => {
+      const plain = await tmp();
+      const file = join(plain, "..", `${plain.split("/").pop()}-r.json`);
+      const local = unitProvider("exit", file, { cgroup: testCgroup() });
+      // As if the directory were replaced after configure (or the configure
+      // check bypassed): a plain directory where the cgroup was.
+      (local.config as { cgroup?: string }).cgroup = plain;
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on("unhandledRejection", listener);
+      try {
+        const thrown = await local.summon
+          .summon(request(), context())
+          .catch((error: unknown) => error);
+        expect(thrown).toBeInstanceOf(ProviderError);
+        expect(thrown).toMatchObject({ kind: "misconfigured" });
+        const checks = await local.validate();
+        expect(checks.find((check) => check.id === "cgroup")).toMatchObject({
+          status: "fail",
+        });
+        await Bun.sleep(500);
+      } finally {
+        process.off("unhandledRejection", listener);
+      }
+      expect(unhandled).toEqual([]);
+      // Neither the unit's cgroup nor validate()'s probe is left behind.
+      expect(readdirSync(plain)).toEqual([]);
+    },
+  );
+
+  it.skipIf(cgroup === undefined)(
+    "a cgroup removed after configure: summon is misconfigured, validate fails its check",
+    async () => {
+      const gone = join(testCgroup(), "removed-later");
+      mkdirSync(gone);
+      const local = unitProvider("exit", join(await tmp(), "r.json"), {
+        cgroup: gone,
+      });
+      rmdirSync(gone);
+      expect(
+        await local.summon
+          .summon(request(), context())
+          .catch((error: unknown) => error),
+      ).toMatchObject({ kind: "misconfigured", platformCode: "ENOENT" });
+      expect(
+        (await local.validate()).find((check) => check.id === "cgroup"),
+      ).toMatchObject({ status: "fail" });
+    },
+  );
 
   it.skipIf(cgroup === undefined)(
     "holds a unit to the cgroup's memory.max",
