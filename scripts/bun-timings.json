@@ -1,7 +1,8 @@
 {
   "version": 1,
   "files": {
-    "__tests__/consumer-check.test.ts": 217,
-    "__tests__/setup-databases.test.ts": 30
+    "__tests__/heavy-run.test.ts": 12396,
+    "__tests__/consumer-check.test.ts": 492,
+    "__tests__/setup-databases.test.ts": 43
   }
 }

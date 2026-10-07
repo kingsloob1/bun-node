@@ -104,21 +104,25 @@ floor. So plain `bun test` is still the one-process run, as is
   4 workers took 44–46 s against 23–24 s for 16, both green twice. The
   failures cost more than that, so the cap stays.
 - **Heavy runs take a slot.** Several sessions share this machine, so a
-  heavy job runs through `/tmp/claude-1000/bun-node-heavy-run.sh <command>`:
+  heavy job runs through `/tmp/claude-1000/bun-node-heavy-run.sh <command>`,
+  installed from this repo's `scripts/heavy-run.sh` (below):
   two slots, the second open only while the 1-minute load is under the core
   count, so two heavy jobs run together on an idle machine and one at a time
   on a busy one. Slot 1 is the old `/tmp/claude-1000/bun-node-heavy.lock`, so
   a plain `flock` on it still counts. The command's exit status is passed
   through; giving up after `HEAVY_WAIT` (default 90 min) exits 75.
   - **A bun-jobs suite with database URLs runs alone**: the full suite, its
-    `--randomize` run, multi-file database runs. Prefix
+    `--randomize` run, any directory-wide run with database URLs. Prefix
     `HEAVY_EXCLUSIVE=1`. Those suites share five servers and assert on
     durations, and the 4-worker figures above were measured one at a time.
-  - **Heavy:** the bun-jobs and bun-jobs-ui suites, their `run-all.ts`
-    (Chrome), the consumer check, `check-types.ts`, benches, repeat or
-    concurrent-copy loops and load probes. **Not heavy, run directly:** the
-    bun-common and bun-nest suites and `run-all.ts` (seconds each), single
-    test files and examples, lint, typecheck and the template's test.
+  - **Heavy:** full suites, every bun-jobs-ui test (they drive the DOM and
+    Chrome), the bun-jobs and bun-jobs-ui `run-all.ts`, `check-types.ts`,
+    benches, and repeat, concurrent-copy and load loops.
+  - **Not heavy, run directly:** lint in any directory,
+    `bun scripts/typecheck.ts`, `bun scripts/consumer-check.ts` (heavy until
+    2026-10-07), specific named test files in any package except bun-jobs-ui,
+    the bun-common and bun-nest suites and `run-all.ts` (seconds each), single
+    examples and the template's test.
   - **Waiting costs nothing, so never poll for it.** Waiters block in the
     kernel on a turnstile lock, and only the head of the line tries the
     slots. Start a heavy job with the Bash tool's `run_in_background` and a
@@ -137,8 +141,26 @@ floor. So plain `bun test` is still the one-process run, as is
     started since the last ordinary one, the next steps back while ordinary
     jobs wait, so the two kinds alternate.
   - `/tmp/claude-1000/bun-node-heavy-queue.sh` lists every job holding or
-    waiting for a slot: its state, how long it has waited, its session and
-    ticket. Session names come from `/tmp/claude-1000/bun-node-sessions`.
+    waiting for a slot: its state, how long it has waited, an **EST** of its
+    run, its session and ticket. The state is the phase each wrapper records
+    for itself (in line, head of the line, stepping back, for the reserve, for
+    slots, attached, RUNNING). EST is the median of the last 10 successful
+    runs of the same kind of job, `~6m10s (n=4)`, plus `~2m left` or
+    `overrun +1m` for a running one, or `unknown` with no history. It comes
+    from `/tmp/claude-1000/bun-node-heavy-history.tsv`, one line per finished
+    job (epoch, key, seconds, exit status); the key is the directory relative
+    to its git top level, the command without its `timeout N`, and
+    `[exclusive]` and `EXAMPLE_DRIVER` when set, so a run in any worktree
+    counts (`bun-node-heavy-run.sh --key <command>` prints it). Session names
+    come from `/tmp/claude-1000/bun-node-sessions`.
+  - **The source is the repo**: `scripts/heavy-run.sh` and
+    `scripts/heavy-queue.sh`, tested by `scripts/__tests__/heavy-run.test.ts`.
+    `bun scripts/install-heavy-run.ts` installs them into `/tmp/claude-1000`
+    (`--dry-run` for the plan, `--dir` elsewhere): an atomic rename, so a
+    running job keeps the copy it started with, and the replaced wrapper
+    stays as `bun-node-heavy-run.prev.sh`. Run it after any change to those
+    scripts, once merged, and again after a reboot clears `/tmp`. Never edit
+    the installed copies.
   - Wrap the heavy command, not a script that also installs or sleeps, and
     give it a `timeout`. Never `flock -o` on these locks: on this machine it
     drops the lock while the command runs.
@@ -191,8 +213,10 @@ hand tests a constructor these examples never use, and it looks broken when it
 is not.
 
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
-`setup-databases.ts`, `consumer-check.ts`) belongs to no package, so it has its
-own lint config and its own tests; after touching one, check it from there:
+`setup-databases.ts`, `consumer-check.ts`, and the heavy-run wrapper
+`heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to no
+package, so it has its own lint config and its own tests; after touching one,
+check it from there:
 
 ```bash
 cd scripts && bunx eslint .   # 0 errors, and 0 warnings
