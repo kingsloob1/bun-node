@@ -140,15 +140,37 @@ floor. So plain `bun test` is still the one-process run, as is
   - **Exclusive jobs cannot starve ordinary ones:** once one exclusive job has
     started since the last ordinary one, the next steps back while ordinary
     jobs wait, so the two kinds alternate.
+  - **The wrapper decides from each job's history** (`HEAVY_MODE=auto`, the
+    default since 2026-10-07): the median wall time and cores of the last 10
+    successful runs of the job's key. No history, or none with CPU recorded:
+    a slot. Median cores at or above `HEAVY_EXCLUSIVE_CORES` (75% of the
+    cores): exclusive. Median under `HEAVY_DIRECT_SECONDS` (60) and under
+    `HEAVY_DIRECT_CORES` (2): it runs at once, holding no slot. Otherwise a
+    slot, or at once when no slot is free but it fits: the 1-minute load,
+    plus the cores of jobs started in the last minute (the load does not show
+    them yet), plus its own median cores is under `HEAVY_MAX_LOAD`, and no
+    exclusive job is waiting or running. `HEAVY_EXCLUSIVE=1` and an explicit
+    `HEAVY_MODE` (`slot`, `exclusive`, `direct`) always win. CPU history
+    cannot see the five database servers, so the bun-jobs DB suite is still
+    marked `HEAVY_EXCLUSIVE=1` by hand. A job run at once keeps its ticket,
+    records its history and is listed. The wrapper says what it decided on
+    stderr as it starts: `bun-node-heavy-run: auto → slot (median 6m10s, 3.2
+    cores, n=4)`.
   - `/tmp/claude-1000/bun-node-heavy-queue.sh` lists every job holding or
     waiting for a slot: its state, how long it has waited, an **EST** of its
     run, its session and ticket. The state is the phase each wrapper records
     for itself (in line, head of the line, stepping back, for the reserve, for
-    slots, attached, RUNNING). EST is the median of the last 10 successful
-    runs of the same kind of job, `~6m10s (n=4)`, plus `~2m left` or
+    slots, attached, RUNNING, `RUNNING (direct)` with no slot), then how it
+    runs: `[auto→slot]`, `[auto→direct]`, `[auto→exclusive]`, or the mode the
+    caller set. EST is the median of the last 10 successful
+    runs of the same kind of job and the median cores they used,
+    `~6m10s, 3.2 cores (n=4)`, plus `~2m left` or
     `overrun +1m` for a running one, or `unknown` with no history. It comes
     from `/tmp/claude-1000/bun-node-heavy-history.tsv`, one line per finished
-    job (epoch, key, seconds, exit status); the key is the directory relative
+    job (epoch, key, seconds, exit status, then CPU seconds of the job's
+    process tree, cores, the load at start and at end, where it ran and the
+    mode asked; lines from before 2026-10-07 have the first four, and still
+    count for EST); the key is the directory relative
     to its git top level, the command without its `timeout N`, and
     `[exclusive]` and `EXAMPLE_DRIVER` when set, so a run in any worktree
     counts (`bun-node-heavy-run.sh --key <command>` prints it). Session names
