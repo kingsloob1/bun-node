@@ -296,16 +296,42 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
   and bun-nest suites and run-alls, single examples, the template test.
 - Wrap the heavy command, not a script that also installs or sleeps; give it a
   `timeout`; never `flock -o` (it drops the lock while the command runs).
+- **The wrapper decides how a job runs from its history** (`HEAVY_MODE=auto`,
+  the default since 2026-10-07), from the median wall time and cores of the
+  last 10 successful runs of its key:
+  - no history, or none with CPU recorded: a slot;
+  - median cores at or above `HEAVY_EXCLUSIVE_CORES` (75% of the cores):
+    exclusive;
+  - median under `HEAVY_DIRECT_SECONDS` (60) and `HEAVY_DIRECT_CORES` (2): at
+    once, holding no slot;
+  - otherwise a slot, or at once when none is free but it fits: the 1-minute
+    load, plus the cores of jobs started in the last minute, plus its own
+    median cores is under `HEAVY_MAX_LOAD`, with no exclusive job waiting or
+    running.
+
+  `HEAVY_EXCLUSIVE=1` and an explicit `HEAVY_MODE` (`slot`, `exclusive`,
+  `direct`) always win. CPU history cannot see the database servers, so the
+  bun-jobs DB suite still needs `HEAVY_EXCLUSIVE=1`. The wrapper prints its
+  decision on stderr as it starts, e.g.
+  `bun-node-heavy-run: auto → slot (median 6m10s, 3.2 cores, n=4)`. A job run
+  at once keeps its ticket, records its history and is listed by the queue.
 - To see the queue: `/tmp/claude-1000/bun-node-heavy-queue.sh` — every job
   holding or waiting for a slot, its phase (each wrapper records its own),
   how long it has waited, an **EST** column, its session and ticket. Keep
   `/tmp/claude-1000/bun-node-sessions` (`<claude pid> <name>`) current when
-  sessions change.
+  sessions change. A job running with no slot reads `RUNNING (direct)`, and
+  each state ends with how the job runs: `[auto→slot]`, `[auto→direct]`,
+  `[auto→exclusive]`, or the mode its caller set.
 - **EST** is the median of the last 10 successful runs of the same kind of
-  job: `~6m10s (n=4)` while it waits, `~6m10s, ~2m left` or
-  `~6m10s, overrun +1m` while it runs, `unknown` with no history. Every
-  finished job appends a line (epoch, key, seconds, exit status) to
-  `/tmp/claude-1000/bun-node-heavy-history.tsv`. The key is the directory
+  job and the median cores they used: `~6m10s, 3.2 cores (n=4)` while it
+  waits, `~6m10s, 3.2 cores, ~2m left` or `~6m10s, 3.2 cores, overrun +1m`
+  while it runs, `unknown` with no history, and no cores figure while none of
+  those runs recorded CPU. Every finished job appends a line to
+  `/tmp/claude-1000/bun-node-heavy-history.tsv`: epoch, key, seconds, exit
+  status, then CPU seconds of the job's whole process tree, cores (CPU over
+  wall), the 1-minute load at start and at end, where it ran (`direct`, a slot
+  number or `all`) and the mode asked; lines from before 2026-10-07 have the
+  first four fields and still count. The key is the directory
   relative to the git top level, the command without a leading `timeout N`,
   and `[exclusive]` and `EXAMPLE_DRIVER` when set, so runs in different
   worktrees share an estimate; `bun-node-heavy-run.sh --key <command>` prints

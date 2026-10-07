@@ -13,6 +13,7 @@
 import type { Subprocess } from "bun";
 import { Buffer } from "node:buffer";
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
@@ -57,6 +58,27 @@ const HOLD_SH = `#!/bin/bash
 # hold.sh <file>: waits until <file> exists. Run under \`flock <lock>\` it
 # holds that lock until the test creates <file>.
 until [ -e "$1" ]; do sleep 0.05; done
+`;
+
+const BURN_SH = `#!/bin/bash
+# burn.sh <name> <threads>: <threads> busy loops, each until it has used 1 s of
+# CPU, so the job uses <threads> CPU seconds whatever the load. Logs its start
+# and end to $JOB_LOG, as job.sh does.
+echo "start $1 $(date +%s%N) \${HEAVY_SLOT:-none}" >>"$JOB_LOG"
+target=$(getconf CLK_TCK)
+spin() {
+  local s f i
+  while :; do
+    for ((i = 0; i < 2000; i++)); do :; done
+    read -r s <"/proc/$BASHPID/stat"
+    s=\${s##*) }
+    read -r -a f <<<"$s"
+    (( f[11] + f[12] >= target )) && return
+  done
+}
+for ((t = 0; t < $2; t++)); do spin & done
+wait
+echo "end $1 $(date +%s%N)" >>"$JOB_LOG"
 `;
 
 const sleep = (ms: number) => Bun.sleep(ms);
@@ -135,6 +157,17 @@ function descendants(pid: number): number[] {
   return found;
 }
 
+/** The command `runJob` runs: relative, so the queue's COMMAND shows the name. */
+function jobCommand(
+  name: string,
+  seconds: number | string,
+  status?: number,
+): string[] {
+  const command = ["bash", "job.sh", name, String(seconds)];
+  if (status !== undefined) command.push(String(status));
+  return command;
+}
+
 /** A started wrapper. */
 interface Run {
   proc: Subprocess<"ignore", "pipe", "pipe">;
@@ -149,12 +182,14 @@ class Box {
   readonly log = join(this.dir, "jobs.log");
   readonly job = join(this.dir, "job.sh");
   readonly hold = join(this.dir, "hold.sh");
+  readonly history = join(this.dir, "bun-node-heavy-history.tsv");
   private readonly pids: number[] = [];
   private holds = 0;
 
   constructor() {
     writeFileSync(this.job, JOB_SH);
     writeFileSync(this.hold, HOLD_SH);
+    writeFileSync(join(this.dir, "burn.sh"), BURN_SH);
     writeFileSync(this.log, "");
   }
 
@@ -222,10 +257,57 @@ class Box {
       script?: string;
     } = {},
   ): Run {
-    // Relative to the box, so the queue's 60-column COMMAND shows the name.
-    const command = ["bash", "job.sh", name, String(seconds)];
-    if (options.status !== undefined) command.push(String(options.status));
-    return this.run(command, options);
+    return this.run(jobCommand(name, seconds, options.status), options);
+  }
+
+  /** The key the wrapper gives `command` in this box (`--key`). */
+  async key(
+    command: string[],
+    env: Record<string, string> = {},
+  ): Promise<string> {
+    const printed = await exec(["bash", HEAVY_RUN, "--key", ...command], {
+      cwd: this.dir,
+      env: this.env(env),
+    });
+    return printed.stdout.trim();
+  }
+
+  /**
+   * Appends past runs of `command` to the history. A run without `cores` is
+   * an old four-field line, from before CPU was recorded.
+   */
+  async seed(
+    command: string[],
+    runs: { seconds: number; cores?: number; status?: number }[],
+    env: Record<string, string> = {},
+  ): Promise<void> {
+    const key = await this.key(command, env);
+    const now = Math.floor(Date.now() / 1000);
+    const lines = runs.map(({ seconds, cores, status = 0 }) => {
+      const fields = [now, key, seconds, status];
+      if (cores !== undefined) {
+        const cpu = (cores * seconds).toFixed(2);
+        fields.push(cpu, cores.toFixed(2), "1.00", "1.00", "1", "auto");
+      }
+      return `${fields.join("\t")}\n`;
+    });
+    appendFileSync(this.history, lines.join(""));
+  }
+
+  /** The history file's lines, split into fields. */
+  lines(): string[][] {
+    if (!existsSync(this.history)) return [];
+    return readFileSync(this.history, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("\t"));
+  }
+
+  /** Points HEAVY_LOADAVG at a file reading `load`, for a fixed load. */
+  fixedLoad(load: number): Record<string, string> {
+    const file = join(this.dir, "loadavg");
+    writeFileSync(file, `${load.toFixed(2)} ${load.toFixed(2)} 0.00 1/100 1\n`);
+    return { HEAVY_LOADAVG: file };
   }
 
   /** Lets a job started with `"@<file>"` finish. */
@@ -714,7 +796,10 @@ describe("heavy-run.sh: history and keys", () => {
     "each run appends one line, keyed the same from any clone",
     async (box) => {
       const command = ["timeout", "-k", "5", "30", "bash", "./run.sh", "0"];
-      const env = { EXAMPLE_DRIVER: "memory" };
+      // HEAVY_MODE=slot: since auto became the default, clone-a's quick run
+      // is history that sends clone-b's straight to "direct". The key is the
+      // same either way; this keeps the case on the slot path it was written for.
+      const env = { EXAMPLE_DRIVER: "memory", HEAVY_MODE: "slot" };
       const key = "examples/bun-jobs: bash ./run.sh 0 [EXAMPLE_DRIVER=memory]";
       for (const name of ["clone-a", "clone-b"]) {
         const cwd = await clone(box, name);
@@ -727,7 +812,10 @@ describe("heavy-run.sh: history and keys", () => {
       }
       const lines = history(box);
       expect(lines).toHaveLength(2);
-      for (const [epoch, lineKey, seconds, status] of lines) {
+      for (const [epoch, lineKey, seconds, status, ...measured] of lines) {
+        // cpu seconds, cores, load at start and end, where, mode asked.
+        expect(measured).toHaveLength(6);
+        expect(measured.slice(4)).toEqual(["1", "slot"]);
         expect(lineKey).toBe(key);
         expect(Number(epoch)).toBeGreaterThan(1_700_000_000);
         expect(seconds).toMatch(/^\d+$/);
@@ -841,6 +929,350 @@ describe("heavy-run.sh: history and keys", () => {
       expect(queue).toContain("Nothing holds or waits");
       expect(existsSync(stale)).toBe(false);
     },
+  );
+});
+
+describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
+  /** A light job: well under 60 s and 2 cores. */
+  const LIGHT = [2, 2, 3].map((seconds) => ({ seconds, cores: 0.3 }));
+  /** A job between light and machine-wide: 5 min on 4 cores. */
+  const MID = [300, 300].map((seconds) => ({ seconds, cores: 4 }));
+  /** Machine-wide against HEAVY_EXCLUSIVE_CORES=8. */
+  const WIDE = [300, 300].map((seconds) => ({ seconds, cores: 12 }));
+
+  scenario(
+    "CPU: two busy loops record about 2 CPU seconds, a sleep about none [slow, ~2 s]",
+    async (box) => {
+      const burn = box.run(["bash", "burn.sh", "burn", "2"]);
+      const nap = box.runJob("nap", 1);
+      const results = await Promise.all([burn.done, nap.done]);
+      expect(results.map((r) => r.code)).toEqual([0, 0]);
+
+      const of = (marker: string) =>
+        box.lines().find((line) => line[1]!.endsWith(marker))!;
+      const burnt = of("burn.sh burn 2");
+      expect(burnt).toHaveLength(10);
+      const [cpu, cores, loadStart, loadEnd] = burnt.slice(4, 8).map(Number);
+      // Each loop stops once it has used 1 s of CPU, so the job's CPU is
+      // about 2 s however loaded the machine is: both children counted.
+      expect(cpu).toBeGreaterThan(1.9);
+      expect(cpu).toBeLessThan(2.6);
+      // Cores is that CPU over the job's wall time: about 2 on a machine with
+      // two cores free. Under load the loops take longer and the figure is
+      // lower, so it is checked against the job's own wall time, not 2.
+      const job = box.jobs().get("burn")!;
+      const wall = (job.end! - job.start) / 1000;
+      expect(Math.abs(cores! - cpu! / wall)).toBeLessThan(0.25);
+      expect(loadStart).toBeGreaterThanOrEqual(0);
+      expect(loadEnd).toBeGreaterThanOrEqual(0);
+      expect(burnt.slice(8)).toEqual([job.slot, "auto"]);
+
+      const slept = of("job.sh nap 1");
+      expect(Number(slept[4])).toBeLessThan(0.1);
+      expect(Number(slept[5])).toBeLessThan(0.1);
+    },
+    SLOW,
+  );
+
+  scenario(
+    "old four-field history lines still give an EST and a decision",
+    async (box) => {
+      // Only old lines: the wall time is known, the CPU is not, so a slot.
+      const old = jobCommand("old", "@old-done");
+      await box.seed(old, [{ seconds: 5 }, { seconds: 5 }, { seconds: 6 }]);
+      const run = box.runJob("old", "@old-done");
+      await box.phaseIs(run, "running");
+      const queue = await box.queue();
+      expect(row(queue, "@old-done")).toMatch(/RUNNING .*\[auto→slot\]/);
+      expect(row(queue, "@old-done")).toMatch(
+        /~0m05s, (~\ds left|overrun \+\d+s)/,
+      );
+      expect(row(queue, "@old-done")).not.toContain("cores");
+      box.finish("old-done");
+      const result = await run.done;
+      expect(result.stderr).toContain(
+        "auto → slot (median 0m05s, no CPU on record, n=3)",
+      );
+      expect(box.jobs().get("old")!.slot).toBe("1");
+
+      // Old and new lines mixed: the wall median counts all of them, the
+      // cores median those that recorded CPU.
+      const mixed = jobCommand("mixed", 0);
+      await box.seed(mixed, [{ seconds: 5 }, { seconds: 5 }, { seconds: 9 }]);
+      await box.seed(mixed, [{ seconds: 5, cores: 0.5 }]);
+      const stats = await exec(["bash", HEAVY_RUN, "--stats", ...mixed], {
+        cwd: box.dir,
+        env: box.env(),
+      });
+      expect(stats.stdout).toBe("5 4 0.50 1\n");
+      const light = await box.runJob("mixed", 0).done;
+      expect(light.stderr).toContain(
+        "auto → direct (median 0m05s, 0.5 cores, n=4)",
+      );
+      expect(box.jobs().get("mixed")!.slot).toBe("direct");
+    },
+  );
+
+  scenario("with no history, auto takes a slot", async (box) => {
+    const result = await box.runJob("fresh", 0).done;
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("auto → slot (no history)");
+    expect(box.jobs().get("fresh")!.slot).toBe("1");
+    const [line] = box.lines();
+    expect(line!.slice(8)).toEqual(["1", "auto"]);
+    // A job of a few milliseconds counts as lasting a second, so its cores
+    // are no more than its CPU seconds, not a few ticks over a few ms.
+    expect(Number(line![5])).toBeLessThanOrEqual(Number(line![4]) + 0.01);
+  });
+
+  scenario(
+    "light history runs at once, with both slots held by other jobs",
+    async (box) => {
+      await box.seed(jobCommand("light", 0), LIGHT);
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      // Both slots stay held throughout: a job that waited for one would
+      // never end, and the case would time out.
+      const result = await box.runJob("light", 0).done;
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain(
+        "auto → direct (median 0m02s, 0.3 cores, n=3)",
+      );
+      expect(box.jobs().get("light")!.slot).toBe("direct");
+      expect(box.lines().at(-1)!.slice(8)).toEqual(["direct", "auto"]);
+      await release1();
+      await release2();
+    },
+  );
+
+  scenario(
+    "machine-wide history runs exclusive, under the job's own key",
+    async (box) => {
+      const env = { HEAVY_EXCLUSIVE_CORES: "8" };
+      const wide = jobCommand("wide", 0);
+      await box.seed(wide, WIDE);
+      const result = await box.runJob("wide", 0, { env }).done;
+      expect(result.stderr).toContain(
+        "auto → exclusive (median 5m00s, 12.0 cores, n=2)",
+      );
+      expect(box.jobs().get("wide")!.slot).toBe("all");
+      // An auto decision is not part of the key, so the run's history goes
+      // where the next decision will read it.
+      const last = box.lines().at(-1)!;
+      expect(last[1]).toBe(await box.key(wide));
+      expect(last[1]).not.toContain("[exclusive]");
+
+      // The default threshold is 75% of the cores: all of them is above it.
+      const cores = Number((await exec(["nproc"])).stdout);
+      const all = jobCommand("all-cores", 0);
+      await box.seed(all, [{ seconds: 300, cores }]);
+      await box.runJob("all-cores", 0).done;
+      expect(box.jobs().get("all-cores")!.slot).toBe("all");
+    },
+  );
+
+  scenario(
+    "mid history takes a slot when one is free, and runs at once when it fits",
+    async (box) => {
+      await box.seed(jobCommand("mid", 0), MID);
+      const free = await box.runJob("mid", 0).done;
+      expect(free.stderr).toContain(
+        "auto → slot (median 5m00s, 4.0 cores, n=2)",
+      );
+      expect(box.jobs().get("mid")!.slot).toBe("1");
+
+      // No slot free, a load of 1 and 4 cores of its own, under 8: it fits.
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      const env = { ...box.fixedLoad(1), HEAVY_MAX_LOAD: "8" };
+      const fits = await box.runJob("mid", 0, { env }).done;
+      expect(fits.stderr).toContain(
+        "auto → direct, no slot free but it fits (load 1.0 + 0.0 starting + 4.0 < 8.0)",
+      );
+      expect(box.jobs().get("mid")!.slot).toBe("direct");
+      await release1();
+      await release2();
+    },
+  );
+
+  scenario(
+    "fits counts the jobs that started in the last minute: two do not both go [slow, ~3 s]",
+    async (box) => {
+      const command = jobCommand("mid", "@mid-done");
+      await box.seed(command, MID);
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      // 1 + 4 < 8 for the first; 1 + 4 (the first, too new for the load to
+      // show) + 4 is not, so the second waits at the head of the line.
+      const env = { ...box.fixedLoad(1), HEAVY_MAX_LOAD: "8" };
+      const first = box.runJob("mid", "@mid-done", { env });
+      await box.phaseIs(first, "direct");
+      const second = box.runJob("mid", "@mid-done", { env });
+      await box.phaseIs(second, "head");
+      await until("the second to look and nap", () => childOf(second, "sleep"));
+      expect(box.starts("mid")).toBe(1);
+
+      box.finish("mid-done");
+      const results = await Promise.all([first.done, second.done]);
+      expect(results.map((r) => r.code)).toEqual([0, 0]);
+      expect(results[1]!.stderr).toContain("load 1.0 + 0.0 starting + 4.0");
+      expect(box.starts("mid")).toBe(2);
+      await release1();
+      await release2();
+    },
+    SLOW,
+  );
+
+  scenario(
+    "fits never jumps an exclusive job holding the reserve [slow, ~3 s]",
+    async (box) => {
+      await box.seed(jobCommand("mid", 0), MID);
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      const reserve = await box.holdLock(
+        box.lock("bun-node-heavy.reserve.lock"),
+      );
+      const run = box.runJob("mid", 0, { env: box.fixedLoad(1) });
+      await box.phaseIs(run, "head");
+      await until("it to look and nap", () => childOf(run, "sleep"));
+      expect(box.starts("mid")).toBe(0);
+      await reserve();
+      expect((await run.done).code).toBe(0);
+      expect(box.jobs().get("mid")!.slot).toBe("direct");
+      await release1();
+      await release2();
+    },
+    SLOW,
+  );
+
+  scenario(
+    "fits never runs beside a running exclusive job: it waits for a slot [slow, ~3 s]",
+    async (box) => {
+      await box.seed(jobCommand("mid", 0), MID);
+      const exclusive = box.runJob("e", "@e-done", {
+        env: { HEAVY_EXCLUSIVE: "1" },
+      });
+      await box.phaseIs(exclusive, "running");
+      const run = box.runJob("mid", 0, { env: box.fixedLoad(1) });
+      await box.phaseIs(run, "head");
+      await until("it to look and nap", () => childOf(run, "sleep"));
+      expect(box.starts("mid")).toBe(0);
+      box.finish("e-done");
+      const results = await Promise.all([exclusive.done, run.done]);
+      expect(results.map((r) => r.code)).toEqual([0, 0]);
+      expect(box.jobs().get("mid")!.slot).toBe("1");
+    },
+    SLOW,
+  );
+
+  scenario("HEAVY_EXCLUSIVE=1 wins over light history", async (box) => {
+    const light = jobCommand("light", 0);
+    const env = { HEAVY_EXCLUSIVE: "1" };
+    // Under its own key and under the [exclusive] one.
+    await box.seed(light, LIGHT);
+    await box.seed(light, LIGHT, env);
+    const result = await box.runJob("light", 0, { env }).done;
+    expect(result.stderr).toContain("exclusive (HEAVY_EXCLUSIVE=1)");
+    expect(box.jobs().get("light")!.slot).toBe("all");
+    // It wins over an explicit HEAVY_MODE too.
+    const both = { ...env, HEAVY_MODE: "direct" };
+    await box.runJob("light2", 0, { env: both }).done;
+    expect(box.jobs().get("light2")!.slot).toBe("all");
+  });
+
+  scenario(
+    "HEAVY_MODE=slot wins over light history: it waits for a slot [slow, ~3 s]",
+    async (box) => {
+      await box.seed(jobCommand("light", 0), LIGHT);
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      const env = { ...box.fixedLoad(0), HEAVY_MODE: "slot" };
+      const run = box.runJob("light", 0, { env });
+      await box.phaseIs(run, "head");
+      await until("it to look and nap", () => childOf(run, "sleep"));
+      expect(box.starts("light")).toBe(0);
+      await release1();
+      const result = await run.done;
+      expect(result.stderr).toContain("slot (HEAVY_MODE=slot)");
+      expect(box.jobs().get("light")!.slot).toBe("1");
+      await release2();
+    },
+    SLOW,
+  );
+
+  scenario(
+    "HEAVY_MODE=direct runs at once with no history; an unknown mode exits 64",
+    async (box) => {
+      const release1 = await box.holdLock(box.lock("bun-node-heavy.lock"));
+      const release2 = await box.holdLock(box.lock("bun-node-heavy.2.lock"));
+      const env = { HEAVY_MODE: "direct" };
+      const result = await box.runJob("now", 0, { env }).done;
+      expect(result.stderr).toContain("direct (HEAVY_MODE=direct)");
+      expect(box.jobs().get("now")!.slot).toBe("direct");
+      expect(box.lines().at(-1)!.slice(8)).toEqual(["direct", "direct"]);
+
+      const bad = await box.runJob("bad", 0, { env: { HEAVY_MODE: "fast" } })
+        .done;
+      expect(bad.code).toBe(64);
+      expect(bad.stderr).toContain("HEAVY_MODE must be");
+      expect(box.starts("bad")).toBe(0);
+      await release1();
+      await release2();
+    },
+  );
+
+  scenario(
+    "a direct run records its history and keeps its ticket",
+    async (box) => {
+      await box.seed(jobCommand("d", "@d-done", 3), LIGHT);
+      const env = { HEAVY_TICKET: "t-direct" };
+      const run = box.runJob("d", "@d-done", { status: 3, env });
+      await box.phaseIs(run, "direct");
+      const status = join(box.dir, "bun-node-heavy-jobs", "t-direct.status");
+      expect(readFileSync(status, "utf8")).toMatch(/^running direct /);
+      box.finish("d-done");
+      expect((await run.done).code).toBe(3);
+      expect(readFileSync(status, "utf8")).toMatch(/^done 3 /);
+      const last = box.lines().at(-1)!;
+      expect([last[3], ...last.slice(8)]).toEqual(["3", "direct", "auto"]);
+
+      const again = await box.runJob("d", "@d-done", { status: 3, env }).done;
+      expect(again.code).toBe(3);
+      expect(again.stderr).toContain("finished with exit 3");
+      expect(box.starts("d")).toBe(1);
+    },
+  );
+
+  scenario(
+    "the queue shows each decision, and the cores beside EST [slow, ~2 s]",
+    async (box) => {
+      const env = { HEAVY_EXCLUSIVE_CORES: "8" };
+      await box.seed(jobCommand("s", "@s-done"), MID);
+      await box.seed(jobCommand("x", "@x-done"), WIDE);
+      await box.seed(jobCommand("d", "@d-done"), LIGHT);
+      const s = box.runJob("s", "@s-done", { env });
+      await box.phaseIs(s, "running");
+      const x = box.runJob("x", "@x-done", { env });
+      await box.phaseIs(x, "waiting-slots");
+      const d = box.runJob("d", "@d-done", { env });
+      await box.phaseIs(d, "direct");
+
+      const queue = await box.queue();
+      expect(row(queue, "@s-done")).toMatch(
+        /RUNNING \d+m\d+s .*\[auto→slot\]\s+~5m00s, 4\.0 cores, ~5m left/,
+      );
+      expect(row(queue, "@x-done")).toMatch(
+        /waiting .*, for slots \[auto→exclusive\]\s+~5m00s, 12\.0 cores \(n=2\)/,
+      );
+      expect(row(queue, "@d-done")).toMatch(
+        /RUNNING \(direct\) .*\[auto→direct\]\s+~0m02s, 0\.3 cores, (~\ds left|overrun \+\d+s)/,
+      );
+
+      for (const name of ["s", "x", "d"]) box.finish(`${name}-done`);
+      const results = await Promise.all([s, x, d].map((r) => r.done));
+      expect(results.map((r) => r.code)).toEqual([0, 0, 0]);
+    },
+    SLOW,
   );
 });
 

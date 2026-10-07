@@ -12,13 +12,18 @@
 # STATE is the phase each wrapper records in bun-node-heavy-jobs/pid-<pid>.state;
 # for a wrapper that records none (an older copy still running) it is guessed
 # from the wrapper's child processes. A state file whose wrapper is gone is
-# ignored and deleted.
+# ignored and deleted. A job running without a slot reads "RUNNING (direct)".
+# STATE ends with how the job runs: [slot], [exclusive] or [direct] when the
+# caller chose, and [auto→slot], [auto→exclusive] or [auto→direct] when the
+# wrapper decided from the job's history (HEAVY_MODE=auto, the default).
 #
 # EST is the median duration of the last 10 successful runs (exit 0) of the
 # same kind of job, from bun-node-heavy-history.tsv, which the wrapper appends
-# to as each job ends; the kind is the key `bun-node-heavy-run.sh --key` prints.
-# A running job also shows what is left of it, or how far past the median it
-# is. With no successful run on record it reads "unknown".
+# to as each job ends, and the median cores they used when recorded:
+# "~6m10s, 3.2 cores (n=4)". The kind is the key `bun-node-heavy-run.sh --key`
+# prints, and the figures are what `--stats` prints, the same ones the wrapper
+# decides from. A running job also shows what is left of it, or how far past
+# the median it is. With no successful run on record it reads "unknown".
 #
 #   HEAVY_DIR      where the locks live (default /tmp/claude-1000; for tests)
 #   HEAVY_WRAPPER  the wrapper whose jobs to list (default $HEAVY_DIR/bun-node-heavy-run.sh)
@@ -26,7 +31,6 @@ set -u
 DIR=${HEAVY_DIR:-/tmp/claude-1000}
 WRAPPER=${HEAVY_WRAPPER:-$DIR/bun-node-heavy-run.sh}
 JOBS="$DIR/bun-node-heavy-jobs"
-HISTORY="$DIR/bun-node-heavy-history.tsv"
 declare -A NAME=()
 if [ -f "$DIR/bun-node-sessions" ]; then
   while read -r pid name; do [ -n "${pid:-}" ] && NAME[$pid]=$name; done <"$DIR/bun-node-sessions"
@@ -45,30 +49,37 @@ where() { readlink "/proc/$1/cwd" 2>/dev/null | sed 's|^/home/[^/]*/Desktop/proj
 envof() { tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p"; }
 printf -v now '%(%s)T' -1
 
-# The key of a process's job, asked of the wrapper itself so it is computed in
-# one place: in the process's directory, with its HEAVY_EXCLUSIVE and
-# EXAMPLE_DRIVER. Arguments after the first <skip> of its command line.
-keyof() {
+# What the history says of a process's job, asked of the wrapper itself so the
+# key and the medians are computed in one place: `--stats` in the process's
+# directory, with its HEAVY_EXCLUSIVE, HEAVY_MODE and EXAMPLE_DRIVER, prints
+# <median seconds> <n> <median cores or -> <n with cores>, or nothing.
+# Arguments after the first <skip> of its command line.
+statsof() {
   local pid=$1 skip=$2 excl=${3:-} cwd args=()
-  grep -q '^heavy_key()' "$WRAPPER" 2>/dev/null || return 0
+  grep -q '^heavy_stats()' "$WRAPPER" 2>/dev/null || return 0
   cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || return 0
   mapfile -d '' args <"/proc/$pid/cmdline" 2>/dev/null || return 0
   [ "${#args[@]}" -gt "$skip" ] || return 0
-  (cd "$cwd" 2>/dev/null && HEAVY_EXCLUSIVE="$excl" EXAMPLE_DRIVER="$(envof "$pid" EXAMPLE_DRIVER)" \
-    bash "$WRAPPER" --key "${args[@]:$skip}" 2>/dev/null)
+  (cd "$cwd" 2>/dev/null && HEAVY_DIR="$DIR" HEAVY_EXCLUSIVE="$excl" HEAVY_MODE="$(envof "$pid" HEAVY_MODE)" \
+    EXAMPLE_DRIVER="$(envof "$pid" EXAMPLE_DRIVER)" bash "$WRAPPER" --stats "${args[@]:$skip}" 2>/dev/null)
 }
-# How long a key's job normally takes: "~6m10s (n=4)", or for a job running
-# for <ran> seconds "~6m10s, ~2m left" or "~6m10s, overrun +1m".
+# How long a key's job normally takes, and the cores it uses when on record:
+# "~6m10s, 3.2 cores (n=4)", or for a job running for <ran> seconds
+# "~6m10s, 3.2 cores, ~2m left" or "~6m10s, 3.2 cores, overrun +1m".
 roughly() { if [ "$1" -lt 60 ]; then echo "${1}s"; else echo "$((($1 + 30) / 60))m"; fi; }
 estimate() {
-  local key=$1 ran=${2:-} med n
-  read -r med n < <([ -n "$key" ] && [ -f "$HISTORY" ] &&
-    K=$key awk -F'\t' '$2 == ENVIRON["K"] && $4 == "0" { print $3 }' "$HISTORY" | tail -n 10 | sort -n |
-    awk '{ v[NR] = $1 } END { if (NR) print (NR % 2 ? v[(NR + 1) / 2] : int((v[NR / 2] + v[NR / 2 + 1]) / 2)), NR }')
+  local stats=$1 ran=${2:-} med n cores ncores est r
+  read -r med n cores ncores <<<"$stats"
   if [ -z "${med:-}" ]; then echo unknown; return; fi
-  if [ -z "$ran" ]; then echo "~$(mins "$med") (n=$n)"
-  elif [ "$ran" -le "$med" ]; then echo "~$(mins "$med"), ~$(roughly $((med - ran))) left"
-  else echo "~$(mins "$med"), overrun +$(roughly $((ran - med)))"
+  est="~$(mins "$med")"
+  # Two places to one, rounded as the wrapper rounds them: 3.25 is 3.3.
+  if [ "${ncores:-0}" -gt 0 ] 2>/dev/null && [[ $cores =~ ^([0-9]+)\.([0-9]{2})$ ]]; then
+    r=$(( (10#${BASH_REMATCH[1]} * 100 + 10#${BASH_REMATCH[2]} + 5) / 10 ))
+    est="$est, $((r / 10)).$((r % 10)) cores"
+  fi
+  if [ -z "$ran" ]; then echo "$est (n=$n)"
+  elif [ "$ran" -le "$med" ]; then echo "$est, ~$(roughly $((med - ran))) left"
+  else echo "$est, overrun +$(roughly $((ran - med)))"
   fi
 }
 
@@ -92,13 +103,15 @@ for w in $(ps -eo pid=,args= | awk -v h="$WRAPPER" '$3 == h { print $1 }'); do
   excl=$(envof "$w" HEAVY_EXCLUSIVE)
   # Its own record of its phase, unless that is older than the wrapper: then
   # it belongs to an earlier process with the same pid.
-  phase="" since=""
-  [ -f "$JOBS/pid-$w.state" ] && read -r phase since _ <"$JOBS/pid-$w.state"
-  if [ -n "$phase" ] && ! [ "${since:-0}" -ge $((now - age - 1)) ] 2>/dev/null; then phase=""; fi
-  ran=""
+  phase="" since="" mode=""
+  [ -f "$JOBS/pid-$w.state" ] && read -r phase since mode _ <"$JOBS/pid-$w.state"
+  if [ -n "$phase" ] && ! [ "${since:-0}" -ge $((now - age - 1)) ] 2>/dev/null; then phase="" mode=""; fi
+  ran="" direct=""
   if [ -n "$phase" ]; then
     case "$phase" in
-      running) ran=$((now - since)); [ "$ran" -le "$age" ] || ran=$age; [ "$ran" -ge 0 ] || ran=0 ;;
+      running | direct)
+        ran=$((now - since)); [ "$ran" -le "$age" ] || ran=$age; [ "$ran" -ge 0 ] || ran=0
+        [ "$phase" = direct ] && direct=" (direct)" ;;
       head) state="waiting $(mins "$age"), head of the line" ;;
       in-line) state="waiting $(mins "$age"), in line" ;;
       stepping-back) state="waiting $(mins "$age"), stepping back for ordinary jobs" ;;
@@ -122,12 +135,15 @@ for w in $(ps -eo pid=,args= | awk -v h="$WRAPPER" '$3 == h { print $1 }'); do
     fi
   fi
   if [ -n "$ran" ]; then
-    state="RUNNING $(mins "$ran") (waited $(mins $((age - ran))))"; key=$((100000 + ran))
+    state="RUNNING$direct $(mins "$ran") (waited $(mins $((age - ran))))"; key=$((100000 + ran))
   else
     key=$age
   fi
-  est=$(estimate "$(keyof "$w" 2 "$excl")" "$ran")
-  [ "$excl" = 1 ] && state="$state [exclusive]"
+  est=$(estimate "$(statsof "$w" 2 "$excl")" "$ran")
+  # How it runs, from its state file; an older wrapper records none.
+  if [ -n "$mode" ]; then state="$state [${mode/>/→}]"
+  elif [ "$excl" = 1 ]; then state="$state [exclusive]"
+  fi
   rows+=("$key|$state|$est|$(owner "$w")|${ticket:--}|$(where "$w")|$cmd")
 done
 # Plain `flock` jobs on the old lock file (slot 1), not started by the wrapper.
@@ -151,7 +167,7 @@ for p in $(lslocks -n -o PID,PATH 2>/dev/null | awk -v f="$DIR/bun-node-heavy.lo
     skip=$((skip + 1))
     case "$a" in -w | -E | --timeout | --conflict-exit-code) read -r _; skip=$((skip + 1)) ;; -*) ;; *) break ;; esac
   done < <(tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null | tail -n +2)
-  est=$(estimate "$(keyof "$p" "$skip")" "$ran")
+  est=$(estimate "$(statsof "$p" "$skip")" "$ran")
   rows+=("$key|$state|$est|$(owner "$p")|-|$(where "$p")|$cmd")
 done
 
