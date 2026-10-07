@@ -50,7 +50,7 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 |---|---|---|
 | `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
-| `compute` | `compute.renders.render` | **summoned**: separate processes a compute provider starts when `renders` has work, each gone again 10 s after the queue is empty; its Summon card names the attempt |
+| `compute` | `compute.renders.render`, `compute.transcodes.transcode` | **summoned**: separate processes a compute provider starts when `renders` or `transcodes` has work, each gone again 10 s after its queue is empty; its Summon card names the attempt |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
 survives a restart of the playground and reaches every replica carrying it.
@@ -85,6 +85,7 @@ than piled onto one (each is commented where it is set):
 | `webhooks` | 2 at a time, rate-limited 20/min | retries with exponential backoff; `umbrella` always fails, so dead jobs pile up |
 | `images` | none in `api` — its only worker is `mailer.images.thumbs` (see above) | a backlog that drains slowly, one job at a time; pause that worker and it only grows |
 | `renders` | none always on — summoned on demand (`summoning.ts`) | a burst of 4–16 jobs every minute, a worker (or two) summoned for it, and back to no worker at all |
+| `transcodes` | none always on — summoned under the same policy as `renders` | 1–3 jobs with each burst, one worker summoned for them by the queue's own controller |
 
 Also on `emails`: two repeat series (`weekly-digest`, `daily-summary`: try
 Disable/Enable), a delayed `reminder-tomorrow`, and a flow
@@ -183,16 +184,23 @@ run's because capture attributes each `console` call to the run that made it
 
 ### Summoning and compute providers (`summoning.ts`, `compute/`)
 
-`renders` has **no** always-on worker. When it has work, its summon
-controller asks a **compute provider** for one, and the provider's platform
-starts a real worker process on this machine; that worker drains the queue
-and exits once there is nothing left for it.
+`renders` and `transcodes` have **no** always-on worker. When one has work,
+its summon controller asks a **compute provider** for one, and the
+provider's platform starts a real worker process on this machine; that
+worker drains the queue and exits once there is nothing left for it.
+
+Both queues share one policy, written once as a **summon group** — the
+context's `summon` option is `[{ queues: ["renders", "transcodes"], … }]`,
+with `overrides` capping `transcodes` at one worker. A group is shorthand:
+each queue still gets its own controller, with its own Summon panel, budget,
+backoff and circuit. Every unit runs the same `compute/worker.ts`, which
+picks its processor by the queue its arguments name.
 
 | File | What it is |
 |---|---|
 | `compute/provider.ts` | the provider, made with `defineComputeProvider` from `@kingsleyweb/bun-jobs/provider`: identity, a config schema with a JSON Schema for the config form, `apiToken` declared a secret, `describe()` facts, a `validate()` preflight, and a summon facet with `status()` and `cancel()` |
 | `compute/platform.ts` | "Local Compute", the made-up platform it talks to over HTTP (through `ctx.fetch`), served on the playground's own port under `/local-compute/v1`. A unit is `bun compute/worker.ts` with the summon's `--bun-jobs-summon-*=` arguments, and the policy's static `env` (how to reach the backend) |
-| `compute/worker.ts` | what a unit runs: a worker under `runSummoned`, which exits 10 s after the queue is empty and writes the exit mark that tells the controller the attempt ended cleanly |
+| `compute/worker.ts` | what a unit runs, for either queue: a worker under `runSummoned`, which exits 10 s after the queue is empty and writes the exit mark that tells the controller the attempt ended cleanly |
 
 **Where to look:**
 
@@ -211,7 +219,9 @@ and exits once there is nothing left for it.
   (`…~1`), its readiness — **pending** for the first 12 s, so the first
   burst waits for it — its capabilities and facts, the attempts in flight,
   failures, backoff, the circuit, the budget, and the last outcome. "Summon
-  now" and "Reset" work.
+  now" and "Reset" work. `transcodes` has a panel of its own
+  (`/jobs/queues/transcodes`), from the same group: the same summoner, its
+  own attempts and budget.
 - **Workers** (`/jobs/workers`): `compute.renders.render` appears under
   `compute` while a summoned worker runs, with its summon provenance (the
   attempt's id, `kind: local`, its mode and deadline), and is gone once it

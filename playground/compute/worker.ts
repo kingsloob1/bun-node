@@ -4,6 +4,10 @@
  * the queue its arguments name, which exits once that queue has nothing left
  * for it. Not meant to be run by hand.
  *
+ * - **One file for the whole summon group**: `renders` and `transcodes` share
+ *   a policy (`summoning.ts`), and every unit runs this file. The queue its
+ *   arguments name chooses the processor, from {@link PROCESSORS}.
+ *
  * - **Identity** comes from the arguments (`summonedFromArgs()`), never the
  *   environment: the namespace, the queue, the attempt's id, its lifetime and
  *   the platform's grace.
@@ -56,11 +60,24 @@ const jobs = new BunJobs({
   logger: noopLogger,
 });
 
+/**
+ * What each queue of the group runs, by queue name. A render and a transcode
+ * take the same data; each logs what it is doing and reports its progress.
+ */
+const PROCESSORS: Record<string, { name: string; verb: string }> = {
+  renders: { name: "render", verb: "rendering" },
+  transcodes: { name: "transcode", verb: "transcoding" },
+};
+const processor = PROCESSORS[summon.queue];
+if (processor === undefined) {
+  throw new Error(`no processor for queue "${summon.queue}"`);
+}
+
 const worker = jobs.worker<RenderData, { frames: number; pid: number }>(
   summon.queue,
   async (job: Job<RenderData>) => {
     await job.log(
-      `rendering ${job.data.scene} (${job.data.frames} frames) in unit ${process.env.LOCAL_COMPUTE_UNIT} (pid ${process.pid})`,
+      `${processor.verb} ${job.data.scene} (${job.data.frames} frames) in unit ${process.env.LOCAL_COMPUTE_UNIT} (pid ${process.pid})`,
     );
     for (let frame = 1; frame <= job.data.frames; frame++) {
       await Bun.sleep(150 + Math.floor(Math.random() * 250));
@@ -70,7 +87,8 @@ const worker = jobs.worker<RenderData, { frames: number; pid: number }>(
   },
   {
     summon,
-    name: "render",
+    // `compute.renders.render`, `compute.transcodes.transcode`.
+    name: processor.name,
     concurrency: 2,
     // Reported often, so the Workers page keeps up with a short-lived worker.
     reportInterval: 2_000,

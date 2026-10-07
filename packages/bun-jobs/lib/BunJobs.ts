@@ -33,6 +33,7 @@ import type { JobRoute, JobRouter } from "./queue/JobBuilder";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
+import type { SummonOption } from "./summon/groups";
 import type { SummonPolicy } from "./summon/types";
 import {
   countQueues,
@@ -64,6 +65,7 @@ import {
   FIND_SUMMON_CONTROLLER,
   SummonController,
 } from "./summon/controller";
+import { expandSummonOption } from "./summon/groups";
 
 /** Options for a {@link BunJobs} context. */
 export interface BunJobsOptions {
@@ -157,10 +159,17 @@ export interface BunJobsOptions {
    */
   metrics?: MetricsOptions;
   /**
-   * Summon compute for these queues, keyed by queue name: a
-   * `SummonController` per entry, built with the context and closed first by
-   * `close()`. Each starts polling at once, and hears the adds of every queue
-   * of its name this context creates (`triggers.onAdd`).
+   * Summon compute for these queues: a `SummonController` per queue, built
+   * with the context and closed first by `close()`. Each starts polling at
+   * once, and hears the adds of every queue of its name this context creates
+   * (`triggers.onAdd`).
+   *
+   * Either policies keyed by queue name, or an array of groups — one policy
+   * written once for several queues, `{ queues: ["emails", "images"],
+   * summoner, … }` — and such records, mixed (see `SummonOption`). A group is
+   * shorthand: it still builds one ordinary controller per queue, each with
+   * its own marker, budget, backoff and circuit. A queue named twice anywhere
+   * in the option, or a group with no queues, is a `ConfigError`.
    *
    * Needs a driver another process can reach, with queue state and worker
    * records (a `ConfigError` at construction otherwise — the memory driver
@@ -169,7 +178,7 @@ export interface BunJobsOptions {
    * `fromSummoned: true`, so a config module shared with the worker cannot
    * make it summon more workers. Unset by default: nothing is summoned.
    */
-  summon?: Record<string, SummonPolicy>;
+  summon?: SummonOption;
 }
 
 /**
@@ -387,8 +396,8 @@ export class BunJobs<
   readonly #notifiers = new Set<JobsNotifier>();
   /** Summon controllers, by queue name: from the `summon` option and `summonController()`. */
   readonly #summonControllers = new Map<string, SummonController>();
-  /** The `summon` option, for `summonController()` to find a queue's policy in. */
-  readonly #summonPolicies: Readonly<Record<string, SummonPolicy>>;
+  /** The `summon` option expanded to one policy per queue, for `summonController()` to find a queue's policy in. */
+  readonly #summonPolicies: ReadonlyMap<string, SummonPolicy>;
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: RegistryWorker<TJobs> | undefined;
   /**
@@ -453,9 +462,11 @@ export class BunJobs<
       logger: options.logger,
     });
 
-    this.#summonPolicies = { ...options.summon };
+    // Expanded (and refused, for a duplicate or an empty group) before any
+    // controller exists, so a bad option starts nothing.
+    this.#summonPolicies = expandSummonOption(options.summon);
     try {
-      for (const queue of Object.keys(this.#summonPolicies)) {
+      for (const queue of this.#summonPolicies.keys()) {
         this.summonController(queue);
       }
     } catch (error) {
@@ -674,7 +685,7 @@ export class BunJobs<
     if (existing) {
       return existing;
     }
-    const resolved = policy ?? this.#summonPolicies[queue];
+    const resolved = policy ?? this.#summonPolicies.get(queue);
     if (resolved === undefined) {
       throw new ConfigError(
         `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,

@@ -11,6 +11,7 @@
 export { SUMMON_ARGS, type SummonedArgs, summonedFromArgs } from "./args";
 export { SummonController } from "./controller";
 export { defineSummoner, type DefineSummonerOptions } from "./define";
+export type { SummonGroup, SummonOption } from "./groups";
 export type {
   PendingSummon,
   ProviderApiVersions,
