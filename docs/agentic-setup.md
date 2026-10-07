@@ -269,9 +269,20 @@ machine and one on a busy one (agreed by all sessions and their users on
 2026-10-06; `CLAUDE.md` has the detail):
 
 ```bash
-/tmp/claude-1000/bun-node-heavy-run.sh timeout 2400 bun run-all.ts
-HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.sh timeout 1800 bun run test
+HEAVY_TICKET=13-ui-runall /tmp/claude-1000/bun-node-heavy-run.sh \
+  timeout 2400 bun run-all.ts > run-all.log 2>&1
+HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.sh \
+  timeout 1800 bun run test > suite.log 2>&1
 ```
+
+- **Never spend turns waiting** (the user's rule, 2026-10-07). Start the job
+  with the Bash tool's `run_in_background`, then stop; the completion
+  notification wakes you. The wrapper waits in the kernel, so the wait itself
+  costs nothing — a `sleep`, a poll or a "still queued" turn costs units.
+- **After a usage limit**, re-issue the exact command with the same
+  `HEAVY_TICKET`: you get its result, or you attach to it in the line,
+  instead of a new place at the back. Its state is in
+  `/tmp/claude-1000/bun-node-heavy-jobs/<ticket>.status`.
 
 - **Exclusive** (`HEAVY_EXCLUSIVE=1`): any bun-jobs suite with database URLs —
   the full suite, `--randomize`, multi-file database runs.
@@ -282,8 +293,10 @@ HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.sh timeout 1800 bun run te
   test files and examples, lint, typecheck, the template test.
 - Wrap the heavy command, not a script that also installs or sleeps; give it a
   `timeout`; never `flock -o` (it drops the lock while the command runs).
-- To see the queue: `lslocks` shows held locks and old-style waiters; the
-  wrapper's waiters poll, so list `bun-node-heavy-run.sh` processes too.
+- To see the queue: `/tmp/claude-1000/bun-node-heavy-queue.sh` — every job
+  holding or waiting for a slot, how long it has waited, its session and
+  ticket. Keep `/tmp/claude-1000/bun-node-sessions` (`<claude pid> <name>`)
+  current when sessions change.
 
 ### Processes, data and services
 
@@ -318,8 +331,8 @@ A session stays responsive by handing long work to subagents.
 - **A scratch subdirectory per agent**, and it deletes only there (a shared
   scratchpad was once wiped by an agent's cleanup).
 - **Every brief carries the rules that apply:** don't commit, push or stash;
-  kill by PID; the heavy-run wrapper; negative controls; the progress file
-  path; what to report.
+  kill by PID; the heavy-run wrapper with a ticket, run in the background and
+  never polled; negative controls; the progress file path; what to report.
 - **Verify a report, don't relay it.** Re-run its key check and read the files
   it says it changed. Reports have claimed gates that never ran.
 - **After a usage limit**, audit each agent's on-disk state (worktree, diff,
