@@ -1113,19 +1113,25 @@ export interface BunQueueWorkerOptions {
    *   (`SIGTERM`, then `SIGKILL`). Needs a processor file.
    * - `{ kind, … }`: one of the three above, with its tuning (`closeTimeout`,
    *   and `worker` or `killTimeout`/`spawn`). See `LocalWorkerTarget`.
+   * - `{ kind: "container", image, … }`: a fresh container per attempt,
+   *   through the Docker or Podman CLI, with no network, none of this
+   *   process's environment, a read-only root and a non-root user. Checked
+   *   at `run()` before anything is claimed. Needs a processor file. See
+   *   `ContainerTarget`.
    * - a `WorkerTargetFactory`: anything else, including a transport this
    *   package does not ship. Accepted with a function or a file.
    *
    * A processor file default-exports the same `(job, ctx) => result` a
    * function processor is; `defineProcessor` types it. In a `Worker` or a
-   * child, `job.log`, `job.updateProgress`, `job.touch` and
+   * child or a container, `job.log`, `job.updateProgress`, `job.touch` and
    * `ctx.heartbeat` work through the worker; operations that change the
    * stored job directly are unavailable.
    *
    * A runner's `executionMode` uses the same three words. Inside the
-   * processor the attempt sees its target's own spelling: `ctx.mode` and
-   * `BUN_JOBS_MODE` are `"worker-thread"` on a worker thread and
-   * `"child-process"` in a child process.
+   * processor the attempt sees its target's own spelling in
+   * `BUN_JOBS_MODE`: `"worker-thread"` on a worker thread,
+   * `"child-process"` in a child process and `"container"` in a container
+   * (unset in-process). A processor's context carries no mode.
    *
    * Not remotely configurable: changing where code runs is a rebuild.
    */

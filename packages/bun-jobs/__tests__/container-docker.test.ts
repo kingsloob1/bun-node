@@ -94,28 +94,36 @@ const SCRATCH = join(import.meta.dir, `.container-scratch-${process.pid}`);
 const keys = new Set<string>();
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 
+// Closing a worker on a loaded machine (a forced close's reap, an engine's
+// CLI) can outlast the default 5 s hook budget.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
     await Promise.resolve(cleanup()).catch(() => undefined);
   }
-});
+}, 60_000);
 
+// One listing and one removal for every key this run used, rather than two
+// engine calls per key: on a loaded machine those outlasted the default hook
+// budget, the hook was abandoned, and containers were left behind.
 afterAll(() => {
-  for (const key of keys) {
+  if (keys.size > 0) {
     const ids = lines(
       docker([
         "ps",
         "--all",
-        "--quiet",
-        `--filter=label=bun-jobs.worker-key=${key}`,
+        `--format={{.ID}} {{.Label "bun-jobs.worker-key"}}`,
+        "--filter=label=bun-jobs.worker-key",
       ]).stdout,
-    );
+    )
+      .map((line) => line.split(" "))
+      .filter(([, key]) => key !== undefined && keys.has(key))
+      .map(([id]) => id!);
     if (ids.length > 0) {
       docker(["rm", "--force", ...ids]);
     }
   }
   rmSync(SCRATCH, { recursive: true, force: true });
-});
+}, 60_000);
 
 /** A fresh marker directory the container (uid 65534) can write. */
 function markerDir(): string {
@@ -364,6 +372,30 @@ describe.skipIf(skipReason !== undefined)(
         });
       }
 
+      it("ends a container stopped from outside (docker stop) as a close: 143, RunKilledError", async () => {
+        const scratch = markerDir();
+        const { executor: container, key } = executor("abortable", scratch);
+        const handle = start(container);
+        await waitFor(() => existsSync(join(scratch, "started")), {
+          timeout: 60_000,
+          interval: 50,
+        });
+        const [id] = containersOf(key);
+        expect(id).toBeDefined();
+        // `-t 30`: without a SIGTERM handler, Bun as PID 1 would sit out all
+        // 30 s and be killed (137).
+        const started = performance.now();
+        expect(docker(["stop", "-t", "30", id!]).code).toBe(0);
+        const outcome = await handle.done;
+        expect(performance.now() - started).toBeLessThan(25_000);
+        expect(outcome.exitCode).toBe(143);
+        expect(outcome.status).toBe("failed");
+        expect(outcome.error?.name).toBe("RunKilledError");
+        expect(existsSync(join(scratch, "aborted"))).toBe(true);
+        await handle.exited;
+        expect(containersOf(key)).toEqual([]);
+      }, 120_000);
+
       it("kills a container that ignores its close: exit 137, removed before exited settles", async () => {
         const scratch = markerDir();
         const { executor: container, key } = executor("spin", scratch);
@@ -415,6 +447,93 @@ describe.skipIf(skipReason !== undefined)(
       }, 120_000);
     });
 
+    it("reads results and answers requests after output without a trailing newline", async () => {
+      for (const [processor, expected] of [
+        ["partial-write", "ok"],
+        ["partial-then-log", { count: expect.any(Number) }],
+      ] as const) {
+        const { queue, worker } = setup(processor);
+        void worker.run();
+        const job = await queue.add(
+          "p",
+          {},
+          {
+            removeOnComplete: false,
+            attempts: 1,
+            timeout: 30_000,
+          },
+        );
+        const stored = await settled(queue, job.id);
+        expect({ processor, state: stored.state }).toEqual({
+          processor,
+          state: "completed",
+        });
+        expect(stored.returnValue).toEqual(expected);
+      }
+    }, 120_000);
+
+    it("ends a run whose processor sends itself SIGTERM, rather than hanging", async () => {
+      const { queue, worker } = setup("sigterm-self");
+      void worker.run();
+      const started = performance.now();
+      const job = await queue.add("s", {}, { attempts: 1, timeout: 60_000 });
+      const stored = await settled(queue, job.id);
+      expect(stored.state).toBe("dead");
+      expect(stored.failedReason?.name).toBe("RunKilledError");
+      // closeTimeout is 2 s; the job's own timeout, 60 s, never fired.
+      expect(performance.now() - started).toBeLessThan(30_000);
+    }, 120_000);
+
+    it("stops a blocked processor's container within seconds of its worker being SIGKILLed", async () => {
+      const scratch = markerDir();
+      const key = testKey();
+      const extra = target({ env: { MARKER_DIR: scratch } }, scratch);
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          fixture("worker-process"),
+          fixture("spin"),
+          IMAGE,
+          key,
+          JSON.stringify({
+            closeTimeout: extra.closeTimeout,
+            env: extra.env,
+            mounts: extra.mounts,
+            ...(extra.security ? { security: extra.security } : {}),
+          }),
+        ],
+        {
+          env: buildChildEnv({
+            passEnv: ["DOCKER_HOST"],
+            env: { MARKER_DIR: scratch },
+          }),
+          stdout: "pipe",
+          stderr: "inherit",
+        },
+      );
+      cleanups.push(() => child.kill("SIGKILL"));
+      const reader = child.stdout.getReader();
+      let said = "";
+      while (!said.includes("STARTED")) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        said += new TextDecoder().decode(value);
+      }
+      expect(containersOf(key)).toHaveLength(1);
+      const killed = performance.now();
+      child.kill("SIGKILL");
+      await child.exited;
+      await waitFor(() => containersOf(key).length === 0, {
+        timeout: 20_000,
+        interval: 200,
+        message: () => `still there: ${containersOf(key).join(", ")}`,
+      });
+      // closeTimeout is 2 s: well inside 15.
+      expect(performance.now() - killed).toBeLessThan(15_000);
+    }, 120_000);
+
     it("sweeps a dead worker's containers by their labels, and keeps a live one's", async () => {
       const key = testKey();
       const namespace = "i1d-sweep";
@@ -434,6 +553,15 @@ describe.skipIf(skipReason !== undefined)(
           "300",
         ]);
       const suffix = Math.random().toString(36).slice(2, 8);
+      // Removed by this test itself, not only by the run's afterAll.
+      cleanups.push(() =>
+        docker([
+          "rm",
+          "--force",
+          `${key}-dead-${suffix}`,
+          `${key}-live-${suffix}`,
+        ]),
+      );
       expect(labelled(`${key}-dead-${suffix}`, "dead.1").code).toBe(0);
       expect(labelled(`${key}-live-${suffix}`, "live.1").code).toBe(0);
 

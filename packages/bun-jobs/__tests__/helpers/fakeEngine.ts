@@ -44,6 +44,12 @@ export interface FakeEngineConfig {
   runFails?: { code: number; stderr: string };
   /** How long a `run` takes before its container exists, in ms. */
   createDelayMs?: number;
+  /** What a killed container's `run` exits with instead of 137; `"signal"` dies of SIGKILL. */
+  killedExit?: number | "signal";
+  /** How long `run` stays up after its container has exited, in ms. */
+  exitDelayMs?: number;
+  /** How long `kill` and `rm` take to return after doing their work, in ms. */
+  commandExitDelayMs?: number;
 }
 
 /** One recorded CLI call. */

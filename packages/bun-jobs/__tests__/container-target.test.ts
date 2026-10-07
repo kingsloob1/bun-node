@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import {
@@ -119,6 +120,7 @@ describe("the fixed hardening", () => {
     for (const flag of [
       "--interactive",
       "--rm",
+      "--init",
       "--pull=never",
       "--read-only",
       "--cap-drop=ALL",
@@ -253,7 +255,17 @@ describe("the refusals, with no escape hatch", () => {
       /no-new-privileges is always set/,
     ],
     ["root", { user: "0:0" }, /may not be root/],
-    ["root by uid alone", { user: "0" }, /may not be root/],
+    [
+      "a uid alone, whose group the image decides",
+      { user: "1000" },
+      /numeric "uid:gid"/,
+    ],
+    ["root by uid alone", { user: "0" }, /numeric "uid:gid"/],
+    [
+      "the root group with a non-root uid",
+      { user: "1000:0" },
+      /root group \(gid 0\)/,
+    ],
     ["a user name", { user: "root" }, /numeric/],
     [
       "an env variable without a value",
@@ -271,6 +283,36 @@ describe("the refusals, with no escape hatch", () => {
       /not a variable name/,
     ],
     ["unlimited pids", { limits: { pids: 0 } }, /at least 16/],
+    [
+      "unlimited memory",
+      { limits: { memory: "0" } },
+      /limits.memory must be at least "6m"/,
+    ],
+    [
+      "unlimited memory in bytes",
+      { limits: { memory: "0b" } },
+      /limits.memory must be at least "6m"/,
+    ],
+    [
+      "memory under the engine's floor",
+      { limits: { memory: "5m" } },
+      /limits.memory must be at least "6m"/,
+    ],
+    [
+      "memory under the floor in bytes",
+      { limits: { memory: "6291455" } },
+      /limits.memory must be at least "6m"/,
+    ],
+    [
+      "an unlimited tmpfs",
+      { limits: { tmpfs: "0" } },
+      /limits.tmpfs must be above 0/,
+    ],
+    [
+      "an unlimited tmpfs in kilobytes",
+      { limits: { tmpfs: "0k" } },
+      /limits.tmpfs must be above 0/,
+    ],
     ["an unknown key", { reuse: "worker" }, /does not take reuse/],
   ])("refuses %s", (_name, target, message) => {
     expect(refusal(target).message).toMatch(message);
@@ -298,6 +340,85 @@ describe("the refusals, with no escape hatch", () => {
     );
   });
 
+  it.each([
+    ["/var/lib/docker"],
+    ["/var/lib/docker/volumes"],
+    ["/var/snap/docker"],
+    ["/var/snap/docker/common"],
+    ["/var/lib/containers"],
+    [`${homedir()}/.docker`],
+    [`${homedir()}/.docker/run`],
+    [`${homedir()}/.colima/default`],
+    [homedir()],
+    ["/home"],
+  ])(
+    "refuses a mount of the engine's sockets or data, or what holds them: %s",
+    (source) => {
+      expect(refusal({ mounts: [{ source, target: "/m" }] }).message).toMatch(
+        /mounts may not mount/,
+      );
+    },
+  );
+
+  it("refuses a mount holding the engine's own endpoint, from the target or the environment", () => {
+    const dir = mkdtempSync(join(homedir(), ".bun-jobs-i1-endpoint-"));
+    try {
+      expect(
+        refusal({
+          engine: { host: `unix://${dir}/sockets/engine.sock` },
+          mounts: [{ source: dir, target: "/m" }],
+        }).message,
+      ).toMatch(/nor a directory holding it/);
+      const previous = process.env.DOCKER_HOST;
+      process.env.DOCKER_HOST = `unix://${dir}/d/docker.sock`;
+      try {
+        expect(
+          refusal({ mounts: [{ source: `${dir}/d`, target: "/m" }] }).message,
+        ).toMatch(/nor a directory holding it/);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.DOCKER_HOST;
+        } else {
+          process.env.DOCKER_HOST = previous;
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a symlink to what holds the engine's endpoint, resolved before comparing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-link-"));
+    try {
+      mkdirSync(join(dir, "real"));
+      symlinkSync(join(dir, "real"), join(dir, "link"));
+      expect(
+        refusal({
+          engine: { host: `unix://${dir}/real/engine.sock` },
+          mounts: [{ source: join(dir, "link"), target: "/m" }],
+        }).message,
+      ).toMatch(/nor a directory holding it/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a directory with a socket directly inside it: a read-only bind does not stop connect()", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bun-jobs-sockdir-"));
+    const server = createServer();
+    await new Promise<void>((resolve) =>
+      server.listen(join(dir, "anything.sock"), resolve),
+    );
+    try {
+      expect(
+        refusal({ mounts: [{ source: dir, target: "/m" }] }).message,
+      ).toMatch(/a directory holding a socket/);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a socket found at the mount's path, whatever it is called", async () => {
     const dir = mkdtempSync(join(tmpdir(), "bun-jobs-sock-"));
     const path = join(dir, "engine");
@@ -323,6 +444,24 @@ describe("the refusals, with no escape hatch", () => {
     expect(() => resolveContainerTarget({ kind: "container" })).toThrow(
       /image must be a non-empty string/,
     );
+  });
+
+  it("takes the engine's floor and the root group when allowed", () => {
+    expect(
+      resolveContainerTarget({
+        kind: "container",
+        image: "img",
+        limits: { memory: "6m", tmpfs: "1k" },
+      }).limits,
+    ).toMatchObject({ memory: "6m", tmpfs: "1k" });
+    expect(
+      resolveContainerTarget({
+        kind: "container",
+        image: "img",
+        user: "1000:0",
+        allowRoot: true,
+      }).user,
+    ).toBe("1000:0");
   });
 
   it("takes root when allowRoot says so", () => {

@@ -37,6 +37,15 @@ export const CONTAINER_START_TIMEOUT = 60_000;
 /** How many times a kill retries the removal while the CLI is still creating the container. */
 const KILL_RETRIES = 40;
 
+/** How many stderr lines an attempt keeps for its error message. */
+const TAIL_LINES = 20;
+
+/** The most characters of one stderr line kept for the error message. */
+const TAIL_LINE_CHARS = 2_000;
+
+/** The CLI's own exit codes: the engine refused (125), or the command could not run (126, 127). */
+const ENGINE_CODES: ReadonlySet<number> = new Set([125, 126, 127]);
+
 /** How long after the CLI exits its pipes may take to deliver their last lines, in ms. */
 const DRAIN_GRACE = 2_000;
 
@@ -46,7 +55,8 @@ const DRAIN_GRACE = 2_000;
  * **The channel.** The container's stdin carries the worker's messages, one
  * JSON line each. Its stdout carries the runner's messages, each line
  * starting with a random prefix generated per container and passed on its
- * command line: `<prefix> <json>`. Any stdout line without the prefix is the
+ * command line: `<prefix> <json>`, each on a line of its own, and found
+ * wherever it starts in a line. Any stdout text without the prefix is the
  * job's own output — a stray `console.log`, a subprocess — and becomes a job
  * log line, as stderr's lines do, so neither can corrupt the channel. A job
  * can forge channel lines, but only for its own attempt, whose result it
@@ -60,17 +70,28 @@ const DRAIN_GRACE = 2_000;
  * **Stopping.** `stop` sends `close` on the channel; after `closeTimeout` the
  * container is killed by name (`kill`, then `rm --force`), which also covers
  * a container still being created: removal is retried until the CLI exits.
+ * A forced `stop` kills at once, with no `close` first. A `stop` that lands
+ * after the result arrived kills nothing: the runner is already exiting.
  * The CLI process itself is never the thing killed while it has a container,
  * since killing it leaves the container running. A killed attempt reports
  * exit code 137, as the container's own kill does.
  *
  * `done` settles when the CLI has exited and the outcome is known; `exited`
- * once the container is gone — at once with `--rm` when it ended by itself,
- * after the forced removal when it was killed.
+ * once the container is gone, which for an attached `docker run --rm` is
+ * when the CLI exits by itself — after a kill too, without waiting for the
+ * `kill` and `rm` commands to return. A CLI that died of a signal is
+ * followed by a removal by name before `exited` settles.
  */
 export class ContainerExecutor {
   /** The engine every attempt's container runs on. */
   readonly engine: ContainerEngine;
+  /**
+   * The kills still running after their attempt's `exited` has settled: the
+   * `docker kill` and `docker rm --force` commands, which return after the
+   * container they removed is already gone. Kept so they are not lost track
+   * of; nothing waits for them.
+   */
+  readonly removals = new Set<Promise<void>>();
 
   constructor(
     /** The resolved target. */
@@ -112,8 +133,15 @@ export class ContainerExecutor {
     /** The job's own output kept so far, in bytes. */
     let logBytes = 0;
     let logCut = false;
-    /** The last lines of stderr, for an error that names why. */
+    /**
+     * The last lines of stderr, for an error that names why: at most
+     * {@link TAIL_LINES} lines of at most {@link TAIL_LINE_CHARS} characters
+     * each, so a container writing huge stderr lines costs the worker a few
+     * kilobytes here, not the lines.
+     */
     const tail: string[] = [];
+    /** Set when the runner's result (`done` or `error`) has arrived. */
+    let resulted = false;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -280,9 +308,11 @@ export class ContainerExecutor {
           events.onLog(message.level, message.message, message.fields);
           break;
         case "done":
+          resulted = true;
           reported ??= { status: "success", result: message.result };
           break;
         case "error":
+          resulted = true;
           reported ??= { status: "failed", error: message.error };
           break;
         default:
@@ -293,13 +323,26 @@ export class ContainerExecutor {
     const stdout = new LineReader(
       CONTAINER_MAX_MESSAGE_BYTES,
       (line) => {
-        if (!line.startsWith(marker)) {
-          output("stdout", line);
+        // The marker is looked for anywhere in the line, not only at its
+        // start: output the processor wrote without a newline ("working...")
+        // runs straight into the next channel line, and that line must still
+        // be read. The runner also starts every channel line on a line of its
+        // own, so this is the second of two guards.
+        const at = line.indexOf(marker);
+        if (at === -1) {
+          // The runner's own newline before each channel line leaves an
+          // empty line whenever the output before it had ended its own.
+          if (line.length > 0) {
+            output("stdout", line);
+          }
           return;
+        }
+        if (at > 0) {
+          output("stdout", line.slice(0, at));
         }
         let message: ChildToParent;
         try {
-          message = JSON.parse(line.slice(marker.length)) as ChildToParent;
+          message = JSON.parse(line.slice(at + marker.length)) as ChildToParent;
         } catch {
           events.onLog(
             "warn",
@@ -314,7 +357,7 @@ export class ContainerExecutor {
         onChannel(message);
       },
       (head, bytes) => {
-        if (head.startsWith(marker)) {
+        if (head.includes(marker)) {
           reported ??= fail(tooLarge("a message from the container", bytes));
           void kill();
           return;
@@ -325,8 +368,16 @@ export class ContainerExecutor {
     const stderr = new LineReader(
       CONTAINER_MAX_MESSAGE_BYTES,
       (line) => {
-        tail.push(line);
-        if (tail.length > 20) {
+        // Clipped on the way in, and copied: the line itself can be 16 MiB,
+        // and a slice of a long string can keep the whole of it alive.
+        tail.push(
+          line.length > TAIL_LINE_CHARS
+            ? Buffer.from(line.slice(0, TAIL_LINE_CHARS), "utf8").toString(
+                "utf8",
+              )
+            : line,
+        );
+        if (tail.length > TAIL_LINES) {
           tail.shift();
         }
         output("stderr", line);
@@ -411,13 +462,17 @@ export class ContainerExecutor {
       // The pipes close with the CLI; a bounded wait for their last lines.
       await Promise.race([drained, Bun.sleep(DRAIN_GRACE)]);
       const killed = killing !== undefined;
-      const engineError = code === 125 && !ready;
+      // The CLI's own codes — 125 the engine refused, 126 and 127 the
+      // command could not run — before the runner said `ready`: no container
+      // ran a runner, so there is no container exit code to report.
+      const engineError = ENGINE_CODES.has(code) && !ready;
       // A container this worker killed reports what the kill made of it:
-      // 137, or 143 when the runner inside stopped itself first. Never the
-      // CLI's own code for a container it could not start (125).
+      // 137, or 143 when the runner inside stopped itself first, or 0 when
+      // its result had arrived and it exited cleanly before the kill took.
+      // Never the CLI's own code, nor a signal the CLI died of.
       const exitCode = killed
-        ? code === 143
-          ? 143
+        ? code === 143 || (code === 0 && resulted)
+          ? code
           : 137
         : proc.signalCode !== null || engineError
           ? null
@@ -441,11 +496,20 @@ export class ContainerExecutor {
         signal: killed && exitCode === 137 ? "SIGKILL" : null,
       });
 
-      // Gone, not merely decided: a container killed by name is waited for,
-      // and one whose CLI did not end normally is removed by name. With
-      // `--rm`, a CLI that exited on its own has already seen it removed.
+      // Gone, not merely decided. The CLI is attached and runs with `--rm`,
+      // so when it exits by itself the engine has already destroyed the
+      // container — killed by name or not: the `kill` and `rm` commands of a
+      // kill go on in the background (tracked in `removals`), and `exited`
+      // does not wait for those CLIs to return, which took longer than the
+      // container itself. One whose CLI did not end normally is removed by
+      // name first.
       if (killing) {
-        await killing;
+        if (proc.signalCode !== null) {
+          await killing;
+        } else {
+          this.removals.add(killing);
+          void killing.finally(() => this.removals.delete(killing!));
+        }
       } else if (proc.signalCode !== null || engineError) {
         await this.engine.exec(["rm", "--force", name]).catch(() => undefined);
       }
@@ -456,6 +520,18 @@ export class ContainerExecutor {
       done: outcome.promise,
       exited: gone.promise,
       stop: (reason, stopOptions) => {
+        if (resulted) {
+          // The result is in, and the runner exits by itself once it has
+          // written it: killing now would only report a kill that did not
+          // decide anything. A backstop, in case it never exits.
+          const backstop = setTimeout(() => {
+            if (!cliExited) {
+              void kill();
+            }
+          }, this.target.closeTimeout);
+          backstop.unref?.();
+          return;
+        }
         reported ??= {
           status: "killed",
           error: serializeError(new RunKilledError(reason, { runId })),

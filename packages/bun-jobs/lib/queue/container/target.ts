@@ -1,5 +1,7 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { posix } from "node:path";
+import process from "node:process";
 import { DEFAULT_CLOSE_TIMEOUT } from "../../shared/constants";
 import { ConfigError } from "../../shared/errors";
 
@@ -22,8 +24,8 @@ import { ConfigError } from "../../shared/errors";
  * only the processor call, and asks the worker over its stdin and stdout for
  * the same closed list of job operations a `child-process` attempt may. Each
  * container gets **no network**, **none of the worker's environment**, a
- * read-only root, no capabilities, `no-new-privileges`, a non-root user and
- * resource limits — fixed, not options. The image is yours: `FROM oven/bun`,
+ * read-only root, no capabilities, `no-new-privileges`, an init as PID 1, a
+ * non-root user and resource limits — fixed, not options. The image is yours: `FROM oven/bun`,
  * with your app and its dependencies (`@kingsleyweb/bun-jobs` among them)
  * installed.
  *
@@ -84,13 +86,13 @@ export interface ContainerTarget {
    * which counts against the memory limit.
    */
   limits?: {
-    /** Memory, as the engine spells it (`"256m"`, `"1g"`). Swap is set equal, so there is none. Defaults to `"256m"`. */
+    /** Memory, as the engine spells it (`"256m"`, `"1g"`). Swap is set equal, so there is none. At least `"6m"`, the engine's floor; `"0"` (no limit) is refused. Defaults to `"256m"`. */
     memory?: string;
     /** CPUs, fractional allowed (`0.5`). Defaults to `1`. */
     cpus?: number;
     /** The most processes and threads, Bun's own included. At least 16. Defaults to `128`. */
     pids?: number;
-    /** The size of the tmpfs at `/tmp`, the only writable path besides a writable mount. Defaults to `"64m"`. */
+    /** The size of the tmpfs at `/tmp`, the only writable path besides a writable mount. Above 0 (`"0"` is no limit, and refused). Defaults to `"64m"`. */
     tmpfs?: string;
   };
   /**
@@ -106,9 +108,13 @@ export interface ContainerTarget {
    */
   env?: Record<string, string>;
   /**
-   * Bind mounts, read-only unless `readOnly: false`. Refused: the engine's
-   * socket, `/`, `/proc`, `/sys`, `/dev`, `/etc`, `/run` and `/var/run`, and
-   * any directory holding one of them. Paths are absolute, without commas.
+   * Bind mounts, read-only unless `readOnly: false`. Refused: a socket, a
+   * directory with a socket directly in it, `/`, `/proc`, `/sys`, `/dev`,
+   * `/etc`, `/run`, `/var/run`, where an engine keeps its sockets or data
+   * (the target's `engine.host`, `DOCKER_HOST`, `~/.docker`, `~/.colima`,
+   * `/var/lib/docker`, `/var/snap/docker` and the like), and any directory
+   * holding one of them, compared after resolving symlinks. A read-only bind
+   * does not stop a `connect()`. Paths are absolute, without commas.
    */
   mounts?: {
     /** The host path. Absolute. */
@@ -119,12 +125,13 @@ export interface ContainerTarget {
     readOnly?: boolean;
   }[];
   /**
-   * The numeric `uid:gid` (or `uid`) to run as. Defaults to `"65534:65534"`
-   * (nobody). uid `0` is refused unless `allowRoot` is set; a user name is
-   * refused, since it could name root.
+   * The numeric `uid:gid` to run as. Defaults to `"65534:65534"` (nobody).
+   * uid `0` and gid `0` are refused unless `allowRoot` is set; a user name is
+   * refused, since it could name root, and so is a uid alone, whose group
+   * the engine takes from the image (which can be `0`).
    */
   user?: string;
-  /** Allows `user` to be root inside the container. Defaults to `false`. */
+  /** Allows `user` to be root (uid 0) or in the root group (gid 0) inside the container. Defaults to `false`. */
   allowRoot?: boolean;
   /**
    * Security profiles. Defaults: the engine's default seccomp and AppArmor
@@ -280,6 +287,23 @@ const ENGINE_SOCKET = /(?:^|\/)(?:docker|podman|containerd)\.sock$/;
 /** A size as the engine spells it: digits, an optional fraction and unit. */
 const SIZE = /^\d+(?:\.\d+)?[bkmg]?$/i;
 
+/** The engine's smallest memory limit, 6 MiB: Docker refuses less. */
+const MEMORY_FLOOR = 6 * 1024 * 1024;
+
+/** A {@link SIZE} string in bytes, as the engine reads it (no unit is bytes). */
+function sizeBytes(size: string): number {
+  const unit = size.at(-1)!.toLowerCase();
+  const scale =
+    unit === "k"
+      ? 1024
+      : unit === "m"
+        ? 1024 ** 2
+        : unit === "g"
+          ? 1024 ** 3
+          : 1;
+  return Math.floor(Number.parseFloat(size) * scale);
+}
+
 /** A variable name the engine passes as `--env=NAME=value`. */
 const ENV_NAME = /^[A-Z_]\w*$/i;
 
@@ -326,7 +350,7 @@ function amount(value: unknown, name: string, min: number): number {
 }
 
 /** Checks a mount's host path against the refusals, as given and resolved. */
-function checkMountSource(source: string): void {
+function checkMountSource(source: string, host: string | undefined): void {
   const candidates = new Set([posix.normalize(source)]);
   try {
     candidates.add(realpathSync(source));
@@ -334,9 +358,10 @@ function checkMountSource(source: string): void {
     // A path that does not exist here may exist on a remote engine's host;
     // its spelling is still checked.
   }
+  const engine = enginePaths(host);
 
   for (const path of candidates) {
-    const normal = path.length > 1 ? path.replace(/\/+$/, "") : path;
+    const normal = trimSlash(path);
     if (normal === "/") {
       throw refuse("mounts may not mount /", { source });
     }
@@ -345,12 +370,12 @@ function checkMountSource(source: string): void {
         source,
       });
     }
-    for (const refused of REFUSED_MOUNT_PATHS) {
+    for (const refused of [...REFUSED_MOUNT_PATHS, ...engine]) {
       const inside = normal === refused || normal.startsWith(`${refused}/`);
       const holds = refused.startsWith(`${normal}/`);
       if (inside || holds) {
         throw refuse(
-          `mounts may not mount ${refused}${holds ? `, nor a directory holding it (${source})` : ` or anything in it (${source})`}`,
+          `mounts may not mount ${refused}${holds ? `, nor a directory holding it (${source})` : ` or anything in it (${source})`}${engine.includes(refused) && !REFUSED_MOUNT_PATHS.includes(refused as never) ? ": the engine's socket or data is there" : ""}`,
           { source },
         );
       }
@@ -361,11 +386,72 @@ function checkMountSource(source: string): void {
     if (lstatSync(source).isSocket()) {
       throw refuse(`mounts may not mount a socket (${source})`, { source });
     }
+    // A read-only bind does not stop connect(): a socket directly inside the
+    // directory is as reachable as the socket itself.
+    if (lstatSync(source).isDirectory()) {
+      for (const entry of readdirSync(source, { withFileTypes: true })) {
+        if (entry.isSocket() || ENGINE_SOCKET.test(`/${entry.name}`)) {
+          throw refuse(
+            `mounts may not mount a directory holding a socket (${posix.join(source, entry.name)})`,
+            { source },
+          );
+        }
+      }
+    }
   } catch (error) {
     if (error instanceof ConfigError) {
       throw error;
     }
   }
+}
+
+/** A path without trailing slashes, `/` staying `/`. */
+function trimSlash(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, "") || "/" : path;
+}
+
+/**
+ * Where an engine keeps its sockets and its data on this host, beyond
+ * `/run` and `/var/run`: the target's own endpoint and the CLI's
+ * (`DOCKER_HOST`, `CONTAINER_HOST`) when they are Unix sockets, the per-user
+ * locations of rootless Docker, Docker Desktop, Colima, Lima, Rancher
+ * Desktop, OrbStack and Podman, and the engines' data directories. Each is
+ * given as spelled and resolved, so a symlink cannot hide one.
+ */
+function enginePaths(host: string | undefined): string[] {
+  const home = homedir();
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  const paths = [
+    ...[host, process.env.DOCKER_HOST, process.env.CONTAINER_HOST]
+      .filter((value): value is string => typeof value === "string")
+      .filter((value) => value.startsWith("unix://"))
+      .map((value) => value.slice("unix://".length)),
+    `${home}/.docker`,
+    `${home}/.colima`,
+    `${home}/.lima`,
+    `${home}/.rd`,
+    `${home}/.orbstack`,
+    `${home}/.local/share/containers`,
+    `${home}/Library/Containers/com.docker.docker`,
+    ...(runtime ? [`${runtime}/docker.sock`, `${runtime}/podman`] : []),
+    "/var/lib/docker",
+    "/var/lib/containerd",
+    "/var/lib/containers",
+    "/var/snap/docker",
+  ];
+  const out = new Set<string>();
+  for (const path of paths) {
+    if (!path.startsWith("/")) {
+      continue;
+    }
+    out.add(trimSlash(posix.normalize(path)));
+    try {
+      out.add(trimSlash(realpathSync(path)));
+    } catch {
+      // Not on this host: its spelling is still refused.
+    }
+  }
+  return [...out];
 }
 
 /** A path option: absolute, NUL-free, and free of the `--mount` separator. */
@@ -504,6 +590,21 @@ export function resolveContainerTarget(
             { [key]: value },
           );
         }
+        // `0` is no limit at all to the engine, and memory below its floor
+        // is refused by the daemon only at the first container.
+        const bytes = sizeBytes(value);
+        if (key === "memory" && bytes < MEMORY_FLOOR) {
+          throw refuse(
+            `limits.memory must be at least "6m" (the engine's floor; "0" would mean no limit), not ${JSON.stringify(value)}`,
+            { memory: value },
+          );
+        }
+        if (key === "tmpfs" && bytes < 1) {
+          throw refuse(
+            `limits.tmpfs must be above 0 ("0" would mean no limit), not ${JSON.stringify(value)}`,
+            { tmpfs: value },
+          );
+        }
         limits[key] = value;
       } else if (key === "cpus") {
         if (
@@ -610,7 +711,7 @@ export function resolveContainerTarget(
       if (posix.normalize(into) === "/") {
         throw refuse("mounts target may not be /", { target: into });
       }
-      checkMountSource(source);
+      checkMountSource(source, host);
       if (mount.readOnly !== undefined && typeof mount.readOnly !== "boolean") {
         throw refuse("mounts readOnly must be a boolean", {
           readOnly: mount.readOnly,
@@ -629,10 +730,10 @@ export function resolveContainerTarget(
     target.user === undefined
       ? CONTAINER_DEFAULTS.user
       : text(target.user, "user");
-  const ids = /^(\d+)(?::\d+)?$/.exec(user);
+  const ids = /^(\d+):(\d+)$/.exec(user);
   if (!ids) {
     throw refuse(
-      `user must be a numeric "uid:gid" or "uid", not "${user}": a name could be root`,
+      `user must be a numeric "uid:gid", not "${user}": a name could be root, and a uid alone takes its group from the image, which can be 0`,
       { user },
     );
   }
@@ -640,6 +741,12 @@ export function resolveContainerTarget(
     throw refuse("user may not be root (uid 0) unless allowRoot is set", {
       user,
     });
+  }
+  if (Number(ids[2]) === 0 && target.allowRoot !== true) {
+    throw refuse(
+      "user may not be in the root group (gid 0) unless allowRoot is set: the group owns root's group-readable files",
+      { user },
+    );
   }
 
   const security: ResolvedContainerTarget["security"] = {};
@@ -759,6 +866,11 @@ export function containerRunArgs(
     "run",
     "--interactive",
     "--rm",
+    // A small init as PID 1 (Docker's tini, Podman's catatonit): it forwards
+    // signals to Bun and reaps orphaned grandchildren, which Bun as PID 1
+    // would neither do (a processor signalling itself hung; zombies counted
+    // against the pids limit).
+    "--init",
     `--name=${run.name}`,
     // An attempt never pulls: the probe did, or the image was there.
     "--pull=never",

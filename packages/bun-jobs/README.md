@@ -2841,8 +2841,8 @@ JavaScript:
 
 A runner's `executionMode` uses the same three words. Inside the processor
 the attempt sees its target's own spelling: `BUN_JOBS_MODE` is
-`worker-thread` on a worker thread and `child-process` in a child process
-(unset in-process).
+`worker-thread` on a worker thread, `child-process` in a child process and
+`container` in a container (unset in-process).
 
 `target` is not remotely configurable: changing where code runs is a rebuild.
 The worker's heartbeat record reports it, as
@@ -3055,7 +3055,9 @@ with its sources in
 [`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/evidence/worker-gateway-and-isolation/platform-isolation.md).
 
 **Fixed, not options**: `--read-only`, `--cap-drop=ALL`, `--ipc=none`,
-`--security-opt=no-new-privileges`, a tmpfs at `/tmp` that is
+`--security-opt=no-new-privileges`, `--init` (a small init as PID 1 —
+Docker's tini, Podman's catatonit — which forwards signals and reaps orphaned
+processes), a tmpfs at `/tmp` that is
 `noexec,nosuid,nodev`, `--pull=never` on every attempt, and an environment of
 literal `NAME=value` pairs only — never a bare `NAME` (which copies the
 host's value) and never an env file. The argument list is built from the
@@ -3063,10 +3065,18 @@ typed options alone; there is no raw-argument option.
 
 **Refused with a `ConfigError`**, with no escape hatch: privileged mode, added
 capabilities and devices, the host's network, PID, IPC or UTS namespace, a
-mount of the engine's socket (any socket), `/`, `/proc`, `/sys`, `/dev`,
-`/etc`, `/run` or `/var/run` (or a directory holding one), `seccomp` or
-`apparmor` `"unconfined"`, unlimited pids, an env variable without a value,
-and uid 0 unless `allowRoot`.
+mount of a socket, of a directory with a socket directly in it, of `/`,
+`/proc`, `/sys`, `/dev`, `/etc`, `/run` or `/var/run`, of where an engine
+keeps its sockets or data — the target's `engine.host` and the CLI's
+`DOCKER_HOST`/`CONTAINER_HOST`, `~/.docker`, `~/.colima`, `~/.lima`, `~/.rd`,
+`~/.orbstack`, `~/.local/share/containers`, Docker Desktop's directory,
+`$XDG_RUNTIME_DIR/docker.sock` and `podman`, `/var/lib/docker`,
+`/var/lib/containerd`, `/var/lib/containers`, `/var/snap/docker` — or of any
+directory holding one of those, each compared after resolving symlinks (a
+read-only bind does not stop a `connect()` to a socket; a socket deeper in a
+mounted tree is reachable only to a user its permissions let in), `seccomp` or
+`apparmor` `"unconfined"`, unlimited memory, pids or tmpfs, an env variable
+without a value, and uid 0 or gid 0 unless `allowRoot`.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -3075,12 +3085,12 @@ and uid 0 unless `allowRoot`.
 | `pull` | `"missing"` | When the start-up probe pulls: `"never"`, `"missing"` or `"always"`. An attempt never pulls. |
 | `engine` | `{ cli: "docker" }` | `cli`: `"docker"` or `"podman"`, found on `PATH`. `host`: the endpoint, given to the CLI as `DOCKER_HOST` (`CONTAINER_HOST` for Podman). |
 | `runtime` | the engine's | The OCI runtime, e.g. `"runsc"`; checked against the engine's list at start. |
-| `limits` | `256m`, `1`, `128`, `64m` | `memory` (swap set equal, so none), `cpus`, `pids` (at least 16), and the `/tmp` `tmpfs` size, which counts against memory. |
+| `limits` | `256m`, `1`, `128`, `64m` | `memory` (at least `6m`; swap set equal, so none), `cpus`, `pids` (at least 16), and the `/tmp` `tmpfs` size (above 0), which counts against memory. `0`, which the engine reads as no limit, is refused. |
 | `network` | `"none"` | The only value this version takes. |
 | `env` | `{}` | Literal values for the job. Nothing is ever copied from the worker's environment. |
 | `mounts` | `[]` | `{ source, target, readOnly? }` bind mounts, read-only unless `readOnly: false`. |
-| `user` | `"65534:65534"` | Numeric `uid:gid`. A name is refused, since it could be root. |
-| `allowRoot` | `false` | Allows `user` to be uid 0. |
+| `user` | `"65534:65534"` | Numeric `uid:gid`. A name is refused, since it could be root, and so is a uid alone, whose group the image decides. |
+| `allowRoot` | `false` | Allows `user` to be uid 0 or gid 0. |
 | `security` | the engine's | `seccomp` (a profile path) and `apparmor` (a profile name). |
 | `closeTimeout` | `5000` | After an attempt is asked to stop, how long before its container is killed. The runner inside exits itself 500 ms before. |
 | `maxLogBytes` | 1 MiB | The most of an attempt's own stdout and stderr kept as job log lines; past it one line says the rest was cut. |
@@ -3106,10 +3116,15 @@ the container in the snap daemon's own profile — broader than
 under `$HOME` or `/srv`. A non-snap engine has neither problem.
 
 **The channel** is the container's stdin and stdout, one JSON message a
-line. Each line the runner writes starts with a random prefix generated for
-that container, so anything the processor prints — which has no prefix —
-becomes a **job log line** instead of corrupting the channel, and so does its
-stderr, up to `maxLogBytes`. Every message is bounded: one over 16 MiB (a
+line. Each message the runner writes starts with a random prefix generated
+for that container, on a line of its own, and the worker finds the prefix
+wherever it starts — so output the processor leaves without a newline
+(`process.stdout.write("working...")`) cannot swallow the next message.
+Anything the processor prints — which has no prefix — becomes a **job log
+line** instead of corrupting the channel, and so does its stderr, up to
+`maxLogBytes`. Those lines are written one write at a time per attempt: the
+lines that arrive while a write is in flight are joined into the next log
+entry, so a chatty processor costs the store a few writes, not one per line. Every message is bounded: one over 16 MiB (a
 result too big, say) fails the attempt with an `UnrecoverableJobError`, with
 no retry, rather than being cut. Store big outputs elsewhere and return a
 key.
@@ -3119,14 +3134,30 @@ after `closeTimeout` the container is killed (`docker kill`, then
 `docker rm --force`, by name, retried while the engine is still creating
 it). A close that lands before the container has started is honoured as
 `child-process` honours one: the processor is never imported. A killed
-attempt reports exit code 137; a runner that stopped itself, 143.
+attempt reports exit code 137; a runner that stopped itself, 143; an attempt
+whose result had already arrived reports that result, whatever stopped it
+afterwards. A forced close kills at once, with no `close` first. A
+`docker stop` from outside is handled as a close: the runner inside asks the
+processor to stop, the attempt fails with `RunKilledError`, and the container
+exits 143 by `closeTimeout` at the latest; a processor that sends itself
+`SIGTERM` ends the same way. A killed container counts as gone once its
+attached `docker run --rm` has exited, which the engine allows only after the
+container is destroyed; the `docker kill` and `docker rm` commands that
+killed it may return a little later, after `close()` has resolved.
 
 **Orphans.** Every container is labelled `bun-jobs.worker-key`,
 `bun-jobs.worker-id`, `bun-jobs.namespace` and `bun-jobs.queue`. A worker
 starting up removes its key's containers on its queue whose worker is not
 live (`listWorkers`) and that are more than a minute old, so a crash leaks
-none past the next start. A container also stops by itself when its worker
-dies: its stdin closes, and the runner inside ends the attempt.
+none past the next start of a worker with that key. A container without a
+`bun-jobs.worker-id` label is left alone, since nothing says whose it is.
+When its worker dies, a container's stdin closes, and the runner inside
+closes the attempt and exits by `closeTimeout` at the latest — even for a
+processor that blocks its thread for good, since the processor runs in a
+`Worker` and the runner's main thread is what watches stdin (measured: a
+spinning processor's container gone within seconds of its worker being
+`SIGKILL`ed). The sweep is for what that misses: a container whose engine
+lost track of its stdin, or one started with an older runner.
 
 **Cost.** A container per attempt pays the engine's start, measured at
 ~280 ms here with `--network=none` (a default bridge network adds ~160 ms),

@@ -1,5 +1,8 @@
 import type { ContainerTarget } from "../lib/index";
-import type { RunOutcome } from "../lib/runner/executors/executor";
+import type {
+  ExecutorStartOptions,
+  RunOutcome,
+} from "../lib/runner/executors/executor";
 import type { FakeEngine, FakeEngineConfig } from "./helpers/fakeEngine";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,11 +42,13 @@ const fixture = (name: string) =>
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 
+// Closing a worker on a loaded machine (a forced close's reap, an engine's
+// CLI) can outlast the default 5 s hook budget.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
     await Promise.resolve(cleanup()).catch(() => undefined);
   }
-});
+}, 60_000);
 
 /** A fake engine for one test, with the test image present. */
 function engine(config: FakeEngineConfig = {}): FakeEngine {
@@ -180,25 +185,12 @@ describe("a container attempt, end to end", () => {
   it("runs the CLI with an explicit environment from the live process.env: no secret, deleted or not", async () => {
     const fake = engine();
     // Set now, after this process started: a plain `Bun.spawn` would pass
-    // the startup environment and miss both changes.
+    // the startup environment and miss the change.
     process.env.I1_TEST_SECRET = "s3cret";
     process.env.DOCKER_CONFIG = "/i1/live-docker-config";
-    const startupOnly = Object.keys(process.env).find(
-      (name) =>
-        !/^(?:PATH|HOME|TMPDIR|LANG|TERM|USER|SHELL|DOCKER_|XDG_|CONTAINER)/.test(
-          name,
-        ),
-    );
-    const removed = startupOnly ? process.env[startupOnly] : undefined;
-    if (startupOnly) {
-      delete process.env[startupOnly];
-    }
     cleanups.push(() => {
       delete process.env.I1_TEST_SECRET;
       delete process.env.DOCKER_CONFIG;
-      if (startupOnly && removed !== undefined) {
-        process.env[startupOnly] = removed;
-      }
     });
 
     const { queue, worker } = setup("echo", {
@@ -212,9 +204,6 @@ describe("a container attempt, end to end", () => {
     expect(calls.length).toBeGreaterThan(3);
     for (const call of calls) {
       expect(call.env.I1_TEST_SECRET).toBeUndefined();
-      if (startupOnly) {
-        expect(call.env[startupOnly]).toBeUndefined();
-      }
       expect(call.env.DOCKER_CONFIG).toBe("/i1/live-docker-config");
       expect(call.env.DOCKER_HOST).toBe("unix:///i1/fake.sock");
     }
@@ -222,6 +211,40 @@ describe("a container attempt, end to end", () => {
     const env = (await queue.getJob(job.id))!.returnValue as { env: string[] };
     expect(env.env).not.toContain("DOCKER_HOST");
     expect(env.env).not.toContain("I1_TEST_SECRET");
+  }, 30_000);
+
+  it("never passes a variable the process started with and has since deleted, from either spawn", async () => {
+    // A process of its own, started with a variable this test chooses, so
+    // the check cannot pass merely because nothing was there to leak.
+    const fake = engine();
+    const probe = Bun.spawn(
+      [process.execPath, fixture("env-probe"), fixture("quick-log")],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: process.env.HOME ?? "/tmp",
+          I1_STARTUP_ONLY: "startup-value",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    cleanups.push(() => probe.kill("SIGKILL"));
+    expect(await probe.exited).toBe(0);
+    expect(await new Response(probe.stdout).text()).toContain(
+      '"status":"success"',
+    );
+
+    const calls = fake.calls();
+    // Both spawn sites: a CLI command and an attempt's `run`.
+    expect(calls.map((call) => call.args[0])).toEqual(
+      expect.arrayContaining(["version", "run"]),
+    );
+    for (const call of calls) {
+      expect(call.env.I1_STARTUP_ONLY).toBeUndefined();
+      expect(call.env.DOCKER_CONFIG).toBe("/i1/live-docker-config");
+      expect(call.env.I1_LIVE_ONLY).toBeUndefined();
+    }
   }, 30_000);
 
   it("gives the attempt and the probe the same hardened argument list", async () => {
@@ -314,6 +337,97 @@ describe("a container attempt, end to end", () => {
       },
     });
   }, 40_000);
+
+  it("reads the result after output that had no trailing newline", async () => {
+    engine();
+    const { queue, worker } = setup("partial-write");
+    void worker.run();
+    const job = await queue.add(
+      "p",
+      {},
+      { removeOnComplete: false, attempts: 1 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect(stored.returnValue).toBe("ok");
+    expect((await queue.getJobLogs(job.id)).logs.join("\n")).toContain(
+      "working...",
+    );
+  }, 30_000);
+
+  it("answers a channel request sent after output that had no trailing newline", async () => {
+    engine();
+    const { queue, worker } = setup("partial-then-log");
+    void worker.run();
+    const job = await queue.add(
+      "p",
+      {},
+      { removeOnComplete: false, attempts: 1, timeout: 15_000 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect(stored.returnValue).toEqual({ count: expect.any(Number) });
+    const lines = (await queue.getJobLogs(job.id)).logs.flatMap((entry) =>
+      entry.split("\n"),
+    );
+    expect(lines).toEqual(
+      expect.arrayContaining(["after the partial write", "50%"]),
+    );
+  }, 30_000);
+
+  it("keeps one container log write in flight, however chatty the output", async () => {
+    engine();
+    const driver = new MemoryDriver();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let calls = 0;
+    const add = driver.addJobLog!.bind(driver);
+    driver.addJobLog = async (...args: Parameters<typeof add>) => {
+      calls++;
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await Bun.sleep(1);
+        return await add(...args);
+      } finally {
+        inFlight--;
+      }
+    };
+    const namespace = testNamespace("i1");
+    const queue = new BunQueue("boxed", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    const worker = new BunQueueWorker("boxed", fixture("tiny-chatty"), {
+      namespace,
+      driver,
+      key: `i1test-${namespace}`,
+      logger: noopLogger,
+      pollInterval: 5,
+      target: { kind: "container", image: "fake/bun:1" },
+    });
+    cleanups.push(
+      () => queue.close(),
+      () => worker.close({ force: true }),
+    );
+    void worker.run();
+    // 200,000 lines of one character: 400 KB, under the default maxLogBytes.
+    const job = await queue.add(
+      "c",
+      { lines: 200_000 },
+      { removeOnComplete: false, attempts: 1 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect(maxInFlight).toBeLessThanOrEqual(1);
+    // Batched: far fewer writes than lines, and nothing lost.
+    expect(calls).toBeLessThan(1000);
+    const logs = await queue.getJobLogs(job.id, { limit: 1000 });
+    const lines = logs.logs.flatMap((entry) => entry.split("\n"));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line === "x")).toBe(true);
+  }, 60_000);
 
   it("retries an ordinary failure, rebuilt from the container", async () => {
     engine();
@@ -424,6 +538,20 @@ describe("the start-up probe fails fast, never degrades", () => {
     // Well inside the 3 s the probe container would have taken.
     expect(performance.now() - started).toBeLessThan(2500);
     await waitFor(() => fake.containers().length === 0, { timeout: 5000 });
+    // Killing the CLI does not stop a container the engine already started,
+    // so the probe container is removed by name, whatever the CLI got to.
+    const { args: probeArgs } = fake.callsOf("run")[0]!;
+    const probe = probeArgs
+      .find((arg) => arg.startsWith("--name="))!
+      .slice("--name=".length);
+    expect(probe.endsWith("-probe")).toBe(true);
+    await waitFor(
+      () =>
+        fake
+          .callsOf("rm")
+          .some((call) => call.args.join(" ") === `rm --force ${probe}`),
+      { timeout: 5000 },
+    );
   }, 30_000);
 });
 
@@ -468,14 +596,33 @@ describe("the orphan sweep", () => {
       created: old,
     });
     fake.addContainer({ name: "unlabelled", labels: {}, created: old });
+    fake.addContainer({
+      name: "other-queue",
+      labels: labels("i1test-sweep", "dead.5", namespace, "elsewhere"),
+      created: old,
+    });
+    fake.addContainer({
+      name: "own",
+      labels: labels("i1test-sweep", worker.id),
+      created: old,
+    });
+    const { "bun-jobs.worker-id": _id, ...noId } = labels("i1test-sweep", "x");
+    fake.addContainer({ name: "no-worker-id", labels: noId, created: old });
 
     void worker.run();
     await waitFor(async () => (await queue.listWorkers()).length === 1, {
       timeout: 10_000,
     });
+    // Only `orphan` goes: another key, namespace or queue is not this
+    // worker's to judge, its own containers are its own, a young one may
+    // belong to a worker not yet listed, and one with no worker id says
+    // nothing about whose it is.
     expect(fake.containers().sort()).toEqual([
+      "no-worker-id",
       "other-key",
       "other-ns",
+      "other-queue",
+      "own",
       "unlabelled",
       "young",
     ]);
@@ -545,10 +692,9 @@ describe("stopping an attempt", () => {
     );
   }
 
-  /** Starts one attempt and returns its handle with the events it saw. */
-  function start(container: ContainerExecutor) {
-    const output: string[] = [];
-    const handle = container.start({
+  /** The options one attempt starts with, its events aside. */
+  function startOptions(data: unknown = {}) {
+    return {
       context: {
         runId: "job-1.1",
         runnerId: "q",
@@ -578,7 +724,7 @@ describe("stopping an attempt", () => {
       job: {
         id: "job-1",
         name: "x",
-        data: {},
+        data,
         opts: {},
         state: "active",
         priority: 0,
@@ -598,6 +744,14 @@ describe("stopping an attempt", () => {
         repeatKey: null,
         lockToken: "t",
       } as never,
+    } satisfies Omit<ExecutorStartOptions<null>, "events">;
+  }
+
+  /** Starts one attempt and returns its handle with the output it saw. */
+  function start(container: ContainerExecutor, data: unknown = {}) {
+    const output: string[] = [];
+    const handle = container.start({
+      ...startOptions(data),
       events: {
         onProgress: () => {},
         onMessage: () => {},
@@ -612,7 +766,8 @@ describe("stopping an attempt", () => {
   it("kills a container that ignores the close after closeTimeout: exit 137, and gone before exited", async () => {
     const fake = engine();
     const dir = markers();
-    const { handle } = start(executor("spin", {}, { MARKER_DIR: dir }));
+    const container = executor("spin", {}, { MARKER_DIR: dir });
+    const { handle } = start(container);
     await waitFor(() => existsSync(join(dir, "started")), { timeout: 15_000 });
     handle.stop("a test");
     const outcome: RunOutcome = await handle.done;
@@ -621,6 +776,9 @@ describe("stopping an attempt", () => {
     expect(outcome.exitCode).toBe(137);
     await handle.exited;
     expect(fake.containers()).toEqual([]);
+    // `exited` does not wait for the `kill` and `rm` commands to return;
+    // the executor tracks them.
+    await Promise.all(container.removals);
     const { args } = fake.callsOf("run").at(-1)!;
     const name = args.find((arg) => arg.startsWith("--name="))!.slice(7);
     expect(fake.callsOf("kill").map((call) => call.args)).toContainEqual([
@@ -637,6 +795,22 @@ describe("stopping an attempt", () => {
     const kill = fake.callsOf("kill").at(-1)!.at;
     const rm = fake.callsOf("rm").at(-1)!.at;
     expect(rm).toBeGreaterThanOrEqual(kill);
+  }, 30_000);
+
+  it("settles exited once the container is gone, not once the kill and rm commands return", async () => {
+    // `kill` and `rm` do their work, then take 3 s to return.
+    engine({ commandExitDelayMs: 3000 });
+    const dir = markers();
+    const container = executor("spin", {}, { MARKER_DIR: dir });
+    const { handle } = start(container);
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 15_000 });
+    handle.stop("close", { force: true });
+    expect((await handle.done).exitCode).toBe(137);
+    await handle.exited;
+    // The container is gone, and the commands that removed it are still
+    // running: tracked, not waited for.
+    expect(container.removals.size).toBe(1);
+    await Promise.all(container.removals);
   }, 30_000);
 
   it("lets a container whose processor ignores the close exit itself: exit 143, not a kill", async () => {
@@ -725,6 +899,174 @@ describe("stopping an attempt", () => {
     await handle.exited;
   }, 30_000);
 
+  it.each([[126], [127]])(
+    "treats the CLI's own %d before ready as an engine error, not an exit code",
+    async (code) => {
+      engine({ runFails: { code, stderr: "exec: bun: not found" } });
+      const { handle } = start(executor("echo"));
+      const outcome = await handle.done;
+      expect(outcome.status).toBe("failed");
+      expect(outcome.exitCode).toBeNull();
+      expect(outcome.error?.data?.context).toMatchObject({
+        reason: "the container could not be started",
+      });
+      await handle.exited;
+    },
+    30_000,
+  );
+
+  it.each([[125], ["signal" as const]])(
+    "reports a killed container as 137 whatever the CLI ends with (%p)",
+    async (killedExit) => {
+      engine({ killedExit });
+      const dir = markers();
+      const { handle } = start(executor("spin", {}, { MARKER_DIR: dir }));
+      await waitFor(() => existsSync(join(dir, "started")), {
+        timeout: 15_000,
+      });
+      handle.stop("a test", { force: true });
+      const outcome = await handle.done;
+      expect(outcome.status).toBe("killed");
+      expect(outcome.exitCode).toBe(137);
+      expect(outcome.signal).toBe("SIGKILL");
+      await handle.exited;
+    },
+    30_000,
+  );
+
+  it("reports the result, exit 0 and no kill, for a stop that lands after the result arrived", async () => {
+    // The CLI stays up after its container has exited, so the stop lands
+    // between the result and the CLI's exit.
+    const fake = engine({ exitDelayMs: 4000 });
+    // A closeTimeout past the CLI's exit, so the backstop never fires.
+    const { handle } = start(executor("quick-log", { closeTimeout: 20_000 }));
+    await waitFor(() => fake.callsOf("run").length > 0, { timeout: 10_000 });
+    await waitFor(
+      () =>
+        fake.containers().length === 0 &&
+        fake.calls().some((call) => call.args[0] === "run"),
+      { timeout: 15_000 },
+    );
+    // The container has exited, so its result is in the pipe; give the
+    // reader a moment to take it.
+    await Bun.sleep(1000);
+    handle.stop("close", { force: true });
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({
+      status: "success",
+      result: "done",
+      exitCode: 0,
+      signal: null,
+    });
+    expect(fake.callsOf("kill")).toEqual([]);
+    await handle.exited;
+  }, 30_000);
+
+  it("keeps a few kilobytes of a container's huge stderr lines, not the lines", async () => {
+    engine();
+    const dir = markers();
+    const { handle } = start(
+      executor("stderr-flood", {}, { MARKER_DIR: dir }),
+      {
+        lines: 20,
+        mib: 4,
+      },
+    );
+    const heap = () => {
+      Bun.gc(true);
+      return process.memoryUsage().heapUsed;
+    };
+    const before = heap();
+    // 20 lines of 4 MiB: what the error message's tail used to keep whole.
+    // The container is still running when this is measured, so the tail is
+    // still held.
+    await waitFor(() => existsSync(join(dir, "flooded")), { timeout: 30_000 });
+    await Bun.sleep(500);
+    const grown = heap() - before;
+    expect(grown).toBeLessThan(30 * 1024 * 1024);
+    handle.stop("done", { force: true });
+    await handle.done;
+    await handle.exited;
+  }, 60_000);
+
+  it("reads a channel message that starts in the middle of a line", async () => {
+    engine();
+    const logs: string[] = [];
+    const container = executor("forge-midline");
+    const output: string[] = [];
+    const handle = container.start({
+      ...startOptions(),
+      events: {
+        onProgress: () => {},
+        onMessage: () => {},
+        onLog: (_level, message) => logs.push(message),
+        onOutput: (_stream, line) => output.push(line),
+        onPid: () => {},
+      },
+    });
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("success");
+    expect(logs).toContain("forged-midline");
+    expect(output).toContain("50%");
+    expect(output.join("\n")).not.toContain("forged-midline");
+    await handle.exited;
+  }, 30_000);
+
+  it("ends a run whose processor sends itself SIGTERM, rather than hanging", async () => {
+    engine();
+    const { handle } = start(executor("sigterm-self"));
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.name).toBe("RunKilledError");
+    expect(outcome.exitCode).toBe(143);
+    await handle.exited;
+  }, 30_000);
+
+  it("stops a blocked processor's container soon after its worker process is killed", async () => {
+    const fake = engine();
+    const dir = markers();
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        fixture("worker-process"),
+        fixture("spin"),
+        "fake/bun:1",
+        "i1test-watchdog",
+        JSON.stringify({ closeTimeout: 1000, env: { MARKER_DIR: dir } }),
+      ],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: process.env.HOME ?? "/tmp",
+          MARKER_DIR: dir,
+        },
+        stdout: "pipe",
+        stderr: "inherit",
+      },
+    );
+    cleanups.push(() => child.kill("SIGKILL"));
+    const reader = child.stdout.getReader();
+    let said = "";
+    while (!said.includes("STARTED")) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      said += new TextDecoder().decode(value);
+    }
+    expect(fake.containers()).toHaveLength(1);
+    const killed = performance.now();
+    child.kill("SIGKILL");
+    await child.exited;
+    // Its stdin closed with the worker; the spinning processor cannot see
+    // that, but the entry's main thread can, and exits at closeTimeout.
+    await waitFor(() => fake.containers().length === 0, {
+      timeout: 10_000,
+      message: () => `still running: ${fake.containers().join(", ")}`,
+    });
+    expect(performance.now() - killed).toBeLessThan(8_000);
+  }, 40_000);
+
   it("ends an attempt the worker times out, and the job is not held", async () => {
     engine();
     const { queue, worker } = setup("spin");
@@ -784,7 +1126,10 @@ describe("the channel's bounds", () => {
     expect(stored.returnValue).toBe(100);
     const { logs } = await queue.getJobLogs(job.id, { limit: 1000 });
     // 101 bytes a line with its newline: nine fit in 1000.
-    expect(logs.filter((line) => line.endsWith("y"))).toHaveLength(9);
+    // Written one entry at a time, lines that waited joined into one entry:
+    // count the lines, not the entries.
+    const lines = logs.flatMap((entry) => entry.split("\n"));
+    expect(lines.filter((line) => line.endsWith("y"))).toHaveLength(9);
     expect(logs.at(-1)).toContain(
       "container output cut at maxLogBytes (1000 bytes)",
     );
@@ -833,7 +1178,10 @@ describe("the container entry", () => {
     });
     const reader = proc.stdout.getReader();
     const { value } = await reader.read();
-    const line = new TextDecoder().decode(value).split("\n")[0]!;
+    // Every channel line starts on a line of its own: after a newline.
+    const text = new TextDecoder().decode(value);
+    expect(text.startsWith("\n")).toBe(true);
+    const line = text.split("\n").find((part) => part.length > 0)!;
     expect(line.startsWith(`${prefix} `)).toBe(true);
     expect(JSON.parse(line.slice(33))).toMatchObject({
       t: "ready",
@@ -848,6 +1196,91 @@ describe("the container entry", () => {
     const dir = markers();
     const { proc } = entry(fixture("import-marker"), { MARKER_DIR: dir });
     proc.stdin.end();
+    expect(await proc.exited).toBe(143);
+    expect(existsSync(join(dir, "imported"))).toBe(false);
+  }, 15_000);
+
+  /** Writes `start` for a job running `processor` on the entry's stdin. */
+  function startRun(
+    proc: { stdin: { write: (s: string) => unknown; flush: () => unknown } },
+    processor: string,
+  ) {
+    const ctx = {
+      runId: "r.1",
+      runnerId: "q",
+      runnerName: "w",
+      namespace: "ns",
+      attempt: 1,
+      source: "queued",
+      mode: "child-process",
+      startedAt: Date.now(),
+      deadline: null,
+      args: null,
+      file: processor,
+      closeTimeout: 5000,
+      forwardLogs: true,
+      kind: "job",
+      job: {
+        id: "j",
+        name: "x",
+        data: {},
+        opts: {},
+        attemptsMade: 1,
+        stacktrace: [],
+        repeatKey: null,
+      },
+    };
+    proc.stdin.write(`${JSON.stringify({ t: "start", runId: "r.1", ctx })}\n`);
+    proc.stdin.flush();
+  }
+
+  /** The runner's channel messages, from its whole stdout. */
+  function messages(
+    stdout: string,
+    prefix: string,
+  ): { t: string; error?: { name?: string } }[] {
+    return stdout
+      .split("\n")
+      .filter((line) => line.startsWith(`${prefix} `))
+      .map(
+        (line) => JSON.parse(line.slice(prefix.length + 1)) as { t: string },
+      );
+  }
+
+  it("closes a started run when its stdin ends, as a worker that died would leave it", async () => {
+    const dir = markers();
+    const { proc, prefix } = entry(fixture("abortable"), { MARKER_DIR: dir });
+    startRun(proc, fixture("abortable"));
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 10_000 });
+    proc.stdin.end();
+    await proc.exited;
+    // The processor was asked to stop, and the run ended.
+    expect(existsSync(join(dir, "aborted"))).toBe(true);
+    const sent = messages(await new Response(proc.stdout).text(), prefix);
+    expect(sent.map((m) => m.t)).toContain("done");
+  }, 15_000);
+
+  it("handles SIGTERM as a close: the run ends killed, and the runner exits 143", async () => {
+    const dir = markers();
+    const { proc, prefix } = entry(fixture("abortable"), { MARKER_DIR: dir });
+    startRun(proc, fixture("abortable"));
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 10_000 });
+    proc.kill("SIGTERM");
+    expect(await proc.exited).toBe(143);
+    expect(existsSync(join(dir, "aborted"))).toBe(true);
+    const sent = messages(await new Response(proc.stdout).text(), prefix);
+    const last = sent.at(-1);
+    expect(last?.t).toBe("error");
+    expect(last?.error?.name).toBe("RunKilledError");
+  }, 15_000);
+
+  it("exits 143 on SIGTERM before start, without importing the processor", async () => {
+    const dir = markers();
+    const { proc } = entry(fixture("import-marker"), { MARKER_DIR: dir });
+    const reader = proc.stdout.getReader();
+    await reader.read();
+    reader.releaseLock();
+    proc.kill("SIGTERM");
     expect(await proc.exited).toBe(143);
     expect(existsSync(join(dir, "imported"))).toBe(false);
   }, 15_000);

@@ -61,6 +61,32 @@ export interface EngineResult {
   stderr: string;
 }
 
+/** The most of one CLI command's stdout, or of its stderr, read: 1 MiB. */
+const ENGINE_OUTPUT_LIMIT = 1024 * 1024;
+
+/**
+ * A stream's text, up to `limit` bytes: the rest is read and dropped, so the
+ * writer is never blocked on a full pipe.
+ */
+async function readCapped(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  let kept = 0;
+  for await (const chunk of stream) {
+    if (kept >= limit) {
+      continue;
+    }
+    const part =
+      chunk.byteLength > limit - kept ? chunk.subarray(0, limit - kept) : chunk;
+    kept += part.byteLength;
+    text += decoder.decode(part, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 /** The most of the engine's stderr an error message carries. */
 const STDERR_LIMIT = 2_000;
 
@@ -150,9 +176,11 @@ export class ContainerEngine {
       killSignal: "SIGKILL",
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    // Capped: the probe container's output is the image's, and a sweep's
+    // listing grows with the engine's; neither is read whole into memory.
     const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      readCapped(proc.stdout, ENGINE_OUTPUT_LIMIT),
+      readCapped(proc.stderr, ENGINE_OUTPUT_LIMIT),
       proc.exited,
     ]);
     return {
@@ -376,7 +404,15 @@ export class ContainerEngine {
       const orphans: string[] = [];
       for (const line of inspected.stdout.split("\n")) {
         const [rawName, workerId, created] = line.trim().split("\t");
-        if (!rawName || workerId === undefined) {
+        // A container without a worker id — the label missing, which the
+        // template prints as nothing or `<no value>` — says nothing about
+        // whose it is, so it is never taken for an orphan.
+        if (
+          !rawName ||
+          workerId === undefined ||
+          workerId === "" ||
+          workerId === "<no value>"
+        ) {
           continue;
         }
         const name = rawName.replace(/^\//, "");

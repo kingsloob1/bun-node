@@ -43,6 +43,7 @@ import {
   containerMarkers,
   containerOutputCutNotice,
 } from "./container/executor";
+import { AttemptLogWriter } from "./container/logWriter";
 import { resolveContainerTarget } from "./container/target";
 
 /**
@@ -829,6 +830,11 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
     // `onMessage` below reads `handle`, but only ever after `start()` has
     // returned: a child cannot send anything before it has been started.
+    /** A container's own output, written to the job's log one write at a time. */
+    const logWriter =
+      target.kind === "container"
+        ? new AttemptLogWriter(async (entry) => await job.log(entry))
+        : undefined;
     const handle: ExecutorHandle = executor.start({
       context: runContext,
       file: this.file,
@@ -863,14 +869,14 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           write.call(context.logger, message, fields);
         },
         // A container's own output — stdout lines without the channel's
-        // prefix, and stderr — becomes the job's log, through its `Job`. The
-        // other kinds' output goes to this process's own stdio instead.
-        onOutput:
-          target.kind === "container"
-            ? (_stream, line) => {
-                void job.log(line).catch(() => undefined);
-              }
-            : () => {},
+        // prefix, and stderr — becomes the job's log, through its `Job`, one
+        // write at a time (`AttemptLogWriter`). The other kinds' output goes
+        // to this process's own stdio instead.
+        onOutput: logWriter
+          ? (_stream, line) => {
+              logWriter.push(line);
+            }
+          : () => {},
         // A job has no run log; its attempt's logger is where the cut is said.
         onEnvWithheld: (withheld) => {
           context.logger.debug(childEnvWithheldMessage(withheld), {
@@ -878,9 +884,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           });
         },
         onOutputLimit: (maxBuffer, bytes) => {
-          if (target.kind === "container") {
+          if (logWriter) {
             const notice = containerOutputCutNotice(maxBuffer);
-            void job.log(notice).catch(() => undefined);
+            logWriter.push(notice);
             context.logger.warn(notice, { maxLogBytes: maxBuffer, bytes });
             return;
           }
@@ -930,6 +936,9 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       );
     } finally {
       signal.removeEventListener("abort", stop);
+      // The container's output is written before the attempt reports back,
+      // so the worker's settle sees it on the attempt's lane.
+      await logWriter?.drain();
     }
   }
 
@@ -1190,11 +1199,20 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
   /**
    * Logs one `warn` for the `worker-thread` runs among `handles` whose thread
-   * has still not stopped — or the `container` runs whose container has not
-   * yet been removed — leaving out any already warned about. A child that is
-   * slow to be reaped is not reported: that wait is what it always was.
+   * has still not stopped, leaving out any already warned about. A child that
+   * is slow to be reaped is not reported: that wait is what it always was.
+   *
+   * Nor is a `container` run. Removing a killed container (`docker kill`,
+   * then `docker rm --force`) takes about a second, against a reap allowance
+   * of `TARGET_CLOSE_REAP` that must end inside the worker's own bound, so a
+   * warning would fire on every forced close and say nothing. The removal
+   * goes on after `close()` resolves, in CLI processes that outlive the
+   * worker if it exits, and the orphan sweep covers one that never lands.
    */
   #warnOverrun(handles: ExecutorHandle[]): void {
+    if (this.name === "container") {
+      return;
+    }
     const runIds: string[] = [];
     for (const handle of handles) {
       const runId = this.#live.get(handle);
@@ -1212,9 +1230,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       return;
     }
     this.#logger.warn(
-      this.name === "container"
-        ? `container ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not been removed ${TARGET_CLOSE_REAP} ms after being killed; the target's close resolved without waiting further (the removal goes on)`
-        : `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
+      `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
       {
         runIds,
         reapMs: TARGET_CLOSE_REAP,

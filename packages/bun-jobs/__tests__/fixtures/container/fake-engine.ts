@@ -26,7 +26,11 @@ import process from "node:process";
  * `<state>/config.json` steers it: `versionFails`, `runtimes`, `images`,
  * `pullFails`, `probeFails` ({ code, stderr }), `createDelayMs` (how long a
  * `run` waits before its container exists, which is when `rm` can find it),
- * and `runFails` ({ code, stderr }).
+ * `runFails` ({ code, stderr }), `killedExit` (what a killed container's
+ * `run` exits with instead of 137: a code, or `"signal"` to die of SIGKILL
+ * itself, as a CLI that is killed would), and `exitDelayMs` (how long `run`
+ * stays up after its container has exited), and `commandExitDelayMs` (how
+ * long `kill` and `rm` take to return after doing their work).
  */
 
 interface Config {
@@ -37,6 +41,9 @@ interface Config {
   probeFails?: { code: number; stderr: string };
   runFails?: { code: number; stderr: string };
   createDelayMs?: number;
+  killedExit?: number | "signal";
+  exitDelayMs?: number;
+  commandExitDelayMs?: number;
 }
 
 interface Container {
@@ -85,6 +92,18 @@ function alive(pid: number | undefined): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Runs the rest of a `kill` or `rm` now, and holds the CLI open for
+ * `commandExitDelayMs` afterwards: a CLI that returns after its work is done.
+ */
+async function finishLater(): Promise<void> {
+  if (config.commandExitDelayMs) {
+    process.on("exit", () => {});
+    setTimeout(() => process.exit(0), config.commandExitDelayMs);
+    await Promise.resolve();
   }
 }
 
@@ -145,6 +164,7 @@ switch (command) {
     break;
   }
   case "kill": {
+    await finishLater();
     const name = rest.at(-1)!;
     const container = read(name);
     if (!container) {
@@ -158,6 +178,7 @@ switch (command) {
     break;
   }
   case "rm": {
+    await finishLater();
     for (const name of rest.filter((arg) => !arg.startsWith("-"))) {
       remove(name);
     }
@@ -266,5 +287,17 @@ async function run(argv: string[]): Promise<void> {
   // for a container it killed.
   const killed = record === undefined || record.killed === true;
   rmSync(recordPath(name), { force: true });
+  if (config.exitDelayMs) {
+    await Bun.sleep(config.exitDelayMs);
+  }
+  if (
+    (child.signalCode === "SIGKILL" || killed) &&
+    config.killedExit !== undefined
+  ) {
+    if (config.killedExit === "signal") {
+      process.kill(process.pid, "SIGKILL");
+    }
+    process.exit(config.killedExit === "signal" ? 1 : config.killedExit);
+  }
   process.exit(child.signalCode === "SIGKILL" || killed ? 137 : code);
 }
