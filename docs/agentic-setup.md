@@ -284,19 +284,49 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
   instead of a new place at the back. Its state is in
   `/tmp/claude-1000/bun-node-heavy-jobs/<ticket>.status`.
 
-- **Exclusive** (`HEAVY_EXCLUSIVE=1`): any bun-jobs suite with database URLs —
-  the full suite, `--randomize`, multi-file database runs.
-- **Wrapper:** the bun-jobs and bun-jobs-ui suites and run-alls, the consumer
-  check, `check-types.ts`, benches, repeat or concurrent-copy loops, load
-  probes.
-- **Direct, no lock:** the bun-common and bun-nest suites and run-alls, single
-  test files and examples, lint, typecheck, the template test.
+- **Exclusive** (`HEAVY_EXCLUSIVE=1`): a bun-jobs suite or directory-wide run
+  with database URLs — the full suite, `--randomize`, multi-file database
+  runs.
+- **Wrapper:** full suites, every bun-jobs-ui test (DOM and Chrome), the
+  bun-jobs and bun-jobs-ui run-alls, `check-types.ts`, benches, and repeat,
+  concurrent-copy and load loops.
+- **Direct, no wrapper:** lint in any directory, `bun scripts/typecheck.ts`,
+  `bun scripts/consumer-check.ts` (no longer heavy, since 2026-10-07),
+  specific named test files in any package except bun-jobs-ui, the bun-common
+  and bun-nest suites and run-alls, single examples, the template test.
 - Wrap the heavy command, not a script that also installs or sleeps; give it a
   `timeout`; never `flock -o` (it drops the lock while the command runs).
 - To see the queue: `/tmp/claude-1000/bun-node-heavy-queue.sh` — every job
-  holding or waiting for a slot, how long it has waited, its session and
-  ticket. Keep `/tmp/claude-1000/bun-node-sessions` (`<claude pid> <name>`)
-  current when sessions change.
+  holding or waiting for a slot, its phase (each wrapper records its own),
+  how long it has waited, an **EST** column, its session and ticket. Keep
+  `/tmp/claude-1000/bun-node-sessions` (`<claude pid> <name>`) current when
+  sessions change.
+- **EST** is the median of the last 10 successful runs of the same kind of
+  job: `~6m10s (n=4)` while it waits, `~6m10s, ~2m left` or
+  `~6m10s, overrun +1m` while it runs, `unknown` with no history. Every
+  finished job appends a line (epoch, key, seconds, exit status) to
+  `/tmp/claude-1000/bun-node-heavy-history.tsv`. The key is the directory
+  relative to the git top level, the command without a leading `timeout N`,
+  and `[exclusive]` and `EXAMPLE_DRIVER` when set, so runs in different
+  worktrees share an estimate; `bun-node-heavy-run.sh --key <command>` prints
+  it.
+
+#### Where the wrapper comes from
+
+The wrapper and the queue listing are `scripts/heavy-run.sh` and
+`scripts/heavy-queue.sh` in this repo, tested by
+`scripts/__tests__/heavy-run.test.ts`. Install or refresh the copies in
+`/tmp/claude-1000` with:
+
+```bash
+bun scripts/install-heavy-run.ts            # --dry-run to see the plan first
+```
+
+It renames each file into place, so a job already running keeps the copy it
+started with, and keeps the replaced wrapper as `bun-node-heavy-run.prev.sh`.
+Run it after any change to those scripts (once merged), and after a reboot
+clears `/tmp`. Never edit the installed copies: the next install overwrites
+them.
 
 ### Processes, data and services
 
