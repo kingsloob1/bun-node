@@ -6,6 +6,7 @@ import type {
   SummonReleaseRequest,
   SummonRequest,
 } from "../../summon/types";
+import type { UnitStatus } from "../define";
 import type { VerdictProbe } from "./checks";
 import type { FakeUnit } from "./fake";
 import type { KitRun } from "./run";
@@ -18,9 +19,10 @@ import { BunQueue } from "../../queue/BunQueue";
 import { ConfigError } from "../../shared/errors";
 import { SummonController } from "../../summon/controller";
 import { PROVIDER_FETCH_PROBE } from "../context";
+import { textRedactor } from "../redact";
 import { VERDICT_POLICY } from "./checks";
 import { RACER, RACER_ENV } from "./racer";
-import { describeThrown, kitLifetime, randomHex } from "./run";
+import { describeThrown, fakeOf, kitLifetime, randomHex } from "./run";
 import { spawnUnit, unitLines, unitSpawner } from "./spawn";
 import { FIXTURE_ENV, FIXTURE_WORKER } from "./worker";
 
@@ -122,24 +124,36 @@ async function within<T>(
   }
 }
 
-/** The handoff group: claim, call, boot, register, release, drain, exit. */
-export async function handoffChecks(run: KitRun): Promise<void> {
-  const ids = [
-    "summon.handoff.started",
-    "summon.handoff.released",
-    "summon.handoff.drained",
-    "summon.handoff.scale-down",
-  ] as const;
-  const fail = (from: number, detail: string): void => {
-    run.set(ids[from]!, "fail", detail);
-    for (const id of ids.slice(from + 1)) {
-      run.set(id, "skip", `skipped: ${ids[from]} failed`);
+/** The handoff group's checks, in order. */
+const HANDOFF_IDS = [
+  "summon.handoff.started",
+  "summon.handoff.released",
+  "summon.handoff.drained",
+  "summon.handoff.scale-down",
+] as const;
+
+/** Fails the handoff at stage `from`, and skips every later stage. */
+function handoffFailer(run: KitRun): (from: number, detail: string) => void {
+  return (from, detail) => {
+    run.set(HANDOFF_IDS[from]!, "fail", detail);
+    for (const id of HANDOFF_IDS.slice(from + 1)) {
+      run.set(id, "skip", `skipped: ${HANDOFF_IDS[from]} failed`);
     }
   };
+}
+
+/** The handoff group: claim, call, boot, register, release, drain, exit. */
+export async function handoffChecks(run: KitRun): Promise<void> {
+  if (run.selfHosted) {
+    await selfHostedHandoff(run);
+    return;
+  }
+  const fake = fakeOf(run);
+  const fail = handoffFailer(run);
 
   const store = await backend(run);
   const namespace = `conformance-${randomHex(6)}`;
-  run.internals.namespaces.push(namespace);
+  fake.internals.namespaces.push(namespace);
   const queueName = "work";
   let driver: JobsDriver | undefined;
   let queue: BunQueue<unknown> | undefined;
@@ -155,17 +169,17 @@ export async function handoffChecks(run: KitRun): Promise<void> {
   /** Which of `ids` the handoff has reached. */
   let stage = 0;
   const starting: Promise<void>[] = [];
-  run.platform.onStart((unit) => {
+  fake.platform.onStart((unit) => {
     starting.push(
       (async () => {
         const process = await spawner.start({ argv: unit.argv });
         units.push({ unit, process });
-        run.internals.mark(unit.handle, "running");
-        run.internals.onStop(unit.handle, () => {
+        fake.internals.mark(unit.handle, "running");
+        fake.internals.onStop(unit.handle, () => {
           process.proc.kill("SIGTERM");
         });
         void process.exited.then(() => {
-          run.internals.mark(unit.handle, "exited");
+          fake.internals.mark(unit.handle, "exited");
         });
       })(),
     );
@@ -307,7 +321,7 @@ export async function handoffChecks(run: KitRun): Promise<void> {
       return;
     }
     if (run.capabilities.style === "scale") {
-      while (Date.now() < drainBy && run.internals.liveCount() > 0) {
+      while (Date.now() < drainBy && fake.internals.liveCount() > 0) {
         await controller.check();
         await pause(100);
       }
@@ -330,7 +344,7 @@ export async function handoffChecks(run: KitRun): Promise<void> {
       const stderr = (await within(units[0]!.process.errors, 1_000)) ?? "";
       fail(
         2,
-        `the worker exited ${bad}${stderr === "" ? "" : `: ${stderr.trim().split("\n").slice(-3).join(" | ")}`}`,
+        `the worker exited ${bad}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-3).join(" | "))}`}`,
       );
       return;
     }
@@ -338,12 +352,12 @@ export async function handoffChecks(run: KitRun): Promise<void> {
     stage = 3;
     // Nothing more is the handoff's: a unit the scale-down check starts
     // stays a unit on the fake, with no worker process behind it.
-    run.platform.onStart(undefined);
+    fake.platform.onStart(undefined);
     await scaleDownCheck(run, driver);
   } catch (error) {
     fail(stage, `the handoff failed: ${run.explain(error)}`);
   } finally {
-    run.platform.onStart(undefined);
+    fake.platform.onStart(undefined);
     if (controller !== undefined) {
       run.scanned.push(await controller.status().catch(() => undefined));
       await controller.close().catch(() => {});
@@ -354,6 +368,239 @@ export async function handoffChecks(run: KitRun): Promise<void> {
     await driver?.purge(namespace).catch(() => {});
     // The direct calls' namespace: nothing should have written there, but
     // the kit leaves no name of its own behind.
+    await driver?.purge(run.namespace).catch(() => {});
+    await driver?.close().catch(() => {});
+    await store.cleanup();
+  }
+}
+
+/** Whether a unit `status()` reports is still on its way or running. */
+function live(unit: UnitStatus): boolean {
+  return unit.state === "pending" || unit.state === "running";
+}
+
+/** A short account of what `status()` said of the units. */
+function describeUnits(units: readonly UnitStatus[] | undefined): string {
+  if (units === undefined || units.length === 0) {
+    return "status() said nothing of its unit";
+  }
+  return units
+    .map(
+      (unit) =>
+        `${unit.state}${unit.exitCode === undefined ? "" : ` ${unit.exitCode}`}${unit.detail === undefined ? "" : ` (${unit.detail})`}`,
+    )
+    .join(", ");
+}
+
+/**
+ * The handoff for a self-hosted provider (no platform): the provider starts
+ * the kit's fixture worker itself ({@link FIXTURE_WORKER}, which it was
+ * configured to run), the worker's test settings reach it as the policy's
+ * `env`, and the unit is followed through `status()` alone.
+ */
+async function selfHostedHandoff(run: KitRun): Promise<void> {
+  const fail = handoffFailer(run);
+  const { status } = run.facet;
+  if (status === undefined) {
+    fail(
+      0,
+      "a self-hosted provider needs status(): with no platform, nothing else can say whether its unit ran and exited",
+    );
+    return;
+  }
+  const store = await backend(run);
+  const namespace = `conformance-${randomHex(6)}`;
+  const queueName = "work";
+  let driver: JobsDriver | undefined;
+  let queue: BunQueue<unknown> | undefined;
+  let controller: SummonController | undefined;
+  const events: SummonEventPayload[] = [];
+  let handles: string[] = [];
+  let stage = 0;
+  /** What `status()` says of the attempt's units now, or `undefined` when it threw. */
+  const units = async (): Promise<readonly UnitStatus[] | undefined> => {
+    if (handles.length === 0) {
+      return [];
+    }
+    const answer = await run.call(
+      async (context) => await status(handles, context),
+    );
+    return answer.ok ? answer.value : undefined;
+  };
+
+  try {
+    driver = createDriver(store.config);
+    await driver.connect();
+    queue = new BunQueue(queueName, {
+      namespace,
+      driver,
+      logger: run.logger,
+    });
+    await queue.addBulk(
+      Array.from({ length: HANDOFF_JOBS }, (_, index) => ({
+        name: "conformance",
+        data: { index },
+      })),
+    );
+
+    try {
+      controller = new SummonController({
+        driver,
+        namespace,
+        queue: queueName,
+        summoner: run.summoner,
+        triggers: { onAdd: false, events: false, poll: false },
+        cooldown: 0,
+        bootBudget: REGISTER_WITHIN_MS,
+        maxLifetime: kitLifetime(run.capabilities),
+        scaleDown: { after: 0 },
+        // Test control for the fixture worker, never identity: the
+        // provider passes the policy's env to its unit like any other.
+        env: {
+          [FIXTURE_ENV.driver]: JSON.stringify(store.config),
+          [FIXTURE_ENV.namespace]: namespace,
+          [FIXTURE_ENV.queue]: queueName,
+          [FIXTURE_ENV.idleMs]: String(FIXTURE_IDLE_MS),
+        },
+        logger: run.logger,
+        [PROVIDER_FETCH_PROBE]: run.fetch,
+      } as SummonControllerOptions);
+    } catch (error) {
+      fail(0, `a SummonController refused the provider: ${run.explain(error)}`);
+      return;
+    }
+    controller.on("summon", (event) => events.push(event));
+
+    const first = await controller.check();
+    run.scanned.push(first);
+    if (first.action !== "summoned" || first.outcome !== "started") {
+      fail(
+        0,
+        `the controller's first check answered ${first.action}${"outcome" in first ? ` ${String(first.outcome)}` : ""}${"reason" in first ? ` (${String(first.reason)})` : ""}, not summoned/started`,
+      );
+      return;
+    }
+    const attempt = first.id;
+    handles = [
+      ...(events.find(
+        (event) => event.id === attempt && event.outcome === "started",
+      )?.handles ??
+        (await controller.status()).pending.find(
+          (pending) => pending.id === attempt,
+        )?.handles ??
+        []),
+    ];
+    for (const handle of handles) {
+      run.handles.add(handle);
+    }
+    run.set("summon.handoff.started", "pass");
+    stage = 1;
+
+    const deadline = Date.now() + REGISTER_WITHIN_MS;
+    let registered = false;
+    let seen: readonly UnitStatus[] | undefined;
+    while (Date.now() < deadline) {
+      await controller.check();
+      if (
+        events.some(
+          (event) => event.id === attempt && event.outcome === "registered",
+        )
+      ) {
+        registered = true;
+        break;
+      }
+      if (
+        events.some((event) => event.id === attempt && event.outcome === "lost")
+      ) {
+        break;
+      }
+      if (handles.length === 0) {
+        break;
+      }
+      seen = await units();
+      // Every unit came and went without releasing it: nothing will.
+      if (seen !== undefined && seen.length > 0 && !seen.some(live)) {
+        await controller.check();
+        registered = events.some(
+          (event) => event.id === attempt && event.outcome === "registered",
+        );
+        break;
+      }
+      await pause(100);
+    }
+    if (!registered) {
+      fail(
+        1,
+        handles.length === 0
+          ? "the provider answered no handle for the attempt, so nothing can be followed"
+          : `the unit never released attempt ${attempt}; ${describeUnits(seen ?? (await units()))}. The provider must pass request.argv to the unit as its arguments, and request.env as its environment`,
+      );
+      return;
+    }
+    run.set("summon.handoff.released", "pass", "by id");
+    stage = 2;
+
+    const drainBy = Date.now() + DRAIN_WITHIN_MS;
+    let drained = false;
+    while (Date.now() < drainBy) {
+      const demand = await queue.getDemand();
+      if (demand.outstanding === 0) {
+        drained = true;
+        break;
+      }
+      await pause(100);
+    }
+    if (!drained) {
+      fail(2, `the backlog of ${HANDOFF_JOBS} jobs did not drain`);
+      return;
+    }
+    // As the fake's handoff: the drain's budget, and at least a second.
+    const exitBy = Math.max(drainBy, Date.now() + 1_000);
+    let after = await units();
+    while (Date.now() < exitBy && (after === undefined || after.some(live))) {
+      await pause(100);
+      after = await units();
+    }
+    if (after === undefined || after.some(live)) {
+      fail(
+        2,
+        after === undefined
+          ? "status() threw while the kit waited for the unit to exit"
+          : "the worker did not exit once the queue was idle",
+      );
+      return;
+    }
+    const bad = after.find(
+      (unit) => unit.state !== "exited" || (unit.exitCode ?? 0) !== 0,
+    );
+    if (bad !== undefined) {
+      fail(2, `the worker ended ${describeUnits([bad])}`);
+      return;
+    }
+    run.set("summon.handoff.drained", "pass");
+    stage = 3;
+    run.set(
+      "summon.handoff.scale-down",
+      "skip",
+      run.capabilities.style === "scale"
+        ? "a self-hosted provider has no platform count to read"
+        : `style is ${run.capabilities.style}`,
+    );
+  } catch (error) {
+    fail(stage, `the handoff failed: ${run.explain(error)}`);
+  } finally {
+    if (controller !== undefined) {
+      run.scanned.push(await controller.status().catch(() => undefined));
+      await controller.close().catch(() => {});
+    }
+    run.scanned.push(events);
+    const { cancel } = run.facet;
+    const left = (await units().catch(() => undefined)) ?? [];
+    if (cancel !== undefined && left.some(live)) {
+      await run.call(async (context) => await cancel(handles, context));
+    }
+    await queue?.close().catch(() => {});
+    await driver?.purge(namespace).catch(() => {});
     await driver?.purge(run.namespace).catch(() => {});
     await driver?.close().catch(() => {});
     await store.cleanup();
@@ -381,7 +628,7 @@ async function scaleDownCheck(run: KitRun, driver: JobsDriver): Promise<void> {
     async (context) =>
       await run.facet.summon(run.request({ count: 1, target: 1 }), context),
   );
-  if (!bumped.ok || run.internals.liveCount() === 0) {
+  if (!bumped.ok || fakeOf(run).internals.liveCount() === 0) {
     run.set(
       id,
       "fail",
@@ -392,7 +639,7 @@ async function scaleDownCheck(run: KitRun, driver: JobsDriver): Promise<void> {
     return;
   }
   const namespace = `conformance-idle-${randomHex(6)}`;
-  run.internals.namespaces.push(namespace);
+  fakeOf(run).internals.namespaces.push(namespace);
   const controller = new SummonController({
     driver,
     namespace,
@@ -407,11 +654,11 @@ async function scaleDownCheck(run: KitRun, driver: JobsDriver): Promise<void> {
   } as SummonControllerOptions);
   try {
     const by = Date.now() + SCALE_DOWN_WITHIN_MS;
-    while (Date.now() < by && run.internals.liveCount() > 0) {
+    while (Date.now() < by && fakeOf(run).internals.liveCount() > 0) {
       run.scanned.push(await controller.check());
       await pause(100);
     }
-    const left = run.internals.liveCount();
+    const left = fakeOf(run).internals.liveCount();
     run.set(
       id,
       left === 0 ? "pass" : "fail",
@@ -450,7 +697,7 @@ export async function verdictProbe(run: KitRun): Promise<{
       return `the backend for the controller's verdict could not connect: ${run.explain(connected)}`;
     }
     const namespace = `conformance-err-${randomHex(6)}`;
-    run.internals.namespaces.push(namespace);
+    run.internals?.namespaces.push(namespace);
     const queue = new BunQueue("work", {
       namespace,
       driver,
@@ -561,7 +808,7 @@ export async function casChecks(run: KitRun): Promise<void> {
     await driver.connect();
     for (let round = 0; round < CAS_ROUNDS; round++) {
       const namespace = `conformance-cas-${randomHex(6)}`;
-      run.internals.namespaces.push(namespace);
+      run.internals?.namespaces.push(namespace);
       const queue = new BunQueue("work", {
         namespace,
         driver,
@@ -593,7 +840,7 @@ export async function casChecks(run: KitRun): Promise<void> {
           }
           const stderr = (await within(racers[0]!.errors, 1_000)) ?? "";
           failures.push(
-            `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${stderr.trim().split("\n").slice(-2).join(" | ")}`}`,
+            `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-2).join(" | "))}`}`,
           );
           break;
         }

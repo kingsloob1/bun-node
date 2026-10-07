@@ -438,6 +438,206 @@ bun-common's type, re-exported: anything accepted where a logger is asked for
 
 bun-common's type, re-exported: one log level.
 
+### `localCompute`
+
+The first-party provider for **this host**: each unit is a child process,
+`bun <entry> [...args] --bun-jobs-summon-*=…`, started with `Bun.spawn`.
+Written on this entry alone, like any third-party provider. Name
+`@kingsleyweb/bun-jobs:local`, kind `local`. The user guide's
+[Summoning on this host](./user-guide.md#summoning-on-this-host-localcompute)
+shows it in use.
+
+`localCompute(options)` takes [`LocalComputeOptions`](#localcomputeoptions)
+and validates them at once, with no I/O: a malformed option is a
+`ConfigError` naming it. What it declares:
+
+| Capability | Value |
+|---|---|
+| `style` | `"launch"` |
+| `dedupe` | `{ kind: "token", maxLength: 64, charset: "A-Za-z0-9-", scope: "instance", ttlMs: 3_600_000, strict: false }`: remembered per configured instance, so two `localCompute(…)` calls never share a token |
+| `passes` | `"argv"` |
+| `bootBudgetMs` | `bootBudget`, default `30_000` |
+| `shutdown` | `{ signal, graceMs }` from `shutdown`, default `SIGTERM` and `10_000` |
+| `maxLifetimeMs` | `maxLifetime`, default `null` |
+| `enforcesLifetime` | `true`: at the request's `maxLifetimeMs` the unit's process group gets the stop signal, and `SIGKILL` after the grace |
+| `maxCountPerCall` | `maxUnits` |
+
+- **`summon`** starts `min(count, free units)`, and answers `unavailable`
+  (reason `max-units: N of N running`) when none is free: the host answered
+  normally, so it is not a `ProviderError`, and the controller counts it as
+  it would a `quota` error. Once a host signal has arrived, for the rest of
+  the process (even when an app listener keeps the host alive), it starts
+  nothing and answers `unavailable` (reason `host-shutdown: the host is
+  stopping`). A missing or unreadable entry, a missing `cwd`, and a `bun` or
+  `cgroup` that cannot be used are `misconfigured`, with the errno as
+  `platformCode` (`ENOENT`, `EACCES`); a spawn short of a resource
+  (`EAGAIN`, `EMFILE`, `ENOMEM`), a unit cgroup that already exists
+  (`EEXIST`: a leftover, never removed, since this process did not make it)
+  or a failure with no errno is `transient`. A call
+  whose signal has aborted rejects and starts nothing, and a `count` under 1
+  is a `ConfigError` (the controller never asks for one).
+- **Every unit is spawned detached**, as the leader of a process group of
+  its own, and with `cgroup` set, in a cgroup of its own inside it: a stop
+  signal or a `SIGKILL` goes to the whole group (only while the unit is
+  alive, since a reaped unit's group id may be reused), and a `SIGKILL` also
+  to its cgroup (`cgroup.kill`, Linux 5.14+). What a unit starts in its own
+  group is stopped with it: when a stopped unit exits inside its grace, its
+  group is sent `SIGKILL` at once, so a child that ignores the stop signal
+  does not outlive it. With a cgroup, so is what it starts in a new
+  session, and what it leaves behind when it exits; without one, a process
+  that left the group, or one a unit leaves behind when it exits on its own,
+  is beyond reach: **use `cgroup` for jobs that run tools of their own**.
+  A handle is `local-<pid>-<nonce>-<n>`, the nonce random per host process,
+  so neither a handle nor a unit cgroup is ever a previous host's. Detached, a unit no
+  longer receives the terminal's Ctrl-C or `SIGHUP` with the host: the
+  host's signal guard forwards a stop instead.
+- **`status`** answers `running` while the process lives; `exited` with code
+  `0`, or with `143`/`137` and detail `cancelled` or `host-shutdown` when
+  this host stopped it; otherwise `failed` with the code and, as detail,
+  `max-lifetime` when its lifetime timer fired, else its last stderr line
+  (200 characters at most), else the signal (`SIGKILL`) or `exit <code>`.
+  `unknown` for a handle this instance did not start, or one of more than
+  256 exited units ago.
+- **`cancel`** sends the unit's group the stop signal, then `SIGKILL` (and
+  its cgroup's `cgroup.kill`) after the grace, and resolves once every unit
+  has exited; an abort ends the wait, not the escalation. After a unit has
+  exited it sends nothing.
+- **The signal guard**: while a unit runs, the host's `exit` kills every
+  unit's group, and a host `SIGINT`, `SIGTERM` or `SIGHUP` sends each unit
+  its stop signal and `SIGKILL` after its grace. When no other listener has
+  the signal, the guard owns its default action: the host waits for its
+  units (at most the longest grace: **Ctrl-C becomes a wait of up to
+  `graceMs`**), then raises the signal again and ends as it would have.
+  Otherwise the host's own listener decides when it ends. The listeners are
+  installed only while a unit runs; an uncaught throw or an unhandled
+  rejection ends the host through `exit`, so its units go too.
+- **A host killed outright leaves its units running.** A `SIGKILL`ed or
+  OOM-killed host runs no guard: its units go on consuming the queue until
+  `runSummoned`'s idle exit or their deadline, a restarted host's `maxUnits`
+  does not count them, and, detached, they also miss the terminal's `SIGHUP`
+  when it closes. A check of the parent's death is a planned follow-up.
+- **`describe()`** facts: `host`, `pid` (the host's), `maxUnits`, `entry`,
+  `runtime`, `env` (the mode, never a value), `output` (its kind), and
+  `cgroup` when set.
+- **`validate()`** checks `cwd`, `entry` (a readable file), `bun` (runs
+  `bun --version` the way a unit starts, in a cgroup of its own inside the
+  configured one, when one is set), `cgroup` (fails when no unit's cgroup
+  can be made or joined there),
+  `output` (with `{ file }`: the file, or its directory, can be written; it
+  creates nothing), `capacity` (a `warn` when every unit is busy), and
+  `isolation` (always a `warn`: a unit is not a sandbox). It starts no unit.
+  At run time, an output file that cannot be opened or written logs one
+  `warn` per configured instance, and the unit runs on.
+
+### `LocalComputeOptions`
+
+What `localCompute` takes.
+
+- `entry`: the worker script each unit runs, which builds its worker with
+  `summonedFromArgs()` and runs it with `runSummoned`. An absolute path, a
+  `file:` URL (`new URL("./worker.ts", import.meta.url)`) or its string form
+  (`import.meta.resolve("./worker.ts")`), or a path relative to `cwd`.
+- `cwd`: optional. The units' working directory. Defaults to the host's
+  `process.cwd()` when configured.
+- `args`: optional. Arguments for the script after `entry` and before the
+  summon arguments, which come last so nothing here overrides them.
+- `bun`: optional. The `bun` executable. Defaults to `process.execPath`.
+- `env`: optional. The same name and shape as the child-process target's:
+  an object (the default, `{}`) gives these literal values over the
+  allowlist [`CHILD_BASE_ENV`](#child_base_env) and `passEnv`, copied from
+  the live `process.env` (`Bun.spawn` with no `env` would pass the one the
+  host started with); a value of `undefined` removes a variable the
+  allowlist would copy. `"inherit"` gives the host's whole live
+  environment. The summon policy's `env` is added on top; `BUN_JOBS_CHILD`
+  is always removed. Under the allowlist a unit runs with `--no-env-file`,
+  since Bun would otherwise load a `.env` from its `cwd`.
+- `passEnv`: optional. Names of host variables to copy, at each spawn,
+  beyond the allowlist; one the host lacks is skipped. A `ConfigError` beside
+  `env: "inherit"`.
+- `maxUnits`: optional. The most units this configured instance runs at
+  once: its capacity, shared by every queue it summons for. Defaults to
+  `os.availableParallelism()`.
+- `bootBudget`: optional. The declared boot budget, in ms. Defaults to
+  `30_000`.
+- `maxLifetime`: optional. A cap on any unit's life, in ms, declared as the
+  platform's: a policy `maxLifetime` above it is a `ConfigError`. Defaults
+  to `null`, no cap of its own.
+- `shutdown`: optional. `{ signal, graceMs }`: the stop signal, `"SIGTERM"`
+  (default) or `"SIGINT"`, and the grace before `SIGKILL`, default `10_000`.
+- `output`: optional. Where a unit's stdout and stderr go: `"inherit"`
+  (default, the host's, line by line), `"ignore"`, `{ file }` (appended,
+  relative to `cwd`), or `{ logger }` (each line, stdout at `info`, stderr at
+  `warn`, bound with `unit`). Stderr is read in every case, for `status()`.
+- `cgroup`: optional. An existing cgroup directory the units start under
+  (Linux only: elsewhere a `ConfigError`, since Bun would ignore it, and so
+  is a path that is not a cgroup v2 directory, one with no
+  `cgroup.controllers`, checked when configured): each
+  gets a cgroup of its own inside it, removed when it
+  exits, so the limits on this one (`memory.max`, `pids.max`, `cpu.max`)
+  bind all the units together, and every process a unit starts stays where
+  stopping it kills it. Without root it must sit in a subtree delegated to the
+  user (systemd's `user@<uid>.service`); a root-owned one fails with
+  `EACCES`.
+
+### `LocalComputeConfig`
+
+The validated config the facets receive, every default filled in.
+
+- `entry`: the worker script, absolute.
+- `cwd`: the working directory, absolute.
+- `args`: the script's extra arguments.
+- `bun`: the `bun` executable.
+- `env`: `"inherit"`, or the literal values (`undefined` removes one).
+- `passEnv`: the host variables copied beyond the allowlist.
+- `maxUnits`: the most units at once.
+- `bootBudgetMs`: the boot budget.
+- `maxLifetimeMs`: the cap on a unit's life, or `null`.
+- `signal`: the stop signal.
+- `graceMs`: the grace before `SIGKILL`.
+- `output`: a [`LocalComputeOutput`](#localcomputeoutput).
+- `cgroup`: optional. The cgroup directory, absolute.
+
+### `LocalComputeOutput`
+
+Where a unit's output goes, validated.
+
+- `kind`: `"inherit"`, `"ignore"`, `"file"` or `"logger"`.
+- `path`: `"file"` only. The file, absolute.
+- `logger`: `"logger"` only. The resolved `Logger`.
+
+### `removeCgroupTree`
+
+`removeCgroupTree(path)`: removes a cgroup v2 directory and every cgroup
+below it, **deepest first**, since a cgroup with a child cannot be removed
+and a process inside one can make cgroups of its own there. For a provider
+that gives each unit a cgroup of its own, as `localCompute` and the
+`child-process` target do.
+
+It **never kills, only removes**: a cgroup still holding a process is busy
+(`EBUSY`) and stays, with everything above it. So write `"1"` to its
+`cgroup.kill` first (Linux 5.14+; it reaches every cgroup below too), and
+call this again while the killed processes are reaped. It answers `true`
+once `path` is gone (removed now, or never there) and `false` when
+something kept it (a busy cgroup, a permission, an unreadable directory),
+for the caller to retry within a budget of its own.
+
+Since it deletes directories, it **refuses what is not a cgroup**: a `path`
+that is not absolute (`""`, `"."` included), or a directory with no
+`cgroup.procs` file, throws a `ConfigError` before anything is removed.
+That is its only throw.
+
+### `CHILD_BASE_ENV`
+
+The host variables a child process gets by default, re-exported from the
+package root: the allowlist both `localCompute`'s units and the
+`child-process` worker target start from. `PATH`, `HOME`, `TMPDIR`, `TMP`,
+`TEMP`, `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TERM`, `NO_COLOR`,
+`FORCE_COLOR`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+`SSL_CERT_DIR`, and Windows' `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`,
+`USERPROFILE`, `APPDATA` and `LOCALAPPDATA`. The proxy variables are left out
+(their URLs can hold a password): ask for them with `passEnv`. See
+[Hardening a child process](../../README.md#hardening-a-child-process).
+
 ## `@kingsleyweb/bun-jobs/provider/testing`
 
 The conformance kit: tests a provider's summon facet with no credentials,
@@ -484,6 +684,35 @@ do not run in that order.
 The timeouts group briefly replaces the global timer functions with counting
 wrappers (about 2 s, always restored).
 
+#### Self-hosted providers
+
+With `platform: "none"`, the kit knows units only by the handles `summon`
+answers and by what `status()` says of them:
+
+- **skipped**, each with the detail `no platform: …`, since each reads a
+  fake: `summon.capabilities.platform-limits`,
+  `summon.purity.identical-requests`, `summon.dedupe.token-is-key`, every
+  `summon.errors.*` check, `summon.validate.auth-fails` and
+  `summon.validate.starts-nothing`;
+- **routing** is skipped when the provider never calls `ctx.fetch`, and
+  **fails** when it does: a provider with a platform API needs its fake;
+- **dedupe and concurrency** count distinct handles;
+- **timeouts**: a call whose signal has already aborted must reject within
+  a second and start nothing, and a call that answers must leave no timer;
+- **status**: `cancel` is proven by `status()` no longer reporting the unit
+  `pending` or `running` (skipped without `status()`);
+- **lifetime**, when the provider declares `enforcesLifetime`: a unit of the
+  fixture worker that ignores its deadline and its stop signal, summoned
+  with `maxLifetimeMs` 1500, must be ended within that plus the declared
+  grace and 5 s, as `status()` reports (skipped when that wait would pass
+  60 s);
+- **the handoff** needs the provider configured to start
+  [`CONFORMANCE_WORKER`](#conformance_worker), and `status()`, through which
+  it follows the unit to a clean exit. The worker's test settings reach it
+  as `request.env` (the policy's `env`), so the provider must pass
+  `request.env` to its units, as it must `request.argv`;
+- every unit a call started is cancelled when the run ends.
+
 ### `ConformanceOptions`
 
 What `runProviderConformance` takes beside the provider.
@@ -493,8 +722,11 @@ What `runProviderConformance` takes beside the provider.
 - `invalidConfigs`: optional. Configs the schema must reject, each
   `{ config, path }` with the dotted path its issue should name. Without
   them, the `must` check `summon.config.rejects-invalid` is skipped.
-- `platform`: the fake, from `fakePlatform()`. Give each run a fresh one: the
-  kit reads every request it received.
+- `platform`: the fake, from `fakePlatform()`; give each run a fresh one,
+  since the kit reads every request it received. Or `"none"` for a
+  **self-hosted** provider, one with no platform API that starts its units
+  itself (`localCompute`): see [Self-hosted providers](#self-hosted-providers).
+  Required either way, so a forgotten fake does not compile.
 - `skip`: optional. Checks to skip, each `{ id, reason }`; the reason is
   printed in the report.
 - `driver`: optional. The backend for the handoff and the race: one several
@@ -627,6 +859,15 @@ The faults a fake reproduces, for `inject` and `FakePlatformOptions.faults`:
 - `conflict`: a token reused with other parameters.
 - `capacity-200`: "no capacity", answered with a 200.
 - `slow`: no answer until the caller aborts.
+
+### `CONFORMANCE_WORKER`
+
+The kit's fixture worker, an absolute path: what a self-hosted provider must
+be configured to start, e.g.
+`runProviderConformance(localCompute, { config: { entry: CONFORMANCE_WORKER }, platform: "none" })`.
+It reads its summon arguments from `argv` and its test settings from the
+environment the kit passes as the policy's `env`; with none (the kit's
+direct calls), it runs on the memory driver and exits once idle.
 
 ## `@kingsleyweb/bun-jobs/summon`
 

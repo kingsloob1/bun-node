@@ -3153,6 +3153,16 @@ export const jobs = new BunJobs({
 });
 ```
 
+**On this host, with no platform:** `localCompute({ entry })`, from
+`@kingsleyweb/bun-jobs/provider`, is a built-in summoner that starts each
+worker as a child process of the controller's own process, running a worker
+script of yours: capped by `maxUnits`, with the same environment allowlist
+as a `child-process` target (`CHILD_BASE_ENV`, `env`, `passEnv`,
+`--no-env-file`; see [Hardening a child process](#hardening-a-child-process))
+and no orphans left when the host exits or is signalled (a host killed
+outright leaves its units running until they idle out). See
+[Summoning on this host](docs/providers/user-guide.md#summoning-on-this-host-localcompute).
+
 The summoned process runs the worker with `summon: summonedFromArgs()` (see
 [worker records](#reading-a-queue-search-totals-workers-and-throughput)). Its
 first report **claims** the attempt's id in queue state (a second process

@@ -39,6 +39,12 @@ export const FIXTURE_ENV = {
   queue: "BUN_JOBS_CONFORMANCE_QUEUE",
   /** `runSummoned`'s `idleFor`, in ms. */
   idleMs: "BUN_JOBS_CONFORMANCE_IDLE_MS",
+  /**
+   * When set: run no worker, ignore `SIGTERM` and `SIGINT`, and exit 0 after
+   * this many ms. A unit that will not end on its own before its lifetime,
+   * for the self-hosted lifetime check.
+   */
+  holdMs: "BUN_JOBS_CONFORMANCE_HOLD_MS",
 } as const;
 
 /** This file, for the spawner. */
@@ -49,8 +55,22 @@ function say(line: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
+/** Holds the process, deaf to stop signals, for `ms`, then exits 0. */
+async function hold(ms: number): Promise<never> {
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => say({ event: "ignored", signal }));
+  }
+  say({ event: "holding", pid: process.pid, ms });
+  await Bun.sleep(ms);
+  process.exit(0);
+}
+
 /** Runs the worker until `runSummoned` stops it, then exits with its code. */
 async function main(): Promise<never> {
+  const holdFor = process.env[FIXTURE_ENV.holdMs];
+  if (holdFor !== undefined) {
+    return await hold(Number(holdFor));
+  }
   const summon = summonedFromArgs();
   const driver = JSON.parse(
     process.env[FIXTURE_ENV.driver] ?? "null",

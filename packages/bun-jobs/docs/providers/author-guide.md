@@ -881,6 +881,20 @@ it("passes the conformance kit", async () => {
   while `serialize.exposeHosts` is off, is not warned about.
 - **`report.toMarkdown()`** renders a checklist headed "tested against a
   fake": publish it with the package.
+- **A provider that gives each unit a cgroup of its own** removes it, once
+  the unit has exited, with `removeCgroupTree` from
+  `@kingsleyweb/bun-jobs/provider`: deepest first, so a cgroup the unit made
+  inside it does not keep it. It never kills: write `"1"` to the cgroup's
+  `cgroup.kill` before it, and retry while it answers `false`. It refuses
+  (a `ConfigError`) a relative path or a directory that is not a cgroup.
+- **A provider with no platform API**, one that starts processes itself on
+  the host (as `localCompute` does), has nothing to fake: pass
+  `platform: "none"` and configure it to start `CONFORMANCE_WORKER`. The kit
+  then follows units through the handles `summon` answers and `status()`,
+  skips each check that reads a fake (purity, the dedupe token, errors, two
+  of validate's), fails routing if the provider calls `ctx.fetch` at all,
+  and still runs the lifetime check, the handoff and the race.
+  See [Self-hosted providers](./reference.md#self-hosted-providers).
 
 ## 12. Security obligations
 
