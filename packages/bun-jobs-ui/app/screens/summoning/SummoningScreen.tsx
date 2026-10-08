@@ -9,12 +9,12 @@ import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";
-import { useCan, useUntargetedCanFn } from "../../meta/hooks";
+import { useCan } from "../../meta/hooks";
 import { POLL_INTERVAL_MS } from "../../queryClient";
 import { Link } from "../../router";
 import { providerReadiness } from "../providers/providerText";
 import { SummonBudget } from "../queues/panels/SummonBudget";
-import { summonOutcome } from "../queues/panels/summonText";
+import { summonInert, summonOutcome } from "../queues/panels/summonText";
 import { summonTabPath } from "./paths";
 
 /**
@@ -30,21 +30,20 @@ const SUMMONING_REFRESH_MS = POLL_INTERVAL_MS;
  * summoner's kind and readiness, the last outcome and when, and the budget
  * left in each UTC window with when it resets.
  *
- * Routed only where the API serves the list (`features.summonResetBudget`,
- * which arrived with it) and the caller may read queues (`queues.read`,
- * untargeted); the nav entry follows the same rule. The API lists only the
- * queues the caller may see.
+ * Routed only where the API serves the list (`features.summonList`) and the
+ * caller may list queues (`queues.list`, the route's action); the nav entry
+ * follows the same rule. The API then lists a controller only where the
+ * caller may read its queue (`queues.read` on that queue).
  */
 export function SummoningScreen() {
   const api = useApiClient();
-  const canRead = useCan("queues.read");
-  // The queue screen is routed only with `queues.list`, on the untargeted map.
-  const linkQueues = useUntargetedCanFn()("queues.list");
+  // `queues.list` is also what routes the queue screen, so every row links.
+  const canList = useCan("queues.list");
   const list = useQuery({
     queryKey: summonKeys.list,
     queryFn: ({ signal }) => listSummonControllers(api, signal),
     refetchInterval: SUMMONING_REFRESH_MS,
-    enabled: canRead,
+    enabled: canList,
   });
   return (
     <div
@@ -52,10 +51,10 @@ export function SummoningScreen() {
       data-testid="summoning-screen"
     >
       <h1 className="screen-title">Summoning</h1>
-      {!canRead ? (
+      {!canList ? (
         <EmptyState
           title="Nothing to show"
-          description="You may not read queues on this API."
+          description="You may not list queues on this API."
         />
       ) : list.isPending ? (
         <Spinner
@@ -89,7 +88,6 @@ export function SummoningScreen() {
               <ControllerRow
                 key={`${item.namespace}/${item.queue}`}
                 item={item}
-                linkQueue={linkQueues}
               />
             ))}
           </tbody>
@@ -103,28 +101,22 @@ export function SummoningScreen() {
 interface ControllerRowProps {
   /** The controller, as `GET /summon` lists it. */
   item: SummonListItemDto;
-  /** Whether the queue name links to its Summon tab (`queues.list`). */
-  linkQueue: boolean;
 }
 
 /** One controller. */
-function ControllerRow({ item, linkQueue }: ControllerRowProps) {
+function ControllerRow({ item }: ControllerRowProps) {
   const readiness = providerReadiness(item.readiness);
   const last =
     item.last === undefined ? undefined : summonOutcome(item.last.outcome);
   return (
     <tr data-testid={`summoning-row-${item.queue}`}>
       <th scope="row">
-        {linkQueue ? (
-          <Link
-            to={summonTabPath(item.queue)}
-            title={`The Summon tab of ${item.queue}`}
-          >
-            {item.queue}
-          </Link>
-        ) : (
-          item.queue
-        )}
+        <Link
+          to={summonTabPath(item.queue)}
+          title={`The Summon tab of ${item.queue}`}
+        >
+          {item.queue}
+        </Link>
       </th>
       <td>
         <code>{displayText(item.kind)}</code>
@@ -137,6 +129,18 @@ function ControllerRow({ item, linkQueue }: ControllerRowProps) {
         >
           {readiness.label}
         </Badge>
+        {item.inert && (
+          <>
+            {" "}
+            <Badge
+              tone="neutral"
+              title={summonInert(item.inertReason)}
+              testId="summoning-inert"
+            >
+              Inert
+            </Badge>
+          </>
+        )}
       </td>
       <td data-testid="summoning-last">
         {item.last === undefined || last === undefined ? (

@@ -5,6 +5,7 @@ import type {
 } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import { summonInert } from "../../../app/screens/queues/panels/summonText";
 import { summonTabPath } from "../../../app/screens/summoning/paths";
 import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
@@ -20,7 +21,8 @@ setupDom();
  * budget left with when each window resets.
  *
  * The rules it keeps: the screen and its nav entry need the list served
- * (`features.summonResetBudget`, which arrived with it) and `queues.read`;
+ * (`features.summonList`) and `queues.list` (the route's action; the API
+ * filters each row by `queues.read` on its queue);
  * an empty list is an explained empty state, not an error; a failed read is
  * an error view.
  */
@@ -36,6 +38,7 @@ function controller(
     queue: "emails",
     kind: "ecs",
     readiness: "ready",
+    inert: false,
     last: { id: "s-1", outcome: "started", at: NOW - 60_000 },
     budget: {
       hour: 2,
@@ -55,11 +58,11 @@ function list(controllers: SummonListItemDto[]): MockReply {
   return { body };
 }
 
-/** Meta with `summonResetBudget` set to `value`. */
+/** Meta with `summonList` set to `value`. */
 function served(value: boolean) {
   return {
     body: metaFixture({
-      features: { ...metaFixture().features, summonResetBudget: value },
+      features: { ...metaFixture().features, summonList: value },
     }),
   };
 }
@@ -114,12 +117,12 @@ describe("the Summoning nav entry and route", () => {
     expect(calls.some((call) => call.path === "/summon")).toBe(false);
   });
 
-  it("is absent, and nothing is read, without queues.read", async () => {
+  it("is absent, and nothing is read, without queues.list", async () => {
     visit("/jobs/summon");
     const { calls } = renderApp({
       handlers: {
         "GET /meta/permissions": {
-          body: permissionsFixture({ "queues.read": false }),
+          body: permissionsFixture({ "queues.list": false }),
         },
         "GET /summon": list([controller()]),
       },
@@ -203,15 +206,27 @@ describe("the Summoning screen", () => {
     );
   });
 
-  it("names the queue without a link where the queue screen is not routed (no queues.list)", async () => {
+  it("marks an inert controller, with why in its title, and only that one", async () => {
     const { screen } = await openScreen({
-      "GET /meta/permissions": {
-        body: permissionsFixture({ "queues.list": false }),
-      },
+      "GET /summon": list([
+        controller(),
+        controller({
+          queue: "reports",
+          inert: true,
+          inertReason: "summoned-process",
+        }),
+      ]),
     });
-    const row = await within(screen).findByTestId("summoning-row-emails");
-    expect(within(row).getByRole("rowheader").textContent).toBe("emails");
-    expectAbsent(within(row).queryByRole("link"));
+    const inert = await within(screen).findByTestId("summoning-row-reports");
+    const badge = within(inert).getByTestId("summoning-inert");
+    expect(badge.textContent).toBe("Inert");
+    expect(badge.title).toBe(summonInert("summoned-process"));
+    // Still ready: an inert controller's provider can be.
+    expect(within(inert).getByTestId("summoning-readiness").textContent).toBe(
+      "Ready",
+    );
+    const working = within(screen).getByTestId("summoning-row-emails");
+    expectAbsent(within(working).queryByTestId("summoning-inert"));
   });
 
   it("reads an exhausted window in the warning tone, and an unknown outcome as its raw string", async () => {

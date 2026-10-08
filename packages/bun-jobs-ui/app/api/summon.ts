@@ -20,10 +20,11 @@ import { assertShape } from "./shape";
  * decides whether a queue has anything to show, and a queue without a
  * summoner reads as `null` rather than as a failure.
  *
- * `GET /summon` arrived with the reset's `budget` body, so
- * `features.summonResetBudget` is what says it is served: on wherever the
- * summon routes are (jobs mode), off in runner mode and absent on an older
- * API.
+ * `features.summonList` says `GET /summon` is served: on wherever the summon
+ * routes are (jobs mode), off in runner mode and absent on an older API. Its
+ * action is `queues.list`; each controller is then listed only where the
+ * caller may read its queue (`queues.read`), so a caller without that sees
+ * `{ controllers: [] }`.
  */
 
 /** The code the status answers where no controller for the queue runs in the API's process. */

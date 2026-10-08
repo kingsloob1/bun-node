@@ -139,12 +139,18 @@ async function listedBudget(queue: string): Promise<Record<string, unknown>> {
   const response = await fetchApi(`${BASE}/summon`, { method: "GET" });
   expect(response.status).toBe(200);
   const body = (await response.json()) as {
-    controllers: { queue: string; budget: Record<string, unknown> }[];
+    controllers: {
+      queue: string;
+      inert: unknown;
+      budget: Record<string, unknown>;
+    }[];
   };
   const item = body.controllers.find((entry) => entry.queue === queue);
   if (!item) {
     throw new Error(`GET /summon does not list ${queue}`);
   }
+  // A working controller in this process: the Summoning screen reads `inert`.
+  expect(item.inert).toBe(false);
   return item.budget;
 }
 

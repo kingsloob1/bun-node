@@ -63,17 +63,17 @@ describe("buildNav", () => {
     ).not.toContain("providers");
   });
 
-  it("offers Summoning after Workers, only where GET /summon is served, in jobs mode, with queues.read", () => {
+  it("offers Summoning after Workers, only where GET /summon is served, in jobs mode, with queues.list", () => {
     const all = ids();
     expect(all.indexOf("summoning")).toBe(all.indexOf("workers") + 1);
-    /** Meta whose `summonResetBudget` is `value`, or absent (an older API). */
+    /** Meta whose `summonList` is `value`, or absent (an older API). */
     const served = (value: boolean | undefined) => {
       const meta = metaFixture();
       const features: Record<string, boolean> = { ...meta.features };
       if (value === undefined) {
-        delete features.summonResetBudget;
+        delete features.summonList;
       } else {
-        features.summonResetBudget = value;
+        features.summonList = value;
       }
       return { ...meta, features: features as typeof meta.features };
     };
@@ -84,13 +84,24 @@ describe("buildNav", () => {
     expect(ids({ meta: metaFixture({ mode: "runner" }) })).not.toContain(
       "summoning",
     );
-    // Without queues.read (untargeted), and with the manage section off.
-    expect(ids({}, ["queues.read"])).not.toContain("summoning");
+    // The reset's budget flag is another capability: it does not decide this.
+    const meta = metaFixture();
+    expect(
+      ids({
+        meta: {
+          ...meta,
+          features: { ...meta.features, summonResetBudget: false },
+        },
+      }),
+    ).toContain("summoning");
+    // Without queues.list (the route's action), and with the manage section off.
+    expect(ids({}, ["queues.list"])).not.toContain("summoning");
     expect(ids({ sections: { manage: false, docs: true } })).not.toContain(
       "summoning",
     );
-    // queues.list is not what it needs: the list is a queues.read.
-    expect(ids({}, ["queues.list"])).toContain("summoning");
+    // queues.read is not what the route asks: each row is filtered by it
+    // server-side, per queue.
+    expect(ids({}, ["queues.read"])).toContain("summoning");
     expect(
       buildNav({
         meta: metaFixture(),
@@ -117,17 +128,16 @@ describe("buildNav", () => {
   });
 
   it("drops an entry whose action is absent or false", () => {
+    // Summoning goes with Queues: `GET /summon` asks `queues.list` too.
     expect(ids({}, ["queues.list"])).toEqual([
       "overview",
       "workers",
-      "summoning",
       "runners",
       "events",
       "docs",
     ]);
     expect(ids({}, ["queues.list", "metrics.read"])).toEqual([
       "workers",
-      "summoning",
       "runners",
       "events",
       "docs",
