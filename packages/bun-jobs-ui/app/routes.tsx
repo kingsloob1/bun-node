@@ -16,6 +16,7 @@ import {
   QueuesListScreen,
   RunnerScreen,
   RunnersListScreen,
+  SummoningScreen,
   WorkerScreen,
   WorkersListScreen,
   WsDocsScreen,
@@ -84,6 +85,10 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
         },
         { path: "/workers", element: <WorkersListScreen /> },
       );
+      continue;
+    }
+    if (item.id === "summoning") {
+      routes.push({ path: "/summon", element: <SummoningScreen /> });
       continue;
     }
     if (item.id === "providers") {

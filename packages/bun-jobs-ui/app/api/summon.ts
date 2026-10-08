@@ -1,18 +1,30 @@
 import type { ApiClient } from "./client";
-import type { SummonCheckDto, SummonStatusDto } from "./types";
+import type {
+  SummonCheckDto,
+  SummonListDto,
+  SummonResetBody,
+  SummonStatusDto,
+} from "./types";
 import { ApiError } from "./errors";
 import { queryKeys } from "./queryKeys";
 import { assertShape } from "./shape";
 
 /**
- * A queue's summoning: `GET /queues/:queue/summon` (the status), and the two
- * opt-in writes, "summon now" and reset (`queues.summon`).
+ * Summoning: `GET /queues/:queue/summon` (a queue's status), the two opt-in
+ * writes, "summon now" and reset (`queues.summon`), and `GET /summon`, every
+ * controller in the API's process.
  *
- * `/meta` has no flag for it: the status answers only where a summon
- * controller for the queue runs in the API's process, and 409
+ * `/meta` has no flag for one queue's summoning: the status answers only
+ * where a summon controller for the queue runs in the API's process, and 409
  * `SUMMON_NOT_CONFIGURED` everywhere else. So the status read itself is what
  * decides whether a queue has anything to show, and a queue without a
  * summoner reads as `null` rather than as a failure.
+ *
+ * `features.summonList` says `GET /summon` is served: on wherever the summon
+ * routes are (jobs mode), off in runner mode and absent on an older API. Its
+ * action is `queues.list`; each controller is then listed only where the
+ * caller may read its queue (`queues.read`), so a caller without that sees
+ * `{ controllers: [] }`.
  */
 
 /** The code the status answers where no controller for the queue runs in the API's process. */
@@ -27,6 +39,8 @@ function summonPath(queue: string, suffix = ""): string {
 export const summonKeys = {
   /** `GET /queues/:queue/summon`. */
   status: (queue: string) => [...queryKeys.queue(queue), "summon"] as const,
+  /** `GET /summon`. */
+  list: ["summon"] as const,
 };
 
 /** Whether `error` says the queue has no summoner here, or the server has no summon routes. */
@@ -97,16 +111,53 @@ export async function summonNow(
 }
 
 /**
+ * `GET /summon`: every summon controller in the API's process, by queue,
+ * with its readiness, last outcome and budget usage. An empty list, never a
+ * 409, where none runs.
+ */
+export async function listSummonControllers(
+  api: ApiClient,
+  signal?: AbortSignal,
+): Promise<SummonListDto> {
+  const path = "/summon";
+  const body = await api.request<unknown>("GET", path, { signal });
+  return assertShape<SummonListDto>(
+    body,
+    (fields) =>
+      Array.isArray(fields.controllers) &&
+      fields.controllers.every(
+        (item: unknown) =>
+          typeof item === "object" &&
+          item !== null &&
+          typeof (item as { queue?: unknown }).queue === "string" &&
+          typeof (item as { budget?: unknown }).budget === "object" &&
+          (item as { budget?: unknown }).budget !== null,
+      ),
+    "the summon controllers",
+    path,
+  );
+}
+
+/**
  * `POST /queues/:queue/summon/reset`: clears the failures, the backoff and
- * the open circuit, and answers the status after it.
+ * the open circuit — and, with `budget: true`, the budget usage this UTC
+ * hour and day — and answers the status after it.
+ *
+ * Without `budget` it sends no body, as before the body existed, so an API
+ * that predates it (`features.summonResetBudget` false) is asked nothing it
+ * would refuse.
  */
 export async function resetSummon(
   api: ApiClient,
   queue: string,
+  options: SummonResetBody = {},
 ): Promise<SummonStatusDto> {
   const path = summonPath(queue, "/reset");
-  // The route takes no body.
-  const body = await api.request<unknown>("POST", path);
+  const body = await api.request<unknown>(
+    "POST",
+    path,
+    options.budget === true ? { body: { budget: true } } : undefined,
+  );
   return assertShape<SummonStatusDto>(
     body,
     isStatus,

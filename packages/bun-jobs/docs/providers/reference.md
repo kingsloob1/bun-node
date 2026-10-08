@@ -940,7 +940,14 @@ the base of `SummonControllerOptions`. The package README's
 - `circuit`: optional. `{ failures?, resetAfter? }`: when to stop after
   repeated failures, and for how long. Defaults to `5` and `900_000`.
 - `budget`: optional. `{ perHour?, perDay? }`: attempts per queue. Defaults
-  to `30` and `300`.
+  to `30` and `300`. `false` turns it off: no limit and no
+  `budget-exhausted`, though attempts are still counted. The counts live in
+  the queue's shared state, so a smaller limit meets the counts a larger one
+  left; `controller.reset({ budget: true })` clears them. An attempt whose
+  provider was never called (its `ready` failed) is not counted, unless a
+  reset cleared its count first. An attempt whose answer could not be
+  recorded (other controllers won every write) is announced only when it is
+  settled, once, as `lost`: one failure then, and its count kept.
 - `maxLifetime`: optional. The longest a summoned worker may live. Defaults
   to `3_600_000`.
 - `servedBy`: optional. `"any-worker"` (default) or `"summoned-only"`.
@@ -953,6 +960,11 @@ the base of `SummonControllerOptions`. The package README's
 - `env`: optional. Static environment for every request. Never identity.
 - `fromSummoned`: optional. Whether the controller may run in a summoned
   process or a runner child. Defaults to `false`: there it is inert.
+- `onSummonFailed`: optional. `(failure: `[`SummonFailure`](#summonfailure)`) => void | Promise<void>`,
+  called — never awaited — when an attempt `failed`, was `lost` or found the
+  platform `unavailable`, when the budget is exhausted, and once when the
+  circuit opens (`circuit-open`, with `until`). Only the controller that
+  decided the outcome calls it. A throw or rejection is logged at `warn`.
 
 ### `SummonGroup`
 
@@ -1048,6 +1060,30 @@ What one check did, by `action`:
 - `id`: `"summoned"` only: the attempt's id.
 - `outcome`: `"summoned"` only: what the summoner answered, or `failed`.
 
+### `SummonFailure`
+
+What `SummonPolicy.onSummonFailed` is told: one failure, secret-free.
+
+- `outcome`: a [`SummonFailureOutcome`](#summonfailureoutcome).
+- `kind`: the summoner's kind.
+- `namespace`: the queue's namespace.
+- `queue`: the queue.
+- `id`: optional. The attempt; for `circuit-open`, the one whose failure
+  opened it. Absent for `budget-exhausted`.
+- `reason`: optional. Why the check that made the call ran, for `failed` and
+  `unavailable`.
+- `detail`: optional. The detail the `summon` event and `status().last`
+  carry; for `circuit-open`, the opening failure's.
+- `at`: when the controller decided it, epoch ms.
+- `until`: optional. For `circuit-open`: when the circuit closes, epoch ms.
+- `budget`: optional. For `budget-exhausted`: `{ hour, perHour, day, perDay }`.
+
+### `SummonFailureOutcome`
+
+What `onSummonFailed` is told about: `failed`, `lost`, `unavailable` and
+`budget-exhausted` (as on the `summon` event), plus `circuit-open`, once per
+opening, which no event carries.
+
 ### `SummonSkipReason`
 
 Why a check did not summon:
@@ -1100,7 +1136,10 @@ What `status()` answers, and the status route serves.
   them.
 - `backoffUntil`: optional. When the backoff ends.
 - `circuitOpenUntil`: optional. When the circuit closes.
-- `budget`: attempts used this hour and today, with the limits.
+- `budget`: `{ hour, perHour?, day, perDay?, off?, hourResetsAt,
+  dayResetsAt }`: attempts used this UTC hour and day, the limits (absent,
+  with `off: true`, when the policy says `budget: false`), and when each
+  window resets, epoch ms.
 - `last`: optional. The [`SummonLastOutcome`](#summonlastoutcome).
 
 ### `SummonMarker`
@@ -1120,7 +1159,9 @@ The shared summon state of one queue, in the reserved queue-state entry
 - `lossStreak`: optional. Counted failures since the last proven success.
 - `backoffUntil`: optional. No attempt before this.
 - `circuitOpenUntil`: optional. While in the future, nothing is summoned.
-- `budget`: attempts in the current hour and day.
+- `budget`: attempts in the current hour and day, and `counted`: the ids of
+  attempts whose count can still be given back (provider not yet called),
+  emptied by a budget reset.
 - `last`: optional. The most recent outcome.
 
 ### `PendingSummon`

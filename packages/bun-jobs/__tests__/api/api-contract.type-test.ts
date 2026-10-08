@@ -1618,6 +1618,8 @@ export type MetaFeatureKeysOk = Expect<
     | "jobDefaultsApply"
     | "demand"
     | "providers"
+    | "summonResetBudget"
+    | "summonList"
   >
 >;
 export type MetaFeatureValuesOk = Expect<

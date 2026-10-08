@@ -208,12 +208,22 @@ for (const backend of BACKENDS) {
         expect(request.argv).toContain(`${SUMMON_ARGS.queue}=work`);
         const status = await summon.status();
         expect(status.pending.map((one) => one.id)).toEqual([request.id]);
+        const hourStart = Math.floor(Date.now() / 3_600_000) * 3_600_000;
         expect(status.budget).toEqual({
           hour: 1,
           perHour: 30,
           day: 1,
           perDay: 300,
+          // Whole UTC windows, so a test crossing an hour boundary moves
+          // both by one window at most.
+          hourResetsAt: expect.any(Number),
+          dayResetsAt: expect.any(Number),
         });
+        expect(status.budget!.hourResetsAt % 3_600_000).toBe(0);
+        expect(status.budget!.dayResetsAt % 86_400_000).toBe(0);
+        expect(status.budget!.hourResetsAt).toBeGreaterThanOrEqual(
+          hourStart + 3_600_000,
+        );
       });
 
       it("releases the attempt when a worker carrying its id reports", async () => {

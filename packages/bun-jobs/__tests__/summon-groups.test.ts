@@ -512,8 +512,7 @@ describe("summon groups: how an override merges", () => {
   });
 
   it("lets a budget: false override turn the budget off, and an override's budget over a group's false turn it on", () => {
-    // `budget: false` is the failed-budget PR's spelling; the rule is the
-    // general one — `false` is not a plain object, so it replaces.
+    // The general rule — `false` is not a plain object, so it replaces.
     const off = expanded(
       [
         {
@@ -522,10 +521,10 @@ describe("summon groups: how an override merges", () => {
           budget: { perHour: 20, perDay: 100 },
           overrides: { a: { budget: false } },
         },
-      ] as unknown as SummonOption,
+      ],
       "a",
     );
-    expect((off as { budget?: unknown }).budget).toBe(false);
+    expect(off.budget).toBe(false);
 
     const on = expanded(
       [
@@ -535,10 +534,47 @@ describe("summon groups: how an override merges", () => {
           budget: false,
           overrides: { a: { budget: { perHour: 5 } } },
         },
-      ] as unknown as SummonOption,
+      ],
       "a",
     );
     expect(on.budget).toEqual({ perHour: 5 });
+  });
+
+  it("gives the controller what the override says: off for an overridden budget: false, the group's limits for the rest", async () => {
+    const jobs = context(sqliteDriver(), [
+      {
+        queues: ["a", "b"],
+        summoner,
+        ...QUIET,
+        budget: { perHour: 20, perDay: 100 },
+        overrides: { a: { budget: false } },
+      },
+    ]);
+    const a = (await jobs.summonController("a").status()).budget;
+    expect(a).toMatchObject({ hour: 0, day: 0, off: true });
+    expect(a).not.toHaveProperty("perHour");
+    expect(a).not.toHaveProperty("perDay");
+    const b = (await jobs.summonController("b").status()).budget;
+    expect(b).toMatchObject({ perHour: 20, perDay: 100 });
+    expect(b).not.toHaveProperty("off");
+  });
+
+  it("turns the budget on for an override's budget over a group's false, with the defaults for what it leaves out", async () => {
+    const jobs = context(sqliteDriver(), [
+      {
+        queues: ["a", "b"],
+        summoner,
+        ...QUIET,
+        budget: false,
+        overrides: { a: { budget: { perHour: 5 } } },
+      },
+    ]);
+    const a = (await jobs.summonController("a").status()).budget;
+    expect(a).toMatchObject({ perHour: 5, perDay: 300 });
+    expect(a).not.toHaveProperty("off");
+    const b = (await jobs.summonController("b").status()).budget;
+    expect(b).toMatchObject({ off: true });
+    expect(b).not.toHaveProperty("perHour");
   });
 
   it("finds an override only by own key", () => {

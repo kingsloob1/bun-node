@@ -243,7 +243,9 @@ kinds, and the kind decides what the controller does. What each looks like:
 - **Check**: the credential is present in this process, not expired, and
   allowed to start compute on this pool, cluster or function. Run the
   provider's `validate()`. Then `controller.reset()`, or reset from the UI
-  (action `queues.summon`), rather than waiting out the circuit.
+  (action `queues.summon`), rather than waiting out the circuit. To hear of
+  an opened circuit as it happens, give the policy an `onSummonFailed`: it
+  is told `circuit-open` once per opening.
 
 ### `misconfigured`: the config names something that is not there
 

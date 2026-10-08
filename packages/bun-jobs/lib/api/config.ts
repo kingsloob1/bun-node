@@ -554,6 +554,10 @@ export interface JobsApiConfig {
    * `page.hasMore`, `truncated`, `offset` and `limit` all count the filtered
    * list — from `GET /overview`'s sums, and from `GET /workers`.
    *
+   * `GET /summon` does not depend on it: it always asks `queues.read` per
+   * controller, with the context `GET /queues/:queue/summon` carries, since a
+   * summon status shows more than a name (a last outcome's detail, a budget).
+   *
    * **Cost:** one `authorize` call per queue matching the request's `search`
    * — every one, not just the page's, since the total needs them all — made
    * at most 16 at a time and never twice for one queue within a request. An

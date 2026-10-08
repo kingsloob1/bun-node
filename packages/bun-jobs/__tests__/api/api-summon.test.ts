@@ -36,8 +36,10 @@ import {
   ConfigError,
   defineSummoner,
 } from "../../lib/index";
+import { setReservedState } from "../../lib/queue/windows";
 import { queueEvent } from "../../lib/shared/events";
 import { FIND_SUMMON_CONTROLLER } from "../../lib/summon/controller";
+import { SUMMON_MARKER } from "../../lib/summon/marker";
 import { makeTmpDir, testNamespace, waitFor } from "../helpers";
 import { harness, openHarnesses } from "./fixtures";
 
@@ -190,7 +192,14 @@ describe("GET /queues/{queue}/summon", () => {
       },
       pending: [],
       failures: 0,
-      budget: { hour: 0, perHour: 30, day: 0, perDay: 300 },
+      budget: {
+        hour: 0,
+        perHour: 30,
+        day: 0,
+        perDay: 300,
+        hourResetsAt: expect.any(Number),
+        dayResetsAt: expect.any(Number),
+      },
     });
     // Negative control: the controller itself reports them, so it is the
     // serializer that dropped them.
@@ -842,5 +851,349 @@ describe("the summon option", () => {
           summon: { work: { summoner: async () => {} } },
         }),
     ).toThrow(ConfigError);
+  });
+});
+
+describe("the summon budget on the wire", () => {
+  it("says off, with no limits, for a policy that turns the budget off, and when each window resets", async () => {
+    const { jobs } = summoning({ budget: false });
+    const h = harness({ jobs });
+    const before = Date.now();
+    const response = await h.call("GET", "/queues/work/summon");
+    expect(response.status).toBe(200);
+    expect(response.body.budget).toEqual({
+      hour: 0,
+      day: 0,
+      off: true,
+      hourResetsAt: expect.any(Number),
+      dayResetsAt: expect.any(Number),
+    });
+    expect(response.body.budget.hourResetsAt % 3_600_000).toBe(0);
+    expect(response.body.budget.dayResetsAt % 86_400_000).toBe(0);
+    expect(response.body.budget.hourResetsAt).toBeGreaterThan(before);
+    // Control: the defaults have limits and no `off`.
+    const { jobs: limited } = summoning();
+    const on = (
+      await harness({ jobs: limited }).call("GET", "/queues/work/summon")
+    ).body.budget;
+    expect(on).toMatchObject({ perHour: 30, perDay: 300 });
+    expect(on).not.toHaveProperty("off");
+  });
+});
+
+describe("POST /queues/{queue}/summon/reset with a body", () => {
+  it("clears the budget usage only when asked to", async () => {
+    const { jobs, calls } = summoning({ cooldown: 0 });
+    await backlog(jobs, 1);
+    const h = harness({ jobs });
+    expect((await h.call("POST", "/queues/work/summon")).body).toMatchObject({
+      outcome: "started",
+    });
+    expect(calls).toHaveLength(1);
+
+    const plain = await h.call("POST", "/queues/work/summon/reset");
+    expect(plain.status).toBe(200);
+    expect(plain.body.budget).toMatchObject({ hour: 1, day: 1 });
+    const no = await h.call("POST", "/queues/work/summon/reset", {
+      budget: false,
+    });
+    expect(no.body.budget).toMatchObject({ hour: 1, day: 1 });
+
+    const cleared = await h.call("POST", "/queues/work/summon/reset", {
+      budget: true,
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.budget).toMatchObject({ hour: 0, day: 0 });
+    // The attempt in flight is kept, as a plain reset keeps it.
+    expect(cleared.body.pending).toHaveLength(1);
+    expect(h.calls.at(-1)).toMatchObject({
+      action: "queues.summon",
+      mutation: true,
+      queue: "work",
+    });
+  });
+
+  it("refuses a body that is not the schema's, and changes nothing", async () => {
+    const { jobs } = summoning({ cooldown: 0 });
+    await backlog(jobs, 1);
+    const h = harness({ jobs });
+    await h.call("POST", "/queues/work/summon");
+    for (const body of [{ budget: "yes" }, { budget: 1 }, { extra: true }]) {
+      const response = await h.call("POST", "/queues/work/summon/reset", body);
+      expect({ body, status: response.status }).toEqual({ body, status: 400 });
+      expect(response.body.code).toBe("VALIDATION");
+    }
+    expect(
+      (await h.call("GET", "/queues/work/summon")).body.budget,
+    ).toMatchObject({ hour: 1 });
+  });
+
+  it("is advertised by /meta.features.summonResetBudget, which runner mode turns off", async () => {
+    const { jobs } = summoning();
+    const served = await harness({ jobs }).call("GET", "/meta");
+    expect(served.body.features.summonResetBudget).toBe(true);
+    const runner = await harness({ jobs, mode: "runner" }).call("GET", "/meta");
+    expect(runner.body.features.summonResetBudget).toBe(false);
+  });
+
+  it("documents the body in the OpenAPI document", async () => {
+    const { jobs } = summoning();
+    const spec = (await harness({ jobs }).call("GET", "/openapi.json")).body;
+    const reset = spec.paths["/queues/{queue}/summon/reset"].post;
+    const schema = reset.requestBody.content["application/json"].schema;
+    expect(schema.properties.budget).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+    expect(reset.requestBody.required).toBeFalsy();
+  });
+});
+
+describe("GET /summon", () => {
+  /** A context with controllers on `work` (from the option) and `other`. */
+  function two(policy: Partial<SummonPolicy> = {}) {
+    const made = summoning(policy);
+    made.jobs.summonController("other", {
+      summoner: defineSummoner({
+        kind: "second",
+        invoke: async () => ({ status: "unavailable", reason: "no capacity" }),
+      }),
+      triggers: { onAdd: false, events: false, poll: false },
+      budget: false,
+    });
+    return made;
+  }
+
+  it("lists every controller in the API's process, by queue, with its budget usage", async () => {
+    const { jobs } = two({ cooldown: 0 });
+    await backlog(jobs, 1);
+    await backlog(jobs, 1, "other");
+    const h = harness({ jobs });
+    await h.call("POST", "/queues/work/summon");
+    await h.call("POST", "/queues/other/summon");
+
+    const response = await h.call("GET", "/summon");
+    expect(response.status).toBe(200);
+    expect(
+      h.calls.filter((ctx) => ctx.action === "queues.list").length,
+    ).toBeGreaterThan(0);
+    expect(response.body).toEqual({
+      controllers: [
+        {
+          namespace: jobs.namespace,
+          queue: "other",
+          kind: "second",
+          readiness: "ready",
+          inert: false,
+          last: {
+            id: expect.any(String),
+            outcome: "unavailable",
+            at: expect.any(Number),
+            detail: "no capacity",
+          },
+          budget: {
+            hour: 1,
+            day: 1,
+            off: true,
+            hourResetsAt: expect.any(Number),
+            dayResetsAt: expect.any(Number),
+          },
+        },
+        {
+          namespace: jobs.namespace,
+          queue: "work",
+          kind: "fake",
+          readiness: "ready",
+          inert: false,
+          last: {
+            id: expect.any(String),
+            outcome: "started",
+            at: expect.any(Number),
+          },
+          budget: {
+            hour: 1,
+            perHour: 30,
+            day: 1,
+            perDay: 300,
+            hourResetsAt: expect.any(Number),
+            dayResetsAt: expect.any(Number),
+          },
+        },
+      ],
+    });
+    // The per-queue status agrees with the list's entry.
+    const work = (await h.call("GET", "/queues/work/summon")).body;
+    expect(response.body.controllers[1].budget).toEqual(work.budget);
+    expect(response.body.controllers[1].last).toEqual(work.last);
+  });
+
+  it("says a controller is inert, and why, as the per-queue status does", async () => {
+    const { jobs } = summoning();
+    // A summon state written by a newer bun-jobs: the controller leaves it
+    // alone and goes inert.
+    const ref = { ns: jobs.namespace, queue: "work" };
+    await jobs.queue("work").add("x", {});
+    expect(
+      await setReservedState(jobs.driver, ref, SUMMON_MARKER, { v: 99 }, null),
+    ).not.toBeNull();
+    const h = harness({ jobs });
+    const item = (await h.call("GET", "/summon")).body.controllers[0];
+    expect(item).toMatchObject({
+      queue: "work",
+      readiness: "ready",
+      inert: true,
+      inertReason: "newer-marker",
+    });
+    const status = (await h.call("GET", "/queues/work/summon")).body;
+    expect([item.inert, item.inertReason]).toEqual([
+      status.inert,
+      status.inertReason,
+    ]);
+  });
+
+  it("answers an empty list, not 409, when no controller runs here", async () => {
+    const h = harness();
+    const response = await h.call("GET", "/summon");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ controllers: [] });
+    // An API built without `jobs` has no controllers to list.
+    const { jobs } = summoning();
+    const without = await harness({
+      jobs: undefined,
+      queues: [jobs.queue("work")],
+    }).call("GET", "/summon");
+    expect(without.status).toBe(200);
+    expect(without.body).toEqual({ controllers: [] });
+  });
+
+  it("hides what the allowlist hides", async () => {
+    const { jobs } = two();
+    const queues = (response: { body: { controllers: { queue: string }[] } }) =>
+      response.body.controllers.map((one) => one.queue);
+
+    // Control: both.
+    expect(queues(await harness({ jobs }).call("GET", "/summon"))).toEqual([
+      "other",
+      "work",
+    ]);
+    expect(
+      queues(
+        await harness({ jobs, queues: [jobs.queue("work")] }).call(
+          "GET",
+          "/summon",
+        ),
+      ),
+    ).toEqual(["work"]);
+  });
+
+  for (const listQueues of ["all", "authorized"] as const) {
+    it(`is never looser than GET /queues/{queue}/summon, under an allow-list or a deny-list (listQueues: ${listQueues})`, async () => {
+      const { jobs } = two();
+      const queues = (response: {
+        body: { controllers: { queue: string }[] };
+      }) => response.body.controllers.map((one) => one.queue);
+
+      // An allow-list policy: queues.read only on `work`.
+      const seen: {
+        action: string;
+        queue?: string;
+        route?: { method: string; path: string };
+      }[] = [];
+      const allowList = harness({
+        jobs,
+        listQueues,
+        authorize: (_req, ctx) => {
+          seen.push(ctx);
+          return ctx.action !== "queues.read" || ctx.queue === "work";
+        },
+      });
+      expect((await allowList.call("GET", "/queues/work/summon")).status).toBe(
+        200,
+      );
+      expect((await allowList.call("GET", "/queues/other/summon")).status).toBe(
+        403,
+      );
+      seen.length = 0;
+      const allowed = await allowList.call("GET", "/summon");
+      expect(allowed.status).toBe(200);
+      expect(queues(allowed)).toEqual(["work"]);
+      // The route itself asked `queues.list`, then `queues.read` per
+      // controller exactly as the per-queue route asks it.
+      const asked = seen;
+      expect(asked).toHaveLength(3);
+      expect(asked[0]).toMatchObject({ action: "queues.list" });
+      expect(asked[0]).not.toHaveProperty("queue");
+      expect(
+        asked
+          .slice(1)
+          .map((ctx) => ({
+            action: ctx.action,
+            queue: ctx.queue,
+            route: ctx.route,
+          }))
+          .sort((a, b) => String(a.queue).localeCompare(String(b.queue))),
+      ).toEqual([
+        {
+          action: "queues.read",
+          queue: "other",
+          route: { method: "GET", path: "/queues/:queue/summon" },
+        },
+        {
+          action: "queues.read",
+          queue: "work",
+          route: { method: "GET", path: "/queues/:queue/summon" },
+        },
+      ]);
+
+      // A deny-list policy: queues.read refused on `other` alone.
+      const denyList = harness({
+        jobs,
+        listQueues,
+        authorize: (_req, ctx) =>
+          !(ctx.action === "queues.read" && ctx.queue === "other"),
+      });
+      expect((await denyList.call("GET", "/queues/other/summon")).status).toBe(
+        403,
+      );
+      const denied = await denyList.call("GET", "/summon");
+      expect(denied.status).toBe(200);
+      expect(queues(denied)).toEqual(["work"]);
+      expect(denied.text).not.toContain("no capacity");
+    });
+  }
+
+  it("is advertised by /meta.features.summonList, which runner mode turns off", async () => {
+    const { jobs } = two();
+    const served = await harness({ jobs }).call("GET", "/meta");
+    expect(served.body.features.summonList).toBe(true);
+    const runner = await harness({ jobs, mode: "runner" }).call("GET", "/meta");
+    expect(runner.body.features.summonList).toBe(false);
+    // The flag follows the route: pruned, it says so.
+    expect(
+      (await harness({ jobs, mode: "runner" }).call("GET", "/summon")).status,
+    ).toBe(404);
+  });
+
+  it("is refused without queues.list, empty without queues.read, pruned in runner mode, and in the OpenAPI document", async () => {
+    const { jobs } = two();
+    const denied = harness({
+      jobs,
+      authorize: (_req, ctx) => ctx.action !== "queues.list",
+    });
+    expect((await denied.call("GET", "/summon")).status).toBe(403);
+    const unread = harness({
+      jobs,
+      authorize: (_req, ctx) => ctx.action !== "queues.read",
+    });
+    const empty = await unread.call("GET", "/summon");
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({ controllers: [] });
+    const runner = await harness({ jobs, mode: "runner" }).call(
+      "GET",
+      "/summon",
+    );
+    expect(runner.status).toBe(404);
+    const spec = (await harness({ jobs }).call("GET", "/openapi.json")).body;
+    expect(spec.paths["/summon"].get.operationId).toBe("listSummonControllers");
   });
 });

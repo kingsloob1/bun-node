@@ -1346,19 +1346,86 @@ export interface SummonStatusDto {
   backoffUntil?: number;
   /** When the open circuit closes, epoch ms, while it is open. */
   circuitOpenUntil?: number;
-  /** Attempts used against the budget, this UTC hour and today, with the limits. */
-  budget?: {
-    /** Attempts this hour. */
-    hour: number;
-    /** The hourly limit. */
-    perHour: number;
-    /** Attempts today. */
-    day: number;
-    /** The daily limit. */
-    perDay: number;
-  };
+  /**
+   * Attempts used against the budget, this UTC hour and today, with the
+   * limits and when each window resets. With the budget off
+   * (`budget: false` in the policy) the counts are still there, the limits
+   * are absent and `off` is `true`.
+   */
+  budget?: SummonBudgetDto;
   /** The most recent outcome. */
   last?: SummonLastOutcomeDto;
+}
+
+/**
+ * A queue's summon budget usage: the attempts counted in the current UTC
+ * hour and day, the limits, and when each window resets. Every controller
+ * on the queue shares the counts; the limits are the answering controller's.
+ */
+export interface SummonBudgetDto {
+  /** Attempts this UTC hour. */
+  hour: number;
+  /** The hourly limit. Absent while the budget is off. */
+  perHour?: number;
+  /** Attempts this UTC day. */
+  day: number;
+  /** The daily limit. Absent while the budget is off. */
+  perDay?: number;
+  /** `true` when the policy turned the budget off (`budget: false`): no limit applies. Absent otherwise. */
+  off?: true;
+  /** When the hour window ends and `hour` starts again from `0`, epoch ms: the next UTC hour. */
+  hourResetsAt: number;
+  /** When the day window ends and `day` starts again from `0`, epoch ms: the next UTC midnight. */
+  dayResetsAt: number;
+}
+
+/** One summon controller in `GET /summon`: its queue, summoner, last outcome and budget usage. */
+export interface SummonListItemDto {
+  /** The queue's namespace. */
+  namespace: string;
+  /** The queue. */
+  queue: string;
+  /** The summoner's kind, e.g. `"ecs"`: a label for badges. */
+  kind: string;
+  /** Whether the summoner can be called, as `SummonStatusDto.summoner.readiness` has it. */
+  readiness: "ready" | "pending" | "failed";
+  /**
+   * Whether the controller is inert, as `SummonStatusDto.inert` has it: it
+   * summons nothing, whatever `readiness` says.
+   */
+  inert: boolean;
+  /** Why it is inert, when it is, as `SummonStatusDto.inertReason` has it. */
+  inertReason?: "summoned-process" | "newer-marker";
+  /** The most recent outcome, as `SummonStatusDto.last` has it. */
+  last?: SummonLastOutcomeDto;
+  /** Budget usage, the limits and the window reset times, as `SummonStatusDto.budget` has them. */
+  budget: SummonBudgetDto;
+}
+
+/**
+ * `GET /summon` (operation `listSummonControllers`, action `queues.list`):
+ * every summon controller the API can read — today the ones running in the
+ * API's process — each only where `authorize` allows `queues.read` on its
+ * queue, asked as `GET /queues/{queue}/summon` asks it (whatever
+ * `listQueues` says), so the list is never looser than that route. An empty
+ * list when none runs here, never a 409.
+ */
+export interface SummonListDto {
+  /** The controllers, by queue name. */
+  controllers: SummonListItemDto[];
+}
+
+/**
+ * `POST /queues/{queue}/summon/reset` body. Optional: `{}` or none resets
+ * failures, backoff and the circuit only. Advertised by the meta flag
+ * `summonResetBudget`.
+ */
+export interface SummonResetBody {
+  /**
+   * Also clear the budget's usage: the attempts counted this UTC hour and
+   * day go to `0`, in the same write. Defaults to `false`.
+   */
+  budget?: boolean;
 }
 
 /** `POST /queues/{queue}/summon` body. Optional: `{}` or none is "summon now". */
@@ -3787,6 +3854,23 @@ export interface MetaDto {
      * empty list), not this flag.
      */
     providers: boolean;
+    /**
+     * `POST /queues/{queue}/summon/reset` is served and accepts
+     * `{ "budget": true }`, which also clears the queue's summon budget
+     * usage (`SummonResetBody`). It needs no driver method, so this is
+     * `false` only in `runner` mode. Like every flag it ignores permissions
+     * (`queues.summon` is opt-in); whether a queue has a summon controller is
+     * the route's own answer (409 `SUMMON_NOT_CONFIGURED`).
+     */
+    summonResetBudget: boolean;
+    /**
+     * `GET /summon` (`SummonListDto`) is served. It needs no driver method,
+     * so this is `false` only in `runner` mode; an API older than the route
+     * leaves it out. Like every flag it ignores permissions: the route asks
+     * `queues.list`, then `queues.read` per controller. Whether any
+     * controller runs is the route's own answer, an empty list.
+     */
+    summonList: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

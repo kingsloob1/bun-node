@@ -448,7 +448,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  79 + addedByState,
+  80 + addedByState,
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
@@ -520,7 +520,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 63 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 64 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -572,7 +572,7 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 38 + addedByState);
+checkEqual("what is left", readOnly.api.routes.length, 39 + addedByState);
 checkEqual(
   "the demand routes among them: reads, so readOnly keeps both",
   demandRoutes(readOnly.api),
@@ -604,7 +604,7 @@ const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  64 + addedByState,
+  65 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",
@@ -658,10 +658,13 @@ check(
   idsOf(byDefault.api),
 );
 check(
-  "while reading job defaults, worker configs and a queue's summon status is a plain read, on by default",
-  ["getJobDefaults", "listWorkerConfigs", "getQueueSummon"].every((id) =>
-    idsOf(byDefault.api).includes(id),
-  ),
+  "while reading job defaults, worker configs, a queue's summon status and the summon list is a plain read, on by default",
+  [
+    "getJobDefaults",
+    "listWorkerConfigs",
+    "getQueueSummon",
+    "listSummonControllers",
+  ].every((id) => idsOf(byDefault.api).includes(id)),
 );
 
 const narrow = mount({ actions: ["meta.read", "jobs.add"] });

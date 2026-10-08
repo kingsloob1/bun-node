@@ -299,7 +299,9 @@ queue's summoning back without anyone noticing:
   run, and a new run can warn again. The count is per controller and in
   memory.
 
-The budget (`perHour`, `perDay`) bounds the attempts either way.
+The budget (`perHour`, `perDay`) bounds the attempts either way, unless the
+policy turns it off (`budget: false`), which leaves the circuit as the only
+bound on a platform that keeps failing.
 
 Source: [`lib/summon/controller.ts`](../../lib/summon/controller.ts)
 (`#retryAfter`, `#noteThrottled`),

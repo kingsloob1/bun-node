@@ -558,6 +558,63 @@ export const ProviderReadinessSchema = (description: string) =>
 export const SERVABLE_FACTS_NOTE =
   "Dropped whatever the provider says: a fact whose key has, or ends with, a credential word (`token`, `secret`, `key`, `password`, `passwd`, `pwd`, `credential`, `auth`, `authorization`, `bearer`, `private`, `cookie`, `session`: `apiKey`, `apikey`, `sessiontoken` and `secretArn` go, `keyspace` stays), one whose value holds a URL with userinfo (`://user:pass@`) or another credential shape (`Bearer …`, a JWT, or a `word:value` / `word=value` pair whose word contains a sensitive word such as `token`, `secret`, `auth` or `session` — which also drops `session-workers:prod`, `max_tokens=4096`, an ARN with `auth-api:prod` in it), and a `host` or `hostname` fact unless `serialize.exposeHosts` is on.";
 
+/** A queue's summon budget usage. Mirrors `SummonBudgetDto`. */
+export const SummonBudgetSchema = s.named(
+  "SummonBudget",
+  s.object(
+    {
+      hour: s.integer({
+        minimum: 0,
+        description: "Attempts this UTC hour.",
+      }),
+      perHour: s.optional(
+        s.integer({
+          minimum: 0,
+          description: "The hourly limit. Absent while the budget is off.",
+        }),
+      ),
+      day: s.integer({ minimum: 0, description: "Attempts this UTC day." }),
+      perDay: s.optional(
+        s.integer({
+          minimum: 0,
+          description: "The daily limit. Absent while the budget is off.",
+        }),
+      ),
+      off: s.optional(
+        s.literal(true, {
+          description:
+            "Present, and `true`, when the policy turned the budget off (`budget: false`): no limit applies, and the counts are shown for information.",
+        }),
+      ),
+      hourResetsAt: Instant(
+        "When the hour window ends and `hour` starts again from 0, epoch ms: the next UTC hour.",
+      ),
+      dayResetsAt: Instant(
+        "When the day window ends and `day` starts again from 0, epoch ms: the next UTC midnight.",
+      ),
+    },
+    {
+      description:
+        "Attempts counted against the summon budget in the current UTC hour and day, shared by every controller on the queue, with the answering controller's limits and when each window resets.",
+    },
+  ),
+);
+
+/** The most recent summon outcome. Mirrors `SummonLastOutcomeDto`. */
+const SummonLastSchema = s.object({
+  id: s.string({
+    description:
+      "The attempt it concerns; empty for an outcome no attempt owns.",
+  }),
+  outcome: SummonOutcomeEnum(
+    "What happened. Show an outcome you do not know as the raw string.",
+  ),
+  at: Instant("When, epoch ms."),
+  detail: s.optional(
+    s.string({ description: "A short, secret-free explanation." }),
+  ),
+});
+
 /** A queue's summon status. Mirrors `SummonStatusDto`. */
 export const SummonStatusSchema = s.named(
   "SummonStatus",
@@ -633,32 +690,8 @@ export const SummonStatusSchema = s.named(
       circuitOpenUntil: s.optional(
         Instant("When the open circuit closes, epoch ms, while it is open."),
       ),
-      budget: s.optional(
-        s.object({
-          hour: s.integer({
-            minimum: 0,
-            description: "Attempts this UTC hour.",
-          }),
-          perHour: s.integer({ minimum: 0, description: "The hourly limit." }),
-          day: s.integer({ minimum: 0, description: "Attempts this UTC day." }),
-          perDay: s.integer({ minimum: 0, description: "The daily limit." }),
-        }),
-      ),
-      last: s.optional(
-        s.object({
-          id: s.string({
-            description:
-              "The attempt it concerns; empty for an outcome no attempt owns.",
-          }),
-          outcome: SummonOutcomeEnum(
-            "What happened. Show an outcome you do not know as the raw string.",
-          ),
-          at: Instant("When, epoch ms."),
-          detail: s.optional(
-            s.string({ description: "A short, secret-free explanation." }),
-          ),
-        }),
-      ),
+      budget: s.optional(SummonBudgetSchema),
+      last: s.optional(SummonLastSchema),
     },
     {
       description:
@@ -677,6 +710,58 @@ export const SummonNowBodySchema = s.object({
     }),
   ),
 });
+
+/** `POST /queues/:queue/summon/reset` body. Mirrors `SummonResetBody`. */
+export const SummonResetBodySchema = s.object({
+  budget: s.optional(
+    s.boolean({
+      default: false,
+      description:
+        "Also clear the queue's summon budget usage: the attempts counted this UTC hour and day go to 0, in the same write as the reset. Defaults to `false`. Advertised by `/meta.features.summonResetBudget`.",
+    }),
+  ),
+});
+
+/** One summon controller in `GET /summon`. Mirrors `SummonListItemDto`. */
+export const SummonListItemSchema = s.object({
+  namespace: s.string({ description: "The queue's namespace." }),
+  queue: s.string({ description: "The queue." }),
+  kind: s.string({
+    description: "The summoner's kind, e.g. `ecs`: a label for badges.",
+  }),
+  readiness: ProviderReadinessSchema(
+    "Whether the summoner can be called, as `GET /queues/{queue}/summon` has it: `ready`, `pending` while its provider's config is still validating, or `failed`.",
+  ),
+  inert: s.boolean({
+    description:
+      "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says.",
+  }),
+  inertReason: s.optional(
+    s.enum(["summoned-process", "newer-marker"], {
+      description:
+        "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
+    }),
+  ),
+  last: s.optional(SummonLastSchema),
+  budget: SummonBudgetSchema,
+});
+
+/** `GET /summon`. Mirrors `SummonListDto`. */
+export const SummonListSchema = s.named(
+  "SummonList",
+  s.object(
+    {
+      controllers: s.array(SummonListItemSchema, {
+        description:
+          "The summon controllers running in the API's process, by queue name, less the queues the caller cannot see. Empty when none runs here.",
+      }),
+    },
+    {
+      description:
+        "Every summon controller the API can read, with its budget usage: today, the ones running in the API's process.",
+    },
+  ),
+);
 
 /** What one summon check did. Mirrors `SummonCheckDto`. */
 export const SummonCheckSchema = s.named(

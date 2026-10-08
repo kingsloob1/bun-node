@@ -98,6 +98,8 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       // per answer (`QueueDemandDto.exact`); false only in `runner` mode.
       demand: true,
       providers: true,
+      summonResetBudget: true,
+      summonList: true,
       throughput: true,
     },
     // A backend recording everything, with the shipped defaults: per-second

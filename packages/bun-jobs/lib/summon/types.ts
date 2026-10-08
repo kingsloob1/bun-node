@@ -242,13 +242,25 @@ export interface SummonPolicy {
     /** How long it stays open, in ms, before one trial attempt. Defaults to `900_000`. */
     resetAfter?: number;
   };
-  /** Cost ceilings, per queue, shared by every controller on it. */
-  budget?: {
-    /** Attempts per clock hour (UTC). Defaults to `30`. */
-    perHour?: number;
-    /** Attempts per UTC day. Defaults to `300`. */
-    perDay?: number;
-  };
+  /**
+   * Cost ceilings, per queue, shared by every controller on it. Left out, the
+   * defaults apply (`30` an hour, `300` a day); `false` turns the budget off:
+   * no limit applies and `budget-exhausted` is never emitted. Attempts are
+   * counted either way, so `status().budget` still shows them, and a limit
+   * set later is checked against counts made while it was off.
+   *
+   * The counts live in the queue's shared marker, not in the policy: a
+   * smaller limit (the defaults included) meets the counts a larger one left.
+   * `reset({ budget: true })` clears them.
+   */
+  budget?:
+    | false
+    | {
+        /** Attempts per clock hour (UTC). Defaults to `30`. */
+        perHour?: number;
+        /** Attempts per UTC day. Defaults to `300`. */
+        perDay?: number;
+      };
   /**
    * The longest a summoned worker may live, in ms: passed to the worker as
    * `--bun-jobs-summon-max-lifetime-ms`, and to the platform's own cap where
@@ -291,6 +303,82 @@ export interface SummonPolicy {
    * summon more workers.
    */
   fromSummoned?: boolean;
+  /**
+   * Called when summoning goes wrong for this queue: an attempt `failed`,
+   * was `lost` or found the platform `unavailable`, the budget was
+   * exhausted (`budget-exhausted`), or the circuit opened (`circuit-open`,
+   * once per opening, not on every check it then refuses). Fired by the
+   * controller that decided it — the one whose call failed, or whose write
+   * declared the attempt lost or opened the circuit — so several controllers
+   * on one queue, in any number of processes, call it once per outcome
+   * between them (`budget-exhausted` is the exception: each controller that
+   * hits the limit calls it once per budget window, as it emits the event).
+   *
+   * Never awaited, and called on a later turn of the event loop than the
+   * check that decided it: a slow hook, synchronous work included, delays
+   * no check. An answer the controller could not record (other controllers
+   * won every write) is not reported by it; the attempt is reported once,
+   * as `lost`, by whoever settles it. A throw or a rejection is logged at
+   * `warn` with the error, once per call, and changes nothing else. The argument is secret-free: the same `detail` the
+   * `summon` event and `status().last` carry, never a credential.
+   */
+  onSummonFailed?: (failure: SummonFailure) => void | Promise<void>;
+}
+
+/**
+ * What `onSummonFailed` is told about: the `summon` outcomes that mean
+ * summoning went wrong, plus `circuit-open`, which no `summon` event carries.
+ */
+export type SummonFailureOutcome =
+  | Extract<
+      SummonOutcomeKind,
+      "failed" | "lost" | "unavailable" | "budget-exhausted"
+    >
+  /** The circuit opened: nothing is summoned for the queue until `until`. */
+  | "circuit-open";
+
+/** The argument of `SummonPolicy.onSummonFailed`: one failure, secret-free. */
+export interface SummonFailure {
+  /** What went wrong. */
+  outcome: SummonFailureOutcome;
+  /** The summoner's `kind`, e.g. `"ecs"`. */
+  kind: string;
+  /** The queue's namespace. */
+  namespace: string;
+  /** The queue. */
+  queue: string;
+  /**
+   * The attempt it concerns. For `circuit-open`, the attempt whose failure
+   * opened it. Absent for `budget-exhausted`, which no attempt owns.
+   */
+  id?: string;
+  /**
+   * Why the check that made the call ran, for `failed` and `unavailable`
+   * (as on their `summon` event). Absent otherwise.
+   */
+  reason?: SummonReason;
+  /**
+   * A short, secret-free explanation: the `summon` event's and
+   * `status().last`'s `detail` (`timeout`, `ThrottlingException`, `died`, an
+   * `unavailable` reason). For `circuit-open`, the detail of the failure that
+   * opened it, when it had one.
+   */
+  detail?: string;
+  /** When the controller decided it, epoch ms. */
+  at: number;
+  /** For `circuit-open`: when the circuit closes again, epoch ms. */
+  until?: number;
+  /** For `budget-exhausted`: the attempts counted and the limits they reached. */
+  budget?: {
+    /** Attempts this UTC hour. */
+    hour: number;
+    /** The hourly limit. */
+    perHour: number;
+    /** Attempts this UTC day. */
+    day: number;
+    /** The daily limit. */
+    perDay: number;
+  };
 }
 
 /** What a `SummonController` is built with: a policy plus where the queue lives. */
@@ -501,6 +589,13 @@ export interface SummonMarker {
     dayStart: number;
     /** Attempts started in it. */
     day: number;
+    /**
+     * Ids of attempts whose claim counted them and whose provider may not
+     * have been called yet: only these can be given back (when the call
+     * never happens). A budget reset empties it with the counts. Optional,
+     * with `v` unchanged: absent is none.
+     */
+    counted?: string[];
   };
   /** The most recent outcome, for the status route and the UI. */
   last?: SummonLastOutcome;
@@ -562,16 +657,26 @@ export interface SummonStatus {
   backoffUntil?: number;
   /** When the circuit closes, epoch ms, if it is open. */
   circuitOpenUntil?: number;
-  /** Attempts used against the budget, this hour and today, with the limits. */
+  /**
+   * Attempts used against the budget, this hour and today, with the limits
+   * and when each window resets. With the budget off (`budget: false`) the
+   * counts are still shown, the limits are absent and `off` is `true`.
+   */
   budget?: {
-    /** Attempts this hour. */
+    /** Attempts this UTC hour. */
     hour: number;
-    /** The hourly limit. */
-    perHour: number;
-    /** Attempts today. */
+    /** The hourly limit. Absent while the budget is off. */
+    perHour?: number;
+    /** Attempts this UTC day. */
     day: number;
-    /** The daily limit. */
-    perDay: number;
+    /** The daily limit. Absent while the budget is off. */
+    perDay?: number;
+    /** `true` when the policy turned the budget off (`budget: false`); absent otherwise. */
+    off?: true;
+    /** When the hour window ends and `hour` starts again from `0`, epoch ms: the next UTC hour. */
+    hourResetsAt: number;
+    /** When the day window ends and `day` starts again from `0`, epoch ms: the next UTC midnight. */
+    dayResetsAt: number;
   };
   /** The most recent outcome. */
   last?: SummonLastOutcome;

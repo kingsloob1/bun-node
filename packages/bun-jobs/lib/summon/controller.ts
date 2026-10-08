@@ -20,6 +20,7 @@ import type {
   Summoner,
   SummonEventPayload,
   SummonFacet,
+  SummonFailure,
   SummonMarker,
   SummonOutcomeKind,
   SummonReason,
@@ -68,8 +69,12 @@ import { DEFAULT_BOOT_BUDGET, toSummoner } from "./define";
 import {
   attemptId,
   backoffFor,
+  budgetResets,
+  clearBudget,
   dedupeKeyFor,
+  markCounted,
   readMarker,
+  refundBudget,
   rollBudget,
   SUMMON_MARKER,
 } from "./marker";
@@ -151,6 +156,16 @@ export const ATTACH_QUEUE: unique symbol = Symbol(
  */
 export const FIND_SUMMON_CONTROLLER: unique symbol = Symbol(
   "bun-jobs: find summon controller",
+);
+
+/**
+ * Internal: the key of the listing the management API's `GET /summon` reads
+ * — every summon controller a `BunJobs` context has, in the order they were
+ * built. Like {@link FIND_SUMMON_CONTROLLER}, it never builds one, and is
+ * exported from this module alone.
+ */
+export const LIST_SUMMON_CONTROLLERS: unique symbol = Symbol(
+  "bun-jobs: list summon controllers",
 );
 
 /**
@@ -336,6 +351,8 @@ interface LostAttempt {
   attempt: PendingSummon;
   /** Its `lost` event, announced once `status()` has answered (or failed). */
   event: SummonEventPayload;
+  /** When it was declared lost, epoch ms. */
+  at: number;
 }
 
 /**
@@ -377,8 +394,8 @@ interface ResolvedPolicy {
   backoff: { initial: number; max: number };
   /** `circuit`. */
   circuit: { failures: number; resetAfter: number };
-  /** `budget`. */
-  budget: { perHour: number; perDay: number };
+  /** `budget`, `false` for off. */
+  budget: { perHour: number; perDay: number } | false;
   /** `maxLifetime`. */
   maxLifetime: number;
   /** `servedBy`. */
@@ -389,6 +406,27 @@ interface ResolvedPolicy {
   summonTimeout: number;
   /** `env`, frozen. */
   env: Readonly<Record<string, string>>;
+  /** `onSummonFailed`, when set. */
+  onSummonFailed:
+    | ((failure: SummonFailure) => void | Promise<void>)
+    | undefined;
+}
+
+/**
+ * A circuit this check opened: the attempt whose failure opened it, and that
+ * failure's detail. Announced (`onSummonFailed`) once the write that opened it
+ * has landed.
+ */
+interface CircuitOpening {
+  /** The attempt whose failure opened it. */
+  id: string;
+  /** That failure's detail, when it had one. */
+  detail?: string;
+}
+
+/** Whether the marker's circuit is open at `now`. */
+function circuitOpen(marker: SummonMarker, now: number): boolean {
+  return marker.circuitOpenUntil !== undefined && marker.circuitOpenUntil > now;
 }
 
 /**
@@ -837,6 +875,23 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       "backoff.initial",
       options.backoff?.initial ?? DEFAULT_BACKOFF_INITIAL,
     );
+    const budget = options.budget;
+    if (
+      budget !== undefined &&
+      budget !== false &&
+      (typeof budget !== "object" || budget === null)
+    ) {
+      throw new ConfigError(
+        "budget must be false (off) or { perHour?, perDay? }",
+        { budget: String(budget) },
+      );
+    }
+    const onSummonFailed = options.onSummonFailed;
+    if (onSummonFailed !== undefined && typeof onSummonFailed !== "function") {
+      throw new ConfigError("onSummonFailed must be a function", {
+        onSummonFailed: typeof onSummonFailed,
+      });
+    }
 
     return {
       onAdd: triggers.onAdd ?? true,
@@ -877,16 +932,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           options.circuit?.resetAfter ?? DEFAULT_CIRCUIT_RESET,
         ),
       },
-      budget: {
-        perHour: positiveInt(
-          "budget.perHour",
-          options.budget?.perHour ?? DEFAULT_PER_HOUR,
-        ),
-        perDay: positiveInt(
-          "budget.perDay",
-          options.budget?.perDay ?? DEFAULT_PER_DAY,
-        ),
-      },
+      budget:
+        budget === false
+          ? false
+          : {
+              perHour: positiveInt(
+                "budget.perHour",
+                budget?.perHour ?? DEFAULT_PER_HOUR,
+              ),
+              perDay: positiveInt(
+                "budget.perDay",
+                budget?.perDay ?? DEFAULT_PER_DAY,
+              ),
+            },
       maxLifetime,
       servedBy,
       scaleDownAfter: nonNegativeInt(
@@ -898,6 +956,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         options.summonTimeout ?? DEFAULT_SUMMON_TIMEOUT,
       ),
       env: Object.freeze({ ...env }),
+      onSummonFailed,
     };
   }
 
@@ -1169,6 +1228,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     const events: SummonEventPayload[] = [];
     const lost: PendingSummon[] = [];
     let changed = read.unreadable;
+    // A circuit this check opens (closed at the read, open after a failure
+    // below): announced once the write that opened it lands, never on a
+    // check that only finds it open.
+    const openAtRead = circuitOpen(marker, now);
+    let opening: CircuitOpening | undefined;
+    const noteOpening = (id: string, detail?: string): void => {
+      if (opening === undefined && !openAtRead && circuitOpen(marker, now)) {
+        opening = { id, ...(detail === undefined ? {} : { detail }) };
+      }
+    };
 
     // Step 2: release what registered, drop what was lost.
     const pendingIds = new Set(marker.pending.map((entry) => entry.id));
@@ -1289,6 +1358,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
             : undefined;
       lost.push(attempt);
       this.#fail(marker, now);
+      noteOpening(attempt.id, detail);
       marker.last = {
         id: attempt.id,
         outcome: "lost",
@@ -1307,7 +1377,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     marker.pending = keep;
     if (
       !provisional &&
-      this.#watch(marker, claims, expiries, released, now, events)
+      this.#watch(marker, claims, expiries, released, now, events, noteOpening)
     ) {
       changed = true;
     }
@@ -1346,7 +1416,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
     if (demand.paused || (demand.demand === 0 && !orphaned)) {
       this.#kickProvider();
-      await this.#settle(marker, version, changed, events, lost);
+      await this.#settle(marker, version, changed, events, lost, now, opening);
       if (capabilities.style === "scale" && idle) {
         this.#zeroSince ??= now;
         if (
@@ -1369,7 +1439,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     const want = wanted - counted.length - onTheirWay;
     if (want <= 0) {
       this.#kickProvider();
-      await this.#settle(marker, version, changed, events, lost);
+      await this.#settle(marker, version, changed, events, lost, now, opening);
       return {
         action: "skipped",
         reason: counted.length >= wanted ? "served" : "pending",
@@ -1380,7 +1450,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // Step 5: the gates, in order.
     const gate = this.#gate(marker, now, force);
     if (gate !== undefined) {
-      await this.#settle(marker, version, changed, events, lost);
+      await this.#settle(marker, version, changed, events, lost, now, opening);
       return { action: "skipped", reason: gate, demand };
     }
 
@@ -1420,6 +1490,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     marker.lastAttemptAt = now;
     marker.budget.hour++;
     marker.budget.day++;
+    markCounted(marker, id);
     const written = await setReservedState(
       this.#driver,
       this.#ref,
@@ -1430,7 +1501,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (written === null) {
       return { action: "skipped", reason: "contended", demand };
     }
-    this.#announceSettled(events, lost);
+    this.#announceSettled(events, lost, now);
+    this.#announceOpening(opening, marker, now);
     this.#released = false;
     this.#zeroSince = undefined;
 
@@ -1458,8 +1530,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // attempt without one.
     let result: SummonResult | undefined;
     let failure: unknown = notReady;
+    let called = false;
     if (notReady === undefined) {
-      [result, failure] = await this.#summon(
+      [result, failure, called] = await this.#summon(
         id,
         count,
         counted.length + onTheirWay + count,
@@ -1469,12 +1542,25 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
 
-    // Step 8: record.
-    const outcome = await this.#record(id, count, reason, result, failure);
+    // Step 8: record. An attempt whose provider was never called gives back
+    // the budget its claim counted: counting at the claim keeps racing
+    // controllers inside the limit, but only a call can cost anything.
+    const outcome = await this.#record(
+      id,
+      count,
+      reason,
+      result,
+      failure,
+      called ? undefined : now,
+    );
     return { action: "summoned", id, outcome, demand };
   }
 
-  /** Step 7: builds the request and calls the facet. Answers its result, or what it threw. */
+  /**
+   * Step 7: builds the request and calls the facet. Answers its result, or
+   * what it threw, and whether the facet was called at all: a throw while
+   * building the request or the call's context reaches no provider.
+   */
   async #summon(
     id: string,
     count: number,
@@ -1482,37 +1568,35 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     kind: string,
     demand: QueueDemand,
     reason: SummonReason,
-  ): Promise<[SummonResult | undefined, unknown]> {
+  ): Promise<[SummonResult | undefined, unknown, boolean]> {
     const capabilities = this.#capabilities;
-    const request: SummonRequest = {
-      ...wireRequest(
-        { id, count, target },
-        {
-          namespace: this.namespace,
-          queue: this.queue,
-          kind,
-          style: capabilities.style,
-          dedupeKey: this.#dedupeKey,
-          graceMs: capabilities.shutdown.graceMs,
-          maxLifetime: this.#policy.maxLifetime,
-          env: this.#policy.env,
-        },
-      ),
-      demand,
-      reason,
-    };
-
     const facet = this.#facet;
+    let called = false;
     try {
-      return [
-        await this.#call(
-          async (context) => await facet.summon(request, context),
-          id,
+      const request: SummonRequest = {
+        ...wireRequest(
+          { id, count, target },
+          {
+            namespace: this.namespace,
+            queue: this.queue,
+            kind,
+            style: capabilities.style,
+            dedupeKey: this.#dedupeKey,
+            graceMs: capabilities.shutdown.graceMs,
+            maxLifetime: this.#policy.maxLifetime,
+            env: this.#policy.env,
+          },
         ),
-        undefined,
-      ];
+        demand,
+        reason,
+      };
+      const result = await this.#call(async (context) => {
+        called = true;
+        return await facet.summon(request, context);
+      }, id);
+      return [result, undefined, called];
     } catch (error) {
-      return [undefined, error];
+      return [undefined, error, called];
     }
   }
 
@@ -1701,8 +1785,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     ) {
       return "cooldown";
     }
-    const { perHour, perDay } = this.#policy.budget;
-    if (marker.budget.hour >= perHour || marker.budget.day >= perDay) {
+    const budget = this.#policy.budget;
+    if (
+      budget !== false &&
+      (marker.budget.hour >= budget.perHour ||
+        marker.budget.day >= budget.perDay)
+    ) {
+      const { perHour, perDay } = budget;
       const window = `${marker.budget.hourStart}:${marker.budget.dayStart}`;
       if (this.#budgetNoted !== window) {
         this.#budgetNoted = window;
@@ -1721,6 +1810,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         // Published like every other outcome: an operator watching another
         // process is the one who needs to know the jobs are waiting.
         this.#publish(exhausted);
+        this.#notifyFailure({
+          outcome: "budget-exhausted",
+          kind: exhausted.kind,
+          namespace: this.namespace,
+          queue: this.queue,
+          at: now,
+          budget: {
+            hour: marker.budget.hour,
+            perHour,
+            day: marker.budget.day,
+            perDay,
+          },
+        });
       }
       return "budget";
     }
@@ -1848,6 +1950,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     changed: boolean,
     events: SummonEventPayload[],
     lost: PendingSummon[],
+    /** When the check read the marker, epoch ms: when it decided. */
+    now: number,
+    /** A circuit this check opened, announced once the write lands. */
+    opening: CircuitOpening | undefined,
   ): Promise<void> {
     if (!changed) {
       return;
@@ -1860,12 +1966,90 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       version,
     );
     if (written !== null) {
-      this.#announceSettled(events, lost);
+      this.#announceSettled(events, lost, now);
+      this.#announceOpening(opening, marker, now);
     }
   }
 
-  /** Emits and logs each event, at the level §9.1 gives its outcome. */
-  #announce(events: readonly SummonEventPayload[]): void {
+  /**
+   * Tells `onSummonFailed` about a circuit this controller's write opened.
+   * Called only once that write has landed, so of several controllers on the
+   * queue, only the one that opened it does.
+   */
+  #announceOpening(
+    opening: CircuitOpening | undefined,
+    marker: SummonMarker,
+    at: number,
+  ): void {
+    if (opening === undefined || marker.circuitOpenUntil === undefined) {
+      return;
+    }
+    this.#notifyFailure({
+      outcome: "circuit-open",
+      kind: this.#summoner.provider.kind,
+      namespace: this.namespace,
+      queue: this.queue,
+      id: opening.id,
+      ...(opening.detail === undefined ? {} : { detail: opening.detail }),
+      at,
+      until: marker.circuitOpenUntil,
+    });
+  }
+
+  /**
+   * Calls `onSummonFailed`, if set, on a later turn of the event loop
+   * (`setImmediate`) and without waiting for it: a slow hook never holds a
+   * check, synchronous work included. A microtask would not do: the check's
+   * caller resumes in a microtask queued after it, so a hook that blocked
+   * there would still delay the check's return. Calls keep their order. A
+   * synchronous throw and a rejection are each logged once, at `warn`, with
+   * the error; neither reaches the check.
+   */
+  #notifyFailure(failure: SummonFailure): void {
+    const hook = this.#policy.onSummonFailed;
+    if (hook === undefined) {
+      return;
+    }
+    setImmediate(() => {
+      this.#callHook(hook, failure);
+    });
+  }
+
+  /** Runs `onSummonFailed` once, logging what it throws or rejects with. */
+  #callHook(
+    hook: (failure: SummonFailure) => void | Promise<void>,
+    failure: SummonFailure,
+  ): void {
+    const warn = (error: unknown): void => {
+      this.#logger.warn("onSummonFailed threw; summoning goes on", {
+        error,
+        outcome: failure.outcome,
+        ...(failure.id === undefined ? {} : { id: failure.id }),
+      });
+    };
+    try {
+      const answered: unknown = hook(failure);
+      if (
+        typeof answered === "object" &&
+        answered !== null &&
+        typeof (answered as PromiseLike<unknown>).then === "function"
+      ) {
+        Promise.resolve(answered as PromiseLike<unknown>).then(undefined, warn);
+      }
+    } catch (error) {
+      warn(error);
+    }
+  }
+
+  /**
+   * Emits and logs each event, at the level §9.1 gives its outcome, and tells
+   * `onSummonFailed` about each `failed`, `lost` and `unavailable` one.
+   */
+  #announce(
+    events: readonly SummonEventPayload[],
+    /** When the outcomes were decided, epoch ms. */
+    at: number,
+  ): void {
     for (const event of events) {
       const fields = {
         id: event.id,
@@ -1890,6 +2074,22 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       }
       this.safeEmit("summon", event);
       this.#publish(event);
+      if (
+        event.outcome === "failed" ||
+        event.outcome === "lost" ||
+        event.outcome === "unavailable"
+      ) {
+        this.#notifyFailure({
+          outcome: event.outcome,
+          kind: event.kind,
+          namespace: this.namespace,
+          queue: this.queue,
+          ...(event.id === "" ? {} : { id: event.id }),
+          ...(event.reason === undefined ? {} : { reason: event.reason }),
+          ...(event.detail === undefined ? {} : { detail: event.detail }),
+          at,
+        });
+      }
     }
   }
 
@@ -1942,6 +2142,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #announceSettled(
     events: readonly SummonEventPayload[],
     lost: readonly PendingSummon[],
+    /** When the check decided them, epoch ms. */
+    at: number,
   ): void {
     const held = new Map<string, PendingSummon>(
       lost
@@ -1956,10 +2158,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         now.push(event);
       } else {
         held.delete(event.id);
-        explain.push({ attempt, event: { ...event } });
+        explain.push({ attempt, event: { ...event }, at });
       }
     }
-    this.#announce(now);
+    this.#announce(now, at);
     if (explain.length === 0) {
       return;
     }
@@ -1984,7 +2186,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    */
   async #explainLost(lost: readonly LostAttempt[]): Promise<void> {
     const facet = this.#facet;
-    for (const { attempt, event } of lost) {
+    for (const { attempt, event, at } of lost) {
       let units: readonly UnitStatus[] = [];
       try {
         const answered = await this.#call(
@@ -2006,7 +2208,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           error,
         });
       }
-      this.#announce([event]);
+      this.#announce([event], at);
       const stillPending = units
         .filter((unit) => unit?.state === "pending")
         .map((unit) => unit.handle);
@@ -2121,6 +2323,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   ): Promise<T> {
     const abort = new AbortController();
     const ms = this.#policy.summonTimeout;
+    // The context first: building it can throw (a logger whose `child`
+    // throws), and a timer armed before it would then never be cleared —
+    // its rejection would surface, unhandled, `summonTimeout` later.
+    const context: ProviderCallContext = providerCallContext(
+      abort.signal,
+      this.#providerLogger(id === undefined ? {} : { attempt: id }),
+      this.#fetch,
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
@@ -2129,11 +2339,6 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         reject(error);
       }, ms);
     });
-    const context: ProviderCallContext = providerCallContext(
-      abort.signal,
-      this.#providerLogger(id === undefined ? {} : { attempt: id }),
-      this.#fetch,
-    );
     try {
       return await Promise.race([fn(context), timeout]);
     } finally {
@@ -2150,8 +2355,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * attempt stays in `pending` exactly as claimed — no handles, `last`
    * unchanged, the failure not counted — and is settled like any other, by a
    * registration or as `lost` once its `until` passes. The outcome is still
-   * returned, emitted and logged here, with a `warn` saying it was not
-   * recorded. Nothing is lost for good; a failed call is only counted late.
+   * returned and logged here, with a `warn` saying it was not recorded, but
+   * **not announced**: no `summon` event, no `onSummonFailed`. Whoever
+   * settles the attempt reports it, once — as `lost`, for a call that failed
+   * — so one attempt is never reported twice. What remains: the failure is
+   * counted then, as one lost attempt, and an attempt whose provider was
+   * never called keeps its budget count.
+   *
+   * **An attempt already gone** (purged, or settled by another check while
+   * the call ran) is not announced here either: it was reported where it
+   * was settled.
    *
    * **A timeout is not a definite failure.** A call that ran past
    * `summonTimeout` may still have started the unit, so the attempt is kept
@@ -2170,6 +2383,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * else — a plain `Error` included — is `transient`: `failed` and counted,
    * with one `warn` per plugin provider that it should map it. The detail is
    * the `platformCode`, else the `PROVIDER_<KIND>` code.
+   *
+   * **An attempt whose provider was never called** (`claimedAt` given: its
+   * `ready` failed, or the request could not be built) gives back the budget
+   * its claim counted, in the same write, while the claim's windows are
+   * still current.
    */
   async #record(
     id: string,
@@ -2177,6 +2395,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     reason: SummonReason,
     result: SummonResult | undefined,
     failure: unknown,
+    /** When the attempt was claimed, epoch ms, when the provider was never called; else `undefined`. */
+    claimedAt: number | undefined,
   ): Promise<SummonOutcomeKind> {
     const timedOut = failure instanceof SummonTimeoutError;
     const notReady = failure instanceof ProviderNotReadyError;
@@ -2205,11 +2425,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // The marker as written, when the answer's write opened the circuit:
     // logged once it landed.
     let opened: SummonMarker | undefined;
+    // Whether that write opened a circuit that was closed when it read:
+    // `onSummonFailed` hears of an opening once, not of every extension.
+    let newlyOpened = false;
+    // When the answer was decided: the time of the write that landed.
+    let decidedAt = Date.now();
 
     let recorded = false;
     let written = false;
     for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
       const now = Date.now();
+      decidedAt = now;
       const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
       const { marker, version, unreadable, newer } = readMarker(entry, now);
       const index =
@@ -2224,6 +2450,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       }
       const pending = marker.pending[index]!;
       opened = undefined;
+      newlyOpened = false;
+      const openAtRead = circuitOpen(marker, now);
+      // The claim's mark settles here either way: a call made keeps its
+      // count; one never made gives it back, unless a budget reset already
+      // cleared it with the counts.
+      refundBudget(marker, id, claimedAt);
       if (timedOut) {
         // A call that timed out may still have started the unit: the
         // attempt stays on its way until it registers, or until its `until`
@@ -2241,6 +2473,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
               true,
             );
         opened = open ? marker : undefined;
+        newlyOpened = open && !openAtRead;
       } else if (handles !== undefined && handles.length > 0) {
         pending.handles = [...handles];
       }
@@ -2293,17 +2526,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     this.#noteThrottled(mapping?.kind === "throttled");
     this.#providerVerdict(mapping, id, detail, written ? opened : undefined);
-    this.#announce([
-      {
-        id,
-        outcome,
-        kind,
-        count,
-        reason,
-        ...(handles === undefined ? {} : { handles: [...handles] }),
-        ...(detail === undefined ? {} : { detail }),
-      },
-    ]);
+    // Announced only by the write that recorded it: an answer that did not
+    // land is reported by whoever settles the attempt, so never twice.
+    if (written) {
+      this.#announce(
+        [
+          {
+            id,
+            outcome,
+            kind,
+            count,
+            reason,
+            ...(handles === undefined ? {} : { handles: [...handles] }),
+            ...(detail === undefined ? {} : { detail }),
+          },
+        ],
+        decidedAt,
+      );
+    }
+    if (written && newlyOpened && opened !== undefined) {
+      this.#announceOpening(
+        { id, ...(detail === undefined ? {} : { detail }) },
+        opened,
+        decidedAt,
+      );
+    }
     return outcome;
   }
 
@@ -2400,9 +2647,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         ),
     );
     this.#released = true;
-    this.#announce([
-      { id: "", outcome: "released", kind: this.#summoner.provider.kind },
-    ]);
+    this.#announce(
+      [{ id: "", outcome: "released", kind: this.#summoner.provider.kind }],
+      Date.now(),
+    );
   }
 
   /**
@@ -2448,6 +2696,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     now: number,
     /** Where this check's events are collected. */
     events: SummonEventPayload[],
+    /** Told of each late loss, so the check can note a circuit it opens. */
+    onLoss: (id: string, detail: string) => void,
   ): boolean {
     const before = marker.watching ?? [];
     let changed = released.length > 0;
@@ -2474,6 +2724,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       if (detail !== undefined) {
         changed = true;
         this.#failLate(marker, now);
+        onLoss(watched.id, detail);
         marker.last = { id: watched.id, outcome: "lost", at: now, detail };
         events.push({
           id: watched.id,
@@ -2624,7 +2875,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
     rollBudget(marker, now);
-    const { perHour, perDay } = this.#policy.budget;
+    const budget = this.#policy.budget;
     return {
       queue: this.queue,
       local: true,
@@ -2643,9 +2894,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         : {}),
       budget: {
         hour: marker.budget.hour,
-        perHour,
+        ...(budget === false ? {} : { perHour: budget.perHour }),
         day: marker.budget.day,
-        perDay,
+        ...(budget === false
+          ? { off: true as const }
+          : { perDay: budget.perDay }),
+        ...budgetResets(marker),
       },
       ...(marker.last === undefined ? {} : { last: marker.last }),
     };
@@ -2705,11 +2959,21 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * Clears failures, the loss streak, backoff and an open circuit. Pending
    * and watched attempts are kept, so a crash from before the reset still
    * counts one failure after it — but not the failures the reset cleared.
+   * With `{ budget: true }` it also zeroes the attempts counted against the
+   * budget this hour and today, in the same write.
    *
    * @throws {JobsError} code `SUMMON_MARKER_CONTENDED` when other controllers
    *   won every write it tried; try again.
    */
-  async reset(): Promise<void> {
+  async reset(options?: {
+    /**
+     * Also clear the budget's usage: the attempts counted this UTC hour and
+     * day go to `0`. Defaults to `false`: the counts are what keep a queue
+     * inside its cost ceiling, so clearing them is asked for explicitly.
+     */
+    budget?: boolean;
+  }): Promise<void> {
+    const clearUsage = options?.budget === true;
     await this.#connect();
     for (let attempt = 0; attempt < RECORD_ATTEMPTS * 2; attempt++) {
       const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
@@ -2731,6 +2995,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       // The streak too: a watched attempt lost after the reset counts one,
       // never the failures the operator just cleared.
       delete marker.lossStreak;
+      if (clearUsage) {
+        clearBudget(marker, Date.now());
+      }
       if (
         (await setReservedState(
           this.#driver,
@@ -2740,6 +3007,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           version,
         )) !== null
       ) {
+        if (clearUsage) {
+          // A limit hit again in this window is news again, here too.
+          this.#budgetNoted = undefined;
+        }
         return;
       }
     }

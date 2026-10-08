@@ -113,6 +113,12 @@ export const WorkersListScreen = onDemand(
   "Loading the workers",
 );
 
+/** `/summon`, on demand. */
+export const SummoningScreen = onDemand(
+  async () => (await import("./summoning")).SummoningScreen,
+  "Loading the summon controllers",
+);
+
 /** `/providers`, on demand. */
 export const ProvidersScreen = onDemand(
   async () => (await import("./providers")).ProvidersScreen,
