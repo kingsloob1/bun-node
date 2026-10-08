@@ -31,6 +31,7 @@ import type {
   UnitStatus,
   WatchedSummon,
 } from "./types";
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import {
   DEFAULT_DEMAND_CAP,
@@ -430,10 +431,36 @@ function circuitOpen(marker: SummonMarker, now: number): boolean {
 }
 
 /**
+ * The most bytes a summon's arguments may take, counting one separator per
+ * argument: 8 KiB. A guess at the tightest common platform limit on a
+ * command override (plan Q10); each argument a group adds costs about 30
+ * bytes plus the queue's name. Internal.
+ */
+export const SUMMON_ARGV_MAX_BYTES = 8 * 1024;
+
+/** The bytes `argv` takes on a command line: each argument in UTF-8, plus one separator. */
+function argvBytes(argv: readonly string[]): number {
+  let bytes = 0;
+  for (const arg of argv) {
+    bytes += Buffer.byteLength(arg) + 1;
+  }
+  return bytes;
+}
+
+/**
  * The parts of a request that go over the wire, built from the claim and the
  * static policy only — never from the clock, the demand reading or the
  * trigger — so every request for one attempt id is byte-identical.
- * Internal; exported for its test.
+ *
+ * One `--bun-jobs-summon-queue=` per queue, in the given order, so one queue
+ * gives exactly the arguments it always has; `--bun-jobs-summon-group=` only
+ * when there are several queues and a group. Internal; exported for its
+ * test and the conformance kit.
+ *
+ * @throws {ConfigError} when `queues` is empty, names a queue twice or does
+ *   not start with `queue`, or when the arguments come to more than
+ *   {@link SUMMON_ARGV_MAX_BYTES}. The controller builds one request at
+ *   construction, so a group too large to summon is refused there.
  */
 export function wireRequest(
   claim: {
@@ -447,8 +474,15 @@ export function wireRequest(
   context: {
     /** The namespace. */
     namespace: string;
-    /** The queue. */
+    /** The queue: the first of `queues` when several are given. */
     queue: string;
+    /**
+     * Every queue the unit serves, in the policy's order. Defaults to
+     * `[queue]`.
+     */
+    queues?: readonly string[];
+    /** The summon group, written only with more than one queue. */
+    group?: string;
     /** The summoner's kind. */
     kind: string;
     /** The summoner's style. */
@@ -462,28 +496,57 @@ export function wireRequest(
     /** Static environment. */
     env: Readonly<Record<string, string>>;
   },
-): Omit<SummonRequest, "demand" | "reason"> {
+): Omit<SummonRequest, "demand" | "demands" | "reason"> {
+  const queues = context.queues ?? [context.queue];
+  if (queues.length === 0 || queues[0] !== context.queue) {
+    throw new ConfigError("A summon's queues must start with its queue", {
+      queue: context.queue,
+      queues: [...queues],
+    });
+  }
+  if (new Set(queues).size !== queues.length) {
+    throw new ConfigError("A summon names each queue once", {
+      queues: [...queues],
+    });
+  }
+  // One queue writes no group: its arguments stay byte-identical to a
+  // summon from before groups existed.
+  const group =
+    queues.length > 1 && context.group !== undefined
+      ? context.group
+      : undefined;
   // A launch or wake unit ends when its process exits, so it exits on idle; a
   // scale unit would only be restarted by its platform, so it runs until
   // stopped (and the controller scales it to zero).
   const mode = context.style === "scale" ? "until-stopped" : "exit-on-idle";
+  const argv = [
+    `${SUMMON_ARGS.id}=${claim.id}`,
+    `${SUMMON_ARGS.kind}=${context.kind}`,
+    `${SUMMON_ARGS.mode}=${mode}`,
+    `${SUMMON_ARGS.namespace}=${context.namespace}`,
+    ...(group === undefined ? [] : [`${SUMMON_ARGS.group}=${group}`]),
+    ...queues.map((queue) => `${SUMMON_ARGS.queue}=${queue}`),
+    `${SUMMON_ARGS.maxLifetimeMs}=${context.maxLifetime}`,
+    `${SUMMON_ARGS.graceMs}=${context.graceMs}`,
+  ];
+  const bytes = argvBytes(argv);
+  if (bytes > SUMMON_ARGV_MAX_BYTES) {
+    throw new ConfigError(
+      `A summon's arguments for ${queues.length} queues come to ${bytes} bytes, over the 8 KiB a summon may pass: split the group, or shorten ${group === undefined ? "its queue names" : `its queue names or the group's name (${Buffer.byteLength(group)} bytes)`}`,
+      { bytes, limit: SUMMON_ARGV_MAX_BYTES, queues: queues.length },
+    );
+  }
   return {
     namespace: context.namespace,
     queue: context.queue,
+    queues: Object.freeze([...queues]),
+    ...(group === undefined ? {} : { group }),
     id: claim.id,
     dedupeKey: context.dedupeKey(claim.id),
     count: claim.count,
     target: claim.target,
     env: context.env,
-    argv: Object.freeze([
-      `${SUMMON_ARGS.id}=${claim.id}`,
-      `${SUMMON_ARGS.kind}=${context.kind}`,
-      `${SUMMON_ARGS.mode}=${mode}`,
-      `${SUMMON_ARGS.namespace}=${context.namespace}`,
-      `${SUMMON_ARGS.queue}=${context.queue}`,
-      `${SUMMON_ARGS.maxLifetimeMs}=${context.maxLifetime}`,
-      `${SUMMON_ARGS.graceMs}=${context.graceMs}`,
-    ]),
+    argv: Object.freeze(argv),
     maxLifetimeMs: context.maxLifetime,
   };
 }
@@ -750,8 +813,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * until every check has passed.
    *
    * @throws {ConfigError} for a scale style without `release`, a dedupe
-   *   charset that is not a character class, or a policy the capabilities
-   *   rule out (see `#resolve`).
+   *   charset that is not a character class, a policy the capabilities
+   *   rule out (see `#resolve`), or summon arguments over 8 KiB (see
+   *   `wireRequest`).
    */
   #bind(facet: SummonFacet, capabilities: SummonCapabilities): void {
     if (capabilities.style === "scale" && typeof facet.release !== "function") {
@@ -770,6 +834,26 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
     const policy = this.#resolve(this.#options, capabilities);
+    // The arguments every attempt passes, built once now (an attempt id has
+    // a fixed length): arguments over the limit are refused at
+    // construction, or at adoption, never at a first attempt.
+    wireRequest(
+      {
+        id: attemptId(this.namespace, this.queue, "", 0),
+        count: 1,
+        target: 1,
+      },
+      {
+        namespace: this.namespace,
+        queue: this.queue,
+        kind: this.#summoner.provider.kind,
+        style: capabilities.style,
+        dedupeKey,
+        graceMs: capabilities.shutdown.graceMs,
+        maxLifetime: policy.maxLifetime,
+        env: policy.env,
+      },
+    );
     const product = policy.maxWorkers * policy.jobsPerWorker;
     this.#facet = facet;
     this.#capabilities = capabilities;
@@ -2642,7 +2726,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     await this.#call(
       async (context) =>
         await facet.release!(
-          { namespace: this.namespace, queue: this.queue, target: 0 },
+          {
+            namespace: this.namespace,
+            queue: this.queue,
+            queues: Object.freeze([this.queue]),
+            target: 0,
+          },
           context,
         ),
     );

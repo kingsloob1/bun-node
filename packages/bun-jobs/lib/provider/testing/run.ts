@@ -131,6 +131,14 @@ export interface KitRun {
     target?: number;
     /** The worker's longest life, in ms. */
     maxLifetimeMs?: number;
+    /**
+     * Every queue the unit is for, in order, as a shared unit's request
+     * names them: the first becomes `queue`. Defaults to {@link DIRECT_QUEUE}
+     * alone.
+     */
+    queues?: readonly string[];
+    /** The summon group, written to `argv` with more than one queue. */
+    group?: string;
     /** The request's `env` (the policy's static environment). Defaults to `{}`. */
     env?: Readonly<Record<string, string>>;
   }) => SummonRequest;
@@ -299,7 +307,9 @@ export function createRun(input: {
           { id, count, target: options.target ?? count },
           {
             namespace,
-            queue: DIRECT_QUEUE,
+            queue: options.queues?.[0] ?? DIRECT_QUEUE,
+            ...(options.queues === undefined ? {} : { queues: options.queues }),
+            ...(options.group === undefined ? {} : { group: options.group }),
             kind: input.identity.kind,
             style: capabilities.style,
             dedupeKey: dedupeKeyFor(capabilities.dedupe),

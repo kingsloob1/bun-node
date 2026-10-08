@@ -106,7 +106,7 @@ describe("defineComputeProvider: the definition", () => {
     expect(Symbol.keyFor(CONFIGURED_PROVIDER)).toBe(
       "@kingsleyweb/bun-jobs/configured-provider",
     );
-    expect(COMPUTE_PROVIDER_API).toEqual({ core: "0.1", summon: "0.1" });
+    expect(COMPUTE_PROVIDER_API).toEqual({ core: "0.1", summon: "0.2" });
     expect(Object.isFrozen(COMPUTE_PROVIDER_API)).toBe(true);
   });
 
@@ -484,7 +484,8 @@ describe("defineSummoner, rebuilt on defineComputeProvider", () => {
       name: "custom:my-cloud",
       version: "0.0.0",
       kind: "my-cloud",
-      apiVersion: { core: "0.1", summon: "0.1" },
+      // Built by the host, at the host's own versions.
+      apiVersion: { core: "0.1", summon: "0.2" },
     });
     expect(summoner.summon.capabilities).toStrictEqual({
       style: "launch",

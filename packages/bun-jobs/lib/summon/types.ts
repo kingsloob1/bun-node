@@ -78,8 +78,27 @@ export interface Summoner extends ConfiguredProvider {
 export interface SummonRequest {
   /** The namespace of the queue that needs a worker. */
   namespace: string;
-  /** The queue that needs a worker. */
+  /**
+   * The queue that needs a worker. For a unit serving several queues, the
+   * first of {@link SummonRequest.queues}.
+   */
   queue: string;
+  /**
+   * Every queue the unit is summoned for, in the policy's order: `[queue]`
+   * for one queue, several for a summon group whose unit serves them all.
+   * The controller always sets it (summon API `0.2`); it is optional here
+   * only so a request built by hand, or by an older host, still type-checks:
+   * read it as `request.queues ?? [request.queue]`. A function of the
+   * policy, so as pure as `id`. **A provider needs none of this to work:**
+   * the queues reach the unit in `argv`, which it passes through whole.
+   */
+  queues?: readonly string[];
+  /**
+   * The summon group the unit is started for, when it serves more than one
+   * queue (summon API `0.2`). Reaches the worker as `--bun-jobs-summon-group=`
+   * in `argv`; absent for one queue. As pure as `id`.
+   */
+  group?: string;
   /**
    * This attempt's id, deterministic for one marker claim, so a retried call
    * is identical, and never repeated, even after the marker is deleted or
@@ -107,6 +126,13 @@ export interface SummonRequest {
    * readings**: never put it on the wire of a platform whose dedupe is strict.
    */
   demand: QueueDemand;
+  /**
+   * For a unit serving several queues, every queue's demand reading, keyed
+   * by queue; `demand` is then the most-starved queue's (summon API `0.2`).
+   * Absent for one queue. **Varies between two readings**, as `demand` does:
+   * never put it on the wire of a platform whose dedupe is strict.
+   */
+  demands?: Readonly<Record<string, QueueDemand>>;
   /** Why the check ran. Like `demand`, not a function of the attempt id. */
   reason: SummonReason;
   /**
@@ -124,12 +150,32 @@ export interface SummonRequest {
   maxLifetimeMs: number;
 }
 
-/** What a scale-style summoner is asked to do when demand has gone. */
+/**
+ * What a scale-style summoner is asked to do when demand has gone.
+ *
+ * **`queues` plus `group` identify the unit**, as they did on the
+ * `SummonRequest` that summoned it: a release names the same queues, in the
+ * same order, and the same group. Read them as
+ * `request.queues ?? [request.queue]` and `request.group`.
+ */
 export interface SummonReleaseRequest {
   /** The namespace of the queue. */
   namespace: string;
-  /** The queue. */
+  /** The queue: for a unit serving several queues, the first of `queues`. */
   queue: string;
+  /**
+   * Every queue the unit serves, in the policy's order: `[queue]` for one
+   * queue (summon API `0.2`). Set by the controller; optional here only so a
+   * request built by hand, or by an older host, still type-checks: read it
+   * as `request.queues ?? [request.queue]`.
+   */
+  queues?: readonly string[];
+  /**
+   * The summon group of the unit, when it serves more than one queue
+   * (summon API `0.2`): the `group` its `SummonRequest` carried. With
+   * `queues`, what identifies a shared unit. Absent for one queue.
+   */
+  group?: string;
   /** The count to set. `0` scales to zero. */
   target: number;
 }

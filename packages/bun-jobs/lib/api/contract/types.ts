@@ -2453,6 +2453,12 @@ export interface WorkerSummonProvenanceDto {
    */
   deadlineAt?: number;
   /**
+   * The summon group whose shared unit this worker belongs to, when the unit
+   * was summoned for several queues: what a badge shows as "unit of media".
+   * Absent for a unit summoned for one queue; never defaulted.
+   */
+  group?: string;
+  /**
    * The mode the worker **actually runs in**, as `runSummoned` resolved it:
    * its own option, else the requested `mode`, else `"exit-on-idle"`. So it
    * may be present with no `mode`. Absent on a worker not run by

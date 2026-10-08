@@ -50,6 +50,7 @@ const MUST_PASS = [
   "summon.lifetime.enforced",
   "summon.describe.facts",
   "summon.validate.healthy",
+  "summon.argv.round-trip",
   "summon.handoff.started",
   "summon.handoff.released",
   "summon.handoff.drained",
@@ -248,9 +249,18 @@ describe("the kit's self-hosted mode (negative controls)", () => {
     ).toContain("no platform");
   });
 
-  it("fails the handoff of one that drops the summon arguments", async () => {
+  it("fails the round trip and the handoff of one that drops the summon arguments", async () => {
     const report = await run("drops-argv", ["summon.cas.one-call"]);
-    expect(failed(report)).toEqual(["summon.handoff.released"]);
+    // Two checks read the same defect: the round trip sees no argument
+    // arrive, and the handoff's worker never names its attempt.
+    expect(failed(report)).toEqual([
+      "summon.argv.round-trip",
+      "summon.handoff.released",
+    ]);
+    expect(
+      report.checks.find((check) => check.id === "summon.argv.round-trip")
+        ?.detail,
+    ).toContain("pass request.argv to the unit");
     expect(
       report.checks.find((check) => check.id === "summon.handoff.released")
         ?.detail,

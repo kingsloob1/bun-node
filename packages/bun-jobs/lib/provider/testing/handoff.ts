@@ -17,17 +17,26 @@ import { join } from "node:path";
 import { createDriver, supportsWorkers } from "../../drivers/index";
 import { BunQueue } from "../../queue/BunQueue";
 import { ConfigError } from "../../shared/errors";
+import { SUMMON_ARGS } from "../../summon/args";
 import { SummonController } from "../../summon/controller";
 import { PROVIDER_FETCH_PROBE } from "../context";
 import { textRedactor } from "../redact";
 import { VERDICT_POLICY } from "./checks";
 import { RACER, RACER_ENV } from "./racer";
-import { describeThrown, fakeOf, kitLifetime, randomHex } from "./run";
+import {
+  describeThrown,
+  DIRECT_QUEUE,
+  fakeOf,
+  kitLifetime,
+  randomHex,
+} from "./run";
 import { spawnUnit, unitLines, unitSpawner } from "./spawn";
 import { FIXTURE_ENV, FIXTURE_WORKER } from "./worker";
 
 /**
- * The summon kit's end-to-end checks (plugins §12.2): the handoff — a real
+ * The summon kit's end-to-end checks (plugins §12.2): the argument round
+ * trip — a request whose `argv` repeats an argument reaches the unit's
+ * process whole and in order; the handoff — a real
  * `SummonController` summons through the provider, the fake starts the kit's
  * fixture worker for the unit, the worker registers and the attempt is
  * released — and the compare-and-set, two controllers in two processes
@@ -122,6 +131,338 @@ async function within<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The queues the argument round trip names, in order: the first is the
+ * direct calls' queue, and the others carry the `.`, `-` and `_` a queue
+ * name may hold, so a delimiter a platform layer splits on shows.
+ */
+const ROUND_TRIP_QUEUES = [DIRECT_QUEUE, "work.b", "work_c-2"] as const;
+
+/** The group the argument round trip names. */
+const ROUND_TRIP_GROUP = "conformance";
+
+/** How long the round trip waits for the fake to start a unit, and for it to answer, in ms. */
+const ROUND_TRIP_WITHIN_MS = 10_000;
+
+/**
+ * The argv group (summon-multi-queue §4.8): a request for a unit serving
+ * three queues repeats `--bun-jobs-summon-queue=` three times, and the
+ * process the fake starts for it must see every argument of `request.argv`,
+ * in order — what a shared unit's worker reads its queues from. A platform
+ * layer that dedupes arguments, keys them by flag, drops one or reorders
+ * them would otherwise break a shared unit silently, while every
+ * single-queue check still passed.
+ *
+ * A scale platform's count goes back to what it was afterwards, by a
+ * `release` naming the unit the round trip summoned (its queues and group);
+ * a release that throws fails the check. An `already-running` answer that
+ * starts no unit is a skip for a scale or wake platform, whose unit may be
+ * up already, and a failure for a launch platform, which starts a unit per
+ * attempt.
+ */
+export async function argvChecks(run: KitRun): Promise<void> {
+  const id = "summon.argv.round-trip";
+  if (run.capabilities.passes !== "argv") {
+    run.set(id, "skip", "passes is none: the platform passes no arguments");
+    return;
+  }
+  if (run.selfHosted) {
+    await selfHostedArgv(run, id);
+    return;
+  }
+  const { platform, internals } = fakeOf(run);
+  const dir = await mkdtemp(join(tmpdir(), "bun-jobs-conformance-argv-"));
+  const echo = join(dir, "args.json");
+  const spawner = unitSpawner(FIXTURE_WORKER, { [FIXTURE_ENV.echo]: echo });
+  const started: Promise<SpawnedUnit>[] = [];
+  platform.onStart((unit) => {
+    started.push(
+      (async () => {
+        const process = await spawner.start({ argv: unit.argv });
+        internals.mark(unit.handle, "running");
+        void process.exited.then(() => {
+          internals.mark(unit.handle, "exited");
+        });
+        return process;
+      })(),
+    );
+  });
+  const style = run.capabilities.style;
+  const scale = style === "scale";
+  const live = internals.liveCount();
+  const request = run.request({
+    queues: ROUND_TRIP_QUEUES,
+    group: ROUND_TRIP_GROUP,
+    count: 1,
+    // A scale platform starts a unit only when its count rises.
+    target: scale ? live + 1 : 1,
+  });
+  let verdict: ["pass" | "fail" | "skip", string];
+  try {
+    verdict = await roundTrip(run, request, started, echo);
+  } catch (error) {
+    verdict = ["fail", `the round trip failed: ${run.explain(error)}`];
+  } finally {
+    platform.onStart(undefined);
+    await Promise.all(started).catch(() => {});
+    await within(spawner.kill("SIGKILL"), 5_000);
+  }
+  try {
+    // A scale platform's count goes back to what it was: released by the
+    // unit it summoned, its queues and group, as a controller would.
+    if (scale && run.facet.release !== undefined) {
+      const released = await run.call(
+        async (context) =>
+          await run.facet.release!(
+            {
+              namespace: request.namespace,
+              queue: request.queue,
+              queues: request.queues ?? [request.queue],
+              ...(request.group === undefined ? {} : { group: request.group }),
+              target: live,
+            },
+            context,
+          ),
+      );
+      if (!released.ok) {
+        const why = `release of the round trip's unit (target ${live}) threw ${describeThrown(released.error)}, so the count was not restored`;
+        verdict =
+          verdict[0] === "fail"
+            ? ["fail", `${verdict[1]}; and the ${why}`]
+            : ["fail", `the ${why}`];
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  run.set(id, ...verdict);
+}
+
+/** The round trip's call and wait: the verdict, unless something threw. */
+async function roundTrip(
+  /** The run. */
+  run: KitRun,
+  /** The request the round trip sends. */
+  request: SummonRequest,
+  /** The units the fake started, as the kit spawns them. */
+  started: readonly Promise<SpawnedUnit>[],
+  /** The file the fixture echoes to. */
+  echo: string,
+): Promise<["pass" | "fail" | "skip", string]> {
+  const outcome = await run.call(
+    async (context) => await run.facet.summon(request, context),
+  );
+  if (!outcome.ok) {
+    return ["fail", `summon threw ${describeThrown(outcome.error)}`];
+  }
+  const by = Date.now() + ROUND_TRIP_WITHIN_MS;
+  while (started.length === 0 && Date.now() < by) {
+    await pause(20);
+  }
+  if (started.length === 0) {
+    return outcome.value?.status === "already-running"
+      ? alreadyRunning(run)
+      : ["fail", "the fake started no unit for the request"];
+  }
+  const unit = await started[0]!;
+  const code = await within(unit.exited, ROUND_TRIP_WITHIN_MS);
+  return roundTripVerdict(
+    request.argv,
+    code === undefined
+      ? "the unit's process did not answer"
+      : await readEcho(echo, code),
+  );
+}
+
+/**
+ * The verdict when the provider answered `already-running` and started no
+ * unit: a skip for a scale or wake platform, whose unit may be up already,
+ * and a failure for a launch platform, which starts a unit per attempt.
+ */
+function alreadyRunning(run: KitRun): ["fail" | "skip", string] {
+  return run.capabilities.style === "launch"
+    ? [
+        "fail",
+        "a launch platform answered already-running for a fresh attempt and started no unit, so no arguments reached one",
+      ]
+    : [
+        "skip",
+        "the platform answered already-running and started no unit, so no arguments reached one",
+      ];
+}
+
+/**
+ * The round trip for a self-hosted provider (no platform): the provider
+ * starts the kit's fixture worker itself, so the echo file reaches it through
+ * the request's `env`, as test control, never identity. With no platform
+ * count to read, a scale provider's unit is released to zero afterwards (a
+ * self-hosted run's units are all the kit's), naming its queues and group; a
+ * release that throws fails the check, as on a fake.
+ */
+async function selfHostedArgv(run: KitRun, id: string): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "bun-jobs-conformance-argv-"));
+  const echo = join(dir, "args.json");
+  const request = run.request({
+    queues: ROUND_TRIP_QUEUES,
+    group: ROUND_TRIP_GROUP,
+    count: 1,
+    env: { [FIXTURE_ENV.echo]: echo },
+  });
+  let verdict: ["pass" | "fail" | "skip", string];
+  try {
+    const outcome = await run.call(
+      async (context) => await run.facet.summon(request, context),
+    );
+    if (!outcome.ok) {
+      verdict = ["fail", `summon threw ${describeThrown(outcome.error)}`];
+    } else if (outcome.value?.status === "already-running") {
+      verdict = alreadyRunning(run);
+    } else {
+      for (const handle of outcome.value?.status === "started"
+        ? outcome.value.handles
+        : []) {
+        run.handles.add(handle);
+      }
+      const by = Date.now() + ROUND_TRIP_WITHIN_MS;
+      while (!(await Bun.file(echo).exists()) && Date.now() < by) {
+        await pause(20);
+      }
+      await pause(50);
+      verdict = roundTripVerdict(
+        request.argv,
+        (await Bun.file(echo).exists())
+          ? ((await Bun.file(echo).json()) as EchoedArgs)
+          : "the unit's process never read its arguments",
+      );
+    }
+  } catch (error) {
+    verdict = ["fail", `the round trip failed: ${run.explain(error)}`];
+  }
+  try {
+    if (run.capabilities.style === "scale" && run.facet.release !== undefined) {
+      const released = await run.call(
+        async (context) =>
+          await run.facet.release!(
+            {
+              namespace: request.namespace,
+              queue: request.queue,
+              queues: request.queues ?? [request.queue],
+              ...(request.group === undefined ? {} : { group: request.group }),
+              target: 0,
+            },
+            context,
+          ),
+      );
+      if (!released.ok) {
+        const why = `release of the round trip's unit (target 0) threw ${describeThrown(released.error)}`;
+        verdict =
+          verdict[0] === "fail"
+            ? ["fail", `${verdict[1]}; and the ${why}`]
+            : ["fail", `the ${why}`];
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  run.set(id, ...verdict);
+}
+
+/** What the fixture worker wrote in echo mode. */
+interface EchoedArgs {
+  /** Its arguments, after the script. */
+  argv: string[];
+  /** What `summonedFromArgs()` read from them. */
+  summon: {
+    /** The queues it read. */
+    queues?: readonly string[];
+    /** The group it read. */
+    group?: string;
+  } | null;
+}
+
+/** The fixture's echo, or why there is none: it exited `code` without writing one. */
+async function readEcho(
+  /** The file it was told to write. */
+  path: string,
+  /** Its exit code. */
+  code: number,
+): Promise<EchoedArgs | string> {
+  const file = Bun.file(path);
+  if (!(await file.exists())) {
+    return `the unit's process exited ${code} without reading its arguments`;
+  }
+  return (await file.json()) as EchoedArgs;
+}
+
+/**
+ * The first argument of `sent` that `received` lacks once every earlier one
+ * is matched in order (`sent` must be a subsequence of `received`), or
+ * `undefined` when all of them arrived in order. A platform may add
+ * arguments of its own around them; it may not drop or reorder any.
+ */
+function missingInOrder(
+  /** The arguments the request carried. */
+  sent: readonly string[],
+  /** The arguments the unit's process received. */
+  received: readonly string[],
+): { index: number; arg: string; elsewhere: boolean } | undefined {
+  let at = 0;
+  for (const [index, arg] of sent.entries()) {
+    const found = received.indexOf(arg, at);
+    if (found === -1) {
+      return { index, arg, elsewhere: received.includes(arg) };
+    }
+    at = found + 1;
+  }
+  return undefined;
+}
+
+/** The round trip's verdict: whether the unit saw every argument the request carried, in order. */
+function roundTripVerdict(
+  /** The arguments the request carried. */
+  sent: readonly string[],
+  /** What the unit read, or why nothing was read. */
+  echoed: EchoedArgs | string,
+): ["pass" | "fail", string] {
+  if (typeof echoed === "string") {
+    return ["fail", echoed];
+  }
+  const queueArgs = (argv: readonly string[]): string[] =>
+    argv.filter((arg) => arg.startsWith(`${SUMMON_ARGS.queue}=`));
+  const expected = queueArgs(sent);
+  const received = queueArgs(echoed.argv);
+  if (JSON.stringify(received) !== JSON.stringify(expected)) {
+    return [
+      "fail",
+      `the unit received ${received.length} ${SUMMON_ARGS.queue}= argument(s), ${JSON.stringify(received.map((arg) => arg.slice(SUMMON_ARGS.queue.length + 1)))}, where the request had ${JSON.stringify([...ROUND_TRIP_QUEUES])}: pass request.argv to the unit whole and in order, repeated arguments included`,
+    ];
+  }
+  const missing = missingInOrder(sent, echoed.argv);
+  if (missing !== undefined) {
+    const flag = missing.arg.slice(0, missing.arg.indexOf("=") + 1);
+    return [
+      "fail",
+      missing.elsewhere
+        ? `the unit received request.argv out of order: argument ${missing.index + 1} of ${sent.length} (${flag}) arrived before one the request put ahead of it; pass request.argv to the unit whole and in order`
+        : `the unit never received argument ${missing.index + 1} of ${sent.length} (${flag}): pass request.argv to the unit whole and in order`,
+    ];
+  }
+  if (
+    JSON.stringify(echoed.summon?.queues) !==
+      JSON.stringify(ROUND_TRIP_QUEUES) ||
+    echoed.summon?.group !== ROUND_TRIP_GROUP
+  ) {
+    return [
+      "fail",
+      `summonedFromArgs() in the unit read queues ${JSON.stringify(echoed.summon?.queues ?? null)} and group ${JSON.stringify(echoed.summon?.group ?? null)}`,
+    ];
+  }
+  return [
+    "pass",
+    `all ${sent.length} arguments arrived in order, the ${expected.length} repeated ${SUMMON_ARGS.queue}= among them`,
+  ];
 }
 
 /** The handoff group's checks, in order. */

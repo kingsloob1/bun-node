@@ -210,6 +210,12 @@ export const WorkerSummonProvenanceSchema = s.named(
             "The latest it should stop, epoch ms, as requested by the summoner. Absent when none was requested, never defaulted.",
         }),
       ),
+      group: s.optional(
+        s.string({
+          description:
+            'The summon group whose shared unit this worker belongs to, when the unit was summoned for several queues: what a badge shows as "unit of media". Absent for a unit summoned for one queue, never defaulted.',
+        }),
+      ),
       resolvedMode: s.optional(
         s.enum(["exit-on-idle", "until-stopped", "in-invocation"] as const, {
           description:

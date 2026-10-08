@@ -1,5 +1,6 @@
 import type { WorkerSummonProvenance } from "../shared/workers";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 
 /**
  * A summoned worker's provenance: the modes a summoner can request, and the
@@ -32,7 +33,7 @@ export function isSummonMode(
 /** A string field of the provenance: absent, or a non-empty string. */
 function optionalText(
   summon: Record<string, unknown>,
-  field: "kind" | "handle",
+  field: "kind" | "handle" | "group",
 ): string | undefined {
   const value = summon[field];
   if (value === undefined) {
@@ -48,17 +49,19 @@ function optionalText(
 }
 
 /**
- * Checks a worker's `summon` option and copies the five fields the record
+ * Checks a worker's `summon` option and copies the six fields the record
  * carries, so the record is written from a resolved value rather than
  * whatever object the caller passed (`summonedFromArgs()` adds `namespace`,
- * `queue`, `maxLifetimeMs` and `graceMs`, which must not reach the record).
+ * `queue`, `queues`, `maxLifetimeMs` and `graceMs`, which must not reach the
+ * record).
  *
  * `undefined` stays `undefined`: an ordinary worker writes no `summon`. And
  * nothing inside one is defaulted either: a `mode` or `deadlineAt` the
  * summoner did not request stays absent.
  *
  * @throws {ConfigError} on a malformed value (`id` is required: it is what
- *   makes a worker summoned), when the worker could never report — with
+ *   makes a worker summoned; a `group` must be a key segment, as a queue
+ *   name is), when the worker could never report — with
  *   `reportInterval: 0`, or on a driver that cannot store worker records —
  *   since then it could never release its attempt, and on a driver without
  *   queue state, where it could not claim its attempt once.
@@ -137,6 +140,11 @@ export function resolveSummonProvenance(
   const deadline = deadlineAt as number | undefined;
   const kind = optionalText(given, "kind");
   const handle = optionalText(given, "handle");
+  const group = optionalText(given, "group");
+  if (group !== undefined) {
+    // Written on the record and served by the API: a queue name's rule.
+    assertSegment(group, "summon.group");
+  }
 
   return Object.freeze({
     id,
@@ -144,5 +152,6 @@ export function resolveSummonProvenance(
     ...(handle === undefined ? {} : { handle }),
     ...(mode === undefined ? {} : { mode }),
     ...(deadline === undefined ? {} : { deadlineAt: deadline }),
+    ...(group === undefined ? {} : { group }),
   });
 }

@@ -538,7 +538,14 @@ export function unreachable(cause: unknown): ProviderError {
 The controller puts the attempt's identity in `request.argv`, as
 `--bun-jobs-summon-*=` arguments: its id, the provider's kind, the mode
 (`until-stopped` for a scale style, `exit-on-idle` otherwise), the namespace
-and queue, the maximum lifetime and the grace. Pass them to the unit's command line, as Acme's `args` does. The
+and queue, the maximum lifetime and the grace. Pass them to the unit's command line, as Acme's `args` does,
+**whole and in order**: a unit summoned for several queues (a summon group
+sharing one unit) gets `--bun-jobs-summon-queue=` once per queue, plus
+`--bun-jobs-summon-group=`, so a layer that dedupes arguments, keys them by
+flag, drops one or reorders them breaks it while every one-queue summon
+still works. The kit's `summon.argv.round-trip` check sends three queues and
+expects every argument of `request.argv` to arrive, in order: a `must` for a
+provider declaring summon `0.2`, a `should` for one declaring `0.1`. The
 worker reads them with `summonedFromArgs()`, and its heartbeat record carries
 the id back, which is how the controller knows **this** attempt registered:
 

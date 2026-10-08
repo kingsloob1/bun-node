@@ -23,7 +23,9 @@ import { runScript } from "./spawn";
  * a platform that passes no arguments.
  *
  * Prints one JSON line per fact: `ready`, `record` (its own heartbeat
- * record's `summon`, once listed), `processed`, `exit`.
+ * record's `summon`, once listed), `processed`, `exit`. In echo mode
+ * ({@link FIXTURE_ENV}`.echo`), it writes its arguments and what
+ * `summonedFromArgs()` read from them to that file instead, and exits.
  *
  * Runs only as a script (`import.meta.main`), so importing the module, as
  * the declaration build and a deep import do, starts nothing.
@@ -45,6 +47,13 @@ export const FIXTURE_ENV = {
    * for the self-hosted lifetime check.
    */
   holdMs: "BUN_JOBS_CONFORMANCE_HOLD_MS",
+  /**
+   * A file path: write the arguments the unit was started with, and what
+   * `summonedFromArgs()` reads from them, to it as JSON, then exit 0 without
+   * building a worker. The argument round trip's mode. A file rather than
+   * stdout, so it works whoever starts the process.
+   */
+  echo: "BUN_JOBS_CONFORMANCE_ECHO",
 } as const;
 
 /** This file, for the spawner. */
@@ -72,6 +81,14 @@ async function main(): Promise<never> {
     return await hold(Number(holdFor));
   }
   const summon = summonedFromArgs();
+  const echo = process.env[FIXTURE_ENV.echo];
+  if (echo !== undefined && echo !== "") {
+    await Bun.write(
+      echo,
+      JSON.stringify({ argv: process.argv.slice(2), summon: summon ?? null }),
+    );
+    process.exit(0);
+  }
   const driver = JSON.parse(
     process.env[FIXTURE_ENV.driver] ?? "null",
   ) as DriverConfig;
