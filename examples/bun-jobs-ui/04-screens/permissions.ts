@@ -98,6 +98,15 @@
  *   Summon now… and Reset… need the opt-in `queues.summon` and a status with
  *   `local` true. The panel also shows the summoner's readiness, always, and
  *   what it declares (style, boot budget, longest life) only once it is ready.
+ *   Its budget shows wherever the status carries `budget`, and Reset's "Also
+ *   clear budget usage" box needs Reset…'s needs and `/meta`'s
+ *   `features.summonResetBudget`.
+ * - **The Summoning screen lists what the API lets you read.** The nav entry
+ *   and `/summon` need `sections.manage`, `meta.mode` `jobs` or `both`,
+ *   `features.summonList` and the untargeted `queues.list`, the route's
+ *   action. The UI filters nothing: `GET /summon` asks `authorize` for
+ *   `queues.read` on each controller's queue and leaves out the ones refused,
+ *   so on the summon host it lists `audit` and `mail`, never `payroll`.
  * - **Providers are the process's, and `/providers` reads the untargeted
  *   map.** The Providers nav entry and `/providers` need `sections.manage`,
  *   `meta.features.providers` (false only in `runner` mode) and the opt-in
@@ -178,6 +187,8 @@ import type {
   RunnersAnalyticsDto,
   RunRecordDto,
   SummonCheckDto,
+  SummonListDto,
+  SummonListItemDto,
   SummonStatusDto,
   WorkerConfigOverrideDto,
   WorkerControlResultDto,
@@ -547,6 +558,12 @@ interface ScreenInputs {
    * not read, which closes the tab too.
    */
   summon?: SummonStatusDto | null;
+  /**
+   * One controller of `GET /summon`, as the Summoning screen draws its row:
+   * listed only where the API granted the caller `queues.read` on its queue.
+   * Absent off a row.
+   */
+  summonItem?: SummonListItemDto;
   /**
    * The cached `GET /providers` (query key `["providers"]`, one cache for the
    * Providers screen and the Summon panel), as the Summon panel holds it: its
@@ -1450,6 +1467,17 @@ const GATES = [
     when: ({ summon }) => summon !== undefined && summon !== null,
   },
   {
+    // `SummonBudget` in `SummonPanel.tsx`: the panel's Budget row, wherever
+    // the status carries `budget` (an older API's status has none). It reads
+    // nothing of its own: the meters, what is left and the reset times all
+    // come from the status the panel already holds.
+    name: "summon: budget",
+    row: "Summon panel budget",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => summon?.budget !== undefined,
+  },
+  {
     // The opt-in `queues.summon`, off under `readOnly`, and a controller in
     // the API's own process (`local`): a status read from another process's
     // controller would be read-only. `local` is always true today.
@@ -1467,6 +1495,16 @@ const GATES = [
     row: "Summon panel Reset…",
     map: "queue",
     needsOf: ["summon: Summon now…"],
+  },
+  {
+    // `canClearBudget` in `SummonPanel.tsx`: the box in Reset's dialog, only
+    // where `/meta` says the reset takes `{ "budget": true }`. Unticked, the
+    // reset sends no body, so an older API is asked nothing it would refuse.
+    name: "summon: Reset… also clear budget usage",
+    row: "Summon panel Reset: also clear budget usage",
+    map: "queue",
+    needsOf: ["summon: Reset…"],
+    features: ["summonResetBudget"],
   },
   {
     // `Summoner` in `SummonPanel.tsx`: the readiness badge sits beside the
@@ -1787,6 +1825,33 @@ const GATES = [
     modes: ["jobs", "both"],
     features: ["workers"],
     reads: ["workers.list"],
+  },
+  // Summoning: `/summon` reads the untargeted map; each row is the API's
+  // answer for one queue.
+  {
+    // `buildNav`: jobs or both, `features.summonList` (compared with `true`,
+    // so an older API that leaves it out reads as off), and the untargeted
+    // `queues.list`, the route's action. `SummoningScreen` reads the list on
+    // the same `queues.list`.
+    name: "Summoning: nav and /summon",
+    row: "Summoning nav entry and `/summon`",
+    map: "boot",
+    sections: ["manage"],
+    modes: ["jobs", "both"],
+    features: ["summonList"],
+    reads: ["queues.list"],
+  },
+  {
+    // `ControllerRow`: one per item of `GET /summon`. The UI filters nothing
+    // and asks for no map: the API lists a controller only where `authorize`
+    // grants `queues.read` on its queue, asked as `?queue=` asks it. So the
+    // `queue` map here is that queue's answer, which is what decides the row.
+    name: "summoning: row",
+    row: "Summoning row",
+    map: "queue",
+    needsOf: ["Summoning: nav and /summon"],
+    reads: ["queues.read"],
+    when: ({ summonItem }) => summonItem !== undefined,
   },
   // Providers: `/providers` is outside any queue, so the untargeted map
   // decides everything on it, Test connection included.
@@ -2607,6 +2672,21 @@ const METHOD_NAMES: ReadonlySet<string> = new Set(CLIENT_METHODS);
 const VERB_NAMES: ReadonlySet<string> = new Set(DESTRUCTIVE_VERBS);
 
 /**
+ * The `meta.mode` values a row names: the run of mode codes right after
+ * `` `meta.mode` `` (at `at` in `codes`), sorted; none when it names no mode.
+ * The run ends at the first other code, so a mode mentioned later in the cell
+ * ("`meta.features.summonList` (false in `runner` mode)") is not one of them.
+ */
+function modeValuesAfter(codes: readonly string[], at: number): string[] {
+  if (at === -1) {
+    return [];
+  }
+  const after = codes.slice(at + 1);
+  const end = after.findIndex((code) => !MODES.has(code));
+  return (end === -1 ? after : after.slice(0, end)).sort();
+}
+
+/**
  * What a row's cells ask for, as comparable lists. `element` is the
  * "Element" cell, which is where a marker row names its "You lack";
  * `elements` is every row's, to resolve "the Workers nav entry's needs" to
@@ -2657,14 +2737,10 @@ function needsOfCell(
       .filter((code) => code.startsWith("sections."))
       .map((code) => code.slice("sections.".length))
       .sort(),
-    // "`meta.mode` `runner` or `both`": the values that follow it.
-    modes:
-      mode === -1
-        ? []
-        : codes
-            .slice(mode + 1)
-            .filter((code) => MODES.has(code))
-            .sort(),
+    // "`meta.mode` `runner` or `both`": the values right after it. Only
+    // those: "(false in `runner` mode)" further on names a mode to say where
+    // a feature is off, not where the element is.
+    modes: modeValuesAfter(codes, mode),
     // "`meta.websocket`": the /meta fields named, other than the mode.
     metaFields: codes
       .filter(
@@ -4079,11 +4155,16 @@ checkEqual(
     // The memory driver runs no summon controller, so the queue screen
     // reads no status: asked below, on a host with one.
     "panel=summon": false,
+    "summon: budget": false,
     "summon: Summon now…": false,
     "summon: Reset…": false,
+    "summon: Reset… also clear budget usage": false,
     "summon: summoner readiness": false,
     "summon: what the summoner declares": false,
     "summon: Test connection": false,
+    // A Summoning row needs a controller `GET /summon` lists, and this host
+    // runs none: asked on the summon host, with its list.
+    "summoning: row": false,
     // The browser-side pagers, which need a list longer than one page: asked
     // below with row counts either side of each table's size.
     "panel=repeatables, pager": false,
@@ -6784,12 +6865,22 @@ async function summonHost(config: Partial<JobsApiConfig>) {
   });
   const summonApp = new BunHttpAdapter();
   summonApp.use(summonApi.basePath, summonApi.router);
-  /** A request through the real pipeline: status, and the parsed body. */
-  async function call<T>(method: "GET" | "POST", path: string) {
+  /**
+   * A request through the real pipeline: status, and the parsed body. A POST
+   * sends `body` as JSON, `{}` unless given.
+   */
+  async function call<T>(
+    method: "GET" | "POST",
+    path: string,
+    body: object = {},
+  ) {
     const response = await summonApp.fetch(`/summon-api${path}`, {
       method,
       ...(method === "POST"
-        ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }
         : {}),
     });
     return {
@@ -6804,7 +6895,10 @@ async function summonHost(config: Partial<JobsApiConfig>) {
   /** What the queue screen holds after its read: the status, `null` for no summoner, or unread. */
   const statuses: Record<string, SummonStatusDto | null | undefined> = {};
   const answers: Record<string, string> = {};
-  for (const queue of ["mail", "audit", "payroll", "plain"]) {
+  // `runner` mode has no queue screens.
+  for (const queue of hostMeta.mode === "runner"
+    ? []
+    : ["mail", "audit", "payroll", "plain"]) {
     hostMaps[queue] = (
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
@@ -6823,6 +6917,23 @@ async function summonHost(config: Partial<JobsApiConfig>) {
             read.status === 404
           ? null
           : undefined;
+  }
+  /** `GET /summon`, as the Summoning screen reads it. */
+  const list = await call<SummonListDto>("GET", "/summon");
+  /**
+   * Every gate, on `/summon` without a queue, or on `queue`'s screen (its map
+   * and its summon status) with one. `inputs` overrides any of them.
+   */
+  function gatesOf(queue?: string, inputs: Partial<ScreenInputs> = {}): Gates {
+    return screenGates({
+      meta: hostMeta,
+      sections,
+      boot: hostBoot,
+      ...(queue === undefined
+        ? {}
+        : { queue: hostMaps[queue]!, summon: statuses[queue] }),
+      ...inputs,
+    });
   }
   /**
    * The three summon gates on `queue`'s screen, with the status as its read
@@ -6853,6 +6964,8 @@ async function summonHost(config: Partial<JobsApiConfig>) {
     maps: hostMaps,
     statuses,
     answers,
+    list,
+    gatesOf,
     summonGatesOf,
   };
 }
@@ -6974,6 +7087,207 @@ checkEqual(
   "and the summoner was handed nothing more: one request in all",
   summonRequests.length,
   1,
+);
+
+/* ------------------------------------------------------------------ */
+step("Summoning: the nav entry, its rows, the budget and Reset's box");
+
+// `GET /summon` lists every summon controller in the API's process. Its
+// action is `queues.list`, untargeted; it then asks `authorize` for
+// `queues.read` on each controller's queue, as `GET /queues/:queue/summon`
+// asks it, and leaves out the ones refused. `/meta` says whether the route is
+// served (`features.summonList`) and whether a reset takes
+// `{ "budget": true }` (`features.summonResetBudget`): each false in
+// `runner` mode alone, and absent on an API older than it.
+
+const summonRunner = await summonHost({
+  actions: [...JOBS_API_ACTIONS],
+  mode: "runner",
+});
+/** The host's `authorize`, refusing the untargeted `queues.list` alone. */
+const refuseQueueList: JobsApiAuthorize = (req, ctx) =>
+  ctx.action === "queues.list" && ctx.queue === undefined
+    ? { allow: false, reason: "this caller may not list queues" }
+    : authorize(req, ctx);
+const summonRefuseList = await summonHost({
+  actions: [...JOBS_API_ACTIONS],
+  authorize: refuseQueueList,
+});
+
+/** A summon host, as {@link summonHost} builds it. */
+type SummonHost = Awaited<ReturnType<typeof summonHost>>;
+
+/** The Summoning nav entry on `host`: `features.summonList`, the gate, and `GET /summon`'s status. */
+function summoningEntry(
+  host: SummonHost,
+  inputs: Partial<ScreenInputs> = {},
+): [boolean | undefined, boolean, number] {
+  return [
+    (inputs.meta ?? host.meta).features.summonList,
+    host.gatesOf(undefined, inputs)["Summoning: nav and /summon"],
+    host.list.status,
+  ];
+}
+// An API older than the route leaves the flag out of `/meta` altogether.
+const { summonList: _summonList, ...olderFeatures } =
+  summonHostAll.meta.features;
+checkEqual(
+  "the Summoning entry and GET /summon: there with the untargeted queues.list (not opt-in, so the default actions have it too); absent in runner mode (features.summonList false, not routed), on an older API that leaves features.summonList out, where authorize refuses the untargeted queues.list (403), and with sections.manage off (the server still answers: sections are the UI's)",
+  {
+    all: summoningEntry(summonHostAll),
+    defaultActions: summoningEntry(summonDefault),
+    runner: summoningEntry(summonRunner),
+    olderApi: summoningEntry(summonHostAll, {
+      meta: {
+        ...summonHostAll.meta,
+        features: olderFeatures as MetaDto["features"],
+      },
+    }),
+    refused: summoningEntry(summonRefuseList),
+    manageOff: summoningEntry(summonHostAll, {
+      sections: { ...sections, manage: false },
+    }),
+  },
+  {
+    all: [true, true, 200],
+    defaultActions: [true, true, 200],
+    runner: [false, false, 404],
+    olderApi: [undefined, false, 200],
+    refused: [true, false, 403],
+    manageOff: [true, false, 200],
+  },
+);
+
+/** The controllers `host`'s `GET /summon` lists, by queue. */
+function listedQueues(host: SummonHost): string[] | undefined {
+  return host.list.status === 200
+    ? host.list.body.controllers.map((item) => item.queue)
+    : undefined;
+}
+show(
+  "GET /summon-api/summon",
+  summonHostAll.list.body.controllers.map(
+    ({ queue, kind, readiness, inert }) =>
+      `${queue}: ${kind}, ${readiness}${inert ? ", inert" : ""}`,
+  ),
+);
+checkEqual(
+  "GET /summon lists, by queue name, the controllers whose queue authorize lets this caller read: audit and mail; not payroll (a controller, but queues.read refused) nor plain (queues.read, but no controller)",
+  listedQueues(summonHostAll),
+  ["audit", "mail"],
+);
+// The UI filters nothing: a row is whatever the API listed. So GATES' row
+// gate, asked with each queue's own map, must agree with the API's filter:
+// open on the queues listed and closed on payroll, whose controller the API
+// left out. Payroll's item is mail's with its queue changed, a row the API
+// never sends.
+const mailItem = summonHostAll.list.body.controllers.find(
+  (item) => item.queue === "mail",
+)!;
+/** The queues with a controller whose Summoning row GATES opens on `host`. */
+function rowsOf(host: SummonHost): string[] {
+  return ["audit", "mail", "payroll"].filter(
+    (queue) =>
+      host.gatesOf(queue, {
+        summonItem: { ...mailItem, queue },
+      })["summoning: row"],
+  );
+}
+checkEqual(
+  "and a Summoning row is open on exactly the queues GET /summon lists: on queues.read for its queue, which the API asked; no row at all where the entry is absent (authorize refusing the untargeted queues.list)",
+  [rowsOf(summonHostAll), rowsOf(summonRefuseList)],
+  [listedQueues(summonHostAll), []],
+);
+checkEqual(
+  "each listed row carries its budget, with both limits and both reset times, as the Summon panel's status does",
+  summonHostAll.list.body.controllers.map((item) => [
+    item.queue,
+    typeof item.budget.perHour,
+    typeof item.budget.perDay,
+    item.budget.hourResetsAt > Date.now(),
+    item.budget.dayResetsAt >= item.budget.hourResetsAt,
+  ]),
+  [
+    ["audit", "number", "number", true, true],
+    ["mail", "number", "number", true, true],
+  ],
+);
+
+// The Summon panel's Budget row: wherever the status carries `budget`.
+checkEqual(
+  "the Summon panel's budget: on mail and audit (a status with budget), not on payroll or plain (no tab), and not on mail for a status without budget (an older API)",
+  [
+    ...["mail", "audit", "payroll", "plain"].map(
+      (queue) => summonHostAll.gatesOf(queue)["summon: budget"],
+    ),
+    summonHostAll.gatesOf("mail", {
+      summon: { ...summonHostAll.statuses.mail!, budget: undefined },
+    })["summon: budget"],
+  ],
+  [true, true, false, false, false],
+);
+
+// Reset's box: Reset…'s needs and `features.summonResetBudget`.
+checkEqual(
+  'Reset\'s "Also clear budget usage" box: on mail; not on read-only audit (no Reset…), on mail where /meta lacks features.summonResetBudget (an older API), on a readOnly host or one with the default actions (no Reset…); and runner mode has no reset to take it',
+  {
+    mail: summonHostAll.gatesOf("mail")[
+      "summon: Reset… also clear budget usage"
+    ],
+    audit:
+      summonHostAll.gatesOf("audit")["summon: Reset… also clear budget usage"],
+    olderApi: summonHostAll.gatesOf("mail", {
+      meta: {
+        ...summonHostAll.meta,
+        features: { ...summonHostAll.meta.features, summonResetBudget: false },
+      },
+    })["summon: Reset… also clear budget usage"],
+    readOnly:
+      summonReadOnly.gatesOf("mail")["summon: Reset… also clear budget usage"],
+    defaultActions:
+      summonDefault.gatesOf("mail")["summon: Reset… also clear budget usage"],
+    runnerFeature: summonRunner.meta.features.summonResetBudget,
+  },
+  {
+    mail: true,
+    audit: false,
+    olderApi: false,
+    readOnly: false,
+    defaultActions: false,
+    runnerFeature: false,
+  },
+);
+// What the box changes: the body Reset sends. Unticked it sends none, which
+// left the attempt "summon now" counted above in place.
+const budgetReset = await summonHostAll.call<SummonStatusDto>(
+  "POST",
+  "/queues/mail/summon/reset",
+  { budget: true },
+);
+checkEqual(
+  "ticked, Reset sends { budget: true }: the attempt counted this hour and today goes back to 0, where the unticked reset above kept it, and the attempt on its way is still kept",
+  {
+    unticked: [summonReset.body.budget?.hour, summonReset.body.budget?.day],
+    ticked: [
+      budgetReset.status,
+      budgetReset.body.budget?.hour,
+      budgetReset.body.budget?.day,
+      budgetReset.body.pending?.map((attempt) => attempt.id),
+    ],
+  },
+  {
+    unticked: [1, 1],
+    ticked: [200, 0, 0, [summonNow.body.id]],
+  },
+);
+checkEqual(
+  "and the server refuses the box where the dialog is absent: 403 on audit",
+  (
+    await summonHostAll.call<object>("POST", "/queues/audit/summon/reset", {
+      budget: true,
+    })
+  ).status,
+  403,
 );
 
 /* ------------------------------------------------------------------ */

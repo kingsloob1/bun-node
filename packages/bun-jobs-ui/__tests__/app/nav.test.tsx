@@ -30,6 +30,7 @@ describe("buildNav", () => {
       "overview",
       "queues",
       "workers",
+      "summoning",
       "runners",
       "events",
       "docs",
@@ -43,6 +44,7 @@ describe("buildNav", () => {
       "overview",
       "queues",
       "workers",
+      "summoning",
       "providers",
       "runners",
       "events",
@@ -61,11 +63,60 @@ describe("buildNav", () => {
     ).not.toContain("providers");
   });
 
+  it("offers Summoning after Workers, only where GET /summon is served, in jobs mode, with queues.list", () => {
+    const all = ids();
+    expect(all.indexOf("summoning")).toBe(all.indexOf("workers") + 1);
+    /** Meta whose `summonList` is `value`, or absent (an older API). */
+    const served = (value: boolean | undefined) => {
+      const meta = metaFixture();
+      const features: Record<string, boolean> = { ...meta.features };
+      if (value === undefined) {
+        delete features.summonList;
+      } else {
+        features.summonList = value;
+      }
+      return { ...meta, features: features as typeof meta.features };
+    };
+    expect(ids({ meta: served(true) })).toContain("summoning");
+    // Not served: runner mode's flag, and an API that predates the list.
+    expect(ids({ meta: served(false) })).not.toContain("summoning");
+    expect(ids({ meta: served(undefined) })).not.toContain("summoning");
+    expect(ids({ meta: metaFixture({ mode: "runner" }) })).not.toContain(
+      "summoning",
+    );
+    // The reset's budget flag is another capability: it does not decide this.
+    const meta = metaFixture();
+    expect(
+      ids({
+        meta: {
+          ...meta,
+          features: { ...meta.features, summonResetBudget: false },
+        },
+      }),
+    ).toContain("summoning");
+    // Without queues.list (the route's action), and with the manage section off.
+    expect(ids({}, ["queues.list"])).not.toContain("summoning");
+    expect(ids({ sections: { manage: false, docs: true } })).not.toContain(
+      "summoning",
+    );
+    // queues.read is not what the route asks: each row is filtered by it
+    // server-side, per queue.
+    expect(ids({}, ["queues.read"])).toContain("summoning");
+    expect(
+      buildNav({
+        meta: metaFixture(),
+        sections: { manage: true, docs: true },
+        can: () => true,
+      }).find((item) => item.id === "summoning"),
+    ).toEqual({ id: "summoning", label: "Summoning", to: "/summon" });
+  });
+
   it("drops the runner side in mode jobs, and the jobs side in mode runner", () => {
     expect(ids({ meta: metaFixture({ mode: "jobs" }) })).toEqual([
       "overview",
       "queues",
       "workers",
+      "summoning",
       "events",
       "docs",
     ]);
@@ -77,6 +128,7 @@ describe("buildNav", () => {
   });
 
   it("drops an entry whose action is absent or false", () => {
+    // Summoning goes with Queues: `GET /summon` asks `queues.list` too.
     expect(ids({}, ["queues.list"])).toEqual([
       "overview",
       "workers",
@@ -94,6 +146,7 @@ describe("buildNav", () => {
       "overview",
       "queues",
       "workers",
+      "summoning",
     ]);
     // Present but false behaves like absent.
     expect(
@@ -123,7 +176,7 @@ describe("buildNav", () => {
 
   it("drops Events without a socket and docs when meta.docs is null", () => {
     expect(ids({ meta: metaFixture({ websocket: null, docs: null }) })).toEqual(
-      ["overview", "queues", "workers", "runners"],
+      ["overview", "queues", "workers", "summoning", "runners"],
     );
   });
 
@@ -152,6 +205,7 @@ describe("buildNav", () => {
       "overview",
       "queues",
       "workers",
+      "summoning",
       "runners",
       "events",
     ]);
@@ -183,6 +237,7 @@ describe("the rendered layout", () => {
       "Overview",
       "Queues",
       "Workers",
+      "Summoning",
       "Events",
       "API docs",
       "HTTP API",
@@ -265,6 +320,7 @@ describe("the rendered layout", () => {
       "Overview",
       "Queues",
       "Workers",
+      "Summoning",
       "Runners",
       "API docs",
       "HTTP API",

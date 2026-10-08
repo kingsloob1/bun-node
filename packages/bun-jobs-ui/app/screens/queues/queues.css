@@ -311,3 +311,28 @@ tr[aria-selected="true"] {
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+/* A summon budget: one line per UTC window, a meter of what is left first. */
+.summon-budget {
+  display: inline-grid;
+  gap: var(--space-1);
+}
+
+.summon-budget-window {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.summon-budget-window.is-exhausted {
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.summon-budget-meter {
+  width: 80px;
+  height: 8px;
+  flex: none;
+}

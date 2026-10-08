@@ -183,9 +183,13 @@ describe("the Summon panel", () => {
       "1",
     );
     expect(within(panel).getByTestId("summon-pending-s-1")).not.toBeNull();
-    expect(within(panel).getByTestId("summon-budget").textContent).toBe(
-      "3 of 30 this hour, 12 of 300 today (UTC)",
-    );
+    // What is left in each window; summonBudget.test.tsx covers the rest.
+    expect(
+      within(panel).getByTestId("summon-budget-hour").textContent,
+    ).toContain("27 of 30 left this hour");
+    expect(
+      within(panel).getByTestId("summon-budget-day").textContent,
+    ).toContain("288 of 300 left today");
     expect(within(panel).getByTestId("summon-provider").textContent).toContain(
       "Amazon ECS",
     );
