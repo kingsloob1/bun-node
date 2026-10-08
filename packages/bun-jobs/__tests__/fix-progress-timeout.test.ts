@@ -25,12 +25,21 @@ import { testNamespace, waitFor } from "./helpers";
  *
  * These tests remove the race: the slow driver below times its progress write
  * off the *claim*, so the write is certainly in flight when the deadline
- * passes and certainly finishes shortly after it. Nothing here depends on how
- * long a child takes to start.
+ * passes and certainly finishes shortly after it, whenever the child happened
+ * to report.
+ *
+ * What the deadline cannot be is longer than every child's start. It covers
+ * the start, and under load a child can still be importing when it passes
+ * (measured: a worker thread not past its imports 2 s after the claim, at a
+ * 1-minute load of 65). Such a run reports nothing, so it has no progress to
+ * order and says nothing about the ordering; the ordering test runs again with
+ * a longer deadline rather than reading it as a pass or a failure.
  */
 
-/** The deadline every job here is given, in ms. Longer than any child's start. */
+/** The deadline a job here is given first, in ms. */
 const TIMEOUT_MS = 2_000;
+/** The longest deadline the ordering test tries before giving up on the child, in ms. */
+const MAX_TIMEOUT_MS = 16_000;
 /** How long after the deadline the driver lets a progress write finish. */
 const OVERRUN_MS = 80;
 
@@ -38,6 +47,8 @@ const OVERRUN_MS = 80;
 interface Write {
   /** Which write it was. */
   kind: "progress" | "fail";
+  /** The job it was for. */
+  id: string;
   /** The value written, for a progress write. */
   value?: RunProgress;
   /** When it finished, so a test can price the wait it caused. */
@@ -50,6 +61,14 @@ class DeadlineProgressDriver extends MemoryDriver {
   readonly writes: Write[] = [];
   /** When the job under test was claimed: the deadline is measured from it. */
   claimedAt = 0;
+  /** The deadline of the job under test, in ms: progress writes land just after it. */
+  deadlineMs = TIMEOUT_MS;
+  /**
+   * The jobs the worker asked to write progress for, as it asked — before any
+   * delay — so a test can tell a child that reported in time from one that
+   * never got to.
+   */
+  readonly progressAskedFor = new Set<string>();
   /** Whether a progress write should hang for good rather than land late. */
   hang = false;
   /** Whether progress writes should land at once instead of straddling the deadline. */
@@ -73,13 +92,14 @@ class DeadlineProgressDriver extends MemoryDriver {
     // anything, and narrowing here would make this driver unassignable.
     value: unknown,
   ): Promise<boolean> {
+    this.progressAskedFor.add(id);
     if (this.hang) {
       // A driver that never answers — what the worker's bound is there for.
       await new Promise<never>(() => {});
     }
     if (!this.instant) {
       // Land just after the deadline, whenever the child happened to report.
-      const until = this.claimedAt + TIMEOUT_MS + OVERRUN_MS;
+      const until = this.claimedAt + this.deadlineMs + OVERRUN_MS;
       const wait = until - Date.now();
       if (wait > 0) {
         await Bun.sleep(wait);
@@ -88,6 +108,7 @@ class DeadlineProgressDriver extends MemoryDriver {
     const done = await super.updateProgress(q, id, value);
     this.writes.push({
       kind: "progress",
+      id,
       value: value as RunProgress,
       at: Date.now(),
     });
@@ -112,8 +133,13 @@ class DeadlineProgressDriver extends MemoryDriver {
       now,
       keepStacktraces,
     );
-    this.writes.push({ kind: "fail", at: Date.now() });
+    this.writes.push({ kind: "fail", id, at: Date.now() });
     return done;
+  }
+
+  /** The writes made for one job, in the order each finished. */
+  writesFor(id: string): Write[] {
+    return this.writes.filter((write) => write.id === id);
   }
 }
 
@@ -158,15 +184,16 @@ function setup(mode: WorkerTargetMode, file: string) {
   return { driver, queue, worker };
 }
 
-/** Adds one job that will overrun `TIMEOUT_MS`, and reads it the moment it dies. */
+/** Adds one job that will overrun `timeout`, and reads it the moment it dies. */
 async function runUntilDead(
   queue: BunQueue,
   what: string,
+  timeout = TIMEOUT_MS,
 ): Promise<{ id: string; progressAtDeath: unknown }> {
   const job = await queue.add(
     "slow",
     {},
-    { attempts: 1, timeout: TIMEOUT_MS, removeOnFail: false },
+    { attempts: 1, timeout, removeOnFail: false },
   );
   let progressAtDeath: unknown;
 
@@ -182,7 +209,7 @@ async function runUntilDead(
       return true;
     },
     {
-      timeout: 20_000,
+      timeout: timeout + 18_000,
       interval: 2,
       message: `the ${what} job never died`,
     },
@@ -196,22 +223,40 @@ for (const mode of ["child-process", "worker-thread"] as const) {
     it("writes the progress the child reported before the failure record", async () => {
       const { driver, queue } = setup(mode, "job-progress-timeout");
 
-      const { progressAtDeath } = await runUntilDead(queue, mode);
+      for (let timeout = TIMEOUT_MS; ; timeout *= 2) {
+        driver.deadlineMs = timeout;
+        const { id, progressAtDeath } = await runUntilDead(
+          queue,
+          mode,
+          timeout,
+        );
+        const kinds = () => driver.writesFor(id).map((write) => write.kind);
 
-      // Both writes have landed by now, one way or the other.
-      await waitFor(() => driver.writes.length >= 2, {
-        timeout: 5_000,
-        message: () =>
-          `only ${JSON.stringify(driver.writes)} was written for the ${mode} job`,
-      });
+        if (!driver.progressAskedFor.has(id)) {
+          // The child was not running yet when the deadline passed: nothing
+          // to order, and nothing may have been written but the failure.
+          expect(kinds()).toEqual(["fail"]);
+          if (timeout * 2 > MAX_TIMEOUT_MS) {
+            throw new Error(
+              `the ${mode} child never reported progress within a ${timeout}ms deadline`,
+            );
+          }
+          continue;
+        }
 
-      expect(driver.writes.map((write) => write.kind)).toEqual([
-        "progress",
-        "fail",
-      ]);
-      // And a reader that waited for the job to die saw the reported value.
-      expect(progressAtDeath).toBe(50);
-    }, 30_000);
+        // Both writes have landed by now, one way or the other.
+        await waitFor(() => kinds().length >= 2, {
+          timeout: 5_000,
+          message: () =>
+            `only ${JSON.stringify(driver.writesFor(id))} was written for the ${mode} job`,
+        });
+
+        expect(kinds()).toEqual(["progress", "fail"]);
+        // And a reader that waited for the job to die saw the reported value.
+        expect(progressAtDeath).toBe(50);
+        return;
+      }
+    }, 60_000);
   });
 }
 

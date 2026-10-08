@@ -19,8 +19,36 @@ const jobs = new BunJobs({
 
 const consumerId = process.env.CONSUMER_ID ?? String(process.pid);
 const log = process.env.RUN_LOG ?? "";
+/** Where to append this consumer's id once its worker is claiming, if anywhere. */
+const readyLog = process.env.READY_LOG ?? "";
 const failFirst = process.env.FAIL_FIRST === "1";
+/**
+ * How many consumers must have taken a job before this one finishes any, if
+ * set (`SHARE_WITH`). Each job waits, after it is logged, until `RUN_LOG`
+ * names that many consumers, so a consumer cannot run the whole queue alone
+ * however the scheduler orders the processes: its jobs in hand hold its
+ * `concurrency` slots, and the next job can go only to another consumer.
+ */
+const shareWith = Number(process.env.SHARE_WITH ?? 0);
+/** How long a job waits for the others before going on anyway, in ms. */
+const SHARE_WAIT_MS = 30_000;
 const seen = new Set<string>();
+
+/**
+ * Waits until `RUN_LOG` names `shareWith` consumers, or `SHARE_WAIT_MS` has
+ * passed: a consumer that never arrives then shows as a test failure (one
+ * consumer did everything) rather than a hang.
+ */
+async function sharedWithOthers(): Promise<void> {
+  const until = Date.now() + SHARE_WAIT_MS;
+  while (Date.now() < until) {
+    const lines = (await Bun.file(log).text()).split("\n").filter(Boolean);
+    if (new Set(lines.map((line) => line.split(":")[0])).size >= shareWith) {
+      return;
+    }
+    await Bun.sleep(10);
+  }
+}
 
 const worker = jobs.worker(
   process.env.QUEUE ?? "work",
@@ -34,6 +62,9 @@ const worker = jobs.worker(
 
     if (log) {
       appendFileSync(log, `${consumerId}:${job.id}\n`);
+      if (shareWith > 1) {
+        await sharedWithOthers();
+      }
     }
 
     await Bun.sleep(Number(process.env.JOB_MS ?? 5));
@@ -55,8 +86,19 @@ worker.on("error", (error, context) => {
   console.error(`worker error (${context}): ${error.message}`);
 });
 
+// Ready means claiming: the worker's own `ready` comes once it has connected,
+// made the queue and adopted its control entries, just before the claim loop
+// starts. Announced straight after `run()` instead, it came first and the loop
+// up to hundreds of milliseconds later under load. The line goes to
+// `READY_LOG` too, when set, because a test waits on that file.
+worker.on("ready", () => {
+  if (readyLog) {
+    appendFileSync(readyLog, `${consumerId}\n`);
+  }
+  console.log(JSON.stringify({ event: "ready", consumerId }));
+});
+
 void worker.run();
-console.log(JSON.stringify({ event: "ready", consumerId }));
 
 /** How many processed lines the test is waiting for, if it said. */
 const stopAfter = Number(process.env.STOP_AFTER ?? 0);

@@ -400,18 +400,27 @@ describe("listing workers", () => {
 describe("a worker on a queue newer than the queue cache", () => {
   it("is listed at once with the default queueCacheMs, and a refused queue's stays hidden", async () => {
     const jobs = jobsContext("api-workers-new-queue");
-    const h = harness({
-      jobs,
-      // The default cache window, not the harness's zero.
-      limits: { queueCacheMs: 2_000 },
-      listQueues: "authorized",
-      authorize: (_req, ctx) =>
-        !(ctx.action === "queues.read" && ctx.queue === "secret"),
-    });
+    // "At once" means before the cached queue list expires: a listing that
+    // shows the new worker only because the window ran out proves nothing.
+    // The cache's clock stands still, so the window cannot run out here
+    // however slow the machine is, and the worker can be listed only by the
+    // route confirming its queue. (A wall-clock bound stood in for this and
+    // measured worker start-up with it: 266 to 295 ms under load.)
+    const frozen = Date.now();
+    const h = harness(
+      {
+        jobs,
+        // The default cache window, not the harness's zero.
+        limits: { queueCacheMs: 2_000 },
+        listQueues: "authorized",
+        authorize: (_req, ctx) =>
+          !(ctx.action === "queues.read" && ctx.queue === "secret"),
+      },
+      { now: () => frozen },
+    );
     // Fills the queue cache while neither queue exists.
     expect((await h.call("GET", "/workers")).body.items).toEqual([]);
 
-    const started = Date.now();
     const fresh = jobs.worker("fresh", async () => null);
     const secret = jobs.worker("secret", async () => null);
     closers.push(async () => await fresh.close({ force: true }));
@@ -419,12 +428,10 @@ describe("a worker on a queue newer than the queue cache", () => {
     void fresh.run();
     void secret.run();
     await waitFor(async () => (await jobs.listWorkers()).length === 2, {
-      timeout: 250,
       message: "the workers never reported",
     });
 
     const listed = await h.call("GET", "/workers");
-    expect(Date.now() - started).toBeLessThan(250);
     expect(listed.body.items.map((worker: any) => worker.id)).toEqual([
       fresh.id,
     ]);

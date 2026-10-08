@@ -3,10 +3,15 @@ import type {
   JobsApiConfig,
 } from "../../lib/api/config";
 import type { AnyRouteDef } from "../../lib/api/routes/define";
+import type { SourceOptions } from "../../lib/api/sources";
 import type { JobsDriver } from "../../lib/index";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
-import { JOBS_API_ACTIONS } from "../../lib/api/config";
-import { createJobsApi } from "../../lib/api/createJobsApi";
+import { JOBS_API_ACTIONS, resolveConfig } from "../../lib/api/config";
+import {
+  buildJobsApi,
+  builtInRoutes,
+  createJobsApi,
+} from "../../lib/api/createJobsApi";
 import { defineRoute } from "../../lib/api/routes/define";
 import { s } from "../../lib/api/schema/builder";
 import { JobStateSchema } from "../../lib/api/schemas/common";
@@ -172,8 +177,15 @@ export const openHarnesses: { mismatches: () => unknown[] }[] = [];
  * A mounted API for route tests: every action enabled, `validateResponses` on,
  * no queue-membership cache, and every `authorize` call recorded. Override
  * anything.
+ *
+ * `sources` reaches the queue and runner caches, as `createJobsApi` cannot:
+ * a test that turns the cache on passes a clock that stands still, so the
+ * cache cannot expire mid-test however slow the machine is.
  */
-export function harness(overrides: Partial<JobsApiConfig> = {}) {
+export function harness(
+  overrides: Partial<JobsApiConfig> = {},
+  sources?: SourceOptions,
+) {
   const { logger, events } = createTestLogger();
   const calls: JobsApiAuthorizeContext[] = [];
   // An explicit `jobs: undefined` means "no jobs source", not "make one". A
@@ -181,7 +193,7 @@ export function harness(overrides: Partial<JobsApiConfig> = {}) {
   const jobs = (
     "jobs" in overrides ? overrides.jobs : jobsContext()
   ) as BunJobs;
-  const api = createJobsApi({
+  const config: JobsApiConfig = {
     basePath: "/admin/jobs",
     logger,
     validateResponses: true,
@@ -193,7 +205,12 @@ export function harness(overrides: Partial<JobsApiConfig> = {}) {
     },
     ...overrides,
     jobs,
-  });
+  };
+  // What `createJobsApi` does, plus the source options it does not take.
+  const resolved = sources && resolveConfig(config);
+  const api = resolved
+    ? buildJobsApi(resolved, builtInRoutes(resolved), sources)
+    : createJobsApi(config);
   const root = new BunRouter();
   root.use(api.basePath, api.router);
 
