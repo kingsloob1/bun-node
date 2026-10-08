@@ -1,6 +1,6 @@
 import type { ExportInfo } from "./referenceCheck";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import {
   checkReference,
   entryExports,
@@ -15,6 +15,23 @@ import {
  * every member of each type, and nothing that is not there. See
  * `referenceCheck.ts` for the rules.
  */
+
+/**
+ * How long compiling the program over the entries may take. Every test here
+ * reads the compiler's view of the entries, and the first to ask pays for
+ * building it: about 2 s on an idle machine, and measured at 15 to 25 s with
+ * the machine's 1-minute load between 20 and 70. Which test asks first is
+ * whatever order the run picks (`--randomize`, `-t`), so the cost is paid
+ * once, here, rather than by one test under the default 5 s timeout.
+ */
+const COMPILE_TIMEOUT_MS = 120_000;
+
+beforeAll(() => {
+  // Builds and caches the program and its checker for every test below.
+  for (const spelling of Object.keys(REFERENCE_ENTRIES)) {
+    entryExports(spelling);
+  }
+}, COMPILE_TIMEOUT_MS);
 
 /** The reference as it is on disk. */
 const reference = readFileSync(REFERENCE_PATH, "utf8");
@@ -31,7 +48,7 @@ function without(pattern: RegExp): string {
 describe("docs/providers/reference.md", () => {
   it("matches the entries' exports and their members", () => {
     expect(checkReference(reference)).toEqual([]);
-  }, 60_000);
+  });
 
   it("reads the entries the way they load at run time", async () => {
     // The compiler's view of the values and the runtime's agree, so a value

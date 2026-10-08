@@ -1,4 +1,5 @@
 import type { JobsDriver } from "../lib/index";
+import type { SpawnedProcess } from "./helpers/spawnBun";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
@@ -48,6 +49,51 @@ async function processed(log: string): Promise<string[]> {
 }
 
 /**
+ * Waits until every consumer's worker is claiming, as each one reports on its
+ * worker's `ready` (`READY_LOG`).
+ *
+ * Spawning a consumer is not the same as its claiming. Starting a `bun`
+ * process, loading the package and connecting took longer under a loaded
+ * `--parallel=16` run than the whole of a 40-job test, so a test that produced
+ * straight after spawning saw one consumer do all of it while the other was
+ * still starting. A consumer that exits instead fails here with its stderr.
+ */
+async function untilClaiming(
+  /** The file each consumer appends its id to once it is claiming. */
+  readyLog: string,
+  /** The consumers, by the id each was given as `CONSUMER_ID`. */
+  consumers: Record<string, SpawnedProcess>,
+): Promise<void> {
+  const expected = Object.keys(consumers);
+  const ready = async (): Promise<Set<string>> =>
+    new Set((await readFile(readyLog, "utf8")).split("\n").filter(Boolean));
+
+  await waitFor(
+    async () => {
+      const seen = await ready();
+      return expected.every((id) => seen.has(id));
+    },
+    {
+      timeout: 45_000,
+      interval: 20,
+      message: async () => {
+        const seen = await ready();
+        const missing = expected.filter((id) => !seen.has(id));
+        const exited = await Promise.all(
+          missing
+            .filter((id) => consumers[id]!.proc.exitCode !== null)
+            .map(async (id) => `${id}: ${await consumers[id]!.errors}`),
+        );
+        return [
+          `consumers never started claiming: ${missing.join(", ")}`,
+          ...exited.map((line) => `exited, stderr ${line}`),
+        ].join("; ");
+      },
+    },
+  );
+}
+
+/**
  * Every backend that claims it can carry work between processes. The list is
  * shared with the runner suite, so a backend cannot be covered by one and
  * quietly missed by the other.
@@ -63,6 +109,8 @@ for (const { name: backendName, config, available } of READY) {
     async function setup(): Promise<{
       env: Record<string, string>;
       log: string;
+      /** Where consumers report that their worker is claiming. */
+      readyLog: string;
       driver: JobsDriver;
       namespace: string;
     }> {
@@ -74,6 +122,8 @@ for (const { name: backendName, config, available } of READY) {
       cleanups.push(tmp.cleanup);
       const log = join(tmp.path, "processed.log");
       await writeFile(log, "");
+      const readyLog = join(tmp.path, "ready.log");
+      await writeFile(readyLog, "");
 
       cleanups.push(async () => {
         await driver.purge(namespace);
@@ -83,21 +133,28 @@ for (const { name: backendName, config, available } of READY) {
       return {
         namespace,
         log,
+        readyLog,
         driver,
         env: {
           NAMESPACE: namespace,
           QUEUE: "work",
           DRIVER_CONFIG: JSON.stringify(config),
           RUN_LOG: log,
+          READY_LOG: readyLog,
         },
       };
     }
 
     it("delivers each job to exactly one of several consumer processes", async () => {
-      const { env, log, driver, namespace } = await setup();
+      const { env, log, readyLog, driver, namespace } = await setup();
       const total = 40;
 
-      // Two consumers, started first so they are already claiming.
+      // Two consumers, started first and waited for, so both are already
+      // claiming when the first job lands. Without the wait, the work being
+      // shared depended on which process happened to start sooner. And
+      // neither finishes a job until both have taken one (`SHARE_WITH`):
+      // even claiming, a consumer starved of CPU under load could watch the
+      // other run all forty (measured once in 30 runs at a load of 70).
       const consumers = ["c1", "c2"].map((id) =>
         spawnBun(CONSUMER, {
           ...env,
@@ -108,8 +165,10 @@ for (const { name: backendName, config, available } of READY) {
           // find: the jobs are simply left unprocessed. Seen under CPU load.
           RUN_FOR_MS: "60000",
           JOB_MS: "2",
+          SHARE_WITH: "2",
         }),
       );
+      await untilClaiming(readyLog, { c1: consumers[0]!, c2: consumers[1]! });
 
       // Two producers, each adding its own half.
       await Promise.all(
@@ -148,7 +207,7 @@ for (const { name: backendName, config, available } of READY) {
     }, 90_000);
 
     it("lets a producer add while consumers are already running", async () => {
-      const { env, log } = await setup();
+      const { env, log, readyLog } = await setup();
 
       const consumer = spawnBun(CONSUMER, {
         ...env,
@@ -156,6 +215,7 @@ for (const { name: backendName, config, available } of READY) {
         STOP_AFTER: "5",
         RUN_FOR_MS: "60000",
       });
+      await untilClaiming(readyLog, { live: consumer });
 
       // Nothing to do yet; the consumer is idling.
       await Bun.sleep(200);

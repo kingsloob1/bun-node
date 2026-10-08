@@ -66,14 +66,33 @@ export class EventGaps {
       return false;
     }
 
-    for (let missing = this.#cursor + 1; missing < seq; missing++) {
+    // Only the newest EVENT_HOLE_LIMIT numbers passed over can survive the trim
+    // below, so only they are recorded. The jump can be the whole log: a feed
+    // following a channel nothing has written to yet starts after 0, and the
+    // numbers are shared by every namespace and channel in the table. Recording
+    // each of them took seconds of one synchronous loop at ~84,000 — the
+    // process's event loop stopped for that long on its first event — and the
+    // trim, one `keys().next()` per delete over a map's deleted entries, is
+    // quadratic in what it removes (measured: 13 ms at 5,000, 2.9 s at 84,000).
+    for (
+      let missing = Math.max(this.#cursor + 1, seq - EVENT_HOLE_LIMIT);
+      missing < seq;
+      missing++
+    ) {
       this.#holes.set(missing, now);
     }
     this.#cursor = seq;
 
     // Oldest first, so a burst of failed writes cannot grow the query forever.
-    while (this.#holes.size > EVENT_HOLE_LIMIT) {
-      this.#holes.delete(this.#holes.keys().next().value!);
+    // One iterator for the whole trim, for the reason above.
+    let excess = this.#holes.size - EVENT_HOLE_LIMIT;
+    if (excess > 0) {
+      for (const hole of this.#holes.keys()) {
+        this.#holes.delete(hole);
+        if (--excess === 0) {
+          break;
+        }
+      }
     }
 
     return true;

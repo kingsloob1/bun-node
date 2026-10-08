@@ -194,7 +194,20 @@ async function completed(
       }
       return true;
     },
-    { timeout: 10_000, interval: 10, message: `jobs ${names} completed` },
+    {
+      timeout: 10_000,
+      interval: 10,
+      // What each job is doing instead, so a failure says which way it went.
+      message: async () => {
+        const states = await Promise.all(
+          names.map(async (id) => {
+            const job = await jobs.queue(queue).getJob(id);
+            return `${id}: ${job?.state ?? "missing"} after ${job?.attemptsMade ?? 0} attempt(s), processedBy ${job?.processedBy?.key ?? "none"}`;
+          }),
+        );
+        return `jobs ${names} completed; ${states.join("; ")}`;
+      },
+    },
   );
 }
 
@@ -359,21 +372,39 @@ describe.each(BACKENDS)("job attribution through the API: $name", (backend) => {
       await slow.close({ timeout: 2_000 });
 
       // A job failed by one worker and completed by another names only the
-      // second, and the first's filter no longer lists it. The backoff keeps
-      // the failing worker from taking the retry before it is closed.
+      // second, and the first's filter no longer lists it. The retry waits on
+      // a backoff no run outlasts and is promoted only once the failing worker
+      // has closed, so that worker can never take it. A 400 ms backoff raced
+      // the close: under load the closing worker claimed the retry, and a
+      // claim landing during close is left unstarted until its lock lapses
+      // (`#declineClaimed`), far past this wait.
       await jobs
         .queue(queue)
-        .add("flaky", {}, { jobId: "flaky-1", attempts: 2, backoff: 400 });
+        .add(
+          "flaky",
+          {},
+          { jobId: "flaky-1", attempts: 2, backoff: 3_600_000 },
+        );
       const failing = startWorker(jobs, queue, "k-fail", async () => {
         throw new Error("first attempt fails");
       });
+      // The failure recorded, not the claim: `attemptsMade` counts an attempt
+      // from its claim, so waiting on it let the close below land between
+      // the claim and the run, and the declined job sat `active` until its
+      // lock lapsed (measured under load: attempt 1, no failedReason).
       await waitFor(
         async () =>
-          ((await jobs.queue(queue).getJob("flaky-1"))?.attemptsMade ?? 0) >= 1,
+          (await jobs.queue(queue).getJob("flaky-1"))?.state === "failed",
         { timeout: 10_000, interval: 10, message: "flaky-1 failed once" },
       );
       await failing.close({ timeout: 2_000 });
+      // Still `failed`, a retry pending: the failing worker never took it.
+      expect(await jobs.queue(queue).getJob("flaky-1")).toMatchObject({
+        state: "failed",
+        attemptsMade: 1,
+      });
       const retried = startWorker(jobs, queue, "k-retry");
+      expect(await jobs.queue(queue).promote("flaky-1")).toBe(true);
       await completed(jobs, queue, ["flaky-1"]);
       await retried.close({ timeout: 2_000 });
       const flaky = await h.call("GET", `/queues/${queue}/jobs/flaky-1`);

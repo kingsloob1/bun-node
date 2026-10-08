@@ -10,6 +10,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
+import { JOB_STATES } from "../lib/drivers/readApis";
 import { claimIndexName } from "../lib/drivers/sql/schema";
 import {
   rewritePageStatement,
@@ -454,9 +455,22 @@ for (const engine of ENGINES) {
           claimer(),
         ]);
 
+        // One read for all of them: a `getJob` each was a thousand more
+        // sequential round trips on a test already made of five hundred claims.
+        const after = new Map(
+          (
+            await driver.listJobs(q, [...JOB_STATES], {
+              offset: 0,
+              limit: count,
+              order: "asc",
+            })
+          ).map((job) => [job.id, job]),
+        );
+        expect(after.size).toBe(count);
+
         let rewritten = 0;
         for (const { id } of jobs) {
-          const job = (await driver.getJob(q, id))!;
+          const job = after.get(id)!;
           const fresh = job.opts.timeout === 99;
 
           // Options, attempts and the column all moved together, or none did.
@@ -479,7 +493,12 @@ for (const engine of ENGINES) {
 
         expect(result.rewritten).toBe(rewritten);
         expect(result.moved).toBe(0);
-      });
+        // Its own timeout, as the walk above has: five hundred claims one
+        // commit at a time took 1-2 s here unloaded and 12-17 s on a machine
+        // the rest of the suite was saturating, where SQLite slowed by the
+        // same factor, so it was the process starved rather than a lock
+        // waited on. It checks what the race wrote, not how long it took.
+      }, 30_000);
 
       it.skipIf(engine.adapter === "sqlite")(
         "neither writes nor counts a job claimed while the walk waits on its row",
