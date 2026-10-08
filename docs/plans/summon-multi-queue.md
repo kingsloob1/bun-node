@@ -29,11 +29,63 @@ each measurement there can be re-run with one command.
 - **The expansion form**: branch `feat/summon-queue-groups`, empty at the
   time of writing. This plan assumes only that it builds one controller per
   queue from one policy. §3.2 says what (A) needs from it: a name for the
-  group.
+  group. *Merged as #283 (2026-10-07), as an array entry
+  `{ queues, overrides?, …policy }` with no name: see §3.2.*
 - **Failure hooks and an optional budget**: the PR in flight on branch
   `feat/summon-failed-budget`. It adds `onSummonFailed`, `budget: false`,
-  `reset({ budget: true })` and `status().budget.disabled`. (A) composes with
-  all four (§3.8).
+  `reset({ budget: true })` and a budget-off flag on `status().budget`. (A)
+  composes with all four (§3.8). *This is #289. The flag shipped as
+  `off?: true`, with `perHour` and `perDay` absent while it is set.*
+
+### Status (2026-10-08)
+
+Checked against git and GitHub on 2026-10-08, against `develop` at
+`2aa5ed0` (after #289 and #294 merged). "Local" means signed commits in a
+worktree, not pushed; the two worktrees holding them have nothing
+uncommitted.
+
+| PR | Scope | State | Left |
+|---|---|---|---|
+| expansion form | one policy, several queues | merged #283; docs fix #295; examples #296 | — |
+| hooks PR | `onSummonFailed`, `budget: false`, `GET /summon` | merged #289 (`4d3364e`), with UI #297 and examples #290, #305 in it | playground follow-up |
+| PR-A1 | group budget | local `41f18a5`, `feat/summon-group-budget` | rebase, re-gate, PR |
+| PR-A2 | shared circuit | local `9c67a3c`, same branch | as A1 |
+| PR-A3 | status without a controller; group routes | local `77ca70d`, same branch | as A1; fold into #289's `GET /summon` |
+| UI-A | Group card, groups view (§5.3) | not started; per-controller usage shipped in #297 | after PR-A3 |
+| EX-A | group budget example | not started | after PR-A1 |
+| PR-B1 | arguments and request | merged #294 (`2aa5ed0`) | — |
+| PR-B2 | `runSummoned(workers[])` | local `14481c2`, `feat/summon-run-several` | rebase on #294, re-gate, PR |
+| PR-B3 | shared-unit controller | not started | needs PR-A1 and PR-B1 |
+| PR-B4 | API, kit handoff, docs | not started | needs PR-B2, PR-B3 |
+| UI-B, EX-B | coverage, "unit of", example, playground | not started | after PR-B4 |
+
+**#289 and #294** merged on 2026-10-08, in that order (`4d3364e`,
+`2aa5ed0`), each gated on the exact tree it produced.
+
+**PR-A1 to PR-A3** sit on a merge of old heads: #289 at `8fbd356` (before
+its review round, UI and examples) and #283 at `e9f43cf` (before its review
+round). Replayed onto #289 and #294 merged together, A1 conflicts in 5
+files: `controller.ts`, the README, `docs/providers/reference.md`, and
+`playground/README.md` and `summoning.ts`, which #301 rewrote. A1 to A3
+conflict in 12, chiefly the API: A3 extends a `GET /summon` that #289 has
+since reworked (`queues.list`, per-queue filtering, `inert` rows). Each
+commit carries the plan's tests (A1: 1, 2, 4, 5 and 7; A2: 3; A3: 6), the
+README and the provider reference; A1 and A2 also change the playground.
+Their gates ran on the old base (the features agent's notes: full suite 7574
+passing; 7580 with 4 unrelated failures, green alone; 7601), and must run
+again after the rebase.
+
+**PR-B2** sits on B1 before its review round (`39c6913`). `git merge-tree`
+replays it onto #294's head, and onto #289 with #294, without a conflict;
+the review round's changes to the kit and release still need a re-gate. It
+has test 6, a fixture, a type test, the README and the provider reference.
+
+**B1 went first, by the user's intent.** It needs nothing of A1, so it was
+built on `develop` and opened before Part A (§11.2). PR-B3 still needs both.
+
+**Also owed:** a playground follow-up for #289 (summon alerts, a budget-off
+switch), then Part A's and B's playground parts as they land; and, after
+#289 and Part A, the summon policy shown in the UI (the user's decision).
 
 ### Contents
 
@@ -136,7 +188,7 @@ secrets (§4.1).
 | (A) the shared circuit | ~1.5 d | — | PR-A1 |
 | (A) API and persisted limits | ~2 d | UI ~1.5 d, examples ~1 d | PR-A1 |
 | **(A) total** | **~7 d** | ~2.5 d | |
-| (B) arguments and request | ~1.5 d | — | PR-A1 |
+| (B) arguments and request | ~1.5 d | — | — (built first: see §11.2) |
 | (B) `runSummoned` for several workers | ~3 d | — | PR-B1 |
 | (B) the shared-unit controller | ~5.5 d | — | PR-A1, PR-B1 |
 | (B) API, conformance and docs | ~3.5 d | UI ~1.5 d, examples ~1.5 d | PR-B3 |
@@ -261,6 +313,12 @@ The expansion form passes `group` through to each of the three controllers, so
 there is nothing to duplicate. Controllers built by hand can join a group by
 name. That includes controllers in different services, which is how a team
 shares one cloud budget across deployments.
+
+*Correction (2026-10-08): the expansion form shipped (#283) as an array
+entry, `summon: [{ queues, overrides?, …policy }]`, with no key and no name.
+So PR-A1 (local `41f18a5`) makes `group.name` required, and the example
+above reads `summon: [{ queues: [...], summoner, group: { name: "media",
+… } }]`.*
 
 **The per-queue `budget` when a group budget is set** (A5, Q2). With
 `group.budget` set and the queue's own `budget` *unset*, the per-queue budget
@@ -425,10 +483,12 @@ argument for (B) at that width, not against (A).
 ### 3.8 Status, reset, hooks and events [D]
 
 - **`status()`** gains `group?: SummonGroupStatus`: the name, the budget
-  (`hour`, `perHour`, `day`, `perDay`, or `disabled`), the circuit for this
-  controller's `kind` (`failures`, `openUntil`), and per-queue `day` counts.
-  The queue's own `budget` shows `disabled: true` when A5 turned it off (the
-  hooks PR's field).
+  (`hour`, `day`, and `perHour` and `perDay` unless it is off, then
+  `off: true`), the circuit for this controller's `kind` (`failures`,
+  `openUntil`), and per-queue `day` counts. The queue's own `budget` shows
+  `off: true` when A5 turned it off, with `perHour` and `perDay` absent (the
+  hooks PR's fields, as #289 shipped them; it also adds `hourResetsAt` and
+  `dayResetsAt`).
 - **`reset({ group: true })`** clears the group's circuit for this `kind`.
   `reset({ group: true, budget: true })` also clears the group's counts. Both
   are the hooks PR's `reset` options, extended. 409 `SUMMON_MARKER_CONTENDED`
@@ -750,16 +810,23 @@ who builds whole workers inside their own threads must pass `summon` in
   platform as a whole: the template (`templates/compute-provider/src/index.ts:181`)
   and Local Compute (`feat/local-compute`, `providers/local.ts:280`). No
   first-party or template provider reads `request.queue` [S, grep].
-- **Additive fields:** `SummonRequest.queues: readonly string[]` (always
-  present; `[queue]` for one queue), `SummonRequest.group?: string`,
-  `SummonRequest.demands?`, and `SummonReleaseRequest.queues`. The summon
+- **Additive fields:** `SummonRequest.queues?: readonly string[]`,
+  `SummonRequest.group?: string`, `SummonRequest.demands?`, and
+  `SummonReleaseRequest.queues?` and `.group?`. **`queues` stays optional**
+  (the user's ruling): the controller always sets it, `[queue]` for one
+  queue, but a request built by hand or by an older host may leave it out, so
+  a provider reads `request.queues ?? [request.queue]`. The summon
   facet's API goes from `0.1` to **`0.2`**. A provider declaring `0.1` runs
   unchanged (`provider/version.ts`: only a *newer* minor than the build warns).
-- **New kit check, "argv round trip" (must):** the fake's unit receives a
-  request whose argv repeats a flag three times, and the fixture worker must
-  see all three, in order. A platform layer that dedupes or reorders arguments
-  (a shell-quoting bug, or a map keyed by flag) would otherwise break (B)
-  silently.
+- **New kit check, "argv round trip"** (`summon.argv.round-trip`): the fake's
+  unit receives a request whose argv repeats a flag three times, and the
+  fixture worker must see all three, in order. A platform layer that dedupes
+  or reorders arguments (a shell-quoting bug, or a map keyed by flag) would
+  otherwise break (B) silently. **A must for a provider declaring summon
+  `0.2`, a should (a warning) at `0.1`** (the user's decision), so a provider
+  that passed before still passes. A platform may add arguments, never drop
+  or reorder one. **PR-B3's shared units refuse a provider at `0.1`**, for
+  which the round trip is not proven.
 - **The two-queue handoff (should):** the kit's existing handoff
   (`provider/testing/handoff.ts`) runs a second time with a shared-unit
   controller over two queues, and the fixture worker builds two workers. It is
@@ -828,6 +895,25 @@ The DTOs are `SummonGroupStatusDto` (new) and `SummonStatusDto` plus `group?`
 and `queues?`. They mirror the status types field by field, as today.
 OpenAPI is generated from the route definitions, as for every route.
 
+*Correction (2026-10-08).* The per-controller budget usage the user asked for
+shipped first, in #289 and its UI #297, rather than as a groups list:
+
+- **`GET /summon`** (`listSummonControllers`, action `queues.list`, each row
+  filtered by `queues.read` on its queue): one row per controller in the
+  API's process, with the summoner's kind and readiness, `inert` and
+  `inertReason`, the last outcome and the budget usage.
+- **`features.summonList`** advertises it, and **`features.summonResetBudget`**
+  the `{ budget: true }` body of `POST /queues/:queue/summon/reset`.
+
+**PR-A3 still owes the group routes.** Its local commit `77ca70d` has
+`GET /summon/groups`, `GET /summon/groups/:group` and
+`POST /summon/groups/:group/reset`, and `features.summonRemoteStatus`. It
+also extends `GET /summon` to queues with no local controller (a `local`
+flag), on #289's earlier `GET /summon`; the rebase must redo that on the
+shipped one. Two choices there differ from the table above (the user's,
+2026-10-07): the groups list asks `queues.list`, and the group reset clears
+every kind's circuit, not one kind's.
+
 ### 5.3 The UI [D]
 
 The UI session owns this.
@@ -850,6 +936,19 @@ The UI session owns this.
 - **Workers page:** a summoned worker's card says "unit of media" from
   `summon.group`.
 
+*Correction (2026-10-08).* #297 (merged into #289's branch) added a
+**Summoning** screen at `/summon`, after Workers in the nav, gated on
+`features.summonList` and untargeted `queues.list`: one row per controller
+with its queue, summoner and readiness, an "Inert" badge, the last outcome
+and the budget left in each window. It also gave the Budget row the
+attempts left and the reset times, and the Reset dialog "Also clear budget
+usage". That is the per-controller usage above, per controller rather than
+per group. **UI-A still owes** the Group card, a view of the groups from
+`GET /summon/groups` (a section of Summoning, or its own list, as the UI
+session prefers) and the "off (group budget)" reading. The read-only
+`local: false` tab exists since #223 (no actions, a note); it needs checking
+against PR-A3's answers, which make the tab appear where a 409 hid it.
+
 ---
 
 ## 6. Back-compat and migration
@@ -864,7 +963,7 @@ PR:
 | argv | byte-identical (no `--bun-jobs-summon-group=`; one `--bun-jobs-summon-queue=`) |
 | `summonedFromArgs()` | same fields, plus `queues: [queue]` |
 | `runSummoned(worker)` | same signature and behaviour |
-| `SummonRequest` | same fields, plus `queues: [queue]` |
+| `SummonRequest` | same fields, plus `queues: [queue]` (optional in the type: §4.8) |
 | `BunJobsOptions.summon` as `Record<queue, SummonPolicy>` | unchanged |
 | API routes and DTO fields | unchanged, plus optional `group` |
 
@@ -942,8 +1041,10 @@ unreachable fails.
    `died`, for the attempt, not three.
 8. **Scale style:** no release while any queue has work; released once all
    are idle for `scaleDown.after`.
-9. **Conformance kit:** the argv round trip (must) on Local Compute and the
-   template's fake. The two-queue handoff (should) on the template, run by its
+9. **Conformance kit:** the argv round trip on Local Compute and the
+   template's fake: a must for providers declaring summon `0.2`, a should
+   (a warning) at `0.1`. A shared-unit controller refuses a `0.1`
+   provider. The two-queue handoff (should) on the template, run by its
    gate (`templates/compute-provider`: `bun test && bun
    scripts/check-types.ts`).
 10. **Examples** (the examples session): `examples/bun-jobs/…/summon-group-budget.ts`
@@ -1039,6 +1140,17 @@ accepted. (A) is approved for building once the expansion form has landed; (B)
 waits for a workload that needs it. The names in §12 are still approved PR by
 PR.
 
+**Decided since:**
+
+- B1 is built ahead of Part A, which it does not need (§11.2).
+- On #294's review (2026-10-07): `SummonRequest.queues` stays optional, and
+  providers read `request.queues ?? [request.queue]`; the argv round trip is
+  a must at summon `0.2` and a should at `0.1`; PR-B3's shared units refuse
+  a `0.1` provider (§4.8).
+- For PR-A3 (2026-10-07): the groups list asks `queues.list`; the group
+  reset clears every kind's circuit; `GET /summon` lists queues without a
+  local controller too, with a `local` flag (§5.2).
+
 1. **Approve (A) alone, and (B) later?** **Recommended: yes.** (A) is ~7 d and
    answers "one budget". (B) is ~13.5 d and pays only for correlated light
    queues (§4.1). Decide (B) on the workload.
@@ -1094,35 +1206,49 @@ read is reported to the examples session before merging.**
 
 ### 11.1 Part A (approvable alone)
 
-| PR | What it ships | Depends on | Effort |
-|---|---|---|---|
-| **PR-A1** the group budget | `group: { name, budget }`; `lib/summon/group.ts`; the `__bunjobs` reservation, the `listQueues` filter on file and memory, and the driver contract case; gate, charge, refund and `contended` re-arm in the controller; A5; `status().group`; `reset({ group, budget })`; `group` on `onSummonFailed` and events; tests 1, 2, 4, 5, 7 | expansion form, hooks PR | ~3.5 d |
-| **PR-A2** the shared circuit | `group.circuit`; `noteGroupFailure` and `noteGroupSuccess` from `#fail`, `#failAtOnce`, `#failLate` and registrations; keyed by `kind`; test 3 | PR-A1 | ~1.5 d |
-| **PR-A3** status everywhere | `limits` and `group` on the marker; `local: false` reads in `api/sources.ts`; `GET /summon/groups`, `GET /summon/groups/:group`, `POST …/reset`; DTOs and schemas; test 6 | PR-A1 | ~2 d |
-| *UI-A* | Group card on the Summon tab; Summon groups list; read-only `local: false` | PR-A3 | *~1.5 d (UI session)* |
-| *EX-A* | group budget example; README section | PR-A1 | *~1 d (examples session)* |
-| | **Total (bun-jobs)** | | **~7 d** |
+| PR | What it ships | Depends on | Effort | State (2026-10-08) |
+|---|---|---|---|---|
+| **PR-A1** the group budget | `group: { name, budget }`; `lib/summon/group.ts`; the `__bunjobs` reservation, the `listQueues` filter on file and memory, and the driver contract case; gate, charge, refund and `contended` re-arm in the controller; A5; `status().group`; `reset({ group, budget })`; `group` on `onSummonFailed` and events; tests 1, 2, 4, 5, 7 | expansion form, hooks PR | ~3.5 d | local `41f18a5` |
+| **PR-A2** the shared circuit | `group.circuit`; `noteGroupFailure` and `noteGroupSuccess` from `#fail`, `#failAtOnce`, `#failLate` and registrations; keyed by `kind`; test 3 | PR-A1 | ~1.5 d | local `9c67a3c` |
+| **PR-A3** status everywhere | `limits` and `group` on the marker; `local: false` reads in `api/sources.ts`; `GET /summon/groups`, `GET /summon/groups/:group`, `POST …/reset`; DTOs and schemas; test 6 | PR-A1 | ~2 d | local `77ca70d` |
+| *UI-A* | Group card on the Summon tab; Summon groups list; read-only `local: false` | PR-A3 | *~1.5 d (UI session)* | not started (§5.3) |
+| *EX-A* | group budget example; README section | PR-A1 | *~1 d (examples session)* | not started |
+| | **Total (bun-jobs)** | | **~7 d** | |
 
 ### 11.2 Part B (after PR-A1)
 
-| PR | What it ships | Depends on | Effort |
-|---|---|---|---|
-| **PR-B1** arguments and request | repeated `--bun-jobs-summon-queue=`, `--bun-jobs-summon-group=`; `SummonedArgs.queues` and `group`; `summon.group` on the record; `SummonRequest.queues`, `group` and `demands`; `SummonReleaseRequest.queues`; summon API `0.2`; the 8 KiB refusal; the kit's argv round trip (must) | PR-A1 | ~1.5 d |
-| **PR-B2** `runSummoned(workers[])` | `SummonedRun` over a set; refusals; joint idle and parked; one close budget; per-worker exit marks; `SummonedExit.queues`; test 6 | PR-B1 | ~3 d |
-| **PR-B3** the shared-unit controller | `unit: "shared"`; `queues` on `SummonControllerOptions`; `#home` and `#queues` split; group entry as a full marker; max-combination; per-queue fast path; claims on every member queue; partial coverage; the watch across queues; N triggers; events on every member queue; scale-down when all idle; the in-process overlap refusal and the record-based warning; `BunJobs` wiring through the expansion form; tests 1–5, 7, 8 | PR-A1, PR-B1 | ~5.5 d |
-| **PR-B4** API, kit and docs | per-queue routes answer for a shared unit (`queues`, coverage); the kit's two-queue handoff (should); template README; bun-jobs README ("one unit for several queues", §4.1's table); test 9 | PR-B3, PR-B2 | ~3.5 d |
-| *UI-B* | per-queue coverage of attempts; "unit of" on worker cards | PR-B4 | *~1.5 d (UI session)* |
-| *EX-B* | shared-unit example on all backends; a playground group (the playground rule: every finished feature goes there) | PR-B4 | *~1.5 d (examples session)* |
-| | **Total (bun-jobs)** | | **~13.5 d** |
+*As built: B1 went first, by the user's intent. It needs nothing of A1, so
+it was built on `develop` and opened as #294 before Part A. PR-B3 still
+needs PR-A1.*
+
+| PR | What it ships | Depends on | Effort | State (2026-10-08) |
+|---|---|---|---|---|
+| **PR-B1** arguments and request | repeated `--bun-jobs-summon-queue=`, `--bun-jobs-summon-group=`; `SummonedArgs.queues` and `group`; `summon.group` on the record; `SummonRequest.queues`, `group` and `demands`; `SummonReleaseRequest.queues`; summon API `0.2`; the 8 KiB refusal; the kit's argv round trip (must at `0.2`, should at `0.1`) | — (planned: PR-A1) | ~1.5 d | merged #294 |
+| **PR-B2** `runSummoned(workers[])` | `SummonedRun` over a set; refusals; joint idle and parked; one close budget; per-worker exit marks; `SummonedExit.queues`; test 6 | PR-B1 | ~3 d | local `14481c2` |
+| **PR-B3** the shared-unit controller | `unit: "shared"`; `queues` on `SummonControllerOptions`; `#home` and `#queues` split; group entry as a full marker; max-combination; per-queue fast path; claims on every member queue; partial coverage; the watch across queues; N triggers; events on every member queue; scale-down when all idle; the in-process overlap refusal and the record-based warning; `BunJobs` wiring through the expansion form; tests 1–5, 7, 8 | PR-A1, PR-B1 | ~5.5 d | not started |
+| **PR-B4** API, kit and docs | per-queue routes answer for a shared unit (`queues`, coverage); the kit's two-queue handoff (should); template README; bun-jobs README ("one unit for several queues", §4.1's table); test 9 | PR-B3, PR-B2 | ~3.5 d | not started |
+| *UI-B* | per-queue coverage of attempts; "unit of" on worker cards | PR-B4 | *~1.5 d (UI session)* | not started |
+| *EX-B* | shared-unit example on all backends; a playground group (the playground rule: every finished feature goes there) | PR-B4 | *~1.5 d (examples session)* | not started |
+| | **Total (bun-jobs)** | | **~13.5 d** | |
 
 **Order:** PR-A1 → (PR-A2 ∥ PR-A3) → PR-B1 → (PR-B2 ∥ PR-B3) → PR-B4. PR-B2
-does not need PR-B3: it can be tested against hand-built argv.
+does not need PR-B3: it can be tested against hand-built argv. *As run:*
+the hooks PR (#289) → PR-B1 (#294) → PR-A1 to A3 and PR-B2, each rebased
+on what landed → PR-B3 → PR-B4.
+
+**For PR-B3, from #294's review:** refuse a provider at summon `0.1` for a
+shared unit; pass `queues` and `group` to the construction-time argv check;
+build `demands` with a null prototype (`__proto__` is a valid queue name).
+The shipped expansion form takes per-queue changes as `overrides`, not as
+`SummonQueueEntry` objects (§4.2), so B3 settles which carries
+`jobsPerWorker` and `maxWorkers`.
 
 ---
 
 ## 12. Names needing approval
 
-Every new public name. Nothing here is built.
+Every new public name. *As of 2026-10-08, B1's are merged (#294) and A1 to A3's
+and B2's in local commits (Status, at the top); the rest is not built.*
 
 | Name | Kind | Where | Why this name |
 |---|---|---|---|
@@ -1141,12 +1267,22 @@ Every new public name. Nothing here is built.
 | `--bun-jobs-summon-group` (`SUMMON_ARGS.group`) | summon argument | `summon/args.ts` | the existing prefix |
 | `SummonedArgs.queues`, `SummonedArgs.group` | fields | `summonedFromArgs()` | the plural; the group |
 | `WorkerSummonProvenance.group` | record field | `shared/workers.ts` | "unit of media" on the Workers page |
-| `SummonRequest.queues`, `.group`, `.demands`; `SummonReleaseRequest.queues` | provider-facing fields | summon API `0.2` | additive |
+| `WorkerSummonProvenanceDto.group` | DTO field | `./api/contract` | mirrors the record's. Added in #294, approved |
+| `SummonRequest.queues`, `.group`, `.demands`; `SummonReleaseRequest.queues` | provider-facing fields | summon API `0.2` | additive; `queues` optional (§4.8) |
+| `SummonReleaseRequest.group` | provider-facing field | summon API `0.2` | with `queues`, names the unit to release. Added in #294, approved |
 | `SummonedExit.queues` | field | `runSummoned` result | per-queue totals |
 | `SummonStatus.overlaps` | field | root | groups also summoning for this queue |
 | `GET /summon/groups`, `GET /summon/groups/{group}`, `POST /summon/groups/{group}/reset` | routes | management API | operations `listSummonGroups`, `getSummonGroup`, `resetSummonGroup` |
 | `SummonGroupStatusDto` | DTO | `./api/contract` | mirrors `SummonGroupStatus` |
 | `limits` on the marker and group entry | persisted field | internal | what the limits were at the last claim |
+
+*Also approved, for the local Part A commits (the features agent's notes,
+2026-10-06 and 07):* `SummonStatusDto.group`, `SummonEventDto.group`, the
+group budget's `off`, `queues[q].lastAt` (A1); `openedBy`,
+`circuit.failures` and `resetAfter` (A2); `SummonGroupListDto`,
+`SummonGroupResetBody`, `SummonGroupStatusDto.circuits`,
+`features.summonRemoteStatus`, `SummonListItemDto.circuitOpenUntil`, and
+`kind`, `limits` and `group` on `SummonMarker` (A3).
 
 ---
 
