@@ -12,9 +12,10 @@ import process from "node:process";
  *   `memory` because summoning (`summoning.ts`) needs a backend **another
  *   process** can reach: a summoned worker is a separate process, and the
  *   memory driver is refused by the summon controller.
- * - `memory`: nothing on disk at all, and events are only this process's own
- *   (the badge says `events: local`). Summoning is skipped: the providers are
- *   still listed, but no worker is summoned for `renders`.
+ * - `memory`: nothing on disk at all (not even `.data/`), and events are only
+ *   this process's own (the badge says `events: local`). Summoning is
+ *   skipped: the providers are still listed, but no worker is summoned for
+ *   any of the summoned queues.
  * - `file` / `sqlite`: kept in `playground/.data/`, so a restart keeps every
  *   queue, job and runner.
  * - `postgres`, `mysql`, `mariadb`, `redis`, `mongodb`: need
@@ -55,8 +56,23 @@ export function isCrossProcess(): boolean {
  */
 const TEMP_DB = join(DATA_DIR, `temp-${process.pid}.db`);
 
-/** The `temp-<pid>.db*` files, with the pid each belongs to. */
-function tempFiles(): { file: string; pid: number }[] {
+/**
+ * The file the media `localCompute()` instance appends its units' output to
+ * (`output: { file }`, `summoning.ts`): named after this process, like the
+ * `temp` database, and deleted with it when the playground stops — on every
+ * backend, since it is this run's alone.
+ */
+export function unitsLogFile(): string {
+  mkdirSync(DATA_DIR, { recursive: true });
+  return join(DATA_DIR, `units-${process.pid}.log`);
+}
+
+/**
+ * Every playground's files of one kind in `.data/` (`temp-<pid>.db*` or
+ * `units-<pid>.log`, by `pattern`, whose first group is the pid), this
+ * process's and any other's, with the pid each belongs to.
+ */
+function pidFiles(pattern: RegExp): { file: string; pid: number }[] {
   let names: string[];
   try {
     names = readdirSync(DATA_DIR);
@@ -64,13 +80,13 @@ function tempFiles(): { file: string; pid: number }[] {
     return [];
   }
   return names.flatMap((name) => {
-    const match = /^temp-(\d+)\.db/.exec(name);
+    const match = pattern.exec(name);
     return match ? [{ file: join(DATA_DIR, name), pid: Number(match[1]) }] : [];
   });
 }
 
 /** Whether a process with this pid is alive. */
-function isAlive(pid: number): boolean {
+export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -81,15 +97,17 @@ function isAlive(pid: number): boolean {
 }
 
 /**
- * Deletes the `temp` backend's files: this process's own when it stops, and
- * on start any a playground left that was killed before it could (its pid is
- * gone). A no-op on every other backend.
+ * Deletes the files a run keeps of its own: the `temp` backend's database
+ * (only on that backend) and the units' output log (on every backend). This
+ * process's own when it stops, and on start any a playground left that was
+ * killed before it could (its pid is gone).
  */
 export function removeTempData(scope: "mine" | "stale"): void {
-  if (playgroundBackend() !== "temp") {
-    return;
-  }
-  for (const { file, pid } of tempFiles()) {
+  const files = [
+    ...(playgroundBackend() === "temp" ? pidFiles(/^temp-(\d+)\.db/) : []),
+    ...pidFiles(/^units-(\d+)\.log$/),
+  ];
+  for (const { file, pid } of files) {
     if (
       scope === "mine"
         ? pid === process.pid

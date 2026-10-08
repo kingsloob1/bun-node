@@ -12,6 +12,8 @@ PLAYGROUND_DRIVER=sqlite bun playground/index.ts     # keeps its state in playgr
 PLAYGROUND_DRIVER=memory bun playground/index.ts     # nothing on disk, and no summoning
 PLAYGROUND_DRIVER=redis PLAYGROUND_URL=redis://localhost:6379/12 bun playground/index.ts
 PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
+PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgroup (Linux, cgroup v2)
+PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -40,7 +42,7 @@ can reach it, so never expose it.
 |---|---|
 | `/jobs` | the UI (Overview, Queues, Workers, Providers, Runners, Events, API docs) |
 | `/jobs-api` | the management API, with its live-events socket on the same port |
-| `/local-compute` | "Local Compute", the made-up platform the compute provider summons workers on: its API (`/local-compute/v1/…`) and a control page for its units and faults (see "Summoning and compute providers" below) |
+| `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit (see "Summoning" below) |
 | `/` | redirects to `/jobs` |
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,
@@ -50,7 +52,7 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 |---|---|---|
 | `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
-| `compute` | `compute.renders.render`, `compute.transcodes.transcode` | **summoned**: separate processes a compute provider starts when `renders` or `transcodes` has work, each gone again 10 s after its queue is empty; its Summon card names the attempt |
+| `compute` | `compute.renders.render`, `compute.transcodes.transcode`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`, `compute.ledger.post`, `compute.secure-exports.export`, `compute.obinna-queue.obinna-pinger-local-compute` | **summoned**: child processes the library's `localCompute()` starts when one of those queues has work, each gone again once its queue is idle (or, for `ledger`, once it is released); its Summon card names the attempt |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
 survives a restart of the playground and reaches every replica carrying it.
@@ -84,8 +86,7 @@ than piled onto one (each is commented where it is set):
 | `reports` | 1 at a time, 6–15 s each | an object progress (`{ step, done, of }`), a backlog |
 | `webhooks` | 2 at a time, rate-limited 20/min | retries with exponential backoff; `umbrella` always fails, so dead jobs pile up |
 | `images` | none in `api` — its only worker is `mailer.images.thumbs` (see above) | a backlog that drains slowly, one job at a time; pause that worker and it only grows |
-| `renders` | none always on — summoned on demand (`summoning.ts`) | a burst of 4–16 jobs every minute, a worker (or two) summoned for it, and back to no worker at all |
-| `transcodes` | none always on — summoned under the same policy as `renders` | 1–3 jobs with each burst, one worker summoned for them by the queue's own controller |
+| `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle`, `obinna-queue`, `ledger`, `secure-exports` | none always on — summoned on demand (`summoning.ts`) | see "Summoning" below |
 
 Also on `emails`: two repeat series (`weekly-digest`, `daily-summary`: try
 Disable/Enable), a delayed `reminder-tomorrow`, and a flow
@@ -182,93 +183,185 @@ run's because capture attributes each `console` call to the run that made it
 | `reindex` | none | spawned; runs only when triggered; Trigger… may pass `{ "ms": 20000 }` for a long run to Kill…, or `{ "failRate": 1 }` |
 | `ping` | every 10 s, 5 s timeout | its 2–8 s of work times out about half the time, and one run in five that finishes in time throws; the Overview's Runners section counts the throws as Failed and the timeouts apart, under "Timed out / killed" |
 
-### Summoning and compute providers (`summoning.ts`, `compute/`)
+### Summoning (`summoning.ts`, `compute/`)
 
-`renders` and `transcodes` have **no** always-on worker. When one has work,
-its summon controller asks a **compute provider** for one, and the
-provider's platform starts a real worker process on this machine; that
-worker drains the queue and exits once there is nothing left for it.
+Eight queues have **no** always-on worker. When one has work, its summon
+controller asks its summoner for one, and the library's **`localCompute()`**
+(from `@kingsleyweb/bun-jobs/provider`) starts a real worker process on this
+machine: a child of the playground, in a process group of its own. The worker
+drains the queue under `runSummoned` and exits once there is nothing left for
+it.
 
-Both queues share one policy, written once as a **summon group** — the
-context's `summon` option is `[{ queues: ["renders", "transcodes"], … }]`,
-with `overrides` capping `transcodes` at one worker. A group is shorthand:
-each queue still gets its own controller, with its own Summon panel, budget,
-backoff and circuit. Every unit runs the same `compute/worker.ts`, which
-picks its processor by the queue its arguments name.
+The context's `summon` option is an array that **mixes a group with a
+record**:
+
+```ts
+export const summon = [
+  // A group: one policy for five queues, with per-queue overrides.
+  {
+    queues: ["renders", "transcodes", "thumbnails", "marathon", "brittle"],
+    summoner: media,
+    maxWorkers: 2,
+    overrides: { transcodes: { maxWorkers: 1, budget: { perHour: 30 } } },
+  },
+  // A record of policies by queue, beside it.
+  {
+    "obinna-queue": { summoner: obinna },
+    "ledger": { summoner: replicas, scaleDown: { after: 20_000 } },
+    "secure-exports": { summoner: vault },
+  },
+];
+```
+
+(abridged: `summoning.ts` has the whole option)
+
+A group is shorthand: each of its queues still gets a controller of its own,
+with its own Summon panel, marker, budget, backoff and circuit.
 
 | File | What it is |
 |---|---|
-| `compute/provider.ts` | the provider, made with `defineComputeProvider` from `@kingsleyweb/bun-jobs/provider`: identity, a config schema with a JSON Schema for the config form, `apiToken` declared a secret, `describe()` facts, a `validate()` preflight, and a summon facet with `status()` and `cancel()` |
-| `compute/platform.ts` | "Local Compute", the made-up platform it talks to over HTTP (through `ctx.fetch`), served on the playground's own port under `/local-compute/v1`. A unit is `bun compute/worker.ts` with the summon's `--bun-jobs-summon-*=` arguments, and the policy's static `env` (how to reach the backend) |
-| `compute/worker.ts` | what a unit runs, for either queue: a worker under `runSummoned`, which exits 10 s after the queue is empty and writes the exit mark that tells the controller the attempt ended cleanly |
+| `summoning.ts` | the four `localCompute()` instances, the vault provider, the scale-style summoner, the `summon` option, and the bursts of jobs |
+| `compute/worker.ts` | the entry the `media` and `ledger` instances run: **one file serving every queue of the group**, choosing its processor by `summonedFromArgs().queue` |
+| `compute/obinna-queue-worker.ts` | the entry the `obinna` instance runs: `obinna-queue`, whose jobs "ping obinna" |
+| `compute/units.ts` | the playground's wrapper around each instance's summon facet (a spread of a configured provider keeps its brand and its Providers id): it records the units, injects a fault into one queue's next start, and on shutdown stops every unit and awaits its exit. It also serves `/playground/compute` |
+| `compute/provider.ts` | "Vault Compute", a third-party provider made with `defineComputeProvider` whose units are started by the `media` `localCompute()` underneath. It shows what `localCompute()` cannot: a declared secret, an asynchronous config (and so Pending and Failed readiness), and the `throttled`/`quota`/`auth`/`transient` answers of a remote platform |
+| `compute/cgroup.ts` | the run's cgroup when `PLAYGROUND_CGROUP` asks for one |
+| `compute/leftovers.ts` | records every unit this run starts, and at startup stops the units a killed run (or a `--watch` reload) left running |
 
-**Where to look:**
+**The `localCompute()` instances** (Providers screen, `@kingsleyweb/bun-jobs:local@0.1.0~1` to `~4`):
 
-- **Providers** (`/jobs/providers`): three instances of the one provider,
-  one per state a card can show.
+| Instance | Options | What to see |
+|---|---|---|
+| `~1` `media` | `entry: compute/worker.ts`, `cwd: playground/`, `args: ["--tier=standard"]`, `maxUnits: 5`, `bootBudget: 15_000`, `shutdown: { signal: "SIGTERM", graceMs: 3_000 }`, `output: { file: ".data/units-<pid>.log" }`, `env: { PLAYGROUND_POOL: "media" }`, `passEnv: ["PLAYGROUND_REGION"]`, and (like every instance) `cgroup` with `PLAYGROUND_CGROUP` | five units at once across six queues, so a big burst meets `unavailable` (`max-units: 5 of 5 running`); every unit's stdout and stderr in `playground/.data/units-<pid>.log` (`tail -f` it); a job's `returnValue.env` has `region` (passed by name) and `pool` (set), and `hostSecret: "kept out"` — the playground sets `PLAYGROUND_HOST_SECRET` in its own environment, and the allowlist never hands it on; `tier: "standard"` from `args` |
+| `~2` `obinna` | `entry: compute/obinna-queue-worker.ts`, `maxUnits: 1`, `maxLifetime: 300_000` (the platform's cap: a policy `maxLifetime` above it is a `ConfigError`), `shutdown: { signal: "SIGINT", graceMs: 5_000 }`, `env: "inherit"`, `output: { logger }` | each unit's `obinna unit up…` line in the playground's terminal, logged by the `obinna-units` logger with the unit's handle; a job's `returnValue.hostEnv` is `"inherited"`: the whole host environment, secret included |
+| `~3` `ledger` | the group's entry again, `args: ["--tier=replica"]`, `maxUnits: 2`, `output: "ignore"` | driven by a scale-style summoner, below |
+| `~4` | `entry: "compute/not-built-yet.ts"` | it configures (the schema reads no file), and **Test connection** fails its `entry` check. Nothing summons with it: a summon would be a `misconfigured` `ProviderError`, which opens a circuit at once |
 
-  | Card | Config | Readiness | Test connection |
-  |---|---|---|---|
-  | `…~1`, region `local-1` | token read from the playground's secret store, which takes 12 s to answer (`PLAYGROUND_SECRET_DELAY_MS`) | **Pending** for the first 12 s, then **Ready** | ok, with a `warn` check (units are not isolated), and the `credentials` check's detail naming the token — shown `[REDACTED]`, because `apiToken` is a declared secret |
-  | `…~2`, region `local-2` | a token the platform does not know | Ready | not ok: `auth`, `InvalidToken` |
-  | `…~3`, pool `gpu` | names a secret the store does not hold | Pending for 12 s, then **Failed** | not ok: `misconfigured`, `invalid config: apiTokenSecret` (it validates again first, so it takes 12 s) |
+**Use cases** — what to watch, and how to make it happen:
 
-  "Config schema" shows the served JSON Schema: the token's `default`,
-  `examples` and `x-ui-widget` in `compute/provider.ts` are gone from it.
-- **`renders` → Summon panel** (`/jobs/queues/renders`): the summoner
-  (`…~1`), its readiness — **pending** for the first 12 s, so the first
-  burst waits for it — its capabilities and facts, the attempts in flight,
-  failures, backoff, the circuit, the budget, and the last outcome. "Summon
-  now" and "Reset" work. `transcodes` has a panel of its own
-  (`/jobs/queues/transcodes`), from the same group: the same summoner, its
-  own attempts and budget.
-- **Workers** (`/jobs/workers`): `compute.renders.render` appears under
-  `compute` while a summoned worker runs, with its summon provenance (the
-  attempt's id, `kind: local`, its mode and deadline), and is gone once it
-  exits.
-- **`/local-compute`**: the platform's own page — every unit, its pid, state,
-  exit code and detail, and buttons that queue a fault.
+| Use case | Where | What to watch in the UI | How to trigger it |
+|---|---|---|---|
+| A **group** with **overrides**, merged one level deep | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | each queue's Summon panel of its own, all naming the one summoner (Provider: Local processes, `@kingsleyweb/bun-jobs:local 0.1.0`), each with its own failures, backoff, circuit and budget. On screen, the budget line shows the merge: `transcodes` reads "… of 30 this hour, … of 2,000 today" — its override's `perHour` beside the group's `perDay` — where the others read "of 240 this hour". The rest of each policy (triggers, `env`, circuit thresholds, `maxWorkers`) is not on screen yet: read it in `summoning.ts`, and see it act in the rows below | always on: a burst every minute (`PLAYGROUND_SUMMON_EVERY_MS`) |
+| **Groups and records mixed** in `summon: [...]` | `obinna-queue`, `ledger`, `secure-exports` | Summon panels like the group's, each naming its own summoner: Local processes (`obinna-queue`), `local-replicas` (`ledger`), Vault Compute (`secure-exports`) | always on |
+| **One entry file serving a group's queues** | `compute/worker.ts` | Workers → `compute`: `compute.renders.render`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`… one per queue, all the same file | always on |
+| `jobsPerWorker`, `maxWorkers` | `renders` (8 per worker, at most 2), `transcodes` (1), `thumbnails` (4 per worker) | a burst of more than 8 renders gets a second worker | always on |
+| `maxPending` | the group: 1 | while an attempt is pending (on the panel, until its worker registers), no second attempt is made for that queue; a burst that needs two workers asks for both in that one attempt (`count: 2`) | a big `renders` burst; or "Summon now" while one is pending, which answers `skipped: pending` |
+| `cooldown`, `backoff` | the group: 5 s, then 5–30 s; `poll` every 10 s | after an `unavailable` or a lost attempt, "Backoff until" on the panel, further out per failure in a row | any fault below |
+| `maxUnits` → **`unavailable`** | `media`, shared by six queues | a panel's last outcome `unavailable`, detail `max-units: 5 of 5 running`, counted and backed off from (so a queue starved three times in a row opens its circuit too) | a big burst landing while `marathon` holds a unit |
+| **`maxLifetime` ending units** | `marathon`: 45 s (its override) | Workers: `compute.marathon.leg` replaced every ~40 s, its last job finishing first — `runSummoned` stops claiming 7 s before the deadline and exits 0 (`deadline`); its unit on `/playground/compute` `exited 0` | always on: a leg every 5 s, so it never goes idle |
+| `maxLifetime` **enforced by `localCompute()`** | `marathon` | the unit ignores its stop signal; at 45 s `localCompute()` sends SIGTERM, then SIGKILL 3 s later: `/playground/compute` shows `failed 137`, detail `max-lifetime`. The Summon panel counts nothing: the attempt registered and ran past its watch, so its end is not a lost attempt, and the next check summons a fresh unit | `curl -X POST 'localhost:4000/playground/compute/faults?kind=ignore-stop&queue=marathon'` (also in the fault cycle) |
+| `bootBudget` → **`lost`** | `media`: 15 s | an attempt pending for 15 s, then `lost`; 10 s later the slow worker registers anyway and drains the queue | `?kind=slow-boot&queue=renders` |
+| A crash before registering | every queue | pending, then `lost` after the boot budget, its detail the unit's last stderr line: `renders worker: cannot load the GPU driver (libvk.so.1)`. The panel's "Boot budget" is the provider's (15 s on `media`); `brittle`'s policy shortens its own to 8 s (`summoning.ts`) | `?kind=crash&queue=renders` |
+| A unit dying mid-queue | any queue | registered, then `lost`, detail `SIGKILL` (the unit's own status from `localCompute()`); the queue is finished by the next worker | `?kind=die&queue=transcodes` |
+| **`circuit`** opened by a fault queue | `brittle` (every unit crashes) | failures counting up, then "Circuit open until" a minute away (two lost attempts open it: `circuit.failures: 2` in `summoning.ts`), one trial when it passes, open again. Reset closes it now | always on: two seeded jobs no unit ever runs |
+| `triggers`: `onAdd` vs `poll` | `thumbnails` (`onAdd: false, events: false`) vs `renders`, in `summoning.ts` | not as settings (not on screen yet), but in when each attempt starts: on `/playground/compute`, a burst's `renders` units start as it lands (the add's check), while `thumbnails`, added 5 s into each burst, start only at the controller's next poll, up to 10 s later | always on |
+| **`scaleDown`** (scale-style summoner) | `ledger`: `defineSummoner({ style: "scale" })` over `~3` (on Providers as `custom:local-replicas@0.0.0~1`) | units run `until-stopped`: they stay on the Workers page after `ledger` drains; 20 s later the controller releases them — a `summon` event with outcome `released` on the Events console (`queue/ledger`) — and they exit 0 (`/playground/compute`: `exited 0`) | every other burst adds 4–8 ledger jobs |
+| `shutdown` signal and grace | `media` SIGTERM / 3 s, `obinna` SIGINT / 5 s (`summoning.ts`; not on screen yet) | `runSummoned` handles either signal and exits 0 (`exited 0` on `/playground/compute`); with `ignore-stop`, the grace running out: `failed 137` | Ctrl+C, or `ignore-stop` |
+| `output` | `media` → file, `obinna` → logger, `ledger` → ignore | `playground/.data/units-<pid>.log`; the playground's terminal; nothing | always on |
+| `env` vs `passEnv` | `media` (allowlist + `passEnv`) vs `obinna` (`"inherit"`) | a completed job's `returnValue`: `env.hostSecret: "kept out"` vs `hostEnv: "inherited"` | open any completed job |
+| `cgroup` | every instance, with `PLAYGROUND_CGROUP` | Providers → each `Local processes` card: a `cgroup` fact, and Test connection's `cgroup` check passes; each unit in a cgroup of its own under `…/app.slice/bun-node-playground-<pid>` (`memory.max` 1 GiB, `pids.max` 512, binding every unit of the run together). Where that cannot be made (no systemd user slice, no cgroup v2, no permission), one warning at startup and the units run without a cgroup | `PLAYGROUND_CGROUP=auto` (Linux, cgroup v2, a user-delegated subtree; `PLAYGROUND_CGROUP_SLICE` names another parent), or a path to an existing cgroup |
+| `.toQueue()` (#278) | `obinna-queue` | each burst's `ping-obinna` job: added through the registry's builder, `jobs.schedule("ping-obinna", data).toQueue("obinna-queue")`. Its definition's `attempts: 5` does **not** follow it: the job has the queue's default | always on |
+| `jobs.queue(name).schedule()` (#278) | `obinna-queue` | a delayed `ping-obinna` 20 s after each burst, and the `obinna-heartbeat` series (Repeatables: every 2 minutes), each summoning a unit | always on |
+| A third-party provider: readiness, a declared secret, platform answers | `secure-exports`, Vault Compute `~1` | Providers: `…vault-compute@0.1.0~1` Pending until the slow secret store answers (`PLAYGROUND_SECRET_DELAY_MS`, default 12 s), then Ready; `~2` Ready but Test connection `auth` (`InvalidToken`); `~3` Pending, then Failed. Test connection on `~1` names the token as `[REDACTED]` and lists the `media` instance's own checks. The queue's Summon panel shows the same readiness | `?kind=throttled&queue=secure-exports` (also `quota`, `auth`, `transient`; only on this queue) |
 
-**One cycle.** Every minute (`PLAYGROUND_SUMMON_EVERY_MS`) a burst of 4–16
-render jobs arrives. The add triggers a check, the controller summons (two
-workers when the burst is more than 8 jobs), the attempt shows as pending
-until the worker's first report **registers** it, the queue drains at two
-jobs per worker, and 10 s after the last job the worker exits (`idle`). Then
-nothing runs until the next burst.
-
-**Faults.** Before some bursts the platform is told to fail the next start,
-so the Summon panel shows how each answer is counted. The cycle, one burst a
-minute: normal, **throttled**, normal, **auth**, normal, **crash**, normal,
-**die**, and again. `PLAYGROUND_SUMMON_FAULTS=off` turns it off. Any fault
-can also be queued by hand, spent by the next start: press it on
-`/local-compute`, or
+**Faults, per queue.** `/playground/compute` queues a fault for **one
+queue's next start**, spent only by a start that happens (one answered
+`unavailable` keeps it queued), and reaching every unit that start asks for
+(a big `renders` burst's two):
 
 ```bash
-curl -X POST 'http://localhost:4000/local-compute/faults?kind=auth'
-curl -X POST 'http://localhost:4000/local-compute/faults/clear'
+curl -X POST 'http://localhost:4000/playground/compute/faults?kind=crash&queue=renders'
+curl -X POST 'http://localhost:4000/playground/compute/faults/clear'
+curl http://localhost:4000/playground/compute/state     # queued faults and every unit's status
 ```
 
-then add a job to `renders` (or press "Summon now") to spend it.
+| Fault | Queues | What it does | The Summon panel shows |
+|---|---|---|---|
+| `crash` | every queue | the unit exits 1 before its worker reports | pending, then **`lost`** after the boot budget, detail the unit's last stderr line |
+| `die` | every queue | the unit `SIGKILL`s itself after its first job | registered, then **`lost`**, detail `SIGKILL`; `/playground/compute` shows `failed 137` |
+| `slow-boot` | every queue but `obinna-queue` | the unit sleeps 25 s before building its worker | **`lost`** at the boot budget (15 s on `media`, 20 s on `ledger`), then a late worker drains the queue |
+| `ignore-stop` | every queue but `obinna-queue` (use `marathon`, which never goes idle; elsewhere the unit still exits on idle) | the unit ignores its signals and its deadline | nothing counted (it registered long before); at `maxLifetime`, `localCompute()` stops it, then kills it: `failed 137`, `max-lifetime` on `/playground/compute` |
+| `throttled` | `secure-exports` | Vault Compute throws `throttled`, retry after 8 s | `unavailable`, **not counted**; backoff 8 s |
+| `quota` | `secure-exports` | `quota`, retry after 20 s | counted; backoff 20 s |
+| `auth` | `secure-exports` | `auth` (`TokenRevoked`) | the **circuit opens at once**, for a minute. Reset closes it |
+| `transient` | `secure-exports` | `transient` | `failed`, counted, backoff |
 
-| Fault | The platform answers | The Summon panel shows |
-|---|---|---|
-| `throttled` | 429, `Retry-After: 8` | last `unavailable`, detail `RateLimited`; failures **unchanged**; backoff 8 s, then a normal summon |
-| `quota` | 402 `QuotaExceeded`, `Retry-After: 20` | `unavailable`, but **counted**; backoff 20 s |
-| `auth` | 401 `TokenRevoked` | last `failed`; failures jump to 3 and the **circuit opens at once**, for a minute. Reset closes it now |
-| `misconfigured` | 404 `PoolNotFound` | as `auth` |
-| `transient` | 503 | `failed`, counted, backoff 5 s |
-| `crash` | a unit that exits 1 before its worker reports | a pending attempt that never registers; after the 20 s boot budget, **`lost`**, explained by the unit's own detail from `status()`: `ExitCode1: render worker: cannot load the GPU driver…` |
-| `die` | a unit `SIGKILL`ed after its first job | registered, then **`lost`**, detail `died`, once its grace has passed; the job it held is recovered as stalled and finished by the next worker |
+Each queue takes only the faults its units act on, and the page offers only
+those: `obinna-queue-worker.ts` knows `crash` and `die` alone, and the four
+provider faults are what a remote platform answers and `localCompute()` never
+does, so they go only to the queue the vault provider summons for. Any other
+kind, an unknown queue, or a fourth fault queued for one queue
+(`MAX_QUEUED_PER_QUEUE` is 3) is a 400 naming what it takes. On `brittle`,
+a queued unit fault replaces its override's `crash` for that one start. Before some bursts the playground queues one
+itself, in turn: `renders` crash, `secure-exports` throttled, `transcodes`
+die, `secure-exports` auth, `renders` slow-boot, `marathon` ignore-stop, with
+a clean burst between each. `PLAYGROUND_SUMMON_FAULTS=off` turns that off.
 
-The policy is tighter than the defaults so a session sees all of it: a poll
-every 5 s, a 5 s cooldown, backoff from 5 s to 30 s, a circuit of 3 failures
-that half-opens after a minute, and at most 2 workers.
+**Stopping.** Ctrl+C (or `SIGTERM`) stops the bursts and then every unit
+still running: `localCompute()` sends each its stop signal as the signal
+arrives and starts nothing more, and the playground's shutdown calls each
+instance's `cancel()` for every live unit, which resolves only once the
+process has exited (`SIGKILL` after the grace), before the backend closes.
+`SIGHUP` (a closed terminal) does the same. It prints `waited for N summoned
+units to exit`, removes `.data/units-<pid>.log` and, with
+`PLAYGROUND_CGROUP=auto`, its cgroup; if any step of the shutdown fails, the
+files and the cgroup are still removed. No unit outlives the playground.
 
-**Stopping.** Ctrl+C (or `SIGTERM`) stops the bursts, sends every unit still
-running `SIGTERM` — `runSummoned` closes its worker and exits 0 — and
-`SIGKILL`s any that has not exited within 3 s, before the backend closes.
-Nothing outlives the playground. Killed with `SIGKILL` itself, it cannot do
-that: its units then exit on their own once idle.
+**Units an earlier run left.** Killed with `SIGKILL` itself (or by the OOM
+killer), the playground runs no shutdown, and its units are detached (each
+leads a process group of its own), so they are re-parented and keep running:
+until idle, or, for a `ledger` replica (`until-stopped`), up to its hour-long
+lifetime. A `bun run dev` (`--watch`) reload is the same: it re-executes the
+playground in place, with the same pid, and runs no shutdown; measured, four
+of the earlier incarnation's units still ran after a reload.
+
+So every run **records each unit it starts** — pid, start time (`ps -o
+lstart`) and command line, with its own pid — in one file per checkout,
+`os.tmpdir()/bun-node-playground-<hash of the checkout path>/units.pid`.
+Not under `.data/`, which the memory backend never makes; one per checkout,
+so two worktrees never stop each other's units; a reboot clearing it is
+fine, since a reboot ends the units too. Each start, before it summons
+anything, stops every recorded unit whose playground is gone, or is itself (a
+reload): `SIGTERM` to the unit's process group, `SIGKILL` 5 s later, printing
+`stopped N summoned units an earlier run left running`. **Only a process
+whose pid, start time and command line all match its record is signalled**,
+so a pid the system has since given to something else is never touched.
+Then it drops those records; another playground still running from the same
+checkout keeps its own. A clean stop drops its records too
+(`compute/leftovers.ts`). Between the kill (or the reload) and the next
+start, the old units may still take a job or two.
+
+With `PLAYGROUND_CGROUP=auto`, every instance's units (`media`, `obinna`,
+`ledger`) are in the run's cgroup, and the next start also kills whatever
+still runs in a cgroup an earlier run left (`cgroup.kill`) and removes it,
+and removes the units log it left.
+
+**Stopping counts against a queue.** Once the shutdown begins, a check that
+still runs is answered `unavailable` ("the playground is stopping") by the
+playground's wrapper. That counts like any `unavailable`: on a backend that
+keeps its state (`PLAYGROUND_DRIVER=sqlite`, a server), the next start's
+Summon panel may show one failure and a last outcome of `unavailable` with
+that detail, until a registration or a Reset clears it.
+
+**Not on develop yet** — hooks for what lands next, to be filled in then:
+
+- TODO(#289): `GET /summon`, every queue's summon status in one call, for a
+  table of all eight queues on `/playground/compute`; and `onSummonFailed`,
+  `budget: false` and `reset({ budget })` on the policies above (e.g. a
+  `brittle` override with `budget: false`, and a reset of `transcodes`'
+  budget from the control page).
+- TODO(policy visible): the user has decided each queue's policy will be
+  shown — triggers, `env` names, circuit thresholds, `maxWorkers`,
+  `jobsPerWorker`, `maxPending`, `cooldown`, `bootBudget`, the provider's
+  shutdown signal and grace — through an API addition and the Summon panel.
+  Then the use-case table above says where each one is on screen, instead of
+  pointing at `summoning.ts`.
+- TODO(Part A): group budgets and circuits, and status from storage: one
+  budget and circuit for the whole media group, where today each of its five
+  queues has its own.
+- TODO(Part B, #294): multi-queue units — one `localCompute()` unit serving
+  several of the group's queues at once, instead of one unit per queue
+  choosing its processor by `summonedFromArgs().queue`.
 
 ## Things to try
 
@@ -296,10 +389,14 @@ that: its units then exit on their own once idle.
 - Queues → `notifications` → Repeatables: six series, and `burst-window` counting down from five.
 - Queues → `dead-letters`: every job that died, with the queue it died in and why.
 - Try any operation from API docs → HTTP, and watch the screens follow.
-- Open Providers in the first 12 s: `…~1` and `…~3` say Pending. Then press Test connection on each of the three.
+- Open Providers in the first 12 s (`PLAYGROUND_SECRET_DELAY_MS`): Vault Compute `…~1` and `…~3` say Pending. Then press Test connection on each of the three, and on the four `Local processes` cards.
 - Open `renders` when a burst lands: a pending attempt, then registered, then a worker under `compute` on the Workers page; a minute later, no worker at all.
-- Queue `auth` on `/local-compute`, then press "Summon now" on `renders`: the circuit opens at once. Reset closes it.
-- Queue `crash`, add a job to `renders`, and watch the attempt go from pending to lost 20 s later, with the unit's own reason as its detail.
+- Queue `auth` for `secure-exports` on `/playground/compute`, then press "Summon now" on that queue: the circuit opens at once. Reset closes it.
+- Queue `crash` for `renders`, add a job to `renders`, and watch the attempt go from pending to lost 15 s later, with the unit's own stderr line as its detail.
+- Watch `brittle`'s panel for two minutes: two lost attempts, the circuit open, a trial a minute later, open again.
+- Open Workers after a burst that added `ledger` jobs: its `compute.ledger.post` workers (two when the burst brought 5 or more jobs, at `jobsPerWorker: 4`) stay after `ledger` drains, then 20 s later are released and go (Events console, `queue/ledger`: a `summon` event, `released`).
+- Open a completed `renders` job and a completed `obinna-queue` job: `env.hostSecret: "kept out"` beside `hostEnv: "inherited"`.
+- `tail -f playground/.data/units-*.log`: every media unit's output, as `output: { file }` appends it.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).
