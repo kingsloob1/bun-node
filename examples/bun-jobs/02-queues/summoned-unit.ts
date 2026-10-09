@@ -35,8 +35,11 @@
  *   `ConfigError` before anything runs, and there is no way to allow it. So
  *   are an empty set, two workers on one queue, workers from different
  *   attempts and a worker already running.
- * - **Idle and parked are joint.** The unit runs on while any queue has work,
- *   and while any worker is not parked; it exits once all are.
+ * - **Idle and parked are joint.** The unit runs on while any worker holds a
+ *   job or any running worker's queue has work. A parked worker's queue
+ *   counts as idle, whatever waits on it: the unit exits `idle` once every
+ *   worker is idle or parked and none holds a job, and `parked` only when
+ *   every worker is parked. A paused worker is not parked.
  * - **A stop while a worker is still connecting** forces that one, which has
  *   claimed nothing, and closes the ready ones by the usual rule, so a job
  *   they hold still finishes.
@@ -164,27 +167,40 @@ function startUnit(
     const index = decisions.findIndex((one) => one.message === message);
     return index < 0 ? undefined : { index, ...decisions[index]! };
   };
+  /**
+   * The exit code once the child has exited and its output is read, or
+   * `undefined` if it is still running after `timeout` ms — it is killed
+   * then, so a unit that should have exited and did not fails a check
+   * rather than outliving the tour.
+   */
+  const exitedWithin = async (timeout: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const code = await Promise.race([
+      child.exited,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(resolve, timeout, undefined);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (code === undefined) {
+      child.kill("SIGKILL");
+    }
+    await reading;
+    return code;
+  };
   return {
     child,
     decisions,
     find,
+    exitedWithin,
     /** The exit code, once the child has exited and its output is read. */
     exited: async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const code = await Promise.race([
-        child.exited,
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(resolve, EXIT_TIMEOUT, undefined);
-        }),
-      ]);
-      clearTimeout(timer);
+      const code = await exitedWithin(EXIT_TIMEOUT);
       if (code === undefined) {
-        child.kill("SIGKILL");
         throw new Error(
           `the unit did not exit within ${EXIT_TIMEOUT} ms; it printed:\n${decisions.map((one) => JSON.stringify(one)).join("\n")}`,
         );
       }
-      await reading;
       return code;
     },
     /** Each queue's worker id, as the child printed them before running. */
@@ -248,6 +264,26 @@ async function recordOf(jobs: BunJobs, queue: string) {
     WAIT,
   );
   return (await jobs.queue(queue).listWorkers())[0]!;
+}
+
+/** Waits until `queue`'s one worker record reports `state`. */
+async function stateOf(jobs: BunJobs, queue: string, state: string) {
+  await waitFor(
+    `${queue}'s worker to report itself ${state}`,
+    async () => (await jobs.queue(queue).listWorkers())[0]?.state === state,
+    WAIT,
+  );
+}
+
+/**
+ * Parks `queue`'s worker through its controller, as an operator would, and
+ * waits until its record says `stopped` — which a worker reports only once
+ * it holds no job, so the unit sees it parked from then on.
+ */
+async function park(jobs: BunJobs, queue: string) {
+  const record = await recordOf(jobs, queue);
+  await jobs.workers.controller(queue).stop({ id: record.id });
+  await stateOf(jobs, queue, "stopped");
 }
 
 /* ------------------------------------------------------------------ */
@@ -662,59 +698,126 @@ await soloJobs.purge();
 await soloJobs.close();
 
 /* ------------------------------------------------------------------ */
-step("Joint park: one parked worker among running ones runs on");
+step("A parked worker's queue counts as idle: the unit exits idle around it");
 
-const parkNs = exampleNamespace("summoned-unit-park");
-const parkJobs = new BunJobs({ namespace: parkNs, driver: config });
-const parkGate = join(tempDir("summoned-unit-park"), "open");
-const busy = await parkJobs.queue("thumbs").add("gated", { gate: parkGate });
-const parkIdleFor = 800;
-const parkUnit = startUnit(
-  summonArgs("attempt-park", parkNs, ["renders", "thumbs"]),
-  {},
-  parkIdleFor,
+const parkedIdleNs = exampleNamespace("summoned-unit-parked-idle");
+const parkedIdleJobs = new BunJobs({ namespace: parkedIdleNs, driver: config });
+const parkedIdleGate = join(tempDir("summoned-unit-parked-idle"), "open");
+const busy = await parkedIdleJobs
+  .queue("thumbs")
+  .add("gated", { gate: parkedIdleGate });
+const parkedIdleUnit = startUnit(
+  summonArgs("attempt-parked-idle", parkedIdleNs, ["renders", "thumbs"]),
 );
-await running(parkJobs, "thumbs", busy.id);
-const rendersRecord = await recordOf(parkJobs, "renders");
-await parkJobs.workers.controller("renders").stop({ id: rendersRecord.id });
-await waitFor(
-  "renders' worker to report itself stopped",
-  async () =>
-    (await parkJobs.queue("renders").listWorkers())[0]?.state === "stopped",
-  WAIT,
-);
-// Work for renders arrives after it was parked: it waits, and keeps the
-// unit from reading idle.
-const parkedJob = await parkJobs.queue("renders").add("quick", {});
-await Bun.sleep(2 * parkIdleFor);
+await running(parkedIdleJobs, "thumbs", busy.id);
+await park(parkedIdleJobs, "renders");
+// Work for renders arrives after it was parked. It waits — nothing in the
+// unit will take it — and does not keep the unit up.
+const backlog = await parkedIdleJobs.queue("renders").add("quick", {});
+await Bun.sleep(5 * IDLE_FOR);
 checkEqual(
-  "renders parked, thumbs working: still running, with no close decided, and renders' job left waiting",
+  "renders parked with a job waiting, thumbs holding its job: still running, with no close decided",
   [
-    parkUnit.child.exitCode,
-    parkUnit.closing(),
-    (await parkJobs.queue("renders").getJob(parkedJob.id))?.state,
+    parkedIdleUnit.child.exitCode,
+    parkedIdleUnit.closing(),
+    (await parkedIdleJobs.queue("renders").getJob(backlog.id))?.state,
   ],
   [null, undefined, "waiting"],
 );
+const gateOpenedAt = parkedIdleUnit.decisions.length;
+await Bun.write(parkedIdleGate, "open");
+// thumbs is never parked, so the unit cannot exit "parked"; it is idle only
+// once thumbs' job is done. A unit that does not exit on its own fails the
+// check below, after the tour's usual ceiling, rather than ending the tour.
+const parkedIdleCode = await parkedIdleUnit.exitedWithin(WAIT.timeout);
+show("it exited with", parkedIdleUnit.stopped());
+checkEqual(
+  "once thumbs is idle and renders parked: exit 0, reason idle, renders' job still waiting",
+  [
+    parkedIdleCode,
+    parkedIdleUnit.stopped()?.reason,
+    parkedIdleUnit.stopped()?.queues,
+    (await parkedIdleJobs.queue("renders").getJob(backlog.id))?.state,
+  ],
+  [
+    0,
+    "idle",
+    {
+      renders: { completed: 0, failed: 0 },
+      thumbs: { completed: 1, failed: 0 },
+    },
+    "waiting",
+  ],
+);
+check(
+  "…decided only after the gate opened",
+  (parkedIdleUnit.closing()?.index ?? -1) >= gateOpenedAt,
+  { closing: parkedIdleUnit.closing(), gateOpenedAt },
+);
+const parkedIdleIds = parkedIdleUnit.ids();
+checkEqual(
+  "both claims are marked idle, the parked worker's too",
+  [
+    await claimsOf(parkedIdleJobs, "renders"),
+    await claimsOf(parkedIdleJobs, "thumbs"),
+  ],
+  ["renders", "thumbs"].map((queue) => [
+    [{ worker: parkedIdleIds[queue], reason: "idle", code: 0 }],
+  ]),
+);
+await parkedIdleJobs.purge();
+await parkedIdleJobs.close();
+
+/* ------------------------------------------------------------------ */
+step("Parked only once every worker is: the unit exits parked");
+
+const parkNs = exampleNamespace("summoned-unit-park");
+const parkedJobs = new BunJobs({ namespace: parkNs, driver: config });
+const parkGate = join(tempDir("summoned-unit-park"), "open");
+const held = await parkedJobs.queue("thumbs").add("gated", { gate: parkGate });
+const parkUnit = startUnit(
+  summonArgs("attempt-park", parkNs, ["renders", "thumbs"]),
+);
+// The unit must never read idle on the way, or it would exit "idle" before
+// the second park. So thumbs is never left running without work: it holds
+// its gated job while renders is parked, and is paused — not parked — with a
+// job waiting before that one finishes.
+await running(parkedJobs, "thumbs", held.id);
+await park(parkedJobs, "renders");
+const thumbsRecord = await recordOf(parkedJobs, "thumbs");
+await parkedJobs.workers.controller("thumbs").pause({ id: thumbsRecord.id });
+await stateOf(parkedJobs, "thumbs", "paused");
+const pausedJob = await parkedJobs.queue("thumbs").add("quick", {});
 await Bun.write(parkGate, "open");
 await waitFor(
-  "thumbs' job to complete",
+  "thumbs' held job to complete",
   async () =>
-    (await parkJobs.queue("thumbs").getJob(busy.id))?.state === "completed",
+    (await parkedJobs.queue("thumbs").getJob(held.id))?.state === "completed",
   WAIT,
 );
+await Bun.sleep(5 * IDLE_FOR);
+checkEqual(
+  "renders parked, thumbs paused with a job waiting: a paused worker is not parked, and its queue has work, so the unit runs on",
+  [
+    parkUnit.child.exitCode,
+    parkUnit.closing(),
+    (await parkedJobs.queue("thumbs").getJob(pausedJob.id))?.state,
+  ],
+  [null, undefined, "waiting"],
+);
+// Now park thumbs. It holds no job, so it reports itself stopped at once:
+// from here every worker is parked.
 const parkedAt = parkUnit.decisions.length;
-const thumbsRecord = await recordOf(parkJobs, "thumbs");
-await parkJobs.workers.controller("thumbs").stop({ id: thumbsRecord.id });
-const parkCode = await parkUnit.exited();
+await park(parkedJobs, "thumbs");
+const parkCode = await parkUnit.exitedWithin(WAIT.timeout);
 show("it exited with", parkUnit.stopped());
 checkEqual(
-  'once every worker is parked: exit 0, reason "parked", renders\' job still waiting',
+  'once every worker is parked: exit 0, reason "parked", thumbs\' job still waiting',
   [
     parkCode,
     parkUnit.stopped()?.reason,
     parkUnit.stopped()?.queues,
-    (await parkJobs.queue("renders").getJob(parkedJob.id))?.state,
+    (await parkedJobs.queue("thumbs").getJob(pausedJob.id))?.state,
   ],
   [
     0,
@@ -734,13 +837,13 @@ check(
 const parkIds = parkUnit.ids();
 checkEqual(
   "both claims are marked parked",
-  [await claimsOf(parkJobs, "renders"), await claimsOf(parkJobs, "thumbs")],
+  [await claimsOf(parkedJobs, "renders"), await claimsOf(parkedJobs, "thumbs")],
   ["renders", "thumbs"].map((queue) => [
     [{ worker: parkIds[queue], reason: "parked", code: 0 }],
   ]),
 );
-await parkJobs.purge();
-await parkJobs.close();
+await parkedJobs.purge();
+await parkedJobs.close();
 
 /* ------------------------------------------------------------------ */
 step("SIGTERM while one worker is still connecting: that one is forced");
