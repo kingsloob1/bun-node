@@ -9,7 +9,10 @@ import type { ContainerOwner, ResolvedContainerTarget } from "./target";
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createDeferred, serializeError } from "@kingsleyweb/bun-common";
-import { FrameDecoder } from "../../runner/bootstrap/container-frames";
+import {
+  FRAME_BYTES,
+  FrameDecoder,
+} from "../../runner/bootstrap/container-frames";
 import { toSerializable } from "../../runner/executors/spawn";
 import {
   CHILD_ENV,
@@ -148,6 +151,14 @@ export class ContainerExecutor {
     const tail: string[] = [];
     /** Set when the runner's result (`done` or `error`) has arrived. */
     let resulted = false;
+    /**
+     * Channel messages dropped as cut off or unreadable, each once however
+     * many frames it had (the decoder reports a message, not its frames).
+     * The first is warned about at once, the rest only counted: a processor
+     * forging frames could otherwise write the worker's log a warning per
+     * line.
+     */
+    let dropped = 0;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -326,12 +337,32 @@ export class ContainerExecutor {
       }
     };
 
+    /** Warns about the first dropped channel message; counts the rest. */
+    const drop = (message: string, fields: Record<string, unknown>): void => {
+      dropped++;
+      if (dropped === 1) {
+        events.onLog("warn", message, fields);
+      }
+    };
+
+    /**
+     * The longest line read from the container: `maxLogBytes`, since no line
+     * longer than that can be kept as output anyway and no frame is longer
+     * than {@link FRAME_BYTES}; never under a frame, never over 16 MiB. A
+     * longer line is kept as its first bytes and its length, so a container
+     * writing long lines, forged frames among them, costs the worker this
+     * much per stream rather than the lines.
+     */
+    const lineCap = Math.min(
+      CONTAINER_MAX_MESSAGE_BYTES,
+      Math.max(FRAME_BYTES, maxLogBytes),
+    );
     const frames = new FrameDecoder(
       marker.trimEnd(),
       CONTAINER_MAX_MESSAGE_BYTES,
     );
     const stdout = new LineReader(
-      CONTAINER_MAX_MESSAGE_BYTES,
+      lineCap,
       (line) => {
         // A channel frame is a whole line starting with the prefix
         // (`container-frames.ts`); every other line — a line the processor
@@ -356,27 +387,24 @@ export class ContainerExecutor {
           return;
         }
         if ("broken" in read) {
-          events.onLog(
-            "warn",
-            "A message on the container channel was cut off and dropped",
-            {
-              runId,
-            },
-          );
+          drop("A message on the container channel was cut off and dropped", {
+            runId,
+          });
           return;
+        }
+        if (read.cutOff) {
+          drop("A message on the container channel was cut off and dropped", {
+            runId,
+          });
         }
         let message: ChildToParent;
         try {
           message = JSON.parse(read.message) as ChildToParent;
         } catch {
-          events.onLog(
-            "warn",
-            "An unreadable message on the container channel was dropped",
-            {
-              runId,
-              bytes: read.message.length,
-            },
-          );
+          drop("An unreadable message on the container channel was dropped", {
+            runId,
+            bytes: read.message.length,
+          });
           return;
         }
         onChannel(message);
@@ -387,10 +415,11 @@ export class ContainerExecutor {
       },
     );
     const stderr = new LineReader(
-      CONTAINER_MAX_MESSAGE_BYTES,
+      lineCap,
       (line) => {
-        // Clipped on the way in, and copied: the line itself can be 16 MiB,
-        // and a slice of a long string can keep the whole of it alive.
+        // Clipped on the way in, and copied: the line itself can be up to
+        // `lineCap`, and a slice of a long string can keep the whole of it
+        // alive.
         tail.push(
           line.length > TAIL_LINE_CHARS
             ? Buffer.from(line.slice(0, TAIL_LINE_CHARS), "utf8").toString(
@@ -499,6 +528,13 @@ export class ContainerExecutor {
           ? null
           : code;
       const stderrText = clipStderr(tail.join("\n"));
+      if (dropped > 1) {
+        events.onLog(
+          "warn",
+          `${dropped} messages on the container channel were dropped as cut off or unreadable in all`,
+          { runId, dropped },
+        );
+      }
       settle({
         ...(reported ??
           fail(

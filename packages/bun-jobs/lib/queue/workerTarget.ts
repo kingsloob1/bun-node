@@ -675,6 +675,12 @@ export const TARGET_CLOSE_GRACE = DEFAULT_CLOSE_TIMEOUT - TARGET_CLOSE_MARGIN;
  */
 export const CONTAINER_CLOSE_REAP = 3_000;
 
+/**
+ * The least time a finished container attempt gives its output to reach the
+ * job's log, whatever its `closeTimeout`: 1000 ms.
+ */
+const LOG_DRAIN_FLOOR = 1_000;
+
 /** Who is running an attempt off-thread, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
@@ -953,16 +959,18 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       signal.removeEventListener("abort", stop);
       // The container's output is written before the attempt reports back,
       // so the worker's settle sees it on the attempt's lane — for at most
-      // the target's closeTimeout, since a store that never answers a log
-      // write must not hold a finished attempt open for good.
-      if (
-        logWriter &&
-        target.kind === "container" &&
-        !(await logWriter.drain(target.closeTimeout))
-      ) {
+      // the target's closeTimeout (and never less than LOG_DRAIN_FLOOR, so a
+      // closeTimeout of 0 does not cut every attempt's output), since a store
+      // that never answers a log write must not hold a finished attempt open
+      // for good.
+      const drainFor =
+        target.kind === "container"
+          ? Math.max(target.closeTimeout, LOG_DRAIN_FLOOR)
+          : 0;
+      if (logWriter && !(await logWriter.drain(drainFor))) {
         context.logger.warn(
-          `The container's output was still being written to the job's log ${target.closeTimeout} ms after the attempt ended; the attempt settled without waiting further`,
-          { closeTimeout: target.closeTimeout },
+          `The container's output was still being written to the job's log ${drainFor} ms after the attempt ended; the attempt settled without waiting further`,
+          { drainMs: drainFor },
         );
       }
     }

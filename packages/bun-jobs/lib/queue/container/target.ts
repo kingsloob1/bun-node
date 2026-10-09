@@ -159,7 +159,9 @@ export interface ContainerTarget {
   /**
    * The most bytes of an attempt's stdout and stderr kept as job log lines
    * (its own output: the channel's lines are not counted). Past it the rest
-   * is dropped and one line says so. Defaults to 1 MiB.
+   * is dropped and one line says so. A single line longer than this is kept
+   * as its first 256 bytes and its length, never held whole. Defaults to
+   * 1 MiB.
    */
   maxLogBytes?: number;
 }
@@ -190,8 +192,8 @@ export const CONTAINER_DEFAULTS = {
 } as const;
 
 /**
- * The longest line the channel reads from a container, and the largest
- * message it writes to one: 16 MiB. A message past it fails the attempt for
+ * The largest message the channel takes from a container or writes to one,
+ * and the longest line it reads from one whatever `maxLogBytes` says: 16 MiB. A message past it fails the attempt for
  * good rather than being cut, since a cut message is a different message.
  */
 export const CONTAINER_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -435,8 +437,8 @@ export const MOUNT_SCAN_ENTRIES = 250_000;
  * Each mount is walked from its resolved path; symlinks inside are not
  * followed (a link can only reach what is mounted, and is checked where it
  * leads if that is in the tree), so a loop cannot trap the walk. A directory
- * this process may not read is skipped: the container's user, which is not
- * this one, may still read it — so mount only what this process can list.
+ * this process cannot list is refused too, with a `ConfigError` naming it: a
+ * socket in it would go unseen, and the container's user may still reach it.
  */
 export async function checkMountedSockets(
   /** The resolved target's mounts. */
@@ -464,8 +466,18 @@ export async function checkMountedSockets(
       let entries;
       try {
         entries = await readdir(path, { withFileTypes: true });
-      } catch {
-        continue;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        // Gone or replaced while being walked: nothing there to check.
+        if (code === "ENOENT" || code === "ENOTDIR") {
+          continue;
+        }
+        // Unlistable here, which does not make it unreachable in the
+        // container: refused, like a tree past a bound, never skipped.
+        throw refuse(
+          `mounts: cannot check ${path} for sockets (${code ?? "unreadable"}): mount only what this process can list`,
+          { source: mount.source, path, code },
+        );
       }
       seen += entries.length;
       if (seen > maxEntries) {

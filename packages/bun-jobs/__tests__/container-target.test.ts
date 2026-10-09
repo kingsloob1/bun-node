@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -743,6 +749,22 @@ describe("the mounts' socket walk at run()", () => {
     }
   });
 
+  it("refuses a tree with a directory it cannot list, naming it, rather than skipping it", async () => {
+    const { dir, close } = await tree(1);
+    const locked = join(dir, "d0");
+    // Searchable but not listable (0311): a socket in it is reachable to a
+    // user who knows its name, and invisible to a walk.
+    chmodSync(locked, 0o311);
+    try {
+      await expect(checkMountedSockets(mountsOf(dir))).rejects.toThrow(
+        new RegExp(`cannot check ${locked} for sockets`),
+      );
+    } finally {
+      chmodSync(locked, 0o755);
+      close();
+    }
+  });
+
   it("does not follow a symlink loop", async () => {
     const dir = mkdtempSync(join(tmpdir(), "bun-jobs-loop-"));
     try {
@@ -751,6 +773,50 @@ describe("the mounts' socket walk at run()", () => {
       await expect(checkMountedSockets(mountsOf(dir))).resolves.toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts its entry bound across all the mounts, not per mount", async () => {
+    const one = mkdtempSync(join(tmpdir(), "bun-jobs-span-"));
+    const two = mkdtempSync(join(tmpdir(), "bun-jobs-span-"));
+    try {
+      for (let i = 0; i < 6; i++) {
+        mkdirSync(join(one, `e${i}`));
+        mkdirSync(join(two, `e${i}`));
+      }
+      const both = resolveContainerTarget({
+        kind: "container",
+        image: "img",
+        mounts: [
+          { source: one, target: "/one" },
+          { source: two, target: "/two" },
+        ],
+      }).mounts;
+      // Each mount alone is under the bound; the two together are over it.
+      await expect(
+        checkMountedSockets(mountsOf(one), { entries: 10 }),
+      ).resolves.toBeUndefined();
+      await expect(checkMountedSockets(both, { entries: 10 })).rejects.toThrow(
+        /too large to check for sockets/,
+      );
+    } finally {
+      rmSync(one, { recursive: true, force: true });
+      rmSync(two, { recursive: true, force: true });
+    }
+  });
+
+  it("walks a mount whose source is a symlink from where it leads", async () => {
+    const { dir, close } = await tree(3);
+    const links = mkdtempSync(join(tmpdir(), "bun-jobs-link-"));
+    const link = join(links, "to-tree");
+    symlinkSync(dir, link);
+    try {
+      await expect(checkMountedSockets(mountsOf(link))).rejects.toThrow(
+        /a directory holding a socket, at any depth/,
+      );
+    } finally {
+      rmSync(links, { recursive: true, force: true });
+      close();
     }
   });
 

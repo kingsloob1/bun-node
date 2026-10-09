@@ -3081,8 +3081,11 @@ The socket check walks each mount when `worker.run()` starts, before the
 probe: up to 250,000 entries across the mounts and 32 levels deep, without
 following symlinks (one can only reach what is mounted). A tree past either
 bound is refused as too large to check, never passed unchecked: mount a
-narrower directory. A directory this process cannot list is skipped, so
-mount only what it can read.
+narrower directory. A directory inside that this process cannot list is
+refused too, by name, since a socket in it would go unseen: mount only what
+it can list. The check sees the tree as it is at `run()`: a socket created
+inside a mount afterwards, by anything on the host, is reachable from the
+containers started after it, so mount nothing a socket can appear in.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -3132,15 +3135,22 @@ output it left without a newline (`process.stdout.write("working...")`), not
 a subprocess that inherited stdout. Every other line — one that merely
 contains the prefix included, such as the processor printing its own argv —
 is the processor's output, and becomes a **job log line**, as its stderr
-does, up to `maxLogBytes`. Those lines are written one write at a time per
-attempt: the lines that arrive while a write is in flight are joined into the
-next log entry, so a chatty processor costs the store a few writes, not one
-per line, and a batch is never written twice. When the attempt ends, its
-output gets up to `closeTimeout` to be written; a store that never answers
-leaves the rest unwritten, with one warning. Every message is bounded: one
+does, up to `maxLogBytes`. A line longer than `maxLogBytes` is never held
+whole: it is kept as its first 256 bytes and its length (`… [a line of N
+bytes, cut]`), and the output after it is still read. Those lines are
+written one write at a time per attempt: the lines that arrive while a write
+is in flight are joined into the next log entry, so a chatty processor
+costs the store a few writes, not one per line, and a batch is never written
+twice. When the attempt ends, its output gets up to `closeTimeout` (at least
+one second) to be written; a store that never answers leaves the rest
+unwritten, with one warning. Every message is bounded: one
 over 16 MiB (a result too big, say) fails the attempt with an
 `UnrecoverableJobError`, with no retry, rather than being cut. Store big
-outputs elsewhere and return a key.
+outputs elsewhere and return a key. The runner exits once the result is out,
+so output the processor wrote with `process.stdout.write` just before
+returning, and Bun had not yet flushed, can be lost (seen with hundreds of
+thousands of lines written at the very end); lines that must arrive go
+through `job.log`, which is part of the channel.
 
 A processor that calls `process.exit(n)` ends the attempt the way a
 `child-process` one does: with its code, and, without a result, as a

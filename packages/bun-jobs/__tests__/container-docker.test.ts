@@ -204,11 +204,29 @@ function containersOf(key: string): string[] {
   );
 }
 
+/**
+ * How long a settled job's attempt took, from its claim to its end: the
+ * worker's own start-up is not in it, so a slow engine start-up cannot make
+ * an attempt that ended at once look like one that waited for its timeout.
+ */
+function attemptMs(job: {
+  processedOn: number | null;
+  finishedOn: number | null;
+}): number {
+  return (job.finishedOn ?? Number.NaN) - (job.processedOn ?? Number.NaN);
+}
+
 /** The non-empty lines of a command's output. */
 function lines(text: string): string[] {
   return text.split("\n").filter(Boolean);
 }
 
+/**
+ * Waits for a job to settle. Generous, since it includes the worker's own
+ * start (its start-up probe is a container too) and the attempt's container
+ * start, each of which took well over 10 s while the Docker daemon also served
+ * a full database suite: it bounds a hang, not a speed.
+ */
 async function settled(
   queue: BunQueue,
   id: string,
@@ -217,7 +235,7 @@ async function settled(
   await waitFor(
     async () => states.includes((await queue.getJob(id))?.state ?? ""),
     {
-      timeout: 60_000,
+      timeout: 150_000,
       interval: 50,
       message: async () => `job ${id} is ${(await queue.getJob(id))?.state}`,
     },
@@ -267,7 +285,7 @@ describe.skipIf(skipReason !== undefined)(
         ].sort(),
       );
       await waitFor(() => containersOf(key).length === 0, { timeout: 10_000 });
-    }, 120_000);
+    }, 300_000);
 
     it("holds the fixed hardening inside the container", async () => {
       const { queue, worker } = setup("hardening");
@@ -285,7 +303,7 @@ describe.skipIf(skipReason !== undefined)(
       expect((stored.returnValue as { network: string }).network).not.toBe(
         "reached",
       );
-    }, 120_000);
+    }, 300_000);
 
     it("times out a container that blocks its thread, kills it, and leaves nothing behind", async () => {
       const { queue, worker, key } = setup("spin");
@@ -297,7 +315,7 @@ describe.skipIf(skipReason !== undefined)(
         timeout: 30_000,
         message: () => `left behind: ${containersOf(key).join(", ")}`,
       });
-    }, 120_000);
+    }, 300_000);
 
     describe("an attempt stopped by the executor", () => {
       function executor(
@@ -394,7 +412,7 @@ describe.skipIf(skipReason !== undefined)(
         expect(existsSync(join(scratch, "aborted"))).toBe(true);
         await handle.exited;
         expect(containersOf(key)).toEqual([]);
-      }, 120_000);
+      }, 300_000);
 
       it("kills a container that ignores its close: exit 137, removed before exited settles", async () => {
         const scratch = markerDir();
@@ -410,7 +428,7 @@ describe.skipIf(skipReason !== undefined)(
         expect(outcome.exitCode).toBe(137);
         await handle.exited;
         expect(containersOf(key)).toEqual([]);
-      }, 120_000);
+      }, 300_000);
 
       it("ends a close sent while the container is still being created, without importing the processor", async () => {
         const scratch = markerDir();
@@ -431,7 +449,7 @@ describe.skipIf(skipReason !== undefined)(
         expect(existsSync(join(scratch, "imported"))).toBe(false);
         await handle.exited;
         expect(containersOf(key)).toEqual([]);
-      }, 120_000);
+      }, 300_000);
 
       it("removes a container a forced stop reached before it existed, without importing the processor", async () => {
         const scratch = markerDir();
@@ -444,7 +462,7 @@ describe.skipIf(skipReason !== undefined)(
         await handle.exited;
         expect(containersOf(key)).toEqual([]);
         expect(existsSync(join(scratch, "imported"))).toBe(false);
-      }, 120_000);
+      }, 300_000);
     });
 
     it("reads results and answers requests after output without a trailing newline", async () => {
@@ -470,7 +488,7 @@ describe.skipIf(skipReason !== undefined)(
         });
         expect(stored.returnValue).toEqual(expected);
       }
-    }, 120_000);
+    }, 300_000);
 
     it("fails a run whose processor calls process.exit, with its code, rather than hanging", async () => {
       for (const [processor, code] of [
@@ -479,7 +497,6 @@ describe.skipIf(skipReason !== undefined)(
       ] as const) {
         const { queue, worker } = setup(processor);
         void worker.run();
-        const started = performance.now();
         const job = await queue.add("x", {}, { attempts: 1, timeout: 120_000 });
         const stored = await settled(queue, job.id);
         expect({ processor, state: stored.state }).toEqual({
@@ -488,9 +505,10 @@ describe.skipIf(skipReason !== undefined)(
         });
         expect(stored.failedReason?.name).toBe("ChildExitError");
         expect(stored.failedReason?.message).toContain(`code ${code}`);
-        expect(performance.now() - started).toBeLessThan(30_000);
+        // Not the job's timeout (120 s): the attempt ended with the exit.
+        expect(attemptMs(stored)).toBeLessThan(60_000);
       }
-    }, 120_000);
+    }, 300_000);
 
     it("keeps a large result whole while the processor's own output races it", async () => {
       const { queue, worker } = setup("noisy-big-result", {
@@ -519,7 +537,7 @@ describe.skipIf(skipReason !== undefined)(
         });
         expect((stored.returnValue as string).length).toBe(bytes);
       }
-    }, 120_000);
+    }, 300_000);
 
     it("reaps orphaned processes (the fixed --init): no zombies left behind", async () => {
       const { queue, worker } = setup("zombies");
@@ -533,30 +551,49 @@ describe.skipIf(skipReason !== undefined)(
       expect(stored.state).toBe("completed");
       // Bun as PID 1 left all ten (measured); an init reaps them.
       expect(stored.returnValue).toBe(0);
-    }, 120_000);
+    }, 300_000);
 
     it("fails a run whose processor throws while it is imported, at once", async () => {
       const { queue, worker } = setup("throw-import");
       void worker.run();
-      const started = performance.now();
       const job = await queue.add("t", {}, { attempts: 1, timeout: 120_000 });
       const stored = await settled(queue, job.id);
       expect(stored.state).toBe("dead");
       expect(stored.failedReason?.message).toBe("boom at import");
-      expect(performance.now() - started).toBeLessThan(30_000);
-    }, 120_000);
+      expect(attemptMs(stored)).toBeLessThan(60_000);
+    }, 300_000);
+
+    it("returns a 3.6M-character non-ASCII result within the default 256m", async () => {
+      const { queue, worker } = setup("unicode-result");
+      void worker.run();
+      const job = await queue.add(
+        "u",
+        {},
+        { removeOnComplete: false, attempts: 1 },
+      );
+      const stored = await settled(queue, job.id);
+      expect({
+        state: stored.state,
+        error: stored.failedReason?.message,
+      }).toEqual({
+        state: "completed",
+        error: undefined,
+      });
+      expect((stored.returnValue as { s: string }).s).toBe(
+        "é😀\u007F\u0000ʃ".repeat(300_000),
+      );
+    }, 300_000);
 
     it("ends a run whose processor sends itself SIGTERM, rather than hanging", async () => {
       const { queue, worker } = setup("sigterm-self");
       void worker.run();
-      const started = performance.now();
-      const job = await queue.add("s", {}, { attempts: 1, timeout: 60_000 });
+      const job = await queue.add("s", {}, { attempts: 1, timeout: 120_000 });
       const stored = await settled(queue, job.id);
       expect(stored.state).toBe("dead");
       expect(stored.failedReason?.name).toBe("RunKilledError");
-      // closeTimeout is 2 s; the job's own timeout, 60 s, never fired.
-      expect(performance.now() - started).toBeLessThan(30_000);
-    }, 120_000);
+      // closeTimeout is 2 s; the job's own timeout, 120 s, never fired.
+      expect(attemptMs(stored)).toBeLessThan(60_000);
+    }, 300_000);
 
     it("stops a blocked processor's container within seconds of its worker being SIGKILLed", async () => {
       const scratch = markerDir();
@@ -606,7 +643,7 @@ describe.skipIf(skipReason !== undefined)(
       });
       // closeTimeout is 2 s: well inside 15.
       expect(performance.now() - killed).toBeLessThan(15_000);
-    }, 120_000);
+    }, 300_000);
 
     it("sweeps a dead worker's containers by their labels, and keeps a live one's", async () => {
       const key = testKey();
@@ -656,7 +693,7 @@ describe.skipIf(skipReason !== undefined)(
         ]).stdout,
       );
       expect(left).toEqual([`${key}-live-${suffix}`]);
-    }, 120_000);
+    }, 300_000);
 
     it("fails fast with the image step for an image that is missing under pull: never", async () => {
       const { worker } = setup("echo", {
@@ -668,7 +705,7 @@ describe.skipIf(skipReason !== undefined)(
       );
       expect(error).toBeInstanceOf(IsolationUnavailableError);
       expect((error as IsolationUnavailableError).context.step).toBe("image");
-    }, 120_000);
+    }, 300_000);
 
     it.skipIf(!SNAP)(
       "on snap Docker, fails the probe without the snap's AppArmor profile, saying so",

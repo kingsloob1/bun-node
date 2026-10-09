@@ -472,6 +472,53 @@ describe("a container attempt, end to end", () => {
     expect(warned).toHaveLength(1);
   }, 30_000);
 
+  it("does not call output cut with closeTimeout 0: the drain has a floor", async () => {
+    engine();
+    const driver = new MemoryDriver();
+    // A store that takes 200 ms per write: the output is still in flight
+    // when the attempt ends, and lands within the floor.
+    const add = driver.addJobLog!.bind(driver);
+    driver.addJobLog = async (...args: Parameters<typeof add>) => {
+      await Bun.sleep(200);
+      return await add(...args);
+    };
+    const { logger, events } = createTestLogger();
+    const namespace = testNamespace("i1");
+    const queue = new BunQueue("boxed", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    const worker = new BunQueueWorker("boxed", fixture("partial-write"), {
+      namespace,
+      driver,
+      key: `i1test-${namespace}`,
+      logger,
+      pollInterval: 5,
+      target: { kind: "container", image: "fake/bun:1", closeTimeout: 0 },
+    });
+    cleanups.push(
+      () => queue.close(),
+      () => worker.close({ force: true }),
+    );
+    void worker.run();
+    const job = await queue.add(
+      "p",
+      {},
+      { removeOnComplete: false, attempts: 1 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect(
+      events.some((event) =>
+        String(event.message).includes("still being written"),
+      ),
+    ).toBe(false);
+    expect((await queue.getJobLogs(job.id)).logs.join("\n")).toContain(
+      "working...",
+    );
+  }, 30_000);
+
   it("retries an ordinary failure, rebuilt from the container", async () => {
     engine();
     const { queue, worker } = setup("fail");
@@ -1077,6 +1124,95 @@ describe("stopping an attempt", () => {
     await handle.exited;
   }, 30_000);
 
+  it("keeps a line longer than maxLogBytes as its start and its length, and reads on", async () => {
+    engine();
+    const container = executor("long-lines", { maxLogBytes: 64 * 1024 });
+    const { handle, output } = start(container, { bytes: 200_000 });
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "success", result: "ok" });
+    // Each long line: its first bytes, then what it was; never the line.
+    const cut = output.filter((line) =>
+      line.endsWith("… [a line of 200000 bytes, cut]"),
+    );
+    expect(cut.map((line) => line[0])).toEqual(
+      expect.arrayContaining(["o", "e"]),
+    );
+    expect(cut.every((line) => line.length < 1000)).toBe(true);
+    // The output after them is still kept: the budget was not spent on them.
+    expect(output).toContain("after the long stdout line");
+    expect(output).toContain("after the long stderr line");
+    await handle.exited;
+  }, 30_000);
+
+  it("reads a forged frame with a part longer than maxLogBytes as one cut line", async () => {
+    engine();
+    const container = executor("long-lines", { maxLogBytes: 64 * 1024 });
+    const { handle, output } = start(container, { bytes: 100_000, forged: 3 });
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "success", result: "ok" });
+    // Cut before it is buffered whole, so before the decoder sees it: kept as
+    // output, its first bytes and its length, like any long line.
+    const forged = output.filter(
+      (line) => line.includes(" zz ") && line.endsWith(" bytes, cut]"),
+    );
+    expect(forged).toHaveLength(3);
+    expect(forged.every((line) => line.length < 1000)).toBe(true);
+    await handle.exited;
+  }, 30_000);
+
+  it("warns once about dropped channel messages, then once with their count", async () => {
+    engine();
+    const logs: { level: string; message: string }[] = [];
+    const container = executor("long-lines");
+    const handle = container.start({
+      ...startOptions({ bytes: 10, broken: 50 }),
+      events: {
+        onProgress: () => {},
+        onMessage: () => {},
+        onLog: (level, message) => logs.push({ level, message }),
+        onOutput: () => {},
+        onPid: () => {},
+      },
+    });
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "success", result: "ok" });
+    const warns = logs.filter((log) => log.level === "warn");
+    // The 50 frames cut each other off, and the result's frame cuts off the
+    // last: 50 dropped, two warnings.
+    expect(warns.map((log) => log.message)).toEqual([
+      "A message on the container channel was cut off and dropped",
+      "50 messages on the container channel were dropped as cut off or unreadable in all",
+    ]);
+    await handle.exited;
+  }, 30_000);
+
+  it("counts a message refused as too large once, not its later frames", async () => {
+    engine();
+    const logs: { level: string; message: string }[] = [];
+    const container = executor("long-lines");
+    const handle = container.start({
+      ...startOptions({ bytes: 10, tooLarge: 40 }),
+      events: {
+        onProgress: () => {},
+        onMessage: () => {},
+        onLog: (level, message) => logs.push({ level, message }),
+        onOutput: () => {},
+        onPid: () => {},
+      },
+    });
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.name).toBe("UnrecoverableJobError");
+    expect(outcome.error?.message).toContain(
+      "refused a message from the container",
+    );
+    await handle.exited;
+    // Its 40 later frames are the refused message's, not 40 dropped ones.
+    expect(
+      logs.filter((log) => log.message.includes("container channel")),
+    ).toEqual([]);
+  }, 30_000);
+
   it("keeps a line with the prefix in it as the processor's output, not a message", async () => {
     engine();
     const logs: string[] = [];
@@ -1271,6 +1407,35 @@ describe("a forced worker close", () => {
   }, 40_000);
 });
 
+describe("a graceful worker close", () => {
+  it("gives a graceful close the container reap: past DEFAULT_CLOSE_TIMEOUT, inside its own bound", async () => {
+    // Killed at TARGET_CLOSE_GRACE (4 s; the container's own closeTimeout is
+    // longer), destroyed 2 s later: a close of about 6 s, which the worker's
+    // default 5 s bound on a target's close would cut short.
+    const fake = engine({ destroyDelayMs: 2000 });
+    const dir = markers();
+    const { logger, events } = createTestLogger();
+    const { queue, worker } = setup(
+      "spin",
+      { env: { MARKER_DIR: dir }, closeTimeout: 10_000 },
+      { logger },
+    );
+    void worker.run();
+    await queue.add("s", {}, { attempts: 1 });
+    await waitFor(() => existsSync(join(dir, "started")), { timeout: 15_000 });
+    const started = performance.now();
+    await worker.close({ timeout: 100 });
+    const took = performance.now() - started;
+    expect(took).toBeGreaterThan(5000);
+    expect(fake.containers()).toEqual([]);
+    expect(
+      events.filter((event) =>
+        String(event.message).includes("did not close within"),
+      ),
+    ).toEqual([]);
+  }, 40_000);
+});
+
 describe("the channel's bounds", () => {
   it("fails an oversize result for good, with no retry", async () => {
     engine();
@@ -1313,6 +1478,22 @@ describe("the channel's bounds", () => {
       });
       expect((stored.returnValue as string).length).toBe(bytes);
     }
+  }, 60_000);
+
+  it("returns a 3.6M-character non-ASCII result whole", async () => {
+    engine();
+    const { queue, worker } = setup("unicode-result");
+    void worker.run();
+    const job = await queue.add(
+      "u",
+      {},
+      { removeOnComplete: false, attempts: 1 },
+    );
+    const stored = await settled(queue, job.id);
+    expect(stored.state).toBe("completed");
+    expect((stored.returnValue as { s: string }).s).toBe(
+      "é😀\u007F\u0000ʃ".repeat(300_000),
+    );
   }, 60_000);
 
   it("keeps a result under the limit whole", async () => {

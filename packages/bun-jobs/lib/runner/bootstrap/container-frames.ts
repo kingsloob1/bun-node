@@ -17,50 +17,47 @@ import { writeSync } from "node:fs";
  * leading newline puts the frame on a line of its own whatever the processor
  * left unterminated before it; nothing can land inside it.
  *
- * The JSON is made pure ASCII first (`\uXXXX` escapes), so a frame is cut
- * on a character boundary by construction and its bytes are its characters.
+ * Each frame's part is base64 of a slice of the message's UTF-8 bytes, so a
+ * frame is ASCII whatever the message holds, is cut on no character, and
+ * costs a fixed size on the wire. The message is never transformed whole:
+ * the frames are produced one at a time from one UTF-8 encoding of it, and
+ * the worker decodes each into one buffer for the message, grown as its
+ * bytes arrive. (Escaping the whole JSON to ASCII first, as an earlier
+ * version did, tripled a non-ASCII result in memory and got a
+ * 3.6M-character one OOM-killed at the default 256m.)
  */
 
 /** The largest write a pipe keeps whole: `PIPE_BUF` on Linux. */
 export const FRAME_BYTES = 4096;
 
-/** The most characters of a message one frame carries, leaving room for its header. */
-export const FRAME_PAYLOAD = FRAME_BYTES - 96;
-
-/** A JSON text with every non-ASCII character escaped: same value, ASCII only. */
-export function asciiJson(json: string): string {
-  // Anything outside printable ASCII (space to tilde): what JSON.stringify
-  // leaves unescaped there is only DEL and non-ASCII text.
-  return json.replace(
-    /[^\x20-\x7E]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
-}
+/**
+ * The most bytes of a message one frame carries: 2880, which base64 makes
+ * 3840 characters, leaving room for the frame's header within
+ * {@link FRAME_BYTES}.
+ */
+export const FRAME_PAYLOAD = 2880;
 
 /**
- * The frames of one message, each a complete line with its leading newline,
- * at most {@link FRAME_BYTES} bytes.
+ * The frames of one message, one at a time, each a complete line with its
+ * leading newline, at most {@link FRAME_BYTES} bytes.
  */
-export function encodeFrames(
+export function* encodeFrames(
   /** The channel's line prefix. */
   prefix: string,
   /** The message's id, unique among this runner's messages. */
   id: number,
   /** The message, as JSON. */
   json: string,
-): string[] {
-  const ascii = asciiJson(json);
-  const count = Math.max(1, Math.ceil(ascii.length / FRAME_PAYLOAD));
+): Generator<string> {
+  const bytes = Buffer.from(json, "utf8");
+  const count = Math.max(1, Math.ceil(bytes.length / FRAME_PAYLOAD));
   const tag = id.toString(36);
-  const frames: string[] = [];
   for (let index = 0; index < count; index++) {
-    const part = ascii.slice(
-      index * FRAME_PAYLOAD,
-      (index + 1) * FRAME_PAYLOAD,
-    );
-    frames.push(`\n${prefix} ${tag} ${index} ${count} ${part}\n`);
+    const part = bytes
+      .subarray(index * FRAME_PAYLOAD, (index + 1) * FRAME_PAYLOAD)
+      .toString("base64");
+    yield `\n${prefix} ${tag} ${index} ${count} ${part}\n`;
   }
-  return frames;
 }
 
 /** How long a full stdout may stay full before the runner gives up on it: 30 s. */
@@ -105,6 +102,11 @@ export type FrameResult =
   | {
       /** A whole message's JSON, once its last frame has arrived. */
       message: string;
+      /**
+       * Set when this message's first frame cut off one that never got its
+       * last: that one is dropped, and this one is read.
+       */
+      cutOff?: true;
     }
   | {
       /** The message is larger than the channel takes. */
@@ -120,22 +122,55 @@ export type FrameResult =
     }
   | undefined;
 
-/** The header after the prefix: id, index, count, then the part. */
-const HEADER = /^ ([\da-z]{1,10}) (\d{1,9}) (\d{1,9}) (.*)$/s;
+/** The header after the prefix: id, index, count, then the part (base64). */
+const HEADER = /^ ([\da-z]{1,10}) (\d{1,9}) (\d{1,9}) ([\w+/=]*)$/;
+
+/** The buffer a message starts with, before any of its bytes arrive. */
+const EMPTY = Buffer.alloc(0);
 
 /**
  * Puts a message back together from its frames, as the worker reads them.
  * Frames arrive in order, since one thread writes them; anything that is not
- * a well-formed next frame is reported, never guessed at.
+ * a well-formed next frame is reported, never guessed at, and once per
+ * message: the frames still to come of a message already dropped are
+ * consumed without another report. Each frame is decoded into one buffer for
+ * the message, so reassembly holds the message's bytes once, not a list of
+ * parts and their join.
+ *
+ * The buffer grows with what arrives, by doubling, up to what the first
+ * frame's count claims — never allocated for the claim up front. A frame
+ * costs what it carries: allocating the claim for each first frame let a
+ * container printing 50-byte forged ones (`<prefix> <id> 0 5826 `) make the
+ * worker allocate 16 MB a line, and stalled its event loop for 14-17 s in
+ * an 8 s flood (measured).
  */
 export class FrameDecoder {
   /** The message being assembled. */
-  #current: { id: string; count: number; parts: string[] } | undefined;
+  #current:
+    | {
+        /** Its id, as written. */
+        id: string;
+        /** How many frames its first one said it has. */
+        count: number;
+        /** The index of the frame expected next. */
+        next: number;
+        /** Its bytes so far, from 0 to `size`; grows as they arrive. */
+        buffer: Buffer;
+        /** How many bytes of `buffer` hold the message. */
+        size: number;
+      }
+    | undefined;
+
+  /**
+   * The message last dropped, as its id and count: its later frames are
+   * consumed quietly, so a message counts once however many frames it had.
+   */
+  #dropped: { id: string; count: number } | undefined;
 
   constructor(
     /** The channel's line prefix. */
     private readonly prefix: string,
-    /** The largest message accepted, in characters of its ASCII JSON. */
+    /** The largest message accepted, in bytes of its UTF-8 JSON. */
     private readonly maxMessage: number,
   ) {}
 
@@ -159,42 +194,62 @@ export class FrameDecoder {
     ];
     const index = Number(indexText);
     const count = Number(countText);
-    if (count < 1 || index >= count) {
+    if (count < 1 || index >= count || part.length > (FRAME_PAYLOAD / 3) * 4) {
       return { text: true };
     }
+    let broken = false;
     if (index === 0) {
-      const broken = this.#current !== undefined;
-      if (count * FRAME_PAYLOAD > this.maxMessage + FRAME_PAYLOAD) {
+      const previous = this.#current;
+      broken = previous !== undefined;
+      this.#dropped = previous && { id: previous.id, count: previous.count };
+      if ((count - 1) * FRAME_PAYLOAD > this.maxMessage) {
         this.#current = undefined;
+        this.#dropped = { id, count };
         return { tooLarge: count * FRAME_PAYLOAD };
       }
-      this.#current = { id, count, parts: [part] };
-      if (broken) {
-        // The message before this one never got its last frame.
-        return count === 1 ? this.#finish() : { broken: true };
-      }
-    } else {
-      const current = this.#current;
-      if (
-        !current ||
-        current.id !== id ||
-        current.count !== count ||
-        current.parts.length !== index
-      ) {
-        this.#current = undefined;
-        return { broken: true };
-      }
-      current.parts.push(part);
+      this.#current = { id, count, next: 0, buffer: EMPTY, size: 0 };
     }
-    return this.#current!.parts.length === this.#current!.count
-      ? this.#finish()
-      : undefined;
-  }
-
-  /** The finished message, and a clean slate. */
-  #finish(): FrameResult {
-    const message = this.#current!.parts.join("");
+    const current = this.#current;
+    if (
+      !current ||
+      current.id !== id ||
+      current.count !== count ||
+      current.next !== index
+    ) {
+      if (this.#dropped?.id === id && this.#dropped.count === count) {
+        // A later frame of the message already dropped: counted then.
+        return undefined;
+      }
+      // This frame's message cannot be read, and neither can the one being
+      // assembled, if any. Its later frames are this message's.
+      this.#current = undefined;
+      this.#dropped = { id, count };
+      return { broken: true };
+    }
+    // Room for this part: it decodes to at most three bytes in four.
+    const needed = current.size + Math.ceil((part.length * 3) / 4);
+    if (needed > current.buffer.length) {
+      const grown = Buffer.allocUnsafe(
+        Math.min(
+          current.count * FRAME_PAYLOAD,
+          Math.max(FRAME_PAYLOAD, current.buffer.length * 2, needed),
+        ),
+      );
+      current.buffer.copy(grown, 0, 0, current.size);
+      current.buffer = grown;
+    }
+    current.size += current.buffer.write(part, current.size, "base64");
+    current.next++;
+    if (current.next < current.count) {
+      return broken ? { broken: true } : undefined;
+    }
     this.#current = undefined;
-    return { message };
+    if (current.size > this.maxMessage) {
+      return { tooLarge: current.size };
+    }
+    const message = current.buffer.toString("utf8", 0, current.size);
+    // The message before this one never got its last frame; this one is
+    // whole, and is read.
+    return broken ? { message, cutOff: true } : { message };
   }
 }

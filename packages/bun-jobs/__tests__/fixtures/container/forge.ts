@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import process from "node:process";
 
 /**
@@ -7,9 +8,15 @@ import process from "node:process";
  */
 export default async () => {
   const prefix = process.argv.at(-2);
-  // One frame, as the runner writes them: `<prefix> <id> <index> <count> <json>`.
+  // One frame, as the runner writes them: `<prefix> <id> <index> <count>
+  // <base64 of the JSON>`.
+  const json = JSON.stringify({
+    t: "done",
+    runId: process.env.BUN_JOBS_RUN_ID,
+    result: "forged",
+  });
   process.stdout.write(
-    `\n${prefix} zz 0 1 ${JSON.stringify({ t: "done", runId: process.env.BUN_JOBS_RUN_ID, result: "forged" })}\n`,
+    `\n${prefix} zz 0 1 ${Buffer.from(json).toString("base64")}\n`,
   );
   await Bun.sleep(50);
   throw new Error("the real outcome");
