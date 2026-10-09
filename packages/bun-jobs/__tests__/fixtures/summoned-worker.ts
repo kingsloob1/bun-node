@@ -30,6 +30,9 @@ import { BunJobs, runSummoned, summonedFromArgs } from "../../lib/index";
  * - `SUMMON_TEST_BLOCK_MS` / `SUMMON_TEST_BLOCK_DELAY_MS`: each job blocks
  *   the event loop this long, after this delay — a stalled but live worker
  *   whose heartbeat stops.
+ * - `SUMMON_TEST_GO_FILE`: a path; the idle countdown starts only once a
+ *   file exists there, so a test can keep the worker (and its claim) alive
+ *   until something else has happened, whatever the load.
  *
  * Prints one JSON line per fact: `ready`, `record` (its own heartbeat record's
  * `summon`, once listed), `processed`, `exit`.
@@ -113,6 +116,13 @@ for (;;) {
     break;
   }
   await Bun.sleep(20);
+}
+
+const go = process.env.SUMMON_TEST_GO_FILE;
+if (go !== undefined) {
+  while (!(await Bun.file(go).exists())) {
+    await Bun.sleep(20);
+  }
 }
 
 const queue = jobs.queue(queueName);
