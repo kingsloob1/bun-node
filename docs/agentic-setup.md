@@ -38,16 +38,16 @@ shows today, and think in roles.
 | **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
 | **Features agent** | nothing exclusively | cross-package and phase work: performance; streaming and SSE (bun-common, bun-nest); summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review |
 
-**As of 2026-10-06:**
+**As of 2026-10-09:**
 
 | Role | Session |
 |---|---|
 | bun-common agent | *to be started* (see [Starting a new agent](#starting-a-new-agent)) |
 | bun-nest agent | *to be started* |
-| bun-jobs agent | bun-node-c0 |
-| bun-jobs-ui agent | bun-node-3a |
-| Examples agent | bun-node-13 |
-| Features agent | bun-node-59 |
+| bun-jobs agent | bun-node-2b |
+| bun-jobs-ui agent | bun-node-e8 |
+| Examples agent | bun-node-dd |
+| Features agent | bun-node-e6 |
 
 Until the bun-common and bun-nest agents exist, the features agent builds
 changes in those two packages and the examples agent checks them against the
