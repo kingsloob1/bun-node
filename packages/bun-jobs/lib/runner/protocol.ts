@@ -28,7 +28,9 @@ export const CHILD_ENV = {
   /**
    * Which executor started it: `"child-process"` or `"worker-thread"`, the
    * run's own `ctx.mode` (unset in-process, where no executor starts
-   * anything). Before 1r the values were `"spawn"` and `"worker"`.
+   * anything), or `"container"` inside a `container` target's container,
+   * whose context says `"child-process"` (a processor's context carries no
+   * mode). Before 1r the values were `"spawn"` and `"worker"`.
    */
   mode: "BUN_JOBS_MODE",
   /** The namespace the run belongs to. */

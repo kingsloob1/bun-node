@@ -99,6 +99,7 @@ reference.
 - [Jobs added in a range, and sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
 - [Where attempts run: `target`](#where-attempts-run-target)
   - [Hardening a child process](#hardening-a-child-process)
+  - [A container per attempt: `{ kind: "container" }`](#a-container-per-attempt--kind-container-)
   - [One file, many job names: `defineProcessors`](#one-file-many-job-names-defineprocessors)
   - [A custom target](#a-custom-target)
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
@@ -794,7 +795,7 @@ Examples:
 | `maintenance` | `boolean` | `true` | Contend for the queue's **housekeeping** lease and, while holding it, run those sweeps once a minute: pruning expired results, healing repeat series, and sweeping stale debounce/throttle windows and dead workers' leftovers. `false` arms no minute timer and never reads that lease. **It does not reach liveness** — promoting delayed jobs is every worker's own, and every worker contends for the stalled lease that recovers stalled jobs and heals flows, whatever this says (see [Maintenance: liveness and housekeeping](#maintenance-liveness-and-housekeeping)). Reported on the worker's record as `sweeps`. |
 | `autorun` | `boolean` | `false` | Start consuming on construction. |
 | `drainDelay` | `number` | `0` | Milliseconds of quiet before `drained` is emitted. |
-| `target` | `WorkerTarget` | `"in-process"` | Where each attempt runs: `"in-process"`, `"worker-thread"`, `"child-process"`, one of those as `{ kind, … }` with its tuning, or a `WorkerTargetFactory`. See [Where attempts run](#where-attempts-run-target). |
+| `target` | `WorkerTarget` | `"in-process"` | Where each attempt runs: `"in-process"`, `"worker-thread"`, `"child-process"`, one of those as `{ kind, … }` with its tuning, a `ContainerTarget` (`{ kind: "container", image }`, a fresh container per attempt), or a `WorkerTargetFactory`. See [Where attempts run](#where-attempts-run-target). |
 | `backoffStrategies` | `BackoffStrategies \| Record<string, BackoffStrategy>` | | Named custom backoffs. |
 | `deadLetterQueue` | `string` | | The dead-letter queue for jobs that do not name their own. |
 | `limitsRefreshInterval` | `number` | `1000` | How long stored limits are trusted before being re-read. |
@@ -2198,11 +2199,13 @@ reader that warns "no worker is sweeping this queue" must look for a live
 `true` and treat an absent field as unknown.
 
 **`target` says where the worker's attempts run**, from the very target it
-dispatches to: `kind` is `"in-process"`, `"worker-thread"`, `"child-process"`
-or `"custom"` (one of `WORKER_TARGET_KINDS`), and `processor` is `"function"`
-or `"file"`. The pairs that occur are `in-process` with either, `worker-thread`
-and `child-process` with `"file"` only, and `custom` with either. A custom
-target adds its `name`, and a file processor its resolved `file` — which the
+dispatches to: `kind` is `"in-process"`, `"worker-thread"`, `"child-process"`,
+`"container"` or `"custom"` (one of `WORKER_TARGET_KINDS`), and `processor` is
+`"function"` or `"file"`. The pairs that occur are `in-process` with either,
+`worker-thread`, `child-process` and `container` with `"file"` only, and
+`custom` with either. A container target adds `container: { image, runtime? }`
+(never its environment), a custom target its `name`, and a file processor its
+resolved `file` — which the
 management API serves only with `serialize.exposeProcessorFiles`. Optional like
 the rest, and **absent is not `"in-process"`**: a record from before the field
 means the worker is too old to say. In its own process the worker says the same
@@ -2796,12 +2799,16 @@ decides only where the **processor call** runs:
   and the one to [harden](#hardening-a-child-process) for code you do not
   trust: it gets an environment allowlist by default.
 - `{ kind, … }` is one of those three with its tuning, below.
+- `{ kind: "container", image }` runs each attempt in a fresh container with
+  no network, none of the worker's environment, a read-only filesystem, no
+  capabilities and a non-root user — the target for code you do not trust.
+  See [A container per attempt](#a-container-per-attempt--kind-container-).
 - a `WorkerTargetFactory` is anything else — see
   [A custom target](#a-custom-target).
 
-`"worker-thread"` and `"child-process"` need a processor file, since a function
-cannot be sent to another process or `Worker`: with a function processor they
-throw `ConfigError`.
+`"worker-thread"`, `"child-process"` and `"container"` need a processor file,
+since a function cannot be sent to another process, `Worker` or container:
+with a function processor they throw `ConfigError`.
 
 ```ts
 // processors/resize.ts
@@ -2834,8 +2841,8 @@ JavaScript:
 
 A runner's `executionMode` uses the same three words. Inside the processor
 the attempt sees its target's own spelling: `BUN_JOBS_MODE` is
-`worker-thread` on a worker thread and `child-process` in a child process
-(unset in-process).
+`worker-thread` on a worker thread, `child-process` in a child process and
+`container` in a container (unset in-process).
 
 `target` is not remotely configurable: changing where code runs is a rebuild.
 The worker's heartbeat record reports it, as
@@ -2990,6 +2997,203 @@ only, so one of `stdout` and `stderr` must be `"pipe"` (a target's default is
 `"inherit"`; a runner's is `"pipe"` while `captureLogs` is on), and not what
 crosses the IPC channel: `ctx.log`, progress and messages. Unbounded by
 default: what run-log capture *stores* is already bounded by `captureLogs`.
+
+### A container per attempt: `{ kind: "container" }`
+
+A `container` target runs each attempt in a **fresh container**, through the
+Docker CLI (or Podman's: `engine: { cli: "podman" }`). The worker keeps the
+claim, the lease, the settle and the driver; the container gets only the
+processor call, and asks the worker for the same few job operations a
+`child-process` attempt may (its log, its lock, a flow's children's values).
+No SDK and no new dependency: the CLI, through `Bun.spawn`.
+
+```ts
+export const worker = new BunQueueWorker("thumbnails", "./jobs/processor.ts", {
+  namespace,
+  driver,
+  target: {
+    kind: "container",
+    image: "ghcr.io/acme/job-runner@sha256:9f2c…", // required; pin by digest
+    processor: "/app/jobs/processor.ts", //           its path inside the image
+    limits: { memory: "256m", cpus: 1, pids: 128, tmpfs: "64m" },
+    env: { NODE_ENV: "production" }, //                 literal values only
+  },
+});
+await worker.run(); // probes the engine first; throws IsolationUnavailableError if it cannot isolate
+```
+
+**The image is yours**: `FROM oven/bun`, with your app and its dependencies —
+`@kingsleyweb/bun-jobs` among them — installed, and the processor file in it.
+The container runs `bun -e <bootstrap> <prefix> <processor>`, and the
+bootstrap imports `@kingsleyweb/bun-jobs/container-entry` from the
+processor's directory: the runner that speaks the channel and imports the
+processor. Pin the image by digest; a tag can move under you (`oven/bun`'s
+tags also lag Bun releases).
+
+**What a hostile job gets, and does not.** The threat this target answers is
+the job's own code: a malicious dependency, a user-supplied script.
+
+| A job tries to | `in-process`, `worker-thread`, `child-process` | `container` |
+|---|---|---|
+| read the worker's secrets (`DATABASE_URL`, cloud keys) | in-process and worker-thread: yes; child-process: its allowlist | none: `docker run` copies nothing from the worker's environment |
+| read the host's files | as the worker's user | only the image and read-only mounts, as uid 65534 |
+| reach the database, the host, other containers, a metadata endpoint | yes | no route: `--network=none` |
+| exhaust memory, CPU, pids, disk | takes the worker down with it | OOM-killed alone; capped CPU and pids; read-only root and a sized `/tmp` |
+| persist into the next job | globals, `/tmp`, module cache | a fresh container per attempt |
+| control the engine | — | the socket is never mounted, and mounting it is refused |
+
+**What it does not promise** — read these first: containers **share the host
+kernel**, so a kernel exploit escapes runc (choose `runtime: "runsc"` for
+gVisor, Kata, or a microVM platform for hostile multi-tenant code); and the
+`docker` group is **root-equivalent**, so a worker that drives rootful Docker
+is as privileged as root on its host (rootless Docker or Podman avoids that).
+A job can still return a wrong result for its own attempt, and read its own
+input. Which platforms can run a container inside a worker at all (EC2 and
+VMs can; Lambda, Fargate, Cloud Run and most PaaS cannot) is in the
+[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-gateway-and-isolation.md#56-platform-reality),
+with its sources in
+[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/evidence/worker-gateway-and-isolation/platform-isolation.md).
+
+**Fixed, not options**: `--read-only`, `--cap-drop=ALL`, `--ipc=none`,
+`--security-opt=no-new-privileges`, `--init` (a small init as PID 1 —
+Docker's tini, Podman's catatonit — which forwards signals and reaps orphaned
+processes), a tmpfs at `/tmp` that is
+`noexec,nosuid,nodev`, `--pull=never` on every attempt, and an environment of
+literal `NAME=value` pairs only — never a bare `NAME` (which copies the
+host's value) and never an env file. The argument list is built from the
+typed options alone; there is no raw-argument option.
+
+**Refused with a `ConfigError`**, with no escape hatch: privileged mode, added
+capabilities and devices, the host's network, PID, IPC or UTS namespace, a
+mount of a socket or of a directory holding one at any depth, of `/`,
+`/proc`, `/sys`, `/dev`, `/etc`, `/run` or `/var/run`, of where an engine
+keeps its sockets or data — the target's `engine.host` and the CLI's
+`DOCKER_HOST`/`CONTAINER_HOST`, `~/.docker`, `~/.colima`, `~/.lima`, `~/.rd`,
+`~/.orbstack`, `~/.local/share/containers`, Docker Desktop's directory,
+`$XDG_RUNTIME_DIR/docker.sock` and `podman`, `/var/lib/docker`,
+`/var/lib/containerd`, `/var/lib/containers`, `/var/snap/docker` — or of any
+directory holding one of those, each compared after resolving symlinks (a
+read-only bind does not stop a `connect()` to a socket), `seccomp` or
+`apparmor` `"unconfined"`, unlimited memory, pids or tmpfs, an env variable
+without a value, and uid 0 or gid 0 unless `allowRoot`.
+
+The socket check walks each mount when `worker.run()` starts, before the
+probe: up to 250,000 entries across the mounts and 32 levels deep, without
+following symlinks (one can only reach what is mounted). A tree past either
+bound is refused as too large to check, never passed unchecked: mount a
+narrower directory. A directory inside that this process cannot list is
+refused too, by name, since a socket in it would go unseen: mount only what
+it can list. The check sees the tree as it is at `run()`: a socket created
+inside a mount afterwards, by anything on the host, is reachable from the
+containers started after it, so mount nothing a socket can appear in.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `image` | (required) | The image. A digest (`name@sha256:…`) is recommended. |
+| `processor` | the worker's processor path | The processor's absolute path inside the image. |
+| `pull` | `"missing"` | When the start-up probe pulls: `"never"`, `"missing"` or `"always"`. An attempt never pulls. |
+| `engine` | `{ cli: "docker" }` | `cli`: `"docker"` or `"podman"`, found on `PATH`. `host`: the endpoint, given to the CLI as `DOCKER_HOST` (`CONTAINER_HOST` for Podman). |
+| `runtime` | the engine's | The OCI runtime, e.g. `"runsc"`; checked against the engine's list at start. |
+| `limits` | `256m`, `1`, `128`, `64m` | `memory` (at least `6m`; swap set equal, so none), `cpus`, `pids` (at least 16), and the `/tmp` `tmpfs` size (above 0), which counts against memory. `0`, which the engine reads as no limit, is refused. |
+| `network` | `"none"` | The only value this version takes. |
+| `env` | `{}` | Literal values for the job. Nothing is ever copied from the worker's environment. |
+| `mounts` | `[]` | `{ source, target, readOnly? }` bind mounts, read-only unless `readOnly: false`. |
+| `user` | `"65534:65534"` | Numeric `uid:gid`. A name is refused, since it could be root, and so is a uid alone, whose group the image decides. |
+| `allowRoot` | `false` | Allows `user` to be uid 0 or gid 0. |
+| `security` | the engine's | `seccomp` (a profile path) and `apparmor` (a profile name). |
+| `closeTimeout` | `5000` | After an attempt is asked to stop, how long before its container is killed. The runner inside exits itself 500 ms before. |
+| `maxLogBytes` | 1 MiB | The most of an attempt's own stdout and stderr kept as job log lines; past it one line says the rest was cut. |
+
+**Fail fast, never degrade.** `worker.run()` checks, before claiming
+anything: the engine answers (`docker version`), the `runtime` is listed
+(`docker info`), the image is present or pulled as `pull` allows, and **a
+probe container with the attempt's exact flags** runs — resolving the
+container entry and finding the processor without importing it. A failure
+throws `IsolationUnavailableError`, a `ConfigError` whose `context.step` is
+`"engine"`, `"runtime"`, `"image"` or `"probe"` and whose `context.stderr` is
+the engine's own words. There is no fallback to running the job some other
+way, and a summoned worker that fails it exits non-zero. A `close()` during
+the probe cuts it short.
+
+**On snap Docker** (Ubuntu's `snap install docker`), every container with
+`no-new-privileges` fails before its first instruction ("operation not
+permitted"): runc runs under the snap's AppArmor profile, and the flag
+forbids its switch to `docker-default`. The probe fails with that message and
+says the way out: `security: { apparmor: "snap.docker.dockerd" }`, which keeps
+the container in the snap daemon's own profile — broader than
+`docker-default`. Snap Docker also cannot read `/tmp`, so mount only paths
+under `$HOME` or `/srv`. A non-snap engine has neither problem.
+
+**The channel** is the container's stdin and stdout. The worker writes one
+JSON message a line to stdin. The runner cuts each of its messages into
+**frames** of at most 4096 bytes — the most a pipe keeps whole in one write —
+each written in one write, on a line of its own, starting with a random
+prefix generated for that container: `<prefix> <id> <index> <count> <part>`.
+So nothing that shares stdout with the runner can land inside one: not the
+processor's `console.log` on its timer while a 2 MiB result goes out, not
+output it left without a newline (`process.stdout.write("working...")`), not
+a subprocess that inherited stdout. Every other line — one that merely
+contains the prefix included, such as the processor printing its own argv —
+is the processor's output, and becomes a **job log line**, as its stderr
+does, up to `maxLogBytes`. A line longer than `maxLogBytes` is never held
+whole: it is kept as its first 256 bytes and its length (`… [a line of N
+bytes, cut]`), and the output after it is still read. Those lines are
+written one write at a time per attempt: the lines that arrive while a write
+is in flight are joined into the next log entry, so a chatty processor
+costs the store a few writes, not one per line, and a batch is never written
+twice. When the attempt ends, its output gets up to `closeTimeout` (at least
+one second) to be written; a store that never answers leaves the rest
+unwritten, with one warning. Every message is bounded: one
+over 16 MiB (a result too big, say) fails the attempt with an
+`UnrecoverableJobError`, with no retry, rather than being cut. Store big
+outputs elsewhere and return a key. The runner exits once the result is out,
+so output the processor wrote with `process.stdout.write` just before
+returning, and Bun had not yet flushed, can be lost (seen with hundreds of
+thousands of lines written at the very end); lines that must arrive go
+through `job.log`, which is part of the channel.
+
+A processor that calls `process.exit(n)` ends the attempt the way a
+`child-process` one does: with its code, and, without a result, as a
+`ChildExitError` — exit 0 included.
+
+**Stopping.** A timeout, a lost lock or a close sends `close` on the channel;
+after `closeTimeout` the container is killed (`docker kill`, then
+`docker rm --force`, by name, retried while the engine is still creating
+it). A close that lands before the container has started is honoured as
+`child-process` honours one: the processor is never imported. A killed
+attempt reports exit code 137; a runner that stopped itself, 143; an attempt
+whose result had already arrived reports that result, whatever stopped it
+afterwards. The reverse race is also told as it happened: a stop that lands
+before the result decides the attempt (`killed`), and if the processor still
+finished and its container exited cleanly before the kill took, the exit
+code reported is that clean 0 — killed, though the processor ran to the end. A forced close kills at once, with no `close` first. A
+`docker stop` from outside is handled as a close: the runner inside asks the
+processor to stop, the attempt fails with `RunKilledError`, and the container
+exits 143 by `closeTimeout` at the latest; a processor that sends itself
+`SIGTERM` ends the same way. A killed container counts as gone once its
+attached `docker run --rm` has exited, which the engine allows only after the
+container is destroyed; the `docker kill` and `docker rm` commands that
+killed it may return a little later, after `close()` has resolved.
+
+**Orphans.** Every container is labelled `bun-jobs.worker-key`,
+`bun-jobs.worker-id`, `bun-jobs.namespace` and `bun-jobs.queue`. A worker
+starting up removes its key's containers on its queue whose worker is not
+live (`listWorkers`) and that are more than a minute old, so a crash leaks
+none past the next start of a worker with that key. A container without a
+`bun-jobs.worker-id` label is left alone, since nothing says whose it is.
+When its worker dies, a container's stdin closes, and the runner inside
+closes the attempt and exits by `closeTimeout` at the latest — even for a
+processor that blocks its thread for good, since the processor runs in a
+`Worker` and the runner's main thread is what watches stdin (measured: a
+spinning processor's container gone within seconds of its worker being
+`SIGKILL`ed). The sweep is for what that misses: a container whose engine
+lost track of its stdin, or one started with an older runner.
+
+**Cost.** A container per attempt pays the engine's start, measured at
+~280 ms here with `--network=none` (a default bridge network adds ~160 ms),
+and an engine starts only so many a second. That is the price of isolating
+every job from every other; a pool of pre-started containers is the next
+step.
 
 ### One file, many job names: `defineProcessors`
 

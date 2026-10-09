@@ -79,6 +79,7 @@ describe("the target badge in a worker table", () => {
       "in-process": "In process",
       "worker-thread": "Worker thread",
       "child-process": "Child process",
+      container: "Container",
       custom: "Custom",
     };
     const list = await openList(

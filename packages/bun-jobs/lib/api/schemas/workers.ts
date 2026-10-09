@@ -151,17 +151,37 @@ export const WorkerTargetInfoSchema = s.named(
     {
       kind: s.enum(WORKER_TARGET_KINDS, {
         description:
-          'Where the attempts run: `"in-process"`, `"worker-thread"`, `"child-process"`, or `"custom"` (a target the application supplied). Show a kind you do not know as the raw string: a later server may add one.',
+          'Where the attempts run: `"in-process"`, `"worker-thread"`, `"child-process"`, `"container"`, or `"custom"` (a target the application supplied). Show a kind you do not know as the raw string: a later server may add one.',
       }),
       processor: s.enum(["function", "file"] as const, {
         description:
-          'Whether the attempts run a function or a processor file. The pairs that occur: `"in-process"` with `"function"` or `"file"`; `"worker-thread"` and `"child-process"` with `"file"` only (a function cannot be sent to a thread or a process); `"custom"` with `"function"` or `"file"`.',
+          'Whether the attempts run a function or a processor file. The pairs that occur: `"in-process"` with `"function"` or `"file"`; `"worker-thread"`, `"child-process"` and `"container"` with `"file"` only (a function cannot be sent to a thread, a process or a container); `"custom"` with `"function"` or `"file"`.',
       }),
       name: s.optional(
         s.string({
           description:
             'For `"custom"`: the target\'s own name. Absent for every other kind.',
         }),
+      ),
+      container: s.optional(
+        s.object(
+          {
+            image: s.string({
+              description:
+                "The image, exactly as the target names it: `name@sha256:…` or `name:tag`.",
+            }),
+            runtime: s.optional(
+              s.string({
+                description:
+                  'The OCI runtime the target asked for, e.g. `"runsc"`; absent for the engine\'s default.',
+              }),
+            ),
+          },
+          {
+            description:
+              'For `"container"`: the image each attempt runs in and the runtime it asked for. Never the container\'s environment. Absent for every other kind.',
+          },
+        ),
       ),
       file: s.optional(
         s.string({

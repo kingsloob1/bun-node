@@ -2395,15 +2395,17 @@ export interface WorkerConfigDto {
  * Where a worker's attempts run, as its record describes it
  * (`WorkerDto.target`).
  *
- * The combinations that occur, since a function cannot be sent to a thread
- * or a process: `"in-process"` with `"function"` or `"file"`;
- * `"worker-thread"` and `"child-process"` with `"file"` only; `"custom"`
- * with `"function"` or `"file"`. A UI need not render any other pair.
+ * The combinations that occur, since a function cannot be sent to a thread,
+ * a process or a container: `"in-process"` with `"function"` or `"file"`;
+ * `"worker-thread"`, `"child-process"` and `"container"` with `"file"` only;
+ * `"custom"` with `"function"` or `"file"`. A UI need not render any other
+ * pair.
  */
 export interface WorkerTargetInfoDto {
   /**
    * Where the attempts run: `"in-process"`, `"worker-thread"`,
-   * `"child-process"`, or `"custom"` (a target the application supplied).
+   * `"child-process"`, `"container"`, or `"custom"` (a target the
+   * application supplied).
    * One of `WORKER_TARGET_KINDS`; a kind this client does not know should be
    * shown as the raw string, since a later server may add one.
    */
@@ -2411,12 +2413,23 @@ export interface WorkerTargetInfoDto {
   /**
    * Whether the attempts run a function or a processor file. The pairs that
    * occur: `"in-process"` + `"function"` | `"file"`; `"worker-thread"` +
-   * `"file"`; `"child-process"` + `"file"`; `"custom"` + `"function"` |
-   * `"file"`.
+   * `"file"`; `"child-process"` + `"file"`; `"container"` + `"file"`;
+   * `"custom"` + `"function"` | `"file"`.
    */
   processor: "function" | "file";
   /** For `"custom"`: the target's own name, e.g. `"grpc-pool"`. Absent for every other kind. */
   name?: string;
+  /**
+   * For `"container"`: the image each attempt runs in, as configured, and
+   * the OCI runtime it asked for. Never the container's environment. Absent
+   * for every other kind.
+   */
+  container?: {
+    /** The image, exactly as the target names it: `name@sha256:…` or `name:tag`. */
+    image: string;
+    /** The OCI runtime the target asked for, e.g. `"runsc"`; absent for the engine's default. */
+    runtime?: string;
+  };
   /**
    * For a file processor: the absolute path it resolved to. Omitted unless
    * the server enables `serialize.exposeProcessorFiles`.

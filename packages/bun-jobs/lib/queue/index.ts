@@ -208,6 +208,7 @@ export {
 } from "./WorkerController";
 export {
   type ChildProcessTarget,
+  type ContainerTarget,
   defineProcessor,
   defineProcessors,
   type InProcessTarget,

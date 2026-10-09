@@ -13,6 +13,10 @@ import type {
 import type { RunContext, SpawnOptions, WorkerOptions } from "../runner/types";
 import type { Logger } from "../shared/logger";
 import type { WorkerTargetInfo, WorkerTargetKind } from "../shared/workers";
+import type {
+  ContainerTarget,
+  ResolvedContainerTarget,
+} from "./container/target";
 import type { JobDefinition, JobDefinitions } from "./definitions";
 import type { Job } from "./Job";
 import type { JobProcessor, ProcessorContext } from "./types";
@@ -34,6 +38,16 @@ import {
 } from "../shared/constants";
 import { ConfigError, UnrecoverableJobError } from "../shared/errors";
 import { resolveLogger } from "../shared/logger";
+import {
+  ContainerExecutor,
+  containerMarkers,
+  containerOutputCutNotice,
+} from "./container/executor";
+import { AttemptLogWriter } from "./container/logWriter";
+import {
+  checkMountedSockets,
+  resolveContainerTarget,
+} from "./container/target";
 
 /**
  * Where a worker's attempts run: the `target` option.
@@ -82,13 +96,17 @@ export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
 
 /**
  * Where a worker's attempts run: one of the three {@link WorkerTargetMode}s, a
- * {@link LocalWorkerTarget} (the same, with its tuning), or a
+ * {@link LocalWorkerTarget} (the same, with its tuning), a
+ * {@link ContainerTarget} (a fresh container per attempt), or a
  * {@link WorkerTargetFactory} for a target this package does not ship.
  */
 export type WorkerTarget =
   | WorkerTargetMode
   | LocalWorkerTarget
+  | ContainerTarget
   | WorkerTargetFactory;
+
+export type { ContainerTarget } from "./container/target";
 
 /**
  * A local target with its tuning. The string `"child-process"` is exactly
@@ -426,6 +444,8 @@ export interface ResolvedWorkerTarget {
   kind: WorkerTargetKind;
   /** The local target, normalised to its object form; for the three local kinds. */
   local?: LocalWorkerTarget;
+  /** The container target, checked and with its defaults; for `"container"`. */
+  container?: ResolvedContainerTarget;
   /** The factory, for `"custom"`. */
   factory?: WorkerTargetFactory;
   /** The processor file's absolute path, when the processor is a file. */
@@ -498,6 +518,28 @@ export function resolveWorkerTarget(
       kind: "custom",
       factory: target as WorkerTargetFactory,
       ...(isFunction ? {} : { file: resolveProcessorFile(processor) }),
+    };
+  }
+
+  if (
+    target &&
+    typeof target === "object" &&
+    (target as { kind?: unknown }).kind === "container"
+  ) {
+    const container = resolveContainerTarget(target);
+    if (isFunction) {
+      throw new ConfigError(
+        'target "container" needs a processor file: a function cannot be sent to a container',
+        { target: "container" },
+      );
+    }
+    return {
+      kind: "container",
+      container,
+      // The path inside the image when the target names one: the file need
+      // not exist on this host at all. Otherwise the worker's own file, at
+      // the same path in the image.
+      file: container.processor ?? resolveProcessorFile(processor),
     };
   }
 
@@ -621,6 +663,24 @@ export const TARGET_CLOSE_REAP = TARGET_CLOSE_MARGIN / 2;
  */
 export const TARGET_CLOSE_GRACE = DEFAULT_CLOSE_TIMEOUT - TARGET_CLOSE_MARGIN;
 
+/**
+ * How long a `container` target's `close()` waits for killed containers to
+ * be gone, in place of `TARGET_CLOSE_REAP`: 3000 ms. A container is gone when
+ * the engine has destroyed it, which took 0.3–0.7 s for one and longer for a
+ * dozen killed at once, far past half a second. The worker's bound on such a
+ * target's `close()` grows by the difference (see
+ * {@link FileTargetExecutor.closeBound}), so the timeline above keeps its
+ * order: a graceful close kills at `TARGET_CLOSE_GRACE`, has seen the
+ * containers gone by 7000 ms, and the worker gives up at 7500 ms.
+ */
+export const CONTAINER_CLOSE_REAP = 3_000;
+
+/**
+ * The least time a finished container attempt gives its output to reach the
+ * job's log, whatever its `closeTimeout`: 1000 ms.
+ */
+const LOG_DRAIN_FLOOR = 1_000;
+
 /** Who is running an attempt off-thread, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
@@ -629,6 +689,11 @@ interface Runner {
   queue: string;
   /** The worker's id. */
   workerId: string;
+  /**
+   * The worker's stable key, which a container's labels carry for the orphan
+   * sweep. Defaults to the worker's id.
+   */
+  workerKey?: string;
   /**
    * Where the target reports what it could not do, such as a `worker-thread`
    * run whose thread outlived a close's reap window. The worker passes its
@@ -644,18 +709,27 @@ interface Runner {
  */
 export class FileTargetExecutor implements WorkerTargetExecutor {
   /** The kind, as the executor's name: `"child-process"`, say. */
-  readonly name: WorkerTargetMode;
-  /** The processor file, resolved to an absolute path. */
+  readonly name: WorkerTargetMode | "container";
+  /**
+   * The processor file, resolved to an absolute path — for `"container"`, the
+   * path inside the image.
+   */
   readonly file: string;
 
   /** The target with its tuning. */
-  readonly #target: LocalWorkerTarget;
+  readonly #target: LocalWorkerTarget | ResolvedContainerTarget;
   /** Who runs the attempts, for the run context the executors need. */
   readonly #runner: Runner;
   /** Where a close reports a thread it could not see stop. */
   readonly #logger: Logger;
-  /** The executor, for `"worker-thread"` and `"child-process"`. */
-  #executor: Executor | undefined;
+  /** The executor, for `"worker-thread"`, `"child-process"` and `"container"`. */
+  #executor: Pick<Executor, "start"> | undefined;
+  /**
+   * The container target's start-up checks, once they have passed: the
+   * probe and the orphan sweep (see {@link prepare}). Kept so a second
+   * `run()` does not repeat them; cleared when they fail, so it can retry.
+   */
+  #prepared: Promise<void> | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
   /**
@@ -708,8 +782,8 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   #forced: Promise<void> | undefined;
 
   constructor(
-    /** The local target, in its object form. */
-    target: LocalWorkerTarget,
+    /** The local target in its object form, or the resolved container target. */
+    target: LocalWorkerTarget | ResolvedContainerTarget,
     /** The processor file, already resolved to an absolute path. */
     file: string,
     /** Who runs the attempts. */
@@ -756,8 +830,10 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       attempt: record.attemptsMade,
       source: "queued",
       // The target's own kind, which is also what the shared executors and
-      // the child's `BUN_JOBS_MODE` call it.
-      mode: target.kind,
+      // the child's `BUN_JOBS_MODE` call it. A container's runner is a child
+      // process inside it, so its context says so; its `BUN_JOBS_MODE` is
+      // `"container"`, and a processor's context carries no mode at all.
+      mode: target.kind === "container" ? "child-process" : target.kind,
       startedAt: Date.now(),
       deadline: null,
       args: null,
@@ -775,6 +851,11 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
     // `onMessage` below reads `handle`, but only ever after `start()` has
     // returned: a child cannot send anything before it has been started.
+    /** A container's own output, written to the job's log one write at a time. */
+    const logWriter =
+      target.kind === "container"
+        ? new AttemptLogWriter(async (entry) => await job.log(entry))
+        : undefined;
     const handle: ExecutorHandle = executor.start({
       context: runContext,
       file: this.file,
@@ -808,7 +889,15 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           const write = context.logger[level] ?? context.logger.info;
           write.call(context.logger, message, fields);
         },
-        onOutput: () => {},
+        // A container's own output — stdout lines without the channel's
+        // prefix, and stderr — becomes the job's log, through its `Job`, one
+        // write at a time (`AttemptLogWriter`). The other kinds' output goes
+        // to this process's own stdio instead.
+        onOutput: logWriter
+          ? (_stream, line) => {
+              logWriter.push(line);
+            }
+          : () => {},
         // A job has no run log; its attempt's logger is where the cut is said.
         onEnvWithheld: (withheld) => {
           context.logger.debug(childEnvWithheldMessage(withheld), {
@@ -816,6 +905,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
           });
         },
         onOutputLimit: (maxBuffer, bytes) => {
+          if (logWriter) {
+            const notice = containerOutputCutNotice(maxBuffer);
+            logWriter.push(notice);
+            context.logger.warn(notice, { maxLogBytes: maxBuffer, bytes });
+            return;
+          }
           context.logger.warn(outputCutNotice(maxBuffer), {
             maxBuffer,
             bytes,
@@ -862,7 +957,104 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       );
     } finally {
       signal.removeEventListener("abort", stop);
+      // The container's output is written before the attempt reports back,
+      // so the worker's settle sees it on the attempt's lane — for at most
+      // the target's closeTimeout (and never less than LOG_DRAIN_FLOOR, so a
+      // closeTimeout of 0 does not cut every attempt's output), since a store
+      // that never answers a log write must not hold a finished attempt open
+      // for good.
+      const drainFor =
+        target.kind === "container"
+          ? Math.max(target.closeTimeout, LOG_DRAIN_FLOOR)
+          : 0;
+      if (logWriter && !(await logWriter.drain(drainFor))) {
+        context.logger.warn(
+          `The container's output was still being written to the job's log ${drainFor} ms after the attempt ended; the attempt settled without waiting further`,
+          { drainMs: drainFor },
+        );
+      }
     }
+  }
+
+  /**
+   * The container target's start-up checks, run by `worker.run()` before the
+   * worker claims anything (I5): no mount holds a socket at any depth (a
+   * `ConfigError`, see `checkMountedSockets`), the engine answers, the
+   * runtime is listed,
+   * the image is present or pulled, and a probe container with the exact
+   * flags runs. Throws `IsolationUnavailableError` when one fails — never a
+   * fallback. Then removes this worker key's containers whose worker is not
+   * in `live` (orphans of a crashed worker), when `live` is known.
+   *
+   * Nothing for the other kinds. Passes once per executor: a later call
+   * returns the same promise, and a failed one is forgotten so a later
+   * `run()` checks again.
+   */
+  async prepare(options: {
+    /** The live workers' ids on this queue, or `undefined` when the driver cannot list them. */
+    live: () => Promise<ReadonlySet<string> | undefined>;
+    /** Aborts the checks: a close during start-up. */
+    signal?: AbortSignal;
+    /** The youngest container the sweep may remove, in ms; for tests. */
+    sweepMinAge?: number;
+  }): Promise<void> {
+    const target = this.#target;
+    if (target.kind !== "container") {
+      return;
+    }
+    this.#prepared ??= (async () => {
+      const executor = this.#containerExecutor(target);
+      const owner = this.#owner();
+      // Every socket anywhere in a mount, before the engine is asked
+      // anything: a walk too long for the constructor.
+      await checkMountedSockets(target.mounts);
+      await executor.engine.probe(target, {
+        owner,
+        processor: this.file,
+        markers: containerMarkers(owner, "probe", this.file),
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        return;
+      }
+      const live = await options.live();
+      if (live === undefined) {
+        this.#logger.warn(
+          "This driver cannot list workers, so orphaned containers of crashed workers are not swept",
+          { workerKey: owner.workerKey },
+        );
+        return;
+      }
+      await executor.engine.sweep(owner, live, this.#logger, {
+        signal: options.signal,
+        ...(options.sweepMinAge === undefined
+          ? {}
+          : { minAge: options.sweepMinAge }),
+      });
+    })();
+    try {
+      await this.#prepared;
+    } catch (error) {
+      this.#prepared = undefined;
+      throw error;
+    }
+  }
+
+  /** Whose containers this executor starts. */
+  #owner() {
+    const runner = this.#runner;
+    return {
+      workerKey: runner.workerKey ?? runner.workerId,
+      workerId: runner.workerId,
+      namespace: runner.namespace,
+      queue: runner.queue,
+    };
+  }
+
+  /** The container executor, built on first use. */
+  #containerExecutor(target: ResolvedContainerTarget): ContainerExecutor {
+    this.#executor ??= new ContainerExecutor(target, this.#owner(), this.file);
+    return this.#executor as ContainerExecutor;
   }
 
   /**
@@ -1016,7 +1208,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
 
   /**
    * Resolves once killed runs have stopped, or after `TARGET_CLOSE_REAP` at
-   * most. The kills are already sent; this is seeing the children reaped and
+   * most (`CONTAINER_CLOSE_REAP` for containers, gone meaning destroyed). The kills are already sent; this is seeing the children reaped and
    * the threads gone, so `close()` resolves with nothing alive. Its timer is
    * ref'd for the same reason as the deadline's, and bounded so the wait ends
    * strictly inside the worker's own bound.
@@ -1035,7 +1227,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     const inTime = await Promise.race([
       FileTargetExecutor.#stopped(handles).then(() => true),
       new Promise<false>((resolve) => {
-        timer = setTimeout(resolve, TARGET_CLOSE_REAP, false);
+        timer = setTimeout(resolve, this.#reapMs, false);
       }),
     ]);
     clearTimeout(timer);
@@ -1044,10 +1236,28 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     }
   }
 
+  /** How long a close waits for killed runs to be gone, for this kind. */
+  get #reapMs(): number {
+    return this.name === "container" ? CONTAINER_CLOSE_REAP : TARGET_CLOSE_REAP;
+  }
+
   /**
-   * Logs one `warn` for the `worker-thread` runs among `handles` whose thread
-   * has still not stopped, leaving out any already warned about. A child that
-   * is slow to be reaped is not reported: that wait is what it always was.
+   * How long the worker gives this target's `close()` before giving up on
+   * it: `DEFAULT_CLOSE_TIMEOUT`, plus for a container the longer reap it
+   * waits ({@link CONTAINER_CLOSE_REAP}). Internal.
+   */
+  get closeBound(): number {
+    return DEFAULT_CLOSE_TIMEOUT + (this.#reapMs - TARGET_CLOSE_REAP);
+  }
+
+  /**
+   * Logs one `warn` for the runs among `handles` that have still not
+   * stopped — a `worker-thread` run whose thread is still running, or a
+   * `container` run whose container the engine has not yet destroyed —
+   * leaving out any already warned about. A child that is slow to be reaped
+   * is not reported: that wait is what it always was. A container still
+   * there after {@link CONTAINER_CLOSE_REAP} is removed later by the `kill`
+   * and `rm` already under way, or by the orphan sweep.
    */
   #warnOverrun(handles: ExecutorHandle[]): void {
     const runIds: string[] = [];
@@ -1066,11 +1276,14 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     if (runIds.length === 0) {
       return;
     }
+    const runs = runIds.length === 1 ? "run" : "runs";
     this.#logger.warn(
-      `worker-thread ${runIds.length === 1 ? "run" : "runs"} ${runIds.join(", ")} had not stopped ${TARGET_CLOSE_REAP} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
+      this.name === "container"
+        ? `container ${runs} ${runIds.join(", ")} had not been removed ${this.#reapMs} ms after being killed; the target's close resolved without waiting further (the removal goes on)`
+        : `worker-thread ${runs} ${runIds.join(", ")} had not stopped ${this.#reapMs} ms after being terminated; the target's close resolved without waiting further (oven-sh/bun#44216)`,
       {
         runIds,
-        reapMs: TARGET_CLOSE_REAP,
+        reapMs: this.#reapMs,
         file: this.file,
         workerId: this.#runner.workerId,
       },
@@ -1078,7 +1291,12 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   }
 
   /** The executor for this kind, built on first use. */
-  #executorFor(target: WorkerThreadTarget | ChildProcessTarget): Executor {
+  #executorFor(
+    target: WorkerThreadTarget | ChildProcessTarget | ResolvedContainerTarget,
+  ): Pick<Executor, "start"> {
+    if (target.kind === "container") {
+      return this.#containerExecutor(target);
+    }
     this.#executor ??=
       target.kind === "child-process"
         ? new SpawnExecutor({
@@ -1146,7 +1364,11 @@ export function buildTargetExecutor(
     return undefined;
   }
 
-  return new FileTargetExecutor(resolved.local!, resolved.file, worker);
+  return new FileTargetExecutor(
+    resolved.container ?? resolved.local!,
+    resolved.file,
+    worker,
+  );
 }
 
 /**
@@ -1163,6 +1385,18 @@ export function describeTarget(
     kind: resolved.kind,
     processor: resolved.file === undefined ? "function" : "file",
     ...(resolved.kind === "custom" && executor ? { name: executor.name } : {}),
+    // The image and runtime, never the environment: a record is read by
+    // anyone the management API lets list workers.
+    ...(resolved.container
+      ? {
+          container: {
+            image: resolved.container.image,
+            ...(resolved.container.runtime === undefined
+              ? {}
+              : { runtime: resolved.container.runtime }),
+          },
+        }
+      : {}),
     ...(resolved.file === undefined ? {} : { file: resolved.file }),
   };
 }

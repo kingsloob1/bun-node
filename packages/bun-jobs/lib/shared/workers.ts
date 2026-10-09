@@ -212,7 +212,8 @@ export type WorkerStopPersistence = (typeof WORKER_STOP_PERSISTENCE)[number];
 
 /**
  * Every value a worker record's `target.kind` can take, for a reader to
- * enumerate: the three local targets, and `"custom"` for a
+ * enumerate: the three local targets, `"container"` for a `ContainerTarget`
+ * (a fresh container per attempt), and `"custom"` for a
  * `WorkerTargetFactory`. A closed list a UI can switch on — though a reader
  * meeting a kind it does not know should show the raw string, since a later
  * version may add one.
@@ -221,6 +222,7 @@ export const WORKER_TARGET_KINDS = [
   "in-process",
   "worker-thread",
   "child-process",
+  "container",
   "custom",
 ] as const;
 
@@ -231,29 +233,42 @@ export type WorkerTargetKind = (typeof WORKER_TARGET_KINDS)[number];
  * A worker's target as its heartbeat record describes it: what it is, never
  * the option it was built from — a factory cannot be serialised.
  *
- * The combinations that occur, since a function cannot be sent to a thread
- * or a process: `"in-process"` with `"function"` or `"file"`;
- * `"worker-thread"` and `"child-process"` with `"file"` only; `"custom"`
- * with `"function"` or `"file"`.
+ * The combinations that occur, since a function cannot be sent to a thread,
+ * a process or a container: `"in-process"` with `"function"` or `"file"`;
+ * `"worker-thread"`, `"child-process"` and `"container"` with `"file"` only;
+ * `"custom"` with `"function"` or `"file"`.
  */
 export interface WorkerTargetInfo {
   /**
    * Where the attempts run: `"in-process"`, `"worker-thread"`,
-   * `"child-process"`, or `"custom"` for a `WorkerTargetFactory`. One of
-   * {@link WORKER_TARGET_KINDS}. A reader meeting a kind it does not know
-   * shows the raw string: a later version may add one.
+   * `"child-process"`, `"container"`, or `"custom"` for a
+   * `WorkerTargetFactory`. One of {@link WORKER_TARGET_KINDS}. A reader
+   * meeting a kind it does not know shows the raw string: a later version may
+   * add one.
    */
   kind: WorkerTargetKind;
   /**
    * Whether the attempts run a function or a processor file. The pairs that
    * occur: `"in-process"` + `"function"` | `"file"`; `"worker-thread"` +
-   * `"file"`; `"child-process"` + `"file"`; `"custom"` + `"function"` |
-   * `"file"`. A function is never sent to a thread or a process, so
-   * `"worker-thread"`/`"child-process"` with `"function"` does not occur.
+   * `"file"`; `"child-process"` + `"file"`; `"container"` + `"file"`;
+   * `"custom"` + `"function"` | `"file"`. A function is never sent to a
+   * thread, a process or a container, so those kinds with `"function"` do not
+   * occur.
    */
   processor: "function" | "file";
   /** For `"custom"`: the executor's own `name`. Absent for every other kind. */
   name?: string;
+  /**
+   * For `"container"`: the image each attempt runs in, as configured (a
+   * digest when the target was given one), and the OCI runtime it asked for.
+   * Never the container's environment. Absent for every other kind.
+   */
+  container?: {
+    /** The image, exactly as the target names it: `name@sha256:…` or `name:tag`. */
+    image: string;
+    /** The OCI runtime the target asked for, e.g. `"runsc"`; absent for the engine's default. */
+    runtime?: string;
+  };
   /**
    * For a file processor: the absolute path it resolved to. The management
    * API omits it unless `serialize.exposeProcessorFiles` is on, since a path
