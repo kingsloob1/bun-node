@@ -3652,12 +3652,16 @@ count.
 
 `createJobsApi({ jobs })` finds a queue's controller on the `jobs` it was
 given — one from the `summon` option or `jobs.summonController()` — and never
-builds one:
+builds one. For a queue whose controller runs in another process, the status
+is read from storage instead (`local: false`):
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/summon` | `queues.list` | `SummonListDto`: every controller running in the API's process, by queue — its namespace, the summoner's `kind`, `readiness` and `inert`, the last outcome and the budget usage. Each is listed only where `authorize` allows `queues.read` on its queue, asked as `GET /queues/:queue/summon` asks it, whatever `listQueues` says: the list never shows what that route refuses. An empty list, never 409, when none runs here |
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, and the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
+| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness` and `inert`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, the last outcome, the open circuit's end and the budget usage. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one, and — from a local controller — the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
+| GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here |
+| GET | `/summon/groups/:group` | `queues.read` | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller |
+| POST | `/summon/groups/:group/reset` | `queues.summon` | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. Needs a controller in the group in the API's process |
 | POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset({ budget })`, then the `SummonStatusDto` after it. The optional body `{ "budget": true }` also clears the budget's usage (`/meta.features.summonResetBudget` says it is accepted); without it the usage is kept |
 
@@ -3668,10 +3672,19 @@ controller's limits, and when each window resets (epoch ms: the next UTC hour
 and midnight). For a policy with `budget: false` the limits are absent and
 `off: true` is there instead.
 
+**Status without a local controller** (`local: false`, advertised by
+`/meta.features.summonRemoteStatus`). Every claim persists its controller's
+summoner `kind`, budget limits (or that the budget was off) and group on the
+queue's summon state, so any API process on the namespace can show a queue
+whose controller runs elsewhere: the state as it is, with no `summoner`, the
+limits the last claim persisted (`off: true` for a budget that was off;
+neither the limits nor `off` while no claim has persisted them), and the
+group's state. "Summon now" and reset still need a controller here.
+
 A queue with no controller in the API's process answers **409
-`SUMMON_NOT_CONFIGURED`**, whichever route; an unknown queue is 404 as
-everywhere, except that a queue with a controller is found before its first
-job. A reset that other controllers kept outwriting is 409
+`SUMMON_NOT_CONFIGURED`** for "summon now" and reset, and for the status only
+when it has no summon state either; an unknown queue is 404 as everywhere,
+except that a queue with a controller is found before its first job. A reset that other controllers kept outwriting is 409
 `SUMMON_MARKER_CONTENDED`: try again.
 
 Every POST — a bodyless "summon now" or reset included — must send
@@ -3720,8 +3733,9 @@ Examples:
 builds one ordinary `SummonController` per queue, exactly as if each queue had
 its own key, so each queue keeps its own marker, `maxWorkers`, backoff,
 circuit and **budget** (`perHour: 20` on a group of two queues allows 20 an
-hour for each). Records may sit in the same array. A queue named twice
-anywhere in the option, a group with no queues, an invalid queue name, or an
+hour for each; to share one budget, name a
+[summon group](#one-budget-for-several-queues-group)). Records may sit in
+the same array. A queue named twice anywhere in the option, a group with no queues, an invalid queue name, or an
 override for a queue the group does not name is a `ConfigError` at
 construction that says where, before any controller starts; each queue's
 controller is still `jobs.summonController(queue)`.
@@ -3788,6 +3802,93 @@ The map may hold processor files instead (`Record<string, string>`, e.g.
 `{ emails: "./processors/email.ts" }`; see [`target`](#where-attempts-run-target)),
 so a unit loads only the code of the queue it serves.
 
+### One budget for several queues: `group`
+
+A policy's `group` shares one budget between every controller that names the
+same group — the queues of one array entry, records, controllers built by
+hand, in any process and any service on the namespace:
+
+```ts
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: [
+    {
+      queues: ["renders", "thumbs", "previews"],
+      summoner,
+      // 60 attempts an hour and 400 a day for the three queues together.
+      group: { name: "media", budget: { perHour: 60, perDay: 400 } },
+    },
+  ],
+});
+```
+
+- **Sharing is opt-in.** An array entry with several `queues` shares
+  nothing by itself; only `group` does, and `group.name` is always written
+  out (the entry has no name to fill it from).
+- **The budget is shared, and the circuit if you ask.** Attempts in flight,
+  cooldown, backoff, `maxPending` and `maxWorkers` stay per queue, and so
+  does each queue's circuit; `group.circuit` adds a shared one (below).
+- **The queue's own budget is off unless set.** In a group with a budget
+  (`group.budget` left out means `30`/hour and `300`/day, as a queue's does),
+  a queue without `budget` has no limit of its own: the group's is the limit,
+  and the queue's counts are kept to show its share (`status().budget.off` is
+  `true`). A `budget` set explicitly still applies, on top of the group's.
+  `group.budget: false` keeps no group limit — attempts are still counted —
+  and leaves each queue's own budget as it is.
+- **It never overspends.** Each attempt is charged to the group *before* its
+  queue's claim, re-checking the limit on the very read its compare-and-set
+  depends on; a claim that is then lost, or a provider that was never called,
+  gives the charge back. A refund that never lands (a crash between the two
+  writes) over-counts the group by one: it can only under-spend. Eight
+  controllers in four processes racing over a limit of five summon exactly
+  five, on every backend.
+- **The name is the key.** The group's state is one entry,
+  `__win:summon-group:<name>`, stored under the namespace's reserved
+  pseudo-queue `__bunjobs` (no queue may take that name). Adding, removing or
+  reordering queues keeps the budget; renaming the group starts it afresh.
+  Every policy naming a group should give it the same `budget`: each
+  controller checks the shared counts against its own.
+- **A queue may be in two groups** through two controllers (a team budget
+  and an org budget): each attempt is charged to its controller's group.
+- **During a rolling upgrade**, a process that predates groups charges only
+  its queue, so the group's budget can be exceeded by the old processes'
+  attempts until every process runs the new version. Set the queues' own
+  `budget` explicitly for the rollout if that matters.
+
+**A shared circuit: `group.circuit`.** Off by default. With `circuit: true`
+(or `{ failures?, resetAfter? }`, defaulting to the policy's `circuit`), the
+group also keeps a circuit per provider `kind`: every failure a queue's
+circuit counts is counted there too, and every registration on any queue of
+the group resets it. Once it opens — at the threshold, or at once on an
+`auth` or `misconfigured` error — no queue of the group using that `kind` is
+summoned for until it closes, so expired credentials cost one failed call for
+the group instead of one per queue. Keyed by `kind`, a group whose
+controllers use different summoners keeps their outages apart. The group's
+count is written after each queue's own, best effort: a lost write
+under-counts, and each queue's circuit still applies. `onSummonFailed` hears
+`circuit-open` with `group` once per opening of the group's circuit.
+
+```ts
+const group = { name: "media", budget: { perHour: 60 }, circuit: true };
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: [{ queues: ["renders", "thumbs"], summoner, group }],
+});
+```
+
+`status().group` shows the group's counts, its limits, when each window
+resets, each queue's share of today's attempts and, with `group.circuit`,
+the shared circuit for this controller's kind (`{ failures, openUntil?,
+openedBy? }`). A `budget-exhausted` of
+the group's budget carries `group: "media"` on the `summon` event and on
+`onSummonFailed`'s argument, and every attempt of a grouped controller names
+its group on its events. `reset({ group: true })` closes the group's circuit
+for the controller's kind; `reset({ group: true, budget: true })` also clears
+the group's counts (and the queue's own); `reset({ budget: true })` alone
+leaves the group alone.
+
 ### Summon policy
 
 | Option | Default | Meaning |
@@ -3801,13 +3902,14 @@ so a unit loads only the code of the queue it serves.
 | `cooldown` | `10_000` | The least time between two attempts. |
 | `backoff` | `30_000` to `900_000` | The wait after a failed or lost attempt, doubling. |
 | `circuit` | `5` failures, `900_000` | When to stop, and for how long; half-open once it closes (see above). |
-| `budget` | `30`/hour, `300`/day | Attempts per queue, or `false` for no limit (attempts are still counted and shown). A hit never fails a job. |
+| `budget` | `30`/hour, `300`/day; off in a group with a budget | Attempts per queue, or `false` for no limit (attempts are still counted and shown). A hit never fails a job. |
 | `maxLifetime` | `3_600_000` | Passed to the worker as `--bun-jobs-summon-max-lifetime-ms`. |
 | `servedBy` | `"any-worker"` | Or `"summoned-only"`. Paused and parked workers never serve. |
 | `scaleDown` | `300_000` | Scale style: how long nothing is outstanding before the count goes to 0. |
 | `summonTimeout` | `30_000` | How long one summoner call may take; its `signal` aborts then. Also how long an attempt waits for a provider whose config validates asynchronously (`ready`), and how long `close()` waits for `summon` events still publishing. |
 | `env` | `{}` | Static environment for every request. Never identity. |
 | `fromSummoned` | `false` | Whether the controller runs in a summoned process or runner child. |
+| `group` | none | `{ name, budget?, circuit? }`: share one budget (and, with `circuit`, a circuit per provider kind) with every controller naming the group ([see above](#one-budget-for-several-queues-group)). With a group budget, `budget` defaults to off. |
 | `onSummonFailed` | none | Called, never awaited, for `failed`, `lost`, `unavailable`, `budget-exhausted` and each `circuit-open` (see above). |
 
 **The budget's counts live in the queue's shared state, not in the policy.**
@@ -5490,7 +5592,7 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-`providers`, `summonResetBudget`, `summonList`, and `analytics` beside `features` for what the analytics routes
+`providers`, `summonResetBudget`, `summonList`, `summonRemoteStatus`, and `analytics` beside `features` for what the analytics routes
 can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
@@ -5519,6 +5621,9 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/queues/:queue/summon` | `queues.read` | no |
 | POST | `/queues/:queue/summon` | `queues.summon` | yes |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | yes |
+| GET | `/summon/groups` | `queues.list` | no |
+| GET | `/summon/groups/:group` | `queues.read` | no |
+| POST | `/summon/groups/:group/reset` | `queues.summon` | yes |
 | GET | `/providers` | `providers.read` | no |
 | POST | `/providers/:id/validate` | `providers.validate` | yes |
 | GET | `/providers/:id/schema` | `providers.read` | no |
@@ -6526,6 +6631,7 @@ cannot" from "you may not":
 | `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
 | `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
+| `summonRemoteStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon`, and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under
@@ -6886,16 +6992,17 @@ export const scalerApi = createJobsApi({
 app.use(scalerApi.basePath, scalerApi.router);
 ```
 
-**Checked:** this API registers 10 routes, all `GET`: `/queues`, `/demand`,
-`/summon` (the summon controllers in its process), and per queue
+**Checked:** this API registers 12 routes, all `GET`: `/queues`, `/demand`,
+`/summon` (every summoning queue), `/summon/groups` and
+`/summon/groups/:group` (the summon groups' shared budgets), and per queue
 `/queues/:queue` with its `counts`, `counts/added`, `demand`, `limits`,
 `job-defaults` and `summon`. On the file and Redis drivers, which serve no
-`counts/added` (`features.addedByState` is false there), it registers nine.
+`counts/added` (`features.addedByState` is false there), it registers eleven.
 So it reads queue figures, settings and summon status, never a
 job, a payload, a worker or a runner; it has no docs, no socket and no
 mutation (a `POST /queues/emails/pause` is 404), and a missing or wrong token
-is 403. With `actions: ["queues.read"]` alone, `/queues`, `/demand` and
-`/summon` go too.
+is 403. With `actions: ["queues.read"]` alone, `/queues`, `/demand`, `/summon`
+and `/summon/groups` (all `queues.list`) go too.
 `authorize` is `(req, context)`, and a `BunRequest` reads a header with
 `getHeader(name)`.
 

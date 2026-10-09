@@ -36,6 +36,7 @@ function controller(
   return {
     namespace: "shop",
     queue: "emails",
+    local: true,
     kind: "ecs",
     readiness: "ready",
     inert: false,

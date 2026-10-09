@@ -77,6 +77,7 @@ import {
   tallyRewrite,
 } from "../queue/jobDefaults";
 import { assertWritableStateName } from "../queue/windows";
+import { RESERVED_QUEUE } from "../shared/keys";
 import { compareCodePoints } from "../shared/strings";
 import {
   compareCreated,
@@ -578,8 +579,20 @@ export class MemoryDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Every queue in the namespace, never the package's pseudo-queue
+   * (`RESERVED_QUEUE`): a queue-state write creates a queue here, and the
+   * state a summon group keeps there is not one.
+   */
   async listQueues(ns: string): Promise<string[]> {
-    return [...(this.#namespaces.get(ns)?.queues.keys() ?? [])];
+    return this.#queueNames(ns);
+  }
+
+  /** The names of the namespace's queues, leaving out `RESERVED_QUEUE`. */
+  #queueNames(ns: string): string[] {
+    return [...(this.#namespaces.get(ns)?.queues.keys() ?? [])].filter(
+      (name) => name !== RESERVED_QUEUE,
+    );
   }
 
   /* --- runner: locks ----------------------------------------------- */
@@ -1729,7 +1742,7 @@ export class MemoryDriver implements JobsDriver {
   ): Promise<Record<string, Record<JobState, number>>> {
     const result: Record<string, Record<JobState, number>> = {};
 
-    for (const name of this.#namespaces.get(ns)?.queues.keys() ?? []) {
+    for (const name of this.#queueNames(ns)) {
       result[name] = await this.countJobs({ ns, queue: name });
     }
 

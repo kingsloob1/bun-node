@@ -2024,6 +2024,10 @@
           "detail": {
             "type": "string",
             "description": "A short, secret-free explanation."
+          },
+          "group": {
+            "type": "string",
+            "description": "The summon group it was decided in: on every event of an attempt a controller in a group made, and on a `budget-exhausted` of the group's budget. Absent otherwise."
           }
         },
         "required": ["id", "outcome", "kind"],

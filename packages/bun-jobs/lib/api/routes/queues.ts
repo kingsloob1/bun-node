@@ -7,6 +7,8 @@ import type {
 import type { BunQueue } from "../../queue/BunQueue";
 import type { JobDefaultsUpdate } from "../../queue/jobDefaults";
 import type { JobDefaultsInfo } from "../../queue/types";
+import type { LocalGroupView } from "../../summon/status";
+import type { SummonStatus } from "../../summon/types";
 import type { JobsApiAuthorizeContext, ResolvedJobsApiConfig } from "../config";
 import type {
   AddedByStateDto,
@@ -32,6 +34,11 @@ import {
 } from "../../drivers/index";
 import { jobDefaultIssue } from "../../queue/jobDefaults";
 import { normalizeLimits } from "../../queue/limits";
+import { resetGroup } from "../../summon/group";
+import {
+  listSummonGroupNames,
+  readStoredGroupStatus,
+} from "../../summon/status";
 import { decide } from "../auth";
 import {
   JOB_DEFAULT_KEYS,
@@ -73,6 +80,9 @@ import {
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
+  SummonGroupListSchema,
+  SummonGroupResetBodySchema,
+  SummonGroupStatusSchema,
   SummonListSchema,
   SummonNowBodySchema,
   SummonResetBodySchema,
@@ -81,13 +91,20 @@ import {
 } from "../schemas/queues";
 import {
   toSummonCheckDto,
+  toSummonGroupStatusDto,
   toSummonListItemDto,
   toSummonStatusDto,
 } from "../serialize";
+import { parseSegment } from "../sources";
 import { overviewAnalytics, requestedRange, resolveRange } from "./analytics";
 import { defineRoute } from "./define";
 import { DRIVER_FEATURES, driverImplements } from "./meta";
-import { mapBounded, QueueParams, queueTarget } from "./support";
+import {
+  mapBounded,
+  QueueParams,
+  queueTarget,
+  SummonGroupParams,
+} from "./support";
 
 /** The driver methods queue limits need. */
 const LIMITS_METHODS = ["getQueueState", "setQueueState"] as const;
@@ -643,6 +660,28 @@ const SUMMON_ERRORS = [
 const SUMMON_NOTE =
   "Served for a queue whose summon controller runs in the API's process: one the `jobs` context the API was given has, from `BunJobsOptions.summon` or `jobs.summonController()`. Elsewhere 409 `SUMMON_NOT_CONFIGURED`; the API never builds one. The summon state itself (attempts in flight, failures, backoff, circuit, budget) lives in the backend, shared by every controller on the queue in any process.";
 
+/**
+ * The view of summon group `name` of a controller in it running in the API's
+ * process (the first, by build order), or `{}` when none does.
+ */
+function localGroupView(
+  services: RouteServices,
+  name: string,
+): { local?: LocalGroupView } {
+  const [first] = services.queues.summonGroupControllers(name);
+  return first === undefined ? {} : { local: first.view };
+}
+
+/** 409 `SUMMON_NOT_CONFIGURED` for a summon group nothing here can answer for. */
+function groupNotConfigured(name: string): ApiError {
+  return new ApiError(
+    "SUMMON_NOT_CONFIGURED",
+    409,
+    `Summon group "${name}" has no shared state, and no controller in it runs in this process`,
+    { context: { group: name } },
+  );
+}
+
 /** The queue routes: overview, list, detail, counts and queue-wide operations. */
 export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
   const { limits } = config;
@@ -900,30 +939,51 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "queues.list",
       mode: "jobs",
       summary:
-        "Every summon controller the API can read, with its budget usage",
-      description: `One item per summon controller running in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — on a queue the API can reach, by queue name: the namespace and queue, the summoner's kind and readiness, the last outcome, and the budget usage with its limits (absent, with \`off: true\`, while the policy turns the budget off) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A controller running in another process is not listed. An empty list, never 409, when none runs here. Reads one summon state per controller; spends nothing.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each controller is then listed only when \`authorize\` allows \`queues.read\` on its queue, asked as \`GET /queues/{queue}/summon\` asks it (one call per controller, whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
+        "Every summoning queue the API can read, with its budget usage and circuit",
+      description: `One item per summoning queue the API can reach, by queue name. A queue whose summon controller runs in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — is \`local: true\`, with its summoner's kind, readiness and whether it is inert. A queue whose controller runs in another process is read from its summon state in storage, as \`local: false\`, with the kind its last claim persisted and no readiness. Each carries the last outcome, when an open circuit closes, and the budget usage with its limits (absent, with \`off: true\`, while the budget is off; read from storage, the limits the last claim persisted) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. An empty list, never 409, when none summons. Reads the summon state of every reachable queue without a local controller (one queue-state read each); spends nothing. Remote items are advertised by \`/meta.features.summonRemoteStatus\`.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each queue is then listed only when \`authorize\` allows \`queues.read\` on it, asked as \`GET /queues/{queue}/summon\` asks it (one call per summoning queue, whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
       tags: ["Queues"],
       responses: { 200: SummonListSchema },
       handler: async ({ req, services }) => {
         const controllers = services.queues.summonControllers();
-        const visible = new Set(
-          await readableSummonQueues(
-            services,
-            req,
-            controllers.map((controller) => controller.queue),
-          ),
+        const local = new Set(
+          controllers.map((controller) => controller.queue),
         );
-        const shown = controllers.filter((controller) =>
-          visible.has(controller.queue),
+        // Every other reachable queue, read from storage: one summoning from
+        // another process has summon state; any other has none.
+        const others = (await services.queues.names()).filter(
+          (name) => !local.has(name),
         );
+        const stored = await mapBounded(
+          others,
+          async (name) => await services.queues.storedSummonStatus(name),
+        );
+        const read = new Map<
+          string,
+          () => Promise<{ status: SummonStatus; kind?: string }>
+        >();
+        for (const controller of controllers) {
+          read.set(controller.queue, async () => ({
+            status: await controller.status(),
+          }));
+        }
+        others.forEach((name, index) => {
+          const found = stored[index];
+          if (found !== undefined) {
+            read.set(name, async () => found);
+          }
+        });
+        const names = [...read.keys()].sort((a, b) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        );
+        const shown = await readableSummonQueues(services, req, names);
         const statuses = await mapBounded(
           shown,
-          async (controller) => await controller.status(),
+          async (name) => await read.get(name)!(),
         );
         return {
           body: {
-            controllers: shown.map((controller, index) =>
-              toSummonListItemDto(controller.namespace, statuses[index]!),
+            controllers: statuses.map(({ status, kind }) =>
+              toSummonListItemDto(services.config.namespace, status, kind),
             ),
           },
         };
@@ -937,20 +997,128 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary:
         "A queue's summon status: attempts in flight, failures, circuit, budget",
-      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, and the summoner — its provider, declared capabilities and secret-free facts. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\n${SUMMON_NOTE}`,
+      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one, and the summoner — its provider, declared capabilities and secret-free facts. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). 409 \`SUMMON_NOT_CONFIGURED\` only for a queue with neither a controller here nor summon state. Advertised by \`/meta.features.summonRemoteStatus\`.`,
       tags: ["Queues"],
       params: QueueParams,
       responses: { 200: SummonStatusSchema },
       errors: SUMMON_ERRORS,
       target: ({ params }) => queueTarget(params.queue),
       handler: async ({ params, services }) => {
-        const controller = await services.queues.summonController(params.queue);
+        const { status } = await services.queues.summonStatus(params.queue);
+        return { body: toSummonStatusDto(status, services.config.serialize) };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/summon/groups",
+      operationId: "listSummonGroups",
+      action: "queues.list",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "Every summon group: its shared budget usage and circuits",
+      description: `One item per summon group (\`SummonPolicy.group\`) with shared state in the namespace, by name, read from storage whether or not a controller in it runs in the API's process: the attempts counted against the group this UTC hour and day across its queues, the limits (a local controller's in the group, else the ones its last charge persisted; absent, with \`off: true\`, while the group's budget is off), when each window resets, each queue's share of today's attempts, and every provider kind's shared circuit (\`circuits\`, plus \`circuit\` for a local controller's kind). Lists the namespace's group entries, then reads each; spends nothing. Gated by \`queues.list\`, like the other lists. Advertised by \`/meta.features.summonRemoteStatus\`.`,
+      tags: ["Queues"],
+      responses: { 200: SummonGroupListSchema },
+      handler: async ({ services }) => {
+        const { driver, namespace } = services.config;
+        const names = await listSummonGroupNames(driver, namespace);
+        const now = Date.now();
+        const groups = await mapBounded(
+          names,
+          async (name) =>
+            await readStoredGroupStatus(
+              driver,
+              namespace,
+              name,
+              now,
+              localGroupView(services, name),
+            ),
+        );
         return {
-          body: toSummonStatusDto(
-            await controller.status(),
-            services.config.serialize,
-          ),
+          body: {
+            groups: groups
+              .filter((group) => group !== undefined)
+              .map((group) => toSummonGroupStatusDto(group)),
+          },
         };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/summon/groups/:group",
+      operationId: "getSummonGroup",
+      action: "queues.read",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "A summon group's shared budget usage and circuits",
+      description: `One summon group's shared state, as \`GET /summon/groups\` has each, read from storage: no controller in the group need run in the API's process. With one, its limits and its kind's circuit; a group with a local controller and no state yet answers its zero counts. 409 \`SUMMON_NOT_CONFIGURED\` for a group with neither state nor a local controller. Spends nothing. Advertised by \`/meta.features.summonRemoteStatus\`.`,
+      tags: ["Queues"],
+      params: SummonGroupParams,
+      responses: { 200: SummonGroupStatusSchema },
+      errors: ["INVALID_NAME", "SUMMON_NOT_CONFIGURED", "DRIVER_ERROR"],
+      handler: async ({ params, services }) => {
+        const name = parseSegment(params.group, "group");
+        const { driver, namespace } = services.config;
+        const group = await readStoredGroupStatus(
+          driver,
+          namespace,
+          name,
+          Date.now(),
+          localGroupView(services, name),
+        );
+        if (group === undefined) {
+          throw groupNotConfigured(name);
+        }
+        return { body: toSummonGroupStatusDto(group) };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/summon/groups/:group/reset",
+      operationId: "resetSummonGroup",
+      action: "queues.summon",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "Clear a summon group's shared circuit or budget usage",
+      description: `Resets a summon group's shared state, for every queue in it, in every process: with \`{ "circuit": true }\` its shared circuit closes and its counts clear, for every provider kind; with \`{ "budget": true }\` its attempts this UTC hour and day, and every queue's share, go to 0. \`{}\` changes nothing. Answers the group's status after it. Needs a controller in the group running in the API's process — the same rule as resetting a queue — or 409 \`SUMMON_NOT_CONFIGURED\`; 409 \`SUMMON_MARKER_CONTENDED\` when other controllers won every write it tried. Each queue's own state is untouched: \`POST /queues/{queue}/summon/reset\` resets that.\n\n\`queues.summon\`, like "summon now": opt-in, and removed by \`readOnly\`.`,
+      tags: ["Queues"],
+      params: SummonGroupParams,
+      body: SummonGroupResetBodySchema,
+      bodyOptional: true,
+      responses: { 200: SummonGroupStatusSchema },
+      errors: [
+        "INVALID_NAME",
+        "SUMMON_NOT_CONFIGURED",
+        "SUMMON_MARKER_CONTENDED",
+        "DRIVER_ERROR",
+      ],
+      handler: async ({ params, body, services }) => {
+        const name = parseSegment(params.group, "group");
+        const view = localGroupView(services, name);
+        if (view.local === undefined) {
+          throw groupNotConfigured(name);
+        }
+        const { driver, namespace } = services.config;
+        const landed = await resetGroup(driver, namespace, name, {
+          budget: body.budget === true,
+          ...(body.circuit === true ? { circuit: true as const } : {}),
+        });
+        if (!landed) {
+          throw new ApiError(
+            "SUMMON_MARKER_CONTENDED",
+            409,
+            `Could not reset summon group "${name}": other controllers kept writing it; try again`,
+            { context: { group: name } },
+          );
+        }
+        const group = await readStoredGroupStatus(
+          driver,
+          namespace,
+          name,
+          Date.now(),
+          view,
+        );
+        return { body: toSummonGroupStatusDto(group!) };
       },
     }),
     defineRoute({

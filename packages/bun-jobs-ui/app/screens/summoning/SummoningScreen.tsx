@@ -105,7 +105,12 @@ interface ControllerRowProps {
 
 /** One controller. */
 function ControllerRow({ item }: ControllerRowProps) {
-  const readiness = providerReadiness(item.readiness);
+  // Absent for a queue read from storage (`local: false`): its controller,
+  // and so its summoner, runs in another process.
+  const readiness =
+    item.readiness === undefined
+      ? undefined
+      : providerReadiness(item.readiness);
   const last =
     item.last === undefined ? undefined : summonOutcome(item.last.outcome);
   return (
@@ -122,13 +127,22 @@ function ControllerRow({ item }: ControllerRowProps) {
         <code>{displayText(item.kind)}</code>
       </td>
       <td>
-        <Badge
-          tone={readiness.tone}
-          title={readiness.hint}
-          testId="summoning-readiness"
-        >
-          {readiness.label}
-        </Badge>
+        {readiness === undefined ? (
+          <span
+            className="muted"
+            title="Its controller runs in another process"
+          >
+            Elsewhere
+          </span>
+        ) : (
+          <Badge
+            tone={readiness.tone}
+            title={readiness.hint}
+            testId="summoning-readiness"
+          >
+            {readiness.label}
+          </Badge>
+        )}
         {item.inert && (
           <>
             {" "}

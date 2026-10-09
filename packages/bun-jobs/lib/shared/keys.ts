@@ -28,8 +28,22 @@ const SEGMENT_PATTERN = /^[\w.-]+$/;
 const MAX_SEGMENT_LENGTH = 200;
 
 /**
+ * The package's own pseudo-queue: the queue ref, `{ ns, queue: "__bunjobs" }`,
+ * that state belonging to no one queue is stored under — a summon group's
+ * shared budget, for one (`__win:summon-group:<name>`). Queue state is the
+ * only compare-and-set the driver contract has, so namespace-wide state that
+ * needs one lives on a queue; this one is never ensured, never holds a job,
+ * and `listQueues` never names it.
+ *
+ * **Reserved:** {@link assertSegment} refuses it, so no queue, worker or
+ * runner can be built on it, and nothing a caller names can collide with it.
+ */
+export const RESERVED_QUEUE = "__bunjobs";
+
+/**
  * Validates one key segment (a queue name, a runner id) and returns it.
- * Throws {@link ConfigError} with the offending value when it is unusable.
+ * Throws {@link ConfigError} with the offending value when it is unusable,
+ * and for {@link RESERVED_QUEUE}, the package's own pseudo-queue.
  */
 export function assertSegment(value: string, what: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -52,6 +66,13 @@ export function assertSegment(value: string, what: string): string {
 
   if (value === "." || value === "..") {
     throw new ConfigError(`${what} may not be "." or ".."`, { value });
+  }
+
+  if (value === RESERVED_QUEUE) {
+    throw new ConfigError(
+      `${what} may not be "${RESERVED_QUEUE}": bun-jobs reserves that name for its own state`,
+      { value, reserved: RESERVED_QUEUE },
+    );
   }
 
   return value;
