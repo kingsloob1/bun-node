@@ -2525,7 +2525,7 @@ await runSummoned(workers, { idleFor: 30_000 });
   who builds whole workers inside threads must pass `summon` in `workerData`
   and cannot use `runSummoned`.
 
-Example: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts).
+Examples: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts); for a unit serving several queues, [`02-queues/summoned-unit.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-unit.ts), with [`02-queues/helpers/summoned-unit-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-unit-entry.ts).
 
 ## Who ran a job: worker attribution
 
