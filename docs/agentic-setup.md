@@ -253,7 +253,7 @@ short:
   `06-jobs-ui/mount.ts` serves the UI). For bun-jobs, set
   `EXAMPLE_DRIVER` **and** the five `EXAMPLE_*_URL`s (from
   `bun scripts/setup-databases.ts --dry-run`); a URL alone runs on memory, and
-  a run without URLs reads 77 of 80 because three examples sit out.
+  a run without URLs is three short, because three examples sit out.
 - **Quote what ran, not what was green.** "78 passed, 3 skipped" is the
   result; "examples green" is not.
 - **Negative controls.** A new check is shown to fail: on the base before the
