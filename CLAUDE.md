@@ -218,11 +218,13 @@ looks like a MySQL one.
 **A sweep needs the URLs as well as the driver, on every backend including
 `memory`.** Three examples name a server of their own whatever `EXAMPLE_DRIVER`
 says — `08-drivers/postgres-and-mysql.ts`, `08-drivers/redis.ts` and
-`08-drivers/mongodb.ts` — so with none exported a run reads **77 of 80**
-rather than 80 of 80. Each says which variable it wants, so nothing is hidden;
-the trap is that the count is stable across runs *because* the same three sit
-out, and a stable count reads like coverage. Export all five and the sweep is
-80 of 80 on each of the eight backends. `bun scripts/setup-databases.ts
+`08-drivers/mongodb.ts` — so with none exported **those three sit out** and
+the run reads three short of the total. Each says which variable it wants, so
+nothing is hidden; the trap is that the count is stable across runs *because*
+the same three sit out, and a stable count reads like coverage. One more sits
+out partly: `10-options/driver-options.ts` covers the MongoDB options only with
+`EXAMPLE_MONGODB_URL` set, and passes either way. Export all five
+and every example runs on each of the eight backends. `bun scripts/setup-databases.ts
 --dry-run` prints the URLs, which is where to take them from rather than
 writing them out: **MariaDB is 3306 and MySQL 3307**, the reverse of the
 obvious guess, because the two conflict on 3306 so MySQL runs as a container
