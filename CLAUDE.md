@@ -63,14 +63,23 @@ bun run test               # tests, in parallel — must all pass
 ```
 
 **Tests run in parallel.** Each test suite's `test` script is
-`bun test --parallel=16 --timings=bun-timings.json` — sixteen worker
-processes, the slowest files started first from the suite's committed
-`bun-timings.json` — except bun-jobs, which runs 4 (below). The heavy-run
-wrapper now decides how many heavy jobs share the machine, so a suite no
+`bun test --parallel --timings=bun-timings.json` — one worker process per
+CPU core of the host (Bun's default for a bare `--parallel`, on 1.4.3), the slowest
+files started first from the suite's committed `bun-timings.json` — except
+bun-jobs, which runs 4 (below). The count follows the machine, so the same
+script runs 16 workers on this 16-core host, 4 on a 4-core laptop and 32 on
+a 32-core box (the user's decision, 2026-10-09: development moves between
+devices). To pin one run, add the count: `bun run test --parallel=8` — a
+later `--parallel=N` wins over the script's bare one. The heavy-run
+wrapper decides how many heavy jobs share the machine, so a suite no
 longer has to hold back for other sessions' runs (the user's decision,
-2026-10-07). Measured serial against `bun run test`: bun-common 7.2 s →
-3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui 136 s → 22–46 s at 16 workers,
-bun-jobs with all five database URLs about 24 min → 458–498 s at its 4.
+2026-10-07). Measured serial against `bun run test` on this 16-core host:
+bun-common 7.2 s → 3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui 136 s →
+22–46 s at 16 workers, bun-jobs with all five database URLs about 24 min →
+458–498 s at its 4. Every figure here was measured at 16 workers or fewer;
+a bigger host runs more, untested, and each worker of a database-backed
+suite holds its own connections (about 180 per server at 16, against the
+`max_connections` `setup-databases.ts` sets, below).
 The flags are in the scripts because `bunfig.toml`'s `[test]` silently ignores
 `parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2, the
 floor. So plain `bun test` is still the one-process run, as is
@@ -95,10 +104,14 @@ floor. So plain `bun test` is still the one-process run, as is
   seeds); 4 workers failed 0, 0 and 1 in 458–498 s. The failures vary by
   run — the postgres and mariadb event contracts, `countDemand`, job
   attribution, job-defaults rewrites, a cross-process file test — so they
-  are contention, not a bug in one test. It moves to 16 once those tests
-  are load-proofed and a three-seed re-measure is clean. (Earlier, on a
+  are contention, not a bug in one test. It moves to the bare `--parallel`
+  (one worker per core) once those tests are load-proofed and a three-seed
+  re-measure at 16 is clean — and with a cap, unlike the other suites
+  (`--parallel=16`, or a raised `max_connections`): at about 11 connections
+  per worker per server, a 64-core host would open about 720 against
+  Postgres's 700. (Earlier, on a
   shared machine: 4 workers failed none in 612–624 s; 16 failed 5–16.)
-- **bun-jobs-ui runs 16 workers**: measured 2026-10-07 under the wrapper,
+- **bun-jobs-ui runs one worker per core** (16 here): measured 2026-10-07 under the wrapper,
   three runs, one beside a second heavy job (load peaking at 51): 1716 of
   1716 each time, in 22–46 s. Its earlier cap at 4 came from several
   unwrapped suites running at once (load 24–88), which the wrapper now
