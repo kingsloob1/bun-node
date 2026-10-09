@@ -2493,9 +2493,18 @@ queue in `summon.queues` and hand them over together:
 
 ```ts
 const summon = summonedFromArgs();
-const handlers = { renders: render, thumbs: thumb, previews: preview };
-const workers = (summon?.queues ?? ["renders"]).map((queue) =>
-  jobs.worker(queue, handlers[queue], { summon }));
+const handlers: Record<string, JobProcessor> = {
+  renders: render,
+  thumbs: thumb,
+  previews: preview,
+};
+const workers = (summon?.queues ?? ["renders"]).map((queue) => {
+  const handler = handlers[queue];
+  if (handler === undefined) {
+    throw new Error(`no handler for queue ${queue}`);
+  }
+  return jobs.worker(queue, handler, { summon });
+});
 await runSummoned(workers, { idleFor: 30_000 });
 ```
 
@@ -2507,17 +2516,23 @@ await runSummoned(workers, { idleFor: 30_000 });
   A worker on a queue the arguments do not name only logs a `warn`.
 - Also refused: an empty set, two workers on one queue, and workers given
   summon options from different attempts.
-- **One idle clock**: the unit stops only once every queue has been idle for
-  `idleFor`, and exits `"parked"` only once every worker is parked; one parked
-  worker among running ones runs on.
+- **One idle clock**: the unit stops once every worker has been idle or
+  parked for `idleFor`. A parked worker's queue counts as idle whatever work
+  waits on it, so one parked worker never keeps the unit alive on its own:
+  the unit exits `"idle"` once the others are idle, and `"parked"` only when
+  every worker is parked. A worker still holding a job is not idle, parked
+  or not.
 - **One close**: the workers close concurrently under one budget, sized for
   the target whose close takes longest; each worker writes the unit's reason
   on its own claim, under its own queue. A stop while some workers are still
-  starting forces only those, which have claimed nothing; the ready ones
+  starting forces only those, at once, before the exit marks are written, so
+  none of them becomes ready and claims a job in the meantime; the ready ones
   close by the rule, so a job they hold is not abandoned.
-- One worker's `run()` failing closes them all, with code `1`. An owner
-  closing one worker leaves the others running, still on the idle clock; the
-  unit ends with `"closed"` if its owner closes every worker.
+- One worker's `run()` failing closes them all, with reason `"error"` and
+  code `1`: the failed worker and any still starting with `force`, the ready
+  ones by the rule, so a job one holds can finish within the budget. An
+  owner closing one worker leaves the others running, still on the idle
+  clock; the unit ends with `"closed"` if its owner closes every worker.
 - **Build the workers in the main thread.** Bun gives a `Worker` thread an
   empty `argv`, so `summonedFromArgs()` answers `undefined` there, and
   `runSummoned` owns the process's signals. A worker's `target` option runs

@@ -67,6 +67,8 @@ interface Line {
   fields?: Record<string, unknown>;
   /** The queue, for a worker's line. */
   queue?: string;
+  /** A `waiting` line's count of the queue's waiting jobs. */
+  count?: number;
 }
 
 /** A running fixture. */
@@ -420,6 +422,53 @@ describe("runSummoned(workers[]), in a real process", () => {
     ).toBe(true);
   });
 
+  it("a failed start lets a ready worker finish its job in flight, and still exits 1 with reason error", async () => {
+    const fixture = start(
+      {
+        FAIL_QUEUE: "thumbs",
+        // Late enough that renders is ready and working when thumbs fails.
+        FAIL_AFTER_MS: "1000",
+        PRE_JOBS: JSON.stringify({ renders: 1 }),
+        JOB_MS: "2000",
+        OPTIONS: QUICK({ idleFor: 60_000 }),
+      },
+      argsFor("sm_fail_ready", testNamespace("several-fail-ready"), [
+        "renders",
+        "thumbs",
+      ]),
+    );
+    const { code } = await exitOf(fixture);
+    expect(code).toBe(1);
+    const failed = fixture.lines.find(
+      (line) =>
+        line.event === "log" &&
+        line.message === "Summoned worker could not start",
+    );
+    expect(failed?.fields).toMatchObject({ queue: "thumbs" });
+    // renders had its job in hand when thumbs failed.
+    const processing = fixture.lines.find(
+      (line) => line.event === "processing" && line.queue === "renders",
+    );
+    expect(processing!.at).toBeLessThan(failed!.at);
+    // Its job finished rather than being abandoned to the stall sweep...
+    expect(stopped(fixture)).toMatchObject({
+      reason: "error",
+      code: 1,
+      completed: 1,
+      failed: 0,
+      queues: {
+        renders: { completed: 1, failed: 0 },
+        thumbs: { completed: 0, failed: 0 },
+      },
+    });
+    // ...because only the failed worker was forced, and the ready one closed
+    // by the rule: graceful, with no budget to cut it short.
+    expect(closingOf(fixture)).toMatchObject({
+      message: "Summoned worker closing gracefully after a failed start",
+      fields: { reason: "error", force: false, startFailed: ["thumbs"] },
+    });
+  });
+
   it("an owner closing one worker leaves the others running; the unit ends once every worker has closed", async () => {
     const fixture = start(
       {
@@ -530,6 +579,53 @@ describe("runSummoned(workers[]), in a real process", () => {
     all.proc.kill("SIGUSR1");
     expect((await exitOf(all)).code).toBe(0);
     expect(stopped(all).reason).toBe("parked");
+  });
+
+  it("exits idle once the other queues are idle, however much work waits for a parked worker", async () => {
+    const idleFor = 1_000;
+    const fixture = start(
+      {
+        PARK_QUEUE: "renders",
+        PARK_ADD: "1",
+        REPORT_WAITING: "1",
+        OPTIONS: QUICK({ idleFor, exit: false }),
+      },
+      argsFor("sm_park_backlog", testNamespace("several-park-backlog"), [
+        "renders",
+        "thumbs",
+      ]),
+    );
+    await fixture.waitFor(
+      (line) => line.event === "ready" && line.queue === "renders",
+    );
+    await fixture.waitFor(
+      (line) => line.event === "ready" && line.queue === "thumbs",
+    );
+    fixture.proc.kill("SIGUSR1");
+    // renders is parked, with a job waiting that nothing in the unit takes.
+    const backlog = await fixture.waitFor(
+      (line) => line.event === "park-backlog" && line.queue === "renders",
+    );
+    const { code, at } = await exitOf(fixture, idleFor + 50 + SLACK);
+    expect(code).toBe(0);
+    // Decided with the backlog there, not before it arrived.
+    expect(closingOf(fixture)!.at).toBeGreaterThan(backlog.at);
+    expect(at - backlog.at).toBeLessThan(idleFor + 50 + SLACK);
+    // Idle, not parked: thumbs was never parked.
+    expect(stopped(fixture)).toMatchObject({
+      reason: "idle",
+      code: 0,
+      queues: {
+        renders: { completed: 0, failed: 0 },
+        thumbs: { completed: 0, failed: 0 },
+      },
+    });
+    // The job is left for whatever runs renders next.
+    expect(
+      fixture.lines.find(
+        (line) => line.event === "waiting" && line.queue === "renders",
+      ),
+    ).toMatchObject({ count: 1 });
   });
 
   it("warns about a worker on a queue the arguments do not name, and runs it", async () => {
@@ -789,6 +885,63 @@ describe("runSummoned(workers[]): the runner's pitfalls across workers", () => {
     ).toBe(false);
     // renders' processor file never ran: no attempt child was started.
     expect(await Bun.file(file).exists()).toBe(false);
+  });
+
+  it("a stop while one worker is still connecting forces it before the exit marks are waited for: it never becomes ready or claims", async () => {
+    const fixture = start(
+      {
+        // thumbs is ready, and writing its exit mark takes 900 ms...
+        SLOW_STATE_QUEUE: "thumbs",
+        SLOW_STATE_MS: "900",
+        // ...while renders' connect completes 400 ms in, with a job waiting.
+        SLOW_CONNECT_QUEUE: "renders",
+        SLOW_CONNECT_MS: "400",
+        PRE_JOBS: JSON.stringify({ renders: 1 }),
+        REPORT_WAITING: "1",
+        OPTIONS: QUICK({ idleFor: 60_000, grace: 10_000, exit: false }),
+      },
+      argsFor("sm_early_mark", testNamespace("several-early-mark"), QUEUES),
+    );
+    await fixture.waitFor(
+      (line) => line.event === "ready" && line.queue === "thumbs",
+    );
+    const sent = Date.now();
+    fixture.proc.kill("SIGTERM");
+    const { code } = await exitOf(fixture);
+
+    expect(code, await fixture.stderr).toBe(0);
+    expect(closingOf(fixture)).toMatchObject({
+      message: "Summoned worker closing gracefully",
+      fields: { reason: "signal", force: false, starting: ["renders"] },
+    });
+    // The window was there: thumbs' close waited out the slow mark, well
+    // past renders' connect.
+    const thumbsClosed = fixture.lines.find(
+      (line) => line.event === "closed" && line.queue === "thumbs",
+    );
+    expect(thumbsClosed!.at - sent).toBeGreaterThanOrEqual(700);
+    // renders never became ready, and its handler never ran.
+    expect(
+      fixture.lines.some(
+        (line) =>
+          (line.event === "ready" || line.event === "processing") &&
+          line.queue === "renders",
+      ),
+    ).toBe(false);
+    expect(stopped(fixture)).toMatchObject({
+      reason: "signal",
+      code: 0,
+      queues: {
+        renders: { completed: 0, failed: 0 },
+        thumbs: { completed: 0, failed: 0 },
+      },
+    });
+    // Its job is still waiting, for the next unit.
+    expect(
+      fixture.lines.find(
+        (line) => line.event === "waiting" && line.queue === "renders",
+      ),
+    ).toMatchObject({ count: 1 });
   });
 
   it("a stop before any worker is ready forces them all at once", async () => {

@@ -566,6 +566,11 @@ interface SummonedMember {
   /** Whether it has emitted `ready`. */
   ready: boolean;
   /**
+   * Whether its `run()` failed during startup. It never became ready, so the
+   * close forces it, as it does a worker still starting.
+   */
+  startFailed: boolean;
+  /**
    * Whether it left the unit without a close of ours: its owner began
    * closing it, or it was closed before it was handed over. Such a worker
    * is no longer watched; the unit runs on for the others.
@@ -598,7 +603,7 @@ class SummonedRun {
   /** The signal handlers installed, to remove exactly those. */
   readonly #signalHandlers = new Map<NodeJS.Signals, () => void>();
 
-  /** Whether every worker has emitted `ready` (or one failed to start). */
+  /** Whether every worker still in the unit has emitted `ready`. */
   #ready = false;
   /** Set once closing has started: the workers are closed at most once. */
   #closing: SummonedStop | undefined;
@@ -645,7 +650,11 @@ class SummonedRun {
   #closeStartedAt: number | undefined;
   /** Whether the close in progress is forced. */
   #closingForced = false;
-  /** Whether a worker's `run()` failed, so the close is forced whatever the reason. */
+  /**
+   * Whether a worker's `run()` failed. The unit then closes with reason
+   * `"error"` and code `1`: the failed worker and any still starting are
+   * forced, and the ready ones close by the close rule.
+   */
   #startFailed = false;
   /** The warning for a close that outlives its budget, without a backstop. */
   #overrunWarning: ReturnType<typeof setTimeout> | undefined;
@@ -674,6 +683,7 @@ class SummonedRun {
       completed: 0,
       failed: 0,
       ready: false,
+      startFailed: false,
       gone: false,
       unstarted: false,
       ownerClosed: false,
@@ -725,11 +735,14 @@ class SummonedRun {
         (error: unknown) => {
           // A failure after a close of ours began is the worker's to swallow:
           // it resolves `run()` then. Reaching here, nothing had stopped it.
+          // The unit is not marked ready: the workers that did start, and may
+          // hold jobs, close by the rule, while this one and any still
+          // starting are forced (`#beginClose`).
           this.#logger.error("Summoned worker could not start", {
             error,
             ...this.#queueField(member),
           });
-          this.#ready = true;
+          member.startFailed = true;
           this.#startFailed = true;
           this.#beginClose({ reason: "error" });
         },
@@ -1122,12 +1135,17 @@ class SummonedRun {
 
   /**
    * One check over the unit. Parked means every worker still in the unit is
-   * parked; idle means every one's queue is idle: with several workers the
-   * unit stops only when none of its queues has work.
+   * parked; idle means every one is idle or parked: with several workers the
+   * unit stops only when none of its running workers' queues has work. A
+   * parked worker's queue counts as idle whatever it holds — the unit would
+   * otherwise run, and cost, for work nothing in it will take — but a
+   * worker still holding a job is not idle, parked or not.
    */
   async #checkOnce(): Promise<void> {
     const { mode, idleFor } = this.#options;
     const active = this.#active();
+    const parked = (member: SummonedMember): boolean =>
+      member.worker.state === "stopped";
 
     if (this.#options.deadlineIsLive) {
       this.#deadlineAt = this.#options.readDeadline();
@@ -1137,11 +1155,9 @@ class SummonedRun {
     const now = Date.now();
 
     // Parked: an operator stopped every worker. It serves nothing and costs
-    // money. One parked worker among running ones runs on.
-    if (
-      active.length > 0 &&
-      active.every((member) => member.worker.state === "stopped")
-    ) {
+    // money. One parked worker among running ones runs on while the others
+    // have work, and its own queue does not keep the unit alive.
+    if (active.length > 0 && active.every(parked)) {
       this.#parkedSince ??= now;
       this.#idleSince = undefined;
       if (mode !== "until-stopped" && now - this.#parkedSince >= idleFor) {
@@ -1160,9 +1176,10 @@ class SummonedRun {
       return;
     }
 
-    // One reading per queue, together.
+    // One reading per running worker's queue, together.
+    const running = active.filter((member) => !parked(member));
     const demands = await Promise.all(
-      active.map(
+      running.map(
         async ({ worker }) =>
           await readDemand(worker.driver, worker.ref, { now, cap: 1 }),
       ),
@@ -1170,7 +1187,7 @@ class SummonedRun {
     if (this.#closing !== undefined || this.#done) {
       return;
     }
-    const idle = active.every(({ worker }, index) => {
+    const idle = running.every(({ worker }, index) => {
       const demand = demands[index]!;
       // The count includes this worker's own record wherever it keeps one.
       // Its first report is not awaited, so the first check may not see it
@@ -1247,38 +1264,42 @@ class SummonedRun {
       ? 0
       : Math.min(EXIT_MARK_WAIT, Math.max(0, total / 4));
     const budget = total - markWait;
-    // Before `ready` a worker has claimed nothing, and a graceful close would
+    // Before `ready` a worker has claimed no job, and a graceful close would
     // first wait out the connect it interrupts: a forced one ends the
     // startup at once, and the worker resolves `run()` for it. That is
     // decided per worker: in a unit stopped while some workers are still
-    // starting, those are forced and the ready ones, which may hold jobs,
-    // close by the rule — forcing them would abandon their jobs for nothing.
+    // starting — or after one failed to start — those are forced and the
+    // ready ones, which may hold jobs, close by the rule; forcing them would
+    // abandon their jobs for nothing.
     const starting = this.#ready
       ? []
       : this.#active().filter((member) => !member.ready);
     const early =
-      !this.#ready && this.#active().every((member) => !member.ready);
-    const decision: SummonCloseDecision =
-      this.#startFailed || early
-        ? {
-            force: true,
-            budget,
-            targetClose: summonTargetClose(this.#targetKind, true),
-          }
-        : (this.#options.probe?.closeRule ?? summonCloseRule)({
-            budget,
-            kind: this.#targetKind,
-            tailReserve,
-          });
+      starting.length > 0 && starting.length === this.#active().length;
+    const decision: SummonCloseDecision = early
+      ? {
+          force: true,
+          budget,
+          targetClose: summonTargetClose(this.#targetKind, true),
+        }
+      : (this.#options.probe?.closeRule ?? summonCloseRule)({
+          budget,
+          kind: this.#targetKind,
+          tailReserve,
+        });
 
     if (until !== undefined) {
       this.#armLimit(until, reason);
     }
     this.#closingForced = decision.force;
 
+    const failed = starting.filter((member) => member.startFailed);
+    const connecting = starting.filter((member) => !member.startFailed);
     this.#logger.info(
       this.#startFailed
-        ? "Summoned worker closing with force after a failed start"
+        ? decision.force
+          ? "Summoned worker closing with force after a failed start"
+          : "Summoned worker closing gracefully after a failed start"
         : early
           ? "Summoned worker closing with force before it was ready: nothing claimed yet"
           : decision.force
@@ -1300,9 +1321,12 @@ class SummonedRun {
           : {
               queues: this.#members.map(({ worker }) => worker.ref.queue),
             }),
-        ...(starting.length === 0 || early || decision.force
+        ...(connecting.length === 0 || early || decision.force
           ? {}
-          : { starting: starting.map(({ worker }) => worker.ref.queue) }),
+          : { starting: connecting.map(({ worker }) => worker.ref.queue) }),
+        ...(failed.length === 0 || early || decision.force
+          ? {}
+          : { startFailed: failed.map(({ worker }) => worker.ref.queue) }),
       },
     );
 
@@ -1311,22 +1335,38 @@ class SummonedRun {
       : decision.timeout === undefined
         ? undefined
         : { timeout: decision.timeout };
+    const closeOne = async (
+      /** The worker to close. */
+      member: SummonedMember,
+      /** Its close's options. */
+      closeOptions: { force?: boolean; timeout?: number } | undefined,
+    ): Promise<void> => {
+      try {
+        await member.worker.close(closeOptions);
+      } catch (error) {
+        this.#logger.error("Summoned worker failed to close cleanly", {
+          reason,
+          error,
+          ...this.#queueField(member),
+        });
+      }
+    };
+    // The workers still starting are forced now, before the exit marks are
+    // waited for: `close()` marks a worker closing synchronously, so one whose
+    // connect completes during that wait abandons its startup rather than
+    // becoming ready, claiming a job and only then being forced (#238). The
+    // mark is still written on any summon claim one of them won, over the
+    // `closed` its own close writes.
+    const forced = new Map(
+      starting.map((member) => [member, closeOne(member, { force: true })]),
+    );
     const close = async (): Promise<void> => {
       await this.#markExit(stop, markWait);
       await Promise.all(
-        this.#members.map(async (member) => {
-          try {
-            await member.worker.close(
-              starting.includes(member) ? { force: true } : options,
-            );
-          } catch (error) {
-            this.#logger.error("Summoned worker failed to close cleanly", {
-              reason,
-              error,
-              ...this.#queueField(member),
-            });
-          }
-        }),
+        this.#members.map(
+          async (member) =>
+            await (forced.get(member) ?? closeOne(member, options)),
+        ),
       );
     };
     void close().then(() => this.#finish(stop));
@@ -1532,9 +1572,17 @@ function checkUnit(
  *
  * ```ts
  * const summon = summonedFromArgs();
- * const handlers = { renders: render, thumbs: thumb };
- * const workers = (summon?.queues ?? ["renders"]).map((queue) =>
- *   jobs.worker(queue, handlers[queue], { summon }));
+ * const handlers: Record<string, JobProcessor> = {
+ *   renders: render,
+ *   thumbs: thumb,
+ * };
+ * const workers = (summon?.queues ?? ["renders"]).map((queue) => {
+ *   const handler = handlers[queue];
+ *   if (handler === undefined) {
+ *     throw new Error(`no handler for queue ${queue}`);
+ *   }
+ *   return jobs.worker(queue, handler, { summon });
+ * });
  * await runSummoned(workers, { idleFor: 30_000 });
  * ```
  *
@@ -1544,7 +1592,9 @@ function checkUnit(
  *   arrives before a worker is ready closes that worker at once, with
  *   `force`: it has claimed nothing, and the close ends its startup, however
  *   long the connect would have taken. In a unit stopped while only some of
- *   its workers are ready, the ready ones close by the close rule below.
+ *   its workers are ready, the ones still starting are forced at once — before
+ *   the exit marks are written, so none becomes ready and claims a job in the
+ *   meantime — and the ready ones close by the close rule below.
  * - **The close rule.** Once closing starts, the budget `A` is the time left
  *   until the hard backstop: `grace − 250` after a signal, `deadline − 250`
  *   otherwise, none for an idle stop with no deadline. The close is graceful,
@@ -1569,12 +1619,16 @@ function checkUnit(
  * - **A parked unit exits** (`"parked"`) after `idleFor`, unless the mode is
  *   `"until-stopped"`, whose platform would restart it. With several
  *   workers, only once every one is parked.
- * - **Several workers.** The unit is idle only when every queue is; one
- *   worker's `run()` failing closes them all, with code `1`; an owner
- *   closing one worker leaves the others running, still on the idle clock,
- *   and the unit ends (`"closed"`) if its owner closes every one; each
- *   worker marks its own claim; and the result adds `queues`, each queue's
- *   totals.
+ * - **Several workers.** The unit is idle only when every worker is idle or
+ *   parked: a parked worker's queue counts as idle whatever work waits on
+ *   it, so the unit exits `"idle"` once the others are, and `"parked"` only
+ *   when every worker is parked. One worker's `run()` failing closes them
+ *   all with reason `"error"` and code `1`: the failed one and any still
+ *   starting with `force`, the ready ones by the close rule, so a job one
+ *   holds can finish within the budget. An owner closing one worker leaves
+ *   the others running, still on the idle clock, and the unit ends
+ *   (`"closed"`) if its owner closes every one; each worker marks its own
+ *   claim; and the result adds `queues`, each queue's totals.
  * - **Every queue the summon names needs a worker.** In a summoned process,
  *   a queue in `summonedFromArgs().queues` with no worker is refused before
  *   anything runs, so the attempt is lost fast rather than registering on
