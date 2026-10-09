@@ -2247,6 +2247,8 @@ last value; a group must be a key segment like a queue name, or
 `summonedFromArgs()` in the main thread:** Bun gives a `Worker` thread an
 empty `argv`, so there it answers `undefined`. A worker's `target` option
 runs its jobs in threads and leaves the worker itself in the main thread.
+Such a unit builds one worker per queue and runs them together with
+[`runSummoned(workers)`](#summoned-workers-several-queues).
 
 <a id="summon-arguments-not-environment"></a>
 **Arguments, not environment variables, by design.** An environment leaks to
@@ -2397,6 +2399,7 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 | `ranForMs` | How long it ran. |
 | `completed`, `failed` | Jobs it completed, attempts it failed. |
 | `code` | `0` for every reason but `"error"`, which is `1`. |
+| `queues` | Each queue's own `{ completed, failed }`, keyed by queue, when it ran a set of workers (below). Absent for `runSummoned(worker)`. |
 
 **Exit 0 is deliberate.** Several platforms restart a non-zero exit (Fly and
 Railway by default, ACI even under `Never`), so only a `run()` that failed —
@@ -2481,6 +2484,46 @@ handler. The one exception is a stop before the worker was ready: it resolves
 at once, while the driver's connect is still in flight, and the worker closes
 that connection only when it completes — which on Lambda can be after the
 invocation has returned, into the freeze.
+
+<a id="summoned-workers-several-queues"></a>
+**One unit for several queues.** A unit summoned for several queues gets one
+`--bun-jobs-summon-queue=` per queue (see
+[the arguments](#summon-arguments-not-environment)). Build one worker per
+queue in `summon.queues` and hand them over together:
+
+```ts
+const summon = summonedFromArgs();
+const handlers = { renders: render, thumbs: thumb, previews: preview };
+const workers = (summon?.queues ?? ["renders"]).map((queue) =>
+  jobs.worker(queue, handlers[queue], { summon }));
+await runSummoned(workers, { idleFor: 30_000 });
+```
+
+- **Every queue the arguments name needs a worker.** One without is a
+  `ConfigError` before anything runs, from `runSummoned(workers)` and
+  `runSummoned(worker)` alike, so the attempt is lost fast rather than
+  serving some queues and leaving the others starving. There is no way to
+  allow it: a unit that should serve fewer queues belongs to another group.
+  A worker on a queue the arguments do not name only logs a `warn`.
+- Also refused: an empty set, two workers on one queue, and workers given
+  summon options from different attempts.
+- **One idle clock**: the unit stops only once every queue has been idle for
+  `idleFor`, and exits `"parked"` only once every worker is parked; one parked
+  worker among running ones runs on.
+- **One close**: the workers close concurrently under one budget, sized for
+  the target whose close takes longest; each worker writes the unit's reason
+  on its own claim, under its own queue. A stop while some workers are still
+  starting forces only those, which have claimed nothing; the ready ones
+  close by the rule, so a job they hold is not abandoned.
+- One worker's `run()` failing closes them all, with code `1`. An owner
+  closing one worker leaves the others running, still on the idle clock; the
+  unit ends with `"closed"` if its owner closes every worker.
+- **Build the workers in the main thread.** Bun gives a `Worker` thread an
+  empty `argv`, so `summonedFromArgs()` answers `undefined` there, and
+  `runSummoned` owns the process's signals. A worker's `target` option runs
+  its jobs in threads and leaves the worker itself in the main thread; a user
+  who builds whole workers inside threads must pass `summon` in `workerData`
+  and cannot use `runSummoned`.
 
 Example: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts).
 

@@ -452,6 +452,16 @@ export const SET_SUMMONED_MODE: unique symbol = Symbol(
   "bun-jobs: set summoned mode",
 );
 
+/**
+ * Internal: the key of the getter `runSummoned` reads a worker's `summon`
+ * option's attempt id with, before the worker has run — `summon` itself
+ * answers only once the attempt is claimed. Exported from this module alone,
+ * never from the package root.
+ */
+export const SUMMON_OPTION_ID: unique symbol = Symbol(
+  "bun-jobs: summon option id",
+);
+
 /** How often a worker reads its stored instructions when it cannot subscribe. */
 const DEFAULT_CONTROL_INTERVAL = 2_000;
 
@@ -4751,6 +4761,14 @@ export class BunQueueWorker<
    */
   get summon(): Readonly<WorkerSummonInfo> | undefined {
     return this.#summonClaim === "won" ? this.#summon : undefined;
+  }
+
+  /**
+   * Internal ({@link SUMMON_OPTION_ID}): the attempt id of the `summon`
+   * option this worker was given, claimed or not; `undefined` without one.
+   */
+  get [SUMMON_OPTION_ID](): string | undefined {
+    return this.#summon?.id;
   }
 
   /**

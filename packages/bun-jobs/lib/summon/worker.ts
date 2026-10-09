@@ -5,7 +5,7 @@ import type { Logger, LoggerLike } from "../shared/logger";
 import type { WorkerTargetKind } from "../shared/workers";
 import process from "node:process";
 import { readDemand, supportsWorkers } from "../drivers/readApis";
-import { SET_SUMMONED_MODE } from "../queue/BunQueueWorker";
+import { SET_SUMMONED_MODE, SUMMON_OPTION_ID } from "../queue/BunQueueWorker";
 import { TARGET_CLOSE_GRACE, TARGET_CLOSE_REAP } from "../queue/workerTarget";
 import { DEFAULT_CLOSE_TIMEOUT } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
@@ -14,9 +14,9 @@ import { summonedFromArgs } from "./args";
 import { markSummonClaimExit } from "./claim";
 
 /**
- * The worker half of summoning: {@link runSummoned} runs a worker until it is
- * no longer needed, handles the platform's signals, and stops it inside the
- * platform's grace.
+ * The worker half of summoning: {@link runSummoned} runs a worker — or a
+ * unit's workers, one per queue — until it is no longer needed, handles the
+ * platform's signals, and stops it inside the platform's grace.
  *
  * It uses only the worker's public surface (`run()`, `close()`, `pause()`,
  * `resume()`, `activeCount`, `state`, `summon`, its events and its driver),
@@ -132,6 +132,20 @@ export interface SummonedExit {
   failed: number;
   /** The exit code it used, or would have used in `"in-invocation"` mode. */
   code: 0 | 1;
+  /**
+   * Each queue's own totals, keyed by queue, when `runSummoned` was given a
+   * set of workers (`completed` and `failed` are then their sums). Absent
+   * for `runSummoned(worker)`, whose result is what it always was.
+   */
+  queues?: Record<
+    string,
+    {
+      /** Jobs that queue's worker completed. */
+      completed: number;
+      /** Attempts that queue's worker failed. */
+      failed: number;
+    }
+  >;
 }
 
 /**
@@ -521,15 +535,58 @@ function resolveOptions(
   };
 }
 
+/** One worker's listeners, bound to its place in the unit. */
+interface SummonedListeners {
+  /** `completed`. */
+  completed: () => void;
+  /** `failed`. */
+  failed: () => void;
+  /** `paused` and `resumed`. */
+  pausedOrResumed: () => void;
+  /** `closing`. */
+  closing: () => void;
+  /** `closed`. */
+  closed: () => void;
+  /** `ready`, once. */
+  ready: () => void;
+}
+
+/** What the unit knows of one of its workers. */
+interface SummonedMember {
+  /** The worker, through its public surface. */
+  worker: SummonedWorker;
+  /** The same worker's events. */
+  events: SummonedWorkerEvents;
+  /** Its listeners. */
+  listeners: SummonedListeners;
+  /** Jobs it completed. */
+  completed: number;
+  /** Attempts it failed. */
+  failed: number;
+  /** Whether it has emitted `ready`. */
+  ready: boolean;
+  /**
+   * Whether it left the unit without a close of ours: its owner began
+   * closing it, or it was closed before it was handed over. Such a worker
+   * is no longer watched; the unit runs on for the others.
+   */
+  gone: boolean;
+  /** Whether it was closed before it was handed over: `run()` resolved with no `ready`. */
+  unstarted: boolean;
+  /** Whether a close of its owner's has finished. */
+  ownerClosed: boolean;
+}
+
 /**
- * One summoned run: the listeners, the timers and the single close. Built
- * and started by {@link runSummoned}.
+ * One summoned run over a unit's workers — one, or one per queue: the
+ * listeners, the timers and the single close. Built and started by
+ * {@link runSummoned}.
  */
 class SummonedRun {
-  /** The worker, through its public surface. */
-  readonly #worker: SummonedWorker;
-  /** The worker's events, with argument-less listeners. */
-  readonly #events: SummonedWorkerEvents;
+  /** The unit's workers, in the order given. */
+  readonly #members: SummonedMember[];
+  /** Whether `runSummoned` was given one worker rather than a set: its result then has no `queues`. */
+  readonly #single: boolean;
   /** The resolved options. */
   readonly #options: ResolvedSummonedOptions;
   /** Where decisions are logged. */
@@ -541,21 +598,17 @@ class SummonedRun {
   /** The signal handlers installed, to remove exactly those. */
   readonly #signalHandlers = new Map<NodeJS.Signals, () => void>();
 
-  /** Jobs completed. */
-  #completed = 0;
-  /** Attempts failed. */
-  #failed = 0;
-  /** Whether the worker has emitted `ready` (or failed to start). */
+  /** Whether every worker has emitted `ready` (or one failed to start). */
   #ready = false;
-  /** Set once closing has started: `close()` is called at most once. */
+  /** Set once closing has started: the workers are closed at most once. */
   #closing: SummonedStop | undefined;
   /** Whether it has finished. */
   #done = false;
   /** Whether the close in progress is the owner's, not one of ours. */
   #ownerClose = false;
-  /** Since when the queue has been idle, epoch ms. */
+  /** Since when every queue has been idle, epoch ms. */
   #idleSince: number | undefined;
-  /** Since when the worker has been parked, epoch ms. */
+  /** Since when every worker has been parked, epoch ms. */
   #parkedSince: number | undefined;
   /** Whether a check is in progress. */
   #checking = false;
@@ -563,7 +616,11 @@ class SummonedRun {
   #deadlineAt: number | undefined;
   /** The deadline the deadline timer is armed for. */
   #deadlineArmedFor: number | undefined;
-  /** The target's kind, known from the worker's construction. */
+  /**
+   * The target kind the close is budgeted for, known from the workers'
+   * construction: the one whose close takes longest, since the workers
+   * close in parallel.
+   */
   readonly #targetKind: WorkerTargetKind;
   /** Whether a SIGINT has been received: a second one exits at once. */
   #sawSigint = false;
@@ -588,120 +645,196 @@ class SummonedRun {
   #closeStartedAt: number | undefined;
   /** Whether the close in progress is forced. */
   #closingForced = false;
-  /** Whether `run()` failed, so the close is forced whatever the reason. */
+  /** Whether a worker's `run()` failed, so the close is forced whatever the reason. */
   #startFailed = false;
   /** The warning for a close that outlives its budget, without a backstop. */
   #overrunWarning: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
-    /** The worker. */
-    worker: SummonedWorker,
-    /** The same worker's events. */
-    events: SummonedWorkerEvents,
+    /** The workers, each with its own events: one, or one per queue. */
+    workers: readonly {
+      /** The worker. */
+      worker: SummonedWorker;
+      /** The same worker's events. */
+      events: SummonedWorkerEvents;
+    }[],
+    /** Whether `runSummoned` was given one worker rather than a set. */
+    single: boolean,
     /** The resolved options. */
     options: ResolvedSummonedOptions,
   ) {
-    this.#worker = worker;
-    this.#events = events;
+    this.#single = single;
     this.#options = options;
     this.#logger = options.logger;
     this.#deadlineAt = options.readDeadline();
-    this.#targetKind = worker.target.kind;
+    this.#members = workers.map(({ worker, events }, index) => ({
+      worker,
+      events,
+      listeners: this.#listenersFor(index),
+      completed: 0,
+      failed: 0,
+      ready: false,
+      gone: false,
+      unstarted: false,
+      ownerClosed: false,
+    }));
+    this.#targetKind = workers
+      .map(({ worker }) => worker.target.kind)
+      .reduce((longest, kind) =>
+        summonTargetClose(kind, false) > summonTargetClose(longest, false)
+          ? kind
+          : longest,
+      );
   }
 
-  /** Installs everything, starts the worker, and settles with the result. */
+  /** Installs everything, starts the workers, and settles with the result. */
   async start(): Promise<SummonedExit> {
     this.#install();
     this.#armDeadline();
 
-    this.#worker.run().then(
-      () => {
-        // `run()` resolves once the claim loop stops, which a close in
-        // progress already accounts for, and so does a close of ours that
-        // ended the startup: the worker then resolves `run()` without
-        // `ready`, before that close has finished. An owner's close is seen
-        // through `closing` first and waited out through `closed`, so it
-        // lands here with `#closing` set. What is left is a worker that was
-        // closed before it was handed over: its `run()` does nothing and
-        // resolves at once, with no `ready`, `closing` or `closed`, and
-        // nothing else would ever end this.
-        if (!this.#ready && this.#closing === undefined && !this.#done) {
-          this.#closing = { reason: "closed" };
-          this.#logger.info("Summoned worker was already closed", {
-            reason: "closed",
+    for (const member of this.#members) {
+      member.worker.run().then(
+        () => {
+          // `run()` resolves once the claim loop stops, which a close in
+          // progress already accounts for, and so does a close of ours that
+          // ended the startup: the worker then resolves `run()` without
+          // `ready`, before that close has finished. An owner's close is seen
+          // through `closing` first and waited out through `closed`. What is
+          // left is a worker that was closed before it was handed over: its
+          // `run()` does nothing and resolves at once, with no `ready`,
+          // `closing` or `closed`, and nothing else would ever end it.
+          if (
+            !member.ready &&
+            !member.gone &&
+            this.#closing === undefined &&
+            !this.#done
+          ) {
+            member.gone = true;
+            member.unstarted = true;
+            if (this.#members.every((one) => one.gone)) {
+              this.#closing = { reason: "closed" };
+              this.#logger.info("Summoned worker was already closed", {
+                reason: "closed",
+              });
+              this.#finish(this.#closing);
+            } else {
+              this.#maybeReady();
+            }
+          }
+        },
+        (error: unknown) => {
+          // A failure after a close of ours began is the worker's to swallow:
+          // it resolves `run()` then. Reaching here, nothing had stopped it.
+          this.#logger.error("Summoned worker could not start", {
+            error,
+            ...this.#queueField(member),
           });
-          this.#finish(this.#closing);
-        }
-      },
-      (error: unknown) => {
-        // A failure after a close of ours began is the worker's to swallow:
-        // it resolves `run()` then. Reaching here, nothing had stopped it.
-        this.#logger.error("Summoned worker could not start", { error });
-        this.#ready = true;
-        this.#startFailed = true;
-        this.#beginClose({ reason: "error" });
-      },
-    );
+          this.#ready = true;
+          this.#startFailed = true;
+          this.#beginClose({ reason: "error" });
+        },
+      );
+    }
 
     return await this.#finished.promise;
   }
 
+  /** The `queue` field a log line about one worker of a set carries; none for one worker. */
+  #queueField(member: SummonedMember): { queue?: string } {
+    return this.#single ? {} : { queue: member.worker.ref.queue };
+  }
+
+  /** The workers still in the unit: those not closed by their owner or before the start. */
+  #active(): SummonedMember[] {
+    return this.#members.filter((member) => !member.gone);
+  }
+
   /* --- listeners ------------------------------------------------------- */
 
-  readonly #onCompleted = (): void => {
-    this.#completed += 1;
-  };
-
-  readonly #onFailed = (): void => {
-    this.#failed += 1;
-  };
-
-  /**
-   * A pause or resume this code did not make hands the pause to whoever
-   * made it: an operator's pause must survive the next SIGCONT.
-   */
-  readonly #onPausedOrResumed = (): void => {
-    if (!this.#toggling) {
-      this.#pausedBySignal = false;
-    }
-  };
+  /** The listeners for the worker at `index`. */
+  #listenersFor(index: number): SummonedListeners {
+    const member = (): SummonedMember => this.#members[index]!;
+    return {
+      completed: () => {
+        member().completed += 1;
+      },
+      failed: () => {
+        member().failed += 1;
+      },
+      // A pause or resume this code did not make hands the pause to whoever
+      // made it: an operator's pause must survive the next SIGCONT.
+      pausedOrResumed: () => {
+        if (!this.#toggling) {
+          this.#pausedBySignal = false;
+        }
+      },
+      closing: () => this.#onClosing(member()),
+      closed: () => this.#onClosed(member()),
+      ready: () => {
+        member().ready = true;
+        this.#maybeReady();
+      },
+    };
+  }
 
   /**
    * A close that is not ours began: the caller's own code, say. It is waited
    * out rather than finished here — during startup the worker resolves
    * `run()` as soon as startup stops, well before that close has unregistered
    * the worker and closed its driver, and exiting then would cut it short.
+   * With several workers, the unit runs on for the others, and ends with
+   * reason `"closed"` once every one of them has been closed so.
    */
-  readonly #onClosing = (): void => {
-    if (this.#closing === undefined && !this.#done) {
-      this.#closing = { reason: "closed" };
-      this.#ownerClose = true;
-      this.#closeStartedAt = Date.now();
-      this.#logger.info("Summoned worker is being closed by its owner", {
-        reason: "closed",
-      });
+  #onClosing(member: SummonedMember): void {
+    if (this.#closing !== undefined || this.#done || member.gone) {
+      return;
     }
-  };
+    member.gone = true;
+    if (!this.#members.every((one) => one.gone)) {
+      this.#logger.info(
+        "Summoned worker is being closed by its owner; the unit runs on for its other queues",
+        { reason: "closed", ...this.#queueField(member) },
+      );
+      this.#maybeReady();
+      return;
+    }
+    this.#closing = { reason: "closed" };
+    this.#ownerClose = true;
+    this.#closeStartedAt = Date.now();
+    this.#logger.info("Summoned worker is being closed by its owner", {
+      reason: "closed",
+    });
+  }
 
   /**
-   * The owner's close finished. The result is settled on the next turn, so
-   * the owner's own `await worker.close()` resumes first — before the process
-   * exits, with `exit`.
+   * An owner's close finished. Once every worker's has, the result is
+   * settled on the next turn, so the owner's own `await worker.close()`
+   * resumes first — before the process exits, with `exit`.
    */
-  readonly #onClosed = (): void => {
-    if (this.#ownerClose && !this.#done) {
+  #onClosed(member: SummonedMember): void {
+    if (member.gone) {
+      member.ownerClosed = true;
+    }
+    if (
+      this.#ownerClose &&
+      !this.#done &&
+      this.#members.every((one) => one.ownerClosed || one.unstarted)
+    ) {
       const stop = this.#closing ?? { reason: "closed" as const };
       setTimeout(() => this.#finish(stop), 0);
     }
-  };
+  }
 
-  /** The worker is running: start watching idleness and parking. */
-  readonly #onReady = (): void => {
-    this.#ready = true;
-    if (this.#closing === undefined && !this.#done) {
+  /** Every worker still in the unit is running: start watching idleness and parking. */
+  #maybeReady(): void {
+    if (this.#ready || this.#closing !== undefined || this.#done) {
+      return;
+    }
+    if (this.#active().every((member) => member.ready)) {
+      this.#ready = true;
       this.#startWatching();
     }
-  };
+  }
 
   #onStopSignal(signal: NodeJS.Signals): void {
     if (signal === "SIGINT") {
@@ -731,7 +864,11 @@ class SummonedRun {
   }
 
   readonly #onTstp = (): void => {
-    if (this.#closing !== undefined || this.#worker.isPaused()) {
+    const active = this.#active();
+    if (
+      this.#closing !== undefined ||
+      active.every((member) => member.worker.isPaused())
+    ) {
       this.#logger.info("SIGTSTP: already paused or stopping; left as it is", {
         signal: "SIGTSTP",
       });
@@ -739,9 +876,13 @@ class SummonedRun {
     }
     this.#toggling = true;
     try {
-      void this.#worker.pause().catch((error: unknown) => {
-        this.#logger.warn("SIGTSTP: pausing failed", { error });
-      });
+      for (const { worker } of active) {
+        if (!worker.isPaused()) {
+          void worker.pause().catch((error: unknown) => {
+            this.#logger.warn("SIGTSTP: pausing failed", { error });
+          });
+        }
+      }
       this.#pausedBySignal = true;
     } finally {
       this.#toggling = false;
@@ -762,7 +903,9 @@ class SummonedRun {
     this.#pausedBySignal = false;
     this.#toggling = true;
     try {
-      this.#worker.resume();
+      for (const { worker } of this.#active()) {
+        worker.resume();
+      }
     } finally {
       this.#toggling = false;
     }
@@ -770,13 +913,15 @@ class SummonedRun {
   };
 
   #install(): void {
-    this.#events.on("completed", this.#onCompleted);
-    this.#events.on("failed", this.#onFailed);
-    this.#events.on("paused", this.#onPausedOrResumed);
-    this.#events.on("resumed", this.#onPausedOrResumed);
-    this.#events.on("closing", this.#onClosing);
-    this.#events.on("closed", this.#onClosed);
-    this.#events.once("ready", this.#onReady);
+    for (const { events, listeners } of this.#members) {
+      events.on("completed", listeners.completed);
+      events.on("failed", listeners.failed);
+      events.on("paused", listeners.pausedOrResumed);
+      events.on("resumed", listeners.pausedOrResumed);
+      events.on("closing", listeners.closing);
+      events.on("closed", listeners.closed);
+      events.once("ready", listeners.ready);
+    }
 
     for (const signal of this.#options.signals) {
       const handler = (): void => this.#onStopSignal(signal);
@@ -792,13 +937,15 @@ class SummonedRun {
   }
 
   #uninstall(): void {
-    this.#events.off("completed", this.#onCompleted);
-    this.#events.off("failed", this.#onFailed);
-    this.#events.off("paused", this.#onPausedOrResumed);
-    this.#events.off("resumed", this.#onPausedOrResumed);
-    this.#events.off("closing", this.#onClosing);
-    this.#events.off("closed", this.#onClosed);
-    this.#events.off("ready", this.#onReady);
+    for (const { events, listeners } of this.#members) {
+      events.off("completed", listeners.completed);
+      events.off("failed", listeners.failed);
+      events.off("paused", listeners.pausedOrResumed);
+      events.off("resumed", listeners.pausedOrResumed);
+      events.off("closing", listeners.closing);
+      events.off("closed", listeners.closed);
+      events.off("ready", listeners.ready);
+    }
     for (const [signal, handler] of this.#signalHandlers) {
       process.off(signal, handler);
     }
@@ -844,11 +991,14 @@ class SummonedRun {
       return;
     }
     this.#closingForced = true;
-    void this.#worker.close({ force: true }).catch((error: unknown) => {
-      this.#logger.warn("Summoned worker could not force its close", {
-        error,
+    for (const member of this.#members) {
+      void member.worker.close({ force: true }).catch((error: unknown) => {
+        this.#logger.warn("Summoned worker could not force its close", {
+          error,
+          ...this.#queueField(member),
+        });
       });
-    });
+    }
   }
 
   /**
@@ -970,9 +1120,14 @@ class SummonedRun {
     }
   }
 
+  /**
+   * One check over the unit. Parked means every worker still in the unit is
+   * parked; idle means every one's queue is idle: with several workers the
+   * unit stops only when none of its queues has work.
+   */
   async #checkOnce(): Promise<void> {
     const { mode, idleFor } = this.#options;
-    const worker = this.#worker;
+    const active = this.#active();
 
     if (this.#options.deadlineIsLive) {
       this.#deadlineAt = this.#options.readDeadline();
@@ -981,8 +1136,12 @@ class SummonedRun {
 
     const now = Date.now();
 
-    // Parked: an operator stopped it. It serves nothing and costs money.
-    if (worker.state === "stopped") {
+    // Parked: an operator stopped every worker. It serves nothing and costs
+    // money. One parked worker among running ones runs on.
+    if (
+      active.length > 0 &&
+      active.every((member) => member.worker.state === "stopped")
+    ) {
       this.#parkedSince ??= now;
       this.#idleSince = undefined;
       if (mode !== "until-stopped" && now - this.#parkedSince >= idleFor) {
@@ -996,31 +1155,37 @@ class SummonedRun {
       return;
     }
 
-    if (worker.activeCount > 0) {
+    if (active.some((member) => member.worker.activeCount > 0)) {
       this.#idleSince = undefined;
       return;
     }
 
-    const demand = await readDemand(worker.driver, worker.ref, {
-      now,
-      cap: 1,
-    });
+    // One reading per queue, together.
+    const demands = await Promise.all(
+      active.map(
+        async ({ worker }) =>
+          await readDemand(worker.driver, worker.ref, { now, cap: 1 }),
+      ),
+    );
     if (this.#closing !== undefined || this.#done) {
       return;
     }
-    // The count includes this worker's own record wherever it keeps one.
-    // Its first report is not awaited, so the first check may not see it
-    // yet: that reads one other worker too few, which only ever delays an
-    // exit, never hastens one.
-    const selfListed =
-      supportsWorkers(worker.driver) &&
-      worker.config.effective.reportInterval > 0;
-    const idle = isSummonIdle({
-      ownActive: worker.activeCount,
-      demand,
-      otherLiveWorkers: Math.max(0, demand.workers - (selfListed ? 1 : 0)),
-      now,
-      idleFor,
+    const idle = active.every(({ worker }, index) => {
+      const demand = demands[index]!;
+      // The count includes this worker's own record wherever it keeps one.
+      // Its first report is not awaited, so the first check may not see it
+      // yet: that reads one other worker too few, which only ever delays an
+      // exit, never hastens one.
+      const selfListed =
+        supportsWorkers(worker.driver) &&
+        worker.config.effective.reportInterval > 0;
+      return isSummonIdle({
+        ownActive: worker.activeCount,
+        demand,
+        otherLiveWorkers: Math.max(0, demand.workers - (selfListed ? 1 : 0)),
+        now,
+        idleFor,
+      });
     });
 
     if (!idle) {
@@ -1045,6 +1210,11 @@ class SummonedRun {
     this.#beginClose(stop);
   }
 
+  /**
+   * Closes every worker, concurrently, under one budget: the close rule is
+   * evaluated once, for the target whose close takes longest, and each
+   * worker is closed with what it decided.
+   */
   #beginClose(stop: SummonedStop): void {
     if (this.#closing !== undefined || this.#done) {
       return;
@@ -1066,20 +1236,28 @@ class SummonedRun {
     }
     const until = limits.length === 0 ? undefined : Math.min(...limits);
     const total = until === undefined ? Number.POSITIVE_INFINITY : until - now;
-    // The exit mark is written before the close starts, out of this same
+    // The exit marks are written before the close starts, out of this same
     // budget (`#markExit`), so the close rule is given what is left after
-    // the most that write may wait: sized against the whole budget, a close
-    // could plan a graceful drain that a slow mark write then pushes past
-    // its limit, escalating it to a forced one.
-    const markWait =
-      this.#worker.summon === undefined
-        ? 0
-        : Math.min(EXIT_MARK_WAIT, Math.max(0, total / 4));
+    // the most those writes may wait: sized against the whole budget, a
+    // close could plan a graceful drain that a slow mark write then pushes
+    // past its limit, escalating it to a forced one.
+    const markWait = this.#active().every(
+      ({ worker }) => worker.summon === undefined,
+    )
+      ? 0
+      : Math.min(EXIT_MARK_WAIT, Math.max(0, total / 4));
     const budget = total - markWait;
-    // Before `ready` nothing has been claimed, and a graceful close would
+    // Before `ready` a worker has claimed nothing, and a graceful close would
     // first wait out the connect it interrupts: a forced one ends the
-    // startup at once, and the worker resolves `run()` for it.
-    const early = !this.#ready;
+    // startup at once, and the worker resolves `run()` for it. That is
+    // decided per worker: in a unit stopped while some workers are still
+    // starting, those are forced and the ready ones, which may hold jobs,
+    // close by the rule — forcing them would abandon their jobs for nothing.
+    const starting = this.#ready
+      ? []
+      : this.#active().filter((member) => !member.ready);
+    const early =
+      !this.#ready && this.#active().every((member) => !member.ready);
     const decision: SummonCloseDecision =
       this.#startFailed || early
         ? {
@@ -1117,87 +1295,108 @@ class SummonedRun {
         ...(decision.timeout === undefined
           ? {}
           : { timeout: decision.timeout }),
+        ...(this.#single
+          ? {}
+          : {
+              queues: this.#members.map(({ worker }) => worker.ref.queue),
+            }),
+        ...(starting.length === 0 || early || decision.force
+          ? {}
+          : { starting: starting.map(({ worker }) => worker.ref.queue) }),
       },
     );
 
+    const options = decision.force
+      ? { force: true }
+      : decision.timeout === undefined
+        ? undefined
+        : { timeout: decision.timeout };
     const close = async (): Promise<void> => {
       await this.#markExit(stop, markWait);
-      await this.#worker.close(
-        decision.force
-          ? { force: true }
-          : decision.timeout === undefined
-            ? undefined
-            : { timeout: decision.timeout },
+      await Promise.all(
+        this.#members.map(async (member) => {
+          try {
+            await member.worker.close(
+              starting.includes(member) ? { force: true } : options,
+            );
+          } catch (error) {
+            this.#logger.error("Summoned worker failed to close cleanly", {
+              reason,
+              error,
+              ...this.#queueField(member),
+            });
+          }
+        }),
       );
     };
-    void close()
-      .catch((error: unknown) => {
-        this.#logger.error("Summoned worker failed to close cleanly", {
-          reason,
-          error,
-        });
-      })
-      .then(() => this.#finish(stop));
+    void close().then(() => this.#finish(stop));
   }
 
   /**
-   * Writes the real reason and code onto the summon claim this worker won,
-   * **before** the close starts: the worker's own `close()` then finds a
-   * mark and leaves it, so the controller reads `idle`, `deadline`, `signal`
-   * or `error` rather than a bare `closed` — and it is there before the
-   * record goes, so a check never sees neither. A code `1` mark is never
-   * replaced by a clean one.
+   * Writes the real reason and code onto the summon claim each worker won,
+   * under its own queue, **before** the close starts: each worker's own
+   * `close()` then finds a mark and leaves it, so the controller reads
+   * `idle`, `deadline`, `signal` or `error` rather than a bare `closed` — and
+   * it is there before the record goes, so a check never sees neither. A
+   * code `1` mark is never replaced by a clean one.
    *
    * Waits at most `wait` — {@link EXIT_MARK_WAIT}, or a quarter of the
    * budget if less, already taken out of the budget the close rule sized the
-   * close against — then lets the close begin while the write carries on. A failed write is
-   * logged, never thrown: the exit goes ahead either way, and the worker's
-   * own close still fills in its `closed` mark.
+   * close against — for every write, then lets the close begin while any
+   * still running carries on. A failed write is logged, never thrown: the
+   * exit goes ahead either way, and the worker's own close still fills in
+   * its `closed` mark.
    */
   async #markExit(
     /** The stop under way. */
     stop: SummonedStop,
-    /** The most to wait for the write before the close begins, in ms. */
+    /** The most to wait for the writes before the close begins, in ms. */
     wait: number,
   ): Promise<void> {
-    const summon = this.#worker.summon;
-    if (summon === undefined) {
-      return;
-    }
-    const write = markSummonClaimExit(
-      this.#worker.driver,
-      this.#worker.ref,
-      summon.id,
-      this.#worker.id,
-      {
-        exitedAt: Date.now(),
-        reason: stop.reason,
-        code: codeFor(stop.reason),
-        ...(this.#closingForced ? { forced: true } : {}),
-      },
-      true,
-    ).then(
-      (result) => {
-        if (result === "contended") {
-          this.#logger.warn(
-            "Summoned worker could not mark its exit on its summon claim: the entry kept changing",
-            { summonId: summon.id },
-          );
-        }
-      },
-      (error: unknown) => {
-        this.#logger.warn(
-          "Summoned worker could not mark its exit on its summon claim",
-          { summonId: summon.id, error },
-        );
-      },
-    );
-    if (wait <= 0) {
+    // A worker its owner already closed keeps the mark its own close wrote.
+    const writes = this.#active().flatMap((member) => {
+      const { worker } = member;
+      const summon = worker.summon;
+      if (summon === undefined) {
+        return [];
+      }
+      return [
+        markSummonClaimExit(
+          worker.driver,
+          worker.ref,
+          summon.id,
+          worker.id,
+          {
+            exitedAt: Date.now(),
+            reason: stop.reason,
+            code: codeFor(stop.reason),
+            ...(this.#closingForced ? { forced: true } : {}),
+          },
+          true,
+        ).then(
+          (result) => {
+            if (result === "contended") {
+              this.#logger.warn(
+                "Summoned worker could not mark its exit on its summon claim: the entry kept changing",
+                { summonId: summon.id, ...this.#queueField(member) },
+              );
+            }
+          },
+          (error: unknown) => {
+            this.#logger.warn(
+              "Summoned worker could not mark its exit on its summon claim",
+              { summonId: summon.id, error, ...this.#queueField(member) },
+            );
+          },
+        ),
+      ];
+    });
+    if (writes.length === 0 || wait <= 0) {
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
-      write,
+      Promise.all(writes),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, wait);
       }),
@@ -1216,9 +1415,19 @@ class SummonedRun {
       reason: stop.reason,
       ...(stop.signal === undefined ? {} : { signal: stop.signal }),
       ranForMs: Date.now() - this.#startedAt,
-      completed: this.#completed,
-      failed: this.#failed,
+      completed: this.#members.reduce((sum, one) => sum + one.completed, 0),
+      failed: this.#members.reduce((sum, one) => sum + one.failed, 0),
       code: codeFor(stop.reason),
+      ...(this.#single
+        ? {}
+        : {
+            queues: Object.fromEntries(
+              this.#members.map(({ worker, completed, failed }) => [
+                worker.ref.queue,
+                { completed, failed },
+              ]),
+            ),
+          }),
     };
     this.#logger.info("Summoned worker stopped", {
       ...result,
@@ -1237,9 +1446,80 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
 }
 
 /**
- * Runs a worker until it is no longer needed, then stops it cleanly. Starts
- * `worker.run()`, installs the signal handlers, watches idleness and the
- * deadline, and closes the worker by the close rule.
+ * The refusals of {@link runSummoned}, before anything runs: an empty set,
+ * two workers on one queue, workers summoned by different attempts, and —
+ * in a summoned process — a queue the summon arguments name with no worker.
+ * Warns about a worker on a queue the arguments do not name: it runs, and
+ * claims under its own queue, which is harmless.
+ *
+ * @throws {ConfigError} naming what is wrong.
+ */
+function checkUnit(
+  /** The workers, one or one per queue. */
+  workers: readonly BunQueueWorker<unknown, unknown, never>[],
+  /** Where the warning goes. */
+  logger: Logger,
+): void {
+  const queues = workers.map((worker) => worker.ref.queue);
+  const twice = queues.find((queue, index) => queues.indexOf(queue) !== index);
+  if (twice !== undefined) {
+    throw new ConfigError(
+      `runSummoned runs one worker per queue, and was given two for queue ${twice}`,
+      { queue: twice },
+    );
+  }
+  const ids = [
+    ...new Set(
+      workers
+        .map((worker) => worker[SUMMON_OPTION_ID])
+        .filter((id) => id !== undefined),
+    ),
+  ];
+  if (ids.length > 1) {
+    throw new ConfigError(
+      "runSummoned runs one summoned unit: its workers were given summon options from different attempts",
+      { ids },
+    );
+  }
+
+  const summoned = summonedFromArgs();
+  const named = summoned?.queues ?? [];
+  if (named.length === 0) {
+    return;
+  }
+  const serves = (worker: BunQueueWorker<unknown, unknown, never>): boolean =>
+    named.includes(worker.ref.queue) &&
+    (summoned?.namespace === undefined || worker.ref.ns === summoned.namespace);
+  const missing = named.filter(
+    (queue) =>
+      !workers.some((worker) => worker.ref.queue === queue && serves(worker)),
+  );
+  if (missing.length > 0) {
+    throw new ConfigError(
+      `runSummoned: the summon arguments name ${missing.length === 1 ? "a queue" : "queues"} with no worker (${missing.join(", ")}): build one worker for each queue in summonedFromArgs().queues. A unit that serves fewer queues belongs to another summon group`,
+      {
+        missing,
+        queues: [...named],
+        ...(summoned?.namespace === undefined
+          ? {}
+          : { namespace: summoned.namespace }),
+      },
+    );
+  }
+  const extra = workers.filter((worker) => !serves(worker));
+  if (extra.length > 0) {
+    logger.warn(
+      "A worker's queue is not named in the summon arguments: it runs, and claims under its own queue",
+      { queues: extra.map((worker) => worker.ref.queue) },
+    );
+  }
+}
+
+/**
+ * Runs a summoned unit until it is no longer needed, then stops it cleanly:
+ * one worker, or one worker per queue for a unit summoned for several
+ * queues. Starts each worker's `run()`, installs the signal handlers, watches
+ * idleness and the deadline, and closes the workers by the close rule.
  *
  * ```ts
  * const summon = summonedFromArgs();
@@ -1247,18 +1527,32 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  * await runSummoned(worker, { idleFor: 30_000 }); // exits the process
  * ```
  *
+ * A unit for several queues gets one `--bun-jobs-summon-queue=` per queue;
+ * build a worker for each and pass them together:
+ *
+ * ```ts
+ * const summon = summonedFromArgs();
+ * const handlers = { renders: render, thumbs: thumb };
+ * const workers = (summon?.queues ?? ["renders"]).map((queue) =>
+ *   jobs.worker(queue, handlers[queue], { summon }));
+ * await runSummoned(workers, { idleFor: 30_000 });
+ * ```
+ *
  * - **Signals first.** The handlers are installed synchronously, before
  *   `run()` connects and before this returns its promise, so a platform
  *   stopping the unit during boot still gets a clean exit 0. A stop that
- *   arrives before the worker is ready closes it at once, with `force`:
- *   nothing has been claimed, and the close ends the startup, however long
- *   the connect would have taken.
+ *   arrives before a worker is ready closes that worker at once, with
+ *   `force`: it has claimed nothing, and the close ends its startup, however
+ *   long the connect would have taken. In a unit stopped while only some of
+ *   its workers are ready, the ready ones close by the close rule below.
  * - **The close rule.** Once closing starts, the budget `A` is the time left
  *   until the hard backstop: `grace − 250` after a signal, `deadline − 250`
  *   otherwise, none for an idle stop with no deadline. The close is graceful,
  *   with the jobs' `timeout` whatever the target's close and `tailReserve`
  *   leave, while `A` covers them, and `force` otherwise. Abandoned jobs are
- *   recovered as stalled: the at-least-once contract, unchanged.
+ *   recovered as stalled: the at-least-once contract, unchanged. Several
+ *   workers close concurrently under that one budget, sized for the target
+ *   whose close takes longest.
  * - **The hard backstop.** Outside `"in-invocation"` mode, with `exit`, the
  *   process exits at `A` if `close()` has not returned, with a log line,
  *   rather than leaving SIGKILL to do it silently — but never sooner than
@@ -1272,15 +1566,31 @@ function codeFor(reason: SummonedExit["reason"]): 0 | 1 {
  * - **A second SIGINT exits at once**, with code 130, whatever `exit` says.
  * - **SIGTSTP / SIGCONT**, with `pauseSignals`, pause and resume claiming;
  *   SIGCONT resumes only a pause SIGTSTP made.
- * - **A parked worker exits** (`"parked"`) after `idleFor`, unless the mode
- *   is `"until-stopped"`, whose platform would restart it.
+ * - **A parked unit exits** (`"parked"`) after `idleFor`, unless the mode is
+ *   `"until-stopped"`, whose platform would restart it. With several
+ *   workers, only once every one is parked.
+ * - **Several workers.** The unit is idle only when every queue is; one
+ *   worker's `run()` failing closes them all, with code `1`; an owner
+ *   closing one worker leaves the others running, still on the idle clock,
+ *   and the unit ends (`"closed"`) if its owner closes every one; each
+ *   worker marks its own claim; and the result adds `queues`, each queue's
+ *   totals.
+ * - **Every queue the summon names needs a worker.** In a summoned process,
+ *   a queue in `summonedFromArgs().queues` with no worker is refused before
+ *   anything runs, so the attempt is lost fast rather than registering on
+ *   some queues and leaving the others starving. Build the workers in the
+ *   main thread: Bun gives a `Worker` thread an empty `argv`, so
+ *   `summonedFromArgs()` answers `undefined` there, and `runSummoned` owns
+ *   the process's signals.
  *
- * The worker must not be running yet: `runSummoned` starts it. Construct it
- * without `autorun`; a worker from `BunJobs.start()` has already been run,
- * so it is refused.
+ * The workers must not be running yet: `runSummoned` starts them. Construct
+ * them without `autorun`; a worker from `BunJobs.start()` has already been
+ * run, so it is refused.
  *
  * @throws {ConfigError} (as a rejection) on an invalid option, a malformed
- *   summon argument, or a worker that is already running.
+ *   summon argument, a worker that is already running, an empty set, two
+ *   workers on one queue, workers given different summon attempts, or a
+ *   queue the summon arguments name with no worker.
  */
 export async function runSummoned<
   TData,
@@ -1290,27 +1600,61 @@ export async function runSummoned<
   /** The worker to run. Not yet running. */
   worker: BunQueueWorker<TData, TResult, TJobs>,
   /** How it runs and stops. */
+  options?: RunSummonedOptions,
+): Promise<SummonedExit>;
+export async function runSummoned(
+  /**
+   * The unit's workers, one per queue. None running yet. `any`, as
+   * `BunJobs`' own set of workers is: a worker's type parameters are
+   * invariant (its private fields use them both ways), so workers of
+   * different data and result types share no narrower element type.
+   */
+  workers: readonly BunQueueWorker<any, any, any>[],
+  /** How they run and stop. */
+  options?: RunSummonedOptions,
+): Promise<SummonedExit>;
+export async function runSummoned(
+  target:
+    | BunQueueWorker<unknown, unknown, never>
+    | readonly BunQueueWorker<unknown, unknown, never>[],
   options: RunSummonedOptions = {},
 ): Promise<SummonedExit> {
-  const resolved = resolveOptions(options, worker.logger);
-
-  if (worker.isRunning) {
+  const single = !Array.isArray(target);
+  const workers: readonly BunQueueWorker<unknown, unknown, never>[] = single
+    ? [target as BunQueueWorker<unknown, unknown, never>]
+    : (target as readonly BunQueueWorker<unknown, unknown, never>[]);
+  if (workers.length === 0) {
     throw new ConfigError(
-      "runSummoned starts the worker itself: do not call run() first or construct it with autorun",
-      { worker: worker.id },
+      "runSummoned needs a worker: it was given an empty set",
     );
   }
+  const resolved = resolveOptions(options, workers[0]!.logger);
+
+  for (const worker of workers) {
+    if (worker.isRunning) {
+      throw new ConfigError(
+        "runSummoned starts the worker itself: do not call run() first or construct it with autorun",
+        { worker: worker.id },
+      );
+    }
+  }
+  checkUnit(workers, resolved.logger);
 
   // The mode it runs in, on the record beside the mode the summoner asked
   // for: once, before `run()`, and only on a worker given `summon` (the
   // worker ignores it otherwise).
-  worker[SET_SUMMONED_MODE](resolved.mode);
+  for (const worker of workers) {
+    worker[SET_SUMMONED_MODE](resolved.mode);
+  }
 
   return await new SummonedRun(
-    worker,
-    // The events a generic worker's map cannot show the compiler; see
-    // `SummonedWorkerEvents`.
-    worker as unknown as SummonedWorkerEvents,
+    workers.map((worker) => ({
+      worker,
+      // The events a generic worker's map cannot show the compiler; see
+      // `SummonedWorkerEvents`.
+      events: worker as unknown as SummonedWorkerEvents,
+    })),
+    single,
     resolved,
   ).start();
 }
