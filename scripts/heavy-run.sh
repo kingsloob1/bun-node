@@ -70,8 +70,9 @@
 # the job waited for; cores is that over the wall time (at least 1 s, so a
 # job of a few milliseconds does not read as several cores). The key names
 # the kind of job across worktrees: the directory relative to its git top
-# level (the cwd's basename outside a repo), the command without a leading
-# `timeout N`, then [exclusive] (HEAVY_EXCLUSIVE=1 or HEAVY_MODE=exclusive,
+# level (the cwd's basename outside a repo), the command without what does not
+# change how long it takes (a leading `timeout N` or `nice`, and `--seed` and
+# `--randomize`; see NORM_AWK), then [exclusive] (HEAVY_EXCLUSIVE=1 or HEAVY_MODE=exclusive,
 # never an auto decision) and [EXAMPLE_DRIVER=...] when they apply. `heavy-run.sh --key
 # <command...>` prints the key for the cwd and environment and runs nothing,
 # and `--stats <command...>` prints what its history says: <median seconds>
@@ -115,6 +116,42 @@ set -u
 DIR=${HEAVY_DIR:-/tmp/claude-1000}
 HISTORY="$DIR/bun-node-heavy-history.tsv"
 
+# A key with what does not change how long a job takes taken out, as an awk
+# function: `norm("<dir>: <command> [markers]")`. Used on a new key and on
+# every key read from the history, so a line recorded before a word joined
+# this list still counts for its job. It drops, from the front of the command
+# and in any order, `timeout [options] N` (how long the caller allows) and
+# `nice [-n N | -N | --adjustment=N]` (how politely it runs); then, anywhere,
+# `--randomize`, `--seed=N` and `--seed N` (which order the same tests run
+# in). A command made of nothing but those words is left as it is.
+NORM_AWK='
+function norm(k,    p, n, w, i, j, out) {
+  p = index(k, ": ")
+  if (!p) return k
+  n = split(substr(k, p + 2), w, " ")
+  i = 1
+  while (i <= n) {
+    j = i
+    if (w[j] == "timeout") {
+      j++
+      while (j <= n && w[j] ~ /^-/) j += (w[j] ~ /^(-k|-s|--kill-after|--signal)$/ ? 2 : 1)
+      j++
+    } else if (w[j] == "nice") {
+      j++
+      if (w[j] ~ /^(-n|--adjustment)$/) j += 2
+      else if (w[j] ~ /^(-n.+|--adjustment=.*|-[0-9]+)$/) j++
+    } else break
+    if (j > n) break
+    i = j
+  }
+  out = ""
+  for (; i <= n; i++) {
+    if (w[i] == "--randomize" || w[i] ~ /^--seed=/) continue
+    if (w[i] == "--seed" && i < n && w[i + 1] ~ /^[0-9]+$/) { i++; continue }
+    out = out (out == "" ? "" : " ") w[i]
+  }
+  return substr(k, 1, p + 1) out
+}'
 # The key of a job (see the header): one line, no tabs, so it fits one field
 # of the history file.
 heavy_key() {
@@ -125,22 +162,12 @@ heavy_key() {
   else
     rel=$(basename "$here")
   fi
-  # A leading `timeout [options] N` is how long the caller allows, not what runs.
-  if [ "${1:-}" = timeout ] && [ $# -ge 3 ]; then
-    shift
-    while [ $# -gt 1 ] && [ "${1#-}" != "$1" ]; do
-      case "$1" in
-        -k | -s | --kill-after | --signal) shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    [ $# -gt 1 ] && shift
-  fi
   cmd="$*"
   printf -v cmd '%s: %s' "$rel" "$cmd"
   if [ "${HEAVY_EXCLUSIVE:-0}" = 1 ] || [ "${HEAVY_MODE:-}" = exclusive ]; then cmd="$cmd [exclusive]"; fi
   [ -n "${EXAMPLE_DRIVER:-}" ] && cmd="$cmd [EXAMPLE_DRIVER=$EXAMPLE_DRIVER]"
   cmd=${cmd//$'\t'/ }; cmd=${cmd//$'\n'/ }; cmd=${cmd//$'\r'/ }
+  cmd=$(K=$cmd awk "$NORM_AWK"' BEGIN { print norm(ENVIRON["K"]) }')
   printf '%s\n' "${cmd:0:400}"
 }
 # What the history says of a key (see the header): the last 10 successful runs,
@@ -148,8 +175,8 @@ heavy_key() {
 # recorded them (lines from before CPU was recorded have four fields).
 heavy_stats() {
   [ -f "$HISTORY" ] || return 0
-  K=$1 awk -F'\t' '
-    $2 == ENVIRON["K"] && $4 == "0" { n++; w[n] = $3 + 0; c[n] = (NF >= 6 && $6 != "" ? $6 : "-") }
+  K=$1 awk -F'\t' "$NORM_AWK"'
+    $4 == "0" && norm($2) == ENVIRON["K"] { n++; w[n] = $3 + 0; c[n] = (NF >= 6 && $6 != "" ? $6 : "-") }
     function sort(a, len,    i, j, t) {
       for (i = 2; i <= len; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
     }

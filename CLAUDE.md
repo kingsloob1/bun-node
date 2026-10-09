@@ -172,9 +172,13 @@ floor. So plain `bun test` is still the one-process run, as is
     process tree, cores, the load at start and at end, where it ran and the
     mode asked; lines from before 2026-10-07 have the first four, and still
     count for EST); the key is the directory relative
-    to its git top level, the command without its `timeout N`, and
-    `[exclusive]` and `EXAMPLE_DRIVER` when set, so a run in any worktree
-    counts (`bun-node-heavy-run.sh --key <command>` prints it). Session names
+    to its git top level, the command without what does not change how long
+    it takes (a leading `timeout N` or `nice`, and `--seed`/`--randomize`
+    anywhere, so every seed of a suite shares one estimate; older history
+    lines are read the same way), and `[exclusive]` and `EXAMPLE_DRIVER` when
+    set, so a run in any worktree counts (`bun-node-heavy-run.sh --key
+    <command>` prints it). The queue's COMMAND column is the whole command
+    line, quoted so it can be pasted back. Session names
     come from `/tmp/claude-1000/bun-node-sessions`.
   - **The source is the repo**: `scripts/heavy-run.sh` and
     `scripts/heavy-queue.sh`, tested by `scripts/__tests__/heavy-run.test.ts`.

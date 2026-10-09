@@ -333,10 +333,12 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
   wall), the 1-minute load at start and at end, where it ran (`direct`, a slot
   number or `all`) and the mode asked; lines from before 2026-10-07 have the
   first four fields and still count. The key is the directory
-  relative to the git top level, the command without a leading `timeout N`,
-  and `[exclusive]` and `EXAMPLE_DRIVER` when set, so runs in different
-  worktrees share an estimate; `bun-node-heavy-run.sh --key <command>` prints
-  it.
+  relative to the git top level, the command without what does not change
+  how long it takes (a leading `timeout N` or `nice`, and `--seed` and
+  `--randomize` anywhere, so every seed of a suite shares one estimate), and
+  `[exclusive]` and `EXAMPLE_DRIVER` when set, so runs in different worktrees
+  share an estimate; `bun-node-heavy-run.sh --key <command>` prints it. The
+  queue shows each job's whole command, quoted so it can be pasted back.
 
 #### Where the wrapper comes from
 
