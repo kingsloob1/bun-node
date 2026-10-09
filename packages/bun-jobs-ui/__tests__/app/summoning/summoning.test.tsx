@@ -230,6 +230,31 @@ describe("the Summoning screen", () => {
     expectAbsent(within(working).queryByTestId("summoning-inert"));
   });
 
+  it("shows Elsewhere, not a readiness, for a queue whose controller runs in another process", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": list([
+        controller(),
+        controller({
+          queue: "reports",
+          local: false,
+          readiness: undefined,
+          inert: undefined,
+        }),
+      ]),
+    });
+    const remote = await within(screen).findByTestId("summoning-row-reports");
+    const elsewhere = within(remote).getByText("Elsewhere");
+    expect(elsewhere.title).toBe("Its controller runs in another process");
+    expectAbsent(within(remote).queryByTestId("summoning-readiness"));
+    expectAbsent(within(remote).queryByTestId("summoning-inert"));
+    // A local row in the same list keeps its badge.
+    const local = within(screen).getByTestId("summoning-row-emails");
+    expect(within(local).getByTestId("summoning-readiness").textContent).toBe(
+      "Ready",
+    );
+    expectAbsent(within(local).queryByText("Elsewhere"));
+  });
+
   it("reads an exhausted window in the warning tone, and an unknown outcome as its raw string", async () => {
     const { screen } = await openScreen({
       "GET /summon": list([
