@@ -217,6 +217,14 @@ export const summon = [
 
 A group is shorthand: each of its queues still gets a controller of its own,
 with its own Summon panel, marker, budget, backoff and circuit.
+Sharing is opt-in: the media group's policy also names a **summon group**,
+`group: { name: "media", budget: { perHour: 600, perDay: 5_000 } }`, so 600
+attempts an hour is the ceiling for its five queues together, on top of each
+queue's own budget (set explicitly, so it still binds; a queue that set none
+would have its own budget off under a group budget). The group does not
+share its circuit (`group.circuit` stays off): `brittle` crashes every unit,
+and a shared circuit for the `local` kind would hold the other four queues
+back with it.
 
 | File | What it is |
 |---|---|
@@ -242,6 +250,7 @@ with its own Summon panel, marker, budget, backoff and circuit.
 | Use case | Where | What to watch in the UI | How to trigger it |
 |---|---|---|---|
 | A **group** with **overrides**, merged one level deep | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | each queue's Summon panel of its own, all naming the one summoner (Provider: Local processes, `@kingsleyweb/bun-jobs:local 0.1.0`), each with its own failures, backoff, circuit and budget. On screen, the budget line shows the merge: `transcodes` reads "… of 30 this hour, … of 2,000 today" — its override's `perHour` beside the group's `perDay` — where the others read "of 240 this hour". The rest of each policy (triggers, `env`, circuit thresholds, `maxWorkers`) is not on screen yet: read it in `summoning.ts`, and see it act in the rows below | always on: a burst every minute (`PLAYGROUND_SUMMON_EVERY_MS`) |
+| **One budget for the group** (`group: { name: "media" }`) | the five queues of the media group | each queue's own budget as before, and the group's usage, limits, reset times and each queue's share as `group` on `GET /queues/renders/summon`; from API docs → HTTP, `GET /summon/groups/media` reads the same from storage, so any process on the namespace answers it, and `POST /summon/groups/media/reset` with `{ "budget": true }` clears the group's counts (a queue's own reset leaves them alone) | always on |
 | **Groups and records mixed** in `summon: [...]` | `obinna-queue`, `ledger`, `secure-exports` | Summon panels like the group's, each naming its own summoner: Local processes (`obinna-queue`), `local-replicas` (`ledger`), Vault Compute (`secure-exports`) | always on |
 | **One entry file serving a group's queues** | `compute/worker.ts` | Workers → `compute`: `compute.renders.render`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`… one per queue, all the same file | always on |
 | `jobsPerWorker`, `maxWorkers` | `renders` (8 per worker, at most 2), `transcodes` (1), `thumbnails` (4 per worker) | a burst of more than 8 renders gets a second worker | always on |

@@ -298,6 +298,11 @@ export interface SummonPolicy {
    * The counts live in the queue's shared marker, not in the policy: a
    * smaller limit (the defaults included) meets the counts a larger one left.
    * `reset({ budget: true })` clears them.
+   *
+   * **In a group with a budget** (`group` set, its `budget` not `false`),
+   * left out means off: the group's budget is the limit, and the queue's
+   * counts are kept only to show its share. Set it explicitly to apply a
+   * per-queue ceiling on top of the group's.
    */
   budget?:
     | false
@@ -319,6 +324,18 @@ export interface SummonPolicy {
    * Paused and parked workers never serve.
    */
   servedBy?: "any-worker" | "summoned-only";
+  /**
+   * Share the budget with every controller naming the same group, on any
+   * queue, in any process: one cost ceiling for several queues. Absent,
+   * nothing is shared (each queue's own `budget` applies alone).
+   *
+   * Each attempt is charged to the group **before** the queue's own marker
+   * is claimed, so racing controllers can over-count by an attempt whose
+   * claim was lost and not refunded, but never summon past the group's
+   * limit. Backoff, cooldown, the circuit, `maxPending` and `maxWorkers`
+   * stay per queue.
+   */
+  group?: SummonGroupOptions;
   /** Scale-style only: when to set the count back to zero. */
   scaleDown?: {
     /**
@@ -414,6 +431,14 @@ export interface SummonFailure {
   at: number;
   /** For `circuit-open`: when the circuit closes again, epoch ms. */
   until?: number;
+  /**
+   * The summon group that decided it, for an outcome decided by the group's
+   * shared state rather than the queue's: a `budget-exhausted` of the
+   * group's budget, or a `circuit-open` of the group's shared circuit (told
+   * once per opening, by the controller whose write opened it). Absent for
+   * everything decided per queue.
+   */
+  group?: string;
   /** For `budget-exhausted`: the attempts counted and the limits they reached. */
   budget?: {
     /** Attempts this UTC hour. */
@@ -425,6 +450,69 @@ export interface SummonFailure {
     /** The daily limit. */
     perDay: number;
   };
+}
+
+/**
+ * A summon group: a name every controller that shares it gives, and what
+ * they share. `SummonPolicy.group`.
+ *
+ * ```ts
+ * summon: [{
+ *   queues: ["renders", "thumbs", "previews"],
+ *   summoner,
+ *   group: { name: "media", budget: { perHour: 60, perDay: 400 } },
+ * }]
+ * ```
+ */
+export interface SummonGroupOptions {
+  /**
+   * The group's name: the key its shared state is stored under, in the
+   * namespace. A queue-name segment (letters, digits, `_`, `.`, `-`).
+   * **The name is the key**: renaming a group starts it afresh, budget
+   * counts included, and two policies naming the same group share one
+   * budget whatever queues they are on — in other services too.
+   */
+  name: string;
+  /**
+   * The group's budget: attempts per UTC hour and day across every queue in
+   * it. Defaults to `30` and `300`, as the per-queue budget does. `false`
+   * keeps no group limit; attempts are still counted, so status shows the
+   * group's usage.
+   *
+   * Each controller checks the counts against its own policy's limits, so
+   * every policy naming a group should give it the same budget.
+   */
+  budget?:
+    | false
+    | {
+        /** Attempts per clock hour (UTC), across the group. Defaults to `30`. */
+        perHour?: number;
+        /** Attempts per UTC day, across the group. Defaults to `300`. */
+        perDay?: number;
+      };
+  /**
+   * Share the circuit too, per provider `kind`: `true`, or the thresholds.
+   * Defaults to `false`: each queue's circuit stands alone.
+   *
+   * On, every failure a controller in the group counts on its queue is also
+   * counted on the group's circuit for its summoner's `kind`, and every
+   * registration resets that count, so a provider outage seen on one queue
+   * stops every queue in the group that uses the same provider kind — an
+   * `auth` or `misconfigured` error at once, as on one queue. A group built
+   * from controllers with different summoners keeps their outages apart.
+   * Each queue's own circuit still applies.
+   */
+  circuit?:
+    | boolean
+    | {
+        /**
+         * Consecutive failures across the group, of one provider kind, that
+         * open it. Defaults to the policy's `circuit.failures`.
+         */
+        failures?: number;
+        /** How long it stays open, in ms. Defaults to the policy's `circuit.resetAfter`. */
+        resetAfter?: number;
+      };
 }
 
 /** What a `SummonController` is built with: a policy plus where the queue lives. */
@@ -645,15 +733,54 @@ export interface SummonMarker {
   };
   /** The most recent outcome, for the status route and the UI. */
   last?: SummonLastOutcome;
+  /**
+   * The summoner `kind` of the controller that made the last claim, so a
+   * reader with no controller can name it. Written by every claim; absent on
+   * a marker no claim has written since it existed. Optional, with `v`
+   * unchanged.
+   */
+  kind?: string;
+  /**
+   * The budget limits of the controller that made the last claim, or `false`
+   * when its budget was off (`budget: false`, or left out in a group with a
+   * budget), so a reader with no controller can show the budget whole and
+   * tell off from unknown. Absent: no claim has written it yet (unknown).
+   * Optional, with `v` unchanged.
+   */
+  limits?:
+    | false
+    | {
+        /** Attempts per UTC hour. */
+        perHour: number;
+        /** Attempts per UTC day. */
+        perDay: number;
+      };
+  /**
+   * The summon group of the controller that made the last claim
+   * (`SummonPolicy.group.name`), absent when it was in none. Optional, with
+   * `v` unchanged.
+   */
+  group?: string;
 }
 
 /** What the status route and the UI read: the marker plus the local policy. */
 export interface SummonStatus {
   /** The queue. */
   queue: string;
-  /** Whether a controller runs in *this* process (always `true` from `controller.status()`). */
+  /**
+   * Whether a controller runs in *this* process: always `true` from
+   * `controller.status()`. `false` for a status read from storage alone (the
+   * management API, for a queue whose controller runs elsewhere): then there
+   * is no `summoner`, and the budget's limits are the ones the last claim
+   * persisted.
+   */
   local: boolean;
-  /** Whether that controller is inert here (see `SummonController.inert`). */
+  /**
+   * Whether that controller is inert here (see `SummonController.inert`).
+   * Read from storage (`local: false`), `true` only for a marker a newer
+   * bun-jobs wrote, which this build cannot read (`inertReason:
+   * "newer-marker"`).
+   */
   inert: boolean;
   /**
    * Why it is inert, when it is: `"summoned-process"` (a summoned process or
@@ -717,7 +844,11 @@ export interface SummonStatus {
     day: number;
     /** The daily limit. Absent while the budget is off. */
     perDay?: number;
-    /** `true` when the policy turned the budget off (`budget: false`); absent otherwise. */
+    /**
+     * `true` when the budget is off: the policy says `budget: false`, or
+     * leaves `budget` out in a group with a budget (the group's is the
+     * limit). Absent otherwise.
+     */
     off?: true;
     /** When the hour window ends and `hour` starts again from `0`, epoch ms: the next UTC hour. */
     hourResetsAt: number;
@@ -726,6 +857,99 @@ export interface SummonStatus {
   };
   /** The most recent outcome. */
   last?: SummonLastOutcome;
+  /** The summon group the queue's controller is in (`SummonPolicy.group`), if any. */
+  group?: SummonGroupStatus;
+}
+
+/**
+ * A summon group's shared state as one of its controllers reads it:
+ * `SummonStatus.group`.
+ */
+export interface SummonGroupStatus {
+  /** The group's name. */
+  name: string;
+  /**
+   * Attempts counted against the group, this UTC hour and today, across
+   * every queue in it, with this controller's limits for the group and when
+   * each window resets. With the group's budget off (`group.budget: false`)
+   * the counts are still shown, the limits are absent and `off` is `true`.
+   */
+  budget: {
+    /** Attempts this UTC hour, across the group. */
+    hour: number;
+    /** The group's hourly limit. Absent while its budget is off. */
+    perHour?: number;
+    /** Attempts this UTC day, across the group. */
+    day: number;
+    /** The group's daily limit. Absent while its budget is off. */
+    perDay?: number;
+    /** `true` when the group's budget is off (`group.budget: false`); absent otherwise. */
+    off?: true;
+    /** When the hour window ends, epoch ms: the next UTC hour. */
+    hourResetsAt: number;
+    /** When the day window ends, epoch ms: the next UTC midnight. */
+    dayResetsAt: number;
+  };
+  /**
+   * Each queue's share of today's attempts, by queue name: the queues that
+   * charged the group since UTC midnight, whether or not this process has a
+   * controller for them.
+   */
+  queues: Readonly<
+    Record<
+      string,
+      {
+        /** Attempts this queue charged to the group this UTC day. */
+        day: number;
+        /** When it last charged one, epoch ms. */
+        lastAt: number;
+      }
+    >
+  >;
+  /**
+   * The group's shared circuit for this controller's summoner `kind`, when
+   * the group shares its circuit (`group.circuit`); absent otherwise.
+   */
+  circuit?: {
+    /** Consecutive failures counted across the group for this kind. */
+    failures: number;
+    /** When the open circuit closes, epoch ms, while it is open. */
+    openUntil?: number;
+    /** The failure that last opened it: its queue, attempt and detail. */
+    openedBy?: {
+      /** The queue whose attempt failed. */
+      queue: string;
+      /** The attempt. */
+      id: string;
+      /** Its detail, when it had one. */
+      detail?: string;
+    };
+  };
+  /**
+   * Every provider kind's shared circuit the group's state holds, by `kind`,
+   * as `circuit` shows one: what a reader with no controller (or one of
+   * another kind) can show. Absent while none has counted a failure.
+   */
+  circuits?: Readonly<
+    Record<
+      string,
+      {
+        /** Consecutive failures counted across the group for this kind. */
+        failures: number;
+        /** When the open circuit closes, epoch ms, while it is open. */
+        openUntil?: number;
+        /** The failure that last opened it. */
+        openedBy?: {
+          /** The queue whose attempt failed. */
+          queue: string;
+          /** The attempt. */
+          id: string;
+          /** Its detail, when it had one. */
+          detail?: string;
+        };
+      }
+    >
+  >;
 }
 
 /** The payload of a controller's `summon` event: one attempt changed state. */
@@ -747,6 +971,14 @@ export interface SummonEventPayload {
   reason?: SummonReason;
   /** A short, secret-free explanation. */
   detail?: string;
+  /**
+   * The summon group it was decided in (`SummonPolicy.group`): on every event
+   * of an attempt a controller in a group made (each is charged to the
+   * group), and on a `budget-exhausted` of the group's budget. Absent on a
+   * `budget-exhausted` of the queue's own budget, on `released`, and for a
+   * controller in no group.
+   */
+  group?: string;
 }
 
 /**

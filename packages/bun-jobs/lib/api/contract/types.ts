@@ -1263,24 +1263,30 @@ export interface SummonLastOutcomeDto {
  * `SummonStatus`: the queue's shared summon state (read from the backend,
  * so the same from every process) plus the local controller's policy.
  *
- * Answered only where a summon controller for the queue runs in the API's
+ * Answered from the summon controller for the queue running in the API's
  * process (`BunJobsOptions.summon` or `jobs.summonController()` on the
- * `jobs` the API was given); elsewhere 409 `SUMMON_NOT_CONFIGURED`.
+ * `jobs` the API was given), else from the queue's summon state in storage
+ * (`local: false`); 409 `SUMMON_NOT_CONFIGURED` only for a queue with
+ * neither.
  */
 export interface SummonStatusDto {
   /** The queue. */
   queue: string;
   /**
-   * Whether the controller runs in the API's process. **Always `true`
-   * today**: status and reset both need a controller in the API's process,
-   * and answer 409 `SUMMON_NOT_CONFIGURED` without one. A read of a queue
-   * whose controller runs elsewhere (`false`, from the shared state alone) is
-   * a recorded follow-up (plan §13.7, "As built").
+   * Whether the controller runs in the API's process. `false`: the status
+   * was read from the queue's shared summon state alone, for a queue whose
+   * controller runs elsewhere — there is then no `summoner`, the budget's
+   * limits are the ones its last claim persisted (`off` when its budget was
+   * off, absent when none was persisted), and "summon now" and reset still
+   * answer 409 `SUMMON_NOT_CONFIGURED`. Advertised by
+   * `/meta.features.summonRemoteStatus`.
    */
   local: boolean;
   /**
    * Whether that controller is inert: it summons nothing, and "summon now"
-   * answers `{ action: "skipped", reason: "inert" }`.
+   * answers `{ action: "skipped", reason: "inert" }`. Read from storage
+   * (`local: false`), `true` only for summon state a newer bun-jobs wrote
+   * (`inertReason: "newer-marker"`).
    */
   inert: boolean;
   /**
@@ -1355,6 +1361,101 @@ export interface SummonStatusDto {
   budget?: SummonBudgetDto;
   /** The most recent outcome. */
   last?: SummonLastOutcomeDto;
+  /** The summon group the queue's controller is in, when it is in one. */
+  group?: SummonGroupStatusDto;
+}
+
+/**
+ * A summon group's shared state: its name, the attempts counted against it
+ * across every queue in it (with the answering controller's limits for the
+ * group), and each queue's share of today's. Mirrors `SummonGroupStatus`.
+ */
+export interface SummonGroupStatusDto {
+  /** The group's name. */
+  name: string;
+  /**
+   * The group's budget usage, the limits and the window reset times. With
+   * the group's budget off (`group.budget: false`) the limits are absent and
+   * `off` is `true`.
+   */
+  budget: SummonBudgetDto;
+  /** Each queue's share of today's attempts, by queue name. */
+  queues: Record<
+    string,
+    {
+      /** Attempts this queue charged to the group this UTC day. */
+      day: number;
+      /** When it last charged one, epoch ms. */
+      lastAt: number;
+    }
+  >;
+  /**
+   * The group's shared circuit for the answering controller's summoner kind,
+   * when the group shares its circuit (`group.circuit`); absent otherwise.
+   */
+  circuit?: {
+    /** Consecutive failures counted across the group for this kind. */
+    failures: number;
+    /** When the open circuit closes, epoch ms, while it is open. */
+    openUntil?: number;
+    /** The failure that last opened it. */
+    openedBy?: {
+      /** The queue whose attempt failed. */
+      queue: string;
+      /** The attempt. */
+      id: string;
+      /** Its detail, when it had one. */
+      detail?: string;
+    };
+  };
+  /**
+   * Every provider kind's shared circuit the group's state holds, by
+   * `kind`, as `circuit` shows one — so any API process, with a controller in
+   * the group or none, shows every kind's. Absent while none has counted a
+   * failure.
+   */
+  circuits?: Record<
+    string,
+    {
+      /** Consecutive failures counted across the group for this kind. */
+      failures: number;
+      /** When the open circuit closes, epoch ms, while it is open. */
+      openUntil?: number;
+      /** The failure that last opened it. */
+      openedBy?: {
+        /** The queue whose attempt failed. */
+        queue: string;
+        /** The attempt. */
+        id: string;
+        /** Its detail, when it had one. */
+        detail?: string;
+      };
+    }
+  >;
+}
+
+/**
+ * `GET /summon/groups` (operation `listSummonGroups`, action `queues.list`):
+ * every summon group with shared state in the namespace, by name, read from
+ * storage — whether or not a controller in it runs in the API's process.
+ */
+export interface SummonGroupListDto {
+  /** The groups, in name order. */
+  groups: SummonGroupStatusDto[];
+}
+
+/**
+ * `POST /summon/groups/{group}/reset` body. Both default to `false`: `{}`
+ * changes nothing and answers the group's status.
+ */
+export interface SummonGroupResetBody {
+  /** Close the group's shared circuit, for every provider kind, and clear its counts. */
+  circuit?: boolean;
+  /**
+   * Clear the group's budget usage: its attempts this UTC hour and day, and
+   * every queue's share, go to `0`.
+   */
+  budget?: boolean;
 }
 
 /**
@@ -1379,23 +1480,41 @@ export interface SummonBudgetDto {
   dayResetsAt: number;
 }
 
-/** One summon controller in `GET /summon`: its queue, summoner, last outcome and budget usage. */
+/**
+ * One summoning queue in `GET /summon`: its queue, summoner kind, last
+ * outcome, budget usage and circuit, and — when its controller runs in the
+ * API's process — the summoner's readiness and whether it is inert.
+ */
 export interface SummonListItemDto {
   /** The queue's namespace. */
   namespace: string;
   /** The queue. */
   queue: string;
-  /** The summoner's kind, e.g. `"ecs"`: a label for badges. */
+  /**
+   * Whether its controller runs in the API's process. `false`: read from the
+   * queue's shared summon state alone, as `GET /queues/{queue}/summon`
+   * answers with `local: false`; then there is no `readiness` or `inert`.
+   */
+  local: boolean;
+  /**
+   * The summoner's kind, e.g. `"ecs"`: a label for badges. Read from storage
+   * (`local: false`), the kind the last claim persisted, `""` when none did.
+   */
   kind: string;
-  /** Whether the summoner can be called, as `SummonStatusDto.summoner.readiness` has it. */
-  readiness: "ready" | "pending" | "failed";
+  /**
+   * Whether the summoner can be called, as `SummonStatusDto.summoner.readiness`
+   * has it. Only when `local`.
+   */
+  readiness?: "ready" | "pending" | "failed";
   /**
    * Whether the controller is inert, as `SummonStatusDto.inert` has it: it
-   * summons nothing, whatever `readiness` says.
+   * summons nothing, whatever `readiness` says. Only when `local`.
    */
-  inert: boolean;
+  inert?: boolean;
   /** Why it is inert, when it is, as `SummonStatusDto.inertReason` has it. */
   inertReason?: "summoned-process" | "newer-marker";
+  /** When the queue's open circuit closes, epoch ms, while it is open, as `SummonStatusDto.circuitOpenUntil` has it. */
+  circuitOpenUntil?: number;
   /** The most recent outcome, as `SummonStatusDto.last` has it. */
   last?: SummonLastOutcomeDto;
   /** Budget usage, the limits and the window reset times, as `SummonStatusDto.budget` has them. */
@@ -1404,11 +1523,11 @@ export interface SummonListItemDto {
 
 /**
  * `GET /summon` (operation `listSummonControllers`, action `queues.list`):
- * every summon controller the API can read — today the ones running in the
- * API's process — each only where `authorize` allows `queues.read` on its
- * queue, asked as `GET /queues/{queue}/summon` asks it (whatever
- * `listQueues` says), so the list is never looser than that route. An empty
- * list when none runs here, never a 409.
+ * every summoning queue the API can reach — each with a controller in the
+ * API's process (`local: true`), or with summon state in storage
+ * (`local: false`) — each only where `authorize` allows `queues.read` on its
+ * queue, asked as `GET /queues/{queue}/summon` asks it. An empty list when
+ * none summons, never a 409.
  */
 export interface SummonListDto {
   /** The controllers, by queue name. */
@@ -1653,6 +1772,12 @@ export interface SummonEventDto {
   reason?: SummonReason;
   /** A short, secret-free explanation. */
   detail?: string;
+  /**
+   * The summon group it was decided in: on every event of an attempt a
+   * controller in a group made, and on a `budget-exhausted` of the group's
+   * budget. Absent otherwise.
+   */
+  group?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -3890,6 +4015,16 @@ export interface MetaDto {
      * controller runs is the route's own answer, an empty list.
      */
     summonList: boolean;
+    /**
+     * Summon status may be read from storage: `GET /queues/{queue}/summon`
+     * answers `local: false` for a queue whose controller runs in another
+     * process (instead of 409), `GET /summon` lists such queues with
+     * `local: false`, and the summon group routes (`GET /summon/groups`,
+     * `GET /summon/groups/{group}`) are served. Needs the driver's queue-state
+     * reads (`getQueueState`, `listQueueState`); `false` in `runner` mode.
+     * Like every flag it ignores permissions.
+     */
+    summonRemoteStatus: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

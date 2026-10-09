@@ -96,7 +96,9 @@ import {
   writeWorkerControl,
 } from "../../lib/index";
 import { JOB_OPTION_BITS } from "../../lib/queue/jobDefaults";
+import { setReservedState } from "../../lib/queue/windows";
 import { queueEvent, workerEvent } from "../../lib/shared/events";
+import { RESERVED_QUEUE } from "../../lib/shared/keys";
 import { compareCodePoints } from "../../lib/shared/strings";
 import { jobOptions, makeJob, testNamespace, waitFor } from "../helpers";
 
@@ -4624,6 +4626,56 @@ export function driverContract(
           null,
           (await driver.getQueueState!(sq, "counter"))!.version,
         );
+      });
+
+      it("never makes a queue of the reserved pseudo-queue's state", async () => {
+        // A summon group's shared budget lives here: state under a queue ref
+        // nothing ensures. It must work as state, and never read as a queue.
+        const pseudo: QueueRef = { ns, queue: RESERVED_QUEUE };
+        const name = "__win:summon-group:contract";
+        const real: QueueRef = { ns, queue: "pseudo-neighbour" };
+        await driver.ensureQueue(real);
+
+        const created = await setReservedState(
+          driver,
+          pseudo,
+          name,
+          { n: 1 },
+          null,
+        );
+        expect(created).not.toBeNull();
+        const read = await driver.getQueueState!(pseudo, name);
+        expect(read).toEqual({ value: { n: 1 }, version: created! });
+        // A compare-and-set, and a stale one refused.
+        const updated = await setReservedState(
+          driver,
+          pseudo,
+          name,
+          { n: 2 },
+          created,
+        );
+        expect(updated).not.toBeNull();
+        expect(
+          await setReservedState(driver, pseudo, name, { n: 9 }, created),
+        ).toBeNull();
+        expect(
+          await driver.listQueueState!(pseudo, {
+            prefix: "__win:summon-group:",
+            limit: 10,
+          }),
+        ).toEqual([name]);
+
+        const queues = await driver.listQueues(ns);
+        expect(queues).toContain("pseudo-neighbour");
+        expect(queues).not.toContain(RESERVED_QUEUE);
+        expect([...(await countQueues(driver, ns)).keys()]).not.toContain(
+          RESERVED_QUEUE,
+        );
+
+        expect(
+          await setReservedState(driver, pseudo, name, null, updated),
+        ).toBe(0);
+        await driver.drainQueue(real, true);
       });
 
       it("keeps the same queue name in two namespaces apart", async () => {

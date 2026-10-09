@@ -986,7 +986,9 @@ the base of `SummonControllerOptions`. The package README's
   provider was never called (its `ready` failed) is not counted, unless a
   reset cleared its count first. An attempt whose answer could not be
   recorded (other controllers won every write) is announced only when it is
-  settled, once, as `lost`: one failure then, and its count kept.
+  settled, once, as `lost`: one failure then, and its count kept. Off by
+  default in a `group` with a budget: set it to apply a per-queue ceiling on
+  top of the group's.
 - `maxLifetime`: optional. The longest a summoned worker may live. Defaults
   to `3_600_000`.
 - `servedBy`: optional. `"any-worker"` (default) or `"summoned-only"`.
@@ -1004,13 +1006,39 @@ the base of `SummonControllerOptions`. The package README's
   platform `unavailable`, when the budget is exhausted, and once when the
   circuit opens (`circuit-open`, with `until`). Only the controller that
   decided the outcome calls it. A throw or rejection is logged at `warn`.
+- `group`: optional. A [`SummonGroupOptions`](#summongroupoptions): share one
+  budget with every controller naming the same group, in any process.
+
+### `SummonGroupOptions`
+
+`SummonPolicy.group`: a summon group's name and what its controllers share.
+Each attempt is charged to the group before its queue's claim, and given
+back when that claim is lost or the provider was never called, so racing
+controllers never summon past the group's limit. Backoff, cooldown, the
+circuit, `maxPending` and `maxWorkers` stay per queue. The package README's
+[one budget for several queues](../../README.md#one-budget-for-several-queues-group)
+has the rules.
+
+- `name`: the group's name, a queue-name segment: the key its shared state
+  is stored under in the namespace (`__win:summon-group:<name>`, under the
+  reserved pseudo-queue `__bunjobs`). Renaming a group starts it afresh.
+- `budget`: optional. `{ perHour?, perDay? }`: attempts per UTC hour and day
+  across the group. Defaults to `30` and `300`. `false` keeps no group limit
+  (attempts are still counted). With a group budget, a queue's own `budget`
+  defaults to off.
+- `circuit`: optional. `true` or `{ failures?, resetAfter? }` (defaulting to
+  the policy's `circuit`): a circuit shared by the group, per provider
+  `kind`, fed by every failure and registration of its queues; while open,
+  no queue of the group using that kind is summoned for. Defaults to
+  `false`. Each queue's own circuit still applies.
 
 ### `SummonGroup`
 
 A `SummonPolicy` written once for several queues: an entry of the array form
 of `BunJobsOptions.summon`. Shorthand, not a shared controller: it expands
 into one `SummonController` per queue, each with its own marker, budget,
-backoff and circuit (a group's `budget` applies to each queue). The package
+backoff and circuit (a group's `budget` applies to each queue; its `group`
+is passed to each, which is how its queues share one budget). The package
 README's [one policy for several queues](../../README.md#one-policy-for-several-queues)
 has an example.
 
@@ -1048,8 +1076,11 @@ driver. Built by `jobs.summonController(queue)`, from
   cooldown, never the circuit, the budget or the compare-and-set.
 - `status`: `() => Promise<SummonStatus>`: the shared state plus this
   controller's policy. Writes nothing.
-- `reset`: `() => Promise<void>`: clears failures, the loss streak, the
-  backoff and an open circuit. Attempts in flight are kept.
+- `reset`: `(options?: { budget?, group? }) => Promise<void>`: clears
+  failures, the loss streak, the backoff and an open circuit. Attempts in
+  flight are kept. `budget: true` also clears the budget's counts;
+  `group: true` closes the summon group's shared circuit for its kind, and
+  with `budget: true` clears the group's counts too.
 - `close`: `() => Promise<void>`: stops the triggers and waits for a check in
   flight, lost attempts being explained, and events still publishing, each
   bounded by `summonTimeout`. Idempotent.
@@ -1085,6 +1116,9 @@ The payload of a `summon` event, locally and across processes.
 - `reason`: optional. Why the check that started it ran.
 - `detail`: optional. The attempt's detail. See
   [the security page](./security.md#the-attempts-detail).
+- `group`: optional. The summon group it was decided in: on every event of
+  an attempt a grouped controller made, and on a `budget-exhausted` of the
+  group's budget.
 
 ### `SummonCheckResult`
 
@@ -1115,6 +1149,9 @@ What `SummonPolicy.onSummonFailed` is told: one failure, secret-free.
   carry; for `circuit-open`, the opening failure's.
 - `at`: when the controller decided it, epoch ms.
 - `until`: optional. For `circuit-open`: when the circuit closes, epoch ms.
+- `group`: optional. For a `budget-exhausted` of a summon group's budget, or
+  a `circuit-open` of its shared circuit: the group's name (and `budget` is
+  the group's).
 - `budget`: optional. For `budget-exhausted`: `{ hour, perHour, day, perDay }`.
 
 ### `SummonFailureOutcome`
@@ -1158,8 +1195,9 @@ What an attempt ended as, on the shared state and in events:
 What `status()` answers, and the status route serves.
 
 - `queue`: the queue.
-- `local`: whether a controller runs in this process (always `true` from
-  `status()`).
+- `local`: whether a controller runs in this process: always `true` from
+  `status()`; `false` for a status the management API read from storage
+  alone (no `summoner`, the limits the last claim persisted).
 - `inert`: whether that controller is inert.
 - `inertReason`: optional. `"summoned-process"` or `"newer-marker"`.
 - `summoner`: optional; always present from `status()`. `{ provider,
@@ -1178,8 +1216,29 @@ What `status()` answers, and the status route serves.
 - `budget`: `{ hour, perHour?, day, perDay?, off?, hourResetsAt,
   dayResetsAt }`: attempts used this UTC hour and day, the limits (absent,
   with `off: true`, when the policy says `budget: false`), and when each
-  window resets, epoch ms.
+  window resets, epoch ms. `off` is also `true` when the queue sets no
+  `budget` in a group with a budget.
 - `last`: optional. The [`SummonLastOutcome`](#summonlastoutcome).
+- `group`: optional. A [`SummonGroupStatus`](#summongroupstatus), when the
+  controller is in a summon group.
+
+### `SummonGroupStatus`
+
+A summon group's shared state, as `status().group` reads it.
+
+- `name`: the group's name.
+- `budget`: `{ hour, perHour?, day, perDay?, off?, hourResetsAt,
+  dayResetsAt }`: attempts counted against the group this UTC hour and day
+  across its queues, this controller's limits for the group (absent, with
+  `off: true`, for `group.budget: false`), and when each window resets.
+- `queues`: `{ [queue]: { day, lastAt } }`: each queue's share of today's
+  attempts.
+- `circuit`: optional, with `group.circuit` on. `{ failures, openUntil?,
+  openedBy? }`: the shared circuit for this controller's summoner kind, and
+  `{ queue, id, detail? }` of the failure that last opened it.
+- `circuits`: optional. Every provider kind's shared circuit the group's
+  state holds, by `kind`, each as `circuit` shows one; absent while none has
+  counted a failure.
 
 ### `SummonMarker`
 
@@ -1202,6 +1261,12 @@ The shared summon state of one queue, in the reserved queue-state entry
   attempts whose count can still be given back (provider not yet called),
   emptied by a budget reset.
 - `last`: optional. The most recent outcome.
+- `kind`: optional. The summoner kind of the controller that made the last
+  claim, so a reader with no controller can name it.
+- `limits`: optional. That controller's budget limits, `{ perHour, perDay }`,
+  or `false` when its budget was off; absent until a claim persists them
+  (unknown).
+- `group`: optional. That controller's summon group, when it was in one.
 
 ### `PendingSummon`
 

@@ -99,6 +99,9 @@ describe("mounting", () => {
       // The summon status only: "summon now" and reset are `queues.summon`,
       // opt-in, so a default API does not register them.
       "GET /admin/jobs/queues/:queue/summon getQueueSummon queues.read",
+      // The summon group reads; the group reset is `queues.summon`, opt-in.
+      "GET /admin/jobs/summon/groups listSummonGroups queues.list",
+      "GET /admin/jobs/summon/groups/:group getSummonGroup queues.read",
       "POST /admin/jobs/queues/:queue/pause pauseQueue queues.pause (mutation)",
       "POST /admin/jobs/queues/:queue/resume resumeQueue queues.resume (mutation)",
       "POST /admin/jobs/queues/:queue/drain drainQueue queues.drain (mutation)",
