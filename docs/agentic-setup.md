@@ -36,7 +36,7 @@ shows today, and think in roles.
 | **bun-jobs agent** | `packages/bun-jobs/**` (but see `lib/runner/**` below) | queues, drivers, schema sync, the management API; its tests, bench and package README; reviews every PR that touches `packages/bun-jobs/**` — compute providers, summon and host isolation are built by the features agent under this review |
 | **bun-jobs-ui agent** | `packages/bun-jobs-ui/**`, `playground/**` | the React UI and its server; its tests, e2e and package README; reviews every playground change |
 | **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
-| **Features agent** | nothing exclusively | cross-package and phase work: performance; streaming and SSE (bun-common, bun-nest); summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review |
+| **Features agent** | nothing exclusively | cross-package and phase work: performance; streaming and SSE (bun-common, bun-nest); summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review. Also the [main agent](#the-main-agent) |
 
 **As of 2026-10-09:**
 
@@ -47,7 +47,7 @@ shows today, and think in roles.
 | bun-jobs agent | bun-node-2b |
 | bun-jobs-ui agent | bun-node-e8 |
 | Examples agent | bun-node-dd |
-| Features agent | bun-node-e6 |
+| Features agent (main agent) | bun-node-e6 |
 
 Until the bun-common and bun-nest agents exist, the features agent builds
 changes in those two packages and the examples agent checks them against the
@@ -60,6 +60,32 @@ only planned work in those packages is the SSE helpers, PR-sse2 to sse5
 
 Update the dated table when a session is replaced. Nothing else in this file
 should need to change for that.
+
+### The main agent
+
+The features agent is also the **main agent** (the user's decision,
+2026-10-09): it makes sure every role above has a session. On startup, and
+again after a restart or a usage limit, it:
+
+1. Runs `ListAgents` and matches each live session to a role in the dated
+   table. A session whose role it cannot tell (one from another window, or
+   one the table does not name) is asked for its role, not assumed, and a
+   session that holds no role keeps none unless the user says so.
+2. For every role with no live session, **recommends to the user** that they
+   start one: it names the role, what the role owns, and gives the kickoff
+   prompt from [Starting a new agent](#starting-a-new-agent) with the role
+   filled in. It recommends; the user starts sessions. Until a session takes
+   the role, the main agent tells the user who covers that role's work — for
+   bun-common and bun-nest, the features agent, as the paragraph above says.
+3. Once the user has started a session, assigns it its role by message: the
+   role, the paths it owns, today's roster, and any in-flight work it
+   inherits (branches, open PRs, owed reviews and reports).
+4. Updates the dated table in one combined edit once the new sessions have
+   their roles, so the file has a single writer. It is a committed file, so
+   the edit goes through the usual commit, PR and merge popups.
+
+If no features agent is running, the first session the user starts does
+steps 1 and 2, recommending a features agent first.
 
 ## Ownership
 
@@ -435,9 +461,20 @@ prompt, for the bun-common agent (swap the package for bun-nest):
 > touches `packages/bun-common/**`. Follow the commit, PR and merge rules
 > exactly: every step is a popup.
 
+For any other role, the main agent fills in the same shape from the role
+table:
+
+> You are the **\<role\>** for bun-node. You own \<its paths\>. Read
+> `CLAUDE.md` and `docs/agentic-setup.md` first, then `ListAgents` to find
+> the other sessions and introduce yourself to each: your role and the paths
+> you own. Ask the main agent (the features agent) for your assignment and
+> the work you inherit. \<What the role reviews, from the table.\> Follow the
+> commit, PR and merge rules exactly: every step is a popup.
+
 On the first day, the new agent:
 
-1. Updates the dated roster table above (a shared-file edit: tell the others).
+1. Tells the main agent its role and session name, for the dated roster
+   table above; the main agent makes that edit, so the table has one writer.
 2. Learns the package's gate: `bun run test`, `CI=1 bunx eslint .`, the
    typecheck, and — for bun-common — the downstream bun-nest and bun-jobs
    checks and the bench guard; for bun-nest, `examples/bun-nest`.
