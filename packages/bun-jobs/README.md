@@ -3640,6 +3640,7 @@ Examples:
 
 - [`11-management-api/summon-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/summon-routes.ts)
 - [`02-queues/summon-controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-controller.ts)
+- [`02-queues/summon-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-failures.ts)
 
 ### One policy for several queues
 
