@@ -24,6 +24,12 @@
 # prints, and the figures are what `--stats` prints, the same ones the wrapper
 # decides from. A running job also shows what is left of it, or how far past
 # the median it is. With no successful run on record it reads "unknown".
+# Since the key leaves out what does not change a job's length (a leading
+# `timeout` or `nice`, `--seed`, `--randomize`), every seed of one suite shares
+# one estimate.
+#
+# COMMAND is the job's whole command line, quoted where a shell needs it and
+# led by EXAMPLE_DRIVER=<driver> when the job set one, so it can be pasted back.
 #
 #   HEAVY_DIR      where the locks live (default /tmp/claude-1000; for tests)
 #   HEAVY_WRAPPER  the wrapper whose jobs to list (default $HEAVY_DIR/bun-node-heavy-run.sh)
@@ -45,6 +51,21 @@ owner() {
   echo "detached"
 }
 mins() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
+# A process's command line from its <skip>th argument on, in full, each
+# argument quoted when a shell would need it, so the line can be pasted back.
+# With <driver>, prefixed EXAMPLE_DRIVER=<driver>, which picks what runs.
+cmdof() {
+  local pid=$1 skip=$2 driver=${3:-} args=() a out=""
+  mapfile -d '' args <"/proc/$pid/cmdline" 2>/dev/null || return 0
+  [ -n "$driver" ] && out="EXAMPLE_DRIVER=$driver "
+  for a in "${args[@]:$skip}"; do
+    if [[ $a =~ ^[A-Za-z0-9_./:=@%+,-]+$ ]]; then out+="$a "
+    else out+="'${a//\'/\'\\\'\'}' "
+    fi
+  done
+  out=${out% }
+  printf '%s' "${out//[$'\t\n\r']/ }"
+}
 where() { readlink "/proc/$1/cwd" 2>/dev/null | sed 's|^/home/[^/]*/Desktop/projects/mine/||'; }
 envof() { tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p"; }
 printf -v now '%(%s)T' -1
@@ -98,7 +119,7 @@ for w in $(ps -eo pid=,args= | awk -v h="$WRAPPER" '$3 == h { print $1 }'); do
   age=$(ps -o etimes= -p "$w" | tr -d ' ')
   [ -n "$age" ] || continue
   kids=$(ps -o pid=,args= --ppid "$w")
-  cmd=$(ps -o args= -p "$w" | sed "s|^[^ ]* $WRAPPER ||" | cut -c1-60)
+  cmd=$(cmdof "$w" 2 "$(envof "$w" EXAMPLE_DRIVER)")
   ticket=$(envof "$w" HEAVY_TICKET)
   excl=$(envof "$w" HEAVY_EXCLUSIVE)
   # Its own record of its phase, unless that is older than the wrapper: then
@@ -144,7 +165,7 @@ for w in $(ps -eo pid=,args= | awk -v h="$WRAPPER" '$3 == h { print $1 }'); do
   if [ -n "$mode" ]; then state="$state [${mode/>/→}]"
   elif [ "$excl" = 1 ]; then state="$state [exclusive]"
   fi
-  rows+=("$key|$state|$est|$(owner "$w")|${ticket:--}|$(where "$w")|$cmd")
+  rows+=("$key"$'\t'"$state"$'\t'"$est"$'\t'"$(owner "$w")"$'\t'"${ticket:--}"$'\t'"$(where "$w")"$'\t'"$cmd")
 done
 # Plain `flock` jobs on the old lock file (slot 1), not started by the wrapper.
 for p in $(lslocks -n -o PID,PATH 2>/dev/null | awk -v f="$DIR/bun-node-heavy.lock" '$2 == f { print $1 }' | sort -u); do
@@ -160,7 +181,6 @@ for p in $(lslocks -n -o PID,PATH 2>/dev/null | awk -v f="$DIR/bun-node-heavy.lo
   else
     state="waiting $(mins "$age"), plain flock on slot 1"; key=$age
   fi
-  cmd=$(ps -o args= -p "$p" | sed 's|^flock [^ ]* ||' | cut -c1-60)
   # `flock [options] <file> <command...>`: the command starts after the file.
   skip=1
   while read -r a; do
@@ -168,16 +188,19 @@ for p in $(lslocks -n -o PID,PATH 2>/dev/null | awk -v f="$DIR/bun-node-heavy.lo
     case "$a" in -w | -E | --timeout | --conflict-exit-code) read -r _; skip=$((skip + 1)) ;; -*) ;; *) break ;; esac
   done < <(tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null | tail -n +2)
   est=$(estimate "$(statsof "$p" "$skip")" "$ran")
-  rows+=("$key|$state|$est|$(owner "$p")|-|$(where "$p")|$cmd")
+  cmd=$(cmdof "$p" "$skip" "$(envof "$p" EXAMPLE_DRIVER)")
+  rows+=("$key"$'\t'"$state"$'\t'"$est"$'\t'"$(owner "$p")"$'\t-\t'"$(where "$p")"$'\t'"$cmd")
 done
 
 if [ ${#rows[@]} -eq 0 ]; then
   echo "Nothing holds or waits for the heavy-run slots."
 else
+  # Tab-separated, since a command may hold a `|`. COMMAND is last and whole,
+  # so a long one wraps in the terminal without moving the other columns.
   {
-    echo "STATE|EST|SESSION|TICKET|WORKTREE|COMMAND"
-    printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1nr | cut -d'|' -f2-
-  } | column -t -s'|'
+    printf 'STATE\tEST\tSESSION\tTICKET\tWORKTREE\tCOMMAND\n'
+    printf '%s\n' "${rows[@]}" | sort -t$'\t' -k1,1nr | cut -f2-
+  } | column -t -s$'\t'
 fi
 echo
 echo "load $(cut -d' ' -f1-3 /proc/loadavg)   streak $(cat "$DIR/bun-node-heavy.streak" 2>/dev/null || echo 0)"

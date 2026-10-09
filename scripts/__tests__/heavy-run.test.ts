@@ -917,6 +917,122 @@ describe("heavy-run.sh: history and keys", () => {
   );
 
   scenario(
+    "the key leaves out timeout, nice, --seed and --randomize",
+    async (box) => {
+      const plain = await box.key(["bun", "test", "--parallel=16", "x.ts"]);
+      expect(plain).toEndWith(": bun test --parallel=16 x.ts");
+      for (const command of [
+        ["timeout", "2400", "bun", "test", "--parallel=16", "x.ts"],
+        [
+          "timeout",
+          "-k",
+          "5",
+          "--foreground",
+          "30",
+          "bun",
+          "test",
+          "--parallel=16",
+          "x.ts",
+        ],
+        ["nice", "-n", "10", "bun", "test", "--parallel=16", "x.ts"],
+        [
+          "nice",
+          "-10",
+          "timeout",
+          "60",
+          "bun",
+          "test",
+          "--parallel=16",
+          "x.ts",
+        ],
+        [
+          "timeout",
+          "60",
+          "nice",
+          "--adjustment=5",
+          "bun",
+          "test",
+          "--parallel=16",
+          "x.ts",
+        ],
+        ["bun", "test", "--parallel=16", "--randomize", "--seed=3", "x.ts"],
+        [
+          "bun",
+          "test",
+          "--randomize",
+          "--parallel=16",
+          "--seed",
+          "4242",
+          "x.ts",
+        ],
+      ]) {
+        expect(await box.key(command)).toBe(plain);
+      }
+      // What does change the run stays: another worker count, a seed's
+      // neighbour that is not a number, and a command of wrappers alone.
+      expect(await box.key(["bun", "test", "--parallel=4", "x.ts"])).not.toBe(
+        plain,
+      );
+      expect(await box.key(["bun", "test", "--seed", "abc"])).toEndWith(
+        ": bun test --seed abc",
+      );
+      expect(await box.key(["timeout", "30"])).toEndWith(": timeout 30");
+      expect(await box.key(["nice"])).toEndWith(": nice");
+    },
+  );
+
+  scenario(
+    "history recorded under an older key counts for the new one",
+    async (box) => {
+      const base = box.dir.split("/").pop();
+      const now = Math.floor(Date.now() / 1000);
+      // Keys as the wrapper wrote them before nice, --seed and --randomize
+      // were left out, and one of another job.
+      const lines = [
+        [`${base}: nice -n 10 bun test --randomize --seed=1`, 100],
+        [`${base}: bun test --randomize --seed=2`, 110],
+        [`${base}: nice -n 10 bun test`, 120],
+        [`${base}: bun test --parallel=4`, 999],
+      ].map(([key, seconds]) => `${now}\t${key}\t${seconds}\t0\n`);
+      writeFileSync(box.history, lines.join(""));
+      const stats = await exec(
+        [
+          "bash",
+          HEAVY_RUN,
+          "--stats",
+          "timeout",
+          "600",
+          "bun",
+          "test",
+          "--seed=9",
+        ],
+        { cwd: box.dir, env: box.env() },
+      );
+      expect(stats.stdout).toBe("110 3 - 0\n");
+    },
+  );
+
+  scenario(
+    "the queue shows the whole command, quoted, with its EXAMPLE_DRIVER",
+    async (box) => {
+      const name =
+        "a name with spaces | a bar, it's quoted, and well past sixty characters";
+      const run = box.run(
+        ["timeout", "60", "bash", "job.sh", name, "@q-done"],
+        {
+          env: { EXAMPLE_DRIVER: "postgres" },
+        },
+      );
+      await box.phaseIs(run, "running");
+      expect(row(await box.queue(), "@q-done")).toEndWith(
+        `EXAMPLE_DRIVER=postgres timeout 60 bash job.sh 'a name with spaces | a bar, it'\\''s quoted, and well past sixty characters' @q-done`,
+      );
+      box.finish("q-done");
+      expect((await run.done).code).toBe(0);
+    },
+  );
+
+  scenario(
     "the queue ignores, and deletes, a state file whose wrapper is gone",
     async (box) => {
       const gone = Bun.spawn(["true"]);
