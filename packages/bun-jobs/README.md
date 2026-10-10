@@ -2410,9 +2410,12 @@ in the Redis driver's options.
 **Signals.**
 
 - The handlers are installed before `run()` connects, so a stop during boot
-  still exits 0. A stop that arrives before the worker is ready closes it at
-  once, with `force` — nothing has been claimed yet — which ends the startup
-  there, however long the connect would have taken.
+  still exits 0. A stop that arrives before the worker is ready closes it
+  with `force` — no job has been claimed yet — which ends the startup there,
+  however long the connect would have taken. It is held short of `ready`
+  first while the exit mark goes onto a summon claim it already holds, so
+  the close comes at once with no claim known, and otherwise within the mark
+  wait: at most 1 s, or a quarter of the budget if less.
 - A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
   held hostage by a drain. A first SIGINT arriving during an idle or deadline
   close is the platform's stop, not a second Ctrl-C.
@@ -2481,7 +2484,8 @@ export async function handler(_event: unknown, context: { getRemainingTimeInMill
 
 It resolves with nothing left behind: no timer, no sweep lease, no signal
 handler. The one exception is a stop before the worker was ready: it resolves
-at once, while the driver's connect is still in flight, and the worker closes
+at once (or within the mark wait, when the worker already holds its summon
+claim), while the driver's connect may still be in flight, and the worker closes
 that connection only when it completes — which on Lambda can be after the
 invocation has returned, into the freeze.
 

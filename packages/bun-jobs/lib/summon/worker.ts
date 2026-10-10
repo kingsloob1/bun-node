@@ -7,6 +7,7 @@ import process from "node:process";
 import { readDemand, supportsWorkers } from "../drivers/readApis";
 import {
   HOLD_STARTUP,
+  SET_EXIT_MARK,
   SET_SUMMONED_MODE,
   SUMMON_OPTION_ID,
 } from "../queue/BunQueueWorker";
@@ -401,12 +402,14 @@ function isMode(value: unknown): value is SummonedMode {
 }
 
 /**
- * The part of a worker {@link runSummoned} uses: its public surface, and the
- * internal {@link HOLD_STARTUP} that stops a starting worker short of `ready`.
+ * The part of a worker {@link runSummoned} uses: its public surface, the
+ * internal {@link HOLD_STARTUP} that stops a starting worker short of
+ * `ready`, and {@link SET_EXIT_MARK}, which hands it the unit's exit mark.
  */
 type SummonedWorker = Pick<
   BunQueueWorker,
   | typeof HOLD_STARTUP
+  | typeof SET_EXIT_MARK
   | "id"
   | "ref"
   | "driver"
@@ -1247,6 +1250,13 @@ class SummonedRun {
     this.#closing = stop;
     this.#closeStartedAt = Date.now();
     const { reason } = stop;
+    // Every worker's own close writes the unit's reason and code on its
+    // summon claim, not `"closed"`: it does so once its first report has
+    // settled the claim, so a claim committed but not yet known to the
+    // worker — which `#markExit` cannot see — still gets them.
+    for (const { worker } of this.#active()) {
+      worker[SET_EXIT_MARK]({ reason, code: codeFor(reason) });
+    }
     const { tailReserve, mode } = this.#options;
     const now = Date.now();
 
@@ -1385,19 +1395,22 @@ class SummonedRun {
   }
 
   /**
-   * Writes the real reason and code onto the summon claim each worker won,
-   * under its own queue, **before** the close starts: each worker's own
-   * `close()` then finds a mark and leaves it, so the controller reads
+   * Writes the real reason and code onto the summon claim each worker knows
+   * it won, under its own queue, **before** the close starts: each worker's
+   * own `close()` then finds a mark and leaves it, so the controller reads
    * `idle`, `deadline`, `signal` or `error` rather than a bare `closed` — and
    * it is there before the record goes, so a check never sees neither. A
-   * code `1` mark is never replaced by a clean one.
+   * code `1` mark is never replaced by a clean one. A claim committed but not
+   * yet known to its worker is not seen here; the worker's own close writes
+   * the same reason and code on it ({@link SET_EXIT_MARK}), so whichever
+   * write lands last, the claim carries them.
    *
    * Waits at most `wait` — {@link EXIT_MARK_WAIT}, or a quarter of the
    * budget if less, already taken out of the budget the close rule sized the
    * close against — for every write, then lets the close begin while any
    * still running carries on. A failed write is logged, never thrown: the
-   * exit goes ahead either way, and the worker's own close still fills in
-   * its `closed` mark. A worker still starting is held meanwhile, not
+   * exit goes ahead either way, and the worker's own close still writes
+   * the unit's mark. A worker still starting is held meanwhile, not
    * closed, so a driver it owns is still open for its mark, which says
    * `forced`: its close will be.
    */
@@ -1607,9 +1620,12 @@ function checkUnit(
  * - **Signals first.** The handlers are installed synchronously, before
  *   `run()` connects and before this returns its promise, so a platform
  *   stopping the unit during boot still gets a clean exit 0. A stop that
- *   arrives before a worker is ready closes that worker at once, with
- *   `force`: it has claimed nothing, and the close ends its startup, however
- *   long the connect would have taken. In a unit stopped while only some of
+ *   arrives before a worker is ready closes that worker with `force`: it has
+ *   claimed no job, and the close ends its startup, however long the connect
+ *   would have taken. It is held short of `ready` while the exit marks are
+ *   written, so it closes at once when no summon claim is known yet, and
+ *   otherwise within the mark wait (at most 1 s, or a quarter of the budget
+ *   if less). In a unit stopped while only some of
  *   its workers are ready, the ones still starting are held at once, short of
  *   `ready`, so none claims a job in the meantime; the exit marks are written
  *   while their drivers are still open, then they are forced, and the ready

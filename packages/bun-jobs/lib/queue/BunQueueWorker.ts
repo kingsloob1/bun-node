@@ -30,6 +30,7 @@ import type {
   WorkerSummonInfo,
   WorkerTargetInfo,
 } from "../shared/workers";
+import type { SummonClaimExit } from "../summon/claim";
 import type { JobEvent } from "./Job";
 import type { Reservation } from "./limits";
 import type {
@@ -471,6 +472,16 @@ export const SUMMON_OPTION_ID: unique symbol = Symbol(
  */
 export const HOLD_STARTUP: unique symbol = Symbol("bun-jobs: hold startup");
 
+/**
+ * Internal: the key of the method `runSummoned` hands a worker the exit mark
+ * of its unit with — the unit's reason and code — before it closes the
+ * worker. The worker's own close then writes that on the summon claim it
+ * won instead of `"closed"`, code `0`: it writes once its claim is known,
+ * which the unit's own write cannot wait for. Exported from this module
+ * alone, never from the package root.
+ */
+export const SET_EXIT_MARK: unique symbol = Symbol("bun-jobs: set exit mark");
+
 /** How often a worker reads its stored instructions when it cannot subscribe. */
 const DEFAULT_CONTROL_INTERVAL = 2_000;
 
@@ -711,6 +722,12 @@ export class BunQueueWorker<
    * HOLD_STARTUP}). Never reset: a held worker is one about to be closed.
    */
   #startupHeld = false;
+  /**
+   * The exit mark `runSummoned` handed over ({@link SET_EXIT_MARK}): the
+   * reason and code its close writes on the summon claim in place of
+   * `"closed"` and `0`. `undefined` for a worker closed by its owner.
+   */
+  #exitMark: Pick<SummonClaimExit, "reason" | "code"> | undefined;
   /**
    * The heartbeat record's `target`, derived once from the very target
    * `#target` was built from, so the record cannot disagree with it. Frozen,
@@ -4784,6 +4801,20 @@ export class BunQueueWorker<
   }
 
   /**
+   * Internal ({@link SET_EXIT_MARK}): records the reason and code the close
+   * that follows writes on this worker's summon claim. Taken whenever it
+   * comes before that write, which the close makes once the first report has
+   * settled whether the claim was won; the latest call wins. `forced` is not
+   * taken: the worker's own close knows whether it was forced.
+   */
+  [SET_EXIT_MARK](
+    /** The unit's reason and exit code. */
+    mark: Pick<SummonClaimExit, "reason" | "code">,
+  ): void {
+    this.#exitMark = { reason: mark.reason, code: mark.code };
+  }
+
+  /**
    * Internal ({@link HOLD_STARTUP}): holds a worker that has not emitted
    * `ready` short of it until its `close()` is called. Synchronous, so a
    * worker held while its startup is still awaiting a step never becomes
@@ -5080,11 +5111,18 @@ export class BunQueueWorker<
    * settled and before the record is removed, so a reader always sees one or
    * the other.
    *
-   * Only fills an empty mark: `runSummoned` writes the real reason and code
-   * before it closes the worker, and that one stands. Nothing at all for a
-   * worker nobody summoned, one that did not win its claim, or one whose
-   * driver is already closed. Best effort: one compare-and-set loop, and a
-   * failure is reported as an error, never thrown.
+   * Under `runSummoned` the reason and code are the unit's, handed over
+   * before the close ({@link SET_EXIT_MARK}). The unit writes them itself
+   * too, before it closes the worker, but only on a claim the worker already
+   * knew it had won; this write waits for the first report to settle that,
+   * so a claim that was committed but not yet known still gets the unit's
+   * reason, never a bare `"closed"`. Both writes carry the same reason, so
+   * neither order loses it.
+   *
+   * Only fills an empty mark: one the unit wrote first stands. Nothing at all
+   * for a worker nobody summoned, one that did not win its claim, or one
+   * whose driver is already closed. Best effort: one compare-and-set loop,
+   * and a failure is reported as an error, never thrown.
    */
   async #markSummonExit(): Promise<void> {
     if (this.#summon === undefined || this.#driverClosed) {
@@ -5104,8 +5142,8 @@ export class BunQueueWorker<
         this.id,
         {
           exitedAt: Date.now(),
-          reason: "closed",
-          code: 0,
+          reason: this.#exitMark?.reason ?? "closed",
+          code: this.#exitMark?.code ?? 0,
           ...(this.#closeForced ? { forced: true } : {}),
         },
         false,
