@@ -870,7 +870,8 @@ describe("shared unit: the group's entry is its marker", () => {
       expect(
         await refundGroup(driver, namespace, "media", {
           queue: "renders",
-          chargedAt: charge.at,
+          hourStart: charge.hourStart,
+          dayStart: charge.dayStart,
           clears: charge.clears,
           epoch: charge.entry.epoch,
         }),
