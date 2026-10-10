@@ -3902,8 +3902,14 @@ export class BunRequest<
       return true;
     } catch (error) {
       if (declared) {
+        // A `SyntaxError`, as body-parser's is: NestJS answers one with a
+        // `BadRequestException` (its `mapExternalException`).
         throw this.#refuseBody(
-          httpError(400, (error as Error).message),
+          Object.assign(new SyntaxError((error as Error).message), {
+            status: 400,
+            statusCode: 400,
+            expose: true as const,
+          }),
           "entity.parse.failed",
           data,
         );

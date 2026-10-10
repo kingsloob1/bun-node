@@ -25,8 +25,26 @@
  *   answers every method with no middleware, guard or interceptor, gets an
  *   `ETag`, and wins over a Nest route on the same path. It exists only on
  *   the socket, so `adapter.fetch()` reaches Nest instead.
+ * - `@Redirect()` and `res.redirect()` answer as Express's `res.redirect`:
+ *   `Location` percent-encoded, `Vary: Accept`, a `Content-Length`, and a
+ *   short body chosen by `Accept` — "Found. Redirecting to …" as `text/plain`,
+ *   the same in a `<p>` (HTML-escaped) as `text/html`, or nothing for a client
+ *   that accepts neither. `res.redirect(301, url)` and the older
+ *   `res.redirect(url, 301)` both work.
+ * - `@Controller({ host })` matches a `Host` with a port; `useStaticAssets()`
+ *   redirects its bare prefix (`/static`) to `/static/` with a 301;
+ *   `res.clearCookie()` expires the cookie at the epoch and drops a `maxAge`
+ *   given; a JSON body that does not parse is Nest's 400 (`message`,
+ *   `error: "Bad Request"`, `statusCode`).
+ * - A few behaviours differ from Express on purpose, and the package README
+ *   lists them under "Known differences from `@nestjs/platform-express`". The
+ *   last section checks four a Nest user is most likely to meet — no `ETag`
+ *   by default, `text/plain` for a string body, a nested `req.query`, and a
+ *   `.tsx` view with no engine registered refused rather than loading a
+ *   module named `tsx` — and that the README still lists each, so neither
+ *   can change without the other.
  */
-import type { BunRequest } from "@kingsleyweb/bun-common";
+import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import type {
   CanActivate,
   MessageEvent,
@@ -36,6 +54,9 @@ import type {
   RawBodyRequest,
 } from "@nestjs/common";
 import type { Observable } from "rxjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import {
   Body,
@@ -46,7 +67,11 @@ import {
   Injectable,
   Module,
   Post,
+  Query,
+  Redirect,
+  Render,
   Req,
+  Res,
   Sse,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
@@ -453,5 +478,334 @@ checkEqual(
   [{ rawBody: null }, { n: 3 }],
 );
 await plainApp.close();
+
+/* ------------------------------------------------------------------ */
+/** Express's response helpers, as a Nest app on platform-express sees them. */
+@Controller()
+class ExpressController {
+  @Get("redirect")
+  @Redirect("/target")
+  redirect() {}
+
+  /** Spaces, a non-ASCII letter and an `&`: encoded, and escaped in HTML. */
+  @Get("redirect/encoded")
+  @Redirect("/search/café menu?q=a b&lang=fr")
+  encoded() {}
+
+  /** Express 5's argument order. */
+  @Get("res-redirect/status-first")
+  statusFirst(@Res() res: BunResponse) {
+    res.redirect(301, "/target");
+  }
+
+  /** The URL first, as before: still a 301 to the same place. */
+  @Get("res-redirect/url-first")
+  urlFirst(@Res() res: BunResponse) {
+    res.redirect("/target", 301);
+  }
+
+  /** A `maxAge` given to `clearCookie()` would keep the cookie alive. */
+  @Get("logout")
+  logout(@Res({ passthrough: true }) res: BunResponse) {
+    res.clearCookie("session", { maxAge: 60_000 });
+    return { loggedOut: true };
+  }
+
+  @Post("json")
+  @HttpCode(200)
+  json(@Body() body: unknown) {
+    return body;
+  }
+
+  @Get("data")
+  data() {
+    return { v: 1 };
+  }
+
+  @Get("words")
+  words() {
+    return "plain words";
+  }
+
+  @Get("query")
+  query(@Query() query: unknown) {
+    return query;
+  }
+
+  /** A `.tsx` view, with no engine registered for `.tsx`. */
+  @Get("widget")
+  @Render("widget.tsx")
+  widget() {
+    return {};
+  }
+
+  /** The same through `res.render()`, which throws what `@Render()` hides. */
+  @Get("widget/why")
+  widgetWhy(@Res() res: BunResponse) {
+    try {
+      res.render("widget.tsx");
+    } catch (error) {
+      res.json({ thrown: (error as Error).message });
+    }
+  }
+}
+
+/** Answers only for `Host: acme.example.com`, with or without a port. */
+@Controller({ host: "acme.example.com", path: "tenant" })
+class TenantController {
+  @Get()
+  tenant() {
+    return "acme's page";
+  }
+}
+
+@Module({ controllers: [ExpressController, TenantController] })
+class ExpressModule {}
+
+const parityScratch = await mkdtemp(join(tmpdir(), "bun-nest-parity-"));
+const publicDir = join(parityScratch, "public");
+await Bun.write(join(publicDir, "index.html"), "<h1>static home</h1>");
+const viewsDir = join(parityScratch, "views");
+await Bun.write(join(viewsDir, "widget.tsx"), "export const widget = 1;\n");
+
+const expressAdapter = new BunHttpAdapter();
+expressAdapter.useStaticAssets(publicDir, { prefix: "/static" });
+expressAdapter.setBaseViewsDir(viewsDir);
+const expressApp = await NestFactory.create(ExpressModule, expressAdapter, {
+  logger: false,
+});
+await expressApp.listen(0);
+const expressBase = `http://127.0.0.1:${expressAdapter.listeningPort}`;
+
+/** What a redirect answered: status, the headers Express sets, the body. */
+async function redirected(path: string, accept?: string) {
+  const response = await fetch(`${expressBase}${path}`, {
+    redirect: "manual",
+    headers: accept === undefined ? {} : { accept },
+  });
+  return {
+    status: response.status,
+    location: response.headers.get("location"),
+    vary: response.headers.get("vary"),
+    type: response.headers.get("content-type"),
+    length: response.headers.get("content-length"),
+    body: await response.text(),
+  };
+}
+
+step("@Redirect() and res.redirect(): Express's body, chosen by Accept");
+
+const plain = await redirected("/redirect", "text/plain");
+show("Accept: text/plain", plain);
+checkEqual("Accept: text/plain — a plain-text body", plain, {
+  status: 302,
+  location: "/target",
+  vary: "Accept",
+  type: "text/plain; charset=utf-8",
+  length: String("Found. Redirecting to /target".length),
+  body: "Found. Redirecting to /target",
+});
+checkEqual(
+  "Accept: text/html — the same in a <p>",
+  await redirected("/redirect", "text/html"),
+  {
+    status: 302,
+    location: "/target",
+    vary: "Accept",
+    type: "text/html; charset=utf-8",
+    length: String("<p>Found. Redirecting to /target</p>".length),
+    body: "<p>Found. Redirecting to /target</p>",
+  },
+);
+checkEqual(
+  "Accept: application/json — no body, and a Content-Length of 0",
+  await redirected("/redirect", "application/json"),
+  {
+    status: 302,
+    location: "/target",
+    vary: "Accept",
+    type: null,
+    length: "0",
+    body: "",
+  },
+);
+const encoded = await redirected("/redirect/encoded", "text/html");
+checkEqual(
+  "Location is percent-encoded; the HTML body escapes the `&`",
+  [encoded.location, encoded.body],
+  [
+    "/search/caf%C3%A9%20menu?q=a%20b&lang=fr",
+    "<p>Found. Redirecting to /search/caf%C3%A9%20menu?q=a%20b&amp;lang=fr</p>",
+  ],
+);
+checkEqual(
+  "res.redirect(301, url) and res.redirect(url, 301) answer alike",
+  [
+    await redirected("/res-redirect/status-first", "text/plain"),
+    await redirected("/res-redirect/url-first", "text/plain"),
+  ].map(({ status, location, body }) => ({ status, location, body })),
+  [
+    {
+      status: 301,
+      location: "/target",
+      body: "Moved Permanently. Redirecting to /target",
+    },
+    {
+      status: 301,
+      location: "/target",
+      body: "Moved Permanently. Redirecting to /target",
+    },
+  ],
+);
+
+step("Host routing, the static prefix, clearCookie, invalid JSON");
+
+/** `GET /tenant` with `Host: host`, served. */
+async function tenantAs(host: string) {
+  const response = await fetch(`${expressBase}/tenant`, { headers: { host } });
+  return `${response.status} ${await response.text()}`;
+}
+checkEqual(
+  "@Controller({ host }) matches the Host with and without a port, and nothing else",
+  [
+    await tenantAs("acme.example.com"),
+    await tenantAs("acme.example.com:8080"),
+    (await tenantAs("other.example.com")).slice(0, 3),
+  ],
+  ["200 acme's page", "200 acme's page", "404"],
+);
+
+const bare = await fetch(`${expressBase}/static`, { redirect: "manual" });
+checkEqual(
+  "GET /static — the bare prefix — is a 301 to /static/",
+  [bare.status, bare.headers.get("location")],
+  [301, "/static/"],
+);
+checkEqual(
+  "…which serves the index",
+  await (await fetch(`${expressBase}/static/`)).text(),
+  "<h1>static home</h1>",
+);
+
+const logout = await fetch(`${expressBase}/logout`);
+const cleared = logout.headers.get("set-cookie") ?? "";
+show("clearCookie('session', { maxAge: 60000 })", cleared);
+checkEqual(
+  "clearCookie() expires the cookie at the epoch, and drops the maxAge given",
+  {
+    expiresAtEpoch: cleared.includes("Expires=Thu, 01 Jan 1970 00:00:00 GMT"),
+    maxAge: /max-age/i.test(cleared),
+    value: cleared.split(";")[0],
+  },
+  { expiresAtEpoch: true, maxAge: false, value: "session=" },
+);
+
+const broken = await fetch(`${expressBase}/json`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: '{"pad":',
+});
+const brokenBody = (await broken.json()) as Record<string, unknown>;
+show("POST /json with invalid JSON", {
+  status: broken.status,
+  body: brokenBody,
+});
+checkEqual(
+  "invalid JSON is Nest's 400: message, error and statusCode",
+  {
+    status: broken.status,
+    keys: Object.keys(brokenBody).sort(),
+    error: brokenBody.error,
+    statusCode: brokenBody.statusCode,
+    message: typeof brokenBody.message,
+  },
+  {
+    status: 400,
+    keys: ["error", "message", "statusCode"],
+    error: "Bad Request",
+    statusCode: 400,
+    message: "string",
+  },
+);
+
+/* ------------------------------------------------------------------ */
+step("Differs from Express, on purpose (README: Known differences)");
+
+/** The package README's "Known differences" section, whitespace collapsed. */
+const readme = await Bun.file(
+  join(import.meta.dir, "../../../packages/bun-nest/README.md"),
+).text();
+const knownDifferences = (
+  readme
+    .split("### Known differences from `@nestjs/platform-express`")[1]
+    ?.split("\n## ")[0] ?? ""
+).replace(/\s+/g, " ");
+
+/**
+ * Checks one deliberate difference: that the README's Known differences list
+ * still names it, and that the adapter still behaves that way. Closing the gap
+ * fails the second half — the README's entry is then out of date — and
+ * dropping the entry while the behaviour stays fails the first.
+ */
+function differsOnPurpose<T>(
+  label: string,
+  readmeSays: string,
+  observed: T,
+  expected: T,
+) {
+  checkEqual(
+    `${label} — README, Known differences: "${readmeSays}"`,
+    { listed: knownDifferences.includes(readmeSays), observed },
+    { listed: true, observed: expected },
+  );
+}
+
+const data = await fetch(`${expressBase}/data`);
+await data.text();
+differsOnPurpose(
+  "no ETag by default (Express: a weak one)",
+  "ETags are off unless the adapter's `etag` option turns them on",
+  data.headers.get("etag"),
+  null,
+);
+
+const words = await fetch(`${expressBase}/words`);
+differsOnPurpose(
+  "a returned string is text/plain (Express: text/html)",
+  "A string, number or boolean response body defaults to `text/plain` (Express: `text/html`)",
+  [words.headers.get("content-type"), await words.text()],
+  ["text/plain;charset=utf-8", "plain words"],
+);
+
+differsOnPurpose(
+  "req.query nests a[b]=1 (Express 5's simple parser: { 'a[b]': '1' })",
+  '`req.query` nests (`a[b]=1` → `{ a: { b: "1" } }`)',
+  await (await fetch(`${expressBase}/query?a[b]=1`)).json(),
+  { a: { b: "1" } },
+);
+
+const widget = await fetch(`${expressBase}/widget`);
+differsOnPurpose(
+  "a .tsx view with no engine is refused, not require('tsx')'d (Express loads the module named after the extension)",
+  'A view with a script extension (`.tsx`, `.jsx`, `.ts`, `.js`, …) and no engine registered for it throws `No view engine registered for ".tsx"…`',
+  {
+    status: widget.status,
+    body: await widget.json(),
+    thrown: (
+      (await (await fetch(`${expressBase}/widget/why`)).json()) as {
+        thrown?: string;
+      }
+    ).thrown,
+  },
+  {
+    status: 500,
+    body: { statusCode: 500, message: "Internal server error" },
+    thrown:
+      'No view engine registered for ".tsx": register one with engine("tsx", fn).',
+  },
+);
+
+await expressApp.close();
+await rm(parityScratch, { recursive: true, force: true });
 
 summary();

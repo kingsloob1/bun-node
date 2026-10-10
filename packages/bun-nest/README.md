@@ -282,14 +282,13 @@ See
 | Returned value | Sent through `BunResponse.send`: text, JSON, binary, `Bun.file()`, `Blob`, `ReadableStream`, Node `Readable` and async iterables (streams are sent as they are). |
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. |
-| `@Redirect(url, status)` | Sets `Location` and the status (`302` when the status is `0`), then sends an **empty** body. Like Express's `res.redirect`, it finishes the response, but it sends no "Redirecting to" body. |
+| `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
 | `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A stream error goes to the file's `errorLogger`. |
-| `@Render(path)` | Sends the **file at `path`** with its content type. There is no template engine, and `setViewEngine()` does nothing. The handler's return value is the `RenderOptions`: a positive integer `status` on it sets the status, otherwise `200`. |
+| `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
 ```ts
-import type { RenderOptions } from "@kingsleyweb/bun-nest";
 import { createReadStream } from "node:fs";
-import { Controller, Get, HttpStatus, Redirect, Render, StreamableFile } from "@nestjs/common";
+import { Controller, Get, HttpCode, HttpStatus, Redirect, Render, StreamableFile } from "@nestjs/common";
 
 @Controller()
 export class PagesController {
@@ -306,15 +305,54 @@ export class PagesController {
   }
 
   @Get("maintenance")
-  @Render("public/maintenance.html")
-  maintenance(): RenderOptions {
-    return { status: 503 };
+  @HttpCode(503)
+  @Render("maintenance")
+  maintenance() {
+    return { until: "noon" };
   }
 }
 ```
 
 See
-[`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts).
+[`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts),
+and
+[`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts)
+for redirect bodies by `Accept`.
+
+#### Views: `@Render()` and `res.render()`
+
+Express's view system, as `@nestjs/platform-express` exposes it. Any engine
+with an Express `__express` export works (ejs, pug, hbs, …); install it in
+your app.
+
+```ts
+const app = await NestFactory.create(AppModule, new BunHttpAdapter());
+app.setBaseViewsDir(join(import.meta.dir, "views")); // Express's `views`
+app.setViewEngine("ejs");                            // `view engine`
+app.setLocal("siteName", "Acme");                    // `app.locals.siteName`
+```
+
+| Call | Express equivalent |
+|---|---|
+| `setBaseViewsDir(dir \| dirs)` | `app.set("views", …)`; defaults to `./views` |
+| `setViewEngine(ext)` | `app.set("view engine", ext)`; its module is loaded on first render and its `__express` used |
+| `engine(ext, fn)` | `app.engine(ext, fn)` |
+| `setLocal(key, value)` | `app.locals[key] = value` |
+| `set(setting, value)`, `enable()`, `disable()` | `app.set()`; only `views`, `view engine`, `view cache` and `view options` apply, any other is ignored with a warning |
+
+The locals are `app.locals`, then `res.locals`, then the handler's return
+value (or `res.render(view, locals)`'s). A name without an extension takes
+the view engine's; with no view engine it throws `No default engine was
+specified and no extension was provided.` (Nest's `500`). A view is looked up
+as `<name>.<ext>`, then `<name>/index.<ext>`, in each views directory; none
+found is Express's `Failed to lookup view …` error. `@Res() res` can call
+`res.render(view, locals?, callback?)` the same way.
+
+A plain HTML file is not a view without an engine for `.html`: send it with
+`res.sendFile()`, `StreamableFile` or `useStaticAssets()`.
+
+See
+[`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts).
 
 ### Versioning
 
@@ -378,8 +416,9 @@ See
 ### Static assets
 
 `adapter.useStaticAssets(directory, options)` serves a directory under
-`options.prefix`. It registers `GET <prefix>/*` and shares bun-common's static
-file implementation. That implementation provides directory indexes, extension
+`options.prefix`. It registers `GET <prefix>/*`, and `GET <prefix>`, which
+answers `301` to `<prefix>/` as Express's `serve-static` does. It shares
+bun-common's static file implementation. That implementation provides directory indexes, extension
 fallbacks, dotfile policy, `ETag` / `Last-Modified` validators (conditional
 requests answer `304`), `Cache-Control`, byte ranges (`206`) and a `404` for a
 path that resolves to nothing.
@@ -683,10 +722,49 @@ See
 
 ### Known differences from `@nestjs/platform-express`
 
-- `@Render()` sends a file; there is no view engine, and `setViewEngine()` is
-  a no-op.
-- `@Redirect()` sends an empty body rather than a "Redirecting to" body.
+Measured by `__tests__/expressCompat.nest.test.ts`, which boots one Nest
+application on both adapters and compares every response; everything not
+listed here answers the same status, headers and body.
+
+- A string, number or boolean response body defaults to `text/plain` (Express:
+  `text/html`), and a type set before a string body gets no `; charset=utf-8`.
+  `Content-Type` parameters are written without the space
+  (`application/json;charset=utf-8`).
+- A returned `Buffer` is sent as its bytes (`application/octet-stream`); Nest
+  on Express sends it as JSON (`{"type":"Buffer","data":[…]}`).
+- Nest's default body parsing parses every body type; on Express only JSON and
+  urlencoded bodies are parsed, so a `text/plain` body is `undefined` there.
+- There is no default body size limit (body-parser's is `100kb`); set one with
+  `app.useBodyParser(type, { limit })` or the adapter's `request.parseBody`
+  options. The `413` message names the limit and the size received.
+- An extended urlencoded body parses `d[]=x` as `"x"` (qs: `["x"]`).
+- `req.query` nests (`a[b]=1` → `{ a: { b: "1" } }`); Express 5's default
+  `simple` parser does not.
+- `X-Forwarded-For` / `X-Forwarded-Proto` are always read (`req.ips`,
+  `req.protocol`, `req.secure`): there is no `trust proxy` setting, so only rely
+  on them behind a proxy that sets them. `app.set("trust proxy", …)` is
+  ignored with a warning.
+- `req.subdomains` comes from the public-suffix list, left to right
+  (`a.b.example.com` → `["a", "b"]`; Express: `["b", "a"]`).
+- `res.cookie()` adds `SameSite=Lax` unless given, and orders the attributes
+  differently.
+- ETags are off unless the adapter's `etag` option turns them on (Express's
+  `etag` setting is on, weak, by default); the hash differs.
+- A view with a script extension (`.tsx`, `.jsx`, `.ts`, `.js`, …) and no
+  engine registered for it throws `No view engine registered for ".tsx"…`,
+  where Express would `require` the module named after the extension (for
+  `.tsx`, the `tsx` TypeScript runner). Register the engine with
+  `app.engine("tsx", fn)`.
+- Static files: `Vary: Accept-Encoding` is added; a directory redirect's HTML
+  links its target; an unsatisfiable range is a `416` with an empty body (on
+  Express it reaches Nest's exception filter as JSON).
+- CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
+  `Content-Length: 0`.
 - `getType()` returns `"express"`.
+
+See the last section of
+[`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
+which checks four of these against this list.
 
 ## File upload interceptors
 
@@ -1311,12 +1389,16 @@ describes the conventions they share.
 | `02-http-adapter` | [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts) | Nest middleware, a global prefix, every versioning type, `fetch()` without a socket |
 | `02-http-adapter` | [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts) | guards, pipes, exception filters and interceptors; not-found and error handlers |
 | `02-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, server introspection, `fetch()`, `close()` |
+| `02-http-adapter` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts) | `@Render()` and `res.render()` with a view engine: `setBaseViewsDir`, `setViewEngine`, `engine(ext, fn)`, `setLocal`, both view lookups, how locals merge, and the errors when a view or engine is missing |
+| `02-http-adapter` | [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts) | what `@nestjs/platform-express` users rely on: `HEAD` on `@Get()`, late `next()`, the request timeout, redirect bodies, host matching, the static-prefix redirect, `clearCookie`, invalid JSON, and the [known differences](#known-differences-from-nestjsplatform-express) checked as deliberate |
+| `02-http-adapter` | [`per-route-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/per-route-parsing.ts) | `requestParsing()` applied per route with `consumer.apply()`, and raising one route's body limit |
 | `03-file-uploads` | [`interceptors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/interceptors.ts) | every upload interceptor, `@UploadedFile(s)`, memory, disk and custom storage, upload errors, interceptor-side parsing |
 | `04-websockets` | [`gateway-basics.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/gateway-basics.ts) | lifecycle hooks, `@MessageBody`, `@ConnectedSocket`, `WsResponse` vs a plain return, Promise and Observable replies, `@Ack` |
 | `04-websockets` | [`message-formats.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/message-formats.ts) | every packet type on the wire, binary frames, malformed and unroutable frames, exceptions |
 | `04-websockets` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/adapter-options.ts) | the `websocket` option, auth on upgrade, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | `04-websockets` | [`custom-adapter.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 | `05-jobs-api` | [`module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/05-jobs-api/module.ts) | `BunJobsApiModule.forRoot`, `@InjectJobsApi()`, authorized requests against the mounted API, and what `app.close()` closes |
+| `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
 
 **Option tours** exercise every option of one part of the API and assert the
 result, so a failed check fails the script:

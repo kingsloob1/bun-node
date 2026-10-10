@@ -12,6 +12,10 @@
  *   it becomes `Max-Age` in seconds plus a matching `Expires`.
  * - `Path` defaults to `/`, and Bun adds `SameSite=Lax` unless told otherwise.
  * - `signed: true` needs a secret: `opts.secret`, or `req.secret`.
+ * - `clearCookie(name, options)` is Express 5's: an empty value with
+ *   `Expires` at the epoch, `Path` defaulting to `/`. A `maxAge` or `expires`
+ *   passed is dropped, since a `Max-Age` would outrank `Expires` and keep the
+ *   cookie alive. Pass the same `path`/`domain` the cookie was set with.
  * - ETags are opt-in: `new BunHttpAdapter(timeout, { etag })`, or per
  *   response with `res.setEtag(option)` / `res.etag = option`, which
  *   overrules the adapter's for that response only. The option is `false`,
@@ -70,6 +74,20 @@ for (const line of cookies.headers.getSetCookie()) {
   show("Set-Cookie", line);
 }
 show("res.get('Set-Cookie') in the handler", await cookies.text());
+
+router.get("/logout", (_req, res) => {
+  // Copied from the options the cookie was set with, `maxAge` included:
+  // clearCookie() drops it, as Express 5 does.
+  res.clearCookie("session", { path: "/account", maxAge: 3_600_000 });
+  res.send("logged out");
+});
+checkEqual(
+  "clearCookie(): Expires at the epoch, the maxAge passed dropped",
+  (await router.fetch("/logout")).headers.getSetCookie(),
+  [
+    "session=; Path=/account; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax",
+  ],
+);
 
 router.get("/unsigned-without-secret", (_req, res) => {
   try {

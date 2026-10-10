@@ -18,7 +18,8 @@
  *   answering `299` and an error handler answering the forwarded status.
  * - A directory without its trailing slash is a `301` to the slashed path
  *   (`redirect`, default `true`), or a miss with `redirect: false` — as in
- *   `serve-static`.
+ *   `serve-static`. The bare prefix (`/static`) is such a directory when the
+ *   handler is mounted with `use()`; a route on `${prefix}/*` never sees it.
  * - `setHeaders` receives the file's `fs.Stats`.
  * - `maxAge` is milliseconds, or an `ms`-style string (`"90s"`, `"1.5h"`,
  *   `"1d"`); anything unparseable means no `Cache-Control`.
@@ -512,6 +513,34 @@ checkEqual(
   "a file is never redirected",
   (await get({}, "/static/notes.txt")).status,
   200,
+);
+
+// The bare prefix. A route on `${prefix}/*` (what `site()` registers, and
+// what bun-common's `adapter.useStaticAssets()` registers) never sees
+// `/static` itself. Mounted with `use()`, as Express mounts
+// `app.use("/static", serveStatic(root))`, the handler sees it as the root
+// directory without its slash, and redirects it like any other directory.
+checkEqual(
+  "a route on the prefix plus /* does not match the bare prefix",
+  (await site().fetch("/static")).status,
+  404,
+);
+const mounted = new BunRouter();
+mounted.use(
+  "/static",
+  createServeStaticHandler(root, { prefix: "/static" }).handler,
+);
+const bare = await mounted.fetch("/static?v=2");
+checkEqual(
+  "mounted with use(): GET /static is a 301 to /static/, query kept",
+  [bare.status, bare.headers.get("location")],
+  [301, "/static/?v=2"],
+);
+const mountedIndex = await mounted.fetch("/static/");
+checkEqual(
+  "…which serves the index",
+  [mountedIndex.status, await mountedIndex.text()],
+  [200, "<h1>home</h1>"],
 );
 
 /* ------------------------------------------------------------------ */

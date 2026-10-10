@@ -7,7 +7,8 @@
  *    Nest's exception layer, each kind registers once and kinds stack;
  *  - `app.listen()` on a busy port rejects (the adapter reports it through
  *    the HTTP server's `error` event);
- *  - `@Render()` with a handler returning nothing still renders.
+ *  - `@Render()` with a handler returning nothing still renders (with no
+ *    locals, as Express's `res.render(view, undefined)`).
  *
  * `reflect-metadata` is imported last per the import-sort rule. No top-level
  * `await`: it perturbs decorator metadata in other gateway test files.
@@ -35,7 +36,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import "reflect-metadata";
 
-/** A file `@Render()` sends. */
+/** The view `@Render()` renders, by absolute path (an `.html` engine is registered below). */
 const PAGE = join(tmpdir(), `bun-nest-render-${process.pid}.html`);
 
 @Controller()
@@ -207,10 +208,27 @@ describe("NestJS app.listen()", () => {
 
 describe("NestJS @Render()", () => {
   it("renders when the handler returns nothing", async () => {
+    let locals: object | undefined;
     const adapter = await makeApp(() => undefined);
+    // As on Express, an `.html` view needs an engine for `.html`.
+    adapter.engine("html", (path, options, callback) => {
+      locals = options;
+      void Bun.file(path)
+        .text()
+        .then((html) => callback(null, html), callback);
+    });
 
     const response = await adapter.fetch("/page");
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("<p>page</p>");
+    expect(response.headers.get("content-type")).toBe(
+      "text/html; charset=utf-8",
+    );
+    // No handler locals: only Express's `settings`, `_locals` and `cache`.
+    expect(Object.keys(locals ?? {}).sort()).toEqual([
+      "_locals",
+      "cache",
+      "settings",
+    ]);
   });
 });
