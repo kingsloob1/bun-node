@@ -440,7 +440,9 @@ export interface SummonFailure {
    * shared state rather than the queue's: a `budget-exhausted` of the
    * group's budget, or a `circuit-open` of the group's shared circuit (told
    * once per opening, by the controller whose write opened it). Absent for
-   * everything decided per queue.
+   * everything decided per queue. A shared unit's (`group.unit: "shared"`)
+   * every failure is its group's, and carries it; `queue` is then its first
+   * queue.
    */
   group?: string;
   /** For `budget-exhausted`: the attempts counted and the limits they reached. */
@@ -517,6 +519,21 @@ export interface SummonGroupOptions {
         /** How long it stays open, in ms. Defaults to the policy's `circuit.resetAfter`. */
         resetAfter?: number;
       };
+  /**
+   * What one summon starts. `"per-queue"` (default): one controller per
+   * queue, each summoning units for its own queue alone, sharing only what
+   * `budget` and `circuit` say. `"shared"`: one controller for the whole
+   * group (`SummonControllerOptions.queues`), and every unit it summons runs
+   * a worker for each of the group's queues.
+   *
+   * **A shared unit keeps all of its state in the group's entry**: one
+   * marker for its attempts, failures, backoff and circuit. So its circuit
+   * is always shared, and `circuit` is accepted and ignored; an open circuit
+   * that per-queue controllers of the group wrote for the summoner's `kind`
+   * still holds it back. `budget` and the policy's own `budget` both apply,
+   * against the one count: per period, the stricter limit wins.
+   */
+  unit?: "per-queue" | "shared";
 }
 
 /** What a `SummonController` is built with: a policy plus where the queue lives. */
@@ -528,8 +545,29 @@ export interface SummonControllerOptions extends SummonPolicy {
   driver: JobsDriver;
   /** The queue's namespace. */
   namespace: string;
-  /** The queue to watch. */
-  queue: string;
+  /**
+   * The queue to watch. Give exactly one of `queue` and `queues`: a
+   * controller for one queue takes `queue`.
+   */
+  queue?: string;
+  /**
+   * The queues a shared unit serves, in order (`group.unit: "shared"`, which
+   * `queues` requires): every unit the controller summons runs a worker for
+   * each. Each named once; the first is `controller.queue`. Give exactly one
+   * of `queue` and `queues`.
+   */
+  queues?: readonly string[];
+  /**
+   * For a shared unit, what may differ per queue, keyed by a queue in
+   * `queues`: its `jobsPerWorker` (outstanding jobs one unit's worker for it
+   * should take; defaults to the policy's) and `maxWorkers` (the most units
+   * its demand alone may ask for, at most the policy's; defaults to it).
+   * Everything else in the policy is the unit's. Any other key, or a queue
+   * not in `queues`, is a `ConfigError` naming it. Unset by default.
+   */
+  overrides?: Readonly<
+    Record<string, Readonly<Pick<SummonPolicy, "jobsPerWorker" | "maxWorkers">>>
+  >;
   /** Where it logs. Any `LoggerLike`; defaults to the package's logger, named `"summon"`. */
   logger?: LoggerLike;
 }
@@ -838,6 +876,11 @@ export interface SummonStatus {
    * Attempts used against the budget, this hour and today, with the limits
    * and when each window resets. With the budget off (`budget: false`) the
    * counts are still shown, the limits are absent and `off` is `true`.
+   *
+   * For a shared unit (`group.unit: "shared"`) the counts are the group's,
+   * and the limits are the ones it is held to: per period the stricter of
+   * the policy's `budget` and `group.budget` (`off` only when both are off).
+   * `group.budget` shows the group's own limits beside the same counts.
    */
   budget?: {
     /** Attempts this UTC hour. */

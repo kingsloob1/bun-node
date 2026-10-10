@@ -2,6 +2,7 @@ import type {
   JobsDriver,
   QueueDemand,
   QueueRef,
+  QueueStateEntry,
   WorkerInfo,
 } from "../drivers/index";
 import type { FacetReadiness } from "../provider/configure";
@@ -12,6 +13,7 @@ import type { SummonClaim } from "./claim";
 import type {
   GroupCircuitNote,
   ResolvedSummonGroup,
+  SharedSummonMarker,
   SummonGroupCharge,
   SummonGroupEntry,
 } from "./group";
@@ -55,7 +57,11 @@ import {
 import { PROVIDER_FETCH_PROBE, providerCallContext } from "../provider/context";
 import { providerErrorFacts } from "../provider/errors";
 import { redactDetail, redactingLogger } from "../provider/redact";
-import { registerProvider, warnUnmappedThrow } from "../provider/version";
+import {
+  negotiate,
+  registerProvider,
+  warnUnmappedThrow,
+} from "../provider/version";
 import { LOCAL_ADD_HOOKS } from "../queue/BunQueue";
 import { MAX_TIMER_MS } from "../queue/BunQueueWorker";
 import { setReservedState } from "../queue/windows";
@@ -77,11 +83,16 @@ import {
 import { DEFAULT_BOOT_BUDGET, toSummoner } from "./define";
 import {
   chargeGroup,
+  groupCircuitOpen,
   noteGroupCircuit,
   ownValue,
+  readSharedMarker,
   refundGroup,
   resetGroup,
   resolveSummonGroup,
+  setOwn,
+  summonGroupRef,
+  summonGroupStateName,
 } from "./group";
 import {
   attemptId,
@@ -236,6 +247,11 @@ export const SUMMON_GROUP_VIEW: unique symbol = Symbol(
 export interface AddedSource {
   /** The hooks, `undefined` while none is set. */
   [LOCAL_ADD_HOOKS]: ((job: AddedJob) => void)[] | undefined;
+  /**
+   * The queue's name (a `BunQueue`'s), which a shared unit's controller
+   * hooks the source to; a controller for one queue does not read it.
+   */
+  readonly name?: string;
 }
 
 /** The two fields of an added job the fast path reads. */
@@ -470,7 +486,60 @@ interface ResolvedPolicy {
   onSummonFailed:
     | ((failure: SummonFailure) => void | Promise<void>)
     | undefined;
+  /**
+   * Each queue's capacity, by queue, in the controller's order: the
+   * policy's `jobsPerWorker` and `maxWorkers`, or a shared unit's
+   * `overrides` of them.
+   */
+  perQueue: ReadonlyMap<string, QueueCapacity>;
 }
+
+/** One queue's reads in a check: its demand and its live worker records. */
+interface QueueReading {
+  /** The queue. */
+  queue: string;
+  /** Its demand reading. */
+  demand: QueueDemand;
+  /** Its live worker records. */
+  workers: WorkerInfo[];
+}
+
+/** What one queue needs in a check, worked out from its reading (§4.4). */
+interface QueueNeed {
+  /** The queue. */
+  queue: string;
+  /** Its demand reading. */
+  demand: QueueDemand;
+  /** Whether it needs a worker at all: not paused, and with demand or an orphan. */
+  needed: boolean;
+  /**
+   * Whether a scale unit could go to zero for it: nothing running (paused or
+   * not), and nothing claimable waiting unless it is paused.
+   */
+  idle: boolean;
+  /** Its live records that count as serving it (`servedBy`). */
+  counted: WorkerInfo[];
+  /** The workers its demand wants, at most its `maxWorkers`: at least `1`. */
+  wanted: number;
+  /** Places of pending attempts still on their way to it. */
+  onTheirWay: number;
+  /** `wanted − counted − onTheirWay`: how many more it is short. */
+  deficit: number;
+}
+
+/** One queue's capacity in a check: what its demand alone asks of the unit. */
+interface QueueCapacity {
+  /** Outstanding jobs one worker for the queue should take. */
+  jobsPerWorker: number;
+  /** The most units the queue's demand alone may ask for. */
+  maxWorkers: number;
+}
+
+/** The keys a shared unit's `overrides` may hold: the per-queue values. */
+const OVERRIDE_KEYS: ReadonlySet<string> = new Set([
+  "jobsPerWorker",
+  "maxWorkers",
+]);
 
 /**
  * A circuit this check opened: the attempt whose failure opened it, and that
@@ -482,6 +551,30 @@ interface CircuitOpening {
   id: string;
   /** That failure's detail, when it had one. */
   detail?: string;
+}
+
+/** The detail prefix of a unit registered on some of its queues only: `partial:<queues>`. */
+const PARTIAL = "partial:";
+
+/**
+ * An attempt's claims on every queue, as one: every queue's holders
+ * together, so a death anywhere in a unit is one loss for the attempt.
+ * `undefined` when no queue has a claim (purged).
+ */
+function mergeClaims(
+  byQueue: ReadonlyMap<string, SummonClaim | undefined> | undefined,
+): SummonClaim | undefined {
+  const claims = [...(byQueue?.values() ?? [])].filter(
+    (claim): claim is SummonClaim => claim !== undefined,
+  );
+  if (claims.length <= 1) {
+    return claims[0];
+  }
+  return {
+    capacity: claims.reduce((sum, claim) => sum + claim.capacity, 0),
+    holders: claims.flatMap((claim) => claim.holders),
+    at: Math.min(...claims.map((claim) => claim.at)),
+  };
 }
 
 /** Whether the marker's circuit is open at `now`. */
@@ -611,7 +704,79 @@ export function wireRequest(
 }
 
 /**
- * Watches one queue and summons compute when it has work and no worker.
+ * The queues a controller watches, checked: `[queue]`, or a shared unit's
+ * `queues`. Exactly one of the two is given, and `queues` only with
+ * `group.unit: "shared"` — which, in turn, takes `queues`, not `queue`.
+ *
+ * @throws {ConfigError} for both or neither, `queues` without a shared
+ *   unit or a shared unit without `queues`, an empty `queues`, a queue that
+ *   is not a valid segment (or is the reserved `__bunjobs`), a queue named
+ *   twice, and `overrides` without `queues`.
+ */
+function controllerQueues(
+  options: SummonControllerOptions,
+  group: ResolvedSummonGroup | undefined,
+): string[] {
+  const { queue, queues, overrides } = options;
+  const shared = group?.unit === "shared";
+  if (queue !== undefined && queues !== undefined) {
+    throw new ConfigError(
+      "SummonController takes queue or queues, not both: queue for one queue, queues for a shared unit",
+      { queue, queues: [...queues] },
+    );
+  }
+  if (queues === undefined) {
+    if (queue === undefined) {
+      throw new ConfigError(
+        "SummonController needs queue (one queue) or queues (a shared unit's)",
+      );
+    }
+    if (shared) {
+      throw new ConfigError(
+        'A shared unit (group.unit: "shared") names the queues it serves in queues, not queue',
+        { queue, group: group.name },
+      );
+    }
+    if (overrides !== undefined) {
+      throw new ConfigError(
+        "overrides change a shared unit's per-queue values, and a controller for one queue has none: set jobsPerWorker and maxWorkers on its policy",
+        { queue },
+      );
+    }
+    return [assertSegment(queue, "queue name")];
+  }
+  if (!shared) {
+    throw new ConfigError(
+      'queues is for a shared unit: set group: { name, unit: "shared" }, or build one controller per queue',
+      { queues: Array.isArray(queues) ? [...queues] : String(queues) },
+    );
+  }
+  if (!Array.isArray(queues) || queues.length === 0) {
+    throw new ConfigError("queues must name at least one queue", {
+      group: group.name,
+    });
+  }
+  const seen = new Set<string>();
+  return queues.map((name: unknown, index) => {
+    const checked = assertSegment(name as string, `queues[${index}]`);
+    if (seen.has(checked)) {
+      throw new ConfigError(
+        `queues names "${checked}" twice: a shared unit runs one worker per queue`,
+        { queue: checked, group: group.name },
+      );
+    }
+    seen.add(checked);
+    return checked;
+  });
+}
+
+/**
+ * Watches one queue and summons compute when it has work and no worker — or,
+ * built with `queues` and `group: { name, unit: "shared" }`, a group of
+ * queues, summoning one unit that runs a worker for each (plan
+ * summon-multi-queue §4): demand combined by the most-starved queue, each
+ * queue's capacity counted apart, and the attempts, failures, backoff,
+ * circuit and budget kept in the group's entry instead of a queue's marker.
  *
  * ```ts
  * const controller = new SummonController({
@@ -644,8 +809,13 @@ export function wireRequest(
  *   a malformed option.
  */
 export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
-  /** The queue it watches. */
+  /** The queue it watches: for a shared unit, the first of {@link queues}. */
   readonly queue: string;
+  /**
+   * Every queue it watches, in the policy's order: `[queue]` for one queue,
+   * the group's queues for a shared unit (`group.unit: "shared"`). Frozen.
+   */
+  readonly queues: readonly string[];
   /** The queue's namespace. */
   readonly namespace: string;
   /**
@@ -660,10 +830,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return this.#inertReason !== undefined;
   }
 
+  /** Whether it summons one shared unit for its group's queues (`group.unit: "shared"`). */
+  get #shared(): boolean {
+    return this.#group?.unit === "shared";
+  }
+
   /** The backend. */
   readonly #driver: JobsDriver;
-  /** The queue as the driver addresses it. */
-  readonly #ref: QueueRef;
+  /**
+   * Where the marker lives — every attempt in flight, the failures, the
+   * backoff, the circuit and the budget: the queue's own `__win:summon`, or
+   * for a shared unit the group's entry (`__win:summon-group:<name>` under
+   * the namespace's pseudo-queue), which then carries every marker field.
+   */
+  readonly #home: {
+    /** The queue-state ref the marker is stored under. */
+    ref: QueueRef;
+    /** The marker's queue-state name. */
+    name: string;
+  };
+
+  /**
+   * The queues it serves, as the driver addresses them, in the policy's
+   * order: where demand, worker records, claims and triggers are read.
+   */
+  readonly #queues: readonly QueueRef[];
   /** Where it logs. */
   readonly #logger: Logger;
   /** The summoner, normalised. */
@@ -721,13 +912,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /** Why the controller is inert, or `undefined` while it is live. */
   #inertReason: "summoned-process" | "newer-marker" | undefined;
   /**
-   * The `cap` each check reads demand with: `DEFAULT_DEMAND_CAP`, raised to
-   * `maxWorkers × jobsPerWorker` when that is finite and larger (§6.4 D3), so
-   * a capped `outstanding` can never under-state how many workers are wanted.
+   * The `cap` each check reads a queue's demand with, by queue:
+   * `DEFAULT_DEMAND_CAP`, raised to the queue's `maxWorkers × jobsPerWorker`
+   * when that is finite and larger (§6.4 D3), so a capped `outstanding` can
+   * never under-state how many workers are wanted.
    */
-  #demandCap!: number;
-  /** Whether the last events subscription failed, so the next poll tick retries it. */
-  #subscribeFailed = false;
+  #demandCaps!: ReadonlyMap<string, number>;
+  /** The queues whose last events subscription failed, so the next poll tick retries them. */
+  readonly #subscribeFailed = new Set<string>();
   /** Whether the current run of subscription failures has been warned about. */
   #warnedSubscribe = false;
   /** Whether the one `warn` about approximate (`exact: false`) demand was logged. */
@@ -737,7 +929,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * covering what the queue wants, and a local `added` does nothing at all:
    * the earliest `expiresAt` among the records that counted. `0` otherwise.
    */
-  #servedUntil = 0;
+  #servedUntil: ReadonlyMap<string, number> = new Map();
   /** The debounce timer for add and event triggers, while armed. */
   #debounceTimer: ReturnType<typeof setTimeout> | undefined;
   /** The one-shot timer for a delayed job added here, and the time it fires. */
@@ -752,10 +944,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #closed = false;
   /** Connecting and ensuring the queue, once. */
   #ready: Promise<void> | undefined;
-  /** The event subscription being set up, and its unsubscribe. */
-  #subscription: Promise<(() => Promise<void>) | undefined> | undefined;
-  /** Queues whose `added` event this controller listens to. */
-  readonly #sources = new Set<AddedSource>();
+  /** Each queue's event subscription being set up, and its unsubscribe, by queue. */
+  readonly #subscriptions = new Map<
+    string,
+    Promise<(() => Promise<void>) | undefined>
+  >();
+
+  /** Queues whose local adds this controller hooks, each with the hook it set there. */
+  readonly #sources = new Map<AddedSource, (job: AddedJob) => void>();
   /** Since when nothing has been outstanding (scale style), or `undefined`. */
   #zeroSince: number | undefined;
   /** Whether this controller has released the scale count since demand last appeared. */
@@ -801,12 +997,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       throw new ConfigError("SummonController needs a driver instance");
     }
     this.namespace = assertNamespace(options.namespace);
-    this.queue = assertSegment(options.queue, "queue name");
+    this.#group = resolveSummonGroup(options.group);
+    this.queues = Object.freeze(controllerQueues(options, this.#group));
+    this.queue = this.queues[0]!;
     this.#driver = driver;
-    this.#ref = { ns: this.namespace, queue: this.queue };
+    this.#queues = this.queues.map((queue) => ({ ns: this.namespace, queue }));
+    this.#home = this.#shared
+      ? {
+          ref: summonGroupRef(this.namespace),
+          name: summonGroupStateName(this.#group!.name),
+        }
+      : { ref: this.#queues[0]!, name: SUMMON_MARKER };
     this.#logger = createJobsLogger(
       options.logger,
-      { namespace: this.namespace, queue: this.queue },
+      {
+        namespace: this.namespace,
+        queue: this.queue,
+        ...(this.#shared ? { group: this.#group!.name } : {}),
+      },
       "summon",
     );
 
@@ -834,9 +1042,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
 
-    this.#group = resolveSummonGroup(options.group);
     this.#summoner = toSummoner(options.summoner);
     this.#options = options;
+    if (this.#shared) {
+      // §4.8: a shared unit's argv repeats `--bun-jobs-summon-queue=`, which
+      // only a provider written for summon 0.2 has proven it passes whole.
+      const summon = negotiate(this.#summoner.provider.apiVersion).summon;
+      const minor = Number(summon?.split(".")[1] ?? 0);
+      if (!(minor >= 2)) {
+        throw new ConfigError(
+          `A shared unit needs a provider written for summon 0.2 or later, which passes its repeated queue arguments whole; ${this.#summoner.provider.name} negotiated summon ${summon ?? "none"}: upgrade the provider, or summon per queue`,
+          {
+            provider: this.#summoner.provider.name,
+            summon: summon ?? null,
+            group: this.#group!.name,
+          },
+        );
+      }
+    }
     const probe = (options as { [PROVIDER_FETCH_PROBE]?: unknown })[
       PROVIDER_FETCH_PROBE
     ];
@@ -874,16 +1097,22 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
     if (this.#policy.poll !== false) {
       this.#pollTimer = setInterval(() => {
-        if (this.#subscribeFailed && !this.#closed) {
-          this.#subscribeFailed = false;
-          this.#subscription = this.#subscribe();
+        if (!this.#closed) {
+          for (const queue of [...this.#subscribeFailed]) {
+            this.#subscribeFailed.delete(queue);
+            this.#subscriptions.set(queue, this.#subscribe(queue));
+          }
         }
         this.#trigger("poll");
       }, this.#policy.poll);
       this.#pollTimer.unref?.();
     }
     if (this.#policy.events) {
-      this.#subscription = this.#subscribe();
+      // One subscription per queue; every one arms the single debounce, so
+      // a burst across all of them makes one check.
+      for (const queue of this.queues) {
+        this.#subscriptions.set(queue, this.#subscribe(queue));
+      }
     }
   }
 
@@ -913,19 +1142,28 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         { error: String(error) },
       );
     }
+    if (this.#shared && capabilities.passes === "none") {
+      // A unit that is told nothing cannot know which queues it serves,
+      // and its workers could not claim the attempt on any of them.
+      throw new ConfigError(
+        'A shared unit needs a platform that passes identity: with passes: "none" the unit cannot know which queues to serve',
+        { kind: this.#summoner.provider.kind, group: this.#group!.name },
+      );
+    }
     const policy = this.#resolve(this.#options, capabilities);
     // The arguments every attempt passes, built once now (an attempt id has
     // a fixed length): arguments over the limit are refused at
     // construction, or at adoption, never at a first attempt.
     wireRequest(
       {
-        id: attemptId(this.namespace, this.queue, "", 0),
+        id: attemptId(this.namespace, this.#attemptKey, "", 0),
         count: 1,
         target: 1,
       },
       {
         namespace: this.namespace,
         queue: this.queue,
+        ...this.#wireQueues(),
         kind: this.#summoner.provider.kind,
         style: capabilities.style,
         dedupeKey,
@@ -934,17 +1172,34 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         env: policy.env,
       },
     );
-    const product = policy.maxWorkers * policy.jobsPerWorker;
+    const caps = new Map<string, number>();
+    for (const [queue, capacity] of policy.perQueue) {
+      const product = capacity.maxWorkers * capacity.jobsPerWorker;
+      caps.set(
+        queue,
+        Number.isFinite(product)
+          ? Math.max(
+              DEFAULT_DEMAND_CAP,
+              Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
+            )
+          : DEFAULT_DEMAND_CAP,
+      );
+    }
     this.#facet = facet;
     this.#capabilities = capabilities;
     this.#dedupeKey = dedupeKey;
     this.#policy = policy;
-    this.#demandCap = Number.isFinite(product)
-      ? Math.max(
-          DEFAULT_DEMAND_CAP,
-          Math.min(Math.ceil(product), Number.MAX_SAFE_INTEGER),
-        )
-      : DEFAULT_DEMAND_CAP;
+    this.#demandCaps = caps;
+  }
+
+  /**
+   * The queues and group a request names: a shared unit's, or nothing extra
+   * for one queue (whose request names `[queue]` and no group).
+   */
+  #wireQueues(): { queues?: readonly string[]; group?: string } {
+    return this.#shared
+      ? { queues: this.queues, group: this.#group!.name }
+      : {};
   }
 
   /**
@@ -1056,6 +1311,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         onSummonFailed: typeof onSummonFailed,
       });
     }
+    const perQueue = this.#perQueue(
+      options,
+      positiveInt("maxWorkers", options.maxWorkers ?? 1),
+      maxWorkers,
+      jobsPerWorker,
+    );
 
     return {
       onAdd: triggers.onAdd ?? true,
@@ -1098,11 +1359,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       },
       // A5: in a group with a budget, a queue that sets none has none of
       // its own — the group's is the limit.
-      budget:
+      budget: this.#effectiveBudget(
         budget === false ||
-        (budget === undefined &&
-          this.#group !== undefined &&
-          this.#group.budget !== false)
+          (budget === undefined &&
+            this.#group !== undefined &&
+            this.#group.budget !== false)
           ? false
           : {
               perHour: positiveInt(
@@ -1114,6 +1375,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
                 budget?.perDay ?? DEFAULT_PER_DAY,
               ),
             },
+      ),
       maxLifetime,
       servedBy,
       scaleDownAfter: nonNegativeInt(
@@ -1126,6 +1388,168 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ),
       env: Object.freeze({ ...env }),
       onSummonFailed,
+      perQueue,
+    };
+  }
+
+  /**
+   * The limits a check holds the marker's counts to. For one queue, the
+   * policy's `budget` as resolved. For a shared unit (Q2), whose one count
+   * is the group's, the policy's `budget` and `group.budget` both apply:
+   * per period the stricter limit wins (the smaller `perHour`, the smaller
+   * `perDay`), a side that is off imposes nothing, and both off is off.
+   * `status().budget` shows the result.
+   */
+  #effectiveBudget(
+    /** The policy's own budget, resolved (A5 applied). */
+    own: { perHour: number; perDay: number } | false,
+  ): { perHour: number; perDay: number } | false {
+    const group = this.#group;
+    if (!this.#shared || group === undefined || group.budget === false) {
+      return own;
+    }
+    if (own === false) {
+      return { perHour: group.budget.perHour, perDay: group.budget.perDay };
+    }
+    return {
+      perHour: Math.min(own.perHour, group.budget.perHour),
+      perDay: Math.min(own.perDay, group.budget.perDay),
+    };
+  }
+
+  /**
+   * Each queue's capacity: the policy's, with a shared unit's `overrides`
+   * over it (Q1: only `jobsPerWorker` and `maxWorkers`, a queue's
+   * `maxWorkers` at most the unit's).
+   *
+   * @throws {ConfigError} for `overrides` that is not a record of objects,
+   *   names a queue not in `queues`, or holds any other key; a per-queue
+   *   `maxWorkers` that is not a positive whole number or is above the
+   *   policy's; a per-queue `jobsPerWorker` that is not a positive number.
+   */
+  #perQueue(
+    options: SummonControllerOptions,
+    /** The policy's `maxWorkers` as given, before a wake pool's clamp. */
+    unitMax: number,
+    /** The policy's `maxWorkers`, clamped to a wake pool. */
+    clamped: number,
+    /** The policy's `jobsPerWorker`. */
+    jobsPerWorker: number,
+  ): Map<string, QueueCapacity> {
+    const overrides: unknown = options.overrides;
+    if (
+      overrides !== undefined &&
+      (typeof overrides !== "object" ||
+        overrides === null ||
+        Array.isArray(overrides))
+    ) {
+      throw new ConfigError(
+        "overrides must be a record of per-queue values by queue",
+        { overrides: String(overrides) },
+      );
+    }
+    const given = (overrides ?? {}) as Record<string, unknown>;
+    for (const [queue, override] of Object.entries(given)) {
+      if (!this.queues.includes(queue)) {
+        throw new ConfigError(
+          `overrides names queue "${queue}", which queues does not: an override changes the values of one of the unit's queues`,
+          { queue },
+        );
+      }
+      if (
+        typeof override !== "object" ||
+        override === null ||
+        Array.isArray(override)
+      ) {
+        throw new ConfigError(
+          `overrides.${queue} must be { jobsPerWorker?, maxWorkers? }`,
+          { queue },
+        );
+      }
+      for (const key of Object.keys(override)) {
+        if (!OVERRIDE_KEYS.has(key)) {
+          throw new ConfigError(
+            `overrides.${queue}.${key}: a shared unit takes only jobsPerWorker and maxWorkers per queue; ${key} is the unit's, set on its policy`,
+            { queue, key },
+          );
+        }
+      }
+    }
+    const capacities = new Map<string, QueueCapacity>();
+    for (const queue of this.queues) {
+      const override = (
+        Object.hasOwn(given, queue) ? given[queue] : undefined
+      ) as
+        | Pick<SummonControllerOptions, "jobsPerWorker" | "maxWorkers">
+        | undefined;
+      let max = clamped;
+      if (override?.maxWorkers !== undefined) {
+        const own = positiveInt(
+          `overrides.${queue}.maxWorkers`,
+          override.maxWorkers,
+        );
+        if (own > unitMax) {
+          throw new ConfigError(
+            `overrides.${queue}.maxWorkers is ${own}, above the unit's maxWorkers of ${unitMax}: one queue's demand cannot ask for more units than the unit may have`,
+            { queue, maxWorkers: own, unitMaxWorkers: unitMax },
+          );
+        }
+        max = Math.min(own, clamped);
+      }
+      const perWorker = override?.jobsPerWorker ?? jobsPerWorker;
+      if (!(perWorker > 0) || Number.isNaN(perWorker)) {
+        throw new ConfigError(
+          `overrides.${queue}.jobsPerWorker must be a positive number`,
+          { queue, jobsPerWorker: perWorker },
+        );
+      }
+      capacities.set(queue, { jobsPerWorker: perWorker, maxWorkers: max });
+    }
+    return capacities;
+  }
+
+  /**
+   * What one queue needs (§4.4): served by its own counted records and the
+   * places of pending attempts still on their way to it, wanted up to its
+   * own `maxWorkers` at its own `jobsPerWorker`. For one queue, exactly the
+   * single-queue decision.
+   */
+  #queueNeed(
+    reading: QueueReading,
+    /** The marker's pending attempts. */
+    pending: readonly PendingSummon[],
+    /** Places per pending attempt no longer on their way to this queue. */
+    decided: ReadonlyMap<string, number> | undefined,
+  ): QueueNeed {
+    const { demand, workers } = reading;
+    const capacity = this.#policy.perQueue.get(reading.queue)!;
+    const orphaned =
+      !demand.paused && demand.active > 0 && workers.length === 0;
+    const serving = workers.filter(isServing);
+    const counted =
+      this.#policy.servedBy === "any-worker"
+        ? serving
+        : serving.filter((worker) => worker.summon !== undefined);
+    const wanted = Math.min(
+      capacity.maxWorkers,
+      Math.max(1, Math.ceil(demand.outstanding / capacity.jobsPerWorker)),
+    );
+    const onTheirWay = pending.reduce(
+      (sum, attempt) =>
+        sum + Math.max(0, attempt.count - (decided?.get(attempt.id) ?? 0)),
+      0,
+    );
+    return {
+      queue: reading.queue,
+      demand,
+      needed: !(demand.paused || (demand.demand === 0 && !orphaned)),
+      idle:
+        demand.active === 0 &&
+        (demand.paused || demand.waiting + demand.dueNow === 0),
+      counted,
+      wanted,
+      onTheirWay,
+      deficit: wanted - counted.length - onTheirWay,
     };
   }
 
@@ -1137,12 +1561,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * known it returns at once — no timer, no driver call — and otherwise it
    * arms at most one timer per controller, however many jobs arrive.
    */
-  readonly #onAdded = (job: AddedJob): void => {
+  #onAdded(queue: string, job: AddedJob): void {
     if (this.#closed || this.#inertReason !== undefined) {
       return;
     }
     const now = Date.now();
-    if (now < this.#servedUntil) {
+    if (now < (this.#servedUntil.get(queue) ?? 0)) {
       return;
     }
     if (job.state === "delayed") {
@@ -1157,23 +1581,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       return;
     }
     this.#arm("add");
-  };
+  }
 
-  /** Hooks into a queue's local adds. Called by `BunJobs`; idempotent. */
+  /**
+   * Hooks into a queue's local adds. Called by `BunJobs`; idempotent. A
+   * shared unit's controller hooks a source of one of its queues by the
+   * source's `name`, bound to that queue (its fast path is the queue's),
+   * and ignores any other.
+   */
   [ATTACH_QUEUE](source: AddedSource): void {
+    const queue = this.#shared ? source.name : this.queue;
     if (
       this.inert ||
       this.#closed ||
       !this.#policy.onAdd ||
-      this.#sources.has(source)
+      this.#sources.has(source) ||
+      queue === undefined ||
+      !this.queues.includes(queue)
     ) {
       return;
     }
-    source[LOCAL_ADD_HOOKS] = [
-      ...(source[LOCAL_ADD_HOOKS] ?? []),
-      this.#onAdded,
-    ];
-    this.#sources.add(source);
+    const hook = (job: AddedJob): void => {
+      this.#onAdded(queue, job);
+    };
+    source[LOCAL_ADD_HOOKS] = [...(source[LOCAL_ADD_HOOKS] ?? []), hook];
+    this.#sources.set(source, hook);
   }
 
   /** Arms the debounce timer, unless it already is. */
@@ -1214,8 +1646,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     this.#dueTimer = { at, timer };
   }
 
-  /** Subscribes to other processes' events on the queue. Failures are logged, never thrown. */
-  async #subscribe(): Promise<(() => Promise<void>) | undefined> {
+  /**
+   * Subscribes to other processes' events on one of its queues. Failures
+   * are logged, never thrown, and retried per queue.
+   */
+  async #subscribe(
+    /** The queue whose events to hear. */
+    queue: string,
+  ): Promise<(() => Promise<void>) | undefined> {
     try {
       await this.#driver.connect();
       if (this.#closed) {
@@ -1224,29 +1662,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       const unsubscribe = await this.#driver.subscribe(
         this.namespace,
         "queue",
-        this.queue,
+        queue,
         (event) => {
           if (
             !this.#closed &&
             DEMAND_EVENTS.has(event.type) &&
-            Date.now() >= this.#servedUntil
+            Date.now() >= (this.#servedUntil.get(queue) ?? 0)
           ) {
             this.#arm("event");
           }
         },
       );
-      this.#warnedSubscribe = false;
+      if (this.#subscribeFailed.size === 0) {
+        this.#warnedSubscribe = false;
+      }
       return unsubscribe;
     } catch (error) {
       // Retried from the next poll tick; one warn per run of failures.
-      this.#subscribeFailed = true;
+      this.#subscribeFailed.add(queue);
       if (!this.#warnedSubscribe) {
         this.#warnedSubscribe = true;
         this.#logger.warn(
           this.#policy.poll === false
             ? "summon events subscription failed; with the poll off it is not retried"
             : "summon events subscription failed; retrying on each poll until it succeeds",
-          { error },
+          { error, ...(this.#shared ? { queue } : {}) },
         );
       }
       return undefined;
@@ -1312,11 +1752,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return await run;
   }
 
-  /** Connects and ensures the queue, once; a failure is retried next time. */
+  /** Connects and ensures the queues it serves, once; a failure is retried next time. */
   async #connect(): Promise<void> {
     this.#ready ??= (async () => {
       await this.#driver.connect();
-      await this.#driver.ensureQueue(this.#ref);
+      for (const ref of this.#queues) {
+        await this.#driver.ensureQueue(ref);
+      }
     })().catch((error: unknown) => {
       this.#ready = undefined;
       throw error;
@@ -1324,30 +1766,81 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     await this.#ready;
   }
 
-  /** The four reads every check starts with: demand, live records and the marker. */
+  /**
+   * What an attempt id is derived from beside the namespace: the queue, or
+   * `group:<name>` for a shared unit. `attemptId` NUL-separates its inputs
+   * and a queue name cannot hold a `:`, so a group's ids never meet a
+   * queue's.
+   */
+  get #attemptKey(): string {
+    return this.#shared ? `group:${this.#group!.name}` : this.queue;
+  }
+
+  /** The marker's stored entry, as the driver answers it: one read. */
+  async #getHome(): Promise<QueueStateEntry | null> {
+    return await this.#driver.getQueueState!(this.#home.ref, this.#home.name);
+  }
+
+  /**
+   * A stored entry read as the marker, as a private copy the caller may
+   * change: for a shared unit, the group's entry lifted into a marker
+   * (`readSharedMarker`), keeping what Part A wrote there.
+   */
+  #parseHome(stored: QueueStateEntry | null, now: number): MarkerRead {
+    return this.#shared
+      ? readSharedMarker(stored, now)
+      : readMarker(stored, now);
+  }
+
+  /** The marker, read: {@link #getHome} then {@link #parseHome}. */
+  async #readHome(now: number): Promise<MarkerRead> {
+    return this.#parseHome(await this.#getHome(), now);
+  }
+
+  /** Writes the marker by compare-and-set at `version`: the new version, or `null` when it lost. */
+  async #writeHome(
+    marker: SummonMarker,
+    version: number | null,
+  ): Promise<number | null> {
+    return await setReservedState(
+      this.#driver,
+      this.#home.ref,
+      this.#home.name,
+      marker,
+      version,
+    );
+  }
+
+  /**
+   * The reads every check starts with, all in parallel: each queue's demand
+   * and live records (`2 × N` reads for N queues), and the marker.
+   */
   async #read(now: number): Promise<{
-    demand: QueueDemand;
-    workers: WorkerInfo[];
+    readings: QueueReading[];
     read: MarkerRead;
   }> {
-    const records = listWorkerRecords(this.#driver, this.#ref, now);
-    const [demand, workers, entry] = await Promise.all([
-      readDemand(this.#driver, this.#ref, {
-        now,
-        cap: this.#demandCap,
-        workers: records,
+    const [entry, ...readings] = await Promise.all([
+      this.#getHome(),
+      ...this.#queues.map(async (ref): Promise<QueueReading> => {
+        const records = listWorkerRecords(this.#driver, ref, now);
+        const [demand, workers] = await Promise.all([
+          readDemand(this.#driver, ref, {
+            now,
+            cap: this.#demandCaps.get(ref.queue)!,
+            workers: records,
+          }),
+          records,
+        ]);
+        return { queue: ref.queue, demand, workers };
       }),
-      records,
-      (async () =>
-        await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER))(),
     ]);
-    const read = readMarker(entry, now);
+    const read = this.#parseHome(entry, now);
     if (read.unreadable) {
       this.#logger.warn(
         "the summon marker is unreadable; starting a fresh one over it",
       );
     }
-    return { demand, workers, read };
+    return { readings, read };
   }
 
   /**
@@ -1375,8 +1868,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     await this.#connect();
     const now = Date.now();
-    const { demand, workers, read } = await this.#read(now);
-    if (!demand.exact && !this.#warnedInexact) {
+    const { readings, read } = await this.#read(now);
+    // Every queue's live records: worker ids are unique across queues.
+    const workers = readings.flatMap((reading) => reading.workers);
+    if (
+      readings.some((reading) => !reading.demand.exact) &&
+      !this.#warnedInexact
+    ) {
       this.#warnedInexact = true;
       this.#logger.warn(
         `the ${this.#driver.name} driver has no countDemand: demand is approximate (exact: false), from countJobs and nextDelayedAt`,
@@ -1424,15 +1922,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     );
     const keep: PendingSummon[] = [];
     // Places per attempt still pending (count > 1) that are no longer on
-    // their way — registered, or started and gone — so only the rest are.
+    // their way — registered, or started and gone — so only the rest are:
+    // by queue, then by attempt, since a unit registers on each queue apart.
     // Worked out afresh each check, never written back.
-    const partly = new Map<string, number>();
+    const partly = new Map<string, Map<string, number>>();
     // Until a late provider is adopted, its `passes` and boot budget are
     // unknown: step 2 decides nothing (every attempt stays as it is), so no
     // provisional decision is ever written to the marker.
     const provisional = this.#pending !== undefined;
     const claims = provisional
-      ? new Map<string, SummonClaim | undefined>()
+      ? new Map<string, Map<string, SummonClaim | undefined>>()
       : await this.#readClaims([...marker.pending, ...(marker.watching ?? [])]);
     const liveIds = new Set(workers.map((worker) => worker.id));
     const expiries = new Map(
@@ -1445,60 +1944,113 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         keep.push(attempt);
         continue;
       }
-      // The claim-once entry, where there is one: a worker that claimed,
-      // drained and closed between two checks has no record left, but its
-      // place in the claim says how it left (see `tallySummonClaim`). Every
-      // live record carrying the id is one of its holders (a worker writes
-      // the id only once it holds a place), so the claim decides alone —
-      // including a holder still listed that has marked a failing exit.
-      // Without one, live records carrying the id, as before.
-      const claim = claims.get(attempt.id);
-      const tally = tallySummonClaim(
-        claim,
-        liveIds,
-        now,
-        START_TIME_SLACK,
-        attempt.until,
-      );
-      let registered =
-        claim === undefined ? liveWithId(workers, attempt.id) : tally.succeeded;
-      if (registered === 0 && capabilities.passes === "none") {
-        const match = workers.find(
-          (worker) =>
-            !attributed.has(worker.id) &&
-            worker.startedAt >= attempt.at - START_TIME_SLACK,
+      // Each queue's claim-once entry, where there is one: a worker that
+      // claimed, drained and closed between two checks has no record left,
+      // but its place in the claim says how it left (see
+      // `tallySummonClaim`). Every live record carrying the id is one of its
+      // holders (a worker writes the id only once it holds a place), so the
+      // claim decides alone — including a holder still listed that has
+      // marked a failing exit. Without one, live records carrying the id, as
+      // before. A shared unit registers on each of its queues apart: the
+      // attempt settles once every queue has.
+      const onQueues = readings.map((reading) => {
+        const claim = claims.get(attempt.id)?.get(reading.queue);
+        const tally = tallySummonClaim(
+          claim,
+          liveIds,
+          now,
+          START_TIME_SLACK,
+          attempt.until,
         );
-        if (match) {
-          attributed.add(match.id);
-          registered = 1;
+        let registered =
+          claim === undefined
+            ? liveWithId(reading.workers, attempt.id)
+            : tally.succeeded;
+        if (registered === 0 && capabilities.passes === "none") {
+          // One queue only: a shared unit refuses `passes: "none"`.
+          const match = reading.workers.find(
+            (worker) =>
+              !attributed.has(worker.id) &&
+              worker.startedAt >= attempt.at - START_TIME_SLACK,
+          );
+          if (match) {
+            attributed.add(match.id);
+            registered = 1;
+          }
         }
-      }
-      const failed = tally.exitedWithError + tally.died;
-      const decided = registered + failed;
-      // Settled once every place is decided, or at `until` — unless nothing
-      // succeeded yet and a holder is still inside its grace.
-      const settled =
-        registered >= attempt.count ||
-        decided >= attempt.count ||
-        (attempt.until <= now && (registered > 0 || tally.starting === 0));
-      if (!settled) {
+        const failed = tally.exitedWithError + tally.died;
+        const decided = registered + failed;
         if (decided > 0) {
-          partly.set(attempt.id, decided);
+          let decidedOn = partly.get(reading.queue);
+          if (decidedOn === undefined) {
+            decidedOn = new Map();
+            partly.set(reading.queue, decidedOn);
+          }
+          decidedOn.set(attempt.id, decided);
         }
+        return {
+          queue: reading.queue,
+          claim,
+          tally,
+          registered,
+          failed,
+          // Settled once every place is decided, or at `until` — unless
+          // nothing succeeded yet and a holder is still inside its grace.
+          settled:
+            registered >= attempt.count ||
+            decided >= attempt.count ||
+            (attempt.until <= now && (registered > 0 || tally.starting === 0)),
+        };
+      });
+      if (!onQueues.every((one) => one.settled)) {
         keep.push(attempt);
         continue;
       }
       changed = true;
+      const covered = onQueues.filter((one) => one.registered > 0);
+      const missing = onQueues
+        .filter((one) => one.registered === 0)
+        .map((one) => one.queue);
+      if (covered.length > 0 && missing.length > 0) {
+        // Partial coverage (§4.5, Q4): a unit that registered on some of
+        // its queues only — an entry script that forgot a queue, or one
+        // older than the group. It is `registered`, so nothing is summoned
+        // twice for the queues it serves, but it counts exactly one failure,
+        // never resets the failures and proves nothing: the queue it misses
+        // would otherwise summon again and again, braked by the budget
+        // alone. Not watched: its one failure is already counted. Logged
+        // once the write lands (`#announce`), and no `onSummonFailed`.
+        const detail = `partial:${missing.join(",")}`;
+        this.#fail(marker, now);
+        noteOpening(attempt.id, detail);
+        marker.last = {
+          id: attempt.id,
+          outcome: "registered",
+          at: now,
+          detail,
+        };
+        events.push({
+          id: attempt.id,
+          outcome: "registered",
+          kind: attempt.kind,
+          count: attempt.count,
+          detail,
+        });
+        continue;
+      }
       // A worker that ran releases the attempt: it leaves `pending`, so it is
       // never counted as capacity twice (on its way and live). Where the
-      // claim cannot yet say every holder left cleanly — one is only listed,
+      // claims cannot yet say every holder left cleanly — one is only listed,
       // still starting, or already failed — the attempt is also watched until
       // its `until`, so a worker that crashes after its first report still
       // counts (see `#watch`).
-      if (registered > 0) {
+      if (covered.length > 0) {
         if (
-          claim !== undefined &&
-          tally.unmarked + tally.starting + failed > 0
+          onQueues.some(
+            (one) =>
+              one.claim !== undefined &&
+              one.tally.unmarked + one.tally.starting + one.failed > 0,
+          )
         ) {
           released.push({
             id: attempt.id,
@@ -1507,7 +2059,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
             count: attempt.count,
             kind: attempt.kind,
           });
-        } else if (claim !== undefined) {
+        } else if (onQueues.every((one) => one.claim !== undefined)) {
           // Every worker of it left a clean mark: proven, so the streak ends.
           delete marker.lossStreak;
         }
@@ -1527,12 +2079,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         continue;
       }
       // Started and failed, rather than never seen: say how.
-      const detail =
-        tally.exitedWithError > 0
-          ? "exited-with-error"
-          : tally.died > 0
-            ? "died"
-            : undefined;
+      const detail = onQueues.some((one) => one.tally.exitedWithError > 0)
+        ? "exited-with-error"
+        : onQueues.some((one) => one.tally.died > 0)
+          ? "died"
+          : undefined;
       lost.push(attempt);
       this.#fail(marker, now);
       noteOpening(attempt.id, detail);
@@ -1560,38 +2111,32 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     rollBudget(marker, now);
 
-    // Step 3: nothing needs a worker.
-    const orphaned =
-      !demand.paused && demand.active > 0 && workers.length === 0;
-    // Scale style: whether the summoned count could go to zero. Nothing may be
-    // running (never release mid-job, paused or not), and nothing claimable
-    // may be waiting — unless the queue is paused, where nothing is claimed
-    // anyway, so once its running jobs finish its workers are idle cost.
-    const idle =
-      demand.active === 0 &&
-      (demand.paused || demand.waiting + demand.dueNow === 0);
+    // Step 3: nothing needs a worker — on any queue.
+    const needs = readings.map((reading) =>
+      this.#queueNeed(reading, marker.pending, partly.get(reading.queue)),
+    );
+    // The demand a result reports: the first queue's, until one is starved.
+    let { demand } = readings[0]!;
+    // Scale style: whether the summoned count could go to zero, on every
+    // queue the unit serves (see `#queueNeed`).
+    const idle = needs.every((need) => need.idle);
     if (!idle) {
       this.#zeroSince = undefined;
       this.#released = false;
     }
 
-    const serving = workers.filter(isServing);
-    const counted =
-      this.#policy.servedBy === "any-worker"
-        ? serving
-        : serving.filter((worker) => worker.summon !== undefined);
-    const wanted = Math.min(
-      this.#policy.maxWorkers,
-      Math.max(1, Math.ceil(demand.outstanding / this.#policy.jobsPerWorker)),
+    // The fast path's window, per queue: while the live records alone cover
+    // what the queue wants, an add to it changes nothing a check would decide.
+    this.#servedUntil = new Map(
+      needs.map((need) => [
+        need.queue,
+        need.counted.length >= need.wanted && need.counted.length > 0
+          ? Math.min(...need.counted.map((worker) => worker.expiresAt))
+          : 0,
+      ]),
     );
-    // The fast path's window: while the live records alone cover what is
-    // wanted, an add changes nothing a check would decide.
-    this.#servedUntil =
-      counted.length >= wanted && counted.length > 0
-        ? Math.min(...counted.map((worker) => worker.expiresAt))
-        : 0;
 
-    if (demand.paused || (demand.demand === 0 && !orphaned)) {
+    if (needs.every((need) => !need.needed)) {
       this.#kickProvider();
       await this.#settle(marker, version, changed, events, lost, now, opening);
       if (capabilities.style === "scale" && idle) {
@@ -1607,19 +2152,39 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       return { action: "none", demand };
     }
 
-    // Step 4: how many more are wanted.
-    const onTheirWay = marker.pending.reduce(
-      (sum, attempt) =>
-        sum + Math.max(0, attempt.count - (partly.get(attempt.id) ?? 0)),
-      0,
+    // Step 4: how many more are wanted. Every unit adds a worker to every
+    // queue, so the most-starved queue decides (the maximum, never the sum:
+    // §4.4), each queue's own workers and attempts on their way counted.
+    const wanting = needs.filter((need) => need.needed);
+    const starved = wanting.reduce((most, need) =>
+      need.deficit > most.deficit ? need : most,
     );
-    const want = wanted - counted.length - onTheirWay;
+    demand = starved.demand;
+    let want = starved.deficit;
+    if (this.#shared) {
+      // The unit's own cap: units alive, read as the most summoned records
+      // on any one queue, plus attempts on their way.
+      const summonedLive = Math.max(
+        ...readings.map(
+          (reading) =>
+            reading.workers.filter((worker) => worker.summon !== undefined)
+              .length,
+        ),
+      );
+      const onTheirWay = Math.max(...needs.map((need) => need.onTheirWay));
+      want = Math.min(
+        want,
+        this.#policy.maxWorkers - summonedLive - onTheirWay,
+      );
+    }
     if (want <= 0) {
       this.#kickProvider();
       await this.#settle(marker, version, changed, events, lost, now, opening);
       return {
         action: "skipped",
-        reason: counted.length >= wanted ? "served" : "pending",
+        reason: wanting.every((need) => need.counted.length >= need.wanted)
+          ? "served"
+          : "pending",
         demand,
       };
     }
@@ -1652,7 +2217,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // counted.
     let charged: { at: number; clears: number; epoch: string } | undefined;
     const group = this.#group;
-    if (group !== undefined) {
+    // A shared unit's marker is the group's entry: its claim below is the
+    // charge, in one compare-and-set, so there is nothing to charge first.
+    if (group !== undefined && !this.#shared) {
       // A replica racing for this queue that has claimed it already moved
       // the marker: this claim would lose, so it charges nothing — its
       // passing charge would only crowd the group's other queues, and its
@@ -1767,7 +2334,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     );
     const id = attemptId(
       this.namespace,
-      this.queue,
+      this.#attemptKey,
       marker.epoch,
       (version ?? 0) + 1,
     );
@@ -1786,25 +2353,42 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // What a reader with no controller needs (§5.1): who claimed, under which
     // limits, in which group.
     marker.kind = kind;
-    marker.limits =
-      this.#policy.budget === false
-        ? false
-        : {
-            perHour: this.#policy.budget.perHour,
-            perDay: this.#policy.budget.perDay,
-          };
+    if (this.#shared) {
+      // The group entry's conventions: limits absent while off, and each
+      // queue's share of the day's attempts — one for every member (Q8),
+      // since one unit serves them all.
+      const shared = marker as SharedSummonMarker;
+      if (this.#policy.budget === false) {
+        delete shared.limits;
+      } else {
+        shared.limits = {
+          perHour: this.#policy.budget.perHour,
+          perDay: this.#policy.budget.perDay,
+        };
+      }
+      const shares = { ...shared.queues };
+      for (const queue of this.queues) {
+        setOwn(shares, queue, {
+          day: (ownValue(shares, queue)?.day ?? 0) + 1,
+          lastAt: now,
+        });
+      }
+      shared.queues = shares;
+    } else {
+      marker.limits =
+        this.#policy.budget === false
+          ? false
+          : {
+              perHour: this.#policy.budget.perHour,
+              perDay: this.#policy.budget.perDay,
+            };
+    }
     if (group === undefined) {
       delete marker.group;
     } else {
       marker.group = group.name;
     }
-    const written = await setReservedState(
-      this.#driver,
-      this.#ref,
-      SUMMON_MARKER,
-      marker,
-      version,
-    );
+    const written = await this.#writeHome(marker, version);
     if (written === null) {
       if (charged !== undefined) {
         await this.#refundGroup(charged);
@@ -1820,21 +2404,32 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // Claim-once for several workers: they all start with this id, so the
     // claim is opened for `count` of them before any can start. One worker
     // needs nothing — its claim is created by the worker itself.
+    // A shared unit's workers claim on each of its queues, so the claim is
+    // opened on every one of them: no queue counts more summoned places for
+    // one attempt than were asked for (§4.5).
     if (count > 1 && notReady === undefined) {
-      try {
-        await openSummonClaim(this.#driver, this.#ref, id, count, now);
-      } catch (error) {
-        // Then only the first to start runs summoned; the attempt is still
-        // released by it (a partial registration counts once `until` passes).
-        this.#logger.warn(
-          "could not open the summon claim for several workers",
-          {
-            id,
-            count,
-            error,
-          },
-        );
-      }
+      const opened = await Promise.allSettled(
+        this.#queues.map(
+          async (ref) =>
+            await openSummonClaim(this.#driver, ref, id, count, now),
+        ),
+      );
+      opened.forEach((outcome, index) => {
+        if (outcome.status === "rejected") {
+          // Then only the first to start runs summoned on that queue; the
+          // attempt is still released by it (a partial registration counts
+          // once `until` passes).
+          this.#logger.warn(
+            "could not open the summon claim for several workers",
+            {
+              id,
+              count,
+              error: outcome.reason,
+              ...(this.#shared ? { queue: this.#queues[index]!.queue } : {}),
+            },
+          );
+        }
+      });
     }
 
     // Step 7: call — unless the provider was not ready, which fails the
@@ -1846,10 +2441,15 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       [result, failure, called] = await this.#summon(
         id,
         count,
-        counted.length + onTheirWay + count,
+        // The absolute count for a scale style: the busiest queue's workers
+        // and attempts on their way, plus this one.
+        Math.max(
+          ...needs.map((need) => need.counted.length + need.onTheirWay),
+        ) + count,
         kind,
         demand,
         reason,
+        readings,
       );
     }
 
@@ -1883,6 +2483,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     kind: string,
     demand: QueueDemand,
     reason: SummonReason,
+    /** Every queue's reading, for a shared unit's `demands`. */
+    readings: readonly QueueReading[],
   ): Promise<[SummonResult | undefined, unknown, boolean]> {
     const capabilities = this.#capabilities;
     const facet = this.#facet;
@@ -1894,6 +2496,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           {
             namespace: this.namespace,
             queue: this.queue,
+            ...this.#wireQueues(),
             kind,
             style: capabilities.style,
             dedupeKey: this.#dedupeKey,
@@ -1903,6 +2506,21 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           },
         ),
         demand,
+        // A shared unit's every reading, keyed by queue; none for one queue,
+        // whose request is as it always was. A null prototype: `__proto__`
+        // is a valid queue name.
+        ...(this.#shared
+          ? {
+              demands: Object.freeze(
+                Object.assign(
+                  Object.create(null) as Record<string, QueueDemand>,
+                  Object.fromEntries(
+                    readings.map((reading) => [reading.queue, reading.demand]),
+                  ),
+                ),
+              ),
+            }
+          : {}),
         reason,
       };
       const result = await this.#call(async (context) => {
@@ -2090,6 +2708,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     ) {
       return "circuit-open";
     }
+    // Q3: a shared unit's entry may also hold the circuit that per-queue
+    // controllers of its group share, by kind: open for this summoner's
+    // kind, it holds the unit back too.
+    if (
+      this.#shared &&
+      groupCircuitOpen(
+        marker as SharedSummonMarker as unknown as SummonGroupEntry,
+        this.#summoner.provider.kind,
+        now,
+      )
+    ) {
+      return "circuit-open";
+    }
     if (marker.backoffUntil !== undefined && marker.backoffUntil > now) {
       return "backoff";
     }
@@ -2116,10 +2747,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           day: marker.budget.day,
           perDay,
         });
+        // A shared unit's count is the group's: its exhaustion is the group's.
+        const group = this.#shared ? this.#group!.name : undefined;
         const exhausted: SummonEventPayload = {
           id: "",
           outcome: "budget-exhausted",
           kind: this.#summoner.provider.kind,
+          ...(group === undefined ? {} : { group }),
         };
         this.safeEmit("summon", exhausted);
         // Published like every other outcome: an operator watching another
@@ -2130,6 +2764,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           kind: exhausted.kind,
           namespace: this.namespace,
           queue: this.queue,
+          ...(group === undefined ? {} : { group }),
           at: now,
           budget: {
             hour: marker.budget.hour,
@@ -2211,7 +2846,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * lose. One driver read.
    */
   async #markerMoved(version: number | null): Promise<boolean> {
-    const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
+    const entry = await this.#getHome();
     return (entry?.version ?? null) !== version;
   }
 
@@ -2429,13 +3064,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (!changed) {
       return;
     }
-    const written = await setReservedState(
-      this.#driver,
-      this.#ref,
-      SUMMON_MARKER,
-      marker,
-      version,
-    );
+    const written = await this.#writeHome(marker, version);
     if (written !== null) {
       this.#announceSettled(events, lost, now);
       this.#announceOpening(opening, marker, now);
@@ -2452,7 +3081,13 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    */
   async #noteGroupCircuit(notes: readonly GroupCircuitNote[]): Promise<void> {
     const group = this.#group;
-    if (group === undefined || group.circuit === false || notes.length === 0) {
+    // A shared unit's circuit is the group's entry's own (Q3): nothing to replay.
+    if (
+      group === undefined ||
+      group.circuit === false ||
+      this.#shared ||
+      notes.length === 0
+    ) {
       return;
     }
     const kind = this.#summoner.provider.kind;
@@ -2521,6 +3156,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       kind: this.#summoner.provider.kind,
       namespace: this.namespace,
       queue: this.queue,
+      // A shared unit's circuit is its group's.
+      ...(this.#shared ? { group: this.#group!.name } : {}),
       id: opening.id,
       ...(opening.detail === undefined ? {} : { detail: opening.detail }),
       at,
@@ -2584,10 +3221,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   ): void {
     const group = this.#group?.name;
     for (const untagged of events) {
-      // An attempt of a controller in a group was charged to the group.
+      // An attempt of a controller in a group was charged to the group; a
+      // shared unit's every event is the group's.
       const event: SummonEventPayload =
         group === undefined ||
-        untagged.id === "" ||
+        (untagged.id === "" && !this.#shared) ||
         untagged.group !== undefined
           ? untagged
           : { ...untagged, group };
@@ -2600,6 +3238,21 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       switch (event.outcome) {
         case "failed":
           this.#providerLogger().error("summon attempt failed", fields);
+          break;
+        case "registered":
+          if (event.detail?.startsWith(PARTIAL) === true) {
+            // Q4: one `error`, and no `onSummonFailed`: a unit missing
+            // queues counts one failure, and the circuit opening is the alert.
+            this.#logger.error(
+              `summon unit registered without a worker for ${event.detail.slice(PARTIAL.length).split(",").join(", ")}: its entry script runs no worker for those queues; counted as a failure`,
+              {
+                ...fields,
+                missing: event.detail.slice(PARTIAL.length).split(","),
+              },
+            );
+          } else {
+            this.#logger.info(`summon attempt ${event.outcome}`, fields);
+          }
           break;
         case "lost":
         case "unavailable":
@@ -2624,6 +3277,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           kind: event.kind,
           namespace: this.namespace,
           queue: this.queue,
+          ...(this.#shared ? { group: this.#group!.name } : {}),
           ...(event.id === "" ? {} : { id: event.id }),
           ...(event.reason === undefined ? {} : { reason: event.reason }),
           ...(event.detail === undefined ? {} : { detail: event.detail }),
@@ -2641,24 +3295,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * rejects: a failure is logged.
    */
   #publish(event: SummonEventPayload): void {
-    const envelope = queueEvent(
-      {
-        ns: this.namespace,
-        target: this.queue,
-        type: "summon",
-        origin: this.#origin,
-      },
-      event,
+    // A shared unit's event goes to every queue it serves, so each queue's
+    // listeners hear it once (§4.6): N publishes, and events are rare.
+    const envelopes = this.queues.map((target) =>
+      queueEvent(
+        {
+          ns: this.namespace,
+          target,
+          type: "summon",
+          origin: this.#origin,
+        },
+        event,
+      ),
     );
     this.#publishing = this.#publishing.then(async () => {
-      try {
-        await this.#driver.publish(envelope);
-      } catch (error) {
-        this.#logger.warn("could not publish a summon event", {
-          error,
-          id: event.id,
-          outcome: event.outcome,
-        });
+      for (const envelope of envelopes) {
+        try {
+          await this.#driver.publish(envelope);
+        } catch (error) {
+          this.#logger.warn("could not publish a summon event", {
+            error,
+            id: event.id,
+            outcome: event.outcome,
+            ...(this.#shared ? { queue: envelope.target } : {}),
+          });
+        }
       }
     });
   }
@@ -2778,9 +3439,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    */
   async #writeLostDetail(id: string, detail: string): Promise<void> {
     for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
-      const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
-      const { marker, version, unreadable, newer } = readMarker(
-        entry,
+      const { marker, version, unreadable, newer } = await this.#readHome(
         Date.now(),
       );
       if (
@@ -2792,15 +3451,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         return;
       }
       marker.last = { ...marker.last, detail };
-      if (
-        (await setReservedState(
-          this.#driver,
-          this.#ref,
-          SUMMON_MARKER,
-          marker,
-          version,
-        )) !== null
-      ) {
+      if ((await this.#writeHome(marker, version)) !== null) {
         return;
       }
     }
@@ -2976,8 +3627,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
       const now = Date.now();
       decidedAt = now;
-      const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
-      const { marker, version, unreadable, newer } = readMarker(entry, now);
+      const { marker, version, unreadable, newer } = await this.#readHome(now);
       const index =
         unreadable || newer !== undefined
           ? -1
@@ -2995,7 +3645,20 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       // The claim's mark settles here either way: a call made keeps its
       // count; one never made gives it back, unless a budget reset already
       // cleared it with the counts.
+      const dayBefore = marker.budget.day;
       refundBudget(marker, id, claimedAt);
+      const shares = this.#shared
+        ? (marker as SharedSummonMarker).queues
+        : undefined;
+      if (marker.budget.day < dayBefore && shares !== undefined) {
+        // A shared unit's refund gives back every member's share too.
+        for (const queue of this.queues) {
+          const share = ownValue(shares, queue);
+          if (share !== undefined && share.day > 0) {
+            share.day--;
+          }
+        }
+      }
       if (timedOut) {
         // A call that timed out may still have started the unit: the
         // attempt stays on its way until it registers, or until its `until`
@@ -3023,15 +3686,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         at: now,
         ...(detail === undefined ? {} : { detail }),
       };
-      if (
-        (await setReservedState(
-          this.#driver,
-          this.#ref,
-          SUMMON_MARKER,
-          marker,
-          version,
-        )) !== null
-      ) {
+      if ((await this.#writeHome(marker, version)) !== null) {
         recorded = true;
         written = true;
         break;
@@ -3193,7 +3848,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     );
   }
 
-  /** Scale style: sets the platform's count to zero. */
+  /**
+   * Scale style: sets the platform's count to zero. Names the unit as its
+   * summons did: every queue, and a shared unit's group.
+   */
   async #release(): Promise<void> {
     const facet = this.#facet;
     await this.#call(
@@ -3202,7 +3860,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           {
             namespace: this.namespace,
             queue: this.queue,
-            queues: Object.freeze([this.queue]),
+            queues: this.queues,
+            ...(this.#shared ? { group: this.#group!.name } : {}),
             target: 0,
           },
           context,
@@ -3248,8 +3907,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #watch(
     /** The marker being settled. */
     marker: SummonMarker,
-    /** The claims this check read, by attempt id. */
-    claims: ReadonlyMap<string, SummonClaim | undefined>,
+    /** The claims this check read, by attempt id, then by queue. */
+    claims: ReadonlyMap<string, ReadonlyMap<string, SummonClaim | undefined>>,
     /** The live worker records' expiries, epoch ms, by worker id. */
     live: ReadonlyMap<string, number>,
     /** Attempts released this check, to watch from now. */
@@ -3265,7 +3924,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     let changed = released.length > 0;
     const kept: WatchedSummon[] = [];
     for (const watched of [...before, ...released]) {
-      const claim = claims.get(watched.id);
+      // Every queue's holders at once: a unit's death is one loss for the
+      // attempt, never one per queue it served.
+      const claim = mergeClaims(claims.get(watched.id));
       if (claim === undefined) {
         changed = true;
         continue;
@@ -3379,15 +4040,29 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   async #readClaims(
     /** The marker's pending and watched attempts. */
     pending: readonly { id: string }[],
-  ): Promise<Map<string, SummonClaim | undefined>> {
+  ): Promise<Map<string, Map<string, SummonClaim | undefined>>> {
+    const claims = new Map<string, Map<string, SummonClaim | undefined>>();
     if (pending.length === 0 || this.#capabilities.passes === "none") {
-      return new Map();
+      return claims;
     }
-    return await readSummonClaims(
-      this.#driver,
-      this.#ref,
-      pending.map((attempt) => attempt.id),
+    const ids = pending.map((attempt) => attempt.id);
+    const perQueue = await Promise.all(
+      this.#queues.map(
+        async (ref) => await readSummonClaims(this.#driver, ref, ids),
+      ),
     );
+    for (const id of ids) {
+      claims.set(
+        id,
+        new Map(
+          this.#queues.map((ref, index) => [
+            ref.queue,
+            perQueue[index]!.get(id),
+          ]),
+        ),
+      );
+    }
+    return claims;
   }
 
   /** Sweeps old claim-once entries, at most once an hour, on a poll. Best effort. */
@@ -3396,19 +4071,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       return;
     }
     this.#claimsSweptAt = now;
-    try {
-      await sweepSummonClaims(
-        this.#driver,
-        this.#ref,
-        now -
-          Math.max(
-            SUMMON_CLAIM_RETENTION_MS,
-            this.#policy.maxLifetime + this.#policy.bootBudget,
-          ),
-        now,
-      );
-    } catch (error) {
-      this.#logger.warn("could not sweep summon claims", { error });
+    for (const ref of this.#queues) {
+      try {
+        await sweepSummonClaims(
+          this.#driver,
+          ref,
+          now -
+            Math.max(
+              SUMMON_CLAIM_RETENTION_MS,
+              this.#policy.maxLifetime + this.#policy.bootBudget,
+            ),
+          now,
+        );
+      } catch (error) {
+        this.#logger.warn("could not sweep summon claims", {
+          error,
+          ...(this.#shared ? { queue: ref.queue } : {}),
+        });
+      }
     }
   }
 
@@ -3427,8 +4107,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       }
     }
     const now = Date.now();
-    const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
-    const { marker, newer } = readMarker(entry, now);
+    const { marker, newer } = await this.#readHome(now);
     if (newer !== undefined && this.#inertReason === undefined) {
       this.#inertReason = "newer-marker";
       this.#logger.warn(
@@ -3613,11 +4292,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   async #resetMarker(clearUsage: boolean): Promise<void> {
     await this.#connect();
     for (let attempt = 0; attempt < RECORD_ATTEMPTS * 2; attempt++) {
-      const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
+      const entry = await this.#getHome();
       if (entry === null) {
         return;
       }
-      const { marker, version, unreadable, newer } = readMarker(
+      const { marker, version, unreadable, newer } = this.#parseHome(
         entry,
         Date.now(),
       );
@@ -3635,15 +4314,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       if (clearUsage) {
         clearBudget(marker, Date.now());
       }
-      if (
-        (await setReservedState(
-          this.#driver,
-          this.#ref,
-          SUMMON_MARKER,
-          marker,
-          version,
-        )) !== null
-      ) {
+      if ((await this.#writeHome(marker, version)) !== null) {
         if (clearUsage) {
           // A limit hit again in this window is news again, here too.
           this.#budgetNoted = undefined;
@@ -3686,19 +4357,24 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       clearTimeout(this.#dueTimer.timer);
       this.#dueTimer = undefined;
     }
-    for (const source of this.#sources) {
+    for (const [source, mine] of this.#sources) {
       const rest = (source[LOCAL_ADD_HOOKS] ?? []).filter(
-        (hook) => hook !== this.#onAdded,
+        (hook) => hook !== mine,
       );
       source[LOCAL_ADD_HOOKS] = rest.length > 0 ? rest : undefined;
     }
     this.#sources.clear();
-    const subscription = this.#subscription;
-    this.#subscription = undefined;
-    const unsubscribe = await subscription;
-    await unsubscribe?.().catch((error: unknown) => {
-      this.#logger.warn("summon events unsubscribe failed", { error });
-    });
+    const subscriptions = [...this.#subscriptions.values()];
+    this.#subscriptions.clear();
+    this.#subscribeFailed.clear();
+    await Promise.all(
+      subscriptions.map(async (subscription) => {
+        const unsubscribe = await subscription;
+        await unsubscribe?.().catch((error: unknown) => {
+          this.#logger.warn("summon events unsubscribe failed", { error });
+        });
+      }),
+    );
     await this.#chain;
     // Lost attempts still being explained announce their events when the
     // summoner answers; each call is bounded by `summonTimeout`.
