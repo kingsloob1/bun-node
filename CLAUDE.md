@@ -25,18 +25,28 @@ published packages under `packages/`:
   `dist/` and served by a `jobsUi()` router. See
   [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
 
-Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
-typecheck, ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
+Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
+typecheck (`bun run check`), ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
 source directly (`main` is `lib/index.ts`; no JS is emitted). All four
 packages also ship built declarations in `dts/` and point `types` at them —
 see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
 
-Runtime is **Bun ≥ 1.4.2**: `engines.bun` says so in the root and in every
-package, `bun-types`/`@types/bun` devDeps are `^1.4.2`, and each package
-declares an optional `@types/bun >=1.4.2` peer so a consumer on older types
-is warned instead of hitting opaque type errors. The floor matters because
-bun-jobs' Redis and SQL drivers use `RedisClient.eval`/`xadd`/… and
+There are two Bun floors (the user's decision, 2026-10-10). **Using** the
+packages needs **Bun ≥ 1.4.2**: every package's `engines.bun` says so, and
+each declares an optional `@types/bun >=1.4.2` peer so a consumer on older
+types is warned instead of hitting opaque type errors. That floor matters
+because bun-jobs' Redis and SQL drivers use `RedisClient.eval`/`xadd`/… and
 `sql.listen`, which 1.4.2 is the first `bun-types` release to declare.
+**Developing** the repo needs **Bun ≥ 1.4.3**, the first stable release with
+`bun check` (released 2026-10-10), which every type check here runs (see
+[Typechecking](#typechecking)): the root `package.json` has
+`packageManager: bun@1.4.3` and `engines.bun >=1.4.3`, the packages'
+`bun-types` devDeps are `^1.4.3`, and `scripts/typecheck.ts` refuses an older
+Bun. The `@types/bun` devDeps stay `^1.4.2`, because `@types/bun` 1.4.3 is not
+on npm yet; the range takes it when it lands. Until then `@types/bun` 1.4.2
+pins `bun-types` 1.4.2 exactly, so the checks still read the 1.4.2
+declarations, and `bun.lock` holds both copies. On Bun 1.4.2, a package's
+`"check": "bun check"` script runs itself forever (measured): `bun upgrade`.
 
 bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
@@ -46,6 +56,7 @@ bun-common.
 
 ```bash
 bun scripts/typecheck.ts   # every project in the repo — must be clean
+                           # (same as `bun run check` or `bun check` at the root)
 ```
 
 **Manual playground:** `bun playground/index.ts` serves bun-jobs, its
@@ -58,12 +69,14 @@ moving (`playground/README.md`). It is a project of its own, like
 Then, in each affected package directory:
 
 ```bash
+bun run check              # bun check on the package's projects
 bunx eslint .              # lint — must have 0 errors
-bun run test               # tests, in parallel — must all pass
+bun run test               # type-check the tests, then run them in parallel — must all pass
 ```
 
 **Tests run in parallel.** Each test suite's `test` script is
-`bun test --parallel --timings=bun-timings.json` — one worker process per
+`bun test --check --parallel --timings=bun-timings.json` (`--check`: see
+[Bun's checker, not tsc](#buns-checker-not-tsc)) — one worker process per
 CPU core of the host (Bun's default for a bare `--parallel`, on 1.4.3), the slowest
 files started first from the suite's committed `bun-timings.json`. The count follows the machine, so the same
 script runs 16 workers on this 16-core host, 4 on a 4-core laptop and 32 on
@@ -81,9 +94,9 @@ holds its own connections (about 180 per server at 16), so the
 `max_connections` `setup-databases.ts` sets scales with the cores too
 (below): run it again on a new machine before the suites.
 The flags are in the scripts because `bunfig.toml`'s `[test]` silently ignores
-`parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2, the
-floor. So plain `bun test` is still the one-process run, as is
-`bun run test:serial`.
+`parallel` and `timings` (Bun 1.4.3, measured); both exist from 1.4.2.
+So plain `bun test` is still the one-process run, as is
+`bun run test:serial` (which also checks types first).
 
 - **`bun run test:timings`** re-measures and rewrites `bun-timings.json`. The
   file goes stale as tests are added, renamed or slowed: refresh it now and
@@ -368,6 +381,12 @@ type check. It is a standalone package like the bench ones — its own
   bun-common and bun-jobs (their `prepack` builds `dts/`), copies the
   template out, installs and checks it against those tarballs, packs it, and
   type-checks a consumer under `bundler` and `node16` with `skipLibCheck` off.
+  Its checks run `bun check`, which reproduced tsc 6.0's errors for both
+  columns, `node16`'s TS2834 on an extensionless relative import in a shipped
+  declaration included (measured, 2026-10-10); its `scripts/build.ts` still
+  emits the declarations with tsc. The template's own tests do not take
+  `bun test --check` and it has no `check` script: inside the repo its
+  author's config reaches bun-jobs' source, and fails there.
 - **Lint.** `templates/eslint.config.mjs` (the packages' config, plus the
   `scripts/` exemption for the template's own `scripts/`), outside the
   template so a copy carries none of the repo's lint dependencies.
@@ -411,9 +430,10 @@ checked from.
 ```bash
 bun scripts/typecheck.ts          # every project in the repo
 bun scripts/typecheck.ts --list   # just name them
+bun run check                     # the same, at the root; in a package, its projects
 ```
 
-Run that rather than `bunx tsc --noEmit` in one package — the packages are not
+Run that rather than `bun run check` in one package — the packages are not
 the only projects. There are also `packages/bun-common/bench`,
 `packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
 `benchmarks/`, each a nested project with its own config because it resolves
@@ -444,7 +464,64 @@ called clean. Every documented command passed the whole time.
 
 Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
 ESLint flat config's inferred default export, which cannot be named without a
-path into a pnpm-style store.
+path into a pnpm-style store. Neither tsc 6.0 nor `bun check` reported them
+on any project on 2026-10-10; the filter stays in case an ESLint config
+upgrade brings them back.
+
+### Bun's checker, not tsc
+
+Every type check in the repo runs Bun's built-in checker, `bun check`, instead
+of `tsc --noEmit` (the user's decision, 2026-10-10). It reads the same
+`tsconfig.json`, reports the errors of TypeScript 7 (`bun -p
+process.versions.typescript`: 7.0.2, where the repo's own `typescript` is 6.0.3
+for the editor and the declaration build), and uses every core. Measured on
+this machine: all 17 projects gave the same verdict as the tsc version of
+`scripts/typecheck.ts`, clean, in 7–10 s against 109–112 s (load 9–13); a
+deliberate error in
+seven of them gave the same error lines from both, on 1.4.3 and on the 1.4.4
+canary (TS2322, TS2339, TS2307, TS7006, TS2578, TS2584, TS2305; tsc exits 2,
+`bun check` 1).
+
+- **`bun check` runs a `check` script when the nearest `package.json` has
+  one** (Bun's rule: "your script wins"), and the root's `check` is
+  `scripts/typecheck.ts`. So `bun check -p <project>` from anywhere in the
+  repo runs the whole repo instead; `-p`, `--project=`, `--cwd` and `bunx` all
+  do (measured). Code that checks one project runs a bare `bun --check` in the
+  project's directory, which is always the checker, and drops `AGENT`,
+  `CLAUDECODE` and `REPL_ID` from its environment: they switch the output to
+  a tagged, multi-line format for AI agents, and a bare `bun --check` ignores
+  `--no-pretty`. `scripts/typecheck.ts`, bun-jobs-ui's
+  `__tests__/app/pkg/typecheck.test.ts`, bun-jobs'
+  `scripts/prove-type-controls.ts` and the template's `check-types.ts` do this.
+  Inside a package's `check` script, `bun check` is the checker.
+- **Packages:** `bun run check` is `bun check`, and in bun-jobs-ui `bun check
+  && bun check -p app && bun check -p __tests__/app/pkg`, its three projects.
+  An error placed in each project in turn failed it.
+- **`bun test --check`** type-checks the test files and what they import
+  before running anything, once, not per worker: with an error, a
+  `--parallel` run printed one error and ran no tests. Every package's `test`
+  scripts carry it. The check itself takes 0.3–0.6 s in bun-common (78 files),
+  0.4–0.7 s in bun-nest (246), 0.7–0.8 s in bun-jobs (537) and 2.0–2.5 s in
+  bun-jobs-ui (822, three projects); whole suites measured 21.9/23.0 s → 27.1/26.4 s
+  for bun-jobs-ui and 229.9/230.2 s → 220.9 s for bun-jobs (no database
+  URLs), the latter inside the noise. It checks each file with its **nearest** `tsconfig.json`,
+  so bun-jobs-ui has `__tests__/app/tsconfig.json`, which only extends
+  `app/tsconfig.json`: without it the app tests were checked with the
+  package's DOM-free config and failed with 1,715 errors. It does not cover
+  `*.type-test.ts` (not test files) or anything the tests load another way;
+  `bun scripts/typecheck.ts` and `bun run check` do. The template's tests do
+  not take it: their nearest config is the plugin author's, which in the repo
+  reaches bun-jobs' source under stricter options (106 errors).
+- **Builds:** bun-jobs-ui's `scripts/build.ts` (prepack) passes `check: true`
+  to `Bun.build`, the API's `--check`, through `buildAssets`; about 175 ms.
+  The in-memory build `jobsUi()` makes on a request never checks.
+- **tsc stays only where `bun check` cannot do the job:** emitting
+  declarations (`scripts/build-declarations.ts` and `tsconfig.build.json` in
+  each package, the template's `scripts/build.ts`), and
+  `scripts/consumer-check.ts`, whose matrix reproduces what consumers' own tsc
+  5.9 and 6.0 report. bun-jobs' `referenceCheck.ts` and `docsCheck.ts` use
+  TypeScript's compiler API (the checker's view of exports; snippets compiled
+  in memory), not a type-check command.
 
 ## Benchmark regression guard
 
@@ -637,7 +714,8 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
 `include`.
 
 - **Build**: `bun run build:types` (`scripts/build-declarations.ts`, also run
-  on `prepack`). It runs `tsc -p tsconfig.build.json` (`emitDeclarationOnly`,
+  on `prepack`). It runs `tsc -p tsconfig.build.json` — tsc, because
+  `bun check` never emits — (`emitDeclarationOnly`,
   `declarationMap`, `rootDir` `lib`, `outDir` `dts`), then rewrites every
   relative specifier in the declarations to `.js`/`/index.js` — tsc copies our
   extensionless specifiers verbatim, and `node16` consumers cannot follow
@@ -662,6 +740,8 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   `node16` (+ `browser` for browser entries) × `skipLibCheck` on/off, asserts
   each named export is not `any`, scans the shipped declarations for leaked
   imports, and imports each spelling under Bun. Any NEW-BROKEN cell fails.
+  It runs each consumer's own tsc, deliberately not `bun check`: the point is
+  what a consumer on TypeScript 5.9 or 6.0 sees.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
   bun-jobs-ui: 44/44 OK on TS 6.0 (its browser-safe `lib/shared/config` also
   under `browser`), against 28 OK on raw `.ts`.
@@ -751,7 +831,8 @@ shape, and it typed nothing.
   never `logger.error("message", err)`.
 
 Compile-time guarantees are asserted in `__tests__/logging.type-test.ts`
-(checked by the tests typecheck, not `bun test`); runtime behaviour and every
+(checked by `bun run check`; `bun test`, even with `--check`, never reads a
+`*.type-test.ts`); runtime behaviour and every
 adapter's call mapping in `__tests__/logging.test.ts`.
 
 ## Router — Express 5 semantics
@@ -917,7 +998,7 @@ mount's *output*, not the raw query.
 Compile-time assertions live in `__tests__/verbTyping.type-test.ts`,
 `__tests__/mountTyping.type-test.ts` and
 `packages/bun-nest/__tests__/nestVerbTyping.type-test.ts`; they are checked by
-the tests typecheck, not `bun test`. Runtime coverage for mounting is in
+`bun run check`, not `bun test` (`--check` covers test files only). Runtime coverage for mounting is in
 `__tests__/bunValidate.test.ts`.
 
 ## Testing without a socket: `fetch()`
@@ -967,8 +1048,7 @@ cannot succeed — a stub server reports both honestly rather than pretending.
   resolution cannot dispatch by arrow arity, so an untyped
   `(err, req, res, next) => …` inside `router.use/get/all/useMethod(...)`
   resolves through the wider overload and all four params infer as `any`
-  (the IDE flags this even when CLI `tsc` doesn't, since CLI tsc doesn't
-  cover tests). Use `satisfies RouterErrorMiddlewareHandler` to give the
+  (the IDE may flag this where the CLI check passes). Use `satisfies RouterErrorMiddlewareHandler` to give the
   arrow a contextual type:
 
   ```ts

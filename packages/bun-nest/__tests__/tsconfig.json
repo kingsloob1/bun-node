@@ -1,10 +1,11 @@
 {
-  // Test files are intentionally excluded from the package `tsconfig.json`
-  // (`include` is `./lib/**/*` only), so `bunx tsc --noEmit` skips them. This
-  // config exists purely so the IDE type-checks the tests with the package's
-  // real compiler options (notably `experimentalDecorators` for NestJS's
-  // `@WebSocketGateway` / `@SubscribeMessage` legacy decorators) instead of an
-  // inferred project that defaults to standard decorators.
+  // The package `tsconfig.json` includes `__tests__/` too, and the package's
+  // `bun run check` checks the tests through it. This config is the nearest
+  // one to a test file, so it is what the IDE, `bun test --check` and
+  // `bun check <file>` use for one: the package's real compiler options
+  // (notably `experimentalDecorators` for NestJS's `@WebSocketGateway` /
+  // `@SubscribeMessage` legacy decorators), not an inferred project that
+  // defaults to standard decorators.
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true

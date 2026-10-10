@@ -263,14 +263,19 @@ Before asking for a commit, run what the change touches; before a merge, the
 full gate on the rebased branch. `CLAUDE.md` has each package's commands; in
 short:
 
-- `bun scripts/typecheck.ts` — every project, and all must pass. In a fresh
-  worktree, first `bun install` in `packages/bun-common/bench`,
+- `bun scripts/typecheck.ts` — every project, with `bun check`, and all must
+  pass (Bun ≥ 1.4.3 for development; the packages' users need 1.4.2; the
+  user's decision, 2026-10-10). Check one project with a bare `bun --check`
+  in its directory, not `bun check -p`: `bun check` runs the nearest
+  `package.json`'s `check` script, and the root's runs the whole repo. In a
+  fresh worktree, first `bun install` in `packages/bun-common/bench`,
   `packages/bun-jobs/bench`, `benchmarks/` and `templates/compute-provider/`:
   without them those projects fail on missing modules, and that noise hides
   real errors in the same projects.
 - `CI=1 bunx eslint .` in each changed package or examples directory —
   0 errors.
-- `bun run test` in each changed package, plus `bun test --randomize` (serial)
+- `bun run test` in each changed package (it type-checks the tests first,
+  `bun test --check`), plus `bun test --randomize` (serial)
   for bun-jobs-ui. After a bun-common change, also bun-nest and bun-jobs;
   after a bun-jobs `api/contract` change, also bun-jobs-ui, whose fixtures and
   tests type against the contract.
@@ -476,8 +481,8 @@ On the first day, the new agent:
 
 1. Tells the main agent its role and session name, for the dated roster
    table above; the main agent makes that edit, so the table has one writer.
-2. Learns the package's gate: `bun run test`, `CI=1 bunx eslint .`, the
-   typecheck, and — for bun-common — the downstream bun-nest and bun-jobs
+2. Learns the package's gate: `bun run test`, `CI=1 bunx eslint .`,
+   `bun run check`, and — for bun-common — the downstream bun-nest and bun-jobs
    checks and the bench guard; for bun-nest, `examples/bun-nest`.
 3. Reads its package's open PRs and the memory entries that mention it.
 

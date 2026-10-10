@@ -82,6 +82,11 @@ The summon facet only: bun-jobs has no execute facet yet.
     bun scripts/check-types.ts  # the shipped declarations, as a user sees them
     ```
 
+    `check-types.ts` type-checks with `bun check`, so it needs Bun 1.4.3 or
+    later; the plugin itself runs wherever bun-jobs does (Bun 1.4.2 or
+    later). The declarations are still emitted by `tsc` (`scripts/build.ts`),
+    because `bun check` only checks.
+
     `bun run test` runs the test files in parallel, slowest first by
     `bun-timings.json`: scheduling hints only, safe to delete or leave stale
     (a test file it does not list still runs). `bun run test:timings`

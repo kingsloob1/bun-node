@@ -1,7 +1,7 @@
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
-import ts from "typescript";
 
 /**
  * Typechecks this directory's project: the tests that import the bun-jobs
@@ -9,50 +9,45 @@ import ts from "typescript";
  * It is compiled without the DOM lib; see tsconfig.json. Running it from
  * `bun test` means it cannot be skipped by a typecheck script that does not
  * list the project.
+ *
+ * It runs Bun's type checker, a bare `bun --check` in this directory, which
+ * checks the nearest tsconfig.json: this project's. Not `bun check -p`: that
+ * would run the package's `check` script, which checks every project of the
+ * package. The variables that switch the checker to its tagged format for AI
+ * agents are dropped, so a failure reads as one line per error, as tsc's did.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const configPath = join(here, "tsconfig.json");
 
-/** Compiles the project and returns its diagnostics. */
-function compile() {
-  const parsed = ts.getParsedCommandLineOfConfigFile(
-    configPath,
-    {},
-    {
-      ...ts.sys,
-      onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
-        throw new Error(
-          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-        );
-      },
-    },
-  );
-  if (!parsed) {
-    throw new Error(`could not read ${configPath}`);
-  }
-  const program = ts.createProgram({
-    rootNames: parsed.fileNames,
-    options: parsed.options,
+/** Checks the project; its exit code and the error lines. */
+function check() {
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.AGENT;
+  delete env.CLAUDECODE;
+  delete env.REPL_ID;
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "--check"],
+    cwd: here,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  return ts.getPreEmitDiagnostics(program).map((diagnostic) => {
-    const file = diagnostic.file?.fileName ?? "(global)";
-    const line =
-      diagnostic.file && diagnostic.start !== undefined
-        ? diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start).line +
-          1
-        : 0;
-    return {
-      file,
-      line,
-      code: diagnostic.code,
-      text: `${file}:${line} TS${diagnostic.code} ${ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`,
-    };
-  });
+  const output = `${result.stdout.toString()}${result.stderr.toString()}`;
+  return {
+    exitCode: result.exitCode,
+    errors: output.split("\n").filter((line) => /error TS\d+/.test(line)),
+    output,
+  };
 }
 
 describe("the package-importing app tests typecheck", () => {
   it("with no errors", () => {
-    expect(compile().map((diagnostic) => diagnostic.text)).toEqual([]);
+    const { exitCode, errors, output } = check();
+    expect(errors).toEqual([]);
+    // A check that never ran (no tsconfig, a crash) prints no error lines.
+    expect({ exitCode, output: exitCode === 0 ? "" : output }).toEqual({
+      exitCode: 0,
+      output: "",
+    });
   }, 120_000);
 });

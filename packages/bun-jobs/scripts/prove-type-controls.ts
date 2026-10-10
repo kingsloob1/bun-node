@@ -33,26 +33,73 @@ const targets =
         .sort()
         .map((path) => `${ROOT}/${path}`);
 
-/** Whether the package typechecks right now. */
-async function typechecks(): Promise<boolean> {
+/**
+ * The environment for the checker: this process's, without the variables that
+ * switch `bun --check` to its tagged, multi-line format for AI agents, so its
+ * output is the one-line `path(line,col): error TS…` form read below.
+ */
+const CHECK_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([name]) => !["AGENT", "CLAUDECODE", "REPL_ID"].includes(name),
+  ),
+);
+
+/**
+ * Runs Bun's type checker (Bun ≥ 1.4.3) over the package: a bare `bun --check`
+ * in the package checks its tsconfig.json. Not `bun check`, which would run the
+ * package's `check` script. About 0.5 s a check against tsc's 13 s.
+ */
+function check(): { exitCode: number; output: string } {
   const result = Bun.spawnSync({
-    cmd: ["bunx", "tsc", "--noEmit", "-p", `${ROOT}/tsconfig.json`],
+    cmd: [process.execPath, "--check"],
     cwd: ROOT,
+    env: CHECK_ENV,
     stdout: "pipe",
     stderr: "pipe",
   });
-
-  const output = `${result.stdout.toString()}${result.stderr.toString()}`;
-  return !/error TS\d+/.test(output);
+  return {
+    exitCode: result.exitCode,
+    output: `${result.stdout.toString()}${result.stderr.toString()}`,
+  };
 }
 
-if (!(await typechecks())) {
+/** Escapes `text` for use inside a regular expression. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether a check failed **because of a type error in `relative`**: exit 1 and
+ * an error line located in that file. A non-zero exit alone is not enough —
+ * `bun --check` also exits 1 on a broken or empty config (TS18003 "No inputs
+ * were found", which carries no file location), a crash or a resolution
+ * failure, and counting one of those as a live control is the false
+ * assurance this script exists to prevent.
+ */
+function failsIn(
+  result: { exitCode: number; output: string },
+  relative: string,
+): boolean {
+  return (
+    result.exitCode === 1 &&
+    new RegExp(
+      `^${escapeRegExp(relative)}\\(\\d+,\\d+\\): error TS\\d+`,
+      "m",
+    ).test(result.output)
+  );
+}
+
+const baseline = check();
+if (baseline.exitCode !== 0 || !baseline.output.includes("No type errors")) {
   console.error("The project does not typecheck as it stands; fix that first.");
+  console.error(baseline.output.trim());
   process.exit(1);
 }
 
 let dead = 0;
 let live = 0;
+/** Controls whose check failed for some reason other than a type error in their file. */
+let unproven = 0;
 
 for (const file of targets) {
   const original = await Bun.file(file).text();
@@ -72,15 +119,21 @@ for (const file of targets) {
 
     try {
       await Bun.write(file, without.join("\n"));
-      const stillPasses = await typechecks();
+      const result = check();
 
-      if (stillPasses) {
+      if (result.exitCode === 0) {
         dead++;
         console.log(
           `  DEAD  line ${index + 1}: ${lines[index + 1]?.trim() ?? ""}`,
         );
-      } else {
+      } else if (failsIn(result, relative)) {
         live++;
+      } else {
+        unproven++;
+        console.log(
+          `  UNPROVEN  line ${index + 1}: the check failed, but not with a type error in ${relative}:`,
+        );
+        console.log(`    ${result.output.trim().split("\n").join("\n    ")}`);
       }
     } finally {
       await Bun.write(file, original);
@@ -88,9 +141,10 @@ for (const file of targets) {
   }
 }
 
+const total = live + dead + unproven;
 console.log(
-  dead === 0
+  dead === 0 && unproven === 0
     ? `\n${live} controls, every one live.`
-    : `\n${dead} of ${live + dead} controls prove nothing.`,
+    : `\n${dead} of ${total} controls prove nothing; ${unproven} failed for a reason other than a type error in their file.`,
 );
-process.exit(dead === 0 ? 0 : 1);
+process.exit(dead === 0 && unproven === 0 ? 0 : 1);

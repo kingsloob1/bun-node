@@ -3,6 +3,11 @@
  * `dist/manifest.json`, which `jobsUi()` serves from memory. Runs on
  * `prepack`, so the published tarball never needs a consumer build step.
  *
+ * The bundle is type-checked first (`Bun.build`'s `check`, the app's
+ * `tsconfig.json`), so a type error fails the pack instead of shipping; it
+ * costs about 175 ms. The in-memory build `jobsUi()` makes on a request does
+ * not check.
+ *
  * ```bash
  * bun scripts/build.ts                      # app/main.tsx → dist/
  * bun scripts/build.ts --entry <file> --out <dir>
@@ -31,7 +36,7 @@ function kib(bytes: number): string {
 }
 
 const started = performance.now();
-const assets = await buildAssets({ entry: values.entry });
+const assets = await buildAssets({ entry: values.entry, check: true });
 const manifest = await writeAssets(assets, values.out);
 
 const rows: string[] = [];

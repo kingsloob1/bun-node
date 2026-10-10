@@ -3,8 +3,8 @@
  *
  * Two jobs: prove a handler registered after a `BunValidate` middleware sees
  * the parsed shapes, and prove the registrations that worked before the
- * overloads existed still resolve the same way. Checked by `tsc`, not
- * `bun test` — see the tests typecheck command in CLAUDE.md.
+ * overloads existed still resolve the same way. Checked by `bun check`, not
+ * `bun test` — run `bun run check` in the package.
  */
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import type { ResolvedHandler } from "../lib/types/routeTyping";

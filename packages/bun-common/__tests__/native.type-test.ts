@@ -4,7 +4,7 @@
  *
  * `native.ts` replaced lodash and friends with helpers whose results used to
  * be `unknown` or a caller-asserted `T`. What they infer now is part of the
- * public API (consumers compile our source), so it is asserted by `tsc`
+ * public API (consumers compile our source), so it is asserted by the type checker
  * rather than at runtime. Checked by `bun scripts/typecheck.ts`, not by
  * `bun test`.
  *

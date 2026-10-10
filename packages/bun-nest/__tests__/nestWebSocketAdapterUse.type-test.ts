@@ -7,7 +7,7 @@
  * tests once wrote `as never` at every one of these sites. The adapter types
  * never needed it; what the casts hid was `getInstance()` inheriting NestJS's
  * `getInstance<T = any>()`, so the comparison was against `any` and checked
- * nothing. It now returns the `BunRouter`. Checked by `tsc`, not `bun test`;
+ * nothing. It now returns the `BunRouter`. Checked by `bun check`, not `bun test`;
  * runtime coverage is in `httpAdapter.test.ts` and the `*.nest.test.ts` suites.
  */
 import type { BunRouter } from "@kingsleyweb/bun-common";

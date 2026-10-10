@@ -1,13 +1,11 @@
 /**
  * Compile-time assertions for {@link ExtractRouteParams}.
  *
- * These are checked by `tsc`, not by `bun test` — the runtime suite in
+ * These are checked by `bun check`, not by `bun test` — the runtime suite in
  * `router.test.ts` proves the matcher produces the same keys these types
- * promise. Run the tests typecheck from CLAUDE.md to verify:
+ * promise. Verify with `bun run check` in the package, or this file alone:
  *
- *   bunx tsc --noEmit --skipLibCheck --target ESNext --module ESNext \
- *     --moduleResolution bundler --strict --allowImportingTsExtensions \
- *     --types bun-types __tests__/routeParams.type-test.ts
+ *   bun check __tests__/routeParams.type-test.ts
  */
 import type { ExtractRouteParams } from "../lib/types/routeParams";
 

@@ -52,10 +52,10 @@
     "build": "bun scripts/build.ts",
     "build:types": "bun scripts/build-declarations.ts",
     "prepack": "bun scripts/build.ts && bun scripts/build-declarations.ts",
-    "test": "bun test --parallel --timings=bun-timings.json",
-    "test:serial": "bun test",
-    "test:timings": "rm -f bun-timings.json && bun test --parallel --timings=bun-timings.json --update-timings",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p app"
+    "test": "bun test --check --parallel --timings=bun-timings.json",
+    "test:serial": "bun test --check",
+    "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
+    "check": "bun check && bun check -p app && bun check -p __tests__/app/pkg"
   },
   "peerDependencies": {
     "@kingsleyweb/bun-jobs": "^2.2.0",
@@ -83,7 +83,7 @@
     "@types/bun": "^1.4.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "bun-types": "^1.4.2",
+    "bun-types": "^1.4.3",
     "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.5.6",
