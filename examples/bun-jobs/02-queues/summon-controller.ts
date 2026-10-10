@@ -162,13 +162,16 @@ const jobs = new BunJobs({
   logger,
   summon: {
     // A worker on demand: the add itself triggers the check, 50 ms after
-    // the last add, and a poll notices the worker registering. The poll is
-    // kept well behind the add, since whichever check comes first claims the
-    // attempt and names it: a fast poll would sometimes win.
+    // the add that armed it. No poll: whichever check first sees the jobs
+    // claims the attempt and names it, and a poll ticks on its own clock,
+    // so on a slow server one lands before the add's check. The add arms
+    // its check as soon as the job is written, so with the poll off it is
+    // the first check to see it; the tour checks for the registration
+    // itself, as the next add or a cron would.
     // Its worker idles 3 s, long enough for the tour to watch it working.
     emails: {
       summoner: spawnWorkerIdling(3_000),
-      triggers: { poll: 1_000, debounce: 50 },
+      triggers: { poll: false, debounce: 50 },
     },
     // Its worker is gone 200 ms after its job. Only the add checks on its
     // own: no poll and no worker events, so the next check is the one the
@@ -221,14 +224,26 @@ function watch(queue: string): SummonEventPayload[] {
 step("On demand: adding jobs summons a worker, which works them and exits");
 
 const emailEvents = watch("emails");
+const emailsController = jobs.summonController("emails");
 const emails = jobs.queue("emails");
 for (const to of ["ada", "grace", "edsger"]) {
   await emails.add("quick", { to });
 }
+// The add's own check first: one the tour made before it would claim the
+// attempt itself. Then the tour checks until the worker's first report
+// registers it.
+await waitFor(
+  "the add's check to summon a worker",
+  () => emailEvents.length > 0,
+  WAIT,
+);
 await waitFor(
   "the summoned worker to register",
-  () => emailEvents.some((event) => event.outcome === "registered"),
-  WAIT,
+  async () => {
+    await emailsController.check();
+    return emailEvents.some((event) => event.outcome === "registered");
+  },
+  { ...WAIT, interval: 100 },
 );
 show("summon events", emailEvents);
 const attempt = emailEvents[0]!;
@@ -257,10 +272,11 @@ checkEqual(
   ],
   [0, 3, 0],
 );
+const afterExit = await emailsController.check();
 checkEqual(
   "and nothing summons another: the queue has no demand left",
-  [emailEvents.length, started.size],
-  [2, 1],
+  [afterExit.action, emailEvents.length, started.size],
+  ["none", 2, 1],
 );
 
 /* ------------------------------------------------------------------ */
@@ -419,9 +435,13 @@ const crashingEvents = watch("crashing");
 /**
  * Summons one worker for `crashing`, with a `quick` job for it, and checks
  * once its record is listed, so that check registers it: the attempt's id.
+ * It returns only once that job is done. A worker stopped before it claims
+ * a job leaves the job waiting, and a check that then finds work and no
+ * worker summons another, as it should: so the tour stops or crashes a
+ * worker only once the queue has nothing left for it.
  */
 async function summonRegistered(): Promise<string> {
-  await jobs.queue("crashing").add("quick", {});
+  const job = await jobs.queue("crashing").add("quick", {});
   // Past the 1 ms backoff a failure leaves.
   await Bun.sleep(10);
   const summoned = await crashing.check();
@@ -437,6 +457,11 @@ async function summonRegistered(): Promise<string> {
     WAIT,
   );
   await crashing.check();
+  await waitFor(
+    "the summoned worker to finish its job",
+    async () => (await job.refresh())?.state === "completed",
+    WAIT,
+  );
   return summoned.id;
 }
 
