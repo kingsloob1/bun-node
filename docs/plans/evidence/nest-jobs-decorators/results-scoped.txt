@@ -1,0 +1,13 @@
+# bun scoped.ts 2000 — 2026-10-10T00:12:36Z, Bun 1.4.3-canary.1+bbdc5a519, load: 28.14 25.80 20.45 on 16 threads
+N=2000 jobs each, memory driver, concurrency 8, Bun 1.4.3; three rounds
+round 1: plain worker 38 ms (19 µs/job) | singleton @Processor 36 ms (18 µs/job) | request-scoped @Processor 94 ms (47 µs/job)
+round 2: plain worker 28 ms (14 µs/job) | singleton @Processor 39 ms (19 µs/job) | request-scoped @Processor 83 ms (41 µs/job)
+round 3: plain worker 33 ms (16 µs/job) | singleton @Processor 31 ms (15 µs/job) | request-scoped @Processor 91 ms (46 µs/job)
+scoped: distinct instances 6150 for 6150 jobs; REQUEST was the job in 6150 of them
+
+# bun scoped.ts 20000 — 2026-10-10T00:12:41Z, load: 26.45 25.48 20.38
+N=20000 jobs each, memory driver, concurrency 8, Bun 1.4.3; three rounds
+round 1: plain worker 279 ms (14 µs/job) | singleton @Processor 287 ms (14 µs/job) | request-scoped @Processor 1629 ms (81 µs/job)
+round 2: plain worker 304 ms (15 µs/job) | singleton @Processor 336 ms (17 µs/job) | request-scoped @Processor 729 ms (36 µs/job)
+round 3: plain worker 230 ms (11 µs/job) | singleton @Processor 284 ms (14 µs/job) | request-scoped @Processor 693 ms (35 µs/job)
+scoped: distinct instances 60150 for 60150 jobs; REQUEST was the job in 60150 of them

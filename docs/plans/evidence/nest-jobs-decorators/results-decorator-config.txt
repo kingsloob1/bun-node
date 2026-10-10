@@ -1,0 +1,15 @@
+# bun decorator-config.ts — 2026-10-10T00:30:45Z, Bun 1.4.3-canary.1+bbdc5a519
+include-empty       { "extends": "../../../../../../tsconfig.base.json", "include": [] }
+                    -> injected: object; design:paramtypes: 1
+include-covers      { "extends": "../../../../../../tsconfig.base.json", "include": ["./*.ts"] }
+                    -> injected: object; design:paramtypes: 1
+no-decorator-flags  { "compilerOptions": { "target": "ESNext", "module": "ESNext" }, "include": ["./*.ts"] }
+                    -> injected: undefined; design:paramtypes: none
+no-tsconfig-here    (no tsconfig.json here, though parent directories have ones that enable decorators)
+                    -> injected: undefined; design:paramtypes: none
+
+# Same probe, varying only the working directory (run by hand, 2026-10-10):
+#   cwd = repo root (tsconfig enables decorators), file in no-decorator-flags/  -> injected: object; design:paramtypes: 1
+#   cwd = repo root, file in no-tsconfig-here/                                 -> injected: object; design:paramtypes: 1
+#   cwd = this folder (tsconfig enables them), file in no-tsconfig-here/        -> injected: object; design:paramtypes: 1
+#   cwd = a directory outside the repo, file in no-tsconfig-here/              -> injected: undefined; design:paramtypes: none

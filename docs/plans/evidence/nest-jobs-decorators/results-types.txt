@@ -1,0 +1,12 @@
+# bunx tsc --noEmit -p . — 2026-10-10T00:15:17Z, TypeScript Version 6.0.3
+# Expected: errors ONLY at the 2a anonymous-class token (TS4094/TS4023, a declaration-emit finding).
+# No TS2578 anywhere means every @ts-expect-error in types.ts was needed: each marked mistake is caught.
+# The UNCAUGHT lines in types.ts compile; that is the finding.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'JOB_ROUTER' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'LOCAL_ADD_HOOKS' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'PlannedFlowNode' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4094: Property '#add' of exported anonymous class type may not be private or protected.
+types.ts(44,7): error TS4094: Property '#addBulk' of exported anonymous class type may not be private or protected.
+types.ts(44,7): error TS4094: Property '#addFlowNode' of exported anonymous class type may not be private or protected.
+# (TS4094 lines after the first three elided: 54 more, one per #private member of BunQueue)
+# directives in types.ts: 6

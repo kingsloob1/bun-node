@@ -1,0 +1,10 @@
+{
+  // Spikes for docs/plans/nest-jobs-decorators.md. Run one at a time with
+  // `bun <file>.ts`. Deliberately not in scripts/typecheck.ts: a spike records
+  // what one Bun and one Nest version did. Without this file Bun reads the
+  // root tsconfig.json, and the decorators here were silently not applied as
+  // legacy decorators (see decorator-config.ts).
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}
