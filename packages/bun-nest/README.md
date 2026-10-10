@@ -410,8 +410,9 @@ See
 ### Static assets
 
 `adapter.useStaticAssets(directory, options)` serves a directory under
-`options.prefix`. It registers `GET <prefix>/*` and shares bun-common's static
-file implementation. That implementation provides directory indexes, extension
+`options.prefix`. It registers `GET <prefix>/*`, and `GET <prefix>`, which
+answers `301` to `<prefix>/` as Express's `serve-static` does. It shares
+bun-common's static file implementation. That implementation provides directory indexes, extension
 fallbacks, dotfile policy, `ETag` / `Last-Modified` validators (conditional
 requests answer `304`), `Cache-Control`, byte ranges (`206`) and a `404` for a
 path that resolves to nothing.
