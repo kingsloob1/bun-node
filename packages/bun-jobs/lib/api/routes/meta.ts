@@ -123,6 +123,9 @@ export const DRIVER_FEATURES = {
   // The summon list: no driver method either — it lists this process's
   // controllers — so only the mode turns it off.
   summonList: [],
+  // Status read from storage: the marker and group entries are queue state,
+  // and the group list pages through it.
+  summonRemoteStatus: ["getQueueState", "listQueueState"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -243,6 +246,14 @@ export const FEATURE_ROUTES = {
   // `GET /summon`. Its action, `queues.list`, is on by default, but like
   // every flag this one ignores permissions.
   summonList: ["listSummonControllers"],
+  // The status and list routes, which answer from storage, and the two
+  // group reads; each group read `requires` `DRIVER_FEATURES.summonRemoteStatus`.
+  summonRemoteStatus: [
+    "getQueueSummon",
+    "listSummonControllers",
+    "listSummonGroups",
+    "getSummonGroup",
+  ],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**

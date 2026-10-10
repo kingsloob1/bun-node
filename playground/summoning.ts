@@ -34,7 +34,7 @@ import {
  *
  * | Entry of `summon: [...]` | Queues | Summoner | Shows |
  * |---|---|---|---|
- * | the **media group** | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | `media`, a `localCompute()` | one policy for five queues, with one-level-merged `overrides`; one entry file choosing its processor by queue; `maxUnits` answering `unavailable`; a lifetime ending units; a fault queue opening its circuit |
+ * | the **media group** | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | `media`, a `localCompute()` | one policy for five queues, with one-level-merged `overrides`; one shared budget for the five (`group: { name: "media" }`); one entry file choosing its processor by queue; `maxUnits` answering `unavailable`; a lifetime ending units; a fault queue opening its circuit |
  * | a **record**, mixed in | `obinna-queue` | `obinna`, a `localCompute()` | the user's own worker, jobs sent with `.toQueue()` and `jobs.queue(name).schedule()`; `env: "inherit"`, output to a logger, `SIGINT` to stop |
  * | | `ledger` | `replicas`, a scale-style `defineSummoner` over a `localCompute()` | `scaleDown`: units that stay up until released |
  * | | `secure-exports` | Vault Compute `…~1` (`compute/provider.ts`), over the media `localCompute()` | a third-party provider: pending readiness, a declared secret, `throttled`/`auth`/… answers |
@@ -354,6 +354,11 @@ export async function createSummoning(
             backoff: { initial: 5_000, max: 30_000 },
             circuit: { failures: 3, resetAfter: 60_000 },
             budget: { perHour: 240, perDay: 2_000 },
+            // …and one budget for the five together, under the summon
+            // group's name, in whichever process charges it. Each queue's
+            // own `budget` above is set, so it still binds on top; without
+            // it a queue's own budget would be off, the group's the limit.
+            group: { name: "media", budget: { perHour: 600, perDay: 5_000 } },
             maxLifetime: 600_000,
             env,
             // One level deep: an object here is merged field by field into

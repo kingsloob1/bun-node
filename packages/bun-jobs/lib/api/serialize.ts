@@ -25,6 +25,7 @@ import type { RunProgress } from "../shared/progress";
 import type {
   SummonCapabilities,
   SummonCheckResult,
+  SummonGroupStatus,
   SummonStatus,
 } from "../summon/types";
 import type { ResolvedJobsApiSerializers } from "./config";
@@ -34,6 +35,7 @@ import type {
   QueueDemandDto,
   SummonCapabilitiesDto,
   SummonCheckDto,
+  SummonGroupStatusDto,
   SummonListItemDto,
   SummonProviderDto,
   SummonStatusDto,
@@ -992,15 +994,20 @@ function toSummonCapabilitiesDto(
 }
 
 /**
- * Shapes one summon controller's status as an item of `GET /summon`: its
- * queue, its summoner's kind and readiness, the last outcome and the budget
- * usage, field by field as {@link toSummonStatusDto} has them.
+ * Shapes one summoning queue's status as an item of `GET /summon`: its
+ * queue, its summoner's kind, the last outcome, the budget usage and the
+ * circuit, field by field as {@link toSummonStatusDto} has them, whether it
+ * is inert, and — for a controller in this process — its readiness. `kind`
+ * is the summoner's for a local controller, else the one storage persisted.
+ * No `budget` when the status has none (a marker a newer bun-jobs wrote).
  */
 export function toSummonListItemDto(
-  /** The controller's namespace. */
+  /** The queue's namespace. */
   namespace: string,
-  /** What its `status()` answered. */
+  /** What its `status()` answered, or what storage said (`local: false`). */
   status: SummonStatus,
+  /** The kind storage persisted, for a status read from storage. */
+  storedKind?: string,
 ): SummonListItemDto {
   const full = toSummonStatusDto(status, {
     exposeSummonHandles: false,
@@ -1009,20 +1016,22 @@ export function toSummonListItemDto(
   return {
     namespace,
     queue: status.queue,
-    kind: status.summoner?.provider.kind ?? "",
-    readiness: status.summoner?.readiness ?? "ready",
+    local: status.local,
+    kind: status.summoner?.provider.kind ?? storedKind ?? "",
+    ...(status.local
+      ? { readiness: status.summoner?.readiness ?? "ready" }
+      : {}),
     inert: status.inert,
     ...(status.inertReason === undefined
       ? {}
       : { inertReason: status.inertReason }),
+    ...(status.circuitOpenUntil === undefined
+      ? {}
+      : { circuitOpenUntil: status.circuitOpenUntil }),
     ...(full.last === undefined ? {} : { last: full.last }),
-    // `status()` always reports the budget; the fallback keeps the type total.
-    budget: full.budget ?? {
-      hour: 0,
-      day: 0,
-      hourResetsAt: 0,
-      dayResetsAt: 0,
-    },
+    // `status()` always reports the budget; storage has none to report for
+    // a marker a newer bun-jobs wrote, and then none is sent — never zeros.
+    ...(full.budget === undefined ? {} : { budget: full.budget }),
   };
 }
 
@@ -1095,6 +1104,53 @@ export function toSummonStatusDto(
               : { detail: status.last.detail }),
           },
         }),
+    ...(status.group === undefined
+      ? {}
+      : { group: toSummonGroupStatusDto(status.group) }),
+  };
+}
+
+/** Shapes a summon group's shared state, field by field. */
+export function toSummonGroupStatusDto(
+  group: SummonGroupStatus,
+): SummonGroupStatusDto {
+  return {
+    name: group.name,
+    budget: { ...group.budget },
+    queues: Object.fromEntries(
+      Object.entries(group.queues).map(([queue, share]) => [
+        queue,
+        { day: share.day, lastAt: share.lastAt },
+      ]),
+    ),
+    ...(group.circuit === undefined
+      ? {}
+      : { circuit: toGroupCircuitDto(group.circuit) }),
+    ...(group.circuits === undefined
+      ? {}
+      : {
+          circuits: Object.fromEntries(
+            Object.entries(group.circuits).map(([kind, circuit]) => [
+              kind,
+              toGroupCircuitDto(circuit),
+            ]),
+          ),
+        }),
+  };
+}
+
+/** One group circuit, field by field. */
+function toGroupCircuitDto(
+  circuit: NonNullable<SummonGroupStatus["circuit"]>,
+): NonNullable<SummonGroupStatusDto["circuit"]> {
+  return {
+    failures: circuit.failures,
+    ...(circuit.openUntil === undefined
+      ? {}
+      : { openUntil: circuit.openUntil }),
+    ...(circuit.openedBy === undefined
+      ? {}
+      : { openedBy: { ...circuit.openedBy } }),
   };
 }
 

@@ -272,6 +272,30 @@ const providerRoutes = (api: {
     .sort();
 
 /**
+ * The three summon group routes: the list of groups and one group's shared
+ * state (`queues.list` and `queues.read`, reads), and a group's reset
+ * (`queues.summon`, a mutation). In the jobs half, backed by the driver's
+ * queue-state reads, which every built-in backend has
+ * (`features.summonRemoteStatus`): the two reads are in every count below
+ * but runner mode's, and the opt-in reset in those that name every action.
+ */
+const SUMMON_GROUP_ROUTES = [
+  "getSummonGroup",
+  "listSummonGroups",
+  "resetSummonGroup",
+];
+/** Which of {@link SUMMON_GROUP_ROUTES} an API registered, sorted, each marked a mutation or not. */
+const summonGroupRoutes = (api: {
+  routes: readonly { operationId: string; mutation: boolean }[];
+}) =>
+  api.routes
+    .filter((route) => SUMMON_GROUP_ROUTES.includes(route.operationId))
+    .map(
+      (route) => `${route.operationId}${route.mutation ? " (mutation)" : ""}`,
+    )
+    .sort();
+
+/**
  * Which of {@link JOB_METHOD_ROUTES} an API registered, in the same one-line
  * shape, with each marked `mutation` or not so a check names what is wrong.
  */
@@ -441,14 +465,20 @@ checkEqual(
 // `getQueueAddedByState` — and a backend that keeps no such counts (the file
 // and Redis drivers) prunes both. Every count below is two lower there. The
 // two demand routes ({@link DEMAND_ROUTES}) are in every count on every
-// backend, runner mode's aside, and so are the three provider routes
-// ({@link PROVIDER_ROUTES}) wherever every action is named.
+// backend, runner mode's aside, and so are the two summon group reads
+// ({@link SUMMON_GROUP_ROUTES}); the group reset and the three provider
+// routes ({@link PROVIDER_ROUTES}) are there wherever every action is named.
 const bothFeatures = (await both.call("GET", "/meta")).body.features;
 const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  80 + addedByState,
+  83 + addedByState,
+);
+checkEqual(
+  "the three summon group routes are among them, the reset a mutation, and /meta's features.summonRemoteStatus says they are served",
+  [summonGroupRoutes(both.api), bothFeatures.summonRemoteStatus],
+  [["getSummonGroup", "listSummonGroups", "resetSummonGroup (mutation)"], true],
 );
 checkEqual(
   "the two demand routes are among them, and /meta says they are served",
@@ -520,7 +550,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 64 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 67 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -544,6 +574,16 @@ checkEqual(
     providerRoutes(runnerOnly.api).length,
     (await jobsOnly.call("GET", "/meta")).body.features.providers,
     (await runnerOnly.call("GET", "/meta")).body.features.providers,
+  ],
+  [3, 0, true, false],
+);
+checkEqual(
+  "so do the summon group routes: they read the backend's queue state, and /meta's features.summonRemoteStatus follows",
+  [
+    summonGroupRoutes(jobsOnly.api).length,
+    summonGroupRoutes(runnerOnly.api).length,
+    (await jobsOnly.call("GET", "/meta")).body.features.summonRemoteStatus,
+    (await runnerOnly.call("GET", "/meta")).body.features.summonRemoteStatus,
   ],
   [3, 0, true, false],
 );
@@ -572,7 +612,7 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 39 + addedByState);
+checkEqual("what is left", readOnly.api.routes.length, 41 + addedByState);
 checkEqual(
   "the demand routes among them: reads, so readOnly keeps both",
   demandRoutes(readOnly.api),
@@ -604,7 +644,7 @@ const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  65 + addedByState,
+  67 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",
@@ -614,11 +654,12 @@ checkEqual(
 // Seven write something a host may well want only some callers to: a new
 // or changed job, a queue's job defaults (saving them, and separately
 // rewriting the backlog with them — tuning without a rewrite is a real
-// policy), summoning a worker now or clearing a queue's summon failures —
-// which starts compute, and costs money — and a worker's or a runner's
-// remote configuration. The other two, the compute providers configured in
-// this process and a preflight against one's platform, write nothing, but
-// disclose infrastructure: clusters, regions, which accounts are reachable.
+// policy), summoning a worker now, or clearing a queue's summon failures or a
+// summon group's shared circuit and budget usage — which starts compute, and
+// costs money — and a worker's or a runner's remote configuration. The other
+// two, the compute providers configured in this process and a preflight
+// against one's platform, write nothing, but disclose infrastructure:
+// clusters, regions, which accounts are reachable.
 checkEqual(
   "the opt-ins: adding and updating jobs, job defaults, summoning, compute providers, and remote config",
   [...JOBS_API_OPT_IN_ACTIONS],
@@ -634,7 +675,7 @@ checkEqual(
     "runners.configure",
   ],
 );
-/** The fifteen routes those nine actions authorize. */
+/** The sixteen routes those nine actions authorize. */
 const OPT_IN_ROUTES = [
   "addFlow",
   "addJob",
@@ -644,6 +685,7 @@ const OPT_IN_ROUTES = [
   "applyJobDefaults",
   "summonQueue",
   "resetQueueSummon",
+  "resetSummonGroup",
   "listProviders",
   "getProviderSchema",
   "validateProvider",
@@ -653,17 +695,19 @@ const OPT_IN_ROUTES = [
   "resetRunnerConfig",
 ];
 check(
-  "so none of their fifteen routes is registered",
+  "so none of their sixteen routes is registered",
   OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
   idsOf(byDefault.api),
 );
 check(
-  "while reading job defaults, worker configs, a queue's summon status and the summon list is a plain read, on by default",
+  "while reading job defaults, worker configs, a queue's summon status, the summon list and the summon groups is a plain read, on by default",
   [
     "getJobDefaults",
     "listWorkerConfigs",
     "getQueueSummon",
     "listSummonControllers",
+    "getSummonGroup",
+    "listSummonGroups",
   ].every((id) => idsOf(byDefault.api).includes(id)),
 );
 
@@ -692,7 +736,7 @@ checkEqual(
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and all fifteen opt-in routes",
+  "while [...JOBS_API_ACTIONS] is the default and all sixteen opt-in routes",
   idsOf(everything.api)
     .filter((id) => !idsOf(byDefault.api).includes(id))
     .sort(),

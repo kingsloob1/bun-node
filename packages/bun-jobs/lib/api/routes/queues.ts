@@ -7,6 +7,9 @@ import type {
 import type { BunQueue } from "../../queue/BunQueue";
 import type { JobDefaultsUpdate } from "../../queue/jobDefaults";
 import type { JobDefaultsInfo } from "../../queue/types";
+import type { LocalGroupView } from "../../summon/status";
+import type { SummonGroupStatus, SummonStatus } from "../../summon/types";
+import type { AuthDecision } from "../auth";
 import type { JobsApiAuthorizeContext, ResolvedJobsApiConfig } from "../config";
 import type {
   AddedByStateDto,
@@ -32,7 +35,12 @@ import {
 } from "../../drivers/index";
 import { jobDefaultIssue } from "../../queue/jobDefaults";
 import { normalizeLimits } from "../../queue/limits";
-import { decide } from "../auth";
+import { resetGroup } from "../../summon/group";
+import {
+  listSummonGroupNames,
+  readStoredGroupStatus,
+} from "../../summon/status";
+import { decide, denialError } from "../auth";
 import {
   JOB_DEFAULT_KEYS,
   MAX_ADDED_BY_STATE_SPAN_MS,
@@ -73,6 +81,9 @@ import {
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
+  SummonGroupListSchema,
+  SummonGroupResetBodySchema,
+  SummonGroupStatusSchema,
   SummonListSchema,
   SummonNowBodySchema,
   SummonResetBodySchema,
@@ -81,13 +92,20 @@ import {
 } from "../schemas/queues";
 import {
   toSummonCheckDto,
+  toSummonGroupStatusDto,
   toSummonListItemDto,
   toSummonStatusDto,
 } from "../serialize";
+import { parseSegment } from "../sources";
 import { overviewAnalytics, requestedRange, resolveRange } from "./analytics";
 import { defineRoute } from "./define";
 import { DRIVER_FEATURES, driverImplements } from "./meta";
-import { mapBounded, QueueParams, queueTarget } from "./support";
+import {
+  mapBounded,
+  QueueParams,
+  queueTarget,
+  SummonGroupParams,
+} from "./support";
 
 /** The driver methods queue limits need. */
 const LIMITS_METHODS = ["getQueueState", "setQueueState"] as const;
@@ -643,6 +661,274 @@ const SUMMON_ERRORS = [
 const SUMMON_NOTE =
   "Served for a queue whose summon controller runs in the API's process: one the `jobs` context the API was given has, from `BunJobsOptions.summon` or `jobs.summonController()`. Elsewhere 409 `SUMMON_NOT_CONFIGURED`; the API never builds one. The summon state itself (attempts in flight, failures, backoff, circuit, budget) lives in the backend, shared by every controller on the queue in any process.";
 
+/**
+ * The view of summon group `name` of a controller in it running in the API's
+ * process (the first, by build order), or `{}` when none does.
+ */
+function localGroupView(
+  services: RouteServices,
+  name: string,
+): { local?: LocalGroupView } {
+  const [first] = services.queues.summonGroupControllers(name);
+  return first === undefined ? {} : { local: first.view };
+}
+
+/**
+ * 409 `SUMMON_NOT_CONFIGURED` for a summon group a caller may see nothing of:
+ * one with neither state nor a local controller — or, answered the same so
+ * that its existence does not leak, one none of whose member queues the
+ * caller may read.
+ */
+function groupNotConfigured(name: string): ApiError {
+  return new ApiError(
+    "SUMMON_NOT_CONFIGURED",
+    409,
+    `Summon group "${name}" has no shared state, and no controller in it runs in this process`,
+    { context: { group: name } },
+  );
+}
+
+/** 409 `SUMMON_NOT_CONFIGURED` for a group reset where no controller in the group runs. */
+function groupResetNotConfigured(name: string): ApiError {
+  return new ApiError(
+    "SUMMON_NOT_CONFIGURED",
+    409,
+    `Summon group "${name}" can be reset only through an API whose process runs a controller in it, and none runs in this process`,
+    { context: { group: name } },
+  );
+}
+
+/** The route `GET /summon/groups/:group` reports to `authorize`. */
+const GROUP_READ_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
+  Object.freeze({ method: "GET", path: "/summon/groups/:group" });
+
+/** The route `GET /summon/groups` reports to `authorize`. */
+const GROUP_LIST_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
+  Object.freeze({ method: "GET", path: "/summon/groups" });
+
+/** The route `POST /summon/groups/:group/reset` reports to `authorize`. */
+const GROUP_RESET_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
+  Object.freeze({ method: "POST", path: "/summon/groups/:group/reset" });
+
+/**
+ * Asks `authorize` about `action` with no target, and throws its denial
+ * (401/403) when it refuses: what a route that authorizes itself asks when
+ * it has no queue to ask about.
+ */
+async function requireUntargeted(
+  services: RouteServices,
+  req: BunRequest,
+  action: "queues.read" | "queues.summon",
+  route: NonNullable<JobsApiAuthorizeContext["route"]>,
+): Promise<void> {
+  const decision = await decide(services.config, req, {
+    action,
+    transport: "http",
+    route,
+  });
+  if (!decision.allow) {
+    throw denialError(decision);
+  }
+}
+
+/**
+ * The `:group` a request names, checked as a segment. One that is not a
+ * valid name (`__bunjobs` among them) is 400 `INVALID_NAME` only to a caller
+ * `authorize` allows `action` without a target: the route authorizes itself,
+ * so nothing about the request reaches a caller it would refuse.
+ */
+async function groupName(
+  services: RouteServices,
+  req: BunRequest,
+  value: unknown,
+  action: "queues.read" | "queues.summon",
+  route: NonNullable<JobsApiAuthorizeContext["route"]>,
+): Promise<string> {
+  try {
+    return parseSegment(value, "group");
+  } catch (error) {
+    await requireUntargeted(services, req, action, route);
+    throw error;
+  }
+}
+
+/**
+ * A per-request `queues.read` asker for summon state: whether the caller may
+ * read `queue`'s summon status, asked as `GET /queues/:queue/summon` asks it
+ * ({@link SUMMON_READ_ROUTE}), once per queue per request.
+ */
+function summonReadAsker(
+  services: RouteServices,
+  req: BunRequest,
+): (queue: string) => Promise<boolean> {
+  const asked = new Map<string, Promise<boolean>>();
+  return async (queue) => {
+    let answer = asked.get(queue);
+    if (answer === undefined) {
+      answer = decide(services.config, req, {
+        action: "queues.read",
+        transport: "http",
+        queue,
+        route: SUMMON_READ_ROUTE,
+      }).then((decision) => decision.allow);
+      asked.set(queue, answer);
+    }
+    return await answer;
+  };
+}
+
+/**
+ * The queues a summon group's status names — its queue shares and the queue
+ * of every circuit's `openedBy` — plus, with `local`, the queues of the
+ * controllers in the group running in the API's process. In code-point order.
+ */
+function groupMembers(
+  services: RouteServices,
+  name: string,
+  group: SummonGroupStatus | undefined,
+  options: { local: boolean },
+): string[] {
+  const members = new Set<string>(Object.keys(group?.queues ?? {}));
+  for (const circuit of [
+    group?.circuit,
+    ...Object.values(group?.circuits ?? {}),
+  ]) {
+    if (circuit?.openedBy !== undefined) {
+      members.add(circuit.openedBy.queue);
+    }
+  }
+  if (options.local) {
+    for (const { controller } of services.queues.summonGroupControllers(name)) {
+      members.add(controller.queue);
+    }
+  }
+  return [...members].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * A summon group's status with nothing about a queue outside `readable`: its
+ * share left out, and a circuit it opened without `openedBy`. The group-wide
+ * counts, limits and every circuit's state stay: they govern every member.
+ */
+function redactGroup(
+  group: SummonGroupStatus,
+  readable: ReadonlySet<string>,
+): SummonGroupStatus {
+  const circuit = (
+    one: NonNullable<SummonGroupStatus["circuit"]>,
+  ): NonNullable<SummonGroupStatus["circuit"]> => {
+    if (one.openedBy === undefined || readable.has(one.openedBy.queue)) {
+      return one;
+    }
+    const { openedBy: _hidden, ...rest } = one;
+    return rest;
+  };
+  return {
+    ...group,
+    queues: Object.fromEntries(
+      Object.entries(group.queues).filter(([queue]) => readable.has(queue)),
+    ),
+    ...(group.circuit === undefined ? {} : { circuit: circuit(group.circuit) }),
+    ...(group.circuits === undefined
+      ? {}
+      : {
+          circuits: Object.fromEntries(
+            Object.entries(group.circuits).map(([kind, one]) => [
+              kind,
+              circuit(one),
+            ]),
+          ),
+        }),
+  };
+}
+
+/**
+ * `queues.read` without a target, asked at most once per request through
+ * the function this returns: what a group naming no queue is shown under,
+ * and what an unknown or hidden group's answer depends on.
+ */
+function untargetedReadAsker(
+  services: RouteServices,
+  req: BunRequest,
+  route: NonNullable<JobsApiAuthorizeContext["route"]>,
+): () => Promise<AuthDecision> {
+  let asked: Promise<AuthDecision> | undefined;
+  return async () => {
+    asked ??= decide(services.config, req, {
+      action: "queues.read",
+      transport: "http",
+      route,
+    });
+    return await asked;
+  };
+}
+
+/**
+ * What a caller may see of each summon group (the rule of `GET /summon`:
+ * nothing about a queue reaches a caller refused `queues.read` on it): each
+ * group redacted to the members it may read ({@link redactGroup}), or
+ * `undefined` when it may read none of them. `authorize` is asked about the
+ * members of every group together, once per queue, in code-point order
+ * (`FAN_OUT` at a time), as `GET /queues/:queue/summon` asks it. A group
+ * with no member at all (its shares cleared, no circuit opened, no
+ * controller here) names no queue: it is shown when `untargeted` allows it,
+ * asked after the members, and only then.
+ */
+async function visibleGroups(
+  services: RouteServices,
+  req: BunRequest,
+  groups: readonly SummonGroupStatus[],
+  untargeted: () => Promise<AuthDecision>,
+): Promise<(SummonGroupStatus | undefined)[]> {
+  const members = groups.map((group) =>
+    groupMembers(services, group.name, group, { local: true }),
+  );
+  const all = [...new Set(members.flat())].sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  const allowed = await mapBounded(all, summonReadAsker(services, req));
+  const readable = new Set(all.filter((_, index) => allowed[index]));
+  const shown: (SummonGroupStatus | undefined)[] = [];
+  for (const [index, group] of groups.entries()) {
+    if (members[index]!.length === 0) {
+      shown.push((await untargeted()).allow ? group : undefined);
+      continue;
+    }
+    shown.push(
+      members[index]!.some((queue) => readable.has(queue))
+        ? redactGroup(group, readable)
+        : undefined,
+    );
+  }
+  return shown;
+}
+
+/**
+ * A queue's summon status with its embedded group redacted to the members
+ * the caller may read. `own` — the queue the route authorized — is the
+ * caller's already: its status is the response.
+ */
+async function withVisibleGroup(
+  services: RouteServices,
+  req: BunRequest,
+  status: SummonStatus,
+  own: string,
+): Promise<SummonStatus> {
+  if (status.group === undefined) {
+    return status;
+  }
+  const ask = summonReadAsker(services, req);
+  const others = groupMembers(services, status.group.name, status.group, {
+    local: false,
+  }).filter((queue) => queue !== own);
+  const allowed = await mapBounded(others, ask);
+  const readable = new Set([
+    own,
+    ...others.filter((_, index) => allowed[index]),
+  ]);
+  return { ...status, group: redactGroup(status.group, readable) };
+}
+
 /** The queue routes: overview, list, detail, counts and queue-wide operations. */
 export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
   const { limits } = config;
@@ -900,30 +1186,52 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "queues.list",
       mode: "jobs",
       summary:
-        "Every summon controller the API can read, with its budget usage",
-      description: `One item per summon controller running in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — on a queue the API can reach, by queue name: the namespace and queue, the summoner's kind and readiness, the last outcome, and the budget usage with its limits (absent, with \`off: true\`, while the policy turns the budget off) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A controller running in another process is not listed. An empty list, never 409, when none runs here. Reads one summon state per controller; spends nothing.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each controller is then listed only when \`authorize\` allows \`queues.read\` on its queue, asked as \`GET /queues/{queue}/summon\` asks it (one call per controller, whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
+        "Every summoning queue the API can read, with its budget usage and circuit",
+      description: `One item per summoning queue the API can reach, by queue name. A queue whose summon controller runs in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — is \`local: true\`, with its summoner's kind, readiness and whether it is inert. A queue whose controller runs in another process is read from its summon state in storage, as \`local: false\`, with the kind its last claim persisted and no readiness. Each carries the last outcome, when an open circuit closes, and the budget usage with its limits (absent, with \`off: true\`, while the budget is off; read from storage, the limits the last claim persisted) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. An empty list, never 409, when none summons. State a newer bun-jobs wrote is listed \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is left out; state written before claims persisted their limits shows its counts with \`limitsUnknown: true\`. Reads the summon state of every reachable queue without a local controller (one queue-state read each: about 20–35 ms per 1,000 queues on SQLite, 75 ms on Postgres); spends nothing. Remote items are advertised by \`/meta.features.summonRemoteStatus\`.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each queue is then listed only when \`authorize\` allows \`queues.read\` on it, asked as \`GET /queues/{queue}/summon\` asks it (one call per summoning queue, whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
       tags: ["Queues"],
       responses: { 200: SummonListSchema },
       handler: async ({ req, services }) => {
         const controllers = services.queues.summonControllers();
-        const visible = new Set(
-          await readableSummonQueues(
-            services,
-            req,
-            controllers.map((controller) => controller.queue),
-          ),
+        const local = new Set(
+          controllers.map((controller) => controller.queue),
         );
-        const shown = controllers.filter((controller) =>
-          visible.has(controller.queue),
+        // Every other reachable queue, read from storage: one summoning from
+        // another process has summon state; any other has none.
+        const others = (await services.queues.names()).filter(
+          (name) => !local.has(name),
         );
+        const stored = await mapBounded(
+          others,
+          async (name) => await services.queues.storedSummonStatus(name),
+        );
+        const read = new Map<
+          string,
+          () => Promise<{ status: SummonStatus; kind?: string }>
+        >();
+        for (const controller of controllers) {
+          read.set(controller.queue, async () => ({
+            status: await controller.status(),
+          }));
+        }
+        others.forEach((name, index) => {
+          const found = stored[index];
+          // Unreadable state has nothing to show: left out, never zeros.
+          if (found !== undefined && found.unreadable !== true) {
+            read.set(name, async () => found);
+          }
+        });
+        const names = [...read.keys()].sort((a, b) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        );
+        const shown = await readableSummonQueues(services, req, names);
         const statuses = await mapBounded(
           shown,
-          async (controller) => await controller.status(),
+          async (name) => await read.get(name)!(),
         );
         return {
           body: {
-            controllers: shown.map((controller, index) =>
-              toSummonListItemDto(controller.namespace, statuses[index]!),
+            controllers: statuses.map(({ status, kind }) =>
+              toSummonListItemDto(services.config.namespace, status, kind),
             ),
           },
         };
@@ -937,18 +1245,208 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary:
         "A queue's summon status: attempts in flight, failures, circuit, budget",
-      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, and the summoner — its provider, declared capabilities and secret-free facts. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\n${SUMMON_NOTE}`,
+      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one (redacted to the members the caller may read, as \`GET /summon/groups/{group}\` redacts it), and the summoner — its provider, declared capabilities and secret-free facts. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). 409 \`SUMMON_NOT_CONFIGURED\` only for a queue with neither a controller here nor summon state. Advertised by \`/meta.features.summonRemoteStatus\`.`,
       tags: ["Queues"],
       params: QueueParams,
       responses: { 200: SummonStatusSchema },
       errors: SUMMON_ERRORS,
       target: ({ params }) => queueTarget(params.queue),
-      handler: async ({ params, services }) => {
-        const controller = await services.queues.summonController(params.queue);
+      handler: async ({ req, params, services }) => {
+        const { status } = await services.queues.summonStatus(params.queue);
         return {
           body: toSummonStatusDto(
-            await controller.status(),
+            await withVisibleGroup(services, req, status, status.queue),
             services.config.serialize,
+          ),
+        };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/summon/groups",
+      operationId: "listSummonGroups",
+      action: "queues.list",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "Every summon group: its shared budget usage and circuits",
+      description: `One item per summon group (\`SummonPolicy.group\`) with shared state in the namespace, by name, read from storage whether or not a controller in it runs in the API's process: the attempts counted against the group this UTC hour and day across its queues, the limits (a local controller's in the group, else the ones its last charge persisted; absent, with \`off: true\`, while the group's budget is off), when each window resets, each queue's share of today's attempts, and every provider kind's shared circuit (\`circuits\`, plus \`circuit\` for a local controller's kind). Lists the namespace's group entries, then reads each; spends nothing. Gated by \`queues.list\`, like the other lists. Each group is redacted to the members the caller may read: \`authorize\` is asked \`queues.read\` about each member queue (its queues with a share, every \`openedBy\` queue, and the queues of its controllers in the API's process) as \`GET /queues/{queue}/summon\` asks it, and a refused member's share and the \`openedBy\` of a circuit it opened are left out; the counts, limits and circuits' state stay, as they govern every member. A group with no member the caller may read is left out (one with no member at all is shown when \`queues.read\` asked without a queue allows it). Advertised by \`/meta.features.summonRemoteStatus\`.`,
+      tags: ["Queues"],
+      responses: { 200: SummonGroupListSchema },
+      handler: async ({ req, services }) => {
+        const { driver, namespace } = services.config;
+        const names = await listSummonGroupNames(driver, namespace);
+        const now = Date.now();
+        const groups = await mapBounded(
+          names,
+          async (name) =>
+            await readStoredGroupStatus(
+              driver,
+              namespace,
+              name,
+              now,
+              localGroupView(services, name),
+            ),
+        );
+        const visible = await visibleGroups(
+          services,
+          req,
+          groups.filter((group) => group !== undefined),
+          untargetedReadAsker(services, req, GROUP_LIST_ROUTE),
+        );
+        return {
+          body: {
+            groups: visible
+              .filter((group) => group !== undefined)
+              .map((group) => toSummonGroupStatusDto(group)),
+          },
+        };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/summon/groups/:group",
+      operationId: "getSummonGroup",
+      action: "queues.read",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "A summon group's shared budget usage and circuits",
+      description: `One summon group's shared state, as \`GET /summon/groups\` has each, read from storage: no controller in the group need run in the API's process. With one, its limits and its kind's circuit; a group with a local controller and no state yet answers its zero counts. 409 \`SUMMON_NOT_CONFIGURED\` for a group with neither state nor a local controller. Spends nothing. Advertised by \`/meta.features.summonRemoteStatus\`.\n\nAuthorized per member, never by an untargeted \`queues.read\`, so a per-queue allow-list reads a group whose members it covers. Each group is redacted to the members the caller may read: \`authorize\` is asked \`queues.read\` about each member queue (its queues with a share, every \`openedBy\` queue, and the queues of its controllers in the API's process) as \`GET /queues/{queue}/summon\` asks it, and a refused member's share and the \`openedBy\` of a circuit it opened are left out; the counts, limits and circuits' state stay, as they govern every member. A group none of whose members the caller may read is answered as an unknown one: the denial of \`queues.read\` asked without a queue, else the same 409 — so its existence does not leak. A \`:group\` that is not a valid name is 400 \`INVALID_NAME\` only to a caller that untargeted question allows.`,
+      tags: ["Queues"],
+      params: SummonGroupParams,
+      responses: { 200: SummonGroupStatusSchema },
+      errors: ["INVALID_NAME", "SUMMON_NOT_CONFIGURED", "DRIVER_ERROR"],
+      authorizesItself: true,
+      handler: async ({ req, params, services }) => {
+        const name = await groupName(
+          services,
+          req,
+          params.group,
+          "queues.read",
+          GROUP_READ_ROUTE,
+        );
+        const { driver, namespace } = services.config;
+        const group = await readStoredGroupStatus(
+          driver,
+          namespace,
+          name,
+          Date.now(),
+          localGroupView(services, name),
+        );
+        const untargeted = untargetedReadAsker(services, req, GROUP_READ_ROUTE);
+        const [shown] =
+          group === undefined
+            ? [undefined]
+            : await visibleGroups(services, req, [group], untargeted);
+        if (shown === undefined) {
+          // Unknown, or nothing in it the caller may read: answered alike,
+          // the untargeted question's denial or the 409.
+          const decision = await untargeted();
+          if (!decision.allow) {
+            throw denialError(decision);
+          }
+          throw groupNotConfigured(name);
+        }
+        return { body: toSummonGroupStatusDto(shown) };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/summon/groups/:group/reset",
+      operationId: "resetSummonGroup",
+      action: "queues.summon",
+      mode: "jobs",
+      requires: DRIVER_FEATURES.summonRemoteStatus,
+      summary: "Clear a summon group's shared circuit or budget usage",
+      description: `Resets a summon group's shared state, for every queue in it, in every process: with \`{ "circuit": true }\` its shared circuit closes and its counts clear, for every provider kind; with \`{ "budget": true }\` its attempts this UTC hour and day, and every queue's share, go to 0. \`{}\` changes nothing. Answers the group's status after it. Needs a controller in the group running in the API's process — the same rule as resetting a queue — or 409 \`SUMMON_NOT_CONFIGURED\`; 409 \`SUMMON_MARKER_CONTENDED\` when other controllers won every write it tried. Each queue's own state is untouched: \`POST /queues/{queue}/summon/reset\` resets that.\n\n\`queues.summon\`, like "summon now": opt-in, and removed by \`readOnly\`. Asked about **every member queue** — its queues with a share, every \`openedBy\` queue, and the queues of its controllers in the API's process — and needed on all of them, since the reset clears state that governs each: any refusal is answered (401/403, naming no queue) before anything is written. A group with no member is asked about without a queue. The status it answers is redacted as \`GET /summon/groups/{group}\` redacts it.`,
+      tags: ["Queues"],
+      params: SummonGroupParams,
+      body: SummonGroupResetBodySchema,
+      bodyOptional: true,
+      responses: { 200: SummonGroupStatusSchema },
+      errors: [
+        "INVALID_NAME",
+        "SUMMON_NOT_CONFIGURED",
+        "SUMMON_MARKER_CONTENDED",
+        "DRIVER_ERROR",
+      ],
+      authorizesItself: true,
+      handler: async ({ req, params, body, services }) => {
+        const name = await groupName(
+          services,
+          req,
+          params.group,
+          "queues.summon",
+          GROUP_RESET_ROUTE,
+        );
+        const { driver, namespace } = services.config;
+        // Every member: the reset clears state that governs each of them.
+        const members = groupMembers(
+          services,
+          name,
+          await readStoredGroupStatus(driver, namespace, name, Date.now()),
+          { local: true },
+        );
+        if (members.length === 0) {
+          await requireUntargeted(
+            services,
+            req,
+            "queues.summon",
+            GROUP_RESET_ROUTE,
+          );
+        } else {
+          const decisions = await mapBounded(
+            members,
+            async (queue) =>
+              await decide(services.config, req, {
+                action: "queues.summon",
+                transport: "http",
+                queue,
+                route: GROUP_RESET_ROUTE,
+              }),
+          );
+          const refused = decisions.find(
+            (decision): decision is Extract<AuthDecision, { allow: false }> =>
+              !decision.allow,
+          );
+          if (refused !== undefined) {
+            // Not naming the queue: the caller may not be allowed to read it.
+            throw denialError(refused);
+          }
+        }
+        const view = localGroupView(services, name);
+        if (view.local === undefined) {
+          throw groupResetNotConfigured(name);
+        }
+        const landed = await resetGroup(driver, namespace, name, {
+          budget: body.budget === true,
+          ...(body.circuit === true ? { circuit: true as const } : {}),
+        });
+        if (!landed) {
+          throw new ApiError(
+            "SUMMON_MARKER_CONTENDED",
+            409,
+            `Could not reset summon group "${name}": other controllers kept writing it; try again`,
+            { context: { group: name } },
+          );
+        }
+        const group = await readStoredGroupStatus(
+          driver,
+          namespace,
+          name,
+          Date.now(),
+          view,
+        );
+        // Answered as the caller may read it: `queues.summon` on a queue is
+        // not `queues.read` on it.
+        const ask = summonReadAsker(services, req);
+        const shown = groupMembers(services, name, group, { local: false });
+        const allowed = await mapBounded(shown, ask);
+        return {
+          body: toSummonGroupStatusDto(
+            redactGroup(
+              group!,
+              new Set(shown.filter((_, index) => allowed[index])),
+            ),
           ),
         };
       },
@@ -992,12 +1490,17 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       responses: { 200: SummonStatusSchema },
       errors: [...SUMMON_ERRORS, "SUMMON_MARKER_CONTENDED"],
       target: ({ params }) => queueTarget(params.queue),
-      handler: async ({ params, body, services }) => {
+      handler: async ({ req, params, body, services }) => {
         const controller = await services.queues.summonController(params.queue);
         await controller.reset({ budget: body.budget });
         return {
           body: toSummonStatusDto(
-            await controller.status(),
+            await withVisibleGroup(
+              services,
+              req,
+              await controller.status(),
+              controller.queue,
+            ),
             services.config.serialize,
           ),
         };

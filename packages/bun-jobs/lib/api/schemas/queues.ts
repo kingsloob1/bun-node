@@ -586,6 +586,12 @@ export const SummonBudgetSchema = s.named(
             "Present, and `true`, when the policy turned the budget off (`budget: false`): no limit applies, and the counts are shown for information.",
         }),
       ),
+      limitsUnknown: s.optional(
+        s.literal(true, {
+          description:
+            "Set when no limits were stored with this state (it was written before limits were persisted): the counts are real, the limits are not known. Cleared on the queue's next summon. Only read from storage (`local: false`); `perHour`, `perDay` and `off` are then absent.",
+        }),
+      ),
       hourResetsAt: Instant(
         "When the hour window ends and `hour` starts again from 0, epoch ms: the next UTC hour.",
       ),
@@ -596,6 +602,80 @@ export const SummonBudgetSchema = s.named(
     {
       description:
         "Attempts counted against the summon budget in the current UTC hour and day, shared by every controller on the queue, with the answering controller's limits and when each window resets.",
+    },
+  ),
+);
+
+/** A summon group's shared circuit for one provider kind, with `description`. */
+function GroupCircuitSchema(description: string) {
+  return s.object(
+    {
+      failures: s.integer({
+        minimum: 0,
+        description:
+          "Consecutive failures counted across the group for this provider kind; reset by a registration on any of its queues.",
+      }),
+      openUntil: s.optional(
+        Instant("When the open circuit closes, epoch ms, while it is open."),
+      ),
+      openedBy: s.optional(
+        s.object(
+          {
+            queue: s.string({ description: "The queue whose attempt failed." }),
+            id: s.string({ description: "The attempt." }),
+            detail: s.optional(
+              s.string({ description: "Its short, secret-free detail." }),
+            ),
+          },
+          { description: "The failure that last opened it." },
+        ),
+      ),
+    },
+    { description },
+  );
+}
+
+/** A summon group's shared state. Mirrors `SummonGroupStatusDto`. */
+export const SummonGroupStatusSchema = s.named(
+  "SummonGroupStatus",
+  s.object(
+    {
+      name: s.string({ description: "The group's name." }),
+      budget: SummonBudgetSchema,
+      queues: s.record(
+        s.object({
+          day: s.integer({
+            minimum: 0,
+            description:
+              "Attempts this queue charged to the group this UTC day.",
+          }),
+          lastAt: Instant("When it last charged one, epoch ms."),
+        }),
+        {
+          description:
+            "Each queue's share of today's attempts, by queue name: every queue that charged the group since UTC midnight.",
+        },
+      ),
+      circuit: s.optional(
+        GroupCircuitSchema(
+          "The group's shared circuit for the answering controller's summoner kind, when a controller in the group runs in the API's process and its group shares its circuit (`group.circuit`) — or, read from storage, the kind a queue's last claim persisted: while open, no queue of the group using that kind is summoned for.",
+        ),
+      ),
+      circuits: s.optional(
+        s.record(
+          GroupCircuitSchema(
+            "The group's shared circuit for one provider kind.",
+          ),
+          {
+            description:
+              "Every provider kind's shared circuit the group's state holds, by `kind`, as `circuit` shows one, so any API process shows every kind's. Absent while none has counted a failure.",
+          },
+        ),
+      ),
+    },
+    {
+      description:
+        "A summon group's shared state (`SummonPolicy.group`): the attempts counted against the group in the current UTC hour and day across every queue in it, with the limits for the group — the answering controller's, or read from storage the ones the last charge persisted (absent, and `off: true`, while the group's budget is off) — each queue's share of today's, and its shared circuits.",
     },
   ),
 );
@@ -623,11 +703,11 @@ export const SummonStatusSchema = s.named(
       queue: s.string({ description: "The queue." }),
       local: s.boolean({
         description:
-          "Whether the controller runs in the API's process. Always `true` today: status and reset both need a controller in the API's process, and answer 409 `SUMMON_NOT_CONFIGURED` without one. A read of a queue whose controller runs elsewhere (`false`) is a recorded follow-up.",
+          "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. Advertised by `/meta.features.summonRemoteStatus`.",
       }),
       inert: s.boolean({
         description:
-          'Whether that controller is inert: it summons nothing, and "summon now" answers `skipped` with reason `inert`.',
+          'Whether that controller is inert: it summons nothing, and "summon now" answers `skipped` with reason `inert`. Read from storage (`local: false`), `true` only for summon state a newer bun-jobs wrote.',
       }),
       inertReason: s.optional(
         s.enum(["summoned-process", "newer-marker"], {
@@ -692,6 +772,7 @@ export const SummonStatusSchema = s.named(
       ),
       budget: s.optional(SummonBudgetSchema),
       last: s.optional(SummonLastSchema),
+      group: s.optional(SummonGroupStatusSchema),
     },
     {
       description:
@@ -711,6 +792,40 @@ export const SummonNowBodySchema = s.object({
   ),
 });
 
+/** `POST /summon/groups/{group}/reset` body. Mirrors `SummonGroupResetBody`. */
+export const SummonGroupResetBodySchema = s.object({
+  circuit: s.optional(
+    s.boolean({
+      default: false,
+      description:
+        "Close the group's shared circuit, for every provider kind, and clear its counts. Defaults to `false`.",
+    }),
+  ),
+  budget: s.optional(
+    s.boolean({
+      default: false,
+      description:
+        "Clear the group's budget usage: its attempts this UTC hour and day, and every queue's share, go to 0. Defaults to `false`.",
+    }),
+  ),
+});
+
+/** `GET /summon/groups`. Mirrors `SummonGroupListDto`. */
+export const SummonGroupListSchema = s.named(
+  "SummonGroupList",
+  s.object(
+    {
+      groups: s.array(SummonGroupStatusSchema, {
+        description: "The groups, in name order. Empty when none has state.",
+      }),
+    },
+    {
+      description:
+        "Every summon group with shared state in the namespace, read from storage.",
+    },
+  ),
+);
+
 /** `POST /queues/:queue/summon/reset` body. Mirrors `SummonResetBody`. */
 export const SummonResetBodySchema = s.object({
   budget: s.optional(
@@ -726,24 +841,40 @@ export const SummonResetBodySchema = s.object({
 export const SummonListItemSchema = s.object({
   namespace: s.string({ description: "The queue's namespace." }),
   queue: s.string({ description: "The queue." }),
-  kind: s.string({
-    description: "The summoner's kind, e.g. `ecs`: a label for badges.",
-  }),
-  readiness: ProviderReadinessSchema(
-    "Whether the summoner can be called, as `GET /queues/{queue}/summon` has it: `ready`, `pending` while its provider's config is still validating, or `failed`.",
-  ),
-  inert: s.boolean({
+  local: s.boolean({
     description:
-      "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says.",
+      "Whether its controller runs in the API's process. `false`: read from the queue's summon state in storage, as `GET /queues/{queue}/summon` answers with `local: false`; then `readiness` is absent.",
   }),
+  kind: s.string({
+    description:
+      "The summoner's kind, e.g. `ecs`: a label for badges. Read from storage, the kind the queue's last claim persisted, empty when none did.",
+  }),
+  readiness: s.optional(
+    ProviderReadinessSchema(
+      "Whether the summoner can be called, as `GET /queues/{queue}/summon` has it: `ready`, `pending` while its provider's config is still validating, or `failed`. Only when `local`.",
+    ),
+  ),
+  inert: s.optional(
+    s.boolean({
+      description:
+        "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says. Read from storage (`local: false`), `true` only for summon state a newer bun-jobs wrote (`inertReason: newer-marker`).",
+    }),
+  ),
   inertReason: s.optional(
     s.enum(["summoned-process", "newer-marker"], {
       description:
         "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
     }),
   ),
+  circuitOpenUntil: s.optional(
+    Instant(
+      "When the queue's open circuit closes, epoch ms, while it is open, as `GET /queues/{queue}/summon` has it.",
+    ),
+  ),
   last: s.optional(SummonLastSchema),
-  budget: SummonBudgetSchema,
+  // Absent for a queue whose summon state a newer bun-jobs wrote (`inert`,
+  // `newer-marker`): this build cannot read its counts.
+  budget: s.optional(SummonBudgetSchema),
 });
 
 /** `GET /summon`. Mirrors `SummonListDto`. */
@@ -753,12 +884,12 @@ export const SummonListSchema = s.named(
     {
       controllers: s.array(SummonListItemSchema, {
         description:
-          "The summon controllers running in the API's process, by queue name, less the queues the caller cannot see. Empty when none runs here.",
+          "Every summoning queue, by queue name — with a controller in the API's process (`local: true`) or summon state in storage (`local: false`) — less the queues the caller may not read. Empty when none summons.",
       }),
     },
     {
       description:
-        "Every summon controller the API can read, with its budget usage: today, the ones running in the API's process.",
+        "Every summoning queue the API can read, with its budget usage and circuit.",
     },
   ),
 );

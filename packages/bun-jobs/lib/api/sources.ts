@@ -1,6 +1,8 @@
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { SummonController } from "../summon/controller";
+import type { LocalGroupView, StoredSummonStatus } from "../summon/status";
+import type { SummonStatus } from "../summon/types";
 import type { ResolvedJobsApiConfig } from "./config";
 import { RunnerController } from "../runner/RunnerController";
 import { ConfigError } from "../shared/errors";
@@ -8,7 +10,9 @@ import { assertSegment } from "../shared/keys";
 import {
   FIND_SUMMON_CONTROLLER,
   LIST_SUMMON_CONTROLLERS,
+  SUMMON_GROUP_VIEW,
 } from "../summon/controller";
+import { readStoredSummonStatus } from "../summon/status";
 import { ApiError } from "./errors";
 
 /**
@@ -20,8 +24,23 @@ import { ApiError } from "./errors";
  * segment, then checked against the known set, and only then resolved.
  */
 
+/** 409 `SUMMON_NOT_CONFIGURED` for a queue with no summon controller in this process. */
+function notConfigured(name: string): ApiError {
+  return new ApiError(
+    "SUMMON_NOT_CONFIGURED",
+    409,
+    `No summon controller for queue "${name}" runs in this process: configure one with the summon option or summonController() on the BunJobs this API was given`,
+    { context: { queue: name } },
+  );
+}
+
 /** Which kind of name a segment is. */
-export type SegmentKind = "queue" | "runner" | "worker" | "worker key";
+export type SegmentKind =
+  | "queue"
+  | "runner"
+  | "worker"
+  | "worker key"
+  | "group";
 
 /** What each kind is called in the message a bad segment is refused with. */
 const SEGMENT_LABELS: Record<SegmentKind, string> = {
@@ -29,6 +48,7 @@ const SEGMENT_LABELS: Record<SegmentKind, string> = {
   runner: "runner id",
   worker: "worker id",
   "worker key": "worker key",
+  group: "summon group name",
 };
 
 /**
@@ -199,17 +219,25 @@ export interface SourceOptions {
   now?: () => number;
 }
 
+/**
+ * What {@link QueueSource} reads of the configuration. `driver` and
+ * `namespace` are what summon status is read from storage with; without them
+ * a queue with no local controller is 409 `SUMMON_NOT_CONFIGURED`.
+ */
+type QueueSourceConfig = Pick<
+  ResolvedJobsApiConfig,
+  "jobs" | "queues" | "limits"
+> &
+  Partial<Pick<ResolvedJobsApiConfig, "driver" | "namespace">>;
+
 /** The queues a configuration can reach. */
 export class QueueSource {
   /** The resolved configuration. */
-  readonly #config: Pick<ResolvedJobsApiConfig, "jobs" | "queues" | "limits">;
+  readonly #config: QueueSourceConfig;
   /** Known names, when they come from the backend. */
   readonly #known: TtlSet | undefined;
 
-  constructor(
-    config: Pick<ResolvedJobsApiConfig, "jobs" | "queues" | "limits">,
-    options?: SourceOptions,
-  ) {
+  constructor(config: QueueSourceConfig, options?: SourceOptions) {
     this.#config = config;
     const jobs = config.jobs;
     this.#known =
@@ -337,12 +365,7 @@ export class QueueSource {
       );
     }
     if (controller === undefined) {
-      throw new ApiError(
-        "SUMMON_NOT_CONFIGURED",
-        409,
-        `No summon controller for queue "${name}" runs in this process: configure one with the summon option or summonController() on the BunJobs this API was given`,
-        { context: { queue: name } },
-      );
+      throw notConfigured(name);
     }
     return controller;
   }
@@ -369,6 +392,81 @@ export class QueueSource {
           configured === undefined || configured.has(controller.queue),
       )
       .sort((a, b) => (a.queue < b.queue ? -1 : a.queue > b.queue ? 1 : 0));
+  }
+
+  /**
+   * The summon status of the queue a request names: its local controller's
+   * (`status()`), else the one its summon state in storage holds
+   * (`local: false`, with the kind the last claim persisted). Validated and
+   * checked for membership like {@link summonController}. 409
+   * `SUMMON_NOT_CONFIGURED` for a reachable queue with neither a local
+   * controller nor summon state, or with no driver to read one from.
+   */
+  async summonStatus(value: unknown): Promise<{
+    /** The status. */
+    status: SummonStatus;
+    /** The local controller, when there is one. */
+    controller?: SummonController;
+    /** The kind storage persisted, for a status read from it. */
+    kind?: string;
+  }> {
+    const name = parseSegment(value, "queue");
+    const controller = this.#config.jobs?.[FIND_SUMMON_CONTROLLER](name);
+    if (controller !== undefined) {
+      return {
+        status: await (await this.summonController(name)).status(),
+        controller,
+      };
+    }
+    if (!(await this.has(name))) {
+      throw new ApiError(
+        "QUEUE_NOT_FOUND",
+        404,
+        `Queue "${name}" was not found`,
+        { context: { queue: name } },
+      );
+    }
+    const stored = await this.storedSummonStatus(name);
+    if (stored === undefined) {
+      throw notConfigured(name);
+    }
+    return stored;
+  }
+
+  /**
+   * A queue's summon status from storage alone, or `undefined` when it has
+   * none (or the API has no driver that keeps queue state). No membership
+   * check: the caller has one.
+   */
+  async storedSummonStatus(
+    name: string,
+  ): Promise<StoredSummonStatus | undefined> {
+    const { driver, namespace } = this.#config;
+    if (
+      driver === undefined ||
+      namespace === undefined ||
+      typeof driver.getQueueState !== "function"
+    ) {
+      return undefined;
+    }
+    return await readStoredSummonStatus(driver, namespace, name, Date.now());
+  }
+
+  /**
+   * The local controllers in summon group `name`: every controller the
+   * `jobs` context runs whose policy names the group, with its view of it.
+   */
+  summonGroupControllers(
+    name: string,
+  ): { controller: SummonController; view: LocalGroupView }[] {
+    const jobs = this.#config.jobs;
+    if (!jobs) {
+      return [];
+    }
+    return jobs[LIST_SUMMON_CONTROLLERS]().flatMap((controller) => {
+      const group = controller[SUMMON_GROUP_VIEW]();
+      return group?.name === name ? [{ controller, view: group.view }] : [];
+    });
   }
 
   /** Forgets the cached queue list, so the next check reads the backend. */

@@ -234,6 +234,10 @@ export const MetaSchema = s.named(
           description:
             "The compute provider routes, `GET /providers`, `POST /providers/{id}/validate` and `GET /providers/{id}/schema`, are served. They need no driver method, so `false` only in `runner` mode; like every flag it ignores permissions (`providers.read` and `providers.validate` are opt-in: see `/meta/permissions`). Whether any provider is configured is `GET /providers`' own answer, an empty list.",
         }),
+        summonRemoteStatus: s.boolean({
+          description:
+            "Summon status may be read from storage: `GET /queues/{queue}/summon` answers `local: false` for a queue whose controller runs in another process (instead of 409), `GET /summon` lists such queues with `local: false`, and the summon group routes (`GET /summon/groups`, `GET /summon/groups/{group}`) are served. Needs the driver's queue-state reads (`getQueueState`, `listQueueState`); `false` in `runner` mode. Like every flag it ignores permissions.",
+        }),
         summonResetBudget: s.boolean({
           description:
             "`POST /queues/{queue}/summon/reset` is served and accepts `{ \"budget\": true }`, which also clears the queue's summon budget usage. `false` only in `runner` mode; like every flag it ignores permissions (`queues.summon` is opt-in: see `/meta/permissions`), and whether a queue has a summon controller is that route's own answer.",

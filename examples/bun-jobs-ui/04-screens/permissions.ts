@@ -7198,18 +7198,26 @@ checkEqual(
   [rowsOf(summonHostAll), rowsOf(summonRefuseList)],
   [listedQueues(summonHostAll), []],
 );
+// Both rows are controllers in this process (`local: true`), and a local
+// controller's row always has its budget: only a row for summon state a newer
+// bun-jobs wrote has none. A row without one fails here, saying so.
 checkEqual(
-  "each listed row carries its budget, with both limits and both reset times, as the Summon panel's status does",
-  summonHostAll.list.body.controllers.map((item) => [
-    item.queue,
-    typeof item.budget.perHour,
-    typeof item.budget.perDay,
-    item.budget.hourResetsAt > Date.now(),
-    item.budget.dayResetsAt >= item.budget.hourResetsAt,
-  ]),
+  "each listed row is a controller here (local: true) and carries its budget, with both limits and both reset times, as the Summon panel's status does",
+  summonHostAll.list.body.controllers.map(({ queue, local, budget }) =>
+    budget === undefined
+      ? [queue, local, "no budget"]
+      : [
+          queue,
+          local,
+          typeof budget.perHour,
+          typeof budget.perDay,
+          budget.hourResetsAt > Date.now(),
+          budget.dayResetsAt >= budget.hourResetsAt,
+        ],
+  ),
   [
-    ["audit", "number", "number", true, true],
-    ["mail", "number", "number", true, true],
+    ["audit", true, "number", "number", true, true],
+    ["mail", true, "number", "number", true, true],
   ],
 );
 

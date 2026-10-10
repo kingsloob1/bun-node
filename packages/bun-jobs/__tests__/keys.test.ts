@@ -1,7 +1,11 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "bun:test";
 import { ConfigError } from "../lib/index";
-import { assertNamespace, assertSegment } from "../lib/shared/keys";
+import {
+  assertNamespace,
+  assertSegment,
+  RESERVED_QUEUE,
+} from "../lib/shared/keys";
 import { compareCodePoints } from "../lib/shared/strings";
 
 /**
@@ -59,6 +63,17 @@ describe("key segments", () => {
     ]) {
       expect(() => assertSegment(name, "queue name")).toThrow(ConfigError);
       expect(() => assertNamespace(name)).toThrow(ConfigError);
+    }
+  });
+
+  it("reject the package's own pseudo-queue, naming the rule", () => {
+    expect(() => assertSegment(RESERVED_QUEUE, "queue name")).toThrow(
+      /queue name may not be "__bunjobs": bun-jobs reserves that name/,
+    );
+    expect(() => assertNamespace(RESERVED_QUEUE)).toThrow(ConfigError);
+    // Only the exact name: a neighbour of it is an ordinary segment.
+    for (const name of ["__bunjobs2", "_bunjobs", "__BunJobs", "bunjobs"]) {
+      expect(assertSegment(name, "queue name")).toBe(name);
     }
   });
 

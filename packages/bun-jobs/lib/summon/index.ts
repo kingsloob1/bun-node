@@ -28,6 +28,8 @@ export type {
   SummonFacet,
   SummonFailure,
   SummonFailureOutcome,
+  SummonGroupOptions,
+  SummonGroupStatus,
   SummonLastOutcome,
   SummonMarker,
   SummonOutcomeKind,

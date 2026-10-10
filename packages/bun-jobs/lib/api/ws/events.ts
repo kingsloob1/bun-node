@@ -185,6 +185,12 @@ export const QUEUE_EVENT_PAYLOADS = {
     detail: s.optional(
       s.string({ description: "A short, secret-free explanation." }),
     ),
+    group: s.optional(
+      s.string({
+        description:
+          "The summon group it was decided in: on every event of an attempt a controller in a group made, and on a `budget-exhausted` of the group's budget. Absent otherwise.",
+      }),
+    ),
   }),
 } satisfies {
   [K in QueueEventName]: Schema<WirePayload<QueueEventPayloads[K]>, any>;

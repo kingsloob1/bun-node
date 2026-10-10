@@ -263,7 +263,36 @@ export function readMarker(
   ) {
     delete marker.lossStreak;
   }
+  // What the last claim persisted for readers without a controller: a field
+  // not of the shape this build writes is dropped (unknown), never a reason
+  // to call the marker unreadable.
+  if (typeof marker.kind !== "string" || marker.kind.length === 0) {
+    delete marker.kind;
+  }
+  if (!isLimits(marker.limits)) {
+    delete marker.limits;
+  }
+  if (typeof marker.group !== "string" || marker.group.length === 0) {
+    delete marker.group;
+  }
   return { marker, version: entry.version, unreadable: false };
+}
+
+/** Whether `value` is a marker's `limits`: `false`, or two positive whole numbers. */
+function isLimits(value: unknown): value is SummonMarker["limits"] & {} {
+  if (value === false) {
+    return true;
+  }
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const limits = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(limits.perHour) &&
+    (limits.perHour as number) > 0 &&
+    Number.isSafeInteger(limits.perDay) &&
+    (limits.perDay as number) > 0
+  );
 }
 
 /** The well-formed entries of a marker's `watching`, dropping anything else. */
@@ -287,18 +316,39 @@ function watchedEntries(value: unknown): WatchedSummon[] {
   });
 }
 
-/** Moves the budget's windows on to the ones `now` falls in, emptying any that changed. */
-export function rollBudget(marker: SummonMarker, now: number): void {
+/**
+ * Moves the budget's windows **forward** to the ones `now` falls in, emptying
+ * any that moved. Takes a marker or a summon group's entry: anything with
+ * `budget`.
+ *
+ * Never backward: a process whose clock is behind the one that rolled a
+ * window on (by seconds, across an hour's turn) keeps that window and its
+ * counts, rather than reading them as the previous window's zero and
+ * spending them again. Only a window more than one whole window ahead of
+ * `now` — a clock that was wildly wrong, not skew — is taken back to `now`'s.
+ */
+export function rollBudget(
+  marker: Pick<SummonMarker, "budget">,
+  now: number,
+): void {
   const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS;
   const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
-  if (marker.budget.hourStart !== hourStart) {
+  if (moves(marker.budget.hourStart, hourStart, HOUR_MS)) {
     marker.budget.hourStart = hourStart;
     marker.budget.hour = 0;
   }
-  if (marker.budget.dayStart !== dayStart) {
+  if (moves(marker.budget.dayStart, dayStart, DAY_MS)) {
     marker.budget.dayStart = dayStart;
     marker.budget.day = 0;
   }
+}
+
+/**
+ * Whether a stored window start gives way to `current`: when it is behind,
+ * or more than one window ahead (see {@link rollBudget}).
+ */
+function moves(stored: number, current: number, window: number): boolean {
+  return stored < current || stored - current > window;
 }
 
 /**

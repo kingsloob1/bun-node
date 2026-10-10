@@ -105,6 +105,7 @@ import { EventRetention } from "../shared/eventRetention";
 import { fitName } from "../shared/fit";
 import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
+import { RESERVED_QUEUE } from "../shared/keys";
 import { PauseCache } from "../shared/pauseCache";
 import { compareCodePoints } from "../shared/strings";
 import { sortsByCreated } from "./added";
@@ -618,10 +619,15 @@ export class FileDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Every queue directory in the namespace, never the package's pseudo-queue
+   * (`RESERVED_QUEUE`): a queue-state write creates a queue's directory, and
+   * the state a summon group keeps there is not a queue.
+   */
   async listQueues(ns: string): Promise<string[]> {
-    return await this.#listSegments(
-      join(this.root, encodeSegment(ns), "queues"),
-    );
+    return (
+      await this.#listSegments(join(this.root, encodeSegment(ns), "queues"))
+    ).filter((name) => name !== RESERVED_QUEUE);
   }
 
   /* --- runner: locks -------------------------------------------------- */

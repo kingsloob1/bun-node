@@ -1,4 +1,5 @@
 import type {
+  SummonBudgetDto,
   SummonListDto,
   SummonListItemDto,
   SummonOutcomeKind,
@@ -29,6 +30,16 @@ setupDom();
 
 const NOW = Date.now();
 
+/** A budget that is on: 2 of 30 this hour, 10 of 300 today. */
+const BUDGET: SummonBudgetDto = {
+  hour: 2,
+  perHour: 30,
+  day: 10,
+  perDay: 300,
+  hourResetsAt: NOW + 23 * 60_000,
+  dayResetsAt: NOW + 9 * 3_600_000,
+};
+
 /** One controller as `GET /summon` lists it: ready, budget on, last attempt started. */
 function controller(
   overrides: Partial<SummonListItemDto> = {},
@@ -36,18 +47,12 @@ function controller(
   return {
     namespace: "shop",
     queue: "emails",
+    local: true,
     kind: "ecs",
     readiness: "ready",
     inert: false,
     last: { id: "s-1", outcome: "started", at: NOW - 60_000 },
-    budget: {
-      hour: 2,
-      perHour: 30,
-      day: 10,
-      perDay: 300,
-      hourResetsAt: NOW + 23 * 60_000,
-      dayResetsAt: NOW + 9 * 3_600_000,
-    },
+    budget: BUDGET,
     ...overrides,
   };
 }
@@ -229,6 +234,116 @@ describe("the Summoning screen", () => {
     expectAbsent(within(working).queryByTestId("summoning-inert"));
   });
 
+  it("shows Elsewhere, not a readiness, for a queue whose controller runs in another process", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": list([
+        controller(),
+        controller({
+          queue: "reports",
+          local: false,
+          readiness: undefined,
+          inert: undefined,
+        }),
+      ]),
+    });
+    const remote = await within(screen).findByTestId("summoning-row-reports");
+    const elsewhere = within(remote).getByText("Elsewhere");
+    expect(elsewhere.title).toBe("Its controller runs in another process");
+    expectAbsent(within(remote).queryByTestId("summoning-readiness"));
+    expectAbsent(within(remote).queryByTestId("summoning-inert"));
+    // A local row in the same list keeps its badge.
+    const local = within(screen).getByTestId("summoning-row-emails");
+    expect(within(local).getByTestId("summoning-readiness").textContent).toBe(
+      "Ready",
+    );
+    expectAbsent(within(local).queryByText("Elsewhere"));
+  });
+
+  it("shows a remote queue's counts with its limits unknown, not as off, and a kind never recorded as a dash", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": list([
+        controller(),
+        // Summon state from before limits were stored (limitsUnknown).
+        controller({
+          queue: "oldmarker",
+          local: false,
+          kind: "",
+          readiness: undefined,
+          inert: undefined,
+          budget: {
+            hour: 1,
+            day: 1,
+            limitsUnknown: true,
+            hourResetsAt: NOW + 23 * 60_000,
+            dayResetsAt: NOW + 9 * 3_600_000,
+          },
+        }),
+      ]),
+    });
+    const row = await within(screen).findByTestId("summoning-row-oldmarker");
+    const budget = within(row).getByTestId("summoning-budget-oldmarker");
+    expect(budget.textContent).toBe(
+      "1 this hour, 1 today (UTC), limits unknown",
+    );
+    expect(budget.textContent).not.toContain("Off");
+    expect(budget.dataset.limitsUnknown).toBe("true");
+    expect(budget.title).toStartWith(
+      "Its limits are set where its controller runs",
+    );
+    const kind = within(row).getByTestId("summoning-kind-unknown");
+    expect(kind.textContent).toBe("—");
+    expect(kind.title).toContain("Not recorded yet");
+    // A row with its kind keeps it, and no dash (negative control).
+    const local = within(screen).getByTestId("summoning-row-emails");
+    expectAbsent(within(local).queryByTestId("summoning-kind-unknown"));
+    expect(local.textContent).toContain("ecs");
+  });
+
+  it("lists a remote queue whose summon state a newer bun-jobs wrote: inert, and a dash for its budget", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": list([
+        controller(),
+        // No budget: the API does not read state a newer version wrote.
+        controller({
+          queue: "newer",
+          local: false,
+          kind: "",
+          readiness: undefined,
+          inert: true,
+          inertReason: "newer-marker",
+          last: undefined,
+          budget: undefined,
+        }),
+      ]),
+    });
+    // The whole list renders: a row without a budget is not a bad response.
+    const row = await within(screen).findByTestId("summoning-row-newer");
+    const budget = within(row).getByTestId("summoning-budget-newer");
+    expect(budget.textContent).toBe("—");
+    expect(row.textContent).not.toContain("Off");
+    expect(row.textContent).not.toContain("1970");
+    const badge = within(row).getByTestId("summoning-inert");
+    expect(badge.textContent).toBe("Inert");
+    expect(badge.title).toBe(summonInert("newer-marker"));
+    expect(within(row).getByText("Elsewhere")).toBeTruthy();
+    // The local row beside it still has its meters (negative control).
+    const local = within(screen).getByTestId("summoning-row-emails");
+    expect(
+      within(local).getByTestId("summoning-budget-emails-hour").textContent,
+    ).toStartWith("28 of 30 left this hour");
+  });
+
+  it("refuses a list whose row has a budget that is not an object", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": {
+        body: {
+          controllers: [{ ...controller(), budget: "lots" }],
+        },
+      },
+    });
+    await within(screen).findByText("Could not load the summon controllers");
+  });
+
   it("reads an exhausted window in the warning tone, and an unknown outcome as its raw string", async () => {
     const { screen } = await openScreen({
       "GET /summon": list([
@@ -239,7 +354,7 @@ describe("the Summoning screen", () => {
             at: NOW,
             detail: "no capacity",
           },
-          budget: { ...controller().budget, day: 300 },
+          budget: { ...BUDGET, day: 300 },
         }),
       ]),
     });
@@ -265,6 +380,23 @@ describe("the Summoning screen", () => {
     );
     expect(screen.textContent).toContain("None runs in this one");
     expectAbsent(within(screen).queryByRole("table"));
+  });
+
+  it("explains an empty list where the API also lists remote queues, without saying they are not listed", async () => {
+    const { screen } = await openScreen({
+      "GET /meta": {
+        body: metaFixture({
+          features: { ...metaFixture().features, summonRemoteStatus: true },
+        }),
+      },
+      "GET /summon": list([]),
+    });
+    const empty = await within(screen).findByText("No summon controllers here");
+    const text = empty.closest(".empty-state")?.textContent ?? "";
+    expect(text).toContain(
+      "none has a controller in the API's own process, or summon state in the store that you may read",
+    );
+    expect(text).not.toContain("is not listed");
   });
 
   it("shows an error view with Retry when the read fails, and recovers on Retry", async () => {

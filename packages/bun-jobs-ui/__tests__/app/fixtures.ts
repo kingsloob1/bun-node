@@ -100,6 +100,7 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       providers: true,
       summonResetBudget: true,
       summonList: true,
+      summonRemoteStatus: false,
       throughput: true,
     },
     // A backend recording everything, with the shipped defaults: per-second

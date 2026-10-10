@@ -983,6 +983,7 @@ describe("GET /summon", () => {
         {
           namespace: jobs.namespace,
           queue: "other",
+          local: true,
           kind: "second",
           readiness: "ready",
           inert: false,
@@ -1003,6 +1004,7 @@ describe("GET /summon", () => {
         {
           namespace: jobs.namespace,
           queue: "work",
+          local: true,
           kind: "fake",
           readiness: "ready",
           inert: false,
