@@ -48,7 +48,8 @@
  *   window is then told again.
  * - **The windows are UTC clock windows**: `hourResetsAt` is the next UTC
  *   hour and `dayResetsAt` the next UTC midnight, not an hour after the
- *   first attempt.
+ *   first attempt. So a count read back starts over when an hour turns: the
+ *   budget steps here first make sure at least 30 s of the hour are left.
  */
 import type {
   SummonCheckResult,
@@ -60,6 +61,7 @@ import type {
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, defineSummoner } from "@kingsleyweb/bun-jobs";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
+import { withinOneHour } from "../shared/budget-window";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
@@ -71,6 +73,16 @@ const DAY = 86_400_000;
 const DEFAULT_PER_HOUR = 30;
 /** The library's default daily limit. */
 const DEFAULT_PER_DAY = 300;
+
+/**
+ * How much of the current UTC hour steps 5 to 9 need left. They spend the
+ * budget and then check what it decided — a check skipped as `budget`, the
+ * hour's count in `status()` and in the hook — and if an hour turned in
+ * between, the count would start over and a correct controller would look
+ * broken. Those steps took at most 2.4 s, measured on a 16-core machine at a
+ * load of 47; 30 s is more than ten times that.
+ */
+const HOUR_NEEDED = 30_000;
 
 /**
  * Every trigger off, no cooldown, a 1 ms backoff: every check is one the tour
@@ -433,6 +445,8 @@ checkEqual(
 
 /* ------------------------------------------------------------------ */
 step("5. budget-exhausted: perHour: 1, spent by the first call");
+
+await withinOneHour(HOUR_NEEDED);
 
 /** The `summon` events `reports`' controller emitted. */
 const reportEvents: SummonEventPayload[] = [];

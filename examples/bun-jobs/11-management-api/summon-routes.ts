@@ -6,25 +6,33 @@
  * bun 11-management-api/summon-routes.ts
  * ```
  *
- * `GET /summon` (`queues.list`) lists every summon controller in the API's
- * process with its budget usage; `GET /queues/:queue/summon` (`queues.read`)
- * answers one queue's summon status; `POST /queues/:queue/summon` runs one
- * check at once, as `check({ reason: "manual", force })`;
- * `POST /queues/:queue/summon/reset` clears failures, backoff and an open
- * circuit — and, with `{ "budget": true }`, the budget's usage — and answers
- * the status after it. The summoners here start nothing — one records what
- * it was asked and hands back a platform identifier, one fails every call —
- * so no worker is ever started. The one child process,
+ * `GET /summon` (`queues.list`) lists every summoning queue the API can
+ * reach, with its budget usage and circuit: each one whose controller runs in
+ * the API's process (`local: true`), and each one whose controller runs
+ * elsewhere, read from its summon state in storage (`local: false`);
+ * `GET /queues/:queue/summon` (`queues.read`) answers one queue's summon
+ * status; `POST /queues/:queue/summon` runs one check at once, as
+ * `check({ reason: "manual", force })`; `POST /queues/:queue/summon/reset`
+ * clears failures, backoff and an open circuit — and, with
+ * `{ "budget": true }`, the budget's usage — and answers the status after it.
+ * The summon group routes (`GET /summon/groups`, `GET /summon/groups/:group`
+ * and `POST /summon/groups/:group/reset`) are only counted here, among the
+ * routes each configuration registers. The summoners here start nothing — one
+ * records what it was asked and hands back a platform identifier, one fails
+ * every call — so no worker is ever started. The one child process,
  * [`helpers/summoned-api.ts`](./helpers/summoned-api.ts), stands in for a
  * summoned worker that shares the API's config, to show its controller
- * listed as inert. Summoning needs a backend another process can reach, so
- * on the memory driver this runs on a temporary SQLite file.
+ * listed as inert, beside the queues whose controllers run here. Summoning
+ * needs a backend another process can reach, so on the memory driver this
+ * runs on a temporary SQLite file. The budget counts per UTC hour, so before
+ * its first attempt the tour makes sure at least 30 s of the hour are left.
  *
  * The points that are easy to get wrong:
  *
- * - **The two writes are opt-in.** `queues.summon` is off unless `actions`
- *   names it, and `readOnly` removes it even then: it can spend money. The
- *   status and the list are plain reads, served by default.
+ * - **The writes are opt-in.** `queues.summon` — "summon now", a queue's
+ *   reset and a summon group's — is off unless `actions` names it, and
+ *   `readOnly` removes it even then: it can spend money. The status, the list
+ *   and the two summon group reads are plain reads, served by default.
  * - **`force` skips the cooldown and nothing else.** An attempt already on
  *   its way, an open circuit, the budget and live workers still hold "summon
  *   now" back, answered `skipped` with the guard's `reason`.
@@ -32,13 +40,18 @@
  *   and the circuit are cleared; attempts in flight and the last outcome stay.
  *   The budget's usage stays too, unless the body says `{ "budget": true }`.
  * - **The API never builds a controller.** It finds the one the `jobs` it was
- *   given runs; a queue without one is 409 `SUMMON_NOT_CONFIGURED` on each of
+ *   given runs, or reads the summon state another process's controller
+ *   stored; a queue with neither is 409 `SUMMON_NOT_CONFIGURED` on each of
  *   the queue's three routes, while `GET /summon` with none at all is an
  *   empty list.
  * - **The list is never looser than the status route.** `GET /summon` asks
- *   `queues.list`, then `queues.read` for each controller's queue exactly as
- *   `GET /queues/:queue/summon` asks it, and leaves out what that refuses.
- *   An inert controller is listed, with `inert: true` and its `inertReason`.
+ *   `queues.list`, then `queues.read` once per row — a queue whose controller
+ *   runs here, or one whose summon state it read from storage — exactly as
+ *   `GET /queues/:queue/summon` asks it, in queue-name order, and leaves out
+ *   what that refuses. A queue with neither is no row, and is not asked
+ *   about. Every row says whether it is `inert`: an inert controller with
+ *   `inert: true` and its `inertReason`; a queue whose controller runs in
+ *   another process with `local: false`, `inert: false` and no `readiness`.
  * - **Platform handles stay home by default.** A pending attempt's `handles`
  *   in the status, and the `queue.summon` event's, go out only with
  *   `serialize.exposeSummonHandles` (a task ARN carries an AWS account id).
@@ -52,6 +65,7 @@ import type {
   MetaDto,
   SummonCheckDto,
   SummonListDto,
+  SummonListItemDto,
   SummonRequest,
   SummonResetBody,
   SummonStatusDto,
@@ -66,6 +80,7 @@ import {
   JOBS_API_OPT_IN_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
+import { withinOneHour } from "../shared/budget-window";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { connectJobsSocket } from "./helpers/jobs-socket";
@@ -175,8 +190,9 @@ function mount(config: Partial<JobsApiConfig> = {}) {
   }
 
   /**
-   * The summon routes this API registered, by operation id: a queue's three
-   * and `GET /summon`, the list of every controller.
+   * The summon routes this API registered, by operation id: a queue's three,
+   * `GET /summon`, the list of every summoning queue, and the three summon
+   * group routes.
    */
   const summonRoutes = () =>
     api.routes
@@ -194,11 +210,22 @@ step(
   "1. queues.summon is opt-in: the default API reads the status, and that is all",
 );
 
+/**
+ * The summon reads, by operation id, sorted: a queue's status, a summon
+ * group's shared state, the list of summoning queues and the list of groups.
+ */
+const SUMMON_READS = [
+  "getQueueSummon",
+  "getSummonGroup",
+  "listSummonControllers",
+  "listSummonGroups",
+];
+
 const plainApi = mount();
 checkEqual(
-  "the default API registers the two reads alone: a queue's status and the list",
+  "the default API registers the four reads alone: a queue's status, the list, a summon group's state and the groups",
   plainApi.summonRoutes(),
-  ["getQueueSummon", "listSummonControllers"],
+  SUMMON_READS,
 );
 checkEqual(
   "GET …/summon 200; both POSTs 404 ROUTE_NOT_FOUND; the summoner was never called",
@@ -219,26 +246,26 @@ checkEqual(
 
 const readOnlyApi = mount({ actions: SUMMON_ACTIONS, readOnly: true });
 checkEqual(
-  "readOnly removes the two writes even when actions names queues.summon, and keeps the reads",
+  "readOnly removes the three writes even when actions names queues.summon, and keeps the reads",
   [
     readOnlyApi.summonRoutes(),
     (await readOnlyApi.call("GET", "/queues/reports/summon")).status,
     (await readOnlyApi.call("POST", "/queues/reports/summon")).status,
     recorded.length,
   ],
-  [["getQueueSummon", "listSummonControllers"], 200, 404, 0],
+  [SUMMON_READS, 200, 404, 0],
 );
 
 const panel = mount({ actions: SUMMON_ACTIONS });
 checkEqual(
-  "opted in: the two reads, summon now and reset, the two writes marked as mutations",
+  "opted in: the reads, summon now and the two resets, the three writes marked as mutations",
   panel.summonRoutes(),
   [
-    "getQueueSummon",
-    "listSummonControllers",
+    ...SUMMON_READS,
     "resetQueueSummon (mutation)",
+    "resetSummonGroup (mutation)",
     "summonQueue (mutation)",
-  ],
+  ].sort(),
 );
 
 /* ------------------------------------------------------------------ */
@@ -320,9 +347,19 @@ checkEqual(
   ],
 );
 
+/**
+ * How much of the current UTC hour steps 3 to 8 need left. They spend the
+ * budget and then read its hourly count back — the list in step 7, the resets
+ * in step 8 — and if an hour turned in between, the count would start over
+ * and a correct API would look broken. Those steps took at most 3.0 s,
+ * measured on a 16-core machine at a load of 47; 30 s is ten times that.
+ */
+const HOUR_NEEDED = 30_000;
+
 /* ------------------------------------------------------------------ */
 step("3. POST /queues/:queue/summon: summon now, once");
 
+await withinOneHour(HOUR_NEEDED);
 const summoned = await panel.call("POST", "/queues/reports/summon");
 const now: SummonCheckDto = summoned.body;
 show("POST /queues/reports/summon", now);
@@ -412,6 +449,14 @@ check(
     open.circuitOpenUntil > Date.now() + 30_000 &&
     open.last?.outcome === "failed",
   open,
+);
+const openRow = (
+  (await panel.call("GET", "/summon")).body as SummonListDto
+).controllers.find((item) => item.queue === "flaky");
+checkEqual(
+  "GET /summon's row for flaky carries the same circuitOpenUntil",
+  openRow?.circuitOpenUntil,
+  open.circuitOpenUntil,
 );
 
 const reset = await panel.call("POST", "/queues/flaky/summon/reset");
@@ -575,19 +620,20 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("7. GET /summon: every controller in this process, one queues.read each");
+step("7. GET /summon: every summoning queue, one queues.read each");
 
 const listed = await panel.call("GET", "/summon");
 const list: SummonListDto = listed.body;
 show("GET /summon", list);
 checkEqual(
-  "200, one item per controller this process runs, by queue name",
+  "200, one item per summoning queue, by queue name: here, the four this process runs",
   [listed.status, list.controllers.map((item) => item.queue)],
   [200, ["alerts", "exports", "flaky", "reports"]],
 );
 checkEqual(
-  "each item: the namespace, the summoner's kind, ready, not inert, and the last outcome",
+  "each item: local, the namespace, the summoner's kind, ready, not inert, and the last outcome",
   list.controllers.map((item) => [
+    item.local,
     item.namespace,
     item.kind,
     item.readiness,
@@ -595,10 +641,10 @@ checkEqual(
     item.last?.outcome,
   ]),
   [
-    [jobs.namespace, "example-record", "ready", false, "started"],
-    [jobs.namespace, "example-record", "ready", false, "started"],
-    [jobs.namespace, "example-down", "ready", false, "failed"],
-    [jobs.namespace, "example-record", "ready", false, "started"],
+    [true, jobs.namespace, "example-record", "ready", false, "started"],
+    [true, jobs.namespace, "example-record", "ready", false, "started"],
+    [true, jobs.namespace, "example-down", "ready", false, "failed"],
+    [true, jobs.namespace, "example-record", "ready", false, "started"],
   ],
 );
 /** How many times each queue's summoner was called so far. */
@@ -606,14 +652,21 @@ const callsTo = (queue: string): number =>
   queue === "flaky"
     ? failingCalls
     : recorded.filter((request) => request.queue === queue).length;
+/**
+ * A row's attempts this hour. `budget` is optional on a row — one for summon
+ * state a newer bun-jobs wrote has none — but every row in this tour has it,
+ * so a row without one answers a sentence naming it, and the check it is in
+ * fails saying so.
+ */
+const hourOf = (item: SummonListItemDto): number | string =>
+  item.budget === undefined ? `${item.queue}: no budget` : item.budget.hour;
 checkEqual(
   "and the budget usage: each call counted this hour and today, against the default limits",
-  list.controllers.map((item) => [
-    item.budget.hour,
-    item.budget.day,
-    item.budget.perHour,
-    item.budget.perDay,
-  ]),
+  list.controllers.map(({ queue, budget }) =>
+    budget === undefined
+      ? `${queue}: no budget`
+      : [budget.hour, budget.day, budget.perHour, budget.perDay],
+  ),
   list.controllers.map((item) => [
     callsTo(item.queue),
     callsTo(item.queue),
@@ -621,17 +674,33 @@ checkEqual(
     300,
   ]),
 );
-/** What `GET /queues/:queue/summon` says about the fields a list item carries. */
-async function asTheStatusRouteHasIt(queue: string) {
+/**
+ * What `GET /queues/:queue/summon` says about the fields a list item for a
+ * queue whose controller runs here carries: `local: true`, its summoner's kind
+ * and readiness, and whether it is inert. A status with no summoner or no
+ * budget, which a local controller's never lacks, answers a sentence naming
+ * that instead, so the comparison fails saying so.
+ */
+async function asTheStatusRouteHasIt(
+  queue: string,
+): Promise<SummonListItemDto | string> {
   const one: SummonStatusDto = (
     await panel.call("GET", `/queues/${queue}/summon`)
   ).body;
+  if (one.summoner === undefined || one.budget === undefined) {
+    return `${queue}: GET /queues/${queue}/summon has no summoner or no budget`;
+  }
   return {
     namespace: jobs.namespace,
     queue: one.queue,
-    kind: one.summoner?.provider.kind,
-    readiness: one.summoner?.readiness,
+    local: one.local,
+    kind: one.summoner.provider.kind,
+    readiness: one.summoner.readiness,
     inert: one.inert,
+    ...(one.inertReason === undefined ? {} : { inertReason: one.inertReason }),
+    ...(one.circuitOpenUntil === undefined
+      ? {}
+      : { circuitOpenUntil: one.circuitOpenUntil }),
     ...(one.last === undefined ? {} : { last: one.last }),
     budget: one.budget,
   };
@@ -646,17 +715,17 @@ checkEqual(
   ),
 );
 
-// `queues.list` gates the route; each controller is then shown only where
+// `queues.list` gates the route; each row is then shown only where
 // `authorize` allows `queues.read` on its queue — asked exactly as
 // `GET /queues/:queue/summon` asks it, so the list is never looser.
 /** Every `authorize` call the guarded API made, in order. */
 const asked: JobsApiAuthorizeContext[] = [];
-const guarded = mount({
-  authorize: (_req, context) => {
-    asked.push(context);
-    return !(context.action === "queues.read" && context.queue === "flaky");
-  },
-});
+/** Records every question, and refuses `queues.read` on flaky alone. */
+function refuseFlaky(_req: unknown, context: JobsApiAuthorizeContext): boolean {
+  asked.push(context);
+  return !(context.action === "queues.read" && context.queue === "flaky");
+}
+const guarded = mount({ authorize: refuseFlaky });
 const guardedList: SummonListDto = (await guarded.call("GET", "/summon")).body;
 show(
   "what authorize was asked",
@@ -671,27 +740,32 @@ checkEqual(
   guardedList.controllers.map((item) => item.queue),
   ["alerts", "exports", "reports"],
 );
-checkEqual(
-  "asked once for queues.list, then once per controller for queues.read, with the queue and the status route",
+/** What `authorize` was asked, without the fields every call here shares. */
+const askedSoFar = () =>
   asked.map((context) => ({
     action: context.action,
     transport: context.transport,
     ...(context.queue === undefined ? {} : { queue: context.queue }),
     route: context.route,
+  }));
+/** What `GET /summon` asks: `queues.list`, then `queues.read` on each of `rows`. */
+const listAsks = (rows: string[]) => [
+  {
+    action: "queues.list" as const,
+    transport: "http" as const,
+    route: { method: "GET", path: "/summon" },
+  },
+  ...rows.map((queue) => ({
+    action: "queues.read" as const,
+    transport: "http" as const,
+    queue,
+    route: { method: "GET", path: "/queues/:queue/summon" },
   })),
-  [
-    {
-      action: "queues.list",
-      transport: "http",
-      route: { method: "GET", path: "/summon" },
-    },
-    ...["alerts", "exports", "flaky", "reports"].map((queue) => ({
-      action: "queues.read" as const,
-      transport: "http" as const,
-      queue,
-      route: { method: "GET", path: "/queues/:queue/summon" },
-    })),
-  ],
+];
+checkEqual(
+  "asked once for queues.list, then once per row for queues.read — here the four controllers this process runs, by name — with the queue and the status route; plain, with no summon state, is not asked about",
+  askedSoFar(),
+  listAsks(["alerts", "exports", "flaky", "reports"]),
 );
 checkEqual(
   "the same refusal on the status route itself: 403 FORBIDDEN",
@@ -699,6 +773,42 @@ checkEqual(
     await guarded.call("GET", "/queues/flaky/summon"),
   ),
   "403 FORBIDDEN",
+);
+
+// The rule is per row, wherever the row comes from. An API over a context on
+// the same namespace that runs no controller reads the four from storage, and
+// asks the same questions about them, in the same order. (Two kinds of row
+// from storage are not shown, since only another version of bun-jobs writes
+// them: state a newer one wrote, listed `inert` with `inertReason:
+// "newer-marker"` and no `budget`, and state from before claims persisted
+// their limits, whose budget says `limitsUnknown: true`.)
+const elsewhere = new BunJobs({
+  namespace: jobs.namespace,
+  driver: config,
+  logger,
+});
+const remoteView = mount({ jobs: elsewhere, authorize: refuseFlaky });
+asked.length = 0;
+const remoteList: SummonListDto = (await remoteView.call("GET", "/summon"))
+  .body;
+show("GET /summon where no controller runs", remoteList.controllers);
+checkEqual(
+  "with no controller in the API's process: the same rows, read from storage — local: false, inert: false, no readiness — and the same refusal leaves flaky out",
+  remoteList.controllers.map((item) => [
+    item.queue,
+    item.local,
+    item.inert,
+    item.readiness,
+    item.kind,
+  ]),
+  list.controllers
+    .filter((item) => item.queue !== "flaky")
+    .map((item) => [item.queue, false, false, undefined, item.kind]),
+);
+checkEqual(
+  "and the same questions: queues.list, then queues.read once per row from storage, by name, flaky included",
+  askedSoFar(),
+  listAsks(["alerts", "exports", "flaky", "reports"]),
 );
 
 asked.length = 0;
@@ -738,7 +848,9 @@ checkEqual(
 );
 
 // A summoned worker that shares the API's config builds the same controller,
-// inert there; its own GET /summon still lists it, saying so.
+// inert there; its own GET /summon still lists it, saying so, beside the
+// three queues whose controllers run here, read from storage: `local: false`,
+// the kind their last claim stored, `inert: false` and no readiness.
 const SUMMONED_API = new URL("./helpers/summoned-api.ts", import.meta.url)
   .pathname;
 const child = Bun.spawn({
@@ -768,28 +880,43 @@ checkEqual(
   [childCode, inWorker.inert, inWorker.check, inWorker.called],
   [0, true, { action: "skipped", reason: "inert" }, false],
 );
-const reportsHere = list.controllers.find((item) => item.queue === "reports");
 checkEqual(
-  "and GET /summon there still lists it: inert: true, inertReason summoned-process, the queue's shared budget usage",
+  "and GET /summon there lists it, local, inert: true, inertReason summoned-process, and the other three from storage, local: false and inert: false; each with the queue's shared budget usage",
   [
     inWorker.status,
     inWorker.controllers.map((item) => ({
       queue: item.queue,
+      local: item.local,
+      kind: item.kind,
+      readiness: item.readiness,
       inert: item.inert,
       inertReason: item.inertReason,
-      hour: item.budget.hour,
+      hour: hourOf(item),
     })),
   ],
   [
     200,
-    [
-      {
-        queue: "reports",
-        inert: true,
-        inertReason: "summoned-process",
-        hour: reportsHere?.budget.hour,
-      },
-    ],
+    list.controllers.map((item) =>
+      item.queue === "reports"
+        ? {
+            queue: item.queue,
+            local: true,
+            kind: item.kind,
+            readiness: "ready" as const,
+            inert: true,
+            inertReason: "summoned-process" as const,
+            hour: hourOf(item),
+          }
+        : {
+            queue: item.queue,
+            local: false,
+            kind: item.kind,
+            readiness: undefined,
+            inert: false,
+            inertReason: undefined,
+            hour: hourOf(item),
+          },
+    ),
   ],
 );
 
@@ -838,19 +965,28 @@ checkEqual(
 const afterReset: SummonListDto = (await panel.call("GET", "/summon")).body;
 checkEqual(
   "and GET /summon shows it: reports' usage is 0, the others' untouched",
-  afterReset.controllers.map((item) => [item.queue, item.budget.hour]),
+  afterReset.controllers.map((item) => [item.queue, hourOf(item)]),
   list.controllers.map((item) => [
     item.queue,
-    item.queue === "reports" ? 0 : item.budget.hour,
+    item.queue === "reports" ? 0 : hourOf(item),
   ]),
 );
 
 /* ------------------------------------------------------------------ */
 step("Clean up");
 
-for (const { api } of [plainApi, readOnlyApi, panel, guarded, noList, bare]) {
+for (const { api } of [
+  plainApi,
+  readOnlyApi,
+  panel,
+  guarded,
+  remoteView,
+  noList,
+  bare,
+]) {
   await api.close();
 }
+await elsewhere.close();
 await unsummoned.purge();
 await unsummoned.close();
 await jobs.purge();
