@@ -214,10 +214,12 @@ for (const backend of BACKENDS) {
         }, 60_000);
       }
 
-      it("a sibling failing to start by timing alone never leaves the claim reading a clean close", async () => {
-        // Swept across the window: depending on the backend, the failure
-        // lands before the claim is written, while it is in flight, or after
-        // the worker knows it.
+      it("(smoke) a sibling failing to start by timing alone never leaves the claim reading a clean close", async () => {
+        // A supplemental smoke test; the injected cases above are the proof
+        // of the window. Swept across it: depending on the backend and load,
+        // the failure lands before the claim is written, while it is in
+        // flight, or after the worker knows it. Which of those a given run
+        // hits is not asserted, so this can pass without hitting the window.
         const outcomes: string[] = [];
         for (const failMs of [5, 10, 20, 35, 50, 65, 80]) {
           const lines = await runIn(
@@ -240,7 +242,8 @@ for (const backend of BACKENDS) {
             `${failMs}:${claim.held ? JSON.stringify(claim.exit) : "none"}`,
           );
         }
-        // Not vacuous: at least one run got as far as its claim.
+        // At least one run got as far as its claim (known or in flight), so
+        // the claim assertion ran at least once.
         expect(
           outcomes.some((outcome) => !outcome.endsWith(":none")),
           outcomes.join(" "),

@@ -2413,9 +2413,10 @@ in the Redis driver's options.
   still exits 0. A stop that arrives before the worker is ready closes it
   with `force` — no job has been claimed yet — which ends the startup there,
   however long the connect would have taken. It is held short of `ready`
-  first while the exit mark goes onto a summon claim it already holds, so
-  the close comes at once with no claim known, and otherwise within the mark
-  wait: at most 1 s, or a quarter of the budget if less.
+  first while the unit's exit marks are written onto the summon claims its
+  workers already hold, so the close comes at once when no worker in the
+  unit has a known claim, and otherwise within the mark wait: at most 1 s,
+  or a quarter of the budget if less.
 - A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
   held hostage by a drain. A first SIGINT arriving during an idle or deadline
   close is the platform's stop, not a second Ctrl-C.
