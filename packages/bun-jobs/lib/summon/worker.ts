@@ -5,7 +5,11 @@ import type { Logger, LoggerLike } from "../shared/logger";
 import type { WorkerTargetKind } from "../shared/workers";
 import process from "node:process";
 import { readDemand, supportsWorkers } from "../drivers/readApis";
-import { SET_SUMMONED_MODE, SUMMON_OPTION_ID } from "../queue/BunQueueWorker";
+import {
+  HOLD_STARTUP,
+  SET_SUMMONED_MODE,
+  SUMMON_OPTION_ID,
+} from "../queue/BunQueueWorker";
 import { TARGET_CLOSE_GRACE, TARGET_CLOSE_REAP } from "../queue/workerTarget";
 import { DEFAULT_CLOSE_TIMEOUT } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
@@ -396,9 +400,13 @@ function isMode(value: unknown): value is SummonedMode {
   );
 }
 
-/** The part of a worker {@link runSummoned} uses: its public surface only. */
+/**
+ * The part of a worker {@link runSummoned} uses: its public surface, and the
+ * internal {@link HOLD_STARTUP} that stops a starting worker short of `ready`.
+ */
 type SummonedWorker = Pick<
   BunQueueWorker,
+  | typeof HOLD_STARTUP
   | "id"
   | "ref"
   | "driver"
@@ -1351,21 +1359,25 @@ class SummonedRun {
         });
       }
     };
-    // The workers still starting are forced now, before the exit marks are
-    // waited for: `close()` marks a worker closing synchronously, so one whose
-    // connect completes during that wait abandons its startup rather than
-    // becoming ready, claiming a job and only then being forced (#238). The
-    // mark is still written on any summon claim one of them won, over the
-    // `closed` its own close writes.
-    const forced = new Map(
-      starting.map((member) => [member, closeOne(member, { force: true })]),
-    );
+    // The workers still starting are held now, synchronously, short of
+    // `ready`: one whose startup completes during the exit marks' wait stops
+    // there rather than becoming ready, claiming a job and only then being
+    // forced (#238). They are not closed yet: a forced close closes a driver
+    // the worker owns, and the mark on a summon claim one of them has
+    // already won would be lost, leaving its own `closed`. So the marks
+    // first, then the force.
+    for (const member of starting) {
+      member.worker[HOLD_STARTUP]();
+    }
     const close = async (): Promise<void> => {
-      await this.#markExit(stop, markWait);
+      await this.#markExit(stop, markWait, starting);
       await Promise.all(
         this.#members.map(
           async (member) =>
-            await (forced.get(member) ?? closeOne(member, options)),
+            await closeOne(
+              member,
+              starting.includes(member) ? { force: true } : options,
+            ),
         ),
       );
     };
@@ -1385,13 +1397,17 @@ class SummonedRun {
    * close against — for every write, then lets the close begin while any
    * still running carries on. A failed write is logged, never thrown: the
    * exit goes ahead either way, and the worker's own close still fills in
-   * its `closed` mark.
+   * its `closed` mark. A worker still starting is held meanwhile, not
+   * closed, so a driver it owns is still open for its mark, which says
+   * `forced`: its close will be.
    */
   async #markExit(
     /** The stop under way. */
     stop: SummonedStop,
     /** The most to wait for the writes before the close begins, in ms. */
     wait: number,
+    /** The workers whose close is forced whatever the decision: those still starting. */
+    forced: readonly SummonedMember[],
   ): Promise<void> {
     // A worker its owner already closed keeps the mark its own close wrote.
     const writes = this.#active().flatMap((member) => {
@@ -1410,7 +1426,9 @@ class SummonedRun {
             exitedAt: Date.now(),
             reason: stop.reason,
             code: codeFor(stop.reason),
-            ...(this.#closingForced ? { forced: true } : {}),
+            ...(this.#closingForced || forced.includes(member)
+              ? { forced: true }
+              : {}),
           },
           true,
         ).then(
@@ -1592,9 +1610,10 @@ function checkUnit(
  *   arrives before a worker is ready closes that worker at once, with
  *   `force`: it has claimed nothing, and the close ends its startup, however
  *   long the connect would have taken. In a unit stopped while only some of
- *   its workers are ready, the ones still starting are forced at once — before
- *   the exit marks are written, so none becomes ready and claims a job in the
- *   meantime — and the ready ones close by the close rule below.
+ *   its workers are ready, the ones still starting are held at once, short of
+ *   `ready`, so none claims a job in the meantime; the exit marks are written
+ *   while their drivers are still open, then they are forced, and the ready
+ *   ones close by the close rule below.
  * - **The close rule.** Once closing starts, the budget `A` is the time left
  *   until the hard backstop: `grace − 250` after a signal, `deadline − 250`
  *   otherwise, none for an idle stop with no deadline. The close is graceful,
@@ -1625,10 +1644,12 @@ function checkUnit(
  *   when every worker is parked. One worker's `run()` failing closes them
  *   all with reason `"error"` and code `1`: the failed one and any still
  *   starting with `force`, the ready ones by the close rule, so a job one
- *   holds can finish within the budget. An owner closing one worker leaves
- *   the others running, still on the idle clock, and the unit ends
- *   (`"closed"`) if its owner closes every one; each worker marks its own
- *   claim; and the result adds `queues`, each queue's totals.
+ *   holds can finish within the budget. With no signal and no deadline that
+ *   budget is unbounded: a ready worker's graceful close is bounded only by
+ *   its close timeout (`lockDuration`, 30 s by default). An owner closing
+ *   one worker leaves the others running, still on the idle clock, and the
+ *   unit ends (`"closed"`) if its owner closes every one; each worker marks
+ *   its own claim; and the result adds `queues`, each queue's totals.
  * - **Every queue the summon names needs a worker.** In a summoned process,
  *   a queue in `summonedFromArgs().queues` with no worker is refused before
  *   anything runs, so the attempt is lost fast rather than registering on

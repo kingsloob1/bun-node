@@ -1005,6 +1005,167 @@ for (const backend of BACKENDS) {
           await store.close();
         }
       }, 60_000);
+
+      /**
+       * A worker that owns its driver, has won its summon claim, and is
+       * still starting when the unit closes — its config read is held — with
+       * the unit's read of that claim slowed. Forcing it before the mark
+       * closed its driver under the write, and the claim kept its own
+       * `closed`.
+       */
+      const startingOwner = (
+        namespace: string,
+        id: string,
+        env: Record<string, string>,
+      ): Fixture =>
+        start(
+          {
+            DRIVER: JSON.stringify(backend.config),
+            HOLD_CONFIG_QUEUE: "renders",
+            SLOW_MARK_MS: "300",
+            REPORT_CLAIMS: "1",
+            OPTIONS: QUICK({ idleFor: 60_000, grace: 10_000 }),
+            ...env,
+          },
+          argsFor(id, namespace, ["renders", "thumbs"]),
+        );
+
+      /**
+       * Waits until `queue`'s worker knows it won its claim on `id` — the
+       * unit marks only a claim its worker knows of; one still in flight is
+       * marked `closed` by the worker's own close — and checks the store
+       * agrees.
+       */
+      const claimWon = async (
+        fixture: Fixture,
+        store: ReturnType<typeof createDriver>,
+        namespace: string,
+        queue: string,
+        id: string,
+      ): Promise<void> => {
+        await fixture.waitFor(
+          (line) => line.event === "claim-known" && line.queue === queue,
+          20_000,
+        );
+        const claim = (
+          await readSummonClaims(store, { ns: namespace, queue }, [id])
+        ).get(id);
+        expect(claim?.holders, queue).toHaveLength(1);
+      };
+
+      /** The exit mark on `queue`'s claim on `id`. */
+      const markOf = async (
+        store: ReturnType<typeof createDriver>,
+        namespace: string,
+        queue: string,
+        id: string,
+      ): Promise<unknown> => {
+        const claims = await readSummonClaims(store, { ns: namespace, queue }, [
+          id,
+        ]);
+        return claims.get(id)?.holders[0]?.exit;
+      };
+
+      /** The fixture's log lines, for a failed assertion's message. */
+      const logOf = (fixture: Fixture): string =>
+        fixture.lines
+          .filter((line) => line.event !== "processing")
+          .map((line) => JSON.stringify(line))
+          .join("\n");
+
+      /** Whether the unit warned that a mark could not be written. */
+      const markWarned = (fixture: Fixture): boolean =>
+        fixture.lines.some(
+          (line) =>
+            line.event === "log" &&
+            (line.message ?? "").includes("could not mark its exit"),
+        );
+
+      it("a signal marks its reason on the claim of a worker still starting that owns its driver", async () => {
+        const namespace = testNamespace(`several-own-${backend.name}`);
+        const id = `sm_own${backend.name}`;
+        const store = createDriver(backend.config);
+        await store.connect();
+        try {
+          const fixture = startingOwner(namespace, id, {});
+          await fixture.waitFor(
+            (line) => line.event === "ready" && line.queue === "thumbs",
+            30_000,
+          );
+          // Both claims won, and known to their workers.
+          await claimWon(fixture, store, namespace, "thumbs", id);
+          await claimWon(fixture, store, namespace, "renders", id);
+          fixture.proc.kill("SIGTERM");
+          const { code } = await exitOf(fixture, 40_000);
+
+          expect(code, await fixture.stderr).toBe(0);
+          expect(closingOf(fixture)?.fields).toMatchObject({
+            reason: "signal",
+            force: false,
+            starting: ["renders"],
+          });
+          // The unit's reason, not the worker's own `closed`; `forced`, as
+          // its close was.
+          expect(
+            await markOf(store, namespace, "renders", id),
+            logOf(fixture),
+          ).toMatchObject({
+            reason: "signal",
+            code: 0,
+            forced: true,
+          });
+          expect(markWarned(fixture)).toBe(false);
+          // Held, it never became ready.
+          expect(
+            fixture.lines.some(
+              (line) => line.event === "ready" && line.queue === "renders",
+            ),
+          ).toBe(false);
+          const thumbs = (await markOf(
+            store,
+            namespace,
+            "thumbs",
+            id,
+          )) as Record<string, unknown>;
+          expect(thumbs).toMatchObject({ reason: "signal", code: 0 });
+          expect(thumbs.forced).toBeUndefined();
+        } finally {
+          await store.purge(namespace).catch(() => {});
+          await store.close();
+        }
+      }, 60_000);
+
+      it("a failed start marks error and code 1 on the claim of a worker still starting that owns its driver", async () => {
+        const namespace = testNamespace(`several-own-fail-${backend.name}`);
+        const id = `sm_ownfail${backend.name}`;
+        const store = createDriver(backend.config);
+        await store.connect();
+        try {
+          const fixture = startingOwner(namespace, id, {
+            FAIL_QUEUE: "thumbs",
+            FAIL_ON_SIGUSR2: "1",
+          });
+          await claimWon(fixture, store, namespace, "renders", id);
+          fixture.proc.kill("SIGUSR2");
+          const { code } = await exitOf(fixture, 40_000);
+
+          expect(code).toBe(1);
+          expect(stopped(fixture)).toMatchObject({ reason: "error", code: 1 });
+          // A start failure must not read as a clean close.
+          expect(
+            await markOf(store, namespace, "renders", id),
+            logOf(fixture),
+          ).toMatchObject({
+            reason: "error",
+            code: 1,
+            forced: true,
+          });
+          expect(markWarned(fixture)).toBe(false);
+        } finally {
+          await store.purge(namespace).catch(() => {});
+          await store.close();
+        }
+      }, 60_000);
     },
   );
 }

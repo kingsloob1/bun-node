@@ -14,6 +14,8 @@ import {
   runSummoned,
   summonedFromArgs,
 } from "../../../lib/index";
+import { workerConfigName } from "../../../lib/queue/workerControl";
+import { summonClaimName } from "../../../lib/summon/claim";
 
 /**
  * A summoned unit serving several queues, for `run-summoned-several.test.ts`:
@@ -32,7 +34,16 @@ import {
  * - `JOB_MS`: how long each job takes (default `50`). `SLOW_QUEUE` and
  *   `SLOW_MS`: that queue's jobs take this long instead.
  * - `FAIL_QUEUE`: that queue's worker gets a driver whose `connect()` fails,
- *   `FAIL_AFTER_MS` (default `100`) in, so its `run()` fails.
+ *   `FAIL_AFTER_MS` (default `100`) in, so its `run()` fails; with
+ *   `FAIL_ON_SIGUSR2=1`, it fails when the process receives `SIGUSR2`
+ *   instead, and arms `HOLD_CONFIG_QUEUE`'s hooks first.
+ * - `HOLD_CONFIG_QUEUE`: that queue's worker (on its own driver from
+ *   `DRIVER`, which it owns, with `control: true`) has its first read of its stored config held
+ *   until the hooks are armed — on `SIGTERM`, or the `FAIL_ON_SIGUSR2`
+ *   failure — so it wins its summon claim (its first report claims it) but
+ *   is not ready when the unit begins closing. Once
+ *   armed, the first read of its summon claim — the unit's exit mark — takes
+ *   `SLOW_MARK_MS` (default `0`).
  * - `OWNER_CLOSE`: `<queue>:<ms>[,<queue>:<ms>…]`: the fixture closes each
  *   such queue's worker itself, that long after start, as an owner would.
  * - `SINGLE=1`: calls `runSummoned(worker)` with the first worker alone.
@@ -53,6 +64,9 @@ import {
  *   queue, which therefore has work no worker takes; reports `held`.
  * - `OPTIONS`: `RunSummonedOptions` as JSON; `DEADLINE_IN_MS` sets
  *   `deadline` to that long after start.
+ * - `REPORT_CLAIMS=1`: reports `claim-known` for each worker once it knows it
+ *   won its summon claim (`worker.summon` is set): the unit marks only such
+ *   claims.
  * - `REPORT_WAITING=1`: once `runSummoned` resolves (which needs
  *   `exit: false` in `OPTIONS`), reports each queue's waiting jobs as
  *   `waiting` lines before exiting with the result's code.
@@ -104,10 +118,31 @@ class SlowStateDriver extends MemoryDriver {
   }
 }
 
-/** A memory driver whose `connect()` fails after `FAIL_AFTER_MS`. */
+/** Arms the `HOLD_CONFIG_QUEUE` hooks: set when the unit is made to close. */
+const armed = Promise.withResolvers<void>();
+/** Whether {@link armed} has resolved, read synchronously. */
+let isArmed = false;
+/** Arms the hooks, once. */
+function arm(why: string): void {
+  if (!isArmed) {
+    isArmed = true;
+    report("armed", { why });
+    armed.resolve();
+  }
+}
+
+/**
+ * A memory driver whose `connect()` fails after `FAIL_AFTER_MS`, or on
+ * `SIGUSR2` with `FAIL_ON_SIGUSR2=1`.
+ */
 class FailingDriver extends MemoryDriver {
   override async connect(): Promise<void> {
-    await Bun.sleep(Number(process.env.FAIL_AFTER_MS ?? 100));
+    if (process.env.FAIL_ON_SIGUSR2 === "1") {
+      await new Promise<void>((resolve) => process.once("SIGUSR2", resolve));
+      arm("SIGUSR2");
+    } else {
+      await Bun.sleep(Number(process.env.FAIL_AFTER_MS ?? 100));
+    }
     throw new Error("connect refused (FAIL_QUEUE)");
   }
 }
@@ -172,6 +207,9 @@ const workers = queues.map((queue) => {
     pollInterval: 20,
     reportInterval: 200,
     concurrency: 4,
+    // Remote control reads the stored config during startup: the read
+    // `HOLD_CONFIG_QUEUE` holds.
+    control: queue === env.HOLD_CONFIG_QUEUE,
   };
   if (queue === env.CHILD_QUEUE) {
     return new BunQueueWorker(queue, spinFile, {
@@ -194,6 +232,42 @@ const workers = queues.map((queue) => {
     options,
   );
 });
+if (env.HOLD_CONFIG_QUEUE !== undefined) {
+  process.on("SIGTERM", () => arm("SIGTERM"));
+  const worker = workers.find(
+    (one) => one.ref.queue === env.HOLD_CONFIG_QUEUE,
+  )!;
+  const driver = worker.driver as JobsDriver & {
+    getQueueState: NonNullable<JobsDriver["getQueueState"]>;
+  };
+  const read = driver.getQueueState.bind(driver);
+  const configName = workerConfigName(worker.key);
+  const claimName = summonClaimName(summon!.id);
+  let slowed = false;
+  driver.getQueueState = async (...args) => {
+    const [, name] = args;
+    if (name === configName && !isArmed) {
+      await armed.promise;
+    } else if (name === claimName && isArmed && !slowed) {
+      slowed = true;
+      await Bun.sleep(Number(env.SLOW_MARK_MS ?? 0));
+    }
+    return await read(...args);
+  };
+}
+
+if (env.REPORT_CLAIMS === "1") {
+  for (const worker of workers) {
+    const watch = setInterval(() => {
+      if (worker.summon !== undefined) {
+        clearInterval(watch);
+        report("claim-known", { queue: worker.ref.queue });
+      }
+    }, 10);
+    watch.unref();
+  }
+}
+
 for (const worker of workers) {
   worker.on("ready", () => report("ready", { queue: worker.ref.queue }));
   if (worker.ref.queue === env.HOLD_QUEUE) {

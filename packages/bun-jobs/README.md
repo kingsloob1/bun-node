@@ -2508,6 +2508,10 @@ const workers = (summon?.queues ?? ["renders"]).map((queue) => {
 await runSummoned(workers, { idleFor: 30_000 });
 ```
 
+A handler typed on its data (`JobProcessor<{ scene: string }>`) does not fit
+a `Record<string, JobProcessor>`; to keep each queue's types, build each
+worker in a `switch (queue)` instead.
+
 - **Every queue the arguments name needs a worker.** One without is a
   `ConfigError` before anything runs, from `runSummoned(workers)` and
   `runSummoned(worker)` alike, so the attempt is lost fast rather than
@@ -2525,14 +2529,18 @@ await runSummoned(workers, { idleFor: 30_000 });
 - **One close**: the workers close concurrently under one budget, sized for
   the target whose close takes longest; each worker writes the unit's reason
   on its own claim, under its own queue. A stop while some workers are still
-  starting forces only those, at once, before the exit marks are written, so
-  none of them becomes ready and claims a job in the meantime; the ready ones
-  close by the rule, so a job they hold is not abandoned.
+  starting forces only those: they are held at once, short of `ready`, so
+  none of them claims a job in the meantime, and forced once the exit marks
+  are written, so a claim one of them won still gets the unit's reason. The
+  ready ones close by the rule, so a job they hold is not abandoned.
 - One worker's `run()` failing closes them all, with reason `"error"` and
   code `1`: the failed worker and any still starting with `force`, the ready
-  ones by the rule, so a job one holds can finish within the budget. An
-  owner closing one worker leaves the others running, still on the idle
-  clock; the unit ends with `"closed"` if its owner closes every worker.
+  ones by the rule, so a job one holds can finish within the budget. With no
+  signal and no deadline that budget is unbounded, so a ready worker's
+  graceful close is bounded only by its close timeout (`lockDuration`, 30 s
+  by default). An owner closing one worker leaves the others running, still
+  on the idle clock; the unit ends with `"closed"` if its owner closes every
+  worker.
 - **Build the workers in the main thread.** Bun gives a `Worker` thread an
   empty `argv`, so `summonedFromArgs()` answers `undefined` there, and
   `runSummoned` owns the process's signals. A worker's `target` option runs

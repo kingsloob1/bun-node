@@ -462,6 +462,15 @@ export const SUMMON_OPTION_ID: unique symbol = Symbol(
   "bun-jobs: summon option id",
 );
 
+/**
+ * Internal: the key of the method `runSummoned` holds a starting worker with
+ * when its unit begins closing: the worker's startup stops short of `ready`
+ * — no claim loop, so no job is claimed — and waits there for the `close()`
+ * that follows, while its driver stays open for the unit's exit mark.
+ * Exported from this module alone, never from the package root.
+ */
+export const HOLD_STARTUP: unique symbol = Symbol("bun-jobs: hold startup");
+
 /** How often a worker reads its stored instructions when it cannot subscribe. */
 const DEFAULT_CONTROL_INTERVAL = 2_000;
 
@@ -697,6 +706,11 @@ export class BunQueueWorker<
    * during start-up does not wait for it.
    */
   readonly #startup = new AbortController();
+  /**
+   * Whether startup is held short of `ready` until `close()` ({@link
+   * HOLD_STARTUP}). Never reset: a held worker is one about to be closed.
+   */
+  #startupHeld = false;
   /**
    * The heartbeat record's `target`, derived once from the very target
    * `#target` was built from, so the record cannot disagree with it. Frozen,
@@ -1556,6 +1570,12 @@ export class BunQueueWorker<
     // Before the loop turns, never after: a worker whose stop was recorded
     // against its key must not claim one job on the way to finding that out.
     await this.#adoptControl({ initial: true });
+    // Held (`runSummoned` closing its unit): wait here, short of `ready` and
+    // the claim loop, for the close that follows. Checked synchronously
+    // before `ready`, so an unheld worker takes no extra turn.
+    if (this.#startupHeld && !this.#closing) {
+      await this.#untilCloseCalled();
+    }
     if (this.#closing) {
       // What startup armed above, `close()` has cleared; this goes no
       // further, so no `ready`, no announced state and no hold on the process.
@@ -4761,6 +4781,33 @@ export class BunQueueWorker<
    */
   get summon(): Readonly<WorkerSummonInfo> | undefined {
     return this.#summonClaim === "won" ? this.#summon : undefined;
+  }
+
+  /**
+   * Internal ({@link HOLD_STARTUP}): holds a worker that has not emitted
+   * `ready` short of it until its `close()` is called. Synchronous, so a
+   * worker held while its startup is still awaiting a step never becomes
+   * ready nor claims a job in between; its driver stays open meanwhile.
+   * Answers whether it took: `false` on a worker already past `ready` or
+   * already closing, which the hold no longer concerns.
+   */
+  [HOLD_STARTUP](): boolean {
+    if (this.#closing || this.#announcedState !== undefined) {
+      return false;
+    }
+    this.#startupHeld = true;
+    return true;
+  }
+
+  /** Resolves once `close()` has been called: it aborts {@link #startup}. */
+  async #untilCloseCalled(): Promise<void> {
+    const signal = this.#startup.signal;
+    if (signal.aborted) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
   }
 
   /**
