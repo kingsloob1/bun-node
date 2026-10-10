@@ -1,0 +1,5 @@
+2026-10-10T10:07:20.198Z bun 1.4.3 (bbdc5a519), linux-x64
+{"mode":"hot","iterations":10,"editToFileMs":{"median":49,"p90":68,"max":68,"min":44},"watcherFetchMsMedian":0,"watcherEmitWriteMsMedian":0,"serverModelMsMedian":1.3,"serverEvaluations":11,"watcherReconnects":0,"noTokenStatus":404,"withTokenStatus":200,"ifNoneMatchStatus":304}
+{"mode":"watch","iterations":10,"editToFileMs":{"median":160,"p90":163,"max":163,"min":159},"watcherFetchMsMedian":0,"watcherEmitWriteMsMedian":0,"serverModelMsMedian":5.5,"serverEvaluations":11,"watcherReconnects":20,"noTokenStatus":404,"withTokenStatus":200,"ifNoneMatchStatus":304}
+{"mode":"poll","iterations":10,"editToFileMs":{"median":560,"p90":1043,"max":1043,"min":69},"watcherFetchMsMedian":1,"watcherEmitWriteMsMedian":1,"serverModelMsMedian":1.28,"serverEvaluations":11,"watcherReconnects":0,"noTokenStatus":404,"withTokenStatus":200,"ifNoneMatchStatus":304}
+production: REFUSED: devTypes: refused under NODE_ENV=production

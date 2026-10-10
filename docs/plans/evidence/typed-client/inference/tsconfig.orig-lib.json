@@ -1,0 +1,5 @@
+{
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "paths": { "lib/*": ["../../../../../packages/bun-common/lib/*"], "utils/*": ["../../../../../packages/bun-common/lib/utils/*"] } },
+  "include": ["../../../../../packages/bun-common/lib/**/*"]
+}

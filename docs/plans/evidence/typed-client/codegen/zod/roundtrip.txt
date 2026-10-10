@@ -1,0 +1,30 @@
+refine (cross-field)
+  input : {"type":"object","properties":{"password":{"type":"string"},"confirm":{"type":"string"}},"required":["password…
+  output: {"type":"object","properties":{"password":{"type":"string"},"confirm":{"type":"string"}},"required":["password…
+transform (string → number)
+  input : {"type":"string"}
+  output: THROWS: Transforms cannot be represented in JSON Schema
+pipe (coerce then range)
+  input : {"type":"number"}
+  output: {"type":"number","minimum":1}
+custom
+  input : THROWS: Custom types cannot be represented in JSON Schema
+  output: THROWS: Custom types cannot be represented in JSON Schema
+brand
+  input : {"type":"string"}
+  output: {"type":"string"}
+date
+  input : THROWS: Date cannot be represented in JSON Schema
+  output: THROWS: Date cannot be represented in JSON Schema
+default
+  input : {"type":"object","properties":{"role":{"default":"a","type":"string","enum":["a","b"]}}}
+  output: {"type":"object","properties":{"role":{"default":"a","type":"string","enum":["a","b"]}},"required":["role"],"a…
+regex + length
+  input : {"type":"string","minLength":3,"maxLength":10,"pattern":"^[a-z]+$"}
+  output: {"type":"string","minLength":3,"maxLength":10,"pattern":"^[a-z]+$"}
+discriminated union
+  input : {"oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"a"},"x":{"type":"number"}},"required…
+  output: {"oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"a"},"x":{"type":"number"}},"required…
+recursive
+  input : {"type":"object","properties":{"v":{"type":"number"},"children":{"type":"array","items":{"$ref":"#"}}},"requir…
+  output: {"type":"object","properties":{"v":{"type":"number"},"children":{"type":"array","items":{"$ref":"#"}}},"requir…

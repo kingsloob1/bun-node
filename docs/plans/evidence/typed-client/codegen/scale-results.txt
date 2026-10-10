@@ -1,0 +1,4 @@
+2026-10-10T10:14:29.031Z bun 1.4.3
+N=50: model 47 ms, emit 3 ms, routes.gen.ts 26093 B; client check exit 0, check 0.16 s, memory 94 MB, instantiations 2239
+N=200: model 88 ms, emit 6 ms, routes.gen.ts 104923 B; client check exit 0, check 0.24 s, memory 112 MB, instantiations 6289
+N=1000: model 297 ms, emit 22 ms, routes.gen.ts 527163 B; client check exit 0, check 0.75 s, memory 150 MB, instantiations 27889

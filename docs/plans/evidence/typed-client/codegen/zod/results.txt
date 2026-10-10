@@ -1,0 +1,10 @@
+2026-10-10T10:14:16.878Z
+bun 1.4.3, zod 4.6.5
+size classic 1 route: 89136 min / 25191 gz; 50 routes: 103226 min / 26226 gz; per extra route ≈ 21 B gz; eval-free: false
+size mini    1 route: 22600 min / 7379 gz; 50 routes: 37287 min / 8866 gz; per extra route ≈ 30 B gz; eval-free: true
+cost JSON.parse of the body (reference) 5.01 µs/op
+cost server schema (zod classic)        9.51 µs/op
+cost generated classic (zod)            14.92 µs/op
+cost generated mini (zod/mini)          21.07 µs/op
+cost @cfworker/json-schema              99.39 µs/op
+failure: [{"target":"response","message":"Invalid email address","path":"items.3.email"}]

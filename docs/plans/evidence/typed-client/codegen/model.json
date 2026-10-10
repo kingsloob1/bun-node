@@ -1,0 +1,396 @@
+{
+  "version": 1,
+  "hash": "aa196cb08f89b79e",
+  "routes": [
+    {
+      "key": "DELETE /users/:id",
+      "method": "DELETE",
+      "path": "/users/:id",
+      "params": [
+        "id"
+      ],
+      "operationId": "deleteUsersById",
+      "request": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "responses": {
+        "204": null,
+        "404": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "status": {
+              "type": "number"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title",
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "warnings": []
+    },
+    {
+      "key": "GET /legacy",
+      "method": "GET",
+      "path": "/legacy",
+      "params": [],
+      "operationId": "getLegacy",
+      "request": {},
+      "responses": {},
+      "warnings": [
+        "no validator: request and response untyped"
+      ]
+    },
+    {
+      "key": "GET /orgs/:org/members/:id",
+      "method": "GET",
+      "path": "/orgs/:org/members/:id",
+      "params": [
+        "org",
+        "id"
+      ],
+      "operationId": "getOrgsByOrgMembersById",
+      "request": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "org": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "org",
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "responses": {
+        "200": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "org": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "since": {}
+          },
+          "required": [
+            "org",
+            "id",
+            "since"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "warnings": [
+        "GET /orgs/:org/members/:id 200: Date cannot be represented in JSON Schema; described as unknown"
+      ]
+    },
+    {
+      "key": "GET /users",
+      "method": "GET",
+      "path": "/users",
+      "params": [],
+      "operationId": "getUsers",
+      "request": {
+        "query": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "page": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "q": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "responses": {
+        "200": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "admin",
+                      "member"
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "email",
+                  "role",
+                  "createdAt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "next": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "items",
+            "next"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "warnings": []
+    },
+    {
+      "key": "GET /users/:id",
+      "method": "GET",
+      "path": "/users/:id",
+      "params": [
+        "id"
+      ],
+      "operationId": "getUsersById",
+      "request": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "responses": {
+        "200": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string",
+              "format": "email",
+              "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "admin",
+                "member"
+              ]
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "email",
+            "role",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "404": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "status": {
+              "type": "number"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title",
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "warnings": []
+    },
+    {
+      "key": "POST /users",
+      "method": "POST",
+      "path": "/users",
+      "params": [],
+      "operationId": "postUsers",
+      "request": {
+        "body": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "email": {
+              "type": "string",
+              "format": "email",
+              "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            },
+            "role": {
+              "default": "member",
+              "type": "string",
+              "enum": [
+                "admin",
+                "member"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "email"
+          ]
+        }
+      },
+      "responses": {
+        "201": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string",
+              "format": "email",
+              "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "admin",
+                "member"
+              ]
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "email",
+            "role",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "409": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "status": {
+              "type": "number"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title",
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "warnings": []
+    }
+  ]
+}
