@@ -1,8 +1,10 @@
 import type { Subprocess } from "bun";
+import type { SummonClaim } from "../lib/summon/claim";
 import { join } from "node:path";
 import process from "node:process";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createDriver, SUMMON_ARGS } from "../lib/index";
+import { tallySummonClaim } from "../lib/summon/claim";
 import { testNamespace } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 
@@ -13,6 +15,13 @@ import { crossProcessBackends } from "./helpers/backends";
  * reason and code on it (`SET_EXIT_MARK`) — never its own `"closed"`, `0`,
  * which reads a failed unit as a clean close. From the #313 round-3 review's
  * probes, as tests.
+ *
+ * And the same window when the claim call itself fails after its write
+ * committed (the reply lost): the worker's claim is then undecided, not won,
+ * and its close must still mark the place it holds — else the controller
+ * reads a clean exit as a death once the holder's grace has passed (#313
+ * round 4). With the negative controls: a worker holding no place writes
+ * nothing on the claim, whether its claim is undecided or lost.
  */
 
 const FIXTURE = join(
@@ -46,6 +55,10 @@ interface Line {
   held?: boolean;
   /** `claim`: the exit mark on it, or `null`. */
   exit?: Record<string, unknown> | null;
+  /** `claim`: the whole entry as read back, or `null`. */
+  value?: SummonClaim | null;
+  /** `claim`: renders' worker id. */
+  worker?: string;
   /** `log`: the message of a warning or an error. */
   message?: string;
 }
@@ -211,6 +224,68 @@ for (const backend of BACKENDS) {
           const claim = lineOf(lines, "claim");
           expect(claim.held, all(lines)).toBe(true);
           expect(claim.exit, all(lines)).toMatchObject(one.exit);
+        }, 60_000);
+      }
+
+      // The claim call fails after its write committed: the worker never
+      // learns it won, so its claim stays undecided through the close.
+      for (const [index, one] of cases.entries()) {
+        it(`${one.name}, its claim call failing after the write: the claim is marked, and the tally reads no death`, async () => {
+          const lines = await runIn(
+            `t${index}`,
+            {
+              MODE: "window",
+              COMMIT_DELAY: "100",
+              CLAIM_THROW: "1",
+              ...one.env,
+            },
+            one.queues,
+          );
+          expect(lineOf(lines, "claim-committed").summonKnown).toBe(false);
+          expect(lineOf(lines, "result")).toMatchObject(one.result);
+          const claim = lineOf(lines, "claim");
+          expect(claim.held, all(lines)).toBe(true);
+          expect(claim.exit, all(lines)).toMatchObject(one.exit);
+          // The controller's view once the holder's grace is long past, its
+          // record gone: the unit's exit, never a death.
+          const holder = claim.value!.holders[0]!;
+          expect(holder.worker).toBe(claim.worker!);
+          const tally = tallySummonClaim(
+            claim.value!,
+            new Set(),
+            holder.until + 60_000,
+            5_000,
+            0,
+          );
+          expect(tally, all(lines)).toMatchObject(
+            one.result.code === 0
+              ? { succeeded: 1, exitedWithError: 0, died: 0, starting: 0 }
+              : { succeeded: 0, exitedWithError: 1, died: 0, starting: 0 },
+          );
+        }, 60_000);
+      }
+
+      // Negative controls: a worker holding no place in the claim — another
+      // worker has it — writes nothing there, its claim undecided (its claim
+      // read failed) or lost.
+      for (const read of ["throw", "pass"] as const) {
+        it(`a claim another worker holds stays untouched, renders' claim ${read === "throw" ? "undecided" : "lost"}`, async () => {
+          const lines = await runIn(
+            `f${read}`,
+            { MODE: "foreign", CLAIM_READ: read },
+            ["thumbs", "renders"],
+          );
+          lineOf(lines, "claim-read");
+          expect(lineOf(lines, "result")).toMatchObject({
+            reason: "signal",
+            code: 0,
+          });
+          const claim = lineOf(lines, "claim");
+          expect(claim.value, all(lines)).toMatchObject({ capacity: 1 });
+          expect(claim.value!.holders, all(lines)).toHaveLength(1);
+          const [holder] = claim.value!.holders;
+          expect(holder!.worker).toBe("foreign-worker");
+          expect(holder!.exit, all(lines)).toBeUndefined();
         }, 60_000);
       }
 
