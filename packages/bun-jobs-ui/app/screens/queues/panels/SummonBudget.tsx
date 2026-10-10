@@ -24,12 +24,26 @@ export interface SummonBudgetProps {
  * left, and when the window resets — absolute in UTC, with the relative time
  * beside it. A window at its limit reads "Exhausted", in the warning tone. The
  * used counts are the tooltip. A budget the policy turned off shows its
- * counts and "no limit", with the reset times as the tooltip.
+ * counts and "no limit", with the reset times as the tooltip; one whose limits
+ * were never stored (`limitsUnknown`) shows its counts and "limits unknown",
+ * never "Off".
  */
 export function SummonBudget({ budget, testId }: SummonBudgetProps) {
   const now = useNow();
   const view = summonBudgetView(budget, now);
-  if (view.off) {
+  if (view.state === "unknown") {
+    return (
+      <span
+        className="summon-budget"
+        data-testid={testId}
+        data-limits-unknown="true"
+        title={view.hint}
+      >
+        {view.text}
+      </span>
+    );
+  }
+  if (view.state === "off") {
     return (
       <span
         className="summon-budget"

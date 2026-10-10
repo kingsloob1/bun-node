@@ -111,9 +111,11 @@ export async function summonNow(
 }
 
 /**
- * `GET /summon`: every summon controller in the API's process, by queue,
- * with its readiness, last outcome and budget usage. An empty list, never a
- * 409, where none runs.
+ * `GET /summon`: every summoning queue the API can reach, by queue — with a
+ * controller in the API's process (`local: true`) or read from storage
+ * (`local: false`) — with its readiness (local only), last outcome and
+ * budget usage (absent for summon state a newer bun-jobs wrote). An empty
+ * list, never a 409, where none summons.
  */
 export async function listSummonControllers(
   api: ApiClient,
@@ -130,8 +132,10 @@ export async function listSummonControllers(
           typeof item === "object" &&
           item !== null &&
           typeof (item as { queue?: unknown }).queue === "string" &&
-          typeof (item as { budget?: unknown }).budget === "object" &&
-          (item as { budget?: unknown }).budget !== null,
+          // Absent for summon state a newer bun-jobs wrote; an object otherwise.
+          ((item as { budget?: unknown }).budget === undefined ||
+            (typeof (item as { budget?: unknown }).budget === "object" &&
+              (item as { budget?: unknown }).budget !== null)),
       ),
     "the summon controllers",
     path,

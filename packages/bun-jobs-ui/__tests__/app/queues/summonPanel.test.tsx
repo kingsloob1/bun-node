@@ -523,6 +523,30 @@ describe("Summon now and Reset", () => {
       "another process",
     );
   });
+
+  it("shows a remote queue's budget with its limits unknown, not as off", async () => {
+    const panel = await expectNoActions(
+      granted(
+        statusFixture({
+          local: false,
+          summoner: undefined,
+          budget: {
+            hour: 1,
+            day: 1,
+            limitsUnknown: true,
+            hourResetsAt: Date.now() + 23 * 60_000,
+            dayResetsAt: Date.now() + 9 * 3_600_000,
+          },
+        }),
+      ),
+    );
+    const budget = within(panel).getByTestId("summon-budget");
+    expect(budget.textContent).toBe(
+      "1 this hour, 1 today (UTC), limits unknown",
+    );
+    expect(budget.dataset.limitsUnknown).toBe("true");
+    expect(panel.textContent).not.toContain("no limit");
+  });
 });
 
 describe("summon text", () => {
