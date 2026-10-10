@@ -1,0 +1,5 @@
+Bun 1.4.3 (bbdc5a519), channel cacheplan_1284093
+sequential n=1000: p50 0.137 ms, p95 0.254 ms, p99 0.688 ms, max 1.651 ms
+burst n=500 notifies issued together: last arrives at 23.227 ms, p50 16.076 ms (21527 notifications/s)
+8000-byte payload: rejected (payload string too long)
+load average at end: 7.12 14.58 17.10 12/3589 1284182

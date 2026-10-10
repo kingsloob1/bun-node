@@ -1,0 +1,4 @@
+Bun 1.4.3 (bbdc5a519)
+flat           N=10000 1 KiB: set (tmp+rename) 5135/s, get 20153/s, miss 83110/s, directory walk of 10000 entries 7 ms (1 dirs)
+sharded 2x256  N=10000 1 KiB: set (tmp+rename) 3024/s, get 23959/s, miss 107757/s, directory walk of 10000 entries 352 ms (9268 dirs)
+load average at end: 14.76 12.75 15.84 13/3873 1319764

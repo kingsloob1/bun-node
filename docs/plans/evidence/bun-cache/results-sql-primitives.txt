@@ -1,0 +1,13 @@
+Bun 1.4.3 (bbdc5a519)
+sqlite: 1 MiB bytes column round-trip equal, read back as Uint8Array
+sqlite: 200 concurrent increments -> final 200, 200 distinct returned values (want 200), 392.8 ms
+sqlite: sweep of 2000 rows (half expired) in 3.9 ms: result.count=1000, result.affectedRows=null, rows left 1000
+postgres: 1 MiB bytes column round-trip equal, read back as Buffer
+postgres: 200 concurrent increments -> final 200, 200 distinct returned values (want 200), 189.3 ms
+postgres: sweep of 2000 rows (half expired) in 2.7 ms: result.count=1000, result.affectedRows=null, rows left 1000
+mysql: 1 MiB bytes column round-trip equal, read back as Buffer
+mysql: 200 concurrent increments -> final 200, 200 distinct returned values (want 200), 382.8 ms
+mysql: sweep of 2000 rows (half expired) in 10.4 ms: result.count=0, result.affectedRows=1000, rows left 1000
+mariadb: 1 MiB bytes column round-trip equal, read back as Buffer
+mariadb: 200 concurrent increments -> final 200, 200 distinct returned values (want 200), 33.0 ms
+mariadb: sweep of 2000 rows (half expired) in 7.5 ms: result.count=0, result.affectedRows=1000, rows left 1000

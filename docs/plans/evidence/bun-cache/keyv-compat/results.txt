@@ -1,0 +1,18 @@
+## cache-manager 7.2.9 + keyv 5.6.0
+factory calls: 1 value: {"a":1,"d":"1970-01-01T00:00:00.000Z"} ttl(): 1791591952777 now: 1791591892778
+keyv.namespace: keyv store.namespace: keyv
+["get","keyv:k"]
+["set","keyv:k","{\"value\":{\"a\":1,\"d\":\"1970-01-01T00:00:00.000Z\"},\"expires\":1791591952777}",60000]
+["get","keyv:k"]
+["get","keyv:k"]
+["clear","keyv"]
+
+## cache-manager 7.2.9 + keyv 6.1.0
+factory calls: 2 value: {"a":1,"d":"1970-01-01T00:00:00.000Z"} ttl(): undefined now: 1791591892839
+keyv.namespace: undefined store.namespace: undefined
+["get","k"]
+["set","k","{\"value\":{\"a\":1,\"d\":\"1970-01-01T00:00:00.000Z\"},\"expires\":1791591952833}",60000]
+["get","k"]
+["set","k","{\"value\":{\"a\":1,\"d\":\"1970-01-01T00:00:00.000Z\"},\"expires\":1791591952838}",60000]
+["get","k"]
+["clear",null]

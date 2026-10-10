@@ -1,0 +1,7 @@
+Bun 1.4.3 (bbdc5a519)
+redis pub/sub sequential n=1000: p50 0.043 ms, p95 0.068 ms, p99 0.098 ms
+redis notify-keyspace-events: {"notify-keyspace-events":""} (keyspace notifications off)
+redis version: 8.0.5
+mongodb: version 7.0.41, setName=(none: standalone)
+mongodb ttlMonitorSleepSecs: 60
+mongodb change stream: refused (The $changeStream stage is only supported on replica sets)

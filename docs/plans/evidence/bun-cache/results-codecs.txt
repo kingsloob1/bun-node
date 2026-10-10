@@ -1,0 +1,34 @@
+Bun 1.4.3 (bbdc5a519)
+
+| value | JSON | bun:jsc serialize | node:v8 serialize |
+|---|---|---|---|
+| Date | → string | ok (Date) | ok (Date) |
+| Map | → Object{} | ok (Map(1)) | ok (Map(1)) |
+| Set | → Object{} | ok (Set(2)) | ok (Set(2)) |
+| Uint8Array | → Object{0:number,1:number,2:number} | ok (Uint8Array) | ok (Uint8Array) |
+| BigInt | throws: JSON.stringify cannot serialize BigInt. | ok (bigint) | ok (bigint) |
+| undefined field | → Object{} | ok (Object{a:undefined}) | ok (Object{a:undefined}) |
+| NaN | → object | ok (NaN) | ok (NaN) |
+| RegExp | → Object{} | ok (RegExp) | ok (RegExp) |
+| Error | → Object{} | ok (Error) | ok (Error) |
+| nested Map in object | → Object{m:Object{}} | ok (Object{m:Map(1)}) | ok (Object{m:Map(1)}) |
+| cycle | throws: JSON.stringify cannot serialize cyclic structures. | throws: Maximum call stack size exceeded. | throws: Maximum call stack size exceeded. |
+| Blob | → Object{} | ok (Blob) | ok (Blob) |
+| class instance | → Object{x:number} | → Object{x:number} | → Object{x:number} |
+| function | throws: JSON Parse error: Unexpected EOF | throws: The object can not be cloned. | throws: The object can not be cloned. |
+
+Payload: 200 records, 70397 bytes as JSON. N=2000
+| codec | bytes | encode µs | decode µs |
+|---|---|---|---|
+| JSON | 70397 | 66.4 | 116.6 |
+| bun:jsc serialize | 34531 | 235.3 | 109.7 |
+| node:v8 serialize | 34531 | 458.0 | 110.2 |
+
+| compression of the JSON bytes | bytes | ratio | compress µs | decompress µs |
+|---|---|---|---|---|
+| gzip (level 6) | 3184 | 22.1x | 196.4 | 27.5 |
+| gzip (level 1) | 4443 | 15.8x | 33.2 | 17.1 |
+| deflate raw | 3166 | 22.2x | 182.7 | 34.1 |
+| zstd (level 3) | 1684 | 41.8x | 49.6 | 21.4 |
+
+load average at end: 5.17 12.67 16.28 12/3567 1293677

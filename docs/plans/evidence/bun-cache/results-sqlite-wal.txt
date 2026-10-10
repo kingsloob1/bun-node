@@ -1,0 +1,12 @@
+Bun 1.4.3 (bbdc5a519), N=20000 ops per cell, median of 3
+| API | value | sync | set, one per statement | set, batched 500/tx | get (hit) | get (miss) |
+|---|---|---|---|---|---|---|
+| bun:sqlite | 100 B | NORMAL | 19,932/s | 280,079/s | 402,683/s | 544,206/s |
+| bun:sqlite | 100 B | FULL | 2,151/s | 241,191/s | 419,245/s | 576,645/s |
+| Bun SQL sqlite (await each) | 100 B | NORMAL | 21,681/s | — | 81,785/s | — |
+| Bun SQL sqlite (5000 concurrent) | 100 B | NORMAL | 24,906/s | — | 100,646/s | — |
+| bun:sqlite | 10000 B | NORMAL | 4,424/s | 8,468/s | 10,301/s | 10,056/s |
+| bun:sqlite | 10000 B | FULL | 1,540/s | 10,228/s | 10,743/s | 10,294/s |
+| Bun SQL sqlite (await each) | 10000 B | NORMAL | 3,216/s | — | 6,770/s | — |
+| Bun SQL sqlite (5000 concurrent) | 10000 B | NORMAL | 3,211/s | — | 6,445/s | — |
+load average at end: 7.54 15.17 17.34 10/3577 1277463
