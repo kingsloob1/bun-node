@@ -1,0 +1,61 @@
+Bun 1.4.3 (bbdc5a519), 2026-10-10T01:03:38.541Z
+
+## minio 2025.5.24 (bitnamilegacy) at http://127.0.0.1:19101
+create bucket: 409 (BucketAlreadyOwnedByYou)
+S3Client: write() returns number 2; text() "v1" (no ETag on this path); stat().etag "6654c734ccab8f440ff0825eb443dc7f"; list() eTag "6654c734ccab8f440ff0825eb443dc7f"
+presigned + unsigned If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+presigned + unsigned If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412)
+SigV4-signed If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+SigV4-signed If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412); body now "z"
+SigV4-signed conditional DELETE with a wrong If-Match -> 204 (IGNORED: deleted); object exists after: false
+race: 32 concurrent If-None-Match:* PUTs -> 1x200, 31x412
+race: 32 concurrent If-Match:<same etag> PUTs -> 1x200, 31x412 (exactly one winner)
+CAS counter: 16 writers x 10 -> final 160 (want 160), 196 GET+PUT attempts, 269 committed increments/s over loopback
+loopback p50/p95 ms: PUT 1.51/2.02, GET 0.72/0.93, HEAD 0.61/0.78, LIST(<=100 keys) 3.06/4.29
+read-after-write: GET "fresh", LIST sees 1/1 (single node: says nothing about distributed setups)
+cleanup: deleted 105 objects under cw-1744362-1791594218541/
+
+## seaweedfs 4.48 at http://127.0.0.1:19102
+create bucket: 200
+S3Client: write() returns number 2; text() "v1" (no ETag on this path); stat().etag "6654c734ccab8f440ff0825eb443dc7f"; list() eTag "6654c734ccab8f440ff0825eb443dc7f"
+presigned + unsigned If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+presigned + unsigned If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412)
+SigV4-signed If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+SigV4-signed If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412); body now "z"
+SigV4-signed conditional DELETE with a wrong If-Match -> 412 (honoured); object exists after: true
+race: 32 concurrent If-None-Match:* PUTs -> 1x200, 31x412
+race: 32 concurrent If-Match:<same etag> PUTs -> 1x200, 31x412 (exactly one winner)
+CAS counter: 16 writers x 10 -> final 160 (want 160), 302 GET+PUT attempts, 23 committed increments/s over loopback
+loopback p50/p95 ms: PUT 1.90/2.23, GET 1.04/1.21, HEAD 0.69/0.82, LIST(<=100 keys) 2.61/3.25
+read-after-write: GET "fresh", LIST sees 1/1 (single node: says nothing about distributed setups)
+cleanup: deleted 106 objects under cw-1744362-1791594219783/
+
+## rustfs (2026-10-03 image) at http://127.0.0.1:19103
+create bucket: 200
+S3Client: write() returns number 2; text() "v1" (no ETag on this path); stat().etag "6654c734ccab8f440ff0825eb443dc7f"; list() eTag "6654c734ccab8f440ff0825eb443dc7f"
+presigned + unsigned If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+presigned + unsigned If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412)
+SigV4-signed If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+SigV4-signed If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412); body now "z"
+SigV4-signed conditional DELETE with a wrong If-Match -> 412 (honoured); object exists after: true
+race: 32 concurrent If-None-Match:* PUTs -> 1x200, 31x412
+race: 32 concurrent If-Match:<same etag> PUTs -> 1x200, 31x412 (exactly one winner)
+CAS counter: 16 writers x 10 -> final 160 (want 160), 2048 GET+PUT attempts, 4 committed increments/s over loopback
+loopback p50/p95 ms: PUT 5.30/17.35, GET 1.10/2.64, HEAD 0.64/1.30, LIST(<=100 keys) 14.20/18.87
+read-after-write: GET "fresh", LIST sees 1/1 (single node: says nothing about distributed setups)
+cleanup: deleted 106 objects under cw-1744362-1791594228577/
+
+## versitygw 1.8.0 (posix) at http://127.0.0.1:19104
+create bucket: 200
+S3Client: write() returns number 2; text() "v1" (no ETag on this path); stat().etag "6654c734ccab8f440ff0825eb443dc7f"; list() eTag "6654c734ccab8f440ff0825eb443dc7f"
+presigned + unsigned If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+presigned + unsigned If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412)
+SigV4-signed If-None-Match:* -> honoured (200 then 412); PUT response ETag header: "9dd4e461268c8034f5c8564e155c67a6"
+SigV4-signed If-Match:<etag> (2nd reuses the stale etag) -> honoured (200 then 412); body now "z"
+SigV4-signed conditional DELETE with a wrong If-Match -> 412 (honoured); object exists after: true
+race: 32 concurrent If-None-Match:* PUTs -> 1x200, 31x412
+race: 32 concurrent If-Match:<same etag> PUTs -> 1x200, 31x412 (exactly one winner)
+CAS counter: 16 writers x 10 -> final 160 (want 160), 1956 GET+PUT attempts, 56 committed increments/s over loopback
+loopback p50/p95 ms: PUT 14.66/21.76, GET 1.01/1.50, HEAD 0.77/1.12, LIST(<=100 keys) 2.35/4.43
+read-after-write: GET "fresh", LIST sees 1/1 (single node: says nothing about distributed setups)
+cleanup: deleted 106 objects under cw-1744362-1791594272173/
