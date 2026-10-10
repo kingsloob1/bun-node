@@ -660,7 +660,8 @@ adapter.setErrorHandler(((err, _req, res, _next) => {
 ```
 
 See
-[`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts).
+[`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts),
+[`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/undecodable-bodies.ts).
 
 ### Testing with `fetch()`
 
@@ -1399,6 +1400,7 @@ describes the conventions they share.
 | `02-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, server introspection, `fetch()`, `close()` |
 | `02-http-adapter` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts) | `@Render()` and `res.render()` with a view engine: `setBaseViewsDir`, `setViewEngine`, `engine(ext, fn)`, `setLocal`, both view lookups, how locals merge, and the errors when a view or engine is missing |
 | `02-http-adapter` | [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts) | what `@nestjs/platform-express` users rely on: `HEAD` on `@Get()`, late `next()`, the request timeout, redirect bodies, host matching, the static-prefix redirect, `clearCookie`, invalid JSON, and the [known differences](#known-differences-from-nestjsplatform-express) checked as deliberate |
+| `02-http-adapter` | [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/undecodable-bodies.ts) | a body that does not parse, refused before any guard by default; routed to the controllers with `router: { acceptUndecodableBody: true }` (guard first, `req.bodyDecodingError` through `@Req()`), or to a mounted bun-common router built with it |
 | `02-http-adapter` | [`per-route-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/per-route-parsing.ts) | `requestParsing()` applied per route with `consumer.apply()`, and raising one route's body limit |
 | `03-file-uploads` | [`interceptors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/interceptors.ts) | every upload interceptor, `@UploadedFile(s)`, memory, disk and custom storage, upload errors, interceptor-side parsing |
 | `04-websockets` | [`gateway-basics.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/gateway-basics.ts) | lifecycle hooks, `@MessageBody`, `@ConnectedSocket`, `WsResponse` vs a plain return, Promise and Observable replies, `@Ack` |

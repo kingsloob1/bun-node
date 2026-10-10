@@ -314,6 +314,42 @@ checkEqual("…and replaces the logger", routed.logger, second.logger);
 await routed.fetch("/r/1");
 check("…which now receives the records", second.events.length > 0);
 
+// router.acceptUndecodableBody: the adapter routes a body it could not decode
+// to its routes instead of refusing it before routing (left unset, it
+// refuses; 04-request/undecodable-bodies.ts has the precedence rules).
+/** A POST whose JSON body (`{`) does not parse. */
+const badJson: RequestInit = {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: "{",
+};
+const undecodable = await serve(
+  new BunHttpAdapter(0, {
+    logger: noopLogger,
+    router: { acceptUndecodableBody: true },
+  }),
+);
+undecodable.post("/r", (req, res) => {
+  res.json({ refused: req.bodyDecodingError?.status ?? null });
+});
+const undecodableServed = await fetch(`${undecodable.url}/r`, badJson);
+const undecodableFetched = await undecodable.fetch("/r", badJson);
+checkEqual(
+  "router.acceptUndecodableBody: its route gets the bad JSON, the 400 on req.bodyDecodingError, served and through fetch()",
+  [
+    undecodableServed.status,
+    await undecodableServed.text(),
+    undecodableFetched.status,
+    await undecodableFetched.text(),
+  ],
+  [200, '{"refused":400}', 200, '{"refused":400}'],
+);
+checkEqual(
+  "…and with no route matched the adapter's own setting decides: its 404, not a 400",
+  (await undecodable.fetch("/nowhere", badJson)).status,
+  404,
+);
+
 /* ------------------------------------------------------------------ */
 step("etag and routeCacheMax");
 

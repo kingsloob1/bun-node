@@ -323,6 +323,33 @@ step("constructor: router and routeCacheMax");
     200,
   );
 
+  // router.acceptUndecodableBody: a body the adapter could not decode is
+  // routed, the refusal on req.bodyDecodingError, instead of refused before
+  // routing. In a Nest app: 02-http-adapter/undecodable-bodies.ts.
+  const badJson = postJson("{");
+  /** An adapter built with `router`, with a `POST /r` reporting the refusal. */
+  function reporting(router?: { acceptUndecodableBody?: boolean }) {
+    const adapter = new BunHttpAdapter(0, { router });
+    adapter.post("/r", (req, res) => {
+      return res.json({ refused: req.bodyDecodingError?.status ?? null });
+    });
+    return adapter;
+  }
+  const accepting = await reporting({ acceptUndecodableBody: true }).fetch(
+    "/r",
+    badJson,
+  );
+  checkEqual(
+    "router.acceptUndecodableBody: true routes bad JSON, the 400 on req.bodyDecodingError",
+    [accepting.status, await accepting.text()],
+    [200, '{"refused":400}'],
+  );
+  checkEqual(
+    "…left unset (the default), it is refused before routing: 400",
+    (await reporting().fetch("/r", badJson)).status,
+    400,
+  );
+
   /** Matches `path` against an adapter's router the way a request would. */
   function match(adapter: BunHttpAdapter, path: string) {
     return adapter.instance.getMatchedLayers({

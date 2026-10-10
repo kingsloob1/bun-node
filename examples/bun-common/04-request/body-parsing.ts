@@ -67,6 +67,13 @@
  *   A bare `BunRouter`'s `fetch()` does not refuse it: the request is
  *   routed, with `req.body` unset and the 400 on `req.bodyDecodingError`, so
  *   a route decides what to answer, and when.
+ * - The adapter routes it that way too to a router built with
+ *   `acceptUndecodableBody: true`, or to a route carrying the
+ *   `acceptUndecodableBody()` marker: bad JSON (400), a corrupt stream (400)
+ *   or an unsupported `Content-Encoding` (415) alike. Off by default: every
+ *   other route keeps the early refusal, and a body over its cap is a 413
+ *   before routing whatever the setting. Which route decides, and nested
+ *   mounts: `undecodable-bodies.ts`.
  * - The final handler logs a 4xx at `warn` and a 5xx at `error` (nothing
  *   under `NODE_ENV=test`); `err.req` is attached non-enumerable.
  * - A body-parser middleware (`useBodyParser`, `registerParserMiddleware`,
@@ -98,6 +105,7 @@ import type {
   JsonValue,
   ParseBodyOption,
   RouterErrorMiddlewareHandler,
+  RouterHandler,
 } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
@@ -109,6 +117,7 @@ import {
   zstdCompressSync,
 } from "node:zlib";
 import {
+  acceptUndecodableBody,
   BunHttpAdapter,
   BunRequest,
   BunRouter,
@@ -1615,6 +1624,119 @@ checkEqual(
   "deferBody + requestParsing(): the 400 goes to next(err)",
   [lazyAnswer.status, await lazyAnswer.json()],
   [400, { via: "next(err)", type: "entity.parse.failed", recorded: true }],
+);
+
+/* ------------------------------------------------------------------ */
+step("Opting in: a route receives the body the adapter could not decode");
+
+// The early refusal above is the adapter's default. A router built with
+// `acceptUndecodableBody: true`, or a single route carrying the
+// `acceptUndecodableBody()` marker, is routed the request instead, as
+// router.fetch() routes it: req.body unset, the refusal on
+// req.bodyDecodingError. Every route that did not opt in keeps the early
+// refusal, and a body over its cap is still a 413 before routing. Which route
+// decides when several could: `undecodable-bodies.ts`.
+const optIn = new BunHttpAdapter(0, {
+  request: { parseBody: { maxContentLength: 64 } },
+});
+adapters.push(optIn);
+optIn.setLogger(createTestLogger().logger);
+/** Paths whose route ran, in order. */
+const optInRan: string[] = [];
+/** Answers 200 with what the route saw: the body and the refusal. */
+const seeRefusal: RouterHandler = (req, res) => {
+  optInRan.push(req.path);
+  const refused = req.bodyDecodingError as
+    | (Error & { status: number; type?: string })
+    | undefined;
+  res.json({
+    body: req.body === undefined ? "unset" : describeBody(req),
+    refused: refused
+      ? [refused.name, refused.status, refused.type ?? null]
+      : null,
+  });
+};
+const optedApi = new BunRouter({ acceptUndecodableBody: true });
+optedApi.post("/echo", seeRefusal);
+optIn.use("/api", optedApi);
+optIn.post("/hooks", acceptUndecodableBody(), seeRefusal);
+optIn.post("/plain", seeRefusal);
+await optIn.listen(0);
+
+/** `"<status> <body>"`, served and through `adapter.fetch()`. */
+async function optInBothWays(
+  path: string,
+  init: RequestInit,
+): Promise<[string, string]> {
+  return [
+    await statusAndBody(await fetch(`${optIn.url}${path}`, init)),
+    await statusAndBody(await optIn.fetch(path, init)),
+  ];
+}
+
+/** A route's answer when it was routed a body that failed to decode. */
+function routedWith(refused: [string, number, string | null]): string {
+  return `200 ${JSON.stringify({ body: "unset", refused })}`;
+}
+
+const badJsonRouted = routedWith(["SyntaxError", 400, "entity.parse.failed"]);
+checkEqual(
+  "a router with acceptUndecodableBody: true gets the bad JSON: req.body unset, the 400 on req.bodyDecodingError, served and through adapter.fetch()",
+  await optInBothWays("/api/echo", brokenJson),
+  [badJsonRouted, badJsonRouted],
+);
+const corruptGzipRouted = routedWith(["Error", 400, null]);
+checkEqual(
+  "…a corrupt gzip stream: its 400",
+  await optInBothWays(
+    "/api/echo",
+    bodyInit("application/json", "not gzip at all", {
+      "Content-Encoding": "gzip",
+    }),
+  ),
+  [corruptGzipRouted, corruptGzipRouted],
+);
+const unsupportedRouted = routedWith(["Error", 415, null]);
+checkEqual(
+  "…an unsupported Content-Encoding (compress): its 415",
+  await optInBothWays(
+    "/api/echo",
+    bodyInit("application/json", "{}", { "Content-Encoding": "compress" }),
+  ),
+  [unsupportedRouted, unsupportedRouted],
+);
+checkEqual(
+  "one route opted in with the acceptUndecodableBody() marker gets it too",
+  await optInBothWays("/hooks", brokenJson),
+  [badJsonRouted, badJsonRouted],
+);
+
+const ranBeforeRefusals = optInRan.length;
+const plainServed = await fetch(`${optIn.url}/plain`, brokenJson);
+const plainFetched = await optIn.fetch("/plain", brokenJson);
+checkEqual(
+  "the route beside them that did not opt in: still refused before routing, the HTML 400",
+  [
+    plainServed.status,
+    /<pre>Bad Request<\/pre>/.test(await plainServed.text()),
+    plainFetched.status,
+    /<pre>Bad Request<\/pre>/.test(await plainFetched.text()),
+  ],
+  [400, true, 400, true],
+);
+const overCap = bodyInit("application/json", `{${"x".repeat(100)}`);
+checkEqual(
+  "a body over its cap is still a 413 before routing, even for the opted-in router",
+  [
+    (await fetch(`${optIn.url}/api/echo`, overCap)).status,
+    (await optIn.fetch("/api/echo", overCap)).status,
+  ],
+  [413, 413],
+);
+checkEqual(
+  "…neither of those two ran a route",
+  optInRan.length,
+  ranBeforeRefusals,
 );
 
 /* ------------------------------------------------------------------ */
