@@ -7444,6 +7444,14 @@ adds them.
 The file driver's `multiHost` is `false` on purpose: its guarantees rest on
 POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
 
+**On one host, a write lock is held until its holder exits.** A holder that
+is paused — stopped, frozen, or blocked by a long synchronous handler or a slow
+disk — keeps its lock while its process is alive; only a holder that died
+loses it, at once. Across hosts sharing a directory, a lock is broken after a
+second without its heartbeat, so their clocks must agree to well under a
+second and the filesystem must keep `O_EXCL`, `rename` and modification times
+current.
+
 **The file driver survives a process crash, not a power cut.** It never calls
 `fsync`. Every record is written to a temporary file and renamed into place,
 and every job moves between states by renaming a marker, so a process killed
