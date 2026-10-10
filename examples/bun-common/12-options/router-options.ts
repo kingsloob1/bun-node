@@ -28,6 +28,12 @@
  *   through: the option, else one of the router's own, made on first read.
  *   A mounted sub-router renders with the views of the router serving the
  *   request, as an Express `Router` has no settings of its own.
+ * - `acceptUndecodableBody` is left unset by default, which refuses: a
+ *   `BunHttpAdapter` answers a body that failed to decode before routing
+ *   unless the route that would handle it opted in (`true`, or the route's
+ *   `acceptUndecodableBody()` marker). `routesUndecodableBody(req)` is the
+ *   question the adapter asks. `fetch()` routes every request regardless.
+ *   Precedence across mounts: `04-request/undecodable-bodies.ts`.
  */
 import type {
   JsonValue,
@@ -42,6 +48,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import {
+  acceptUndecodableBody,
   BunRequest,
   BunResponse,
   BunRouter,
@@ -1220,6 +1227,69 @@ checkEqual(
   "200 hello app.locals",
 );
 rmSync(viewsDir, { recursive: true, force: true });
+
+/* ------------------------------------------------------------------ */
+step("acceptUndecodableBody, and routesUndecodableBody()");
+
+/** A built request whose JSON body (`{`) failed to decode. */
+async function undecodable(path: string): Promise<BunRequest> {
+  return BunRequest.init(
+    new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    }),
+    FETCH_STUB_SERVER,
+    { parseBody: true },
+  );
+}
+
+/** A router built with `options`, with a `POST /r` route. */
+function undecodableRouter(options?: { acceptUndecodableBody?: boolean }) {
+  const router = new BunRouter(options);
+  router.post("/r", (req, res) => {
+    res.json({ refused: req.bodyDecodingError?.status ?? null });
+  });
+  return router;
+}
+
+const refusedRequest = await undecodable("/r");
+checkEqual(
+  "the request carries its refusal on bodyDecodingError",
+  refusedRequest.bodyDecodingError?.status,
+  400,
+);
+checkEqual(
+  "routesUndecodableBody(): unset (the default) and false answer false, true answers true",
+  [
+    undecodableRouter().routesUndecodableBody(refusedRequest),
+    undecodableRouter({
+      acceptUndecodableBody: false,
+    }).routesUndecodableBody(refusedRequest),
+    undecodableRouter({
+      acceptUndecodableBody: true,
+    }).routesUndecodableBody(refusedRequest),
+  ],
+  [false, false, true],
+);
+const markedRoute = new BunRouter();
+markedRoute.post("/r", acceptUndecodableBody(), (_req, res) => res.send("r"));
+checkEqual(
+  "…and the acceptUndecodableBody() marker opts in one route of a router that did not",
+  markedRoute.routesUndecodableBody(refusedRequest),
+  true,
+);
+// The option is for an adapter, which asks routesUndecodableBody() before
+// routing; fetch() routes every request whatever it says.
+checkEqual(
+  "fetch() routes the request with the option false, the refusal on req.bodyDecodingError",
+  await text(undecodableRouter({ acceptUndecodableBody: false }), "/r", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{",
+  }),
+  '200 {"refused":400}',
+);
 
 /* ------------------------------------------------------------------ */
 step("The exports around the router");

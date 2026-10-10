@@ -648,7 +648,8 @@ every route that did not opt in keeps the early refusal. Off by default.
 
 Examples:
 [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts),
-[`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts).
+[`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts),
+[`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/undecodable-bodies.ts).
 
 #### Adapter helpers
 
@@ -1878,7 +1879,8 @@ Each file is a standalone script whose opening comment says what it shows.
 | `03-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts) | Every constructor option |
 | `03-http-adapter` | [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts) | Not-found and error handlers, `enableCors`, `useStaticAssets` and its bare prefix, body parsers, `setTimeout` |
 | `04-request` | [`reading-a-request.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/reading-a-request.ts) | Every request property, query options, freshness, ranges, content negotiation |
-| `04-request` | [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts) | Every body-parsing option, size limits, compressed and stacked bodies, raw bodies, invalid JSON refused by the adapter and routed by `router.fetch()` |
+| `04-request` | [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts) | Every body-parsing option, size limits, compressed and stacked bodies, raw bodies, invalid JSON refused by the adapter and routed by `router.fetch()`, or by the adapter to a route that opted in with `acceptUndecodableBody` |
+| `04-request` | [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/undecodable-bodies.ts) | Which route decides whether the adapter routes a body it could not decode: nested mounts, the `acceptUndecodableBody()` marker, the first matching handler |
 | `04-request` | [`cookies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/cookies.ts) | Parsing cookies, signed cookies and secrets, JSON cookies |
 | `05-response` | [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts) | Status, every `send` body type, `json`/`jsonp`, headers, ETags, `format()`, attachments |
 | `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events, redirects |
@@ -1903,8 +1905,8 @@ Each file is a standalone script whose opening comment says what it shows.
 | `11-utilities` | [`http-helpers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/http-helpers.ts) | `etag`, `fresh`, ranges, `vary`, dates and byte sizes, cookie helpers, `accepts`, `typeIs`, `mime` |
 | `11-utilities` | [`async-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/async-control.ts) | `sleep`, `withTimeout`, `waitUntil`, `retry`, `computeBackoff`, `Mutex`, `Semaphore`, `getPort` |
 | `11-utilities` | [`errors-xml-files.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/errors-xml-files.ts) | Serialising errors, parsing XML, random bytes, unique filenames, streams to buffers |
-| `12-options` | [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts) | Tour: every `BunRouter` option and public method, `views` included |
-| `12-options` | [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/http-adapter-options.ts) | Tour: every `BunHttpAdapter` option and public method, the view helpers included |
+| `12-options` | [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts) | Tour: every `BunRouter` option and public method, `views` and `acceptUndecodableBody` included |
+| `12-options` | [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/http-adapter-options.ts) | Tour: every `BunHttpAdapter` option and public method, the view helpers and `router.acceptUndecodableBody` included |
 | `12-options` | [`request-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/request-options.ts) | Tour: every request property, body-parsing and query option |
 | `12-options` | [`response-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/response-options.ts) | Tour: every response method and option |
 | `12-options` | [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts) | Tour: every validation option, execution order, `toStandardSchema` |
