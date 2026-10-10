@@ -928,6 +928,10 @@ function quietly(run: () => void): void {
  * is consumed and starting with `prefix`. With `flushEachChunk`, every chunk
  * is flushed as it is written (server-sent events); `flush()` flushes on
  * demand (`res.flush()`).
+ *
+ * Nothing is flushed otherwise, as in the `compression` package: a short
+ * chunk can sit in the compressor's window until more input, a flush or the
+ * end of `source` pushes it out.
  */
 function zlibReadable(
   source: ReadableStream<Uint8Array>,
@@ -936,18 +940,38 @@ function zlibReadable(
   flushEachChunk: boolean,
 ): { readable: ReadableStream<Uint8Array>; flush: () => void } {
   const reader = source.getReader();
+  /** Set once `source` is done, the consumer cancelled or the engine failed. */
   let closing = false;
-  // Enqueued by the first `pull`, not `start`: on Bun 1.4.3 a chunk enqueued
-  // in `start` leaves `pull` never called, and the stream hangs.
+  /** Set once the consumer cancelled or the engine failed: nothing is wanted. */
+  let stopped = false;
+  /** Chunks enqueued so far, so `pull` can tell whether it produced any. */
+  let produced = 0;
+  // Enqueued by the first `pull`, not `start`. (This was once put down to Bun
+  // never calling `pull` after a chunk enqueued in `start`; a plain
+  // Bun.serve check shows it does. The hang was the pull that enqueued
+  // nothing, fixed below.)
   let prefix = codec.prefix;
   let settle: (() => void) | undefined;
   const ended = new Promise<void>((resolve) => {
     settle = resolve;
   });
 
+  /** Writes one chunk; a write the engine refuses after a stop is dropped. */
+  const write = (chunk: Uint8Array) =>
+    new Promise<void>((resolve, reject) => {
+      engine.write(chunk, (error) => {
+        if (error && !stopped) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+    });
+
   const readable = new ReadableStream<Uint8Array>({
     start(controller) {
       engine.on("data", (chunk: Buffer) => {
+        produced++;
         quietly(() => controller.enqueue(chunk));
       });
       engine.once("end", () => {
@@ -955,6 +979,8 @@ function zlibReadable(
         settle?.();
       });
       engine.once("error", (error: Error) => {
+        closing = true;
+        stopped = true;
         quietly(() => controller.error(error));
         reader.cancel(error).catch(() => undefined);
         settle?.();
@@ -962,31 +988,54 @@ function zlibReadable(
     },
     async pull(controller) {
       if (prefix) {
+        produced++;
         controller.enqueue(prefix);
         prefix = undefined;
       }
+      // A `pull` that returns with nothing enqueued is not called again
+      // until something is (WHATWG Streams, ReadableStreamDefaultController-
+      // CallPullIfNeeded), and zlib emits nothing for input that fits in its
+      // window. So feed it until it produces output or `source` ends: one
+      // input chunk at a time, only while the consumer wants more.
+      const before = produced;
+      try {
+        // `produced` changes in the engine's "data" listener and `closing` in
+        // its "error" one, so both are read afresh on every pass.
+        for (;;) {
+          if (closing || produced !== before) {
+            break;
+          }
+          const { done, value } = await reader.read();
+          if (stopped) {
+            return;
+          }
+          if (done) {
+            closing = true;
+            engine.end();
+            break;
+          }
+          await write(value);
+          if (flushEachChunk && !stopped) {
+            await new Promise<void>((resolve) => {
+              engine.flush(codec.flushKind, resolve);
+            });
+          }
+        }
+      } catch (error) {
+        // `source` or the engine failed: release the engine, fail the body.
+        closing = true;
+        stopped = true;
+        engine.destroy();
+        settle?.();
+        throw error;
+      }
       if (closing) {
         await ended;
-        return;
-      }
-      const { done, value } = await reader.read();
-      if (done) {
-        closing = true;
-        engine.end();
-        await ended;
-        return;
-      }
-      await new Promise<void>((resolve, reject) => {
-        engine.write(value, (error) => (error ? reject(error) : resolve()));
-      });
-      if (flushEachChunk) {
-        await new Promise<void>((resolve) => {
-          engine.flush(codec.flushKind, resolve);
-        });
       }
     },
     async cancel(reason) {
       closing = true;
+      stopped = true;
       engine.destroy();
       settle?.();
       await reader.cancel(reason);
