@@ -145,7 +145,7 @@ key-value layer `@nestjs/cache-manager` builds on), so existing
 | File, SQLite drivers | ~4.5 d | bun-cache | core |
 | SQL driver (Postgres, MySQL, MariaDB) | ~4 d | bun-cache, bun-jobs agent reviews | core |
 | Redis, MongoDB drivers | ~5 d | bun-cache, bun-jobs agent reviews | core |
-| S3 driver, MinIO in `setup-databases.ts` | ~3.5 d | bun-cache | core |
+| S3 driver, SeaweedFS in `setup-databases.ts` | ~3.5 d | bun-cache | core |
 | Multi-tier and the bus | ~4 d | bun-cache | core, one networked driver |
 | **The package** | **~27 d** | | |
 | `cacheControl()`, transform ordering (bun-common) | ~1.5 d | bun-common agent | — |
@@ -1242,7 +1242,7 @@ stub [M `s3-wire.ts`]. A real server's side is from the docs, marked [W].
 - AWS S3 has given strong read-after-write consistency since December 2020
   [W: AWS S3 docs, "Amazon S3 data consistency model"].
 - Other S3-compatible stores differ [U per vendor]. The README lists the
-  ones tested (MinIO in CI, §13.2) and warns about the rest.
+  ones tested (SeaweedFS in CI, §13.2) and warns about the rest.
 - Every `get` is a billed request, and listing costs more than reading
   [W: AWS pricing page; check at implementation]. S3 suits large values,
   long TTLs and few reads per key. It is a poor L2 for hot small keys without
@@ -1956,18 +1956,27 @@ now" idea is already folded into the section named.
   - S3 uses the bucket `bun-cache-test`.
   - Each run uses namespaces carrying its pid and timestamp, and deletes
     exactly those, never a prefix sweep (the shared-test-data rule).
-- **S3: MinIO in `setup-databases.ts`** (PR-C7):
-  - **Docker only.** It runs `minio/minio` on `127.0.0.1:9000` with
-    `--ulimit nofile=65536`, as the other containers have.
-  - **The bucket.** It is created with `docker exec <c> mc mb`, because Bun's
+- **S3: SeaweedFS in `setup-databases.ts`** (PR-C7), the one test server
+  shared with bun-jobs (`bun-jobs-s3-driver.md` §7, PR-S0, whose proposed
+  owner is the bun-jobs agent; PR-C7 reuses it). MinIO was the first choice, but its images could not be
+  pulled and its repository is archived [M there].
+  - **Docker only.** A `dockerOnly` plan entry, as MySQL's is
+    (`scripts/setup-databases.ts:809`, `:1898`). It runs
+    `chrislusf/seaweedfs:4.48`, pinned, with `server -s3`, as `bun-jobs-s3`
+    on `127.0.0.1:8333` with `--ulimit nofile=65536:65536`, as the other
+    containers have.
+  - **The bucket.** It is created with a signed `PUT /<bucket>`, because Bun's
     `S3Client` cannot create buckets: no such method [M `s3-wire.ts`].
-  - **Snap Docker.** Docker here is the snap, which cannot write `/tmp`, and
-    captured `docker` output is silently empty unless piped through `| cat`
-    (CLAUDE.md, and the team's memory). Every `docker` call in the script
-    already pipes, and the MinIO steps must too.
-  - **What it prints.** `--dry-run` prints `BUN_CACHE_TEST_S3_URL=s3://minio:minio123@127.0.0.1:9000/bun-cache-test`.
-    The test helper maps that onto `S3Client` options (`endpoint`, `bucket`,
-    keys, `virtualHostedStyle: false`).
+  - **Snap Docker.** *Corrected:* the "pipe through `| cat`" caveat
+    (CLAUDE.md) is about a shell's captured output. The script's `run()`
+    (`scripts/setup-databases.ts:317-340`) captures through `Bun.spawn`
+    pipes, and it uses no bind mounts, so the caveat does not apply there.
+    The one rule is to keep the server's data off `/tmp`, which snap Docker
+    cannot read or write.
+  - **What it prints.** `--dry-run` prints `BUN_JOBS_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-jobs-test`;
+    `BUN_CACHE_TEST_S3_URL` falls back to it, with its own bucket
+    `bun-cache-test`. The test helper maps that onto `S3Client` options
+    (`endpoint`, `bucket`, keys, `virtualHostedStyle: false`).
   - **Ownership.** The script belongs to no package, so the PR tells the
     agents whose suites use it (agentic-setup).
 - **Heavy runs.** bun-cache's full suite with database URLs runs through the
@@ -2290,7 +2299,7 @@ and the last PR of each feature adds it to the playground.
 | **PR-C4** SQL | Postgres, MySQL and MariaDB through Bun's `SQL`; `LISTEN`/`NOTIFY` bus; polled bus elsewhere; `unlogged`; `syncSchema()` returning `[]`; the copied connection helpers with the drift test. The bun-jobs agent reviews | PR-C1 | ~4 d |
 | **PR-C5** Redis | The Redis driver: Lua scripts, pub/sub bus, `cluster`. The bun-jobs agent reviews | PR-C1 | ~2.5 d |
 | **PR-C6** MongoDB | The MongoDB driver: TTL indexes, change-stream or tailable-cursor bus, `RETIRED_INDEXES`. The bun-jobs agent reviews | PR-C1 | ~2.5 d |
-| **PR-C7** S3 | The S3 driver (stamp mode, `Content-Type` expiry, sweeper, lifecycle docs); MinIO in `setup-databases.ts`; the conditional-`PUT`-through-`fetch` spike against MinIO (§7.8) | PR-C2 (stamp mode) | ~3.5 d |
+| **PR-C7** S3 | The S3 driver (stamp mode, `Content-Type` expiry, sweeper, lifecycle docs); SeaweedFS in `setup-databases.ts` (shared with bun-jobs' PR-S0); the conditional-`PUT`-through-`fetch` question, since answered by `bun-jobs-s3-driver.md` §3 (§7.8) | PR-C2 (stamp mode) | ~3.5 d |
 | **PR-T1** multi-tier | L1 (values, `clone`), the bus wiring and gap flush, backfill keeping expiry, `{ tier: "l2" }`, `redisBus` and `pgBus` (R13, R14) | PR-C1 and one bus driver (C4 or C5) | ~4 d |
 | **PR-B1** bench | The bench package, contenders, baselines, `--compare` | the drivers it measures | ~3 d |
 | *PR-C1b* | soft purge (`mode: "stale"`, R21) | PR-C1 | *~1 d, later* |
