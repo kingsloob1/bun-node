@@ -4984,10 +4984,12 @@ export class BunRequest<
    * parsed while the request was built is read before any middleware, so the
    * adapter passes this error to its error handling (body-parser's
    * `next(err)`), answering with its status instead of routing a request
-   * whose body is missing. A declared empty body on a GET or HEAD with no
-   * body stream (a served `Content-Length: 0`) is checked on the first read
-   * of the body instead (see {@link EMPTY_BODY_UNSETTLED}), so its refusal
-   * appears here only after that read, and the request is routed.
+   * whose body is missing — unless the route that would handle it opted in
+   * (the router option `acceptUndecodableBody`), which then reads it here. A
+   * declared empty body on a GET or HEAD with no body stream (a served
+   * `Content-Length: 0`) is checked on the first read of the body instead
+   * (see {@link EMPTY_BODY_UNSETTLED}), so its refusal appears here only
+   * after that read, and the request is routed.
    */
   get bodyDecodingError(): BunHttpClientError | undefined {
     return this.#bodyDecodingError;

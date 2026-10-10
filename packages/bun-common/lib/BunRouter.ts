@@ -303,7 +303,75 @@ type RouteWithGroup = Route & {
    * path is `req.baseUrl`. `null` for a route outside any mount.
    */
   baseUrlRegexp?: RegExp | null;
+  /**
+   * Whether an adapter routes a request whose body could not be decoded to
+   * this route (see {@link BunRouter.routesUndecodableBody}): `true` for a
+   * route carrying the {@link acceptUndecodableBody} marker, else the
+   * `acceptUndecodableBody` option of the innermost router that set one.
+   * `undefined` while none has, which an adapter reads as a refusal.
+   */
+  acceptUndecodableBody?: boolean;
+  /**
+   * How many router mounts (`use(router)`, `group(path, router)`,
+   * `domain(host, router)`) the route was flattened in through: `0` (or
+   * absent) for a route registered on this router itself. Picks the innermost
+   * router when no route handler matches (see
+   * {@link BunRouter.routesUndecodableBody}).
+   */
+  mountDepth?: number;
 };
+
+/** Tags the middleware {@link acceptUndecodableBody} returns. */
+const UNDECODABLE_BODY_MARK: unique symbol = Symbol.for(
+  "@kingsleyweb/bun-common.acceptUndecodableBody",
+);
+
+/** A pass-through middleware tagged by {@link acceptUndecodableBody}. */
+type UndecodableBodyMarker = RouterHandler & {
+  [UNDECODABLE_BODY_MARK]?: true;
+};
+
+/**
+ * Opts one route in to receiving a request whose body could not be decoded,
+ * which a `BunHttpAdapter` (or bun-nest's adapter) otherwise refuses before
+ * routing. It goes among the route's callbacks:
+ *
+ * ```ts
+ * router.post("/hooks", acceptUndecodableBody(), (req, res) => {
+ *   if (req.bodyDecodingError) return res.status(400).json({ code: "BAD_BODY" });
+ *   // …
+ * });
+ * ```
+ *
+ * The request is then routed as `router.fetch()` routes every request:
+ * `req.body` unset, the refusal on `req.bodyDecodingError` (`415` for a
+ * `Content-Encoding` that cannot be decoded, `400` for a corrupt stream or a
+ * JSON body that does not parse). It is the per-route form of the router
+ * option `acceptUndecodableBody: true`, and wins over a router's `false`. A
+ * body over its cap is still refused with `413`. See
+ * {@link BunRouter.routesUndecodableBody} for which route decides.
+ *
+ * The middleware itself only calls `next()`.
+ */
+export function acceptUndecodableBody(): RouterHandler {
+  const marker: UndecodableBodyMarker = (_req, _res, next) => next();
+  marker[UNDECODABLE_BODY_MARK] = true;
+  return marker;
+}
+
+/** Whether a route's `callbacks` carry an {@link acceptUndecodableBody} marker. */
+function hasUndecodableBodyMarker(callbacks: unknown): boolean {
+  const list = Array.isArray(callbacks) ? callbacks : [callbacks];
+  for (const callback of list) {
+    if (
+      isFunction(callback) &&
+      (callback as UndecodableBodyMarker)[UNDECODABLE_BODY_MARK] === true
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * `regexp` with its case-insensitive flag matching `caseSensitive`: `i` added
@@ -876,6 +944,20 @@ export class BunRouter<
    */
   #hostScoped = false;
 
+  /**
+   * Whether this router, or any route registered on it, opted in to an
+   * undecodable body (`acceptUndecodableBody`): while `false`,
+   * {@link routesUndecodableBody} answers without matching anything.
+   */
+  #anyUndecodableBodyOptIn = false;
+
+  /**
+   * The route being flattened in from another router, while
+   * {@link mergeRoute} registers its copy: its `acceptUndecodableBody` and
+   * `mountDepth` carry over. Consumed (reset) by {@link setRoute}.
+   */
+  #pendingFlattenSource: RouteWithGroup | undefined = undefined;
+
   /** Allocates a fresh group id for the next `use(subRouter)` mount. */
   #nextRouterGroupId = 1;
   /**
@@ -906,6 +988,25 @@ export class BunRouter<
 
   constructor(
     private localOptions?: {
+      /**
+       * Whether a `BunHttpAdapter` (or bun-nest's adapter) routes a request
+       * whose body could not be decoded to this router's routes — `415` for a
+       * `Content-Encoding` it cannot decode, `400` for a corrupt stream or
+       * JSON that does not parse — instead of refusing it before routing.
+       * Routed, the request carries `req.body` unset and the refusal on
+       * `req.bodyDecodingError`, as {@link BunRouter.fetch} routes every
+       * request, so a route can authorize the caller before judging the body.
+       *
+       * Defaults to unset: the router does not decide, and its routes take
+       * the setting of the router they are mounted in (`use(router)`,
+       * `group()`, `domain()`); unset all the way up, the adapter refuses, as
+       * Express's global `json()` parser does. `false` refuses even inside an
+       * opted-in router. The innermost router that sets it decides, and a
+       * route's own {@link acceptUndecodableBody} marker wins over both. A
+       * body over its cap (`413`) is refused regardless. Read at
+       * registration: set it before adding routes.
+       */
+      acceptUndecodableBody?: boolean;
       /**
        * The {@link BunWebSocket} that {@link BunRouter.ws} registers WebSocket
        * routes on. {@link BunRouter.setBunWebSocket} takes precedence over it.
@@ -989,6 +1090,8 @@ export class BunRouter<
         : undefined;
 
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
+    this.#anyUndecodableBodyOptIn =
+      localOptions?.acceptUndecodableBody === true;
   }
 
   /**
@@ -1107,6 +1210,8 @@ export class BunRouter<
     // cannot leak it onto the next route registered.
     const isEndpoint = this.#pendingEndpoint;
     this.#pendingEndpoint = false;
+    const flattenSource = this.#pendingFlattenSource;
+    this.#pendingFlattenSource = undefined;
 
     // Express 5 catch-all syntax (`*name` / `{*name}`) → routejs's `*`.
     // Idempotent — non-catch-all paths pass through unchanged. The names are
@@ -1169,6 +1274,22 @@ export class BunRouter<
     // treat them as route handlers, not `use` middleware.
     route.isEndpoint = isEndpoint;
     route.wildcardNames = wildcardNames;
+    // Whether an adapter routes an undecodable body here: the route's own
+    // marker, else what the innermost router that decided said (the source
+    // route carries it across a flatten), else this router's option.
+    const acceptsUndecodable = hasUndecodableBodyMarker(route.callbacks)
+      ? true
+      : (flattenSource?.acceptUndecodableBody ??
+        this.localOptions?.acceptUndecodableBody);
+    if (acceptsUndecodable !== undefined) {
+      route.acceptUndecodableBody = acceptsUndecodable;
+      if (acceptsUndecodable) {
+        this.#anyUndecodableBodyOptIn = true;
+      }
+    }
+    if (flattenSource !== undefined) {
+      route.mountDepth = (flattenSource.mountDepth ?? 0) + 1;
+    }
     if (route.hostRegexp) {
       this.#hostScoped = true;
     }
@@ -1218,6 +1339,8 @@ export class BunRouter<
         // flatten so specificity ordering and param binding still treat it
         // correctly.
         this.#pendingEndpoint = isEndpointRoute(route);
+        // …and its undecodable-body setting and mount depth.
+        this.#pendingFlattenSource = route as RouteWithGroup;
         this.setRoute(opts);
       });
     } else if (Array.isArray(option.callbacks)) {
@@ -1225,6 +1348,7 @@ export class BunRouter<
         if (route instanceof RouteClass) {
           const opts = this.getFormattedSetRouteOption(option, route);
           this.#pendingEndpoint = isEndpointRoute(route);
+          this.#pendingFlattenSource = route as RouteWithGroup;
           this.setRoute(opts);
         } else if (Array.isArray(route) || route instanceof Router) {
           this.mergeRoute({
@@ -4615,7 +4739,9 @@ export class BunRouter<
    * one can authorize the caller before saying anything about the body
    * (bun-jobs' management API answers `400 INVALID_JSON` only then). The
    * adapters instead refuse it before routing, as Express's global `json()`
-   * parser does. Responses render through {@link views}.
+   * parser does, except for a route that opted in (`acceptUndecodableBody`,
+   * see {@link routesUndecodableBody}). Responses render through
+   * {@link views}.
    *
    * @example
    * ```ts
@@ -4880,6 +5006,62 @@ export class BunRouter<
       ],
       orders: ["asc", "desc", "asc", "asc", "desc", "desc"],
     };
+  }
+
+  /**
+   * Whether a request whose body could not be decoded (it carries
+   * `req.bodyDecodingError`) is routed, or refused before routing as
+   * Express's global `json()` parser refuses it. The adapters ask this, and
+   * only for such a request; {@link fetch} routes every request regardless.
+   *
+   * The route that would handle the request decides, by its
+   * `acceptUndecodableBody` setting (the route's own
+   * {@link acceptUndecodableBody} marker, else the innermost router that set
+   * the option, else refused):
+   *
+   * 1. the first route handler (a verb or `all` route) the request matches,
+   *    in the order the pipeline would run them;
+   * 2. with none, the middleware of the most deeply mounted router the
+   *    request reaches (the first such layer at that depth) — a mounted
+   *    router's own not-found middleware, say. Error handlers do not count;
+   * 3. with nothing matched, this router's own option.
+   *
+   * Middleware ahead of an opted-in route still runs, with `req.body` unset.
+   * Matching shares the pipeline's cache, so the request is matched once.
+   * Answers `false` at once while nothing on this router opted in.
+   *
+   * @param req The request, built (`BunRequest.init`) but not yet routed.
+   */
+  routesUndecodableBody(req: BunRequest): boolean {
+    if (!this.#anyUndecodableBodyOptIn) {
+      return false;
+    }
+    const routes = this.routes() as RouteWithGroup[];
+    let deepest: RouteWithGroup | undefined;
+    const layers = this.getMatchedLayers({
+      requestHost: req.host,
+      requestMethod: req.method,
+      requestUrl: req.originalUrl,
+      requestPath: req.path,
+    });
+    for (const layer of layers) {
+      if (layer.isErrorHandler) {
+        continue;
+      }
+      const route = routes[layer.routeIndex];
+      if (layer.isRouteHandler) {
+        return route.acceptUndecodableBody === true;
+      }
+      if (
+        deepest === undefined ||
+        (route.mountDepth ?? 0) > (deepest.mountDepth ?? 0)
+      ) {
+        deepest = route;
+      }
+    }
+    return deepest === undefined
+      ? this.localOptions?.acceptUndecodableBody === true
+      : deepest.acceptUndecodableBody === true;
   }
 
   /**

@@ -624,7 +624,15 @@ Errors reach one of three layers, depending on where they are raised.
    `@nestjs/platform-express`. (On a GET or HEAD, a declared empty body with
    no stream — Bun serves `Content-Length: 0` that way — is checked when the
    body is first read, by the body parser, rather than before routing; its
-   `415` reaches the same handlers.) Error handlers run as Express error
+   `415` reaches the same handlers.) A body declared JSON that does not
+   parse is refused here too (`400`), unless its route opted in with the
+   router option `acceptUndecodableBody`:
+   `new BunHttpAdapter(0, { router: { acceptUndecodableBody: true } })` for
+   every controller, or a bun-common router built with it and mounted with
+   `adapter.use()`. Such a request is routed with the refusal on
+   `req.bodyDecodingError`, so a guard runs before anything is said about the
+   body. A body over its cap stays a `413` before routing; bun-common's
+   README says which route decides. Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
    handling with a `404`, and a return value is ignored.
