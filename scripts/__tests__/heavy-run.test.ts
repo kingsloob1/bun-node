@@ -1048,6 +1048,50 @@ describe("heavy-run.sh: history and keys", () => {
   );
 });
 
+describe("heavy-run.sh: the command's environment", () => {
+  /**
+   * Names the wrapper assigns for itself: a caller exporting them for its own
+   * command must still see its own values there.
+   */
+  const CALLER = {
+    TAG: "the-callers-tag",
+    DIR: "/the/callers/dir",
+    MODE: "production",
+    now: "the-callers-now",
+  };
+  /** Prints the caller's names, HEAVY_SLOT and HEAVY_WAITED, one per line, to $OUT. */
+  const PRINT =
+    'printf "%s\\n" "$TAG" "$DIR" "$MODE" "$now" "$HEAVY_SLOT" "$HEAVY_WAITED" >"$OUT"';
+
+  for (const [mode, slot] of [
+    ["slot", "1"],
+    ["direct", "direct"],
+  ] as const) {
+    scenario(
+      `the command sees the caller's variables, not the wrapper's (HEAVY_MODE=${mode})`,
+      async (box) => {
+        const out = join(box.dir, `env-${mode}.txt`);
+        const run = box.run(["bash", "-c", PRINT], {
+          env: { ...CALLER, OUT: out, HEAVY_MODE: mode },
+        });
+        expect((await run.done).code).toBe(0);
+        const [tag, dir, caller, now, heavySlot, waited] = readFileSync(
+          out,
+          "utf8",
+        ).split("\n");
+        expect([tag, dir, caller, now]).toEqual(Object.values(CALLER));
+        expect(heavySlot).toBe(slot);
+        expect(waited).toMatch(/^\d+$/);
+      },
+    );
+  }
+
+  scenario("a command that is not found still exits 127", async (box) => {
+    const run = box.run(["no-such-command-for-heavy-run-test"]);
+    expect((await run.done).code).toBe(127);
+  });
+});
+
 describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
   /** A light job: well under 60 s and 2 cores. */
   const LIGHT = [2, 2, 3].map((seconds) => ({ seconds, cores: 0.3 }));

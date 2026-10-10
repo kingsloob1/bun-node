@@ -113,6 +113,19 @@
 # here it drops the lock while the command runs.
 set -u
 
+# The caller's environment as it came in, read before this script assigns
+# anything. The command runs with exactly this, plus HEAVY_SLOT and
+# HEAVY_WAITED, so none of the wrapper's own variables can reach it: bash keeps
+# a name exported when it is reassigned, so a caller who exported DIR, MODE or
+# TAG for its own command used to hand that command the wrapper's value
+# instead. `_` is bash's, not the caller's. (`env` takes a command's first
+# word containing `=` for a variable, so such a command cannot be wrapped.)
+HEAVY_CALLER_ENV_=()
+while IFS= read -r -d '' heavy_var_; do
+  [[ $heavy_var_ == _=* ]] || HEAVY_CALLER_ENV_+=("$heavy_var_")
+done < <(env -0)
+unset heavy_var_
+
 DIR=${HEAVY_DIR:-/tmp/claude-1000}
 HISTORY="$DIR/bun-node-heavy-history.tsv"
 
@@ -349,7 +362,7 @@ run_job() {
   read -r l0 _ <"$LOADAVG"
   child_ticks; c0=$REPLY
   t0=${EPOCHREALTIME//[!0-9]/}
-  "$@"
+  env -i "${HEAVY_CALLER_ENV_[@]}" HEAVY_SLOT="$HEAVY_SLOT" HEAVY_WAITED="$HEAVY_WAITED" "$@"
   rc=$?
   t1=${EPOCHREALTIME//[!0-9]/}
   child_ticks; c1=$REPLY
