@@ -11,6 +11,14 @@
  *
  * - Responses here are built directly — `new BunResponse(req, { etag })` —
  *   and read back with `getNativeResponse()`, the way the adapter does.
+ * - The constructor's other option, `views`, is the `BunViews` that
+ *   `render()` renders through. Without it a response renders through a
+ *   default one, with no engine registered and no default engine.
+ *   bun-common's own adapter and `router.fetch()` pass none; only bun-nest's
+ *   adapter does. `05-response/views.ts` covers views in full.
+ * - `redirect()` is Express 5's (a body chosen by `Accept`, `Vary`,
+ *   `Content-Length`, an encoded `Location`), and `clearCookie()` always
+ *   expires the cookie at the epoch, dropping a `maxAge` or `expires`.
  * - The files `sendFile()` serves are written to a temporary directory and
  *   removed at the end. `sendFile(path)` resolves `path` under `root`.
  * - `res.cookie()`'s `maxAge` is milliseconds; the header gets seconds.
@@ -22,7 +30,11 @@
  * - Checks marked `Known issue` assert what the library documents where it
  *   currently does something else; they fail until the library is fixed.
  */
-import type { BunServer, EtagOption } from "@kingsleyweb/bun-common";
+import type {
+  BunServer,
+  EtagOption,
+  RenderCallback,
+} from "@kingsleyweb/bun-common";
 import type { Writable } from "node:stream";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -33,6 +45,7 @@ import {
   BunHttpAdapter,
   BunRequest,
   BunResponse,
+  BunViews,
   compression,
   etag,
   FETCH_STUB_SERVER,
@@ -868,10 +881,18 @@ checkEqual(
   [302, "http://localhost/next"],
 );
 checkEqual(
-  "a status",
+  "a status after the URL (the older form)",
   (await native((await makeRes()).redirect("http://localhost/next", 301)))
     .status,
   301,
+);
+const statusFirst = await native(
+  (await makeRes()).redirect(308, "http://localhost/next"),
+);
+checkEqual(
+  "a status before the URL, as Express 5's redirect(status, url)",
+  [statusFirst.status, statusFirst.headers.get("Location")],
+  [308, "http://localhost/next"],
 );
 checkEqual(
   "a ResponseInit",
@@ -882,6 +903,160 @@ checkEqual(
   ).status,
   308,
 );
+
+/** The redirect of `url` for an `Accept`, read back as plain values. */
+async function redirectFor(
+  accept: string,
+  url = "/next step",
+  etagOption?: EtagOption,
+): Promise<(string | number | null)[]> {
+  const res = await makeRes({ Accept: accept }, etagOption);
+  res.set("X-Earlier", "kept");
+  const response = await native(res.redirect(url));
+  return [
+    response.status,
+    response.headers.get("Location"),
+    response.headers.get("Content-Type"),
+    response.headers.get("Content-Length"),
+    response.headers.get("Vary"),
+    response.headers.get("X-Earlier"),
+    await response.text(),
+  ];
+}
+
+checkEqual(
+  "Accept: text/plain — Express's text body, Vary and Content-Length",
+  await redirectFor("text/plain"),
+  [
+    302,
+    "/next%20step",
+    "text/plain; charset=utf-8",
+    String("Found. Redirecting to /next%20step".length),
+    "Accept",
+    "kept",
+    "Found. Redirecting to /next%20step",
+  ],
+);
+checkEqual(
+  "Accept: text/html — the same in a <p>, the URL HTML-escaped",
+  (await redirectFor("text/html", "/a?x=1&y=<2>")).slice(1),
+  [
+    "/a?x=1&y=%3C2%3E",
+    "text/html; charset=utf-8",
+    String("<p>Found. Redirecting to /a?x=1&amp;y=%3C2%3E</p>".length),
+    "Accept",
+    "kept",
+    "<p>Found. Redirecting to /a?x=1&amp;y=%3C2%3E</p>",
+  ],
+);
+checkEqual(
+  "Accept: application/json — no body, Content-Length 0",
+  (await redirectFor("application/json")).slice(2),
+  [null, "0", "Accept", "kept", ""],
+);
+checkEqual(
+  "raw characters are encoded, an existing escape is not encoded twice",
+  (await redirectFor("text/plain", "/café?q=a%20b"))[1],
+  "/caf%C3%A9?q=a%20b",
+);
+const taggedRedirect = await native(
+  (await makeRes({}, true)).redirect("/next"),
+);
+checkEqual(
+  "a body, but no ETag, even with etag: true",
+  [taggedRedirect.headers.get("ETag"), await taggedRedirect.text()],
+  [null, "Found. Redirecting to /next"],
+);
+const headRedirect = new BunResponse(
+  await BunRequest.init(
+    new Request("http://localhost/", { method: "HEAD" }),
+    FETCH_STUB_SERVER,
+    { parseBody: false },
+  ),
+);
+const headNative = await native(headRedirect.redirect("/next"));
+checkEqual(
+  "HEAD: the GET's Content-Length, no body",
+  [headNative.headers.get("Content-Length"), await headNative.text()],
+  [String("Found. Redirecting to /next".length), ""],
+);
+
+/* ------------------------------------------------------------------ */
+step("render() and the views option");
+
+const viewDir = await mkdtemp(join(tmpdir(), "bun-common-response-views-"));
+await Bun.write(join(viewDir, "card.tpl"), "<b>{{title}}</b> by {{by}}");
+
+/** A one-line engine: `{{key}}` is replaced by the local `key`. */
+function tplEngine(
+  path: string,
+  options: Record<string, unknown>,
+  callback: RenderCallback,
+): void {
+  const fill = (_match: string, key: string): string =>
+    String(options[key] ?? "");
+  Bun.file(path)
+    .text()
+    .then((text) => callback(null, text.replace(/\{\{(\w+)\}\}/g, fill)))
+    .catch((error: Error) => callback(error));
+}
+
+const views = new BunViews();
+views.root = viewDir;
+views.engine("tpl", tplEngine);
+views.locals.by = "app.locals";
+
+/** A response for a GET, rendering through `views`. */
+async function viewRes(): Promise<BunResponse> {
+  return new BunResponse(await makeReq(), { views });
+}
+
+const cardRes = await viewRes();
+cardRes.locals.by = "res.locals";
+cardRes.render("card.tpl", { title: "Hi" });
+const card = await native(cardRes);
+checkEqual(
+  "views: render() renders through the views given — engine, root, locals",
+  [card.status, card.headers.get("Content-Type"), await card.text()],
+  [200, "text/html; charset=utf-8", "<b>Hi</b> by res.locals"],
+);
+const typedRes = await viewRes();
+typedRes.type("text/plain").render("card.tpl", { title: "T" });
+checkEqual(
+  "a Content-Type set before render() is kept",
+  (await native(typedRes)).headers.get("Content-Type"),
+  "text/plain",
+);
+const quietRes = await viewRes();
+const viaCallback = await new Promise<[string | null, string | undefined]>(
+  (resolve) => {
+    quietRes.render("card.tpl", { title: "Cb" }, (err, html) => {
+      resolve([err?.message ?? null, html]);
+    });
+  },
+);
+checkEqual(
+  "render(view, locals, callback): the HTML goes to the callback, nothing is sent",
+  [...viaCallback, quietRes.headersSent],
+  [null, "<b>Cb</b> by app.locals", false],
+);
+const lostRes = await viewRes();
+lostRes.render("absent.tpl");
+const lost = await native(lostRes);
+checkEqual(
+  "a missing view with no callback and no pipeline: 500",
+  [lost.status, await lost.text()],
+  [500, ""],
+);
+await checkRejects(
+  "without views: a default BunViews, which has no default engine",
+  async () => (await makeRes()).render("card"),
+  {
+    message:
+      /^No default engine was specified and no extension was provided\.$/,
+  },
+);
+await rm(viewDir, { recursive: true, force: true });
 
 /* ------------------------------------------------------------------ */
 step("cookie() and clearCookie(): every option");
@@ -977,6 +1152,16 @@ cleared.clearCookie("gone", { path: "/account", domain: "example.com" });
 checkEqual("clearCookie()", cleared.getHeader("Set-Cookie"), [
   "gone=; Domain=example.com; Path=/account; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax",
 ]);
+const clearedMaxAge = await makeRes();
+clearedMaxAge.clearCookie("gone", {
+  maxAge: 60_000,
+  expires: new Date(Date.UTC(2031, 0, 28)),
+});
+checkEqual(
+  "clearCookie() drops maxAge and expires, as Express 5: Expires is the epoch",
+  clearedMaxAge.getHeader("Set-Cookie"),
+  ["gone=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"],
+);
 const both = await makeRes();
 both.cookie("a", "1").cookie("b", "2");
 checkEqual(

@@ -290,6 +290,14 @@ checkEqual(
   (await hosted.fetch(new Request("http://other.example.test/where"))).status,
   404,
 );
+const withPort = await hosted.fetch(
+  new Request("http://api.example.test:8080/where"),
+);
+checkEqual(
+  "…matched against the hostname, so a port in Host still matches",
+  [withPort.status, await withPort.text()],
+  [200, "api.example.test"],
+);
 
 const sensitive = new BunRouter({ caseSensitive: true });
 sensitive.get("/Users", says("matched"));

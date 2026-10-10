@@ -25,8 +25,14 @@
  * - Once a response has ended (`end()`, or any `send()`), `write()` writes
  *   nothing: it answers `false` and emits `ERR_STREAM_WRITE_AFTER_END`, as
  *   Node's `ServerResponse` does.
- * - `redirect()` builds a fresh `Response`, so headers set earlier on `res`
- *   are not carried onto it.
+ * - `redirect([status,] url)` is Express 5's: `Location` is the URL
+ *   percent-encoded, the status defaults to `302`, and the body follows
+ *   `Accept` — `Found. Redirecting to <url>` as `text/plain`, the same in a
+ *   `<p>` as `text/html`, or empty when neither is acceptable (a JSON
+ *   client) — with `Vary: Accept` and its `Content-Length`. Headers set
+ *   earlier on `res` are kept. `redirect(url, status)` still works; only
+ *   `redirect(url, init)` with a `ResponseInit` builds Bun's own
+ *   `Response.redirect()`, which keeps no earlier header and has no body.
  * - A stream's headers go out as soon as it opens: an async handler that
  *   writes and then awaits does not hold its first chunk back. An open
  *   stream is never cut short by the adapter's request timeout.
@@ -305,25 +311,98 @@ show("interval cleared on res close");
 await adapter.close();
 
 /* ------------------------------------------------------------------ */
-step("redirect(): statuses and a ResponseInit");
+step("redirect(): Express 5's body, statuses and a ResponseInit");
 
 router.get("/old", (_req, res) => {
-  res.redirect("http://localhost/new");
+  res.set("X-Trace", "kept");
+  res.redirect("/new place?q=ü");
 });
 router.get("/moved", (_req, res) => {
-  res.redirect("http://localhost/new", 301);
+  res.redirect(301, "/new");
+});
+router.get("/url-first", (_req, res) => {
+  res.redirect("/new", 307);
 });
 router.get("/temporary", (_req, res) => {
+  res.set("X-Trace", "dropped");
   res.redirect("http://localhost/new", { status: 307 });
 });
 
-for (const path of ["/old", "/moved", "/temporary"]) {
-  const response = await router.fetch(path);
-  show(path, {
-    status: response.status,
-    location: response.headers.get("Location"),
+/**
+ * Status, Location, Content-Type, Content-Length, Vary, X-Trace and the body
+ * of `path`, asked with `accept` (none when undefined) and `method`.
+ */
+async function redirected(
+  path: string,
+  accept?: string,
+  method = "GET",
+): Promise<(string | number | null)[]> {
+  const response = await router.fetch(path, {
+    method,
+    headers: accept === undefined ? {} : { Accept: accept },
   });
+  return [
+    response.status,
+    response.headers.get("Location"),
+    response.headers.get("Content-Type"),
+    response.headers.get("Content-Length"),
+    response.headers.get("Vary"),
+    response.headers.get("X-Trace"),
+    await response.text(),
+  ];
 }
+
+const plainText = "Found. Redirecting to /new%20place?q=%C3%BC";
+checkEqual(
+  "redirect(url): 302, Location percent-encoded, a text body for a plain client",
+  await redirected("/old"),
+  [
+    302,
+    "/new%20place?q=%C3%BC",
+    "text/plain; charset=utf-8",
+    String(plainText.length),
+    "Accept",
+    "kept",
+    plainText,
+  ],
+);
+checkEqual(
+  "…the same in a <p> for a browser (Accept: text/html)",
+  (await redirected("/old", "text/html")).slice(2),
+  [
+    "text/html; charset=utf-8",
+    String(plainText.length + "<p></p>".length),
+    "Accept",
+    "kept",
+    `<p>${plainText}</p>`,
+  ],
+);
+checkEqual(
+  "…and no body, Content-Length 0, for a JSON client",
+  (await redirected("/old", "application/json")).slice(2),
+  [null, "0", "Accept", "kept", ""],
+);
+checkEqual(
+  "…HEAD: the GET's headers, no body",
+  (await redirected("/old", undefined, "HEAD")).slice(3),
+  [String(plainText.length), "Accept", "kept", ""],
+);
+const moved = await redirected("/moved");
+checkEqual(
+  "redirect(301, url): the status first, as in Express 5",
+  [moved[0], moved[1], moved[6]],
+  [301, "/new", "Moved Permanently. Redirecting to /new"],
+);
+checkEqual(
+  "redirect(url, 307): the URL first still works",
+  (await redirected("/url-first")).slice(0, 2),
+  [307, "/new"],
+);
+checkEqual(
+  "redirect(url, { status }): Bun's Response.redirect — no earlier header, no body",
+  await redirected("/temporary"),
+  [307, "http://localhost/new", null, null, null, null, ""],
+);
 
 /* ------------------------------------------------------------------ */
 step("sendFile() from a temporary file");

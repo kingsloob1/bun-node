@@ -57,8 +57,10 @@
  *   understates the body is still a 413, and a served request and
  *   `adapter.fetch()` answer alike.
  * - Invalid JSON in a body declared JSON (`application/json`, `+json`) is a
- *   400, as body-parser answers it: `type: "entity.parse.failed"`, the text
- *   in `err.body`, recorded as `req.bodyDecodingError`. Read while the
+ *   400, as body-parser answers it: a `SyntaxError` carrying `status` and
+ *   `statusCode` 400, `expose: true`, `type: "entity.parse.failed"` and the
+ *   text in `err.body`, recorded as `req.bodyDecodingError`. Unhandled, the
+ *   adapter answers it with its HTML error page (`Bad Request`). Read while the
  *   request is built, it fails before routing and reaches `setErrorHandler`;
  *   read inside the pipeline (`deferBody` with `requestParsing()`), it goes
  *   to `next(err)`. A body with no `Content-Type` is only *tried* as JSON.
@@ -1490,6 +1492,8 @@ strict.setErrorHandler(((error, req, res, _next) => {
     body: string;
   };
   res.status(parseError.status).json({
+    name: parseError.name,
+    syntaxError: parseError instanceof SyntaxError,
     status: parseError.status,
     statusCode: parseError.statusCode,
     expose: parseError.expose,
@@ -1503,20 +1507,44 @@ await strict.listen(0);
 const brokenJson = bodyInit("application/json", '{"a":');
 const strictServed = await fetch(`${strict.url}/echo`, brokenJson);
 const strictAnswer = await strictServed.json();
-checkEqual("setErrorHandler sees the parse error", strictAnswer, {
-  status: 400,
-  statusCode: 400,
-  expose: true,
-  type: "entity.parse.failed",
-  body: '{"a":',
-  recorded: true,
-});
+checkEqual(
+  "setErrorHandler sees the parse error, a SyntaxError",
+  strictAnswer,
+  {
+    name: "SyntaxError",
+    syntaxError: true,
+    status: 400,
+    statusCode: 400,
+    expose: true,
+    type: "entity.parse.failed",
+    body: '{"a":',
+    recorded: true,
+  },
+);
 checkEqual(
   "…the same through adapter.fetch()",
   await (await strict.fetch("/echo", brokenJson)).json(),
   strictAnswer,
 );
 checkEqual("…and use() error middleware never saw it", middlewareSaw, []);
+
+// With no setErrorHandler, the adapter's final handler answers the 400 with
+// bun-common's own error page, as Express's finalhandler does (bun-nest's
+// adapter answers Nest's JSON instead).
+const plainAdapter = new BunHttpAdapter(0);
+adapters.push(plainAdapter);
+plainAdapter.setLogger(createTestLogger().logger);
+plainAdapter.post("/echo", (req, res) => res.json({ body: describeBody(req) }));
+const plainAnswer = await plainAdapter.fetch("/echo", brokenJson);
+checkEqual(
+  "…and with no setErrorHandler: 400, the final handler's HTML page",
+  [
+    plainAnswer.status,
+    plainAnswer.headers.get("Content-Type"),
+    /<pre>Bad Request<\/pre>/.test(await plainAnswer.text()),
+  ],
+  [400, "text/html; charset=utf-8", true],
+);
 
 checkEqual(
   "no Content-Type: only tried as JSON, so a=1 parses as urlencoded",

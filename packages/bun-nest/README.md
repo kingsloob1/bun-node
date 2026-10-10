@@ -314,7 +314,10 @@ export class PagesController {
 ```
 
 See
-[`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts).
+[`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts),
+and
+[`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts)
+for redirect bodies by `Accept`.
 
 #### Views: `@Render()` and `res.render()`
 
@@ -347,6 +350,9 @@ found is Express's `Failed to lookup view …` error. `@Res() res` can call
 
 A plain HTML file is not a view without an engine for `.html`: send it with
 `res.sendFile()`, `StreamableFile` or `useStaticAssets()`.
+
+See
+[`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts).
 
 ### Versioning
 
@@ -755,6 +761,10 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+
+See the last section of
+[`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
+which checks four of these against this list.
 
 ## File upload interceptors
 
@@ -1379,12 +1389,16 @@ describes the conventions they share.
 | `02-http-adapter` | [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts) | Nest middleware, a global prefix, every versioning type, `fetch()` without a socket |
 | `02-http-adapter` | [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts) | guards, pipes, exception filters and interceptors; not-found and error handlers |
 | `02-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, server introspection, `fetch()`, `close()` |
+| `02-http-adapter` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts) | `@Render()` and `res.render()` with a view engine: `setBaseViewsDir`, `setViewEngine`, `engine(ext, fn)`, `setLocal`, both view lookups, how locals merge, and the errors when a view or engine is missing |
+| `02-http-adapter` | [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts) | what `@nestjs/platform-express` users rely on: `HEAD` on `@Get()`, late `next()`, the request timeout, redirect bodies, host matching, the static-prefix redirect, `clearCookie`, invalid JSON, and the [known differences](#known-differences-from-nestjsplatform-express) checked as deliberate |
+| `02-http-adapter` | [`per-route-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/per-route-parsing.ts) | `requestParsing()` applied per route with `consumer.apply()`, and raising one route's body limit |
 | `03-file-uploads` | [`interceptors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/interceptors.ts) | every upload interceptor, `@UploadedFile(s)`, memory, disk and custom storage, upload errors, interceptor-side parsing |
 | `04-websockets` | [`gateway-basics.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/gateway-basics.ts) | lifecycle hooks, `@MessageBody`, `@ConnectedSocket`, `WsResponse` vs a plain return, Promise and Observable replies, `@Ack` |
 | `04-websockets` | [`message-formats.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/message-formats.ts) | every packet type on the wire, binary frames, malformed and unroutable frames, exceptions |
 | `04-websockets` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/adapter-options.ts) | the `websocket` option, auth on upgrade, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | `04-websockets` | [`custom-adapter.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 | `05-jobs-api` | [`module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/05-jobs-api/module.ts) | `BunJobsApiModule.forRoot`, `@InjectJobsApi()`, authorized requests against the mounted API, and what `app.close()` closes |
+| `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
 
 **Option tours** exercise every option of one part of the API and assert the
 result, so a failed check fails the script:

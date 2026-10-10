@@ -1090,6 +1090,13 @@ with `download: true`.
   `Accept`. With no match and no `default` it passes a 406 error to `next`,
   or answers 406 directly outside a pipeline.
 
+Examples:
+[`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts),
+[`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts),
+[`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts),
+tour
+[`response-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/response-options.ts).
+
 #### Streaming and server-sent events
 
 `write(chunk)` opens a long-lived streamed response, and `end(chunk?)`
@@ -1808,6 +1815,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `05-response` | [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts) | Status, every `send` body type, `json`/`jsonp`, headers, ETags, `format()`, attachments |
 | `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events, redirects |
 | `05-response` | [`cookies-and-caching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
+| `05-response` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts) | `res.render()` and `BunViews`: engines, view lookup, locals, the callback form, every render failure |
 | `06-validation` | [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts) | Every target and failure mode, hooks, chained validators, `ValidationError` |
 | `06-validation` | [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts) | The same schema in zod, yup, valibot and arktype, and superstruct through `toStandardSchema` |
 | `06-validation` | [`typed-handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/typed-handlers.ts) | Handler types from the validator, `InferValidatedShape`, typed mounts |
