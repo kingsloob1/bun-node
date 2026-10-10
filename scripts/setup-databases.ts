@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { availableParallelism } from "node:os";
 import process from "node:process";
 
 /**
@@ -44,7 +45,9 @@ type Mode = "native" | "docker";
  * MySQL 171, and MariaDB pinned at its 151 ceiling with a `Too many
  * connections`, errno 1040). Two runs at once need about 350 to 400. The
  * servers are shared with other sessions and the examples, so this leaves
- * room for several concurrent runs plus everyone else.
+ * room for several concurrent runs plus everyone else. That is on
+ * {@link BASELINE_CORES} cores: the suites run one worker per core, so a bigger
+ * host gets more, in proportion ({@link connectionsForCores}).
  *
  * A server already at or above the target is left alone: this never lowers a
  * limit somebody raised further on purpose.
@@ -64,7 +67,9 @@ export const MAX_CONNECTIONS_CEILING = 100_000;
  * bun-jobs peaked at 182 Postgres connections against the default of 100, so
  * this leaves room for several concurrent runs plus the server's other users.
  * Lower than {@link MAX_CONNECTIONS} because every Postgres connection is a
- * process with its own memory, where MariaDB's and MySQL's are threads.
+ * process with its own memory, where MariaDB's and MySQL's are threads. Like
+ * it, this is the figure for {@link BASELINE_CORES} cores, scaled up on a
+ * bigger host ({@link connectionsForCores}).
  *
  * Unlike MariaDB and MySQL, Postgres applies a new value only on a restart,
  * which this script never does unless `--restart-postgres` asks for it.
@@ -81,6 +86,63 @@ export const POSTGRES_MAX_CONNECTIONS = 700;
  * that becomes likely; past it, a connection pooler is the answer.
  */
 export const POSTGRES_MAX_CONNECTIONS_CEILING = 10_000;
+
+/** The image this script's Postgres container runs. */
+export const POSTGRES_CONTAINER_IMAGE = "postgres:16-alpine";
+
+/**
+ * Where the official Postgres images keep their data: `PGDATA` is
+ * `/var/lib/postgresql/data` on 16, and a versioned directory below this on
+ * newer ones, so a search for `postgresql.auto.conf` starts here.
+ */
+export const POSTGRES_DATA_ROOT = "/var/lib/postgresql";
+
+/**
+ * The core count {@link MAX_CONNECTIONS} and {@link POSTGRES_MAX_CONNECTIONS}
+ * were measured on. Every test suite runs `bun test --parallel`, one worker
+ * per core, and each bun-jobs worker holds its own connections, so the
+ * connections a run needs grow with the host's cores. Measured 2026-10-10
+ * during a full 16-worker run of bun-jobs with all five database URLs
+ * (sampled each second): peaks of 191 on Postgres, 201 on MySQL, 181 on
+ * MariaDB and 17 on Redis — about 12 a worker per SQL server, so 1000 and
+ * 700 per 16 cores leave a margin of about 3.5 to 5 times one run.
+ */
+export const BASELINE_CORES = 16;
+
+/**
+ * The default `max_connections` for a host with `cores` CPU cores: `base`,
+ * which was measured on {@link BASELINE_CORES}, scaled up in proportion on a
+ * bigger host and never below `base` on a smaller one (other sessions and the
+ * examples share the servers whatever the core count), nor above `ceiling`.
+ * On this repo's 16-core machine it is `base` itself.
+ */
+export function connectionsForCores(
+  base: number,
+  ceiling: number,
+  cores: number = availableParallelism(),
+): number {
+  return Math.min(
+    ceiling,
+    Math.max(base, Math.ceil((base * cores) / BASELINE_CORES)),
+  );
+}
+
+/** {@link MAX_CONNECTIONS} for this host's cores: `--max-connections`' default. */
+export function defaultMaxConnections(cores?: number): number {
+  return connectionsForCores(MAX_CONNECTIONS, MAX_CONNECTIONS_CEILING, cores);
+}
+
+/**
+ * {@link POSTGRES_MAX_CONNECTIONS} for this host's cores:
+ * `--postgres-max-connections`' default.
+ */
+export function defaultPostgresMaxConnections(cores?: number): number {
+  return connectionsForCores(
+    POSTGRES_MAX_CONNECTIONS,
+    POSTGRES_MAX_CONNECTIONS_CEILING,
+    cores,
+  );
+}
 
 /** A command line this script cannot act on; `main` prints it and exits 1. */
 export class UsageError extends Error {
@@ -107,12 +169,15 @@ interface Options {
   user: string;
   /**
    * The `max_connections` MariaDB and MySQL should have at least. Defaults to
-   * {@link MAX_CONNECTIONS}; a server already above it is left alone.
+   * {@link MAX_CONNECTIONS} scaled to this host's cores
+   * ({@link defaultMaxConnections}); a server already above it is left alone.
    */
   maxConnections: number;
   /**
    * The `max_connections` Postgres should have at least. Defaults to
-   * {@link POSTGRES_MAX_CONNECTIONS}; a server already above it is left alone.
+   * {@link POSTGRES_MAX_CONNECTIONS} scaled to this host's cores
+   * ({@link defaultPostgresMaxConnections}); a server already above it is
+   * left alone.
    * A raise applies only after a restart.
    */
   postgresMaxConnections: number;
@@ -164,8 +229,8 @@ export function parseArgs(argv: string[]): Options {
     password: "bunjobs",
     database: "bun_jobs_test",
     user: "bunjobs",
-    maxConnections: MAX_CONNECTIONS,
-    postgresMaxConnections: POSTGRES_MAX_CONNECTIONS,
+    maxConnections: defaultMaxConnections(),
+    postgresMaxConnections: defaultPostgresMaxConnections(),
     restartPostgres: false,
   };
 
@@ -250,11 +315,18 @@ Options
   --max-connections=N
                     The max_connections MariaDB and MySQL should have at
                     least. A server already at or above it is left alone;
-                    one below is raised. (default: ${MAX_CONNECTIONS})
+                    one below is raised. Scales with the host's cores:
+                    ${MAX_CONNECTIONS} per ${BASELINE_CORES}, never less.
+                    (default here, ${availableParallelism()} cores: ${defaultMaxConnections()})
   --postgres-max-connections=N
                     The same for Postgres. A raise is written with ALTER
                     SYSTEM and applies only after a restart. At most
-                    ${POSTGRES_MAX_CONNECTIONS_CEILING}. (default: ${POSTGRES_MAX_CONNECTIONS})
+                    ${POSTGRES_MAX_CONNECTIONS_CEILING}. Scales the same way:
+                    ${POSTGRES_MAX_CONNECTIONS} per ${BASELINE_CORES} cores, never less.
+                    (default here: ${defaultPostgresMaxConnections()}) Every
+                    connection reserves shared memory at start: a value the
+                    machine cannot back keeps Postgres from starting after
+                    the restart, and the script says how to back it out.
   --restart-postgres
                     Restart Postgres to apply a raised max_connections,
                     then confirm it. Off by default: a restart drops every
@@ -1566,6 +1638,7 @@ export async function applyPostgresLimit(
   }
   if (!(await io.waitReady())) {
     log.bad("Postgres did not accept connections again after the restart");
+    log.warn(postgresNotBackHint(applied, ctx));
     return "max_connections unknown (not back after the restart)";
   }
   const after = await io.readState();
@@ -1577,6 +1650,50 @@ export async function applyPostgresLimit(
   }
   log.did(`restarted Postgres; max_connections is now ${after.current}`);
   return `max_connections ${from}${after.current}`;
+}
+
+/**
+ * What to do when Postgres does not come back after a restart that applied a
+ * raised `max_connections`. The likeliest cause is the raise itself: Postgres
+ * reserves shared memory and lock-table slots for every connection when it
+ * starts, and refuses to start when the machine cannot back them (see
+ * {@link POSTGRES_MAX_CONNECTIONS_CEILING}). The value sits in
+ * `postgresql.auto.conf`, and `ALTER SYSTEM` cannot take it back while the
+ * server is down, so the way back is by hand.
+ */
+export function postgresNotBackHint(
+  applied: number,
+  ctx: Pick<PostgresLimitContext, "host" | "unit" | "containerName">,
+): string {
+  const cause = `max_connections ${applied} may need more shared memory than this machine gives Postgres, and then it refuses to start.`;
+  const after =
+    "then rerun with a lower --postgres-max-connections (or raise the kernel's shared-memory limits first).";
+  if (ctx.host === "container") {
+    // A stopped container takes no `docker exec`; a copy back through
+    // `docker cp` lands owned by root, which Postgres cannot read; and a copy
+    // through /tmp fails silently under snap Docker. So a throwaway container
+    // of the container's own image edits the file in place on its volume.
+    // `sed -i` writes a new file owned by whoever runs it, and the postgres
+    // user's uid differs by image (70 on Alpine, 999 on Debian), so it runs as
+    // root and gives the file back its owner. The image name is read through
+    // `| cat`: snap Docker's captured output can come back empty, and an empty
+    // name fails as "invalid reference format". Checked against
+    // postgres:16-alpine, with the file owned by 70 and by 999.
+    const name = ctx.containerName;
+    return [
+      cause,
+      `Check its log (docker logs ${name} | cat). To back out:`,
+      `docker run --rm --user root --volumes-from ${name} --entrypoint sh "$(docker inspect -f '{{.Config.Image}}' ${name} | cat)"`,
+      `-c 'for f in $(find ${POSTGRES_DATA_ROOT} -name postgresql.auto.conf); do o=$(stat -c %u:%g "$f"); sed -i "/^max_connections/d" "$f" && chown "$o" "$f"; done'`,
+      `&& docker start ${name};`,
+      after,
+    ].join(" ");
+  }
+  return [
+    cause,
+    `Check its log (journalctl -u ${ctx.unit}). To back out, delete the max_connections line from postgresql.auto.conf in its data directory, start it,`,
+    after,
+  ].join(" ");
 }
 
 /**
@@ -1730,7 +1847,7 @@ export const PLANS: Record<Service, ServicePlan> = {
       platform.manager === "brew" ? "postgresql@16" : "postgresql",
     container: (options) => ({
       name: "bun-jobs-postgres",
-      image: "postgres:16-alpine",
+      image: POSTGRES_CONTAINER_IMAGE,
       port: 5432,
       env: {
         POSTGRES_USER: options.user,

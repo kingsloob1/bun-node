@@ -4,9 +4,14 @@ import type {
   PostgresLimitState,
   Runner,
 } from "../setup-databases";
+import { availableParallelism } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
   applyPostgresLimit,
+  BASELINE_CORES,
+  connectionsForCores,
+  defaultMaxConnections,
+  defaultPostgresMaxConnections,
   describeLimit,
   describePostgresLimit,
   dockerRunArgv,
@@ -28,6 +33,7 @@ import {
   postgresAdminArgv,
   postgresLimitStatement,
   postgresMaxConnectionsArg,
+  postgresNotBackHint,
   postgresRestartArgv,
   runLimitSteps,
   UsageError,
@@ -37,14 +43,38 @@ import {
 // `import.meta.main`. These tests reach no database, no sudo and no Docker.
 
 describe("--max-connections", () => {
-  it("defaults to the measured 1000 when absent", () => {
+  it("defaults to the measured 1000 per 16 cores, scaled to this host, when absent", () => {
     // About 180 connections per server for one 16-worker parallel run, so
     // 1000 leaves room for several runs and the servers' other users.
     expect(MAX_CONNECTIONS).toBe(1000);
-    expect(parseArgs([]).maxConnections).toBe(MAX_CONNECTIONS);
-    expect(parseArgs(["--dry-run", "--docker"]).maxConnections).toBe(
-      MAX_CONNECTIONS,
+    expect(BASELINE_CORES).toBe(16);
+    const here = defaultMaxConnections();
+    expect(here).toBe(defaultMaxConnections(availableParallelism()));
+    expect(here).toBeGreaterThanOrEqual(MAX_CONNECTIONS);
+    expect(parseArgs([]).maxConnections).toBe(here);
+    expect(parseArgs(["--dry-run", "--docker"]).maxConnections).toBe(here);
+  });
+
+  it("scales with the cores: more on a bigger host, never less on a smaller one", () => {
+    // The suites run one worker per core, each with its own connections.
+    expect(defaultMaxConnections(16)).toBe(1000);
+    expect(defaultMaxConnections(4)).toBe(1000);
+    expect(defaultMaxConnections(1)).toBe(1000);
+    expect(defaultMaxConnections(17)).toBe(1063);
+    expect(defaultMaxConnections(32)).toBe(2000);
+    expect(defaultMaxConnections(64)).toBe(4000);
+    expect(defaultPostgresMaxConnections(16)).toBe(700);
+    expect(defaultPostgresMaxConnections(8)).toBe(700);
+    expect(defaultPostgresMaxConnections(64)).toBe(2800);
+    expect(defaultPostgresMaxConnections(128)).toBe(5600);
+  });
+
+  it("never scales past the ceiling a server accepts", () => {
+    expect(defaultPostgresMaxConnections(512)).toBe(
+      POSTGRES_MAX_CONNECTIONS_CEILING,
     );
+    expect(defaultMaxConnections(10_000)).toBe(MAX_CONNECTIONS_CEILING);
+    expect(connectionsForCores(100, 150, 64)).toBe(150);
   });
 
   it("takes a valid value", () => {
@@ -160,7 +190,7 @@ describe("containers", () => {
 
   it("uses the default limit when none is given", () => {
     const argv = dockerRunArgv(PLANS.mariadb.container(options()));
-    expect(argv.at(-1)).toBe(`--max-connections=${MAX_CONNECTIONS}`);
+    expect(argv.at(-1)).toBe(`--max-connections=${defaultMaxConnections()}`);
   });
 
   it.each(["redis", "mongodb"] as const)(
@@ -340,11 +370,16 @@ describe("runLimitSteps", () => {
 });
 
 describe("--postgres-max-connections and --restart-postgres", () => {
-  it("defaults to the measured 700, and no restart, when absent", () => {
+  it("defaults to the measured 700 per 16 cores, scaled to this host, and no restart, when absent", () => {
     // One 16-worker parallel run peaked at 182 Postgres connections.
     expect(POSTGRES_MAX_CONNECTIONS).toBe(700);
     const options = parseArgs([]);
-    expect(options.postgresMaxConnections).toBe(POSTGRES_MAX_CONNECTIONS);
+    expect(options.postgresMaxConnections).toBe(
+      defaultPostgresMaxConnections(),
+    );
+    expect(options.postgresMaxConnections).toBeGreaterThanOrEqual(
+      POSTGRES_MAX_CONNECTIONS,
+    );
     expect(options.restartPostgres).toBe(false);
   });
 
@@ -471,7 +506,7 @@ describe("Postgres commands", () => {
     ]);
     expect(
       dockerRunArgv(PLANS.postgres.container(parseArgs([]))).slice(-2),
-    ).toEqual(["-c", `max_connections=${POSTGRES_MAX_CONNECTIONS}`]);
+    ).toEqual(["-c", `max_connections=${defaultPostgresMaxConnections()}`]);
   });
 
   it("raises a container as POSTGRES_USER, which the image makes superuser", () => {
@@ -636,6 +671,35 @@ describe("applyPostgresLimit", () => {
     { current: 100, pendingRestart: false, pendingValue: null },
     700,
   );
+
+  it("with --restart-postgres, a server that does not come back: says why it may not have, and how to back the raise out", async () => {
+    const f = fakes();
+    f.io.waitReady = async () => false;
+    const note = await applyPostgresLimit(raise, ctx({ restart: true }), f.io);
+    expect(note).toBe("max_connections unknown (not back after the restart)");
+    const out = logs.join("\n");
+    expect(out).toContain(
+      "Postgres did not accept connections again after the restart",
+    );
+    expect(out).toContain(
+      "max_connections 700 may need more shared memory than this machine gives Postgres",
+    );
+    expect(out).toContain("docker logs bun-jobs-postgres | cat");
+    // In place on the stopped container's volume, as the postgres user: no
+    // `docker exec` (it is down), no root-owned copy, nothing through /tmp.
+    // The container's own image, as root, giving the file back its owner:
+    // the postgres user's uid differs by image (70 on Alpine, 999 on Debian).
+    expect(out).toContain(
+      `docker run --rm --user root --volumes-from bun-jobs-postgres --entrypoint sh "$(docker inspect -f '{{.Config.Image}}' bun-jobs-postgres | cat)"`,
+    );
+    expect(out).toContain(
+      `-c 'for f in $(find /var/lib/postgresql -name postgresql.auto.conf); do o=$(stat -c %u:%g "$f"); sed -i "/^max_connections/d" "$f" && chown "$o" "$f"; done' && docker start bun-jobs-postgres;`,
+    );
+    expect(out).not.toContain("/tmp");
+    const native = postgresNotBackHint(700, ctx({ host: "native" }));
+    expect(native).toContain("journalctl -u postgresql");
+    expect(native).toContain("postgresql.auto.conf in its data directory");
+  });
 
   it("without --restart-postgres: sets it, prints the notice and the command, restarts nothing", async () => {
     const f = fakes();
