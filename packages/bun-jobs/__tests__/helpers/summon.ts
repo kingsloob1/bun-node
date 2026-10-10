@@ -57,6 +57,16 @@ export interface SpawningSummonerOptions {
   bootBudget?: number;
   /** Extra test-control environment for the worker (never identity). */
   env?: Record<string, string>;
+  /**
+   * The script each process runs. Defaults to {@link SUMMONED_WORKER};
+   * `fixtures/summoned-unit.ts` for a shared unit's.
+   */
+  worker?: string;
+  /**
+   * Start every unit twice, with the same argv: a platform's double start
+   * (a retried launch). Defaults to `false`.
+   */
+  startTwice?: boolean;
 }
 
 /** A spawning summoner, and what it saw. */
@@ -81,7 +91,7 @@ export function spawningSummoner(
 ): SpawningSummoner {
   const calls: SummonRequest[] = [];
   const releases: SummonReleaseRequest[] = [];
-  const spawner = unitSpawner(SUMMONED_WORKER, {
+  const spawner = unitSpawner(options.worker ?? SUMMONED_WORKER, {
     SUMMON_TEST_DRIVER: JSON.stringify(options.driver),
     ...options.env,
   });
@@ -102,7 +112,9 @@ export function spawningSummoner(
         ...options.env,
       };
       first = false;
-      void spawner.start({ argv, env }, options.coldStartMs ?? 0);
+      for (let copy = 0; copy < (options.startTwice ? 2 : 1); copy++) {
+        void spawner.start({ argv, env }, options.coldStartMs ?? 0);
+      }
     }
   };
 
