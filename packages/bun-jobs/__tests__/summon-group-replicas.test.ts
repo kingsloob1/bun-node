@@ -12,6 +12,7 @@ import {
 } from "../lib/summon/group";
 import { testNamespace } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
+import { withinOneHour } from "./helpers/budgetWindow";
 import { runBun } from "./helpers/spawnBun";
 
 /**
@@ -49,6 +50,16 @@ const BACKENDS = await crossProcessBackends({ cleanups });
 const ROUNDS = Number(process.env.SUMMON_GROUP_REPLICA_ROUNDS ?? 5);
 /** Time between two rounds' starts, so a round is over before the next begins. */
 const SLOT_MS = 1_500;
+/** How long after the racers are given their start the rounds begin. */
+const START_DELAY_MS = 4_000;
+/**
+ * How much of the UTC hour a race needs: every round, from the start, plus a
+ * minute for slow process starts and checks on a loaded machine. A round
+ * that straddles an hour counts in two windows, and one of a limit spends it
+ * twice, so a race that would begin too near the hour's end waits for the
+ * next one.
+ */
+const RACE_SPAN_MS = START_DELAY_MS + ROUNDS * SLOT_MS + 60_000;
 
 /** One line a racer printed. */
 interface RacerLine {
@@ -92,10 +103,11 @@ async function race(
         await queue.close();
       }
     }
+    await withinOneHour(RACE_SPAN_MS);
     const env = {
       SUMMON_TEST_DRIVER: JSON.stringify(backend.config),
       SUMMON_TEST_NAMESPACES: namespaces.join(","),
-      SUMMON_TEST_START_AT: String(Date.now() + 4_000),
+      SUMMON_TEST_START_AT: String(Date.now() + START_DELAY_MS),
       SUMMON_TEST_SLOT_MS: String(SLOT_MS),
       SUMMON_TEST_PER_HOUR: String(options.perHour),
       SUMMON_TEST_CHECKS: "4",

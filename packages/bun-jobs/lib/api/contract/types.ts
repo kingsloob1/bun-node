@@ -1285,16 +1285,21 @@ export interface SummonStatusDto {
   /**
    * Whether that controller is inert: it summons nothing, and "summon now"
    * answers `{ action: "skipped", reason: "inert" }`. Read from storage
-   * (`local: false`), `true` only for summon state a newer bun-jobs wrote
-   * (`inertReason: "newer-marker"`).
+   * (`local: false`), `true` only for summon state this build cannot read:
+   * state a newer bun-jobs wrote (`inertReason: "newer-marker"`), or state
+   * that is not summon state's shape at all (`"unreadable-marker"`, with
+   * nothing pending, no failures and no `budget`, since none could be read).
    */
   inert: boolean;
   /**
    * Why it is inert: `"summoned-process"` (the API's process was itself
-   * summoned, or is a runner child, and the policy has no `fromSummoned`) or
-   * `"newer-marker"` (a newer bun-jobs wrote the queue's summon state).
+   * summoned, or is a runner child, and the policy has no `fromSummoned`),
+   * `"newer-marker"` (a newer bun-jobs wrote the queue's summon state) or
+   * `"unreadable-marker"` (the queue's summon state cannot be read at all;
+   * only `GET /queues/{queue}/summon` answers one, `GET /summon` leaves the
+   * queue out). A client should show a reason it does not know as text.
    */
-  inertReason?: "summoned-process" | "newer-marker";
+  inertReason?: "summoned-process" | "newer-marker" | "unreadable-marker";
   /**
    * The summoner: who provides it, how far its config has got, what it
    * declares, and its facts. Always present today.
@@ -1528,8 +1533,11 @@ export interface SummonListItemDto {
    * (`inertReason: "newer-marker"`).
    */
   inert?: boolean;
-  /** Why it is inert, when it is, as `SummonStatusDto.inertReason` has it. */
-  inertReason?: "summoned-process" | "newer-marker";
+  /**
+   * Why it is inert, when it is, as `SummonStatusDto.inertReason` has it
+   * (never `"unreadable-marker"` here: the list leaves such a queue out).
+   */
+  inertReason?: "summoned-process" | "newer-marker" | "unreadable-marker";
   /** When the queue's open circuit closes, epoch ms, while it is open, as `SummonStatusDto.circuitOpenUntil` has it. */
   circuitOpenUntil?: number;
   /** The most recent outcome, as `SummonStatusDto.last` has it. */

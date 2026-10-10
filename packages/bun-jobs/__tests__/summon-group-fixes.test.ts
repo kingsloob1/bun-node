@@ -71,7 +71,8 @@ describe("refundGroup and the entry's epoch (A3)", () => {
     expect(
       await refundGroup(driver, namespace, "g", {
         queue: "q",
-        chargedAt: before.at,
+        hourStart: before.hourStart,
+        dayStart: before.dayStart,
         clears: before.clears,
         epoch: before.entry.epoch,
       }),
@@ -91,7 +92,8 @@ describe("refundGroup and the entry's epoch (A3)", () => {
     expect(
       await refundGroup(driver, namespace, "g", {
         queue: "q",
-        chargedAt: charge.at,
+        hourStart: charge.hourStart,
+        dayStart: charge.dayStart,
         clears: charge.clears,
         epoch: charge.entry.epoch,
       }),
@@ -212,7 +214,8 @@ describe("a member queue named __proto__", () => {
     ).toMatchObject({ day: 2 });
     await refundGroup(driver, namespace, "g", {
       queue: "__proto__",
-      chargedAt: second.at,
+      hourStart: second.hourStart,
+      dayStart: second.dayStart,
       clears: second.clears,
       epoch: second.entry.epoch,
     });

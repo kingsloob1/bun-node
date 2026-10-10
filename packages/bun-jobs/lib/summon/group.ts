@@ -566,8 +566,17 @@ export type SummonGroupCharge =
       entry: SummonGroupEntry;
       /** The version it was written at. */
       version: number;
-      /** When it was charged, epoch ms: what a refund gives back against. */
+      /** When it was charged, epoch ms, on this process's clock. */
       at: number;
+      /**
+       * The start of the hour window the attempt was counted in, epoch ms:
+       * the entry's, which may be ahead of this process's clock (windows roll
+       * only forward, so a replica whose clock is ahead may have rolled it).
+       * What a refund gives back against, never a window recomputed from `at`.
+       */
+      hourStart: number;
+      /** The start of the day window the attempt was counted in, epoch ms, as `hourStart`. */
+      dayStart: number;
       /** The entry's `budget.clears` it was charged under (`0` before any). */
       clears: number;
     }
@@ -689,6 +698,8 @@ export async function chargeGroup(
         entry,
         version: written,
         at: now,
+        hourStart: entry.budget.hourStart,
+        dayStart: entry.budget.dayStart,
         clears: entry.budget.clears ?? 0,
       };
     }
@@ -697,10 +708,12 @@ export async function chargeGroup(
 }
 
 /**
- * Gives back the one attempt a charge at `chargedAt` counted for `queue`:
- * when its queue's claim was lost, or its provider was never called. Only in
- * windows that are still the charge's (a window that rolled on dropped the
- * count with it), only while no reset has cleared the counts since the
+ * Gives back the one attempt a charge counted for `queue`: when its queue's
+ * claim was lost, or its provider was never called. Only in windows that are
+ * still the charge's — the windows the charge reported counting in, never
+ * ones recomputed from a clock, which on a replica behind would name a window
+ * the entry has already rolled past (a window that rolled on dropped the
+ * count with it) — only while no reset has cleared the counts since the
  * charge (the clear dropped it already), only in the entry the charge was
  * made in (one deleted and created afresh since — a purge — dropped it too),
  * never below `0`, for at most {@link GROUP_REFUND_ROUNDS} rounds, jittered.
@@ -716,8 +729,10 @@ export async function refundGroup(
   options: {
     /** The queue the charge was for. */
     queue: string;
-    /** When the charge was made, epoch ms: {@link SummonGroupCharge}'s `at`. */
-    chargedAt: number;
+    /** The hour window the charge counted in: {@link SummonGroupCharge}'s `hourStart`. */
+    hourStart: number;
+    /** The day window the charge counted in: {@link SummonGroupCharge}'s `dayStart`. */
+    dayStart: number;
     /** The clears the charge was made under: {@link SummonGroupCharge}'s `clears`. */
     clears: number;
     /**
@@ -729,8 +744,7 @@ export async function refundGroup(
 ): Promise<boolean> {
   const ref = summonGroupRef(namespace);
   const stateName = summonGroupStateName(name);
-  const hourStart = Math.floor(options.chargedAt / HOUR_MS) * HOUR_MS;
-  const dayStart = Math.floor(options.chargedAt / DAY_MS) * DAY_MS;
+  const { hourStart, dayStart } = options;
   for (let round = 0; round < GROUP_REFUND_ROUNDS; round++) {
     if (round > 0) {
       // Spread the losers out, so that each round some refund lands.
