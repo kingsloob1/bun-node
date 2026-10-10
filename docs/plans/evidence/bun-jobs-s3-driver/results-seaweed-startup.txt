@@ -1,0 +1,4 @@
+Bun 1.4.3; image chrislusf/seaweedfs:4.48
+round 1: docker run -> bucket created (HTTP 200) in 3.82 s
+round 2: docker run -> bucket created (HTTP 200) in 5.96 s
+round 3: docker run -> bucket created (HTTP 200) in 5.65 s

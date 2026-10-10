@@ -1,0 +1,27 @@
+## Cost per 1,000,000 jobs (requests only)
+
+| Design | writes / reads per job | S3 Standard (us-east-1) | S3 Express One Zone | Cloudflare R2 | Backblaze B2 |
+|---|---|---|---|---|---|
+| (a) full driver, short job, no events | 9.5 / 2 | $48.30 | $10.79 | $43.47 | $0.000 |
+| (a) + events on (3 event objects) + 1 heartbeat | 13.5 / 6 | $69.90 | $15.44 | $62.91 | $0.000 |
+| (b) blob store, data offloaded | 1 / 1 | $5.40 | $1.16 | $4.86 | $0.000 |
+| (c) archive, batches of 1000 | 0.001 / 0 | $0.005 | $0.001 | $0.005 | $0.000 |
+
+## One idle worker on design (a), per 30 days, defaults
+
+| Wait poll interval | wait HEAD/s (measured) | requests/month | S3 Standard (us-east-1) | S3 Express One Zone | Cloudflare R2 | Backblaze B2 |
+|---|---|---|---|---|---|---|
+| 25 ms | 27.7 | 82.7 M | $70.63 | $11.46 | $63.57 | $0.000 |
+| 100 ms | 9.5 | 35.5 M | $51.76 | $10.05 | $46.59 | $0.000 |
+| 250 ms | 3.8 | 20.7 M | $45.85 | $9.60 | $41.27 | $0.000 |
+| 1000 ms | 1 | 13.5 M | $42.95 | $9.39 | $38.65 | $0.000 |
+
+## Add-ons per idle worker per 30 days
+
+| Add-on | S3 Standard (us-east-1) | S3 Express One Zone | Cloudflare R2 | Backblaze B2 |
+|---|---|---|---|---|
+| + control on (GET every 2 s) | $0.518 | $0.039 | $0.467 | $0.000 |
+| + one polled subscription (LIST every 250 ms) | $51.84 | $11.72 | $46.66 | $0.000 |
+| + summon controller (3 LIST every 30 s) | $1.30 | $0.293 | $1.17 | $0.000 |
+
+The floor with no wait polling at all (promotion 2 LIST/s, claim LIST 1/s, registry, leases): S3 Standard (us-east-1): $41.91; S3 Express One Zone: $9.31; Cloudflare R2: $37.72; Backblaze B2: $0.000

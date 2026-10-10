@@ -1,0 +1,11 @@
+Bun 1.4.3 (bbdc5a519), 300 jobs per run
+
+## minio 2025.5.24
+workers  1: 300/300 claimed exactly once, 0 lost claim races, 59 jobs/s; per job: LIST 1.01, PUT(if-none-match) 1.00, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00
+workers  4: 300/300 claimed exactly once, 0 lost claim races, 251 jobs/s; per job: LIST 1.05, PUT(if-none-match) 1.00, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00
+workers 16: 300/300 claimed exactly once, 90 lost claim races, 218 jobs/s; per job: LIST 1.51, PUT(if-none-match) 1.30, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00
+
+## seaweedfs 4.48
+workers  1: 300/300 claimed exactly once, 0 lost claim races, 105 jobs/s; per job: LIST 1.01, PUT(if-none-match) 1.00, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00
+workers  4: 300/300 claimed exactly once, 0 lost claim races, 337 jobs/s; per job: LIST 1.05, PUT(if-none-match) 1.00, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00
+workers 16: 300/300 claimed exactly once, 94 lost claim races, 509 jobs/s; per job: LIST 1.53, PUT(if-none-match) 1.31, GET 1.00, PUT(if-match) 2.00, DELETE 1.00; enqueue per job: PUT(if-none-match) 2.00

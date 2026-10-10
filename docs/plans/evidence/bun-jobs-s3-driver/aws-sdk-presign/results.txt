@@ -1,0 +1,9 @@
+## bun signed-headers.ts
+SignedHeaders= host;if-none-match | query keys: x-amz-checksum-crc32,x-amz-sdk-checksum-algorithm,x-id
+SignedHeaders= host;if-match | query keys: x-amz-checksum-crc32,x-amz-sdk-checksum-algorithm,x-id
+SignedHeaders= host | query keys: x-amz-checksum-crc32,x-amz-sdk-checksum-algorithm,x-id
+SignedHeaders= host;if-match | query keys: x-id
+
+## bun checksum.ts
+default crc32= AAAAAA== signed= host;if-none-match
+WHEN_REQUIRED crc32= null signed= host;if-none-match

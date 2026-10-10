@@ -1,0 +1,5 @@
+Bun 1.4.3 (bbdc5a519), MinIO loopback, 25 wakes per interval
+poll every   25 ms: notice latency p50 25 ms, max 57 ms; 27.7 HEAD/s per waiter (71.7 M requests per idle waiter per 30 days)
+poll every  100 ms: notice latency p50 66 ms, max 129 ms; 9.5 HEAD/s per waiter (24.5 M requests per idle waiter per 30 days)
+poll every  250 ms: notice latency p50 86 ms, max 257 ms; 3.8 HEAD/s per waiter (9.9 M requests per idle waiter per 30 days)
+poll every 1000 ms: notice latency p50 495 ms, max 995 ms; 1.0 HEAD/s per waiter (2.6 M requests per idle waiter per 30 days)
