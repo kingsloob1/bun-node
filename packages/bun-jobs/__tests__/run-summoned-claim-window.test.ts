@@ -221,7 +221,15 @@ for (const backend of BACKENDS) {
         // flight, or after the worker knows it. Which of those a given run
         // hits is not asserted, so this can pass without hitting the window.
         const outcomes: string[] = [];
-        for (const failMs of [5, 10, 20, 35, 50, 65, 80]) {
+        // Under load the claim can land later than the last of these, so no
+        // run of the sweep reaches it; then later failures are tried, until
+        // one does or the slowest has run.
+        const sweep = [5, 10, 20, 35, 50, 65, 80];
+        const later = [150, 300, 600, 1200, 2400];
+        const reached = () =>
+          outcomes.some((outcome) => !outcome.endsWith(":none"));
+        while (sweep.length > 0 || (!reached() && later.length > 0)) {
+          const failMs = (sweep.length > 0 ? sweep : later).shift()!;
           const lines = await runIn(
             `n${failMs}`,
             { MODE: "natural", FAIL_MS: String(failMs) },
@@ -244,11 +252,8 @@ for (const backend of BACKENDS) {
         }
         // At least one run got as far as its claim (known or in flight), so
         // the claim assertion ran at least once.
-        expect(
-          outcomes.some((outcome) => !outcome.endsWith(":none")),
-          outcomes.join(" "),
-        ).toBe(true);
-      }, 120_000);
+        expect(reached(), outcomes.join(" ")).toBe(true);
+      }, 180_000);
     },
   );
 }
