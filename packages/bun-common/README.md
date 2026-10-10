@@ -1080,7 +1080,12 @@ with `download: true`.
   `engine(ext, fn)` and `locals` (`app.locals`). Locals are `app.locals`, then
   `res.locals`, then `locals`. Without a callback the result is sent as
   `text/html; charset=utf-8` and an error goes to `next(err)`; a name with no
-  extension and no default engine throws, as in Express.
+  extension and no default engine throws, as in Express. One deliberate
+  difference: a script extension (`.tsx`, `.jsx`, `.ts`, `.js`, `.mjs`,
+  `.cjs`, `.mts`, `.cts`) with no engine registered throws `No view engine
+  registered for ".tsx"…` instead of loading the module named after it, as
+  Express would (for `.tsx` that is the `tsx` TypeScript runner). Register
+  its engine with `engine("tsx", fn)`.
 - `res.format({ json: h, html: h, default: h })` runs the handler matching
   `Accept`. With no match and no `default` it passes a 406 error to `next`,
   or answers 406 directly outside a pipeline.

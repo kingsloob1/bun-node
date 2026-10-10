@@ -743,6 +743,11 @@ listed here answers the same status, headers and body.
   differently.
 - ETags are off unless the adapter's `etag` option turns them on (Express's
   `etag` setting is on, weak, by default); the hash differs.
+- A view with a script extension (`.tsx`, `.jsx`, `.ts`, `.js`, …) and no
+  engine registered for it throws `No view engine registered for ".tsx"…`,
+  where Express would `require` the module named after the extension (for
+  `.tsx`, the `tsx` TypeScript runner). Register the engine with
+  `app.engine("tsx", fn)`.
 - Static files: `Vary: Accept-Encoding` is added; a directory redirect's HTML
   links its target; an unsatisfiable range is a `416` with an empty body (on
   Express it reaches Nest's exception filter as JSON).
