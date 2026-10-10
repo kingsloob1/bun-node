@@ -336,3 +336,51 @@ tr[aria-selected="true"] {
   height: 8px;
   flex: none;
 }
+
+/* A summon group: on the Summon tab (a card) and on the Summoning screen (rows). */
+.summon-group {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.summon-subheading {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.summon-group-circuit.is-open {
+  color: var(--warning-text);
+}
+
+.summon-group tr.is-current,
+.summon-groups tr.is-current {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.summon-groups {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+.summon-groups-title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.summon-group-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.summon-group-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}

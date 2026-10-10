@@ -17,6 +17,12 @@ export interface SummonBudgetProps {
    * `-day` appended.
    */
   testId: string;
+  /**
+   * Whether the queue is in a summon group: a budget the policy turned off
+   * then reads "Off: the group's budget applies", its counts in the tooltip.
+   * Defaults to `false`.
+   */
+  group?: boolean;
 }
 
 /**
@@ -26,11 +32,15 @@ export interface SummonBudgetProps {
  * used counts are the tooltip. A budget the policy turned off shows its
  * counts and "no limit", with the reset times as the tooltip; one whose limits
  * were never stored (`limitsUnknown`) shows its counts and "limits unknown",
- * never "Off".
+ * never "Off". In a summon group, an off budget says the group's applies.
  */
-export function SummonBudget({ budget, testId }: SummonBudgetProps) {
+export function SummonBudget({
+  budget,
+  testId,
+  group = false,
+}: SummonBudgetProps) {
   const now = useNow();
-  const view = summonBudgetView(budget, now);
+  const view = summonBudgetView(budget, now, { group });
   if (view.state === "unknown") {
     return (
       <span

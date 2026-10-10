@@ -237,3 +237,50 @@ describe("the reset times", () => {
     expect(view.day.resetsAt).toBe(MIDNIGHT);
   });
 });
+
+describe("a queue in a summon group", () => {
+  /** The queue's own budget, turned off by its policy. */
+  const OFF: SummonBudgetDto = {
+    hour: 41,
+    day: 120,
+    off: true,
+    hourResetsAt: NEXT_HOUR,
+    dayResetsAt: MIDNIGHT,
+  };
+
+  it("reads its own budget off as the group's applying, with its counts in the tooltip", () => {
+    expect(summonBudgetView(OFF, NOW, { group: true })).toEqual({
+      state: "off",
+      text: "Off: the group's budget applies",
+      resets:
+        "This queue's own count: 41 this hour, 120 today (UTC). Counts reset at 14:00 UTC and at midnight UTC",
+    });
+  });
+
+  it("reads the same budget outside a group as no limit (negative control)", () => {
+    expect(off(OFF).text).toBe("Off: 41 this hour, 120 today (UTC), no limit");
+    expect(summonBudgetView(OFF, NOW, { group: false })).toEqual(off(OFF));
+  });
+
+  it("changes nothing for a budget that is on, or whose limits are unknown", () => {
+    expect(summonBudgetView(budget(), NOW, { group: true })).toEqual(
+      on(budget()),
+    );
+    const stored: SummonBudgetDto = {
+      hour: 1,
+      day: 1,
+      limitsUnknown: true,
+      hourResetsAt: NEXT_HOUR,
+      dayResetsAt: MIDNIGHT,
+    };
+    expect(summonBudgetView(stored, NOW, { group: true })).toEqual(
+      unknown(stored),
+    );
+  });
+
+  it("keeps a missing limit without the off flag as no limit: only the policy's off defers to the group", () => {
+    expect(
+      summonBudgetView(budget({ perDay: undefined }), NOW, { group: true }),
+    ).toEqual(off(budget({ perDay: undefined })));
+  });
+});
