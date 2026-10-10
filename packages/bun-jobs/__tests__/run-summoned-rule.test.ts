@@ -8,7 +8,11 @@ import {
   MemoryDriver,
   runSummoned,
 } from "../lib/index";
-import { SET_SUMMONED_MODE } from "../lib/queue/BunQueueWorker";
+import {
+  HOLD_STARTUP,
+  SET_EXIT_MARK,
+  SET_SUMMONED_MODE,
+} from "../lib/queue/BunQueueWorker";
 import {
   TARGET_CLOSE_GRACE,
   TARGET_CLOSE_REAP,
@@ -318,6 +322,11 @@ describe("runSummoned with a run() that resolves before ready", () => {
       // Where `runSummoned` records the mode it resolved; a stub was given
       // no `summon`, so, like a real unsummoned worker, it takes nothing.
       [SET_SUMMONED_MODE]: () => false,
+      // Where `runSummoned` holds a worker still starting short of `ready`
+      // before its exit marks; this one never becomes ready anyway.
+      [HOLD_STARTUP]: () => true,
+      // Where `runSummoned` hands over its exit mark; this one has no claim.
+      [SET_EXIT_MARK]: () => {},
     };
     return {
       worker: stub as unknown as BunQueueWorker<unknown, string>,

@@ -11,15 +11,17 @@
  * the same value written correctly, which must compile.
  */
 import type {
+  BunQueueWorker,
   BunQueueWorkerOptions,
   JobsApiConfig,
   SUMMON_ARGS,
   SummonedArgs,
+  SummonedExit,
   WorkerInfo,
   WorkerSummonInfo,
   WorkerSummonProvenance,
 } from "../lib/index";
-import { summonedFromArgs } from "../lib/index";
+import { runSummoned, summonedFromArgs } from "../lib/index";
 
 /** `true` only when `A` and `B` are the same type, exactly. */
 type Equals<A, B> =
@@ -155,3 +157,22 @@ assertTrue<
     boolean | undefined
   >
 >();
+
+/* --- runSummoned over a set (PR-B2) ---------------------------------------- */
+
+/** Workers of different data and result types, as one unit's would be. */
+declare const renders: BunQueueWorker<{ file: string }, number>;
+declare const thumbs: BunQueueWorker<{ size: number }, string>;
+// One worker, as ever, and a set of differently typed ones.
+export const one: Promise<SummonedExit> = runSummoned(renders);
+export const several: Promise<SummonedExit> = runSummoned([renders, thumbs], {
+  idleFor: 1_000,
+});
+assertTrue<
+  Equals<
+    SummonedExit["queues"],
+    Record<string, { completed: number; failed: number }> | undefined
+  >
+>();
+// @ts-expect-error -- a set holds workers, nothing else.
+export const notWorkers = runSummoned([renders, "thumbs"]);

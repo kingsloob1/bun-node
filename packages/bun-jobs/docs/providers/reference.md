@@ -1280,7 +1280,11 @@ at startup, as an unknown mode is.
 
 `runSummoned(worker, options?)`: runs a summoned worker until it is no
 longer needed, handles the platform's stop signals, and closes it within the
-platform's grace. See
+platform's grace. `runSummoned(workers, options?)` runs a unit summoned for
+several queues, one worker per queue: one idle clock over every queue, one
+close budget, and a `ConfigError` before anything runs for a queue the
+summon arguments name with no worker. Call it, and `summonedFromArgs()`, in
+the main thread. See
 [Summoned workers: `runSummoned`](../../README.md#summoned-workers-runsummoned).
 
 ### `RunSummonedOptions`
@@ -1320,6 +1324,8 @@ Why and how a summoned worker stopped.
 - `completed`: jobs it completed.
 - `failed`: attempts it failed.
 - `code`: the exit code it used, or would have in `"in-invocation"` mode.
+- `queues`: optional. Each queue's `{ completed, failed }`, keyed by queue,
+  when it ran a set of workers. Absent for `runSummoned(worker)`.
 
 ### `ProviderIdentity`
 

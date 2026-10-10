@@ -2247,6 +2247,8 @@ last value; a group must be a key segment like a queue name, or
 `summonedFromArgs()` in the main thread:** Bun gives a `Worker` thread an
 empty `argv`, so there it answers `undefined`. A worker's `target` option
 runs its jobs in threads and leaves the worker itself in the main thread.
+Such a unit builds one worker per queue and runs them together with
+[`runSummoned(workers)`](#summoned-workers-several-queues).
 
 <a id="summon-arguments-not-environment"></a>
 **Arguments, not environment variables, by design.** An environment leaks to
@@ -2397,6 +2399,7 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 | `ranForMs` | How long it ran. |
 | `completed`, `failed` | Jobs it completed, attempts it failed. |
 | `code` | `0` for every reason but `"error"`, which is `1`. |
+| `queues` | Each queue's own `{ completed, failed }`, keyed by queue, when it ran a set of workers (below). Absent for `runSummoned(worker)`. |
 
 **Exit 0 is deliberate.** Several platforms restart a non-zero exit (Fly and
 Railway by default, ACI even under `Never`), so only a `run()` that failed —
@@ -2407,9 +2410,13 @@ in the Redis driver's options.
 **Signals.**
 
 - The handlers are installed before `run()` connects, so a stop during boot
-  still exits 0. A stop that arrives before the worker is ready closes it at
-  once, with `force` — nothing has been claimed yet — which ends the startup
-  there, however long the connect would have taken.
+  still exits 0. A stop that arrives before the worker is ready closes it
+  with `force` — no job has been claimed yet — which ends the startup there,
+  however long the connect would have taken. It is held short of `ready`
+  first while the unit's exit marks are written onto the summon claims its
+  workers already hold, so the close comes at once when no worker in the
+  unit has a known claim, and otherwise within the mark wait: at most 1 s,
+  or a quarter of the budget if less.
 - A **second** SIGINT exits at once with code `130`, so Ctrl-C twice is never
   held hostage by a drain. A first SIGINT arriving during an idle or deadline
   close is the platform's stop, not a second Ctrl-C.
@@ -2478,11 +2485,75 @@ export async function handler(_event: unknown, context: { getRemainingTimeInMill
 
 It resolves with nothing left behind: no timer, no sweep lease, no signal
 handler. The one exception is a stop before the worker was ready: it resolves
-at once, while the driver's connect is still in flight, and the worker closes
+at once (or within the mark wait, when the worker already holds its summon
+claim), while the driver's connect may still be in flight, and the worker closes
 that connection only when it completes — which on Lambda can be after the
 invocation has returned, into the freeze.
 
-Example: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts).
+<a id="summoned-workers-several-queues"></a>
+**One unit for several queues.** A unit summoned for several queues gets one
+`--bun-jobs-summon-queue=` per queue (see
+[the arguments](#summon-arguments-not-environment)). Build one worker per
+queue in `summon.queues` and hand them over together:
+
+```ts
+const summon = summonedFromArgs();
+const handlers: Record<string, JobProcessor> = {
+  renders: render,
+  thumbs: thumb,
+  previews: preview,
+};
+const workers = (summon?.queues ?? ["renders"]).map((queue) => {
+  const handler = handlers[queue];
+  if (handler === undefined) {
+    throw new Error(`no handler for queue ${queue}`);
+  }
+  return jobs.worker(queue, handler, { summon });
+});
+await runSummoned(workers, { idleFor: 30_000 });
+```
+
+A handler typed on its data (`JobProcessor<{ scene: string }>`) does not fit
+a `Record<string, JobProcessor>`; to keep each queue's types, build each
+worker in a `switch (queue)` instead.
+
+- **Every queue the arguments name needs a worker.** One without is a
+  `ConfigError` before anything runs, from `runSummoned(workers)` and
+  `runSummoned(worker)` alike, so the attempt is lost fast rather than
+  serving some queues and leaving the others starving. There is no way to
+  allow it: a unit that should serve fewer queues belongs to another group.
+  A worker on a queue the arguments do not name only logs a `warn`.
+- Also refused: an empty set, two workers on one queue, and workers given
+  summon options from different attempts.
+- **One idle clock**: the unit stops once every worker has been idle or
+  parked for `idleFor`. A parked worker's queue counts as idle whatever work
+  waits on it, so one parked worker never keeps the unit alive on its own:
+  the unit exits `"idle"` once the others are idle, and `"parked"` only when
+  every worker is parked. A worker still holding a job is not idle, parked
+  or not.
+- **One close**: the workers close concurrently under one budget, sized for
+  the target whose close takes longest; each worker writes the unit's reason
+  on its own claim, under its own queue. A stop while some workers are still
+  starting forces only those: they are held at once, short of `ready`, so
+  none of them claims a job in the meantime, and forced once the exit marks
+  are written, so a claim one of them won still gets the unit's reason. The
+  ready ones close by the rule, so a job they hold is not abandoned.
+- One worker's `run()` failing closes them all, with reason `"error"` and
+  code `1`: the failed worker and any still starting with `force`, the ready
+  ones by the rule, so a job one holds can finish within the budget. With no
+  signal and no deadline that budget is unbounded, so a ready worker's
+  graceful close is bounded only by its close timeout (`lockDuration`, 30 s
+  by default). An owner closing one worker leaves the others running, still
+  on the idle clock; the unit ends with `"closed"` if its owner closes every
+  worker.
+- **Build the workers in the main thread.** Bun gives a `Worker` thread an
+  empty `argv`, so `summonedFromArgs()` answers `undefined` there, and
+  `runSummoned` owns the process's signals. A worker's `target` option runs
+  its jobs in threads and leaves the worker itself in the main thread; a user
+  who builds whole workers inside threads must pass `summon` in `workerData`
+  and cannot use `runSummoned`.
+
+Examples: [`02-queues/summoned-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-worker.ts), with the entry file it runs in [`02-queues/helpers/summoned-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-entry.ts); for a unit serving several queues, [`02-queues/summoned-unit.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summoned-unit.ts), with [`02-queues/helpers/summoned-unit-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-unit-entry.ts).
 
 ## Who ran a job: worker attribution
 
