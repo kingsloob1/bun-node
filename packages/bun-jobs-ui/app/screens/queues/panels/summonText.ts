@@ -109,6 +109,8 @@ const INERT: Readonly<
     "The API's own process was summoned (or is a runner child), and the policy does not allow summoning from one, so this controller summons nothing.",
   "newer-marker":
     "A newer version of bun-jobs wrote this queue's summon state: this version leaves it alone, summons nothing for it and cannot read its budget.",
+  "unreadable-marker":
+    "This queue's summon state cannot be read: it is not in a shape any version of bun-jobs writes, so its attempts, failures and budget are unknown here.",
 };
 
 /** A summoner's style, from its capabilities (known once the summoner is ready). */
@@ -160,6 +162,22 @@ export function summonInert(reason: SummonStatusDto["inertReason"]): string {
   return known(INERT, reason)
     ? INERT[reason]
     : `This controller is inert ("${displayText(reason)}"): it summons nothing.`;
+}
+
+/**
+ * Whether a status's summon state was read, so its attempts on their way,
+ * consecutive failures, backoff, circuit and budget are facts worth showing.
+ *
+ * Not for `inertReason: "unreadable-marker"`: the server could not read the
+ * queue's summon state at all, and answers `pending: []` and `failures: 0`
+ * as placeholders, not as counts. Shown, they would read as "nothing on its
+ * way, no failures", which nobody knows. Every other status, inert or not,
+ * carries what was read.
+ */
+export function summonStateKnown(
+  status: Pick<SummonStatusDto, "inertReason">,
+): boolean {
+  return status.inertReason !== "unreadable-marker";
 }
 
 /** A summoner style in words; a raw string for one this build does not know. */
