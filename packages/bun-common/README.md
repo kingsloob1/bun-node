@@ -290,6 +290,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
+| `acceptUndecodableBody` | `boolean` | unset (the default), which refuses | On an adapter, route a request whose body could not be decoded (bad JSON, a corrupt stream, an unsupported `Content-Encoding`) to this router's routes, with `req.bodyDecodingError` set, instead of refusing it before routing. Unset, the router takes its mount's setting; unset all the way up, the adapter refuses. `false` refuses inside an opted-in router. Set it before adding routes. See [Testing without a socket](#testing-without-a-socket). |
 | `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
 Examples:
@@ -625,7 +626,8 @@ export const everything = new BunHttpAdapter(0, {
 ```
 
 It is routed as `router.fetch()` routes it, `req.bodyDecodingError` set, and
-every route that did not opt in keeps the early refusal. Off by default.
+every route that did not opt in keeps the early refusal. The option is
+unset by default, which refuses.
 
 - **Which route decides:** the first route handler the request matches, in
   pipeline order; with none (a mounted router's own not-found middleware,
