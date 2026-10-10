@@ -252,6 +252,12 @@ export interface AddedSource {
    * hooks the source to; a controller for one queue does not read it.
    */
   readonly name?: string;
+  /**
+   * The queue's namespace (a `BunQueue`'s): a shared unit's controller hooks
+   * only a source in its own, never a same-named queue of another. A
+   * controller for one queue does not read it.
+   */
+  readonly namespace?: string;
 }
 
 /** The two fields of an added job the fast path reads. */
@@ -704,6 +710,26 @@ export function wireRequest(
 }
 
 /**
+ * Internal: whether a negotiated summon version (`"major.minor"`) is `0.2`
+ * or later — the first that passes a shared unit's repeated queue
+ * arguments whole: any later major, or major `0` at minor `2` or more.
+ * `undefined` (no summon facet) or a version that is not `major.minor` is
+ * not.
+ */
+export function speaksSharedUnit(
+  /** The negotiated summon version, e.g. `"0.2"`. */
+  summon: string | undefined,
+): boolean {
+  const match = /^(\d+)\.(\d+)$/.exec(summon ?? "");
+  if (match === null) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 2;
+}
+
+/**
  * The queues a controller watches, checked: `[queue]`, or a shared unit's
  * `queues`. Exactly one of the two is given, and `queues` only with
  * `group.unit: "shared"` — which, in turn, takes `queues`, not `queue`.
@@ -1048,8 +1074,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       // §4.8: a shared unit's argv repeats `--bun-jobs-summon-queue=`, which
       // only a provider written for summon 0.2 has proven it passes whole.
       const summon = negotiate(this.#summoner.provider.apiVersion).summon;
-      const minor = Number(summon?.split(".")[1] ?? 0);
-      if (!(minor >= 2)) {
+      if (!speaksSharedUnit(summon)) {
         throw new ConfigError(
           `A shared unit needs a provider written for summon 0.2 or later, which passes its repeated queue arguments whole; ${this.#summoner.provider.name} negotiated summon ${summon ?? "none"}: upgrade the provider, or summon per queue`,
           {
@@ -1586,12 +1611,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   /**
    * Hooks into a queue's local adds. Called by `BunJobs`; idempotent. A
    * shared unit's controller hooks a source of one of its queues by the
-   * source's `name`, bound to that queue (its fast path is the queue's),
-   * and ignores any other.
+   * source's `name` and `namespace`, bound to that queue (its fast path is
+   * the queue's), and ignores any other — a same-named queue of another
+   * namespace above all.
    */
   [ATTACH_QUEUE](source: AddedSource): void {
     const queue = this.#shared ? source.name : this.queue;
     if (
+      (this.#shared && source.namespace !== this.namespace) ||
       this.inert ||
       this.#closed ||
       !this.#policy.onAdd ||
@@ -2358,14 +2385,25 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       // queue's share of the day's attempts — one for every member (Q8),
       // since one unit serves them all.
       const shared = marker as SharedSummonMarker;
-      if (this.#policy.budget === false) {
+      // The group's own limits, `group.budget`, as every writer of the entry
+      // records them: a reader with no controller shows them as the group's.
+      // The limits this unit holds the count to (Q2: the stricter of these
+      // and the policy's own) are its `status().budget`, never the group's.
+      const own = this.#group!.budget;
+      if (own === false) {
         delete shared.limits;
       } else {
-        shared.limits = {
-          perHour: this.#policy.budget.perHour,
-          perDay: this.#policy.budget.perDay,
-        };
+        shared.limits = { perHour: own.perHour, perDay: own.perDay };
       }
+      // No `against`: this claim landed in the write that counts it, so
+      // nothing of it is in flight. A per-queue replica's `against` is not
+      // kept either: the in-flight check (step 6a) reads it with the
+      // charge's time, and `lastAt` is this claim's now — kept, it would
+      // read this claim as that replica's charge in flight, for up to
+      // GROUP_IN_FLIGHT_MS. So in mixed mode (per-queue controllers of a
+      // member beside the unit), a replica whose peer's charge is still
+      // being claimed can be refused as `budget` (after its rechecks) where
+      // it would have waited as `contended`: transient, never an overspend.
       const shares = { ...shared.queues };
       for (const queue of this.queues) {
         setOwn(shares, queue, {
@@ -4117,6 +4155,18 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     }
     rollBudget(marker, now);
     const budget = this.#policy.budget;
+    // What holds the circuit open: the marker's own, and on a shared unit
+    // also the group's circuit for this kind that per-queue controllers
+    // opened in the same entry (Q3), which holds it back as well — the later.
+    const circuitOpenUntil = Math.max(
+      marker.circuitOpenUntil ?? 0,
+      this.#shared
+        ? (ownValue(
+            (marker as SharedSummonMarker).circuits,
+            this.#summoner.provider.kind,
+          )?.openUntil ?? 0)
+        : 0,
+    );
     return {
       queue: this.queue,
       local: true,
@@ -4130,9 +4180,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(marker.backoffUntil !== undefined && marker.backoffUntil > now
         ? { backoffUntil: marker.backoffUntil }
         : {}),
-      ...(marker.circuitOpenUntil !== undefined && marker.circuitOpenUntil > now
-        ? { circuitOpenUntil: marker.circuitOpenUntil }
-        : {}),
+      ...(circuitOpenUntil > now ? { circuitOpenUntil } : {}),
       budget: {
         hour: marker.budget.hour,
         ...(budget === false ? {} : { perHour: budget.perHour }),
@@ -4244,6 +4292,12 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * and with `{ group: true, budget: true }` zeroes the group's counts too,
    * in a second write (the queue's marker first).
    *
+   * A shared unit's marker is the group's entry, so its reset is one write
+   * that also closes the group's circuit for its summoner's kind (one that
+   * per-queue controllers of the group opened holds it back too), and with
+   * `budget: true` clears the group's counts and every queue's share, as the
+   * group's reset does; `group` adds nothing to it.
+   *
    * @throws {JobsError} code `SUMMON_MARKER_CONTENDED` when other controllers
    *   won every write it tried, to the marker or to the group's entry; try
    *   again.
@@ -4268,6 +4322,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     await this.#resetMarker(options?.budget === true);
     const group = this.#group;
     if (options?.group !== true || group === undefined) {
+      return;
+    }
+    if (this.#shared) {
+      // A shared unit's marker is the group's entry: the write above closed
+      // its kind's circuit and, with `budget`, cleared the group's counts and
+      // shares, as `resetGroup` would. A second write would only count the
+      // clear twice.
+      this.#groupBudgetNoted = undefined;
       return;
     }
     if (
@@ -4313,6 +4375,31 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       delete marker.lossStreak;
       if (clearUsage) {
         clearBudget(marker, Date.now());
+      }
+      if (this.#shared) {
+        // The marker is the group's entry (Q3): the circuit per-queue
+        // controllers of the group opened for this kind holds the unit back
+        // as its own does, so a reset closes it too, whatever `group.circuit`
+        // says.
+        const shared = marker as SharedSummonMarker;
+        const kind = this.#summoner.provider.kind;
+        if (
+          shared.circuits !== undefined &&
+          Object.hasOwn(shared.circuits, kind)
+        ) {
+          delete shared.circuits[kind];
+          if (Object.keys(shared.circuits).length === 0) {
+            delete shared.circuits;
+          }
+        }
+        if (clearUsage) {
+          // As `resetGroup` clears the group's counts: the clear is counted,
+          // so a per-queue controller's refund of a charge made before it
+          // gives nothing back (it was cleared with the counts), and every
+          // queue's share goes.
+          shared.budget.clears = (shared.budget.clears ?? 0) + 1;
+          delete shared.queues;
+        }
       }
       if ((await this.#writeHome(marker, version)) !== null) {
         if (clearUsage) {

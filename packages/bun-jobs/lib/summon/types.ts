@@ -528,10 +528,18 @@ export interface SummonGroupOptions {
    *
    * **A shared unit keeps all of its state in the group's entry**: one
    * marker for its attempts, failures, backoff and circuit. So its circuit
-   * is always shared, and `circuit` is accepted and ignored; an open circuit
-   * that per-queue controllers of the group wrote for the summoner's `kind`
-   * still holds it back. `budget` and the policy's own `budget` both apply,
-   * against the one count: per period, the stricter limit wins.
+   * is always the entry's own, and `circuit` is accepted and changes
+   * nothing. An open circuit that per-queue controllers of the group wrote
+   * in the same entry for the summoner's `kind` holds it back too, until it
+   * closes or the unit's `reset()` closes it (which it always does, with its
+   * own). `budget` and the policy's own `budget` both apply, against the one
+   * count: per period, the stricter limit wins.
+   *
+   * Known caveat while both kinds run in one group (a rolling switch): a
+   * shared unit's attempt can hide a per-queue replica's charge that is
+   * still being claimed, so another replica of that queue, refused by the
+   * group budget, may report `budget` for a check where it would have waited
+   * as `contended`. Transient, and never more attempts than the budget.
    */
   unit?: "per-queue" | "shared";
 }
@@ -870,7 +878,12 @@ export interface SummonStatus {
   failures: number;
   /** When the backoff ends, epoch ms, if one is running. */
   backoffUntil?: number;
-  /** When the circuit closes, epoch ms, if it is open. */
+  /**
+   * When the circuit closes, epoch ms, if it is open. For a shared unit, the
+   * later of its own circuit and the group's circuit for its summoner's
+   * `kind` that per-queue controllers of the group opened: either holds it
+   * back.
+   */
   circuitOpenUntil?: number;
   /**
    * Attempts used against the budget, this hour and today, with the limits

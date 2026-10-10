@@ -12,6 +12,7 @@ import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { listWorkerRecords } from "../lib/drivers/index";
 import {
+  BunJobs,
   BunQueue,
   BunQueueWorker,
   ConfigError,
@@ -22,15 +23,17 @@ import {
 import { defineComputeProvider, toStandardSchema } from "../lib/provider/index";
 import { LOCAL_ADD_HOOKS } from "../lib/queue/BunQueue";
 import { setReservedState } from "../lib/queue/windows";
-import { ATTACH_QUEUE } from "../lib/summon/controller";
+import { ATTACH_QUEUE, speaksSharedUnit } from "../lib/summon/controller";
 import {
   chargeGroup,
   noteGroupCircuit,
+  refundGroup,
   resolveSummonGroup,
   summonGroupRef,
   summonGroupStateName,
 } from "../lib/summon/group";
 import { attemptId, freshMarker, SUMMON_MARKER } from "../lib/summon/marker";
+import { readStoredGroupStatus } from "../lib/summon/status";
 import { makeTmpDir, testNamespace } from "./helpers";
 
 /**
@@ -291,6 +294,53 @@ describe("shared unit: options", () => {
         }),
       ),
     ).not.toThrow();
+  });
+
+  it("takes summon 0.2 or later, of any major, as a version that passes its queues whole", () => {
+    expect(
+      ["0.2", "0.3", "0.10", "1.0", "1.1", "2.0"].map((version) =>
+        speaksSharedUnit(version),
+      ),
+    ).toEqual([true, true, true, true, true, true]);
+    expect(
+      ["0.0", "0.1", undefined, "", "1", "0.2.1", "a.b", "-1.5"].map(
+        (version) => speaksSharedUnit(version),
+      ),
+    ).toEqual([false, false, false, false, false, false, false, false]);
+  });
+
+  it("is refused by BunJobs, which does not build shared units yet, saying so", async () => {
+    const { driver, namespace } = await freshDriver();
+    const { summoner } = recordingSummoner();
+    const group = { name: "media", unit: "shared" } as const;
+    const message =
+      /a shared summon unit \(group\.unit "shared"\) is not supported through BunJobs' summon option or summonController\(\) yet; build a SummonController with queues directly/i;
+    // Refused at construction, before any controller starts.
+    for (const summon of [
+      [{ queues: ["renders", "thumbs"], summoner, group }],
+      { renders: { summoner, group } },
+    ]) {
+      let thrown: unknown;
+      try {
+        const jobs = new BunJobs({
+          namespace,
+          driver,
+          logger: noopLogger,
+          summon,
+        });
+        perTest.unshift(async () => await jobs.close());
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(ConfigError);
+      expect((thrown as Error).message).toMatch(message);
+    }
+    // And summonController() with such a policy.
+    const jobs = new BunJobs({ namespace, driver, logger: noopLogger });
+    perTest.unshift(async () => await jobs.close());
+    expect(() => jobs.summonController("renders", { summoner, group })).toThrow(
+      message,
+    );
   });
 
   /** Each case: what to change, and what the `ConfigError` must say. */
@@ -699,6 +749,187 @@ describe("shared unit: the group's entry is its marker", () => {
     expect(calls).toHaveLength(0);
   });
 
+  /** Opens `media`'s circuit for kind `fake`, as per-queue controllers of the group would, until `resetAfter` from now. */
+  async function openGroupCircuit(
+    driver: JobsDriver,
+    namespace: string,
+    resetAfter = 600_000,
+  ): Promise<number> {
+    const noted = await noteGroupCircuit(driver, namespace, "media", {
+      kind: "fake",
+      queue: "emails",
+      notes: [{ type: "failure", id: "sm_x", atOnce: true }],
+      failures: 3,
+      resetAfter,
+    });
+    expect(noted.opened).toBeDefined();
+    const { circuits } = (await groupEntry(driver, namespace))!.value;
+    const openUntil = circuits.fake.openUntil as number;
+    expect(openUntil).toBeGreaterThan(Date.now());
+    return openUntil;
+  }
+
+  it("shows a circuit per-queue controllers opened for its kind as open, the later of it and its own (Q3)", async () => {
+    const { driver, namespace } = await freshDriver();
+    const groupUntil = await openGroupCircuit(driver, namespace, 60_000);
+    await seed(driver, namespace, "renders");
+    const { controller } = build(sharedOptions(driver, namespace));
+    expect(await controller.check()).toMatchObject({
+      action: "skipped",
+      reason: "circuit-open",
+    });
+    const status = await controller.status();
+    // What holds it back is in its status, not only in group.circuits.
+    expect(status.circuitOpenUntil).toBe(groupUntil);
+    // Its own circuit open for longer: the later is shown.
+    const entry = (await groupEntry(driver, namespace))!;
+    const ownUntil = groupUntil + 600_000;
+    await setReservedState(
+      driver,
+      summonGroupRef(namespace),
+      summonGroupStateName("media"),
+      { ...entry.value, circuitOpenUntil: ownUntil },
+      entry.version,
+    );
+    expect((await controller.status()).circuitOpenUntil).toBe(ownUntil);
+    // Its own shorter than the group's: the group's.
+    const again = (await groupEntry(driver, namespace))!;
+    await setReservedState(
+      driver,
+      summonGroupRef(namespace),
+      summonGroupStateName("media"),
+      { ...again.value, circuitOpenUntil: groupUntil - 30_000 },
+      again.version,
+    );
+    expect((await controller.status()).circuitOpenUntil).toBe(groupUntil);
+  });
+
+  // group.circuit true with reset({ group: true }) is the control: it
+  // cleared the circuit before the fix too, through the group's reset.
+  for (const circuit of [undefined, true] as const) {
+    for (const groupReset of [false, true]) {
+      it(`closes it with reset(${groupReset ? "{ group: true }" : ""}), group.circuit ${String(circuit)} (Q3)`, async () => {
+        const { driver, namespace } = await freshDriver();
+        await openGroupCircuit(driver, namespace);
+        await seed(driver, namespace, "renders");
+        const { summoner, calls } = recordingSummoner();
+        const { controller } = build(
+          sharedOptions(driver, namespace, {
+            summoner,
+            group: {
+              name: "media",
+              unit: "shared",
+              ...(circuit === undefined ? {} : { circuit }),
+            },
+          }),
+        );
+        expect(await controller.check()).toMatchObject({
+          action: "skipped",
+          reason: "circuit-open",
+        });
+        await controller.reset(groupReset ? { group: true } : undefined);
+        const entry = (await groupEntry(driver, namespace))!.value;
+        expect(entry.circuits?.fake).toBeUndefined();
+        expect((await controller.status()).circuitOpenUntil).toBeUndefined();
+        expect(await controller.check()).toMatchObject({ action: "summoned" });
+        expect(calls).toHaveLength(1);
+      });
+    }
+  }
+
+  // With group: true the group's reset counted the clear before the fix
+  // too: the control.
+  for (const group of [false, true]) {
+    it(`counts its budget reset${group ? " with group: true" : ""} as the group's clear: a per-queue refund of an earlier charge gives nothing back`, async () => {
+      const { driver, namespace } = await freshDriver();
+      // A per-queue replica of renders charged the group; its claim is
+      // still to come.
+      const charge = await chargeGroup(
+        driver,
+        namespace,
+        resolveSummonGroup({ name: "media" })!,
+        { queue: "renders", against: null },
+      );
+      if (charge.outcome !== "charged") {
+        throw new Error(`expected a charge, got ${charge.outcome}`);
+      }
+      await seed(driver, namespace, "renders");
+      const { summoner, calls } = recordingSummoner();
+      const { controller } = build(
+        sharedOptions(driver, namespace, { summoner }),
+      );
+      await controller.reset({ budget: true, group });
+      const cleared = (await groupEntry(driver, namespace))!.value;
+      // One clear, counted once, and every share gone with the counts.
+      expect(cleared.budget).toMatchObject({ hour: 0, day: 0, clears: 1 });
+      expect(cleared.queues).toBeUndefined();
+      expect(await controller.check()).toMatchObject({ action: "summoned" });
+      expect(calls).toHaveLength(1);
+      // The replica's claim lost: it gives back its charge from before the
+      // reset, which the reset already cleared.
+      expect(
+        await refundGroup(driver, namespace, "media", {
+          queue: "renders",
+          chargedAt: charge.at,
+          clears: charge.clears,
+          epoch: charge.entry.epoch,
+        }),
+      ).toBe(true);
+      const after = (await groupEntry(driver, namespace))!.value;
+      // One real call since the reset, and one counted.
+      expect(after.budget).toMatchObject({ hour: 1, day: 1 });
+      expect(after.queues).toMatchObject({
+        renders: { day: 1 },
+        thumbs: { day: 1 },
+        previews: { day: 1 },
+      });
+    });
+  }
+
+  for (const [label, groupBudget, own, effective] of [
+    ["off", false, { perHour: 5, perDay: 50 }, { perHour: 5, perDay: 50 }],
+    [
+      "set",
+      { perHour: 20, perDay: 50 },
+      { perHour: 10 },
+      { perHour: 10, perDay: 50 },
+    ],
+  ] as const) {
+    it(`records the group's own limits (${label}) in the entry, and its effective ones only in its status (Q2)`, async () => {
+      const { driver, namespace } = await freshDriver();
+      await seed(driver, namespace, "renders");
+      const { controller } = build(
+        sharedOptions(driver, namespace, {
+          budget: own,
+          group: { name: "media", unit: "shared", budget: groupBudget },
+        }),
+      );
+      expect(await controller.check()).toMatchObject({ action: "summoned" });
+      const entry = (await groupEntry(driver, namespace))!.value;
+      // The group-entry convention: the group's own limits, absent when off.
+      if (groupBudget === false) {
+        expect(Object.hasOwn(entry, "limits")).toBe(false);
+      } else {
+        expect(entry.limits).toEqual(groupBudget);
+      }
+      // A reader with no controller shows the group's limits as the group's.
+      const remote = await readStoredGroupStatus(
+        driver,
+        namespace,
+        "media",
+        Date.now(),
+      );
+      if (groupBudget === false) {
+        expect(remote!.budget).toMatchObject({ hour: 1, off: true });
+        expect(remote!.budget.perHour).toBeUndefined();
+      } else {
+        expect(remote!.budget).toMatchObject({ hour: 1, ...groupBudget });
+      }
+      // The unit's own status: the limits it holds the count to.
+      expect((await controller.status()).budget).toMatchObject(effective);
+    });
+  }
+
   it("gives back the count and every member's share when the provider was never called", async () => {
     const { driver, namespace } = await freshDriver();
     // Part A's counts first: one charge for renders, kept through the refund.
@@ -801,6 +1032,73 @@ describe("shared unit: combined demand (§4.4)", () => {
     );
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     expect(calls.map((call) => call.count)).toEqual([1]);
+  });
+
+  it("counts the units alive by the queue listing the most, against maxWorkers (§4.4)", async () => {
+    const { driver, namespace } = await freshDriver();
+    await seed(driver, namespace, "previews", 3);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Two units alive: sm_u1 on every queue, sm_u2 on renders and thumbs
+    // only (a partial one). previews has one of them, and wants two.
+    const placed = [
+      ["renders", "sm_u1"],
+      ["thumbs", "sm_u1"],
+      ["previews", "sm_u1"],
+      ["renders", "sm_u2"],
+      ["thumbs", "sm_u2"],
+    ] as const;
+    const workers = placed.map(
+      ([queue, id]) =>
+        new BunQueueWorker(queue, async () => await held, {
+          namespace,
+          driver,
+          logger: noopLogger,
+          concurrency: 1,
+          pollInterval: 20,
+          reportInterval: 2_000,
+          summon: { id },
+        }),
+    );
+    for (const worker of workers) {
+      void worker.run();
+    }
+    perTest.unshift(async () => {
+      release();
+      await Promise.all(workers.map(async (worker) => await worker.close()));
+    });
+    await waitUntil(async () => {
+      const listed = await Promise.all(
+        ["renders", "thumbs", "previews"].map(
+          async (queue) =>
+            (
+              await listWorkerRecords(
+                driver,
+                { ns: namespace, queue },
+                Date.now(),
+              )
+            ).length,
+        ),
+      );
+      return listed.join() === "2,2,1";
+    }, 5_000);
+    const { summoner, calls } = recordingSummoner();
+    const { controller } = build(
+      sharedOptions(driver, namespace, {
+        summoner,
+        maxWorkers: 2,
+        jobsPerWorker: 1,
+        group: { name: "media", unit: "shared", budget: false },
+      }),
+    );
+    // previews is one short, but the unit's cap is reached: two alive.
+    expect(await controller.check()).toMatchObject({
+      action: "skipped",
+      reason: "pending",
+    });
+    expect(calls).toHaveLength(0);
   });
 
   it("the expansion form, for contrast, starts one unit set per queue: 3 + 1", async () => {
@@ -972,6 +1270,114 @@ describe("shared unit: triggers and events (§4.6)", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("keeps each queue's fast path apart: an add to a served queue checks nothing, one to an unserved queue does", async () => {
+    const { driver, namespace } = await freshDriver();
+    await seed(driver, namespace, "renders", 2);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // renders' own always-on worker serves it for a record lifetime.
+    const worker = new BunQueueWorker("renders", async () => await held, {
+      namespace,
+      driver,
+      logger: noopLogger,
+      concurrency: 1,
+      pollInterval: 20,
+      reportInterval: 2_000,
+    });
+    void worker.run();
+    perTest.unshift(async () => {
+      release();
+      await worker.close();
+    });
+    await waitUntil(
+      async () =>
+        (
+          await listWorkerRecords(
+            driver,
+            { ns: namespace, queue: "renders" },
+            Date.now(),
+          )
+        ).some((one) => one.id === worker.id),
+      5_000,
+    );
+    // Each check reads the group's entry: counting those reads counts checks.
+    let reads = 0;
+    const counting = wrap(driver, {
+      getQueueState: async (
+        ref: Parameters<NonNullable<JobsDriver["getQueueState"]>>[0],
+        name: string,
+      ) => {
+        if (name === summonGroupStateName("media")) {
+          reads++;
+        }
+        return await driver.getQueueState!(ref, name);
+      },
+    });
+    const { summoner, calls } = recordingSummoner();
+    const { controller } = build(
+      sharedOptions(counting, namespace, {
+        summoner,
+        // One worker covers renders' next add too: nothing a check decides.
+        overrides: { renders: { jobsPerWorker: 10 } },
+        triggers: { onAdd: true, events: false, poll: false, debounce: 20 },
+      }),
+    );
+    expect(await controller.check()).toMatchObject({
+      action: "skipped",
+      reason: "served",
+    });
+    const queues = ["renders", "thumbs"].map(
+      (name) => new BunQueue(name, { namespace, driver, logger: noopLogger }),
+    );
+    perTest.unshift(async () => {
+      await Promise.all(queues.map(async (queue) => await queue.close()));
+    });
+    for (const queue of queues) {
+      controller[ATTACH_QUEUE](queue);
+    }
+    const before = reads;
+    await queues[0]!.add("a", {});
+    await Bun.sleep(200);
+    // renders is served: its add returned at once, and no check ran.
+    expect(reads).toBe(before);
+    // thumbs is not: its add runs a check, which summons for it.
+    await queues[1]!.add("a", {});
+    await waitUntil(() => calls.length > 0, 5_000);
+    expect(calls[0]!.reason).toBe("add");
+    expect(calls[0]!.demand.waiting).toBe(1);
+  });
+
+  it("hooks a queue of its own name only in its own namespace", async () => {
+    const { driver, namespace } = await freshDriver();
+    const { controller } = build(
+      sharedOptions(driver, namespace, {
+        triggers: { onAdd: true, events: false, poll: false },
+      }),
+    );
+    const elsewhere = `${namespace}-other`;
+    const other = new BunQueue("renders", {
+      namespace: elsewhere,
+      driver,
+      logger: noopLogger,
+    });
+    const mine = new BunQueue("renders", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    perTest.unshift(async () => {
+      await other.close();
+      await mine.close();
+      await driver.purge(elsewhere).catch(() => {});
+    });
+    controller[ATTACH_QUEUE](other);
+    controller[ATTACH_QUEUE](mine);
+    expect(other[LOCAL_ADD_HOOKS]).toBeUndefined();
+    expect(mine[LOCAL_ADD_HOOKS]).toHaveLength(1);
   });
 
   for (const events of [true, false]) {
