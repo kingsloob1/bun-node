@@ -1,0 +1,24 @@
+bun 1.4.3 (bbdc5a519), NODE_ENV=production
+
+## Native import of a .tsx view by path
+cold import (transpile Page + Main): 62.02 ms; renders P1/L1
+warm import (module registry hit): 0.08 ms
+
+## Edit, then reload — what each strategy picks up (expect page/layout = P2/L2 after editing both)
+plain import again: P1/L1
+import(path + "?v=2") (query-string busting): P2/L1
+delete require.cache[page] and [layout], import again: P2/L2
+
+## Server-side Bun.build per view (target bun, packages external), imported from a content-hashed file
+cold build: 22.66 ms; inputs to watch: ["../../../../../../../../.cache/bun-node-e6/reactviewsplan/loading/views/Page.tsx","../../../../../../../../.cache/bun-node-e6/reactviewsplan/loading/views/layouts/Main.tsx"]
+renders P2/L2
+rebuild after editing only the layout: 14.56 ms
+renders P2/L3 (expect P2/L3)
+20 rebuilds: median 13.44 ms
+
+## Memory: 300 reloads of the same view
+query-string busting: RSS +9.9 MB over 300 reloads
+require.cache deletion: RSS +-0.1 MB over 300 reloads
+
+## fs.watch on the views tree (recursive)
+events: ["change:layouts/Main.tsx","rename:New.tsx","change:New.tsx"]

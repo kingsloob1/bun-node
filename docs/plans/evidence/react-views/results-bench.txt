@@ -1,0 +1,14 @@
+bun 1.4.3 (bbdc5a519), node v24.2.0, NODE_ENV=production, 16 cores
+oha -z 3s -c 32, 4 interleaved rounds, load at start 43.1 26.6 21.9
+load at end 8.3 18.3 19.4
+
+server | path | req/s median of rounds (each round) | p50 ms (median) | p99 ms (median)
+bun-common on Bun | /string | 626 (616, 557, 626, 669) | 50.2 | 105.1
+Express 5 on Node v24.2.0 | /string | 552 (461, 538, 552, 596) | 55.7 | 328.6
+Express 5 on Bun | /string | 733 (631, 683, 733, 783) | 46.0 | 90.5
+bun-common on Bun | /engine | 765 (765, 692, 654, 779) | 43.6 | 92.1
+Express 5 on Node v24.2.0 | /engine | 561 (571, 561, 520, 436) | 57.5 | 362.9
+Express 5 on Bun | /engine | 740 (802, 740, 696, 576) | 42.9 | 86.6
+bun-common on Bun | /stream | 464 (460, 486, 464, 304) | 68.9 | 133.6
+Express 5 on Node v24.2.0 | /stream | 380 (389, 351, 380, 289) | 84.2 | 705.6
+Express 5 on Bun | /stream | 127 (127, 106, 130, 90) | 279.1 | 612.6

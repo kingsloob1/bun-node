@@ -1,0 +1,8 @@
+bun 1.4.3 (bbdc5a519)
+server | body | status | client saw
+ 9 | const direct = () =>
+Bun.serve | direct | 200 | an error: TypeError: ECONNRESET: The socket connection was closed unex
+Bun.serve | piped | 200 | an error: TypeError: ECONNRESET: The socket connection was closed unex
+ 9 | const direct = () =>
+bun-common adapter | direct | 200 | an error: TypeError: ECONNRESET: The socket connection was closed unex
+bun-common adapter | piped | 200 | an error: TypeError: ECONNRESET: The socket connection was closed unex

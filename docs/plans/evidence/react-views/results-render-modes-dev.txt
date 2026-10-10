@@ -1,0 +1,21 @@
+bun 1.4.3 (bbdc5a519), NODE_ENV=(unset)
+react-dom/server -> file:///home/kingsloob1/Desktop/projects/mine/bun-node-reactviewsplan-e6-1010/docs/plans/evidence/react-views/node_modules/react-dom/server.bun.js
+react-dom/static -> file:///home/kingsloob1/Desktop/projects/mine/bun-node-reactviewsplan-e6-1010/docs/plans/evidence/react-views/node_modules/react-dom/static.node.js
+1000 iterations, one render per mode each, rotating order; load 23.9 28.1 24.2
+
+## Whole-page render, no Suspense (ms per render)
+mode | bytes | p50 | p90 | mean | renders/s at p50 (1 core)
+renderToString(body) | 94970 | 5.124 | 7.835 | 5.678 | 195
+renderToString(document) | 95066 | 5.153 | 7.885 | 5.635 | 194
+renderToReadableStream(document), drained | 96282 | 6.513 | 9.787 | 7.171 | 154
+renderToReadableStream + allReady, drained | 96282 | 6.420 | 9.491 | 7.023 | 156
+prerender(document), prelude drained | 96282 | 6.605 | 9.616 | 7.171 | 151
+
+## Suspense: the page plus a section that waits 50 ms (median of 15)
+stream: shell ready (await renderToReadableStream): 5.84 ms
+stream: first chunk: 7.02 ms
+stream: last chunk: 51.42 ms
+prerender: prelude ready: 51.83 ms
+renderToString: returned: 6.36 ms
+renderToString with a suspended section contains the fallback: true, the data: false
+stream contains the fallback: true, the data: true, a <template> swap marker: true, inline <script> for the swap: true

@@ -1,0 +1,12 @@
+bun 1.4.3, express 5.3.0
+- res.render("Hello", { name }): 200 "<p>Hello <!-- -->World</p>"
+- keys of the options the engine received: ["settings","appName","user","name","_locals","cache"]
+- options.cache under NODE_ENV=production: true; settings keys include: ["view","views","view cache","view engine"]
+- res.render("users") (directory): 200 "<ul><li>users index</li></ul>"
+- res.render("Legacy.jsx") with an engine registered for jsx: 200 "<p>legacy jsx</p>"
+- res.render("Legacy") with view engine tsx: 500 "error: Failed to lookup view \"Legacy\" in views directory \"/home/kingsloob1/.cache/bun-node-e6/reactviewsplan/contract/vi"
+- res.render("Named") (no default export): 500 "error: /home/kingsloob1/.cache/bun-node-e6/reactviewsplan/contract/views/Named.tsx has no default export"
+- res.render("../Secret") (climbs out of views): 200 "<p>outside the views directory</p>"
+- res.render("/home/kingsloob1/.cache/bun-node-e6/reactviewsplan/contract/Secret") (absolute): 200 "<p>outside the views directory</p>"
+- res.render(view, locals, callback): 200 "[<p>Hello <!-- -->cb</p>]"
+- view engine "tsx" with no app.engine("tsx"): 500 "error: Cannot find module 'tsx'\nRequire stack:\n- /home/kingsloob1/Desktop/projects/mine/bun-node-reactviewsplan-e6-1010/"

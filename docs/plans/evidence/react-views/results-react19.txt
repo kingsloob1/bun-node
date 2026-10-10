@@ -1,0 +1,44 @@
+bun 1.4.3, NODE_ENV=production
+
+## Doctype
+- renderToString(<html>) starts with: <html lang="en"><head><meta ch
+- renderToReadableStream(<html>) starts with: <!DOCTYPE html><html lang="en"
+- renderToReadableStream(<div>) starts with: <div>x</div>
+
+## Hoisting <title>, <meta>, <link precedence> from deep in the tree
+- whole document, stream: <title> inside <head>: true
+- whole document, stream: <meta description> inside <head>: true
+- whole document, stream: stylesheet <link> inside <head>: true
+- whole document, renderToString: <title> inside <head>: true
+- fragment (no <html>), renderToString output: <link rel="stylesheet" href="/a.css" data-precedence="default"/><title>Deep title</title><meta name="description" content="from deep in the tree"/><section><p>body text</p></section>
+
+## Async function components (no RSC)
+- stream output: <!--$--><p>async component resolved</p><!--/$-->
+- onError calls: []
+- renderToString output: <!--$!--><template></template><p>fallback</p><!--/$-->
+
+## use(promise) inside Suspense
+- stream resolves the data: true
+- a promise created in render: finished in 6 ms, resolved: true
+- its onError: []
+
+## Errors
+- shell error: renderToReadableStream rejects with: Error: boom in render
+- shell error: onError calls: ["Error: boom in render"]
+- renderToString throws: Error: boom in render
+- boundary error: shell resolved, onError calls: ["Error: boom in render"]
+- boundary error: output has fallback + client-render marker (data-dgst): {"fallback":true,"dgst":true,"message":false}
+- late boundary error: onError: ["Error: late boom"]
+- late boundary error: stream ended normally with fallback kept: true
+
+## nonce and bootstrap scripts
+- every <script> tag carries the nonce: true
+- script tags: ["<script nonce=\"NONCE123\">","<script nonce=\"NONCE123\" id=\"_R_\">","<script type=\"module\" src=\"/assets/page-abc.js\" nonce=\"NONCE123\" async=\"\">","<script nonce=\"NONCE123\">"]
+- modulepreload link emitted: true
+
+## Abort (a deadline)
+- aborted after 102 ms; stream ended with </html>: true
+- onError: ["Error: render deadline 100 ms"]
+
+## Escaping
+- text and attribute escaped: <div title="&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;&quot;&#x27;&amp;">&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;&quot;&#x27;&amp;</div>
