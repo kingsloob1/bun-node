@@ -14,7 +14,7 @@ import { ApiError } from "./errors";
 export type ShapeFields = Readonly<Record<string, unknown>>;
 
 /** Whether a value is a plain JSON object (not an array, not `null`). */
-function isRecord(value: unknown): value is ShapeFields {
+export function isRecord(value: unknown): value is ShapeFields {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

@@ -9,13 +9,18 @@ import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";
+import { useNow } from "../../hooks/useNow";
 import { useCan, useMeta } from "../../meta/hooks";
 import { POLL_INTERVAL_MS } from "../../queryClient";
 import { Link } from "../../router";
 import { providerReadiness } from "../providers/providerText";
+import { utcResetLabel } from "../queues/panels/budgetText";
 import { SummonBudget } from "../queues/panels/SummonBudget";
 import { summonInert, summonOutcome } from "../queues/panels/summonText";
 import { summonTabPath } from "./paths";
+import { SummonGroupsSection } from "./SummonGroupsSection";
+// The group styles live with the Summon tab's; this chunk may load first.
+import "../queues/queues.css";
 
 /**
  * How often the list is re-read: attempts and budgets move with the clock
@@ -30,7 +35,10 @@ const SUMMONING_REFRESH_MS = POLL_INTERVAL_MS;
  * (`features.summonRemoteStatus`), every queue whose controller runs
  * elsewhere (`local: false`: "Elsewhere", no actions), one row each — its queue (linked to the queue's Summon tab), the
  * summoner's kind and readiness, the last outcome and when, and the budget
- * left in each UTC window with when it resets.
+ * left in each UTC window with when it resets, and an open circuit.
+ *
+ * Under the controllers, where the API reads summon state from storage, the
+ * summon groups of the namespace ({@link SummonGroupsSection}).
  *
  * Routed only where the API serves the list (`features.summonList`) and the
  * caller may list queues (`queues.list`, the route's action); the nav entry
@@ -101,6 +109,9 @@ export function SummoningScreen() {
           </tbody>
         </Table>
       )}
+      {canList && remote && (
+        <SummonGroupsSection refetchInterval={SUMMONING_REFRESH_MS} />
+      )}
     </div>
   );
 }
@@ -113,6 +124,7 @@ interface ControllerRowProps {
 
 /** One controller. */
 function ControllerRow({ item }: ControllerRowProps) {
+  const now = useNow();
   // Absent for a queue read from storage (`local: false`): its controller,
   // and so its summoner, runs in another process.
   const readiness =
@@ -171,6 +183,18 @@ function ControllerRow({ item }: ControllerRowProps) {
               testId="summoning-inert"
             >
               Inert
+            </Badge>
+          </>
+        )}
+        {item.circuitOpenUntil !== undefined && (
+          <>
+            {" "}
+            <Badge
+              tone="warning"
+              title={`Circuit open until ${utcResetLabel(item.circuitOpenUntil, now)}: after repeated failures nothing is summoned until then, apart from one trial attempt.`}
+              testId="summoning-circuit"
+            >
+              Circuit open
             </Badge>
           </>
         )}
