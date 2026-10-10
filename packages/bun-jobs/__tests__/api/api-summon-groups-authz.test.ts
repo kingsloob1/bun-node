@@ -26,7 +26,8 @@ import { harness } from "./fixtures";
  * an allow-list can read and reset a group whose members it covers.
  *
  * Also the `GET /summon` rows read from storage that cannot show a budget: a
- * newer bun-jobs' marker (inert, no budget), an unreadable one (left out),
+ * newer bun-jobs' marker (inert, no budget), an unreadable one (left out of
+ * the list; inert, `unreadable-marker`, on its own route),
  * and one written before limits were persisted (`limitsUnknown`).
  */
 
@@ -495,6 +496,27 @@ describe("GET /summon rows read from storage that cannot show a budget", () => {
     expect(status.body.budget).not.toHaveProperty("off");
     const local = await h.call("GET", "/queues/local/summon");
     expect(local.body.budget).not.toHaveProperty("limitsUnknown");
+
+    // The single-queue route answers for an unreadable marker rather than
+    // leave it out, and says it is inert and why: never a healthy idle queue
+    // (`inert: false`, nothing pending, no failures) with no budget.
+    const garbage = await h.call("GET", "/queues/garbage/summon");
+    expect(garbage.status).toBe(200);
+    expect(garbage.body).toEqual({
+      queue: "garbage",
+      local: false,
+      inert: true,
+      inertReason: "unreadable-marker",
+      pending: [],
+      failures: 0,
+    });
+    // A newer marker's, alike (the control): inert, its own reason.
+    const newer = await h.call("GET", "/queues/newer/summon");
+    expect(newer.body).toMatchObject({
+      inert: true,
+      inertReason: "newer-marker",
+    });
+    expect(newer.body).not.toHaveProperty("budget");
     expect(h.mismatches()).toEqual([]);
   });
 });

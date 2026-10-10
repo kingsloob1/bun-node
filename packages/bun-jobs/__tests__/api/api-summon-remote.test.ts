@@ -366,7 +366,8 @@ describe("in one process, on the file backend", () => {
     // already dropped that one, so the group still counts one, not zero.
     await refundGroup(apiDriver, namespace, "g", {
       queue: "local",
-      chargedAt: before.at,
+      hourStart: before.hourStart,
+      dayStart: before.dayStart,
       clears: before.clears,
     });
     expect((await h.call("GET", "/summon/groups/g")).body).toMatchObject({

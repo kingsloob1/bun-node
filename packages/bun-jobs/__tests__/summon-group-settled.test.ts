@@ -10,6 +10,7 @@ import {
 } from "../lib/summon/group";
 import { testNamespace } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
+import { withinOneHour } from "./helpers/budgetWindow";
 import { runBun } from "./helpers/spawnBun";
 
 /**
@@ -42,6 +43,15 @@ const MEMBER = join(
   "summon-group-member.ts",
 );
 const BACKENDS = await crossProcessBackends({ cleanups });
+
+/**
+ * How much of the UTC hour each case needs, from its first charge to its
+ * last read: two member processes and a second between them, with room for
+ * a loaded machine. A case whose charge and check fall in two hours sees a
+ * limit of 1 allow both (a summon, not the refusal it checks for), so one
+ * that would begin too near the hour's end waits for the next.
+ */
+const CASE_SPAN_MS = 60_000;
 
 /** One line the member process printed. */
 interface MemberLine {
@@ -102,6 +112,7 @@ for (const backend of BACKENDS) {
           `group-settled-${backend.name}`,
           "remote-builds",
         );
+        await withinOneHour(CASE_SPAN_MS);
         const first = await member(backend, namespace, "remote-builds");
         expect([first.check?.action, first.check?.outcome]).toEqual([
           "summoned",
@@ -130,6 +141,7 @@ for (const backend of BACKENDS) {
           `group-in-flight-${backend.name}`,
           "remote-builds",
         );
+        await withinOneHour(CASE_SPAN_MS);
         // A replica's charge for this queue, made against the marker the
         // check will read (none yet), whose claim has not landed.
         const charge = await chargeGroup(

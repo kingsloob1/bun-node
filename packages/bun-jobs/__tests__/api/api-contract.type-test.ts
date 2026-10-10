@@ -615,6 +615,35 @@ export type SummonLimitsUnknownRuntimeOk = Expect<
     true | undefined
   >
 >;
+// Why a status is inert: one vocabulary in the contract, the runtime and a
+// list row, including `unreadable-marker` (summon state that cannot be read,
+// answered by `GET /queues/{queue}/summon` rather than shown as idle).
+export type SummonInertReasonOk = Expect<
+  Equal<
+    NonNullable<Contract.SummonStatusDto["inertReason"]>,
+    "summoned-process" | "newer-marker" | "unreadable-marker"
+  >
+>;
+export type SummonInertReasonRuntimeOk = Expect<
+  Equal<
+    NonNullable<Root.SummonStatus["inertReason"]>,
+    NonNullable<Contract.SummonStatusDto["inertReason"]>
+  >
+>;
+export type SummonListInertReasonOk = Expect<
+  Equal<
+    Contract.SummonListItemDto["inertReason"],
+    Contract.SummonStatusDto["inertReason"]
+  >
+>;
+// Negative control: the vocabulary without `unreadable-marker` is not it.
+export type SummonInertReasonNegative = Expect<
+  // @ts-expect-error -- `unreadable-marker` is one of the reasons
+  Equal<
+    NonNullable<Contract.SummonStatusDto["inertReason"]>,
+    "summoned-process" | "newer-marker"
+  >
+>;
 // Negative control: a list row whose budget is required is not the schema's.
 export type SummonListNegative = Expect<
   // @ts-expect-error -- the schema's `budget` is optional

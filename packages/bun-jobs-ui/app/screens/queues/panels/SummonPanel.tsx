@@ -36,6 +36,7 @@ import {
   summonCheckSummary,
   summonInert,
   summonOutcome,
+  summonStateKnown,
   summonStyle,
 } from "./summonText";
 
@@ -150,7 +151,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
       )}
       <SummonState status={data} />
       {data.summoner && <Summoner summoner={data.summoner} />}
-      {data.pending.length > 0 && (
+      {summonStateKnown(data) && data.pending.length > 0 && (
         <PendingTable
           queue={queue}
           pending={data.pending}
@@ -217,10 +218,15 @@ export function SummonPanel({ queue }: SummonPanelProps) {
   );
 }
 
-/** What holds the next attempt back, and the last thing that happened. */
+/**
+ * What holds the next attempt back, and the last thing that happened. For
+ * summon state the server could not read ({@link summonStateKnown}), only
+ * the last outcome: the rest would be placeholders.
+ */
 function SummonState({ status }: { status: SummonStatusDto }) {
   const last =
     status.last === undefined ? undefined : summonOutcome(status.last.outcome);
+  const known = summonStateKnown(status);
   return (
     <KeyValue
       items={[
@@ -248,7 +254,7 @@ function SummonState({ status }: { status: SummonStatusDto }) {
               </span>
             ),
         },
-        {
+        known && {
           key: "pending",
           label: "On their way",
           value: (
@@ -258,7 +264,7 @@ function SummonState({ status }: { status: SummonStatusDto }) {
           ),
           hint: "Summon attempts still counting as workers on their way.",
         },
-        {
+        known && {
           key: "failures",
           label: "Consecutive failures",
           value: (
@@ -268,37 +274,40 @@ function SummonState({ status }: { status: SummonStatusDto }) {
           ),
           hint: "Failed, unavailable or lost attempts in a row, towards the circuit. A throttled call is not counted, and an auth or misconfiguration error counts enough to open it at once. A registration or a reset clears them.",
         },
-        status.backoffUntil !== undefined && {
-          key: "backoff",
-          label: "Backing off until",
-          value: (
-            <span data-testid="summon-backoff">
-              <RelativeTime value={status.backoffUntil} />
-            </span>
-          ),
-        },
-        status.circuitOpenUntil !== undefined && {
-          key: "circuit",
-          label: "Circuit open until",
-          value: (
-            <span data-testid="summon-circuit">
-              <RelativeTime value={status.circuitOpenUntil} />
-            </span>
-          ),
-          hint: "After repeated failures nothing is summoned until then, apart from one trial attempt.",
-        },
-        status.budget !== undefined && {
-          key: "budget",
-          label: "Budget",
-          value: (
-            <SummonBudget
-              budget={status.budget}
-              testId="summon-budget"
-            />
-          ),
-          // The row shows what is left; the counts used stay in view here.
-          hint: budgetUsedText(status.budget),
-        },
+        known &&
+          status.backoffUntil !== undefined && {
+            key: "backoff",
+            label: "Backing off until",
+            value: (
+              <span data-testid="summon-backoff">
+                <RelativeTime value={status.backoffUntil} />
+              </span>
+            ),
+          },
+        known &&
+          status.circuitOpenUntil !== undefined && {
+            key: "circuit",
+            label: "Circuit open until",
+            value: (
+              <span data-testid="summon-circuit">
+                <RelativeTime value={status.circuitOpenUntil} />
+              </span>
+            ),
+            hint: "After repeated failures nothing is summoned until then, apart from one trial attempt.",
+          },
+        known &&
+          status.budget !== undefined && {
+            key: "budget",
+            label: "Budget",
+            value: (
+              <SummonBudget
+                budget={status.budget}
+                testId="summon-budget"
+              />
+            ),
+            // The row shows what is left; the counts used stay in view here.
+            hint: budgetUsedText(status.budget),
+          },
       ]}
     />
   );
