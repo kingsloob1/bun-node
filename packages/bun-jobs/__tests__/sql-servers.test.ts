@@ -1203,3 +1203,108 @@ describe.skipIf(!postgres)(
     }, 30_000);
   },
 );
+
+/**
+ * Postgres promotes past a due row another transaction holds, rather than
+ * waiting on it.
+ *
+ * Every worker promotes twice over — its sweep and its loop's empty pass — so
+ * on a busy queue several promotions want the same due rows at once. When each
+ * waited on the rows the others held, they deadlocked: Postgres broke one
+ * cycle per `deadlock_timeout` (1s), the lock retry ran the loser straight into
+ * the next, and with 4 workers on 120 jobs promotion stopped for 5-20s while
+ * every loop waited on its own promotion and claimed nothing. A held row now
+ * belongs to whoever holds it, and still reads as due, so the next pass
+ * returns for it at once.
+ */
+describe.skipIf(!postgres)(
+  "SQL driver: postgres promotion and held rows",
+  () => {
+    it("promotes the due rows nobody holds, without waiting on the one held", async () => {
+      const driver = new SqlDriver({
+        url: postgres,
+        adapter: "postgres",
+        tablePrefix: "bun_jobs_test_",
+      });
+      const raw = rawClient(postgres!);
+      const q: QueueRef = { ns: testNamespace("pg-promote-held"), queue: "q" };
+      const now = Date.now();
+
+      try {
+        await driver.connect();
+        await driver.addJobs(
+          q,
+          ["held", "free-1", "free-2"].map((id, index) =>
+            makeJob({
+              id,
+              state: "delayed",
+              createdAt: now - 1_000,
+              runAt: now - 300 + index * 100,
+            }),
+          ),
+        );
+
+        // Hold the earliest due row, the way another worker's promotion of it
+        // does until it commits.
+        let locked = 0;
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const holding = raw.begin(async (tx) => {
+          locked = (
+            await tx.unsafe(
+              `SELECT 1 FROM bun_jobs_test_jobs
+              WHERE ns = $1 AND queue = $2 AND id = 'held' FOR UPDATE`,
+              [q.ns, q.queue],
+            )
+          ).length;
+          await released;
+        });
+        await waitFor(() => locked === 1, { timeout: 5_000 });
+
+        let answered:
+          | Awaited<ReturnType<SqlDriver["promoteDelayed"]>>
+          | "waited";
+        try {
+          answered = await Promise.race([
+            driver.promoteDelayed(q, Date.now(), 100),
+            Bun.sleep(2_000).then(() => "waited" as const),
+          ]);
+        } finally {
+          release();
+          await holding;
+        }
+
+        // The two free rows moved; the held one is still due, so the next pass
+        // is told to come at once.
+        expect(answered).toEqual({ promoted: 2, nextDueAt: now - 300 });
+        const states = async () =>
+          Object.fromEntries(
+            (
+              (await raw.unsafe(
+                `SELECT id, state FROM bun_jobs_test_jobs
+                WHERE ns = $1 AND queue = $2 ORDER BY id`,
+                [q.ns, q.queue],
+              )) as { id: string; state: string }[]
+            ).map(({ id, state }) => [id, state]),
+          );
+        expect(await states()).toEqual({
+          "free-1": "waiting",
+          "free-2": "waiting",
+          held: "delayed",
+        });
+
+        // Once let go, the next pass takes it.
+        expect(await driver.promoteDelayed(q, Date.now(), 100)).toEqual({
+          promoted: 1,
+          nextDueAt: null,
+        });
+        expect((await states()).held).toBe("waiting");
+      } finally {
+        await driver.purge(q.ns).catch(() => {});
+        await driver.close();
+      }
+    }, 30_000);
+  },
+);
