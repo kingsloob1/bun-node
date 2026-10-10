@@ -781,17 +781,19 @@ export interface SummonStatus {
   local: boolean;
   /**
    * Whether that controller is inert here (see `SummonController.inert`).
-   * Read from storage (`local: false`), `true` only for a marker a newer
-   * bun-jobs wrote, which this build cannot read (`inertReason:
-   * "newer-marker"`).
+   * Read from storage (`local: false`), `true` only for a marker this build
+   * cannot read: one a newer bun-jobs wrote (`inertReason: "newer-marker"`)
+   * or one that is not a marker's shape at all (`"unreadable-marker"`).
    */
   inert: boolean;
   /**
    * Why it is inert, when it is: `"summoned-process"` (a summoned process or
-   * a runner child, without `fromSummoned`), or `"newer-marker"` (the queue's
-   * marker was written by a newer bun-jobs, which this build leaves alone).
+   * a runner child, without `fromSummoned`), `"newer-marker"` (the queue's
+   * marker was written by a newer bun-jobs, which this build leaves alone),
+   * or `"unreadable-marker"` (read from storage only: the marker is neither
+   * this build's shape nor a newer one's, so nothing of it can be shown).
    */
-  inertReason?: "summoned-process" | "newer-marker";
+  inertReason?: "summoned-process" | "newer-marker" | "unreadable-marker";
   /**
    * The summoner: its identity, how far its config has got, its declared
    * capabilities once known, and its `describe()` facts. Always present from

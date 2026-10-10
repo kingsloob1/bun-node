@@ -707,12 +707,12 @@ export const SummonStatusSchema = s.named(
       }),
       inert: s.boolean({
         description:
-          'Whether that controller is inert: it summons nothing, and "summon now" answers `skipped` with reason `inert`. Read from storage (`local: false`), `true` only for summon state a newer bun-jobs wrote.',
+          'Whether that controller is inert: it summons nothing, and "summon now" answers `skipped` with reason `inert`. Read from storage (`local: false`), `true` only for summon state this build cannot read: state a newer bun-jobs wrote, or state not in the shape of summon state at all (with nothing pending, no failures and no `budget`).',
       }),
       inertReason: s.optional(
-        s.enum(["summoned-process", "newer-marker"], {
+        s.enum(["summoned-process", "newer-marker", "unreadable-marker"], {
           description:
-            "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
+            "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`), `newer-marker` (a newer bun-jobs wrote the queue's summon state) or `unreadable-marker` (the queue's summon state cannot be read at all; `GET /summon` leaves such a queue out). Show a reason you do not know as text.",
         }),
       ),
       summoner: s.optional(
@@ -861,9 +861,9 @@ export const SummonListItemSchema = s.object({
     }),
   ),
   inertReason: s.optional(
-    s.enum(["summoned-process", "newer-marker"], {
+    s.enum(["summoned-process", "newer-marker", "unreadable-marker"], {
       description:
-        "Why it is inert: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state).",
+        "Why it is inert, as `GET /queues/{queue}/summon` has it: `summoned-process` (the API's process was itself summoned, or is a runner child, and the policy has no `fromSummoned`) or `newer-marker` (a newer bun-jobs wrote the queue's summon state). Never `unreadable-marker` here: the list leaves a queue whose summon state cannot be read out.",
     }),
   ),
   circuitOpenUntil: s.optional(

@@ -40,8 +40,9 @@ export interface StoredSummonStatus {
   kind?: string;
   /**
    * `true` when the marker is neither this build's shape nor a newer one's:
-   * `status` then holds nothing read from it (no budget, no failures), so a
-   * list leaves the queue out rather than show zeros.
+   * `status` then holds nothing read from it (no budget, no failures, inert
+   * with `unreadable-marker`), so a list leaves the queue out rather than
+   * show zeros.
    */
   unreadable?: true;
 }
@@ -52,9 +53,10 @@ export interface StoredSummonStatus {
  * controller has ever written it). The budget's limits are the last claim's
  * (`off: true` for a budget that was off, `limitsUnknown: true` when no claim
  * persisted them); a marker a newer bun-jobs wrote answers `inert` with
- * `newer-marker` and no budget, and an unreadable one `unreadable: true` and
- * nothing read from it. The group, when there is one, is unfiltered: a caller
- * serving it redacts what its reader may not see.
+ * `newer-marker` and no budget, and an unreadable one `unreadable: true`,
+ * `inert` with `unreadable-marker` and nothing read from it — never what
+ * would read as a healthy, idle queue. The group, when there is one, is
+ * unfiltered: a caller serving it redacts what its reader may not see.
  */
 export async function readStoredSummonStatus(
   driver: JobsDriver,
@@ -79,8 +81,8 @@ export async function readStoredSummonStatus(
       status: {
         queue,
         local: false,
-        inert: newer !== undefined,
-        ...(newer === undefined ? {} : { inertReason: "newer-marker" }),
+        inert: true,
+        inertReason: newer === undefined ? "unreadable-marker" : "newer-marker",
         pending: [],
         failures: 0,
       },

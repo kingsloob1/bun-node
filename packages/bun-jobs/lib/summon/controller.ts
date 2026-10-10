@@ -172,6 +172,30 @@ const GROUP_RECHECKS = 5;
  */
 const GROUP_IN_FLIGHT_MS = 5_000;
 
+/** What a refund of a group charge needs of it. */
+interface GroupChargeMade {
+  /** The hour window the charge counted in, epoch ms: the entry's, not this clock's. */
+  hourStart: number;
+  /** The day window the charge counted in, epoch ms. */
+  dayStart: number;
+  /** The entry's `budget.clears` it was charged under. */
+  clears: number;
+  /** The epoch of the entry it was charged in. */
+  epoch: string;
+}
+
+/** The refund's view of a charge that landed. */
+function groupCharge(
+  charge: Extract<SummonGroupCharge, { outcome: "charged" }>,
+): GroupChargeMade {
+  return {
+    hourStart: charge.hourStart,
+    dayStart: charge.dayStart,
+    clears: charge.clears,
+    epoch: charge.entry.epoch,
+  };
+}
+
 /**
  * The events from other processes that can create demand, so the events
  * trigger checks after them.
@@ -1650,7 +1674,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // refunded, and a refund that is lost too over-counts by one — whereas a
     // claim whose charge was lost would be an attempt the group never
     // counted.
-    let charged: { at: number; clears: number; epoch: string } | undefined;
+    let charged: GroupChargeMade | undefined;
     const group = this.#group;
     if (group !== undefined) {
       // A replica racing for this queue that has claimed it already moved
@@ -1712,11 +1736,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           charge.outcome === "charged" &&
           (await this.#markerMoved(version))
         ) {
-          await this.#refundGroup({
-            at: charge.at,
-            clears: charge.clears,
-            epoch: charge.entry.epoch,
-          });
+          await this.#refundGroup(groupCharge(charge));
           return { action: "skipped", reason: "contended", demand };
         }
       }
@@ -1752,11 +1772,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         }
         return { action: "skipped", reason: "budget", demand };
       }
-      charged = {
-        at: charge.at,
-        clears: charge.clears,
-        epoch: charge.entry.epoch,
-      };
+      charged = groupCharge(charge);
     }
 
     // Step 6b: claim. Nothing has been called yet, so losing costs nothing —
@@ -2240,8 +2256,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * could have afforded until the window rolls. Never throws.
    */
   async #refundGroup(
-    /** The charge: when it was made, the clears and the entry's epoch it was made under. */
-    charged: { at: number; clears: number; epoch: string },
+    /** The charge: the windows it counted in, the clears and the entry's epoch it was made under. */
+    charged: GroupChargeMade,
   ): Promise<void> {
     const group = this.#group;
     if (group === undefined) {
@@ -2254,7 +2270,8 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         group.name,
         {
           queue: this.queue,
-          chargedAt: charged.at,
+          hourStart: charged.hourStart,
+          dayStart: charged.dayStart,
           clears: charged.clears,
           epoch: charged.epoch,
         },

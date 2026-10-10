@@ -678,7 +678,8 @@ describe("refund after a reset", () => {
     expect(
       await refundGroup(driver, namespace, "g", {
         queue: "a",
-        chargedAt: first.at,
+        hourStart: first.hourStart,
+        dayStart: first.dayStart,
         clears: first.clears,
       }),
     ).toBe(true);
@@ -692,7 +693,8 @@ describe("refund after a reset", () => {
     }
     await refundGroup(driver, namespace, "g", {
       queue: "b",
-      chargedAt: second.at,
+      hourStart: second.hourStart,
+      dayStart: second.dayStart,
       clears: second.clears,
     });
     expect(await entry("g")).toMatchObject({ budget: { hour: 0, day: 0 } });
