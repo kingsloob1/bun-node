@@ -95,16 +95,9 @@ const slowWriteFile = join(processors, "isolation-slow-write.ts");
 /** Short waits, so the tour spends its time on the work. */
 const fast = { pollInterval: 25, maxBlock: 50 };
 /**
- * How often the tour's workers sweep for stalled jobs, in milliseconds — the
+ * How often step 4's sweeper looks for stalled jobs, in milliseconds — the
  * `stalledInterval` option, whose default is 30s, far longer than a tour can
  * wait.
- *
- * Every worker on a queue is given it, not only the sweeper a step is about.
- * The queue's repair cadence is the fleet's rather than any one worker's: each
- * worker sweeps on its own `stalledInterval`, so the shortest on the queue is
- * what sets the pace, and a fleet that elected one sweeper per queue would
- * take the elected worker's instead. No step can name the worker whose
- * interval will count, so this one is set on all of them.
  */
 const SWEEP_INTERVAL = 100;
 /** How long to wait for anything that involves starting a process. */
@@ -661,29 +654,34 @@ const held: JobsDriver = new Proxy(driver, {
 /* ------------------------------------------------------------------ */
 step("4. ctx.heartbeat() from a child keeps a long job's lock");
 
-// The worker's own renewal is effectively off (a minute apart, against a
-// 3-second lock), so only the child's heartbeats can keep the job. A paused
-// worker sweeps for stalled jobs every SWEEP_INTERVAL ms and would take it
-// back — as would `beating` itself, so both are given that cadence and either
-// one's sweep is quick enough to catch a lock that lapses.
+// The rule this step rests on is the library's own: a lock must be renewed
+// well inside the time it lives. The worker renews at a third of
+// `lockDuration` by default (`heartbeatInterval`), and refuses a remote
+// override slower than half. Here the worker's own renewal is effectively off
+// (a minute apart, against a 3-second lock), so only the child's heartbeats
+// renew the lock, and they keep to that rule: a fifth of the lock apart, which
+// leaves four-fifths of it for each renewal's round trip through the worker to
+// the driver.
+//
+// What no heartbeat can cover is the child's start. Until the spawned process
+// has loaded and called `ctx.heartbeat()`, the claim's own lock is all the job
+// has, and how long a process takes to start is not something a lock duration
+// can bound on a busy machine. In real use the worker's own renewal covers it;
+// here nothing sweeps until the child has heartbeated once. A lock that lapsed
+// while the child started is renewed by that first heartbeat — a renewal
+// checks the claim, not the clock — and from then on only the heartbeats stand
+// between the job and the sweep.
+/** The heartbeat worker's `lockDuration`, in milliseconds. */
+const HEARTBEAT_LOCK = 3_000;
+/** How far apart the child heartbeats: a fifth of the lock. */
+const BEAT_EVERY = HEARTBEAT_LOCK / 5;
+/** How many heartbeats the job sends: enough for two whole locks. */
+const BEATS = (2 * HEARTBEAT_LOCK) / BEAT_EVERY;
+
 const heartbeatQueue = new BunQueue<ReportData, Report>("heartbeats", {
   namespace,
   driver,
 });
-const sweeper = new BunQueueWorker("heartbeats", async () => null, {
-  namespace,
-  driver,
-  stalledInterval: SWEEP_INTERVAL,
-  ...fast,
-});
-/** Ids the queue's stalled sweep recovered, from whichever worker ran it. */
-const swept: string[] = [];
-sweeper.on("stalled", (ids) => {
-  swept.push(...ids);
-});
-await sweeper.pause();
-void sweeper.run();
-
 const beating = new BunQueueWorker<ReportData, Report>(
   "heartbeats",
   reportFile,
@@ -691,45 +689,88 @@ const beating = new BunQueueWorker<ReportData, Report>(
     namespace,
     driver,
     target: { kind: "child-process", closeTimeout: 2_000 },
-    lockDuration: 3_000,
+    lockDuration: HEARTBEAT_LOCK,
     heartbeatInterval: 60_000,
-    // The same cadence as the sweeper beside it: the checks below need a sweep
-    // inside the ~6s the job runs, whichever worker's sweep that turns out to
-    // be — otherwise nothing sweeps in time and the two would pass for the
-    // wrong reason.
-    stalledInterval: SWEEP_INTERVAL,
+    // Its first sweep runs as it starts, before the job is claimed, and the
+    // next only after LONG, the longest this tour waits for a process to
+    // start. So `beating` cannot sweep while the child starts, and the
+    // sweeper below does the sweeping once it runs.
+    stalledInterval: LONG.timeout,
     ...fast,
   },
 );
+/** Ids the queue's stalled sweep recovered, from whichever worker ran it. */
+const swept: string[] = [];
 beating.on("stalled", (ids) => {
   swept.push(...ids);
+});
+/** How many of its heartbeats the job has reported landing so far. */
+let beatsLanded = 0;
+// The processor reports `{ heartbeats }` after each one returns, which is once
+// the worker has written the renewed lock: the order a job channel keeps.
+beating.on("progress", (_job, value) => {
+  if (typeof value === "object" && typeof value.heartbeats === "number") {
+    beatsLanded = value.heartbeats;
+  }
 });
 void beating.run();
 
 const longJob = await heartbeatQueue.add(
   "report",
-  { label: "heartbeats", beats: 10, beatEvery: 600 },
+  {
+    label: "heartbeats",
+    beats: BEATS,
+    beatEvery: BEAT_EVERY,
+    // `touch()` and `extendLock()` hold a lock for 30s by default: long
+    // enough to see the job out, heartbeats or none.
+    touchLock: false,
+  },
   { removeOnComplete: false },
 );
+await waitFor("the child's first heartbeat", () => beatsLanded >= 1, LONG);
+
+// A paused worker still sweeps for stalled jobs, every SWEEP_INTERVAL ms. The
+// queue's stalled sweep is leased to one worker at a time, and a worker takes
+// the lease from one sweeping more than twice as seldom, so from its first
+// pass this one does the sweeping.
+const sweeper = new BunQueueWorker("heartbeats", async () => null, {
+  namespace,
+  driver,
+  stalledInterval: SWEEP_INTERVAL,
+  ...fast,
+});
+sweeper.on("stalled", (ids) => {
+  swept.push(...ids);
+});
+await sweeper.pause();
+const sweepingFrom = Date.now();
+void sweeper.run();
+
+// Settled either way: a job the sweep took back fails the checks below
+// rather than leaving the wait to time out.
 await waitFor(
-  "the long isolated job to complete",
-  async () => (await heartbeatQueue.getJob(longJob.id))?.state === "completed",
+  "the long isolated job to settle",
+  async () =>
+    ["completed", "failed", "dead"].includes(
+      (await heartbeatQueue.getJob(longJob.id))?.state ?? "",
+    ),
   LONG,
 );
 const beaten = await heartbeatQueue.getJob(longJob.id);
+checkEqual("it completed", beaten?.state, "completed");
 checkEqual(
-  "it sent 10 heartbeats over ~6s",
-  (beaten?.returnValue as Report).heartbeats,
-  10,
+  `it sent ${BEATS} heartbeats, ${BEAT_EVERY}ms apart`,
+  (beaten?.returnValue as Report | undefined)?.heartbeats,
+  BEATS,
 );
 check(
-  "it ran for longer than its lock lasts",
-  (beaten?.finishedOn ?? 0) - (beaten?.processedOn ?? 0) >= 5_000,
-  { processedOn: beaten?.processedOn, finishedOn: beaten?.finishedOn },
+  "the sweep watched it for longer than its lock lasts",
+  (beaten?.finishedOn ?? 0) - sweepingFrom > HEARTBEAT_LOCK,
+  { sweepingFrom, finishedOn: beaten?.finishedOn, lock: HEARTBEAT_LOCK },
 );
 checkEqual("never stalled", beaten?.stalledCount, 0);
 // `swept` collects both workers' `stalled` events, so this holds whichever of
-// them ran the sweep — and is not satisfied by no sweep having run at all.
+// them ran the sweep.
 check(
   "neither worker's sweep recovered it",
   !swept.includes(longJob.id),
