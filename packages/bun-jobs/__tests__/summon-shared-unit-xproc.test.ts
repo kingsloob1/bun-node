@@ -49,6 +49,8 @@ const RACER = join(
   "processes",
   "summon-shared-racer.ts",
 );
+/** The backends a death after one queue's clean close is checked on: one of each kind. */
+const CLOSE_BACKENDS = new Set(["file", "sqlite", "postgres", "redis"]);
 /** Rounds of the race per backend. */
 const ROUNDS = 3;
 /** Time between two rounds' starts. */
@@ -559,6 +561,67 @@ for (const backend of BACKENDS) {
         expect(platform.calls).toHaveLength(1);
         await controller.close();
       });
+
+      // The watch merges the attempt's claims across every queue: a unit
+      // whose worker on ONE queue closed cleanly and that then died is still
+      // one death. The renders case is the sharp one — the first queue's
+      // claim reads clean, so a watch reading only that claim misses the
+      // death; the previews case is its control. On one backend of each
+      // kind, not all seven: the merge is the controller's, not the driver's.
+      for (const closeQueue of CLOSE_BACKENDS.has(backend.name)
+        ? ["renders", "previews"]
+        : []) {
+        it(`a unit that closed its ${closeQueue} worker cleanly and then died is one late lost (died)`, async () => {
+          const namespace = fresh(`close-${closeQueue}`);
+          await seed(namespace, { thumbs: 1 });
+          const platform = spawningSummoner({
+            driver: backend.config,
+            worker: UNIT,
+            env: {
+              SUMMON_TEST_KILL_AFTER_FIRST: "1500",
+              SUMMON_TEST_CLOSE_QUEUE: closeQueue,
+            },
+          });
+          kills.push(platform.kill);
+          const { controller, events } = shared(namespace, {
+            summoner: platform.summoner,
+            bootBudget: 10_000,
+            cooldown: 600_000,
+            circuit: { failures: 10 },
+          });
+          await checkUntil(
+            controller,
+            () => events.some((event) => event.outcome === "registered"),
+            30_000,
+            "the registration",
+          );
+          const registered = events.find(
+            (event) => event.outcome === "registered",
+          )!;
+          // Every queue covered: a full registration, not a partial one.
+          expect(registered.detail).toBeUndefined();
+          await checkUntil(
+            controller,
+            () => events.some((event) => event.outcome === "lost"),
+            60_000,
+            "the late loss",
+          );
+          for (let index = 0; index < 5; index++) {
+            await controller.check();
+            await Bun.sleep(50);
+          }
+          expect(events.filter((event) => event.outcome === "lost")).toEqual([
+            expect.objectContaining({
+              id: registered.id,
+              outcome: "lost",
+              detail: "died",
+            }),
+          ]);
+          expect((await controller.status()).failures).toBe(1);
+          expect(platform.calls).toHaveLength(1);
+          await controller.close();
+        });
+      }
     },
   );
 }

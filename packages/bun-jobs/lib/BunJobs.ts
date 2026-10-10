@@ -678,8 +678,10 @@ export class BunJobs<
    * It hears the adds of the queue by this name that this context creates,
    * and is closed first by `close()`.
    *
-   * @throws {ConfigError} when there is no policy for the queue, or the
-   *   policy or driver cannot summon (see `SummonController`).
+   * @throws {ConfigError} when there is no policy for the queue, the policy
+   *   is a shared unit's (`group.unit: "shared"`, built with
+   *   `new SummonController({ queues, … })` for now), or the policy or
+   *   driver cannot summon (see `SummonController`).
    */
   summonController(queue: string, policy?: SummonPolicy): SummonController {
     const existing = this.#summonControllers.get(queue);
@@ -691,6 +693,20 @@ export class BunJobs<
       throw new ConfigError(
         `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,
         { queue },
+      );
+    }
+    const group: unknown = resolved.group;
+    if (
+      typeof group === "object" &&
+      group !== null &&
+      (group as { unit?: unknown }).unit === "shared"
+    ) {
+      // Failing closed until the summon option builds shared units itself:
+      // a controller per queue here would summon one unit set per queue,
+      // the very thing a shared unit exists to avoid.
+      throw new ConfigError(
+        `A shared summon unit (group.unit "shared") is not supported through BunJobs' summon option or summonController() yet; build a SummonController with queues directly`,
+        { queue, group: (group as { name?: unknown }).name ?? null },
       );
     }
     const controller = new SummonController({

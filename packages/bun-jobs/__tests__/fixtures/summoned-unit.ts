@@ -22,10 +22,15 @@ import { BunJobs, summonedFromArgs } from "../../lib/index";
  * - `SUMMON_TEST_JOB_MS`: how long each job takes (default 0).
  * - `SUMMON_TEST_KILL_AFTER_FIRST`: once its first job has run this long
  *   (ms), the process SIGKILLs itself, holding whatever it holds: a death in
- *   the unit, with no exit mark on any claim.
+ *   the unit, with no exit mark on any claim. With
+ *   `SUMMON_TEST_CLOSE_QUEUE`, the wait starts once that close is done.
+ * - `SUMMON_TEST_CLOSE_QUEUE`: once every worker's record is listed, closes
+ *   this queue's worker cleanly (an exit mark with code `0` on its claim),
+ *   the others running on: a unit that ended well on one queue only.
  *
  * Prints one JSON line per fact: `ready` (with the queues it runs), `record`
- * (each worker's record's `summon`, once listed), `processed`, `exit`.
+ * (each worker's record's `summon`, once listed), `processed`, `closed`,
+ * `exit`.
  */
 
 const say = (line: Record<string, unknown>): void => {
@@ -45,6 +50,16 @@ const queues = summon.queues.filter((queue) => !skip.has(queue));
 const idleMs = Number(process.env.SUMMON_TEST_IDLE_MS ?? 400);
 const jobMs = Number(process.env.SUMMON_TEST_JOB_MS ?? 0);
 const killAfter = process.env.SUMMON_TEST_KILL_AFTER_FIRST;
+const closeQueue = process.env.SUMMON_TEST_CLOSE_QUEUE;
+// Resolved once `closeQueue`'s worker has closed (at once without one): the
+// kill waits for it, so the death always comes after the clean close.
+let closeDone!: () => void;
+const closed = new Promise<void>((resolve) => {
+  closeDone = resolve;
+});
+if (closeQueue === undefined) {
+  closeDone();
+}
 
 const jobs = new BunJobs({
   namespace: summon.namespace,
@@ -59,9 +74,11 @@ const workers: BunQueueWorker[] = queues.map((queue) =>
       say({ event: "processed", queue, id: job.id, pid: process.pid });
       if (first && killAfter !== undefined) {
         first = false;
-        setTimeout(
-          () => process.kill(process.pid, "SIGKILL"),
-          Number(killAfter),
+        void closed.then(() =>
+          setTimeout(
+            () => process.kill(process.pid, "SIGKILL"),
+            Number(killAfter),
+          ),
         );
         await new Promise(() => {});
       }
@@ -103,6 +120,18 @@ await Promise.all(
     }
   }),
 );
+
+if (closeQueue !== undefined) {
+  const index = queues.indexOf(closeQueue);
+  if (index === -1) {
+    throw new Error(
+      `SUMMON_TEST_CLOSE_QUEUE names ${closeQueue}, not a queue run here`,
+    );
+  }
+  await workers[index]!.close();
+  say({ event: "closed", queue: closeQueue });
+  closeDone();
+}
 
 let idleSince = Date.now();
 for (;;) {

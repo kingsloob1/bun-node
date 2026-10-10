@@ -1035,11 +1035,12 @@ has the rules.
   `"shared"`: one controller for the group (`SummonControllerOptions.queues`),
   whose every unit runs a worker for each of its queues; its attempts,
   failures, backoff, circuit and budget live in the group's entry. Its
-  circuit is always shared (`circuit` is accepted and ignored; an open
-  circuit per-queue controllers of the group wrote for its `kind` still holds
-  it back), and the policy's `budget` and this `budget` both apply: per
-  period, the stricter limit. A shared unit refuses a provider that
-  negotiated summon `0.1` and one that passes `"none"`.
+  circuit is always the entry's own (`circuit` is accepted and changes
+  nothing); an open circuit that per-queue controllers of the group wrote in
+  the entry for its `kind` holds it back too, until it closes or the unit's
+  `reset()` closes it with its own. The policy's `budget` and this `budget`
+  both apply: per period, the stricter limit. A shared unit refuses a
+  provider that negotiated summon `0.1` and one that passes `"none"`.
 
 ### `SummonGroup`
 
