@@ -13,10 +13,21 @@ import { defineProcessor } from "@kingsleyweb/bun-jobs";
 export interface ReportData {
   /** Written into the job's log, so each mode's log is recognisable. */
   label: string;
-  /** How many times to call `ctx.heartbeat()` before returning. Defaults to `0`. */
+  /**
+   * How many times to call `ctx.heartbeat()` before returning, reporting
+   * `{ heartbeats }` as progress after each. Defaults to `0`.
+   */
   beats?: number;
   /** Milliseconds between heartbeats. Defaults to `0`. */
   beatEvery?: number;
+  /**
+   * Whether to call `job.touch()` and `job.extendLock()` before the
+   * heartbeats, as `worker-targets.ts` step 1 checks they answer. Defaults to
+   * `true`. Each holds the lock for `extendLock()`'s default of 30s, which
+   * would see a short job out with no heartbeat at all, so step 4 turns them
+   * off.
+   */
+  touchLock?: boolean;
   /**
    * How many extra progress values to report, back to back, before the final
    * `100`. Defaults to `0`: the processor then reports `25` and then `100`, as
@@ -68,9 +79,9 @@ export interface Report {
   recordId: string;
   /** What `job.log()` and then `ctx.log()` answered: the log's line count. */
   logged: number[];
-  /** What `job.touch()` answered. */
+  /** What `job.touch()` answered; `false` when `touchLock` was off. */
   touched: boolean;
-  /** What `job.extendLock()` answered. */
+  /** What `job.extendLock()` answered; `false` when `touchLock` was off. */
   extended: boolean;
   /** How many heartbeats it sent. */
   heartbeats: number;
@@ -82,14 +93,18 @@ export default defineProcessor<ReportData, Report>(async (job, ctx) => {
   const second = await ctx.log("second line");
   ctx.logger.info("isolated logger line", { label: job.data.label });
 
-  const touched = await job.touch();
-  const extended = await job.extendLock();
+  const touchLock = job.data.touchLock ?? true;
+  const touched = touchLock && (await job.touch());
+  const extended = touchLock && (await job.extendLock());
 
   let heartbeats = 0;
   for (let beat = 0; beat < (job.data.beats ?? 0); beat++) {
     await Bun.sleep(job.data.beatEvery ?? 0);
     await ctx.heartbeat();
     heartbeats++;
+    // Sent once the heartbeat is answered, so the worker's `progress` event
+    // says how many renewals have landed.
+    await job.updateProgress({ heartbeats });
   }
 
   // Back to back, each awaited: every one is a message to the worker, and the
