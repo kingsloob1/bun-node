@@ -3794,7 +3794,12 @@ export const jobs = new BunJobs({
   queue's summon state has moved since it read it, a refund gets twice a
   charge's rounds, and a refusal is retried (up to about 1.5 s, once per
   window per controller) before it is believed and told as
-  `budget-exhausted`. A refund that still never lands
+  `budget-exhausted`. Only a replica's attempt really in flight holds that
+  back: when the queue's last charge was made against the very summon state
+  this check read, its claim may still land, so the check answers
+  `contended` and runs again a debounce later (for at most 5 s after that
+  charge). A charge whose attempt already claimed, settled or not, is
+  simply part of the count. A refund that still never lands
   (every round lost to other writers, or a crash between the two writes) is
   logged at `warn` and over-counts the group by one until the window rolls:
   it can only under-spend. Eight controllers in four processes racing over a
