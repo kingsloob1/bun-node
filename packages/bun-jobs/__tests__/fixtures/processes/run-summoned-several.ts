@@ -87,16 +87,29 @@ function report(event: string, fields: Record<string, unknown> = {}): void {
 /**
  * A memory driver whose `connect()` takes `SLOW_CONNECT_MS` once `slow` is
  * set: after the fixture has added its jobs, so only the worker's waits.
+ * Like a real driver, it answers no queue-state read until that connect has
+ * finished, so a close that reads through a worker's unconnected driver
+ * waits the connect out.
  */
 class SlowConnectDriver extends MemoryDriver {
   /** Whether `connect()` is slow yet. */
   slow = false;
+  /** The slow connect in progress, which queue-state reads wait for. */
+  #connecting: Promise<void> | undefined;
 
   override async connect(): Promise<void> {
     if (this.slow) {
-      await Bun.sleep(Number(process.env.SLOW_CONNECT_MS ?? 0));
+      this.#connecting = Bun.sleep(Number(process.env.SLOW_CONNECT_MS ?? 0));
+      await this.#connecting;
     }
     await super.connect();
+  }
+
+  override async getQueueState(
+    ...args: Parameters<MemoryDriver["getQueueState"]>
+  ): ReturnType<MemoryDriver["getQueueState"]> {
+    await this.#connecting;
+    return await super.getQueueState(...args);
   }
 }
 

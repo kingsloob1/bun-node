@@ -752,6 +752,14 @@ export class BunQueueWorker<
    * summoned.
    */
   #summonClaim: "won" | "lost" | undefined;
+  /**
+   * Whether this worker ever sent its claim for {@link #summon}: set just
+   * before the claim call, so an undecided {@link #summonClaim} after it may
+   * hide a write that committed (its reply lost). Before it there is nothing
+   * to mark — and the driver may never have connected, so a close must not
+   * read through it.
+   */
+  #summonClaimSent = false;
   /** Options with defaults applied. */
   readonly #options: Required<
     Pick<
@@ -4891,6 +4899,9 @@ export class BunQueueWorker<
    */
   async #claimSummon(now: number): Promise<boolean> {
     const summon = this.#summon!;
+    if (this.#summonClaim === undefined) {
+      this.#summonClaimSent = true;
+    }
     try {
       const held =
         this.#summonClaim === undefined
@@ -5144,11 +5155,14 @@ export class BunQueueWorker<
     // A first report still in flight decides the claim; `#unregister` waits
     // for it anyway, so this adds no wait.
     await this.#reporting;
-    // Lost: another process holds the place, so nothing on it is ours.
-    // Undecided goes on (see above). The driver check is a guard only: the
-    // constructor refuses `summon` on a driver without queue state.
+    // Lost: another process holds the place, so nothing on it is ours. Never
+    // sent: no claim was written, and the driver may never have connected (a
+    // worker forced while still starting). Undecided after a sent claim goes
+    // on (see above). The driver check is a guard only: the constructor
+    // refuses `summon` on a driver without queue state.
     if (
       this.#summonClaim === "lost" ||
+      (this.#summonClaim === undefined && !this.#summonClaimSent) ||
       typeof this.driver.getQueueState !== "function"
     ) {
       return;
