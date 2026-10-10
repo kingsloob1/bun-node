@@ -116,6 +116,21 @@ describe("BunViews (Express app.render)", () => {
     ).toThrow();
   });
 
+  it("refuses a script extension with no registered engine instead of loading a module by its name", () => {
+    const views = new BunViews();
+    views.root = root;
+    for (const ext of ["tsx", "jsx", "ts", "js", "mjs", "cts"]) {
+      expect(() => views.render(`page.${ext}`, {}, () => undefined)).toThrow(
+        `No view engine registered for ".${ext}": register one with engine("${ext}", fn).`,
+      );
+    }
+    // A registered engine for a script extension renders as any other.
+    views.engine("tsx", (_path, _options, cb) => cb(null, "<p>tsx</p>"));
+    expect(() => views.render("page.tsx", {}, () => undefined)).not.toThrow(
+      "No view engine registered",
+    );
+  });
+
   it("defers a callback the engine calls synchronously", () => {
     const views = makeViews();
     views.engine("tpl", (_path, _options, callback) => callback(null, "sync"));

@@ -51,6 +51,21 @@ export interface RenderLocals {
   [local: string]: unknown;
 }
 
+/**
+ * Extensions of script files, whose module name is never a view engine: a
+ * view with one of these needs its engine registered with `engine()`.
+ */
+const SCRIPT_EXTENSIONS = new Set([
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".jsx",
+  ".ts",
+  ".mts",
+  ".cts",
+  ".tsx",
+]);
+
 /** A resolved view: the file to render and the engine that renders it. */
 class View {
   /** The view's extension, with its dot (`.ejs`). */
@@ -87,6 +102,15 @@ class View {
 
     if (!engines[ext]) {
       const module = ext.slice(1);
+      // Express would `require` the module named after the extension. For a
+      // script extension that is never a view engine and may be a loader
+      // with side effects (`.tsx` loads the `tsx` TypeScript runner), so
+      // ask for the engine to be registered instead.
+      if (SCRIPT_EXTENSIONS.has(ext)) {
+        throw new Error(
+          `No view engine registered for "${ext}": register one with engine("${module}", fn).`,
+        );
+      }
       const fn = (load(module) as { __express?: unknown } | undefined)
         ?.__express;
       if (typeof fn !== "function") {
