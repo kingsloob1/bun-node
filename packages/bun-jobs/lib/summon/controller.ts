@@ -163,11 +163,12 @@ const GROUP_RECHECK_MS = 25;
  */
 const GROUP_RECHECKS = 5;
 /**
- * How recent a charge for the check's own queue, in ms before the check
- * began, counts as a replica's attempt still being claimed: the gap between
- * a charge and its claim is two driver writes, so a slow backend under load
- * fits. A refusal while one is that recent is answered `contended`, not
- * `budget`; a group really spent is told at most this much later.
+ * How long, in ms before the check began, a replica's charge for the check's
+ * own queue can count as its attempt still being claimed: the gap between a
+ * charge and its claim is two driver writes, so a slow backend under load
+ * fits. Only a charge made against the very marker version the check read
+ * counts at all (see the check); this bounds how long one whose replica
+ * died before claiming holds a spent group's refusal at `contended`.
  */
 const GROUP_IN_FLIGHT_MS = 5_000;
 
@@ -1659,7 +1660,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       if (await this.#markerMoved(version)) {
         return { action: "skipped", reason: "contended", demand };
       }
-      let charge = await this.#chargeGroup(group);
+      let charge = await this.#chargeGroup(group, version);
       if (charge.outcome === "charged") {
         this.#lastGroupChargeAt = charge.at;
       }
@@ -1679,14 +1680,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         if (await this.#markerMoved(version)) {
           return { action: "skipped", reason: "contended", demand };
         }
-        // A replica charged for this very queue since this check began, and
-        // its claim is not in yet: the count includes this queue's own
-        // attempt in flight. Not exhaustion; checked again a debounce later.
-        // (This controller's own last charge is not one: its claim is not
-        // in flight, and a refund of it that was lost is a real over-count.)
+        // A replica's attempt for this very queue is in flight: its charge
+        // is the queue's last, recent, and made against the marker version
+        // this check read — which has not moved, so that claim may still
+        // land. The count includes it: not exhaustion; checked again a
+        // debounce later. A charge against any other version is not in
+        // flight: its claim landed (an attempt that counts, settled or not)
+        // or can no longer land (a refund the rechecks wait for). Neither is
+        // this controller's own last charge: a refund of it that was lost is
+        // a real over-count.
         const share = ownValue(charge.entry.queues, this.queue);
         if (
           share !== undefined &&
+          share.against === version &&
           share.lastAt >= now - GROUP_IN_FLIGHT_MS &&
           share.lastAt !== this.#lastGroupChargeAt
         ) {
@@ -1698,7 +1704,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         }
         const wait = GROUP_RECHECK_MS * 2 ** recheck;
         await Bun.sleep(wait + Math.random() * wait);
-        charge = await this.#chargeGroup(group);
+        charge = await this.#chargeGroup(group, version);
         if (charge.outcome === "charged") {
           this.#lastGroupChargeAt = charge.at;
         }
@@ -2209,10 +2215,17 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return (entry?.version ?? null) !== version;
   }
 
-  /** One {@link chargeGroup} of this controller's attempt against `group`. */
-  async #chargeGroup(group: ResolvedSummonGroup): Promise<SummonGroupCharge> {
+  /**
+   * One {@link chargeGroup} of this controller's attempt against `group`,
+   * whose claim is conditional on the marker at `version`.
+   */
+  async #chargeGroup(
+    group: ResolvedSummonGroup,
+    version: number | null,
+  ): Promise<SummonGroupCharge> {
     return await chargeGroup(this.#driver, this.namespace, group, {
       queue: this.queue,
+      against: version,
       ...(group.circuit === false
         ? {}
         : { circuitKind: this.#summoner.provider.kind }),

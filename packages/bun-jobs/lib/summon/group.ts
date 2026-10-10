@@ -135,6 +135,15 @@ export interface SummonGroupQueueShare {
   day: number;
   /** When it last charged one, epoch ms. */
   lastAt: number;
+  /**
+   * The version of the queue's summon marker that last charge's claim is
+   * conditional on (`null` for a marker not written yet); absent from an
+   * entry an earlier build wrote. A replica of the queue refused by the
+   * budget while its own check read that same version knows the charge's
+   * claim may still land: that attempt is in flight. Any other version's
+   * claim has landed (and moved the marker) or never can (and is refunded).
+   */
+  against?: number | null;
 }
 
 /** What `__win:summon-group:<name>` holds. */
@@ -445,7 +454,13 @@ function queueShares(
       isNumber(fields.day) &&
       isNumber(fields.lastAt)
     ) {
-      setOwn(shares, queue, { day: fields.day, lastAt: fields.lastAt });
+      setOwn(shares, queue, {
+        day: fields.day,
+        lastAt: fields.lastAt,
+        ...(fields.against === null || isNumber(fields.against)
+          ? { against: fields.against }
+          : {}),
+      });
     }
   }
   return Object.keys(shares).length === 0 ? undefined : shares;
@@ -600,6 +615,12 @@ export async function chargeGroup(
     /** The queue the attempt is for: its share is counted too. */
     queue: string;
     /**
+     * The version of the queue's summon marker the attempt's claim will be
+     * conditional on (`null` for none yet), recorded on the queue's share
+     * ({@link SummonGroupQueueShare.against}). Unset, none is recorded.
+     */
+    against?: number | null;
+    /**
      * The summoner's kind, when the group shares its circuit: an open circuit
      * for it refuses the charge. Unset, the circuit is not read.
      */
@@ -647,7 +668,11 @@ export async function chargeGroup(
     // A computed key, so `__proto__` is an own property like any queue's.
     entry.queues = {
       ...entry.queues,
-      [options.queue]: { day: (share?.day ?? 0) + 1, lastAt: now },
+      [options.queue]: {
+        day: (share?.day ?? 0) + 1,
+        lastAt: now,
+        ...(options.against === undefined ? {} : { against: options.against }),
+      },
     };
     if (group.budget === false) {
       delete entry.limits;
