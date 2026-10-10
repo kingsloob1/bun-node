@@ -83,7 +83,15 @@ afterAll(async () => {
   for (const cleanup of cleanups.toReversed()) {
     await cleanup().catch(() => undefined);
   }
-});
+  // Its own timeout. This deletes every row the file wrote, over 23,000 per
+  // server (20,000 of them the plan case's), one namespace and table at a time
+  // in about 45 steps: 0.8 s idle, but 4.7-11 s with four copies of the file
+  // at a load of 50-60, where no one step stood out (0.1-1.7 s each). Past
+  // bun's 5 s default that failed the file, reported as "(unnamed) … a
+  // beforeEach/afterEach hook timed out" (Bun names the wrong hook:
+  // oven-sh/bun#42361). It checks nothing, so its bound only has to catch a
+  // hang.
+}, 60_000);
 
 /** A client for what the driver has no API for: `EXPLAIN`, raw reads, DDL. */
 function rawClient(adapter: SqlAdapter, url: string): SQL {

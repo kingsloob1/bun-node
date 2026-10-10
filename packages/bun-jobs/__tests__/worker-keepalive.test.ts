@@ -19,6 +19,22 @@ describe("a worker keeping its process alive", () => {
   it("stays up on an idle queue, and exits by itself once closed", async () => {
     const child = spawnBun(script, {});
 
+    // Nothing is timed, and no signal sent, until the script has installed its
+    // SIGTERM handler and started the worker: it prints `started` between the
+    // two. Signalled before that, the default action kills it with 143 rather
+    // than closing the worker. That took 0.4-0.7 s idle and over the 1.5 s
+    // this test used to allow from the spawn in a 16-worker run.
+    const started = await Promise.race([
+      child.printed('"event":"started"'),
+      Bun.sleep(15_000).then(() => false),
+    ]);
+    if (!started) {
+      child.proc.kill("SIGKILL");
+      expect(await child.errors).toBe("the script printed `started`");
+    }
+
+    // Idle from here: a worker that did not hold its process would let it
+    // exit within milliseconds of `run()` starting.
     const early = await Promise.race([
       child.exited.then((code) => `exited with ${code}`),
       Bun.sleep(1_500).then(() => "alive"),

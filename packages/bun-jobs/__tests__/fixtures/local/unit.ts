@@ -15,8 +15,14 @@ import { summonedFromArgs } from "../../../lib/index";
  *
  * `unit.ts <mode> <report-file> [--bun-jobs-summon-*=…]`
  *
- * It first writes `<report-file>` as JSON: its pid, its whole argv, its
- * environment and what `summonedFromArgs()` reads. Then, by mode:
+ * It first installs its mode's stop-signal handlers, then writes
+ * `<report-file>` as JSON: its pid, its whole argv, its environment and what
+ * `summonedFromArgs()` reads. The report is the test's "up" signal, so
+ * nothing it promises may come after it: a new mode installs its handlers in
+ * the loop above the write, never in its case below. A stop signal sent once
+ * the report exists then always meets the handler, never the default action,
+ * which would kill the unit with 130 or 143 and log nothing (a cancel test
+ * failed so under `bun test --parallel=16`). Then, by mode:
  *
  * - `exit`: exits 0;
  * - `sleep`: waits; on SIGTERM or SIGINT appends `signal <name>` to
@@ -43,6 +49,31 @@ const [mode, report] = process.argv.slice(2);
 if (report === undefined) {
   throw new Error("usage: unit.ts <mode> <report-file>");
 }
+const log = (line: string): void => {
+  appendFileSync(`${report}.log`, `${line}\n`);
+};
+
+// Before the report: see above.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  switch (mode) {
+    case "sleep":
+    case "spawner":
+    case "trap-spawner":
+      // `spawner` leaves its child behind on purpose: the provider must not.
+      process.on(signal, () => {
+        log(`signal ${signal}`);
+        process.exit(0);
+      });
+      break;
+    case "stubborn":
+      process.on(signal, () => log(`ignored ${signal}`));
+      break;
+    case "stubborn-spawner":
+      process.on(signal, () => log(`signal ${signal}`));
+      break;
+  }
+}
+
 writeFileSync(
   report,
   JSON.stringify({
@@ -52,27 +83,12 @@ writeFileSync(
     summon: summonedFromArgs() ?? null,
   }),
 );
-const log = (line: string): void => {
-  appendFileSync(`${report}.log`, `${line}\n`);
-};
-
 switch (mode) {
   case "exit":
     process.exit(0);
     break;
   case "sleep":
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.on(signal, () => {
-        log(`signal ${signal}`);
-        process.exit(0);
-      });
-    }
-    setInterval(() => {}, 1 << 30);
-    break;
   case "stubborn":
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.on(signal, () => log(`ignored ${signal}`));
-    }
     setInterval(() => {}, 1 << 30);
     break;
   case "crash":
@@ -110,15 +126,6 @@ switch (mode) {
       stderr: "ignore",
     });
     log(`child ${child.pid}`);
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.on(signal, () => {
-        log(`signal ${signal}`);
-        if (mode === "spawner") {
-          // Leaves its child behind on purpose: the provider must not.
-          process.exit(0);
-        }
-      });
-    }
     setInterval(() => {}, 1 << 30);
     break;
   }
@@ -131,12 +138,6 @@ switch (mode) {
       stderr: "ignore",
     });
     log(`child ${child.pid}`);
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.on(signal, () => {
-        log(`signal ${signal}`);
-        process.exit(0);
-      });
-    }
     setInterval(() => {}, 1 << 30);
     break;
   }

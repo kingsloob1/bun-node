@@ -423,8 +423,10 @@ async function scanByCreated(
  * concatenates whole sorted sets, state block by state block, each block in
  * that state's own key order; measured against a listing of that shape, this
  * seek lost 3 jobs and repeated 3 of 33, silently. The two readings cannot be
- * told apart from the rows (jobs added in one `addBulk` share a creation
- * millisecond, so a blocked listing is also non-decreasing by `createdAt`), so
+ * told apart from the rows (jobs added in one `addBulk` usually share a
+ * creation millisecond, and then a blocked listing is also non-decreasing by
+ * `createdAt`; each job is stamped as it is built, so a long bulk can span
+ * two), so
  * the repair belongs in the driver, not here: **a driver whose several-state
  * listing is not the contract's must seek for itself**, and Redis does, from
  * {@link JobCursorKey.stateValues}. If a future driver orders several states
