@@ -1,0 +1,53 @@
+# bun pipeline.ts — 2026-10-10T00:30:21Z, Bun 1.4.3-canary.1+bbdc5a519, @nestjs/core 11.1.27
+explorer: worker started on "emails" for EmailProcessor (singleton)
+
+--- 1. a valid job: guard, pipe, interceptor, custom param decorator
+global APP_GUARD: type=bun-jobs
+guard: type=bun-jobs class=EmailProcessor handler=welcome flag=off job=welcome
+global interceptor (app.useGlobalInterceptors): type=bun-jobs
+handler: welcome to=ada@example.com id=01a12337-d301-7745-970e-090e3dee4449 attempt=1
+interceptor: welcome#01a12337-d301-7745-970e-090e3dee4449 -> "sent:ada@example.com" in 5.33 ms
+job 01a12337-d301-7745-970e-090e3dee4449: completed: "sent:ada@example.com"
+
+--- 2. invalid data: the pipe throws BadRequestException, the filter maps it to UnrecoverableJobError
+global APP_GUARD: type=bun-jobs
+guard: type=bun-jobs class=EmailProcessor handler=welcome flag=off job=welcome
+global interceptor (app.useGlobalInterceptors): type=bun-jobs
+interceptor: welcome#01a12337-d32a-77fd-93e3-a3a013bdee97 threw BadRequestException: to must be a string
+filter: type=bun-jobs to must be a string -> UnrecoverableJobError
+job 01a12337-d32a-77fd-93e3-a3a013bdee97: dead: UnrecoverableJobError: invalid data: to must be a string (attemptsMade=1)
+
+--- 3. guard denies: ForbiddenException, retried until attempts run out
+global APP_GUARD: type=bun-jobs
+guard: type=bun-jobs class=EmailProcessor handler=welcome flag=off job=welcome
+global APP_GUARD: type=bun-jobs
+guard: type=bun-jobs class=EmailProcessor handler=welcome flag=off job=welcome
+job 01a12337-d33b-75ba-803d-7422debd94f7: dead: ForbiddenException: Forbidden resource (attemptsMade=2)
+
+--- 4. a filter that returns a value: the job COMPLETES with it
+global APP_GUARD: type=bun-jobs
+global interceptor (app.useGlobalInterceptors): type=bun-jobs
+interceptor: flaky#01a12337-d6cc-76a2-bb00-697d3c040350 threw TypeError: boom
+filter: swallowing boom and returning "recovered"
+job 01a12337-d6cc-76a2-bb00-697d3c040350: completed: "recovered"
+
+--- 5. a plain error with no filter: Nest's ExternalExceptionFilter logs it (stderr above/below) and rethrows
+global APP_GUARD: type=bun-jobs
+global interceptor (app.useGlobalInterceptors): type=bun-jobs
+interceptor: plain-error#01a12337-d6da-70a1-956a-982f11d4f188 threw Error: plain failure
+[Nest] 1363445  - 10/10/2026, 1:30:24 AM   ERROR [ExceptionsHandler] Error: plain failure
+    at plainError (<repo>/docs/plans/evidence/nest-jobs-decorators/pipeline.ts:114:15)
+    at <anonymous> (<repo>/node_modules/@nestjs/core/helpers/external-context-creator.js:69:29)
+    at transformDeferred (<repo>/node_modules/@nestjs/core/interceptors/interceptors-consumer.js:31:33)
+    at runInAsyncScope (node:async_hooks:207:23)
+    at <anonymous> (<repo>/node_modules/rxjs/dist/cjs/internal/observable/defer.js:8:31)
+    at <anonymous> (<repo>/node_modules/rxjs/dist/cjs/internal/Observable.js:41:25)
+    at <anonymous> (<repo>/node_modules/rxjs/dist/cjs/internal/Observable.js:35:31)
+    at errorContext (<repo>/node_modules/rxjs/dist/cjs/internal/util/errorContext.js:22:9)
+    at <anonymous> (<repo>/node_modules/rxjs/dist/cjs/internal/Observable.js:26:24)
+    at doInnerSub (<repo>/node_modules/rxjs/dist/cjs/internal/operators/mergeInternals.js:22:56)
+job 01a12337-d6da-70a1-956a-982f11d4f188: dead: Error: plain failure (attemptsMade=1)
+onModuleDestroy: closing 1 worker(s)
+onModuleDestroy: workers closed
+
+context type constant: bun-jobs

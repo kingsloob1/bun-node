@@ -1,0 +1,92 @@
+# bun lifecycle.ts — 2026-10-10T00:12:02Z, Bun 1.4.3-canary.1+bbdc5a519, @nestjs/core 11.1.27
+
+A. drain in the jobs module's onModuleDestroy; jobs module global; Db in the processor's module
+  outcome: failed: database is closed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | Db.onModuleDestroy: connection closed
+  | onModuleDestroy: closing 1 worker(s)
+  | onModuleDestroy: workers closed
+
+B. drain in beforeApplicationShutdown; Db in a module the feature imports
+  outcome: failed: database is closed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | Db.onModuleDestroy: connection closed
+  | beforeApplicationShutdown: closing 1 worker(s)
+  | beforeApplicationShutdown: workers closed
+
+C. drain in the jobs module's onModuleDestroy; jobs module global; Db in an imported module
+  outcome: failed: database is closed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | Db.onModuleDestroy: connection closed
+  | onModuleDestroy: closing 1 worker(s)
+  | onModuleDestroy: workers closed
+
+D. drain in the jobs module's onModuleDestroy; jobs module NOT global; Db in an imported module
+  outcome: completed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | onModuleDestroy: closing 1 worker(s)
+  | job: finished
+  | onModuleDestroy: workers closed
+  | Db.onModuleDestroy: connection closed
+
+E. drain attached to the processor instance (its module's onModuleDestroy); Db in an imported module
+  outcome: completed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | drain(WorkProcessor): closing its worker
+  | job: finished
+  | drain(WorkProcessor): worker closed
+  | Db.onModuleDestroy: connection closed
+
+F. drain attached to the processor instance; Db in the SAME module as the processor
+  outcome: failed: database is closed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | Db.onModuleDestroy: connection closed
+  | drain(WorkProcessor): closing its worker
+  | drain(WorkProcessor): worker closed
+
+H. drain attached to the processor instance; Db in a @Global module
+  outcome: completed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | drain(WorkProcessor): closing its worker
+  | job: finished
+  | drain(WorkProcessor): worker closed
+  | Db.onModuleDestroy: connection closed
+
+G. drain in the jobs module's onModuleDestroy; Db in a @Global module
+  outcome: failed: database is closed
+  | Db.onModuleInit: connected
+  | explorer: worker started on "work" for WorkProcessor (singleton)
+  | WorkProcessor.onApplicationBootstrap
+  | job: started
+  | app.close() called
+  | Db.onModuleDestroy: connection closed
+  | onModuleDestroy: closing 1 worker(s)
+  | onModuleDestroy: workers closed

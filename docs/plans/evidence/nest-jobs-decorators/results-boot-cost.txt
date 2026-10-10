@@ -1,0 +1,6 @@
+# bun boot-cost.ts — 2026-10-10T00:13:10Z
+Bun 1.4.3 (bbdc5a519), load 17.19 23.33 19.83
+child process bun-jobs only     : wall median 151 ms, in-child bootstrap median 140 ms (wall: 146, 139, 142, 151, 166, 167, 155)
+child process bun-jobs + Nest ctx: wall median 281 ms, in-child bootstrap median 269 ms (wall: 281, 261, 274, 294, 264, 284, 282)
+worker thread bun-jobs only     : wall median 137 ms, in-child bootstrap median 133 ms (wall: 137, 130, 131, 146, 133, 148, 145)
+worker thread bun-jobs + Nest ctx: wall median 252 ms, in-child bootstrap median 248 ms (wall: 257, 252, 241, 244, 256, 242, 264)
