@@ -1,8 +1,9 @@
 {
   "version": 1,
   "files": {
-    "__tests__/heavy-run.test.ts": 12396,
-    "__tests__/consumer-check.test.ts": 492,
-    "__tests__/setup-databases.test.ts": 43
+    "__tests__/heavy-run.test.ts": 17184,
+    "__tests__/typecheck.test.ts": 2220,
+    "__tests__/consumer-check.test.ts": 814,
+    "__tests__/setup-databases.test.ts": 40
   }
 }

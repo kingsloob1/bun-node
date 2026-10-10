@@ -1,9 +1,8 @@
 {
-  // Test files are intentionally excluded from the package `tsconfig.json`
-  // (`include` is `./lib/**/*` only), so `bunx tsc --noEmit` skips them. This
-  // config exists purely so the IDE type-checks the tests with the package's
-  // real compiler options instead of an inferred project. The CLI equivalent
-  // is the single-file tests typecheck command in CLAUDE.md.
+  // The package `tsconfig.json` includes `__tests__/` too, and the package's
+  // `bun run check` checks the tests through it. This config is the nearest
+  // one to a test file, so it is what the IDE, `bun test --check` and
+  // `bun check <file>` use for one: the package's options, unchanged.
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true

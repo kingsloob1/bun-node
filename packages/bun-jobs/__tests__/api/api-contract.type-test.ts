@@ -170,7 +170,7 @@ import type * as Workers from "../../lib/shared/workers";
  * (not merely assignable: assignability both ways misses a new optional
  * field) to the type its schema infers. A request type is compared after its
  * server defaults are applied (`Defaulted`), since a client may omit what the
- * server fills in. Checked by `tsc` (`scripts/typecheck.ts`), not `bun test`.
+ * server fills in. Checked by `bun check` (`scripts/typecheck.ts`), not `bun test`.
  *
  * Negative controls are `@ts-expect-error` lines: if the assertion under one
  * stopped failing, the directive itself would become the error.

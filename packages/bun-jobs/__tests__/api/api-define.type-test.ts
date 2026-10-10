@@ -3,7 +3,7 @@ import type { MetaSchema } from "../../lib/api/schemas/meta";
 /**
  * Compile-time assertions for `defineRoute`: a handler's `params`, `query`
  * and `body` are what its schemas produce, and it may only answer with the
- * bodies its responses declare. Checked by `tsc`, not `bun test`.
+ * bodies its responses declare. Checked by `bun check`, not `bun test`.
  *
  * Each negative control is an `@ts-expect-error` over one short line, so
  * formatting cannot move the failure off the directive.

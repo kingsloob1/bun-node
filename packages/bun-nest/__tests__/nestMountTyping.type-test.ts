@@ -3,7 +3,7 @@
  * bun-common sub-routers under the same contract as bun-common's own `use()`
  * (see bun-common's `mountTyping.type-test.ts`): a plain router mounts as is,
  * a router that declared its mount must be mounted exactly there. Checked by
- * `tsc`, not `bun test`; runtime coverage is in `httpAdapter.test.ts`.
+ * `bun check`, not `bun test`; runtime coverage is in `httpAdapter.test.ts`.
  */
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { BunRouter, validate } from "@kingsleyweb/bun-common";

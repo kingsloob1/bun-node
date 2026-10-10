@@ -11,7 +11,7 @@ import type {
  * The builder's promise is that one definition is both the validator and the
  * type. These assertions hold that promise against the real bun-jobs types —
  * a schema that drifts from `JobState`, `TriggerOutcome` or `RunnerStats`
- * fails to compile here. Checked by `tsc` (the package `tsconfig.json`
+ * fails to compile here. Checked by `bun check` (the package `tsconfig.json`
  * includes `__tests__/**`), not by `bun test`.
  *
  * Every negative control is an `@ts-expect-error` over a short

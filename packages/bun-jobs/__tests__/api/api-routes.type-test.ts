@@ -1,7 +1,7 @@
 /**
  * Compile-time assertions that the route schemas describe the real bun-jobs
  * types: a field added to `ResolvedJobOptions`, `RunnerSchedule` or
- * `StoredLimits` without the schema following fails here. Checked by `tsc`.
+ * `StoredLimits` without the schema following fails here. Checked by `bun check`.
  *
  * DTOs carrying an `ErrorDto` are checked for assignability rather than
  * equality: the schema describes `cause` loosely, since it cannot recurse.

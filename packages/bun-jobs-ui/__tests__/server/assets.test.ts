@@ -76,6 +76,28 @@ describe("buildAssets", () => {
     );
   });
 
+  it("type-checks the entry only when asked, and fails on a type error", async () => {
+    const { dir, cleanup } = tempDir();
+    cleanups.push(cleanup);
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { strict: true, lib: ["ESNext", "DOM"], types: [] },
+      }),
+    );
+    const entry = join(dir, "entry.ts");
+    writeFileSync(
+      entry,
+      `export const n: number = "not a number";\nconsole.log(n);\n`,
+    );
+
+    // Off by default: the in-memory build `jobsUi()` makes never checks.
+    expect((await buildAssets({ entry })).entry.js).toMatch(/^entry-/);
+    await expect(buildAssets({ entry, check: true })).rejects.toThrow(
+      /entry\.ts:1:\d+: TS2322: Type 'string' is not assignable to type 'number'/,
+    );
+  });
+
   it("refuses a missing entry with a ConfigError", async () => {
     await expect(
       buildAssets({ entry: "/nope/main.tsx" }),

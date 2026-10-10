@@ -23,7 +23,7 @@ Bun-first libraries for building servers: an Express-like HTTP layer for
 A monorepo of three published packages, managed with Bun workspaces, lerna and
 nx. Each package ships its TypeScript source (`main` and `types` point at
 `lib/index.ts`), so there is no build step. Each has its own tests
-(`bun:test`), `tsc --noEmit` typecheck and ESLint configuration. The packages
+(`bun:test`), `bun check` typecheck and ESLint configuration. The packages
 prefer Bun and native APIs over third-party dependencies.
 
 ## Packages
@@ -59,10 +59,13 @@ example follows.
 
 ## Requirements
 
-- **Bun ≥ 1.4.2.** The root and every package declare it in `engines.bun`, and
-  the repository pins `bun@1.4.2` as its package manager. bun-jobs' Redis and
-  SQL drivers use APIs that 1.4.2 is the first `bun-types` release to declare.
+- **Bun ≥ 1.4.2** to use the packages. Every package declares it in
+  `engines.bun`. bun-jobs' Redis and SQL drivers use APIs that 1.4.2 is the
+  first `bun-types` release to declare.
 - **`@types/bun` ≥ 1.4.2**, an optional peer of every package.
+- **Bun ≥ 1.4.3** to develop the repository, the first stable release with
+  `bun check`, which runs every type check here. The root `package.json`
+  declares it in `engines.bun` and pins `bun@1.4.3` as its package manager.
 - **NestJS 11** (`@nestjs/common`, `@nestjs/core`, `rxjs`; `@nestjs/websockets`
   for gateways) for bun-nest.
 
@@ -91,17 +94,19 @@ bun scripts/typecheck.ts          # every project in the repo; must be clean
 bun scripts/typecheck.ts --list   # just name them
 ```
 
-`scripts/typecheck.ts` checks every `tsconfig.json` in the repository: the
-packages, their nested bench and playground projects, `benchmarks/` and the
-example projects. They all extend `tsconfig.base.json`, so a file is checked
-the same way wherever it is checked from. Run it rather than `tsc` in a single
+`scripts/typecheck.ts` checks every `tsconfig.json` in the repository with
+`bun check` (`bun run check` at the root runs it too): the packages, their
+nested bench and playground projects, `benchmarks/` and the example projects.
+They all extend `tsconfig.base.json`, so a file is checked the same way
+wherever it is checked from. Run it rather than `bun run check` in a single
 package.
 
 Then, in each affected package directory:
 
 ```bash
+bun run check                     # bun check on the package's projects
 bunx eslint .                     # the whole package, READMEs included; 0 errors
-bun test                          # every test must pass
+bun run test                      # type-checks the tests, then runs them; every test must pass
 ```
 
 After changing bun-common, run bun-nest's and bun-jobs' checks too.

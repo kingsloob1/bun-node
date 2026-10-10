@@ -1,6 +1,6 @@
 /**
  * Compile-time assertions that the Nest adapter's verb methods narrow their
- * handlers the same way bun-common's do. Checked by `tsc`, not `bun test`.
+ * handlers the same way bun-common's do. Checked by `bun check`, not `bun test`.
  */
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { validate } from "@kingsleyweb/bun-common";

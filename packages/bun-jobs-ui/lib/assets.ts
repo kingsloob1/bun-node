@@ -84,6 +84,14 @@ export interface BuildAssetsOptions {
    * at, `"external"` emits them unreferenced, `"none"` emits none.
    */
   sourcemap?: "linked" | "external" | "none";
+  /**
+   * Type-check the entry and everything it imports first, with Bun.build's
+   * `check` (Bun ≥ 1.4.3; app/tsconfig.json's options), and fail the build on
+   * a type error. Defaults to `false`: `scripts/build.ts` (prepack) turns it
+   * on; the in-memory build `jobsUi()` runs on a request never does, which
+   * also keeps it off a 1.4.2 runtime. Adds about 175 ms.
+   */
+  check?: boolean;
 }
 
 /** Content types by extension, so both sources agree whatever Bun reports. */
@@ -175,9 +183,18 @@ export async function buildAssets(
     },
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     throw: false,
+    // Spread rather than written out: `@types/bun` 1.4.2 pins bun-types
+    // 1.4.2, whose `BuildConfig` predates `check`. Write `check` directly
+    // once `@types/bun` 1.4.3 is the floor.
+    ...(options.check === true ? { check: true } : {}),
   });
   if (!result.success) {
-    const messages = result.logs.map((log) => log.message);
+    // A type error from `check` is "TS2322: …" alone; its position says where.
+    const messages = result.logs.map((log) =>
+      log.position === null
+        ? log.message
+        : `${log.position.file}:${log.position.line}:${log.position.column}: ${log.message}`,
+    );
     throw new Error(
       `bun-jobs-ui: building ${entry} failed:\n${messages.join("\n")}`,
     );

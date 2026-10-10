@@ -2,7 +2,7 @@
  * Compile-time assertions for the Nest adapters' generics and overloads: the
  * custom client data a `BunHttpAdapter<Session>` declares reaching gateway
  * callbacks, `listen()`'s two forms, packet types keyed by `MessageEventTypes`,
- * and compatibility with NestJS's own adapter interfaces. Checked by `tsc`,
+ * and compatibility with NestJS's own adapter interfaces. Checked by `bun check`,
  * not `bun test`.
  */
 import type {

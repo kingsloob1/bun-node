@@ -2,7 +2,7 @@
  * Compile-time assertions for the logging contract.
  *
  * The point of replacing the old console-shaped logger was type safety, so
- * the guarantees are asserted by `tsc` rather than at runtime: fixed
+ * the guarantees are asserted by the type checker rather than at runtime: fixed
  * signatures, a closed set of levels, and adapter inputs wide enough to
  * accept what the real libraries hand you. Checked by the tests typecheck
  * command in CLAUDE.md, not by `bun test`.

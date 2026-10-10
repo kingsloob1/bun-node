@@ -13,6 +13,12 @@
  *    bun-jobs' published declarations), then packs it (`prepack` builds).
  * 3. Installs the tarball into a consumer and type-checks {@link PROBE}
  *    under `bundler` and `node16` resolution, `skipLibCheck` off.
+ *
+ * The type checks run Bun's checker (`bun check`, Bun ≥ 1.4.3), which
+ * reports what tsc does, including the `node16` errors a declaration with an
+ * extensionless relative import gets (TS2834) and errors inside shipped
+ * declarations with `skipLibCheck` off (measured against tsc 6.0). tsc stays
+ * only where something is emitted: `scripts/build.ts` writes the declarations.
  * 4. Fails when a shipped declaration imports anything but
  *    {@link ALLOWED_IMPORTS} (the plugin's peer entries), and when the
  *    package does not import under Bun.
@@ -86,7 +92,7 @@ const COLUMNS: Record<string, Record<string, unknown>> = {
 interface Manifest {
   /** The package name. */
   name: string;
-  /** Its dev dependencies: bun-jobs, TypeScript and Bun's types. */
+  /** Its dev dependencies: bun-jobs, Bun's types and TypeScript (for the declarations build). */
   devDependencies: Record<string, string>;
   /** Where dependencies resolve instead of the registry. */
   overrides?: Record<string, string>;
@@ -105,10 +111,10 @@ rmSync(work, { recursive: true, force: true });
 mkdirSync(tarballs, { recursive: true });
 
 /** Runs a command; its output, or a thrown error carrying it. */
-function run(cmd: string[], cwd: string, allowFail = false): string {
+function run(cmd: string[], cwd: string): string {
   const result = Bun.spawnSync({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
   const output = `${result.stdout.toString()}${result.stderr.toString()}`;
-  if (result.exitCode !== 0 && !allowFail) {
+  if (result.exitCode !== 0) {
     throw new Error(`${cmd.join(" ")} failed in ${cwd}:\n${output}`);
   }
   return output;
@@ -147,9 +153,35 @@ function importsOf(file: string): string[] {
   return importedFiles.map((imported) => imported.fileName);
 }
 
-/** Type errors in `tsc`'s output. */
-function typeErrors(output: string): string[] {
-  return output.split("\n").filter((line) => /error TS\d+/.test(line));
+/**
+ * Type-checks with Bun's checker in `cwd`: the project `config` names, or,
+ * without one, the nearest `tsconfig.json` through a bare `bun --check`
+ * (which, unlike `bun check`, never runs a `check` script of the package).
+ * Answers the type errors, one line each; a check that failed without
+ * reporting any (no tsconfig, a crash) answers its whole output instead.
+ */
+function typeErrors(cwd: string, config?: string): string[] {
+  // These switch the checker to a tagged, multi-line format for AI agents;
+  // the one-line `tsc --pretty false` format is what is read here.
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.AGENT;
+  delete env.CLAUDECODE;
+  delete env.REPL_ID;
+  const result = Bun.spawnSync({
+    cmd:
+      config === undefined
+        ? [process.execPath, "--check"]
+        : [process.execPath, "check", "-p", config, "--no-pretty"],
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const output = `${result.stdout.toString()}${result.stderr.toString()}`;
+  const errors = output.split("\n").filter((line) => /error TS\d+/.test(line));
+  return errors.length === 0 && result.exitCode !== 0
+    ? [output.trim()]
+    : errors;
 }
 
 const results: {
@@ -185,17 +217,11 @@ writeFileSync(
 run(["bun", "install", "--no-save"], plugin);
 results.push({
   check: "the plugin's sources, with its tsconfig.json",
-  problems: typeErrors(
-    run(
-      ["bun", "x", "tsc", "-p", "tsconfig.json", "--pretty", "false"],
-      plugin,
-      true,
-    ),
-  ),
+  problems: typeErrors(plugin),
 });
 const tarball = pack(plugin);
 
-// 3. A consumer with the plugin, bun-jobs and TypeScript, and nothing else.
+// 3. A consumer with the plugin, bun-jobs and Bun's types, and nothing else.
 const consumer = join(work, "consumer");
 mkdirSync(consumer);
 writeFileSync(
@@ -210,7 +236,6 @@ writeFileSync(
         "@kingsleyweb/bun-jobs":
           manifest.devDependencies["@kingsleyweb/bun-jobs"],
         "@types/bun": manifest.devDependencies["@types/bun"],
-        typescript: manifest.devDependencies.typescript,
       },
       overrides,
     },
@@ -236,21 +261,7 @@ for (const [column, options] of Object.entries(COLUMNS)) {
   );
   results.push({
     check: `a consumer, ${column} resolution`,
-    problems: typeErrors(
-      run(
-        [
-          "bun",
-          "x",
-          "tsc",
-          "-p",
-          `tsconfig.${column}.json`,
-          "--pretty",
-          "false",
-        ],
-        consumer,
-        true,
-      ),
-    ),
+    problems: typeErrors(consumer, `tsconfig.${column}.json`),
   });
 }
 

@@ -4,8 +4,9 @@
   "description": "Utilities for bun webserver which includes an extended Request, Response, Router, HttpAdapter, Websocket, NestJs compatitble HttpAdapter, NestJs compatitble websocket adapter, NestJs compatitble file decorators and file interceptors",
   "private": true,
   "scripts": {
-    "test:scripts": "cd scripts && bun test --parallel --timings=bun-timings.json",
-    "test:scripts:timings": "cd scripts && rm -f bun-timings.json && bun test --parallel --timings=bun-timings.json --update-timings",
+    "check": "bun scripts/typecheck.ts",
+    "test:scripts": "cd scripts && bun test --check --parallel --timings=bun-timings.json",
+    "test:scripts:timings": "cd scripts && rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
     "typecheck": "bun scripts/typecheck.ts"
   },
   "workspaces": [
@@ -25,9 +26,9 @@
     "nx": "23.2.1",
     "typescript": "^6.0.3"
   },
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.3"
   },
   "dependencies": {}
 }
