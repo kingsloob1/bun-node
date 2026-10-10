@@ -1,0 +1,12 @@
+Bun 1.4.3 (bbdc5a519)
+1000 concurrent misses, one key, loader 0 ms, naive        : loader ran 1000x, 1 distinct values returned, burst took 3.4 ms
+1000 concurrent misses, one key, loader 0 ms, single-flight: loader ran    1x, 1 distinct values returned, burst took 1.8 ms
+1000 concurrent misses, one key, loader 5 ms, naive        : loader ran 1000x, 1 distinct values returned, burst took 6.1 ms
+1000 concurrent misses, one key, loader 5 ms, single-flight: loader ran    1x, 1 distinct values returned, burst took 5.5 ms
+1000 concurrent misses, one key, loader 50 ms, naive        : loader ran 1000x, 1 distinct values returned, burst took 51.0 ms
+1000 concurrent misses, one key, loader 50 ms, single-flight: loader ran    1x, 1 distinct values returned, burst took 50.6 ms
+1000 concurrent misses over 100 keys (10 each), loader 5 ms, single-flight: loader ran 100x in 6.2 ms
+1000 concurrent misses, loader throws: loader ran 1x, 1000 callers rejected with the one error; next call ran the loader again -> ok
+1,000,000 sequential hits, naive        : 0.293 µs/hit
+1,000,000 sequential hits, single-flight: 0.245 µs/hit
+load average at end: 6.09 13.86 16.81 2/3790 1288663

@@ -1,0 +1,53 @@
+Bun 1.4.3 (bbdc5a519)
+
+## write with type carrying parameters, contentEncoding, contentDisposition
+  result: 5
+  wire: PUT /cache/ns/a {"content-disposition":"inline","content-encoding":"gzip","content-type":"application/x-bun-cache; exp=1760000000000; v=1"}
+
+## stat(): what HEAD exposes
+  result: {"size":5,"lastModified":"1970-01-01T00:00:00.000Z","etag":"\"etag-of-/cache/ns/a\"","type":"application/x-bun-cache; exp=1760000000000; v=1","keys":[]}
+  wire: HEAD /cache/ns/a {}
+
+## undeclared option metadata:{exp} — is x-amz-meta-* sent?
+  result: 1
+  wire: PUT /cache/ns/b {"content-type":"application/octet-stream"}
+
+## undeclared options ifNoneMatch / headers — sent?
+  result: 1
+  wire: PUT /cache/ns/b {"content-type":"application/octet-stream"}
+
+## exists() on present and missing
+  result: [true,false]
+  wire: HEAD /cache/ns/a {}
+  wire: HEAD /cache/ns/zzz {}
+
+## file().text() of missing key
+  result: THROWS S3Error: <Error><Code>NoSuchKey</Code></Error> code=NoSuchKey
+  wire: GET /cache/ns/zzz {}
+
+## ranged read slice(0,3)
+  result: hel
+  wire: GET /cache/ns/a {"range":"bytes=0-2"}
+
+## list({prefix})
+  result: {"name":"cache","prefix":"ns/","isTruncated":false,"keyCount":2,"maxKeys":1000,"contents":[{"key":"ns/a","eTag":"\"x\"","lastModified":"2026-10-10T00:00:00.000Z","size":5,"storageClass":"STANDARD"},{"key":"ns/b","eTag":"\"x\"","lastModified":"2026-10-10T00:00:00.000Z","size":1,"storageClass":"STANDARD"}]}
+  wire: GET /cache/?list-type=2&prefix=ns%2F {}
+
+## size()
+  result: 5
+  wire: HEAD /cache/ns/a {}
+
+## delete() then delete() again (idempotent?)
+  result: ok
+  wire: DELETE /cache/ns/a {}
+  wire: DELETE /cache/ns/a {}
+
+## presign GET (offline, no request)
+  result: http://127.0.0.1:33209/cache/ns/b?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test%2F20261010%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261010T001925Z&X-Amz-Expires=60&X-Amz-Signature=…&X-Amz-SignedHeaders=host
+
+## fetch(presigned GET) exposes x-amz-meta-* the stub returns
+  result: {"x-amz-meta-exp":"123"}
+  wire: GET /cache/ns/m?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test%2F20261010%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261010T001925Z&X-Amz-Expires=86400&X-Amz-Signature=b8feb0c636c824b1a599b38a9de332f9a576e863146124e69ceca7dcde0047a1&X-Amz-SignedHeaders=host {}
+
+## S3Client methods on the prototype
+  result: ["constructor","delete","exists","file","list","presign","size","stat","unlink","write"]
