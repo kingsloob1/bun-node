@@ -631,7 +631,10 @@ Errors reach one of three layers, depending on where they are raised.
    every controller, or a bun-common router built with it and mounted with
    `adapter.use()`. Such a request is routed with the refusal on
    `req.bodyDecodingError`, so a guard runs before anything is said about the
-   body. A body over its cap stays a `413` before routing; bun-common's
+   body. The option is unset by default, which refuses. bun-common's
+   per-route `acceptUndecodableBody()` marker does not apply to Nest
+   controllers, whose handlers Nest registers itself: opt in with the
+   adapter's router option, or through a mounted bun-common router. A body over its cap stays a `413` before routing; bun-common's
    README says which route decides. Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
