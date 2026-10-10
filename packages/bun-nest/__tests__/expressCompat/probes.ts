@@ -527,16 +527,16 @@ export interface KnownDifference {
   reason: string;
 }
 
-const TEXT_DEFAULT =
+export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";
-const TEXT_CHARSET =
+export const TEXT_CHARSET =
   "Express appends `; charset=utf-8` to a type set before a string body";
-const BODY_CHANGES = ["body", "content-length", "etag"];
-const STATIC_VARY = "the static handler adds `Vary: Accept-Encoding`";
+export const BODY_CHANGES = ["body", "content-length", "etag"];
+export const STATIC_VARY = "the static handler adds `Vary: Accept-Encoding`";
 const CORS_VARY =
   "CORS adds `Vary: Origin` where the cors package leaves it out (origin `*`, or skipped)";
 const CORS_LENGTH = "a preflight 204 carries no `Content-Length: 0`";
-const SERVE_STATIC_REDIRECT =
+export const SERVE_STATIC_REDIRECT =
   "the directory redirect's HTML body links the target (serve-static 1.x) and carries an ETag";
 
 /**

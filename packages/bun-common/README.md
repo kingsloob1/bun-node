@@ -290,6 +290,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
+| `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
 Example tour:
 [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts).
@@ -459,6 +460,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
+| `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
 
@@ -592,6 +594,16 @@ Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
 upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
 `parseBody: true`; use the adapter to test request options.
 
+A body that cannot be parsed — declared JSON that does not, or a
+`Content-Encoding` that cannot be decoded — is treated differently by the two.
+The adapter refuses it before routing, as Express's global `json()` parser
+does: its `setErrorHandler` handlers get the `400` `SyntaxError` (or the
+`415`/`400`), and without one it is finalhandler's `400`. A bare router routes
+it, with `req.body` unset and the refusal on `req.bodyDecodingError`, so a
+route decides what to say and when: bun-jobs' management API authorizes the
+caller first and only then answers `400 INVALID_JSON`. `router.fetch()` and a
+`BunWebSocket` dedicated server serving the router behave the same here.
+
 Example:
 [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts).
 
@@ -601,6 +613,17 @@ Example:
 |---|---|
 | `useBodyParser(kind, rawBody, options)` | Registers one body parser (`"json"`, `"urlencoded"`, `"text"` or `"raw"`), once per kind. `options` follows body-parser: `type`, `limit` (over it: 413), `inflate` (`false`: 415), plus the [body-decoding](#body-decoding) options. `rawBody: true` keeps the bytes on `req.rawBody`. |
 | `registerParserMiddleware(prefix?, rawBody?)` | Registers a parser for every body type, optionally under a prefix. |
+| `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
+| `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`, and on the prefix itself, which answers `301` to `${prefix}/` as Express's `app.use(prefix, static)` does; see [Static files](#static-files). |
+| `setBaseViewsDir(dir \| dirs)`, `setViewEngine(ext)`, `engine(ext, fn)`, `setLocal(key, value)` | Configure `adapter.views`, as `@nestjs/platform-express`'s adapter does Express's: the `views` and `view engine` settings, an engine, an `app.locals` entry. |
+| `set(setting, value)`, `enable(setting)`, `disable(setting)` | Express's `app.set` for the view settings (`views`, `view engine`, `view cache`, `view options`). Any other setting has no effect and is warned about once. |
+| `render(res, view, locals?)` | `res.render(view, locals)` through `adapter.views`, as platform-express's adapter. A `status` key is only a local. |
+| `redirect(res, status, url)` | `res.redirect(status \|\| 302, url)`: Express's encoded `Location` and "Redirecting to" body. |
+| `getRequestHostname(req)` | `req.hostname`: the host without its port, or `127.0.0.1`. |
+| `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
+| `setTimeout(ms, callback)` | Sets `requestTimeout` and calls back with the server once it is listening. |
+| `setInstance(router)` | Routes requests through another `BunRouter`. Register routes on the new instance afterwards. |
+| `setLogger(logger)` | Replaces the logger. |
 
 Either parser passes a request with no body (`req.hasBody` false) on
 synchronously, before its type, encoding or size, as body-parser's `read()`
@@ -613,12 +636,6 @@ default. Only `requestParsing({ parseBody })` turns parsing back on, for the
 routes it is mounted on: it reads the body itself, and a parser registered
 **after** it then runs with its own options (one registered before it ran while
 parsing was still off).
-| `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
-| `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`; see [Static files](#static-files). |
-| `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
-| `setTimeout(ms, callback)` | Sets `requestTimeout` and calls back with the server once it is listening. |
-| `setInstance(router)` | Routes requests through another `BunRouter`. Register routes on the new instance afterwards. |
-| `setLogger(logger)` | Replaces the logger. |
 
 Example:
 [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts).
@@ -1074,8 +1091,10 @@ with `download: true`.
   accepted too; `redirect(url, init)` with a `ResponseInit` is Bun's
   `Response.redirect(url, init)`.
 - `res.render(view, locals?, callback?)` is Express's, through the response's
-  `views` (a `BunViews`, the constructor's `views` option; bun-nest's adapter
-  passes its own). `BunViews` is Express's `app.render`: `root` (`views`),
+  `views` (a `BunViews`, the constructor's `views` option). Both adapters,
+  `BunRouter.fetch()` and a `BunWebSocket` dedicated server give every
+  response the application's one instance: `adapter.views` / `router.views`
+  (the `views` option, else their own). `BunViews` is Express's `app.render`: `root` (`views`),
   `defaultEngine` (`view engine`), `cache` (`view cache`), `viewOptions`,
   `engine(ext, fn)` and `locals` (`app.locals`). Locals are `app.locals`, then
   `res.locals`, then `locals`. Without a callback the result is sent as
@@ -1241,7 +1260,9 @@ tour
 ### Static files
 
 `adapter.useStaticAssets(root, options)` serves a directory on
-`${prefix}/*`. `createServeStaticHandler(root, options)` returns
+`${prefix}/*`, and on `${prefix}` itself, which is the directory without its
+slash: a `301` to `${prefix}/`, as Express's `app.use(prefix, static)`.
+`createServeStaticHandler(root, options)` returns
 `{ prefix, handler }`, for registering the handler on any router yourself. The
 contract is `serve-static`'s, plus precompressed siblings and on-the-fly
 compression.
@@ -1574,7 +1595,7 @@ await app.listen(0);
 | `router` | a private empty router | The router upgrade routes register on. |
 | `onUpgrade` | none | Instance-wide `WebSocketUpgradeHook`, for routes registered without one. |
 | `customDataToWsClientFn` | none | **Deprecated.** Treated as `onUpgrade: async (req, res) => ({ custom: await fn(req, res) })`. Given beside `onUpgrade`, it is ignored and a warning is logged once. |
-| `responseTimeout`, `serverOptions`, `bunRequestOpts` | `0`, none, none | Dedicated server only: HTTP response timeout, base `Bun.serve` options, request parsing. |
+| `responseTimeout`, `serverOptions`, `bunRequestOpts` | `0`, none, none | Dedicated server only: HTTP response timeout, base `Bun.serve` options, request parsing. A body that cannot be parsed is routed, as by `router.fetch()`, with the refusal on `req.bodyDecodingError`. Responses render through the router's `views`. |
 
 The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
 `ping`, `pong` and `drain`. `port`, `getServer()` and `setRouteHandler()` are

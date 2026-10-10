@@ -44,6 +44,7 @@ import {
 } from "./utils/native";
 import { FifoCache } from "./utils/routeIndex";
 import { RouteTree } from "./utils/routeTree";
+import { BunViews } from "./views";
 
 export type { matchedRoute } from "@routejs/router";
 
@@ -900,6 +901,9 @@ export class BunRouter<
    */
   #lastRoute: Route | null = null;
 
+  /** {@link views}, once given or read. */
+  #views: BunViews | undefined;
+
   constructor(
     private localOptions?: {
       /**
@@ -954,9 +958,17 @@ export class BunRouter<
        * registration order, like Express. See {@link RouteSpecificityOption}.
        */
       routeSpecificity?: RouteSpecificityOption;
+      /**
+       * The application's views — Express's `views` / `view engine` /
+       * `view cache` settings, engines and `app.locals` — that `res.render`
+       * renders through; see {@link BunRouter.views}. Defaults to a
+       * {@link BunViews} of its own, created on first use.
+       */
+      views?: BunViews;
     },
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
+    this.#views = localOptions?.views;
 
     // `0` disables the cache; a positive value caps it; anything else
     // (negative, non-numeric, absent) falls back to the default.
@@ -977,6 +989,25 @@ export class BunRouter<
         : undefined;
 
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
+  }
+
+  /**
+   * The application's views — where templates live, the default engine,
+   * the registered engines, `app.locals` and the view cache, as Express's
+   * view settings — which `res.render` renders through. Every response this
+   * router builds carries this one instance, so its cache and locals are
+   * shared across requests: those of {@link fetch}, of a `BunWebSocket`'s
+   * dedicated server serving this router and, on a `BunHttpAdapter`, of
+   * every request it serves and of its error handlers.
+   *
+   * The `views` constructor option, else a default {@link BunViews}
+   * (templates under `./views`, no default engine) created on first read.
+   * A router mounted with `use()` renders with the views of the router
+   * serving the request, not its own — as an Express `Router` has no
+   * settings of its own.
+   */
+  get views(): BunViews {
+    return (this.#views ??= new BunViews());
   }
 
   /**
@@ -4576,6 +4607,16 @@ export class BunRouter<
    * `BunHttpAdapter` overrides this to route through its full request handler,
    * so its not-found and error handlers apply too.
    *
+   * The body is parsed (`parseBody: true`). One that could not be — declared
+   * JSON that does not parse, or a `Content-Encoding` that cannot be decoded
+   * — is still routed, with `req.body` unset and the refusal on
+   * `req.bodyDecodingError`, as on a `BunWebSocket`'s dedicated server
+   * serving this router: a bare router leaves the decision to its routes, so
+   * one can authorize the caller before saying anything about the body
+   * (bun-jobs' management API answers `400 INVALID_JSON` only then). The
+   * adapters instead refuse it before routing, as Express's global `json()`
+   * parser does. Responses render through {@link views}.
+   *
    * @example
    * ```ts
    * await router.fetch("/users/42");                       // GET
@@ -4605,7 +4646,7 @@ export class BunRouter<
     });
     const request =
       created instanceof BunRequestClass ? created : await created;
-    const response = new BunResponseClass(request);
+    const response = new BunResponseClass(request, { views: this.views });
 
     const pipelineOptions: PipelineOptions = {
       requestHost: request.host,

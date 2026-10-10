@@ -747,10 +747,16 @@ export async function observe(
   path: string,
   init: RequestInit = {},
 ): Promise<Observed> {
-  const res = await fetch(`${base}${path}`, {
-    redirect: "manual",
-    ...init,
-  });
+  return observeResponse(
+    await fetch(`${base}${path}`, {
+      redirect: "manual",
+      ...init,
+    }),
+  );
+}
+
+/** Records a response's status, headers and body, as {@link observe} does. */
+export async function observeResponse(res: Response): Promise<Observed> {
   const headers: Record<string, string> = {};
   res.headers.forEach((value, name) => {
     if (!IGNORED_HEADERS.has(name) && name !== "set-cookie") {
@@ -764,4 +770,27 @@ export async function observe(
       .join(" | ");
   }
   return { status: res.status, headers, body: await res.text() };
+}
+
+/**
+ * Flattens an observation into comparable fields, normalised: `Content-Type`
+ * parameters are compared as `type; param` (Bun writes
+ * `application/json;charset=utf-8`), and an `ETag`'s hash part is masked
+ * (both are `W/"<hex length>-<hash>"`, hashed differently).
+ */
+export function comparable(observed: Observed): Record<string, string> {
+  const out: Record<string, string> = {
+    status: String(observed.status),
+    body: observed.body,
+  };
+  for (const [name, value] of Object.entries(observed.headers)) {
+    if (name === "content-type") {
+      out[name] = value.toLowerCase().replace(/;\s*/g, "; ");
+    } else if (name === "etag") {
+      out[name] = value.replace(/-[^"]+"/, '-*"');
+    } else {
+      out[name] = value;
+    }
+  }
+  return out;
 }

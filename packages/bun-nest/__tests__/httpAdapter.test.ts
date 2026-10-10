@@ -1,5 +1,8 @@
 import type { App } from "supertest/types";
 import { Buffer } from "node:buffer";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
   BunRouter,
@@ -1132,5 +1135,27 @@ describe("BunHttpAdapter: a JSON body and rawBody", () => {
       body: { n: 7 },
       raw: body,
     });
+  });
+});
+
+describe("BunHttpAdapter: one BunViews for the adapter and its router", () => {
+  it("gives its bun-common router the adapter's views, so the router's fetch() renders the same", async () => {
+    const adapter = new BunHttpAdapter();
+    const router = adapter.getInstance();
+    expect(router.views).toBe(adapter.views);
+
+    adapter.engine("txt", (_path, options, callback) => {
+      callback(null, `site=${String(options.site)}`);
+    });
+    adapter.setLocal("site", "S");
+    const dir = await mkdtemp(join(tmpdir(), "bun-nest-views-"));
+    await writeFile(join(dir, "page.txt"), "");
+    adapter.views.root = dir;
+    router.get("/page", (_req, res) => res.render("page.txt"));
+    try {
+      expect(await (await router.fetch("/page")).text()).toBe("site=S");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

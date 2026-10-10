@@ -195,9 +195,12 @@ function loadEngineModule(module: string): unknown {
  * An application's views, as Express's: where templates live, which engine
  * renders a name without an extension, the registered engines, the
  * application-wide locals and the view cache. `res.render` renders through
- * the instance its response was given (bun-nest's adapter gives every
- * response its own); a response without one renders with a fresh default
- * instance, as an Express app with no view settings would.
+ * the instance its response was given: both HTTP adapters, `BunRouter.fetch`
+ * and a `BunWebSocket`'s dedicated server give every response the
+ * application's one instance (`views` on the adapter or router), so the
+ * view cache and `locals` are shared across requests. A response built
+ * without one renders with a fresh default instance, as an Express app with
+ * no view settings would.
  */
 export class BunViews {
   /**
@@ -257,8 +260,52 @@ export class BunViews {
    */
   viewOptions: Record<string, unknown> | undefined = undefined;
 
+  /**
+   * The Express settings {@link set} applies: `views`, `view engine`,
+   * `view cache` and `view options`. The adapters name them when warning
+   * about any other.
+   */
+  static readonly SETTINGS: readonly string[] = [
+    "views",
+    "view engine",
+    "view cache",
+    "view options",
+  ];
+
   /** Resolved views by name, while {@link cache} is on. */
   readonly #cache = new Map<string, View>();
+
+  /**
+   * Applies an Express view setting by name, as `app.set(setting, value)`
+   * does: `views` sets {@link root}, `view engine` {@link defaultEngine},
+   * `view cache` {@link cache} (as a boolean) and `view options`
+   * {@link viewOptions}. Returns `true` for those ({@link SETTINGS}); any
+   * other setting changes nothing and returns `false`. Both HTTP adapters'
+   * `set`, `enable` and `disable` go through it.
+   */
+  set(setting: string, value: unknown): boolean {
+    switch (setting) {
+      case "views": {
+        this.root = value as string | string[];
+        return true;
+      }
+      case "view engine": {
+        this.defaultEngine = value as string | undefined;
+        return true;
+      }
+      case "view cache": {
+        this.cache = Boolean(value);
+        return true;
+      }
+      case "view options": {
+        this.viewOptions = value as Record<string, unknown> | undefined;
+        return true;
+      }
+      default: {
+        return false;
+      }
+    }
+  }
 
   /**
    * Registers `fn` as the engine for `ext` (`"html"` or `".html"`), as
