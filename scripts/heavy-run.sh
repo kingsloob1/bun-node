@@ -72,7 +72,7 @@
 # the kind of job across worktrees: the directory relative to its git top
 # level (the cwd's basename outside a repo), the command without what does not
 # change how long it takes (a leading `timeout N` or `nice`, and `--seed` and
-# `--randomize`; see NORM_AWK), then [exclusive] (HEAVY_EXCLUSIVE=1 or HEAVY_MODE=exclusive,
+# `--randomize`, and output paths such as `--log-dir`; see NORM_AWK), then [exclusive] (HEAVY_EXCLUSIVE=1 or HEAVY_MODE=exclusive,
 # never an auto decision) and [EXAMPLE_DRIVER=...] when they apply. `heavy-run.sh --key
 # <command...>` prints the key for the cwd and environment and runs nothing,
 # and `--stats <command...>` prints what its history says: <median seconds>
@@ -136,7 +136,15 @@ HISTORY="$DIR/bun-node-heavy-history.tsv"
 # and in any order, `timeout [options] N` (how long the caller allows) and
 # `nice [-n N | -N | --adjustment=N]` (how politely it runs); then, anywhere,
 # `--randomize`, `--seed=N` and `--seed N` (which order the same tests run
-# in). A command made of nothing but those words is left as it is.
+# in), and an output path, as `--flag=<path>` or `--flag <path>`, for the flags
+# OUTPUT_FLAG names (where the logs or results go, which a run writes but does
+# not take longer for): without that, every run that logs to a directory of its
+# own had a key of its own and never an estimate. A command made of nothing but
+# those words is left as it is.
+#
+#   OUTPUT_FLAG  --log-dir, --logdir, --out-dir, --outdir, --out-file,
+#                --outfile, --output, --reporter-outfile
+NORM_AWK_OUTPUT='^--(log-?dir|out-?dir|out-?file|output|reporter-outfile)'
 NORM_AWK='
 function norm(k,    p, n, w, i, j, out) {
   p = index(k, ": ")
@@ -161,6 +169,8 @@ function norm(k,    p, n, w, i, j, out) {
   for (; i <= n; i++) {
     if (w[i] == "--randomize" || w[i] ~ /^--seed=/) continue
     if (w[i] == "--seed" && i < n && w[i + 1] ~ /^[0-9]+$/) { i++; continue }
+    if (w[i] ~ (OUTPUT "=")) continue
+    if (w[i] ~ (OUTPUT "$") && i < n && w[i + 1] !~ /^-/) { i++; continue }
     out = out (out == "" ? "" : " ") w[i]
   }
   return substr(k, 1, p + 1) out
@@ -180,7 +190,7 @@ heavy_key() {
   if [ "${HEAVY_EXCLUSIVE:-0}" = 1 ] || [ "${HEAVY_MODE:-}" = exclusive ]; then cmd="$cmd [exclusive]"; fi
   [ -n "${EXAMPLE_DRIVER:-}" ] && cmd="$cmd [EXAMPLE_DRIVER=$EXAMPLE_DRIVER]"
   cmd=${cmd//$'\t'/ }; cmd=${cmd//$'\n'/ }; cmd=${cmd//$'\r'/ }
-  cmd=$(K=$cmd awk "$NORM_AWK"' BEGIN { print norm(ENVIRON["K"]) }')
+  cmd=$(K=$cmd awk -v OUTPUT="$NORM_AWK_OUTPUT" "$NORM_AWK"' BEGIN { print norm(ENVIRON["K"]) }')
   printf '%s\n' "${cmd:0:400}"
 }
 # What the history says of a key (see the header): the last 10 successful runs,
@@ -188,7 +198,7 @@ heavy_key() {
 # recorded them (lines from before CPU was recorded have four fields).
 heavy_stats() {
   [ -f "$HISTORY" ] || return 0
-  K=$1 awk -F'\t' "$NORM_AWK"'
+  K=$1 awk -F'\t' -v OUTPUT="$NORM_AWK_OUTPUT" "$NORM_AWK"'
     $4 == "0" && norm($2) == ENVIRON["K"] { n++; w[n] = $3 + 0; c[n] = (NF >= 6 && $6 != "" ? $6 : "-") }
     function sort(a, len,    i, j, t) {
       for (i = 2; i <= len; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
