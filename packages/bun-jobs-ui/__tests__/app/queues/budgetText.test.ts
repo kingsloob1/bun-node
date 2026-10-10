@@ -2,9 +2,11 @@ import type { SummonBudgetDto } from "../../../app/api/types";
 import type {
   BudgetOffView,
   BudgetOnView,
+  BudgetUnknownView,
 } from "../../../app/screens/queues/panels/budgetText";
 import { describe, expect, it } from "bun:test";
 import {
+  budgetLimitsUnknown,
   budgetOff,
   budgetUsedText,
   summonBudgetView,
@@ -41,7 +43,7 @@ function budget(overrides: Partial<SummonBudgetDto> = {}): SummonBudgetDto {
 /** The view of a budget that must be on. */
 function on(input: SummonBudgetDto, now = NOW): BudgetOnView {
   const view = summonBudgetView(input, now);
-  if (view.off) {
+  if (view.state !== "on") {
     throw new Error("expected the budget to be on");
   }
   return view;
@@ -50,8 +52,17 @@ function on(input: SummonBudgetDto, now = NOW): BudgetOnView {
 /** The view of a budget that must be off. */
 function off(input: SummonBudgetDto, now = NOW): BudgetOffView {
   const view = summonBudgetView(input, now);
-  if (!view.off) {
+  if (view.state !== "off") {
     throw new Error("expected the budget to be off");
+  }
+  return view;
+}
+
+/** The view of a budget whose limits must be unknown. */
+function unknown(input: SummonBudgetDto, now = NOW): BudgetUnknownView {
+  const view = summonBudgetView(input, now);
+  if (view.state !== "unknown") {
+    throw new Error("expected the budget's limits to be unknown");
   }
   return view;
 }
@@ -137,7 +148,7 @@ describe("a budget that is off", () => {
     };
     expect(budgetOff(input)).toBe(true);
     expect(off(input)).toEqual({
-      off: true,
+      state: "off",
       text: "Off: 41 this hour, 120 today (UTC), no limit",
       resets: "Counts reset at 14:00 UTC and at midnight UTC",
     });
@@ -148,7 +159,7 @@ describe("a budget that is off", () => {
     expect(off(budget({ perDay: undefined })).text).toBe(
       "Off: 2 this hour, 10 today (UTC), no limit",
     );
-    expect(off(budget({ perHour: undefined })).off).toBe(true);
+    expect(off(budget({ perHour: undefined })).state).toBe("off");
   });
 
   it("is on with both limits and no off flag (negative control)", () => {
@@ -156,6 +167,41 @@ describe("a budget that is off", () => {
     expect(budgetUsedText(budget())).toBe(
       "Used 2 of 30 this hour, 10 of 300 today (UTC)",
     );
+  });
+});
+
+describe("a budget whose limits were never stored (limitsUnknown)", () => {
+  /** As the API reads one from storage: counts and reset times, no limits. */
+  const input: SummonBudgetDto = {
+    hour: 1,
+    day: 1,
+    limitsUnknown: true,
+    hourResetsAt: NEXT_HOUR,
+    dayResetsAt: MIDNIGHT,
+  };
+
+  it("shows the counts with the limits unknown, never as off", () => {
+    expect(unknown(input)).toEqual({
+      state: "unknown",
+      text: "1 this hour, 1 today (UTC), limits unknown",
+      hint: "Its limits are set where its controller runs, and show here after its next summon attempt. Counts reset at 14:00 UTC and at midnight UTC",
+    });
+    expect(budgetOff(input)).toBe(false);
+    expect(budgetLimitsUnknown(input)).toBe(true);
+    // Its counts are its whole text, as an off budget's are.
+    expectUndefined(budgetUsedText(input));
+  });
+
+  it("reads the same counts without the flag as off (negative control)", () => {
+    const { limitsUnknown: _flag, ...without } = input;
+    expect(off(without).text).toBe("Off: 1 this hour, 1 today (UTC), no limit");
+    expect(budgetLimitsUnknown(without)).toBe(false);
+  });
+
+  it("is off when the policy turned it off, whatever else is set", () => {
+    const both: SummonBudgetDto = { ...input, off: true };
+    expect(off(both).state).toBe("off");
+    expect(budgetLimitsUnknown(both)).toBe(false);
   });
 });
 

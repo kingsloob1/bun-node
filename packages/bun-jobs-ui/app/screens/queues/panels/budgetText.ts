@@ -40,7 +40,7 @@ export interface BudgetWindowView {
 /** A budget the policy limits. */
 export interface BudgetOnView {
   /** The budget is on. */
-  off: false;
+  state: "on";
   /** The UTC hour. */
   hour: BudgetWindowView;
   /** The UTC day. */
@@ -54,15 +54,30 @@ export interface BudgetOnView {
 /** A budget the policy turned off: counts, and no limit. */
 export interface BudgetOffView {
   /** The budget is off. */
-  off: true;
+  state: "off";
   /** The counts: `"Off: 41 this hour, 120 today (UTC), no limit"`. */
   text: string;
   /** When the counts reset: `"Counts reset at 14:00 UTC and at midnight UTC"`. */
   resets: string;
 }
 
-/** A budget in plain words: {@link BudgetOnView} or {@link BudgetOffView}. */
-export type BudgetView = BudgetOnView | BudgetOffView;
+/**
+ * A budget whose limits were never stored (`limitsUnknown`): read from
+ * storage, for a queue whose controller runs in another process and has not
+ * claimed since it began recording them. The counts are real; the limits are
+ * not known here, which is not the same as none.
+ */
+export interface BudgetUnknownView {
+  /** The limits are unknown. */
+  state: "unknown";
+  /** The counts: `"1 this hour, 1 today (UTC), limits unknown"`. */
+  text: string;
+  /** Why, and when the counts reset. */
+  hint: string;
+}
+
+/** A budget in plain words: {@link BudgetOnView}, {@link BudgetOffView} or {@link BudgetUnknownView}. */
+export type BudgetView = BudgetOnView | BudgetOffView | BudgetUnknownView;
 
 /** How far ahead a reset may be and still be named by its time of day alone. */
 const SAME_DAY_MS = 86_400_000;
@@ -111,22 +126,31 @@ export function budgetWindow(
   };
 }
 
-/** Whether a budget is off: turned off by the policy, or missing a limit, which the contract sends only then. */
+/**
+ * Whether a budget is off: turned off by the policy, or missing a limit
+ * without `limitsUnknown`, which the contract sends only then. A budget whose
+ * limits are unknown is not off.
+ */
 export function budgetOff(budget: SummonBudgetDto): boolean {
   return (
     budget.off === true ||
-    budget.perHour === undefined ||
-    budget.perDay === undefined
+    (budget.limitsUnknown !== true &&
+      (budget.perHour === undefined || budget.perDay === undefined))
   );
+}
+
+/** Whether a budget's limits are unknown here (`limitsUnknown`), and it is not off. */
+export function budgetLimitsUnknown(budget: SummonBudgetDto): boolean {
+  return budget.off !== true && budget.limitsUnknown === true;
 }
 
 /**
  * Both windows' used counts in one line, `"Used 2 of 30 this hour, 10 of 300
- * today (UTC)"`; `undefined` for a budget that is off, whose counts are
- * already its whole text.
+ * today (UTC)"`; `undefined` for a budget that is off or whose limits are
+ * unknown, whose counts are already its whole text.
  */
 export function budgetUsedText(budget: SummonBudgetDto): string | undefined {
-  if (budgetOff(budget)) {
+  if (budgetOff(budget) || budgetLimitsUnknown(budget)) {
     return undefined;
   }
   return `Used ${formatNumber(budget.hour)} of ${formatNumber(budget.perHour ?? 0)} this hour, ${formatNumber(budget.day)} of ${formatNumber(budget.perDay ?? 0)} today (UTC)`;
@@ -135,12 +159,21 @@ export function budgetUsedText(budget: SummonBudgetDto): string | undefined {
 /**
  * A budget in plain words. Off when the policy turned it off (`off: true`),
  * and also when a limit is missing, which the contract sends only then: the
- * counts are shown with no limit rather than against an invented one.
+ * counts are shown with no limit rather than against an invented one. With
+ * `limitsUnknown` the counts are shown as such, never as off.
  */
 export function summonBudgetView(
   budget: SummonBudgetDto,
   now: number,
 ): BudgetView {
+  const resets = `Counts reset at ${utcResetLabel(budget.hourResetsAt, now)} and at ${utcResetLabel(budget.dayResetsAt, now)}`;
+  if (budgetLimitsUnknown(budget)) {
+    return {
+      state: "unknown",
+      text: `${formatNumber(budget.hour)} this hour, ${formatNumber(budget.day)} today (UTC), limits unknown`,
+      hint: `Its limits are set where its controller runs, and show here after its next summon attempt. ${resets}`,
+    };
+  }
   if (
     budget.off === true ||
     budget.perHour === undefined ||
@@ -148,9 +181,9 @@ export function summonBudgetView(
   ) {
     // Spelled out rather than `budgetOff()`, so the limits narrow below.
     return {
-      off: true,
+      state: "off",
       text: `Off: ${formatNumber(budget.hour)} this hour, ${formatNumber(budget.day)} today (UTC), no limit`,
-      resets: `Counts reset at ${utcResetLabel(budget.hourResetsAt, now)} and at ${utcResetLabel(budget.dayResetsAt, now)}`,
+      resets,
     };
   }
   const hour = budgetWindow(
@@ -168,7 +201,7 @@ export function summonBudgetView(
     now,
   );
   return {
-    off: false,
+    state: "on",
     hour,
     day,
     exhausted: hour.exhausted || day.exhausted,

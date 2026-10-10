@@ -9,7 +9,7 @@ import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";
-import { useCan } from "../../meta/hooks";
+import { useCan, useMeta } from "../../meta/hooks";
 import { POLL_INTERVAL_MS } from "../../queryClient";
 import { Link } from "../../router";
 import { providerReadiness } from "../providers/providerText";
@@ -26,7 +26,9 @@ const SUMMONING_REFRESH_MS = POLL_INTERVAL_MS;
 
 /**
  * `/summon`: every summon controller in the API's process (`GET /summon`),
- * one row each — its queue (linked to the queue's Summon tab), the
+ * and, where the API reads summon state from storage
+ * (`features.summonRemoteStatus`), every queue whose controller runs
+ * elsewhere (`local: false`: "Elsewhere", no actions), one row each — its queue (linked to the queue's Summon tab), the
  * summoner's kind and readiness, the last outcome and when, and the budget
  * left in each UTC window with when it resets.
  *
@@ -39,6 +41,8 @@ export function SummoningScreen() {
   const api = useApiClient();
   // `queues.list` is also what routes the queue screen, so every row links.
   const canList = useCan("queues.list");
+  // Whether the API also lists queues whose controller runs elsewhere.
+  const remote = useMeta().features.summonRemoteStatus === true;
   const list = useQuery({
     queryKey: summonKeys.list,
     queryFn: ({ signal }) => listSummonControllers(api, signal),
@@ -70,7 +74,11 @@ export function SummoningScreen() {
       ) : list.data.controllers.length === 0 ? (
         <EmptyState
           title="No summon controllers here"
-          description="Summon controllers run in the API's own process, from its BunJobs context's summon option or jobs.summonController(). None runs in this one, so there is nothing to list. A controller running in another process is not listed."
+          description={
+            remote
+              ? "No queue summons here: none has a controller in the API's own process, or summon state in the store that you may read."
+              : "Summon controllers run in the API's own process, from its BunJobs context's summon option or jobs.summonController(). None runs in this one, so there is nothing to list. A controller running in another process is not listed."
+          }
         />
       ) : (
         <Table label="Summon controllers">
@@ -124,7 +132,18 @@ function ControllerRow({ item }: ControllerRowProps) {
         </Link>
       </th>
       <td>
-        <code>{displayText(item.kind)}</code>
+        {item.kind === "" ? (
+          // Read from storage before any claim recorded the summoner's kind.
+          <span
+            className="muted"
+            title="Not recorded yet: its controller runs in another process"
+            data-testid="summoning-kind-unknown"
+          >
+            —
+          </span>
+        ) : (
+          <code>{displayText(item.kind)}</code>
+        )}
       </td>
       <td>
         {readiness === undefined ? (
@@ -175,10 +194,20 @@ function ControllerRow({ item }: ControllerRowProps) {
         )}
       </td>
       <td>
-        <SummonBudget
-          budget={item.budget}
-          testId={`summoning-budget-${item.queue}`}
-        />
+        {item.budget === undefined ? (
+          // None for summon state a newer bun-jobs wrote: it is not read here.
+          <span
+            className="muted"
+            data-testid={`summoning-budget-${item.queue}`}
+          >
+            —
+          </span>
+        ) : (
+          <SummonBudget
+            budget={item.budget}
+            testId={`summoning-budget-${item.queue}`}
+          />
+        )}
       </td>
     </tr>
   );
