@@ -9,6 +9,7 @@ import {
   runSummoned,
   summonedFromArgs,
 } from "../../../lib/index";
+import { setReservedState } from "../../../lib/queue/windows";
 import { WORKER_CONFIG_PREFIX } from "../../../lib/queue/workerControl";
 import {
   SUMMON_CLAIM_PREFIX,
@@ -34,6 +35,15 @@ import {
  * - `MODE=natural`: nothing is injected. `thumbs`' connect fails `FAIL_MS`
  *   in; with timing alone the failure lands before, inside or after the
  *   window, depending on the backend. `CONTROL=1` turns renders' control on.
+ * - `CLAIM_THROW=1` (window mode): renders' claim write commits and then
+ *   throws, as when the reply is lost after the write landed. The worker's
+ *   claim call fails, so its claim stays undecided rather than won.
+ * - `MODE=foreign`: renders' claim is seeded first with another worker in
+ *   its only place, still inside its grace, and the stop (`SIGUSR2`) is sent
+ *   on renders' first claim read. With `CLAIM_READ=throw` that read then
+ *   throws, leaving the claim undecided; otherwise it returns, and the claim
+ *   is lost. Either way renders holds no place, so nothing of its may be
+ *   written on the claim.
  *
  * Adapted from the #313 round-3 review's probes.
  */
@@ -48,6 +58,7 @@ const summon = summonedFromArgs()!;
 const namespace = summon.namespace!;
 const config = JSON.parse(env.DRIVER!) as DriverConfig;
 const natural = env.MODE === "natural";
+const foreign = env.MODE === "foreign";
 const delay = Number(env.COMMIT_DELAY ?? 0);
 const readyFirst = env.READY === "1";
 
@@ -108,7 +119,25 @@ renders.on("ready", () => {
   rendersReady.resolve();
 });
 
-if (!natural) {
+if (foreign) {
+  const driver = renders.driver as JobsDriver & {
+    getQueueState: NonNullable<JobsDriver["getQueueState"]>;
+  };
+  const get = driver.getQueueState.bind(driver);
+  let claimRead = false;
+  driver.getQueueState = async (...args) => {
+    const [, name] = args;
+    if (name.startsWith(SUMMON_CLAIM_PREFIX) && !claimRead) {
+      claimRead = true;
+      report("claim-read");
+      process.kill(process.pid, "SIGUSR2");
+      if (env.CLAIM_READ === "throw") {
+        throw new Error("claim read failed (fixture)");
+      }
+    }
+    return await get(...args);
+  };
+} else if (!natural) {
   const driver = renders.driver as JobsDriver & {
     getQueueState: NonNullable<JobsDriver["getQueueState"]>;
     setQueueState: NonNullable<JobsDriver["setQueueState"]>;
@@ -148,6 +177,9 @@ if (!natural) {
       }
       await Bun.sleep(delay);
       report("claim-call-returning", { closingSeen });
+      if (env.CLAIM_THROW === "1") {
+        throw new Error("reply lost after the write landed (fixture)");
+      }
     }
     return result;
   };
@@ -160,9 +192,35 @@ await new BunQueue("renders", {
   driver: seed,
   logger: noopLogger,
 }).add("work", {}, { attempts: 1 });
+if (foreign) {
+  // Another worker in renders' claim's only place, its grace an hour long:
+  // renders can neither join nor take it over.
+  const now = Date.now();
+  await setReservedState(
+    seed,
+    renders.ref,
+    summonClaimName(summon.id),
+    {
+      capacity: 1,
+      holders: [
+        {
+          worker: "foreign-worker",
+          host: "elsewhere",
+          pid: 1,
+          at: now,
+          until: now + 3_600_000,
+        },
+      ],
+      at: now,
+    },
+    null,
+  );
+}
 
 const result = await runSummoned(
-  natural ? [thumbs, renders] : [thumbs, renders, ...(maps ? [maps] : [])],
+  natural || foreign
+    ? [thumbs, renders]
+    : [thumbs, renders, ...(maps ? [maps] : [])],
   {
     exit: false,
     signals: ["SIGUSR2"],
@@ -191,6 +249,8 @@ const holders = (claim?.value as { holders?: { exit?: unknown }[] } | undefined)
 report("claim", {
   held: holders !== undefined && holders.length > 0,
   exit: holders?.[0]?.exit ?? null,
+  value: claim?.value ?? null,
+  worker: renders.id,
 });
 await seed.close();
 process.exit(0);

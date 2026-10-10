@@ -5104,12 +5104,12 @@ export class BunQueueWorker<
   }
 
   /**
-   * Marks this worker's exit on the summon claim it won — reason `"closed"`,
-   * code `0`, `forced` on a forced (or escalated) close — so the controller
-   * counts a summoned worker that closed as one that ran, and only a process
-   * that died without closing as a crash. Written after the attempts have
-   * settled and before the record is removed, so a reader always sees one or
-   * the other.
+   * Marks this worker's exit on the summon claim it won, or may have won —
+   * reason `"closed"`, code `0`, `forced` on a forced (or escalated) close —
+   * so the controller counts a summoned worker that closed as one that ran,
+   * and only a process that died without closing as a crash. Written after
+   * the attempts have settled and before the record is removed, so a reader
+   * always sees one or the other.
    *
    * Under `runSummoned` the reason and code are the unit's, handed over
    * before the close ({@link SET_EXIT_MARK}). The unit writes them itself
@@ -5119,10 +5119,23 @@ export class BunQueueWorker<
    * reason, never a bare `"closed"`. Both writes carry the same reason, so
    * neither order loses it.
    *
+   * A claim still **undecided** is marked too, not only a won one. A claim
+   * call whose write committed but whose reply was lost (a dropped
+   * connection, a timeout after the write landed) leaves this worker holding
+   * a place it never learned of, and once the close has begun no later report
+   * comes to learn it; the unit's own write skips it too, since
+   * `worker.summon` is unset, so this write is the only one it gets. Left
+   * unmarked, that place reads `starting` and then, past the holder's grace,
+   * `died`: a clean exit counted as a crash toward the circuit's loss streak.
+   * `markSummonClaimExit` answers `"not-held"` without writing when this
+   * worker has no place in the claim (its write never landed, or another
+   * worker holds the place), so this costs one read on close and never marks
+   * a place that is not this worker's.
+   *
    * Only fills an empty mark: one the unit wrote first stands. Nothing at all
-   * for a worker nobody summoned, one that did not win its claim, or one
-   * whose driver is already closed. Best effort: one compare-and-set loop,
-   * and a failure is reported as an error, never thrown.
+   * for a worker nobody summoned, one that lost its claim, or one whose
+   * driver is already closed. Best effort: one compare-and-set loop, and a
+   * failure is reported as an error, never thrown.
    */
   async #markSummonExit(): Promise<void> {
     if (this.#summon === undefined || this.#driverClosed) {
@@ -5131,7 +5144,13 @@ export class BunQueueWorker<
     // A first report still in flight decides the claim; `#unregister` waits
     // for it anyway, so this adds no wait.
     await this.#reporting;
-    if (this.#summonClaim !== "won") {
+    // Lost: another process holds the place, so nothing on it is ours.
+    // Undecided goes on (see above). The driver check is a guard only: the
+    // constructor refuses `summon` on a driver without queue state.
+    if (
+      this.#summonClaim === "lost" ||
+      typeof this.driver.getQueueState !== "function"
+    ) {
       return;
     }
     try {
