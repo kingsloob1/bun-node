@@ -108,7 +108,7 @@ const INERT: Readonly<
   "summoned-process":
     "The API's own process was summoned (or is a runner child), and the policy does not allow summoning from one, so this controller summons nothing.",
   "newer-marker":
-    "A newer version of bun-jobs wrote this queue's summon state, so this controller leaves it alone and summons nothing.",
+    "A newer version of bun-jobs wrote this queue's summon state: this version leaves it alone, summons nothing for it and cannot read its budget.",
 };
 
 /** A summoner's style, from its capabilities (known once the summoner is ready). */
