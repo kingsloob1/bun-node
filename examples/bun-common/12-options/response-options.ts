@@ -13,9 +13,10 @@
  *   and read back with `getNativeResponse()`, the way the adapter does.
  * - The constructor's other option, `views`, is the `BunViews` that
  *   `render()` renders through. Without it a response renders through a
- *   default one, with no engine registered and no default engine.
- *   bun-common's own adapter and `router.fetch()` pass none; only bun-nest's
- *   adapter does. `05-response/views.ts` covers views in full.
+ *   default one, with no engine registered and no default engine. Both
+ *   adapters, `router.fetch()` and a `BunWebSocket` dedicated server pass
+ *   their application's one (`adapter.views` / `router.views`).
+ *   `05-response/views.ts` covers views in full.
  * - `redirect()` is Express 5's (a body chosen by `Accept`, `Vary`,
  *   `Content-Length`, an encoded `Location`), and `clearCookie()` always
  *   expires the cookie at the epoch, dropping a `maxAge` or `expires`.
