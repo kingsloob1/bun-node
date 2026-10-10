@@ -1,0 +1,69 @@
+$ NODE_ENV=production bun frameworks-ssr.ts
+bun 1.4.3 (bbdc5a519), NODE_ENV=production, load 4.8 7.2 7.2
+react-dom 19.3.0, vue 3.5.43, svelte 5.57.2, preact 11.0.1, preact-render-to-string 6.8.0, solid-js 1.9.17, babel-preset-solid 1.9.16
+
+## react (.tsx, .jsx; compile step: none, Bun loads it)
+cold load of Catalog (compile + import, its child views too): 1.1 ms
+cold load of a second view, Counter (compiler already loaded): 0.3 ms
+warm load: 0.01 ms
+string render: 98002 bytes, 200 cards, <title> in <head> true, doctype true, name escaped true
+string render with 50 ms data: 53.6 ms, data in the page true, fallback in the page false
+stream with 50 ms data: first chunk 15.6 ms (98170 bytes), first card 15.7 ms, last 51.9 ms; data true, fallback sent true, <title> in <head> true
+throwing view: rejects, "view failed: react"
+client bundle (Counter, minified): built in 26 ms, 1 files, entry 207.4 KiB, all 207.4 KiB, gzip 65.3 KiB
+
+## vue (.vue; compile step: Bun plugin)
+cold load of Catalog (compile + import, its child views too): 240.7 ms
+cold load of a second view, Counter (compiler already loaded): 4.2 ms
+warm load: 0.01 ms
+string render: 99650 bytes, 200 cards, <title> in <head> true, doctype true, name escaped true
+string render with 50 ms data: 50.8 ms, data in the page true, fallback in the page false
+stream with 50 ms data: first chunk 3.0 ms (90 bytes), first card 3.1 ms, last 50.8 ms; data true, fallback sent false, <title> in <head> false
+throwing view: rejects, "view failed: vue"
+  without an errorHandler, Vue itself: resolves "<!---->", console.error called 1 time(s)
+client bundle (Counter, minified): built in 23 ms, 1 files, entry 77.2 KiB, all 77.2 KiB, gzip 30.7 KiB
+
+## svelte (.svelte; compile step: Bun plugin)
+cold load of Catalog (compile + import, its child views too): 45.9 ms
+cold load of a second view, Counter (compiler already loaded): 6.7 ms
+warm load: 0.01 ms
+string render: 97994 bytes, 200 cards, <title> in <head> true, doctype true, name escaped true
+string render with 50 ms data: 1.5 ms, data in the page false, fallback in the page true
+stream: none (the adapter has no renderToStream; the core renders the string)
+throwing view: rejects, "view failed: svelte"
+client bundle (Counter, minified): built in 21 ms, 1 files, entry 48.7 KiB, all 48.7 KiB, gzip 18.1 KiB
+
+## preact (.tsx, .jsx; compile step: none, Bun loads it)
+cold load of Catalog (compile + import, its child views too): 3.1 ms
+cold load of a second view, Counter (compiler already loaded): 0.3 ms
+warm load: 0.01 ms
+string render: 95681 bytes, 200 cards, <title> in <head> false, doctype true, name escaped true
+string render with 50 ms data: 51.9 ms, data in the page true, fallback in the page false
+stream with 50 ms data: first chunk 8.3 ms (90 bytes), first card 8.5 ms, last 54.9 ms; data true, fallback sent true, <title> in <head> false
+throwing view: rejects, "view failed: preact"
+client bundle (Counter, minified): built in 4 ms, 1 files, entry 13.5 KiB, all 13.5 KiB, gzip 5.8 KiB
+
+## solid (.tsx, .jsx; compile step: Bun plugin)
+cold load of Catalog (compile + import, its child views too): 107.6 ms
+cold load of a second view, Counter (compiler already loaded): 11.2 ms
+warm load: 0.03 ms
+string render: 112186 bytes, 200 cards, <title> in <head> false, doctype true, name escaped true
+string render with 50 ms data: 52.2 ms, data in the page true, fallback in the page false
+stream with 50 ms data: first chunk 2.9 ms (482 bytes), first card 5.1 ms, last 50.7 ms; data true, fallback sent true, <title> in <head> false
+throwing view: rejects, "view failed: solid"
+client bundle (Counter, minified): built in 20 ms, 1 files, entry 15.7 KiB, all 15.7 KiB, gzip 6.0 KiB
+
+## Express 5 on Bun, res.render through each adapter's engine
+GET /react/Counter.tsx: 200, count 3 rendered true, raw </script><b> absent true
+GET /vue/Counter.vue: 200, count 3 rendered true, raw </script><b> absent true
+GET /svelte/Counter.svelte: 200, count 3 rendered true, raw </script><b> absent true
+GET /vue/Broken.vue: 500, count 3 rendered false, raw </script><b> absent true
+
+## Render time, catalogue page (string, no async data), 500 rotating iterations
+react        p50 2.96 ms, p90 5.18 ms, 338 renders/s at p50
+vue          p50 1.00 ms, p90 1.73 ms, 1005 renders/s at p50
+svelte       p50 0.64 ms, p90 1.15 ms, 1569 renders/s at p50
+preact       p50 2.20 ms, p90 4.09 ms, 456 renders/s at p50
+solid        p50 0.76 ms, p90 1.32 ms, 1311 renders/s at p50
+react-string p50 1.53 ms, p90 2.75 ms, 653 renders/s at p50
+load at end 4.8 7.1 7.2

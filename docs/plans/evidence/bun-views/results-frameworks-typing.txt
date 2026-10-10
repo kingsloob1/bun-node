@@ -1,0 +1,2 @@
+$ ../../../../node_modules/.bin/tsc -p frameworks-typing   # TypeScript 6.0.3, from docs/plans/evidence/bun-views
+exit 0

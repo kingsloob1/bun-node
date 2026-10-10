@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { renderToReadableStream } from "react-dom/server";
 import { BunHttpAdapter, createLogger } from "../../../../packages/bun-common/lib/index.ts";
 
-const scratch = process.argv[2] ?? mkdtempSync(join(tmpdir(), "react-views-hydrate-"));
+const scratch = process.argv[2] ?? mkdtempSync(join(tmpdir(), "bun-views-hydrate-"));
 rmSync(scratch, { recursive: true, force: true });
 mkdirSync(join(scratch, "views"), { recursive: true });
 symlinkSync(join(import.meta.dir, "node_modules"), join(scratch, "node_modules"));
