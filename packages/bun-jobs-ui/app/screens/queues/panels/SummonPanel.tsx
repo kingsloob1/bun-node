@@ -31,6 +31,7 @@ import { useCanMutate } from "../gating";
 import { useRefreshInterval } from "../live";
 import { budgetUsedText } from "./budgetText";
 import { SummonBudget } from "./SummonBudget";
+import { SummonGroupCard } from "./SummonGroupCard";
 import {
   summonActionsOffered,
   summonCheckSummary,
@@ -47,8 +48,9 @@ export interface SummonPanelProps {
 
 /**
  * A queue's summoning (`GET /queues/:queue/summon`): who summons its workers,
- * what is on its way, what holds the next attempt back, and the two opt-in
- * actions — "summon now" and reset (`queues.summon`).
+ * what is on its way, what holds the next attempt back, the summon group it
+ * is in (when it is in one), and the two opt-in actions — "summon now" and
+ * reset (`queues.summon`).
  *
  * Shown only where the status answers 200: the queue screen reads it before
  * offering the tab, and a queue with no summoner in the API's process (409
@@ -149,6 +151,13 @@ export function SummonPanel({ queue }: SummonPanelProps) {
         </p>
       )}
       <SummonState status={data} />
+      {data.group !== undefined && (
+        <SummonGroupCard
+          group={data.group}
+          queue={queue}
+          kind={data.summoner?.provider.kind}
+        />
+      )}
       {data.summoner && <Summoner summoner={data.summoner} />}
       {data.pending.length > 0 && (
         <PendingTable
@@ -294,6 +303,11 @@ function SummonState({ status }: { status: SummonStatusDto }) {
             <SummonBudget
               budget={status.budget}
               testId="summon-budget"
+              // Its own budget off, the group's applies to it, unless the
+              // group's is off too: then no limit applies at all.
+              group={
+                status.group !== undefined && status.group.budget.off !== true
+              }
             />
           ),
           // The row shows what is left; the counts used stay in view here.

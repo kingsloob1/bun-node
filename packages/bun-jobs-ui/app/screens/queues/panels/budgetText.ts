@@ -55,9 +55,15 @@ export interface BudgetOnView {
 export interface BudgetOffView {
   /** The budget is off. */
   state: "off";
-  /** The counts: `"Off: 41 this hour, 120 today (UTC), no limit"`. */
+  /**
+   * The counts: `"Off: 41 this hour, 120 today (UTC), no limit"`; for a
+   * queue in a summon group, `"Off: the group's budget applies"`.
+   */
   text: string;
-  /** When the counts reset: `"Counts reset at 14:00 UTC and at midnight UTC"`. */
+  /**
+   * The tooltip: when the counts reset, `"Counts reset at 14:00 UTC and at
+   * midnight UTC"`; for a queue in a summon group, its own counts first.
+   */
   resets: string;
 }
 
@@ -156,15 +162,30 @@ export function budgetUsedText(budget: SummonBudgetDto): string | undefined {
   return `Used ${formatNumber(budget.hour)} of ${formatNumber(budget.perHour ?? 0)} this hour, ${formatNumber(budget.day)} of ${formatNumber(budget.perDay ?? 0)} today (UTC)`;
 }
 
+/** Options of {@link summonBudgetView}. */
+export interface SummonBudgetViewOptions {
+  /**
+   * Whether the queue is in a summon group, whose budget then applies to
+   * it. Only a queue budget the policy turned off (`off: true`) reads
+   * differently: "Off: the group's budget applies", with the queue's own
+   * counts in its tooltip, rather than "…, no limit", which would be untrue.
+   * Defaults to `false`.
+   */
+  group?: boolean;
+}
+
 /**
  * A budget in plain words. Off when the policy turned it off (`off: true`),
  * and also when a limit is missing, which the contract sends only then: the
  * counts are shown with no limit rather than against an invented one. With
- * `limitsUnknown` the counts are shown as such, never as off.
+ * `limitsUnknown` the counts are shown as such, never as off. A queue in a
+ * summon group whose own budget is off reads as the group's budget applying
+ * ({@link SummonBudgetViewOptions.group}).
  */
 export function summonBudgetView(
   budget: SummonBudgetDto,
   now: number,
+  options: SummonBudgetViewOptions = {},
 ): BudgetView {
   const resets = `Counts reset at ${utcResetLabel(budget.hourResetsAt, now)} and at ${utcResetLabel(budget.dayResetsAt, now)}`;
   if (budgetLimitsUnknown(budget)) {
@@ -180,6 +201,13 @@ export function summonBudgetView(
     budget.perDay === undefined
   ) {
     // Spelled out rather than `budgetOff()`, so the limits narrow below.
+    if (options.group === true && budget.off === true) {
+      return {
+        state: "off",
+        text: "Off: the group's budget applies",
+        resets: `This queue's own count: ${formatNumber(budget.hour)} this hour, ${formatNumber(budget.day)} today (UTC). ${resets}`,
+      };
+    }
     return {
       state: "off",
       text: `Off: ${formatNumber(budget.hour)} this hour, ${formatNumber(budget.day)} today (UTC), no limit`,
