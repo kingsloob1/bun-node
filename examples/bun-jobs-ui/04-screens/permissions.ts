@@ -87,26 +87,38 @@
  *   none reports `true`; a worker too old to report the field has said
  *   nothing, so a panel whose live workers all omit it shows no note at all.
  *   It needs no permission of its own beyond the panel's.
- * - **The Summon tab needs a controller, and `/meta` cannot say so.** The
+ * - **The Summon tab needs summon state, and `/meta` cannot say so.** The
  *   queue screen reads `GET /queues/:queue/summon` itself, with `queues.read`,
- *   and offers the tab only on a status: a queue with no summon controller in
- *   the API's process answers 409 `SUMMON_NOT_CONFIGURED` (a server without
- *   the routes, 404) and has no tab. The memory driver refuses a `summon`
- *   policy, so the host above has no tab anywhere; a second host, on a
- *   backend another process can reach, has controllers on `mail`, `audit`
- *   and `payroll` and none on `plain`, and a summoner that starts nothing.
- *   Summon now… and Reset… need the opt-in `queues.summon` and a status with
- *   `local` true. The panel also shows the summoner's readiness, always, and
- *   what it declares (style, boot budget, longest life) only once it is ready.
- *   Its budget shows wherever the status carries `budget`, and Reset's "Also
- *   clear budget usage" box needs Reset…'s needs and `/meta`'s
- *   `features.summonResetBudget`.
+ *   and offers the tab on any status: a controller in the API's process
+ *   (`local: true`), or, where `features.summonRemoteStatus` is on, summon
+ *   state another process's controller wrote (`local: false`). A queue with
+ *   neither answers 409 `SUMMON_NOT_CONFIGURED` (a server without the routes,
+ *   404) and has no tab. The memory driver refuses a `summon` policy, so the
+ *   host above has no tab anywhere; a second host, on a backend another
+ *   process can reach, has controllers on `mail`, `audit` and `payroll` and
+ *   none on `plain`, and a summoner that starts nothing. Summon now… and
+ *   Reset… need the opt-in `queues.summon` and a status with `local` true. The
+ *   panel also shows the summoner's readiness wherever the status has a
+ *   summoner (a `local: false` one never does), and what it declares (style,
+ *   boot budget, longest life) only once it is ready. Its budget shows
+ *   wherever the status carries `budget`, and Reset's "Also clear budget
+ *   usage" box needs Reset…'s needs and `/meta`'s
+ *   `features.summonResetBudget`. The group card shows wherever the status
+ *   carries `group`: `mail`'s controller is in the summon group `outbound`.
+ *   Another `BunJobs` over the summon host's driver and namespace, standing
+ *   in for another process, runs the only controller for `newsletter`, so the
+ *   summon host reads that queue's status from storage: `local: false`, a
+ *   tab with no buttons even where `queues.summon` is granted.
  * - **The Summoning screen lists what the API lets you read.** The nav entry
  *   and `/summon` need `sections.manage`, `meta.mode` `jobs` or `both`,
  *   `features.summonList` and the untargeted `queues.list`, the route's
  *   action. The UI filters nothing: `GET /summon` asks `authorize` for
  *   `queues.read` on each controller's queue and leaves out the ones refused,
- *   so on the summon host it lists `audit` and `mail`, never `payroll`.
+ *   so on the summon host it lists `audit` and `mail`, never `payroll`. Its
+ *   Summon groups section needs the entry's needs and
+ *   `features.summonRemoteStatus`, which a driver without `listQueueState`
+ *   (and `runner` mode) turns off; `GET /summon/groups` redacts each group to
+ *   the members the caller may read.
  * - **Providers are the process's, and `/providers` reads the untargeted
  *   map.** The Providers nav entry and `/providers` need `sections.manage`,
  *   `meta.features.providers` (false only in `runner` mode) and the opt-in
@@ -187,6 +199,7 @@ import type {
   RunnersAnalyticsDto,
   RunRecordDto,
   SummonCheckDto,
+  SummonGroupListDto,
   SummonListDto,
   SummonListItemDto,
   SummonStatusDto,
@@ -552,10 +565,11 @@ interface ScreenInputs {
   jobDefaults?: Pick<JobDefaultsDto, "overridden" | "pending">;
   /**
    * `GET /queues/<q>/summon`, which the queue screen reads with `queues.read`
-   * before it offers the Summon tab: the status, or `null` where it answered
-   * 409 `SUMMON_NOT_CONFIGURED` (no summon controller for the queue in the
-   * API's process) or 404 (a server without the summon routes). Absent when
-   * not read, which closes the tab too.
+   * before it offers the Summon tab: the status (`local` true for a controller
+   * in the API's process, `false` for summon state another process's
+   * controller wrote), or `null` where it answered 409
+   * `SUMMON_NOT_CONFIGURED` (neither) or 404 (a server without the summon
+   * routes). Absent when not read, which closes the tab too.
    */
   summon?: SummonStatusDto | null;
   /**
@@ -1457,9 +1471,11 @@ const GATES = [
   {
     // `/meta` has no flag for summoning: the queue screen reads
     // `GET /queues/:queue/summon` itself (with `queues.read`, on the queue's
-    // own map) and offers the tab only on a status. A queue with no summon
-    // controller in the API's process answers 409 `SUMMON_NOT_CONFIGURED`,
-    // and a server without the routes 404: both read as `null`, and no tab.
+    // own map) and offers the tab on any status, `local` or not. A queue with
+    // neither a controller in the API's process nor summon state another
+    // process wrote answers 409 `SUMMON_NOT_CONFIGURED` (`isNoSummoner` in
+    // `api/summon.ts`), and a server without the routes 404: both read as
+    // `null`, and no tab.
     name: "panel=summon",
     row: "Summon panel",
     map: "queue",
@@ -1479,8 +1495,13 @@ const GATES = [
   },
   {
     // The opt-in `queues.summon`, off under `readOnly`, and a controller in
-    // the API's own process (`local`): a status read from another process's
-    // controller would be read-only. `local` is always true today.
+    // the API's own process (`summonActionsOffered` in `summonText.ts`:
+    // `canSummon && status.local`). `local` is `true` for a queue whose
+    // controller runs in the API's process, and `false` for one whose
+    // controller runs in another process, which the API answers from the
+    // summon state in storage wherever `features.summonRemoteStatus` is on
+    // (bun-jobs #314): the panel is then read-only, and the API answers both
+    // POSTs 409 `SUMMON_NOT_CONFIGURED` even where `queues.summon` is granted.
     name: "summon: Summon now…",
     row: "Summon panel Summon now…",
     map: "queue",
@@ -1550,6 +1571,22 @@ const GATES = [
         providers?.some((item) => item.id === id && item.preflight) === true
       );
     },
+  },
+  {
+    // `SummonPanel.tsx`: `data.group !== undefined && <SummonGroupCard>`,
+    // inside the panel, reading nothing of its own — the group arrives on the
+    // status, already redacted by the API to the members the caller may read.
+    // Local or not: a status read from storage carries the group too. Its name
+    // links to `/summon?group=<name>` only where the Summoning screen lists
+    // groups (`GroupName` in `SummonGroupCard.tsx`: `features.summonList`,
+    // `features.summonRemoteStatus` and the untargeted `queues.list`), and is
+    // plain text otherwise; that is a detail of the link, not of the card, so
+    // it is no part of this gate, as the README row says.
+    name: "summon: group card",
+    row: "Summon panel group card",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => summon?.group !== undefined,
   },
   {
     name: "panel=throughput",
@@ -1852,6 +1889,20 @@ const GATES = [
     needsOf: ["Summoning: nav and /summon"],
     reads: ["queues.read"],
     when: ({ summonItem }) => summonItem !== undefined,
+  },
+  {
+    // `SummoningScreen.tsx`: `canList && remote && <SummonGroupsSection>`,
+    // where `canList` is the untargeted `queues.list` and `remote` is
+    // `features.summonRemoteStatus === true`. Below the controllers whatever
+    // their list answered, and `GET /summon/groups` (`listSummonGroups` in
+    // `api/summon.ts`) is requested only from inside the section, so not at
+    // all without it. Like the rows, the UI filters nothing: the API redacts
+    // each group to the members the caller may read.
+    name: "summoning: groups section",
+    row: "Summoning groups section",
+    map: "boot",
+    needsOf: ["Summoning: nav and /summon"],
+    features: ["summonRemoteStatus"],
   },
   // Providers: `/providers` is outside any queue, so the untargeted map
   // decides everything on it, Test connection included.
@@ -4162,6 +4213,7 @@ checkEqual(
     "summon: summoner readiness": false,
     "summon: what the summoner declares": false,
     "summon: Test connection": false,
+    "summon: group card": false,
     // A Summoning row needs a controller `GET /summon` lists, and this host
     // runs none: asked on the summon host, with its list.
     "summoning: row": false,
@@ -6793,12 +6845,12 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("The Summon panel: a summon controller in the API's process, or no tab");
+step("The Summon panel: summon state for the queue, or no tab");
 
-// `/meta` says nothing about summoning, so the queue screen asks the status
-// route itself. The memory host above runs no controller, so every queue
-// there answers 409 and gets no tab — which is why mail's gates above hold
-// the three summon gates closed.
+// `/meta` says nothing about which queue summons, so the queue screen asks
+// the status route itself. The memory host above runs no controller and holds
+// no summon state, so every queue there answers 409 and gets no tab — which
+// is why mail's gates above hold the summon gates closed.
 checkEqual(
   "the memory host: GET /queues/:queue/summon is 409 SUMMON_NOT_CONFIGURED on mail and audit (no tab), 403 on payroll (not read at all)",
   await Promise.all(
@@ -6834,13 +6886,27 @@ const recordingSummoner = defineSummoner({
 });
 /** Every trigger off: only "summon now" runs a check. */
 const ONE_SHOT = { onAdd: false, events: false, poll: false } as const;
+/**
+ * The summon group `outbound`'s budget, the same in every policy naming the
+ * group, as `SummonGroupOptions.budget` asks.
+ */
+const OUTBOUND_BUDGET = { perHour: 20, perDay: 200 } as const;
 const summonJobs = new BunJobs({
   namespace: exampleNamespace("examples-ui-permissions-summon"),
   driver: crossProcessDriver(),
   logger: noopLogger,
   // The three queues above, each with a controller here; `plain` has none.
+  // mail's is in the summon group `outbound`, so "summon now" on mail charges
+  // the group too (the summon groups step below). In a group with a budget a
+  // queue's own budget is off unless set, so mail sets its own, the default
+  // limits, as a ceiling on top of the group's: its Budget row keeps them.
   summon: {
-    mail: { summoner: recordingSummoner, triggers: ONE_SHOT },
+    mail: {
+      summoner: recordingSummoner,
+      triggers: ONE_SHOT,
+      budget: { perHour: 30, perDay: 300 },
+      group: { name: "outbound", budget: OUTBOUND_BUDGET },
+    },
     audit: { summoner: recordingSummoner, triggers: ONE_SHOT },
     payroll: { summoner: recordingSummoner, triggers: ONE_SHOT },
   },
@@ -7297,6 +7363,327 @@ checkEqual(
   ).status,
   403,
 );
+
+/* ------------------------------------------------------------------ */
+step("Summon groups, and a queue whose controller runs in another process");
+
+// mail's controller is in the summon group `outbound`, so the attempt
+// "Summon now…" made above was charged to the group as well as to mail. The
+// group's state is shared, in storage, under the group's name: the queue's
+// status carries it as `group`, and `GET /summon/groups` lists it.
+const mailGrouped = (
+  await summonHostAll.call<SummonStatusDto>("GET", "/queues/mail/summon")
+).body;
+const groupList = await summonHostAll.call<SummonGroupListDto>(
+  "GET",
+  "/summon/groups",
+);
+show(
+  "GET /summon-api/summon/groups",
+  groupList.body.groups.map(
+    ({ name, budget, queues }) =>
+      `${name}: ${budget.hour}/${budget.perHour} this hour, ${budget.day}/${budget.perDay} today; ${Object.entries(
+        queues,
+      )
+        .map(([queue, share]) => `${queue} ${share.day}`)
+        .join(", ")}`,
+  ),
+);
+checkEqual(
+  "mail's status names its group, outbound, with the group's own budget and mail's share of today's attempts: the one Summon now… made",
+  [
+    mailGrouped.group?.name,
+    mailGrouped.group?.budget.perHour,
+    mailGrouped.group?.budget.perDay,
+    mailGrouped.group?.queues.mail?.day,
+  ],
+  ["outbound", OUTBOUND_BUDGET.perHour, OUTBOUND_BUDGET.perDay, 1],
+);
+checkEqual(
+  "and GET /summon/groups lists it, with that share: 200, one group, outbound, charged by mail",
+  [
+    groupList.status,
+    groupList.body.groups.map(({ name, queues }) => [
+      name,
+      Object.keys(queues),
+    ]),
+  ],
+  [200, [["outbound", ["mail"]]]],
+);
+
+// The group card: on a status with `group`, inside the panel.
+checkEqual(
+  "the Summon panel's group card: on mail (a status with group); not on audit (a controller in no group), payroll (no queues.read, no tab) or plain (no controller, no tab); and not on mail for a status without group",
+  [
+    summonHostAll.gatesOf("mail", { summon: mailGrouped })[
+      "summon: group card"
+    ],
+    ...["audit", "payroll", "plain"].map(
+      (queue) => summonHostAll.gatesOf(queue)["summon: group card"],
+    ),
+    summonHostAll.gatesOf("mail", {
+      summon: { ...mailGrouped, group: undefined },
+    })["summon: group card"],
+  ],
+  [true, false, false, false, false],
+);
+checkEqual(
+  "audit's status really has no group, so the card's absence there is the API's answer",
+  summonHostAll.statuses.audit?.group,
+  undefined,
+);
+
+// The groups section: on the Summoning screen, with the untargeted
+// `queues.list` and `features.summonRemoteStatus`. A backend whose driver
+// cannot list queue state (`listQueueState`, which the group list pages
+// through) has the feature off and no group routes, while `GET /summon` and
+// the Summoning entry stay: a MemoryDriver without that one method stands in
+// for such a driver here.
+const unlistable = new MemoryDriver();
+Object.defineProperty(unlistable, "listQueueState", { value: undefined });
+const unlistableJobs = new BunJobs({
+  namespace: "examples-ui-permissions-unlistable",
+  driver: unlistable,
+  logger: noopLogger,
+});
+const unlistableApi = createJobsApi({
+  jobs: unlistableJobs,
+  basePath: "/unlistable-api",
+  mode: "jobs",
+  actions: [...JOBS_API_ACTIONS],
+  authorize,
+  logger: noopLogger,
+});
+const unlistableApp = new BunHttpAdapter();
+unlistableApp.use(unlistableApi.basePath, unlistableApi.router);
+/** A GET on the host without `listQueueState`: status and body. */
+async function unlistableGet<T>(path: string) {
+  const response = await unlistableApp.fetch(`/unlistable-api${path}`);
+  return { status: response.status, body: (await response.json()) as T };
+}
+const unlistableMeta = (await unlistableGet<MetaDto>("/meta")).body;
+const unlistableBoot = (
+  await unlistableGet<PermissionsBody>("/meta/permissions")
+).body;
+
+/**
+ * The Summoning entry, the groups section and `GET /summon/groups`' status,
+ * on `host` (or on the given `/meta` and map).
+ */
+async function groupsSection(
+  host: Pick<SummonHost, "meta" | "boot"> & {
+    groups: () => Promise<number>;
+  },
+  inputs: Partial<ScreenInputs> = {},
+): Promise<[boolean, boolean, number]> {
+  const set = screenGates({
+    meta: host.meta,
+    sections,
+    boot: host.boot,
+    ...inputs,
+  });
+  return [
+    set["Summoning: nav and /summon"],
+    set["summoning: groups section"],
+    await host.groups(),
+  ];
+}
+/** `host`'s `GET /summon/groups` status. */
+function groupsStatus(host: SummonHost): () => Promise<number> {
+  return async () => (await host.call<object>("GET", "/summon/groups")).status;
+}
+// An API older than the groups leaves the flag out of `/meta`.
+const { summonRemoteStatus: _summonRemoteStatus, ...preGroupFeatures } =
+  summonHostAll.meta.features;
+checkEqual(
+  "the Summon groups section: there with the Summoning entry and features.summonRemoteStatus; absent where authorize refuses the untargeted queues.list (entry and section, 403), on a driver without listQueueState (the entry stays, the feature is off and GET /summon/groups is not routed: 404), on an older API that leaves the flag out, and in runner mode",
+  {
+    all: await groupsSection({
+      ...summonHostAll,
+      groups: groupsStatus(summonHostAll),
+    }),
+    refused: await groupsSection({
+      ...summonRefuseList,
+      groups: groupsStatus(summonRefuseList),
+    }),
+    noListQueueState: await groupsSection({
+      meta: unlistableMeta,
+      boot: unlistableBoot,
+      groups: async () =>
+        (await unlistableGet<object>("/summon/groups")).status,
+    }),
+    olderApi: await groupsSection(
+      { ...summonHostAll, groups: groupsStatus(summonHostAll) },
+      {
+        meta: {
+          ...summonHostAll.meta,
+          features: preGroupFeatures as MetaDto["features"],
+        },
+      },
+    ),
+    runner: await groupsSection({
+      ...summonRunner,
+      groups: groupsStatus(summonRunner),
+    }),
+  },
+  {
+    all: [true, true, 200],
+    refused: [false, false, 403],
+    noListQueueState: [true, false, 404],
+    olderApi: [true, false, 200],
+    runner: [false, false, 404],
+  },
+);
+checkEqual(
+  "features.summonRemoteStatus as each /meta reports it: on for the summon host, off without listQueueState and in runner mode",
+  [
+    summonHostAll.meta.features.summonRemoteStatus,
+    unlistableMeta.features.summonRemoteStatus,
+    summonRunner.meta.features.summonRemoteStatus,
+  ],
+  [true, false, false],
+);
+await unlistableApi.close();
+await unlistableJobs.close();
+
+// A status with `local: false`: a second `BunJobs` over the same driver and
+// namespace — another process, as far as the API can tell — runs the only
+// controller for `newsletter`, in the same group, and makes one attempt.
+// The API's own context has no controller for it, so it answers the status
+// from the summon state in storage. Its summoner is the recording one above:
+// a summoner is the process's (`GET /providers` lists each one configured),
+// so a new one would be a sixth provider in the providers step below.
+/** The requests the recording summoner was handed for newsletter. */
+const newsletterRequests = () =>
+  summonRequests.filter((request) => request.queue === "newsletter");
+const summonElsewhere = new BunJobs({
+  namespace: summonJobs.namespace,
+  driver: summonJobs.driver,
+  logger: noopLogger,
+  summon: {
+    newsletter: {
+      summoner: recordingSummoner,
+      triggers: ONE_SHOT,
+      group: { name: "outbound", budget: OUTBOUND_BUDGET },
+    },
+  },
+});
+await summonElsewhere
+  .queue("newsletter")
+  .add("send-email", {}, { jobId: "waiting-1" });
+const elsewhereCheck = await summonElsewhere
+  .summonController("newsletter")
+  .check({ force: true });
+checkEqual(
+  "the other context's controller summoned for newsletter: one request handed to the summoner, started",
+  [
+    elsewhereCheck.action,
+    elsewhereCheck.action === "summoned" ? elsewhereCheck.outcome : undefined,
+    newsletterRequests().length,
+  ],
+  ["summoned", "started", 1],
+);
+// The summon host's `authorize` gives no queue but mail a mutation, so a host
+// granting newsletter everything shows that `local` alone closes the buttons.
+// It grants the provider actions too, which `?queue=` answers untargeted (the
+// providers step below), so that Test connection lacks only a summoner.
+/** The host's `authorize`, granting every action on newsletter and the provider actions. */
+const grantNewsletter: JobsApiAuthorize = (req, ctx) =>
+  ctx.queue === "newsletter" || ctx.action.startsWith("providers.")
+    ? true
+    : authorize(req, ctx);
+const summonGrantNewsletter = await summonHost({
+  actions: [...JOBS_API_ACTIONS],
+  authorize: grantNewsletter,
+});
+const newsletterMap = (
+  await summonGrantNewsletter.call<PermissionsBody>(
+    "GET",
+    "/meta/permissions?queue=newsletter",
+  )
+).body;
+const newsletterRead = await summonGrantNewsletter.call<SummonStatusDto>(
+  "GET",
+  "/queues/newsletter/summon",
+);
+const newsletter = newsletterRead.body;
+show("GET /summon-api/queues/newsletter/summon", {
+  status: newsletterRead.status,
+  local: newsletter.local,
+  summoner: newsletter.summoner,
+  group: newsletter.group?.name,
+});
+checkEqual(
+  "newsletter's status: 200, local: false, no summoner, and the group read from storage, charged by both queues",
+  [
+    newsletterRead.status,
+    newsletter.local,
+    newsletter.summoner,
+    newsletter.group?.name,
+    Object.keys(newsletter.group?.queues ?? {}).sort(),
+  ],
+  [200, false, undefined, "outbound", ["mail", "newsletter"]],
+);
+/**
+ * A provider with a preflight, listed under `id`: what the panel's Test
+ * connection would need, but for a summoner on the status to name it.
+ */
+function preflightProvider(id: string): ProviderDto {
+  return {
+    id,
+    provider: mailGrouped.summoner!.provider,
+    readiness: "ready",
+    facts: {},
+    preflight: true,
+    configSchema: false,
+  };
+}
+/** The Summon panel's gates on newsletter's screen, for `summon`. */
+function newsletterGates(summon: SummonStatusDto): boolean[] {
+  const set = summonGrantNewsletter.gatesOf(undefined, {
+    queue: newsletterMap,
+    summon,
+    providers: [preflightProvider("elsewhere-provider")],
+  });
+  return [
+    set["panel=summon"],
+    set["summon: Summon now…"],
+    set["summon: Reset…"],
+    set["summon: summoner readiness"],
+    set["summon: Test connection"],
+    set["summon: group card"],
+  ];
+}
+checkEqual(
+  "newsletter's map grants queues.summon, providers.read and providers.validate",
+  ["queues.summon", "providers.read", "providers.validate"].map((action) =>
+    can(newsletterMap, action as JobsApiAction),
+  ),
+  [true, true, true],
+);
+checkEqual(
+  "on that local: false status: the tab and the group card; no Summon now… or Reset… although queues.summon is granted; no readiness and no Test connection (no summoner), with a preflight provider listed",
+  newsletterGates(newsletter),
+  [true, false, false, false, false, true],
+);
+checkEqual(
+  "and the server agrees: both POSTs on newsletter are 409 SUMMON_NOT_CONFIGURED, and the recording summoner was handed nothing more for newsletter",
+  [
+    ...(await Promise.all(
+      ["/summon", "/summon/reset"].map(async (suffix) => {
+        const { status, body } = await summonGrantNewsletter.call<object>(
+          "POST",
+          `/queues/newsletter${suffix}`,
+        );
+        return `${status} ${body.code}`;
+      }),
+    )),
+    newsletterRequests().length,
+  ],
+  ["409 SUMMON_NOT_CONFIGURED", "409 SUMMON_NOT_CONFIGURED", 1],
+);
+await summonGrantNewsletter.api.close();
+await summonElsewhere.close();
 
 /* ------------------------------------------------------------------ */
 step("A summoned worker's actual mode: resolvedMode, beside the one requested");
