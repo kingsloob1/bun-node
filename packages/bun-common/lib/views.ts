@@ -44,7 +44,8 @@ export interface RenderLocals {
   cache?: boolean;
   /**
    * `res.locals`, merged under the options and over `app.locals` — the slot
-   * Express's `res.render` fills. Not passed to the template itself.
+   * Express's `res.render` fills. Like Express, the engine's options still
+   * carry `_locals` itself, beside the merged locals.
    */
   _locals?: Record<string, unknown>;
   /** Any other local the template reads. */
