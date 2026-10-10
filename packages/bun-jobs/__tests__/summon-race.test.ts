@@ -18,7 +18,7 @@ import {
 } from "../lib/index";
 import { SUMMON_ARGS } from "../lib/summon/args";
 import { SUMMON_MARKER } from "../lib/summon/marker";
-import { testNamespace, waitFor } from "./helpers";
+import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 import { runBun, spawnBun } from "./helpers/spawnBun";
 import { SUMMONED_WORKER, workerLines } from "./helpers/summon";
@@ -121,14 +121,31 @@ for (const backend of BACKENDS) {
         `${SUMMON_ARGS.namespace}=${namespace}`,
         `${SUMMON_ARGS.queue}=work`,
       ];
+      // Neither may go idle and exit before both have claimed: one that
+      // started much later (3.8 s apart was seen under load) otherwise
+      // found the first gone, and rightly took its place as a restart.
+      const gate = await makeTmpDir("bun-jobs-summon-race");
+      perTest.push(gate.cleanup);
+      const go = join(gate.path, "go");
       const env = {
         SUMMON_TEST_DRIVER: JSON.stringify(backend.config),
         SUMMON_TEST_IDLE_MS: "1500",
+        SUMMON_TEST_GO_FILE: go,
+        // A record lifetime of 3 s: at 600 ms a live holder starved under
+        // load could lapse, and its place read as free.
+        SUMMON_TEST_REPORT_MS: "1000",
       };
       const workers = [
         spawnBun(SUMMONED_WORKER, env, args),
         spawnBun(SUMMONED_WORKER, env, args),
       ];
+      // Both have claimed once both records are listed (a worker claims
+      // before its first record): only then may they go idle.
+      await waitFor(
+        async () => (await driver.listWorkers!(ref, Date.now())).length === 2,
+        { timeout: 30_000 },
+      );
+      await Bun.write(go, "");
       const exits = await Promise.all(
         workers.map(async (one) => await one.exited),
       );
@@ -203,6 +220,10 @@ for (const backend of BACKENDS) {
             SUMMON_TEST_DRIVER: JSON.stringify(backend.config),
             SUMMON_TEST_STALLED_MS: "300",
             SUMMON_TEST_LOCK_MS: "1000",
+            // A record lifetime of 3 s (three reports): at 200 ms (600 ms),
+            // a live holder starved under load missed it, and its place
+            // read as free or its record as gone.
+            SUMMON_TEST_REPORT_MS: "1000",
             ...env,
           },
           args,
@@ -215,22 +236,25 @@ for (const backend of BACKENDS) {
           (one) => one.summon?.id === id,
         );
 
-      // The two units the attempt asked for; the first will crash.
-      const first = start({
-        SUMMON_TEST_CRASH_AFTER_MS: "5000",
-        SUMMON_TEST_IDLE_MS: "60000",
-      });
+      // The two units the attempt asked for; the first will crash. The test
+      // kills it, once the early restart below has claimed: on its own
+      // timer (5 s after it started, as it was) it could die while that
+      // restart was still booting, which under load took long enough
+      // (3.8 s) for its record to lapse first — and the restart then
+      // rightly took a dead holder's place. Neither unit holds a job, so
+      // the backlog drains and the restarts below go idle and exit.
+      const first = start({ SUMMON_TEST_IDLE_MS: "60000" });
       // The second unit runs throughout; it is killed with the rest at the
       // end, since how it ends is not what this test is about.
-      start({ SUMMON_TEST_IDLE_MS: "8000" });
+      start({ SUMMON_TEST_IDLE_MS: "60000" });
       await waitFor(async () => (await summonedRecords()).length === 2, {
-        timeout: 10_000,
+        timeout: 30_000,
       });
 
       // Restarted while both holders are live: a double start, so it loses.
-      // Past the holders' `until` first (one record lifetime, 600 ms here),
+      // Past the holders' `until` first (one record lifetime, 3 s here),
       // so it is their live records alone that keep their places.
-      await Bun.sleep(1_000);
+      await Bun.sleep(3_500);
       expect(await summonedRecords()).toHaveLength(2);
       const early = start({ SUMMON_TEST_IDLE_MS: "300" });
       expect(await early.exited, await early.errors).toBe(0);
@@ -242,9 +266,11 @@ for (const backend of BACKENDS) {
 
       // The first unit dies without a word; once its record lapses, a
       // restart with the same arguments takes its place.
-      expect(await first.exited).toBe(1);
+      first.proc.kill("SIGKILL");
+      await first.exited;
+      expect(first.proc.signalCode).toBe("SIGKILL");
       await waitFor(async () => (await summonedRecords()).length === 1, {
-        timeout: 10_000,
+        timeout: 30_000,
       });
       const restarted = start({ SUMMON_TEST_IDLE_MS: "300" });
       expect(await restarted.exited, await restarted.errors).toBe(0);

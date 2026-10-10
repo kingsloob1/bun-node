@@ -1697,6 +1697,11 @@ describe("a summon status's providerId and readiness", () => {
         work: {
           summoner: summoner as never,
           triggers: { onAdd: false, events: false, poll: false },
+          // Under the file's 30 s timeout: the default (30 s) bounds a
+          // check's wait for the config and close()'s wait for the summon
+          // events, so a hang in either read as this test's own timeout
+          // (seen once, never reproduced). At 10 s it fails as itself.
+          summonTimeout: 10_000,
         },
       },
     });

@@ -672,8 +672,14 @@ describe("localCompute: a unit", () => {
   it("says SIGKILL, not max-lifetime, for a unit that killed itself, then and later", async () => {
     const file = join(await tmp(), "r.json");
     const local = unitProvider("selfkill", file);
+    // The unit kills itself 300 ms after it boots, and the lifetime must
+    // outlast that boot: at 1 s, under `bun test --parallel=16`, a boot
+    // took the rest and the backstop's SIGTERM landed first, rightly
+    // reported as max-lifetime/143. 5 s leaves the boot ~4.7 s.
+    const lifetime = 5_000;
+    const summonedAt = Date.now();
     const [handle] = handlesOf(
-      await summon(local.summon, request({ maxLifetimeMs: 1_000 })),
+      await summon(local.summon, request({ maxLifetimeMs: lifetime })),
     );
     const expected: UnitStatus = {
       handle: handle!,
@@ -689,7 +695,7 @@ describe("localCompute: a unit", () => {
       ),
     ).toEqual(expected);
     // Past the lifetime: still the unit's own death, not the backstop's.
-    await Bun.sleep(1_500);
+    await Bun.sleep(Math.max(0, summonedAt + lifetime + 500 - Date.now()));
     expect((await local.summon.status!([handle!], context()))[0]).toEqual(
       expected,
     );

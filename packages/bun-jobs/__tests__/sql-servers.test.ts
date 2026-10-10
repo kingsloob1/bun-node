@@ -642,6 +642,13 @@ for (const engine of ENGINES) {
  * caps that name until the worker closes. Either way the queue stalls with
  * nothing in the log unless someone listens for `error`.
  *
+ * On Postgres, under load, the queue stalled another way: the promotion sweep
+ * runs at the poll interval (5ms here) and its statement waits on the rows it
+ * promotes, and every tick started another sweep whether or not the last had
+ * finished — 2,122 in flight in one run — until each driver's pool was full of
+ * them and claims, completions and lock renewals waited behind. Now a sweep
+ * still running makes the next tick skip (`worker-sweep-overlap.test.ts`).
+ *
  * Every ingredient is here on purpose: separate drivers (so separate
  * connection pools, like separate processes), concurrency above one, a
  * per-name limit, jobs that fail their first attempt and back off briefly, and
@@ -656,8 +663,20 @@ for (const engine of ENGINES) {
       const JOBS = 120;
       /** The lock a claim takes; a stranded job is invisible for this long. */
       const LOCK_MS = 30_000;
-      /** How long every job has to settle: a third of the lock. */
-      const SETTLE_MS = 10_000;
+      /**
+       * How long every job has to settle once the last is added: two thirds of
+       * the lock, so no job can settle by way of the stalled sweep, which
+       * takes back a stranded one only once its lock has lapsed.
+       */
+      const SETTLE_MS = (LOCK_MS * 2) / 3;
+      /**
+       * The longest the queue may go without a job settling: past it the
+       * queue has stalled, and the test fails then rather than at
+       * `SETTLE_MS`. Measured at a load of 30-52 on 16 cores, the widest gap
+       * between completions was 2.4s, and the last job settled up to 16.6s
+       * after the last add; a stalled queue went 29-75s.
+       */
+      const STALL_MS = 5_000;
 
       let url: string;
       if (engine.url) {
@@ -773,9 +792,21 @@ for (const engine of ENGINES) {
           );
         }
 
+        // Waits on progress, not a fixed time: a slow machine settles jobs
+        // slowly but steadily, a stalled queue not at all.
         const deadline = Date.now() + SETTLE_MS;
-        while (completions.size < JOBS && Date.now() < deadline) {
+        let settled = completions.size;
+        let settledAt = Date.now();
+        while (
+          completions.size < JOBS &&
+          Date.now() < deadline &&
+          Date.now() - settledAt < STALL_MS
+        ) {
           await Bun.sleep(25);
+          if (completions.size !== settled) {
+            settled = completions.size;
+            settledAt = Date.now();
+          }
         }
 
         // Diagnostics first: when the queue stalls, this says why.
@@ -803,7 +834,9 @@ for (const engine of ENGINES) {
         );
         await producerDriver.close();
       }
-    }, 60_000);
+      // Adding the jobs alone took up to 16s at a load of 52, before the
+      // SETTLE_MS that follows.
+    }, 90_000);
   });
 }
 

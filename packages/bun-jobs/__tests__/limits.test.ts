@@ -320,6 +320,61 @@ describe("queue limits: a claim that fails", () => {
   });
 });
 
+describe("queue limits: a commit that loses every race", () => {
+  /**
+   * `commit` writes its give-back with the same compare-and-set as everything
+   * else, which gives up after a dozen lost races — and the give-back used to
+   * go with it, so the tentative charge stayed on this worker's own lease and
+   * the name read as full until the worker closed. Measured on Postgres with
+   * four workers on one queue under load: one commit in every few runs lost
+   * all twelve.
+   */
+  it("gives the charge back with this worker's next write", async () => {
+    const driver = new MemoryDriver();
+    const ref = { ns: testNamespace(), queue: "limited" };
+    await driver.setQueueState(
+      ref,
+      LIMITS_STATE,
+      { names: { capped: { concurrency: 2 } } },
+      null,
+    );
+
+    const first = new QueueLimiter(driver, ref, "first", 30_000);
+    const second = new QueueLimiter(driver, ref, "second", 30_000);
+    closers.push(
+      () => first.close(),
+      () => second.close(),
+    );
+
+    // The grant shrinks to the capped name's room, and charges it all of it.
+    const reservation = await first.reserve(6, Date.now());
+    expect(reservation?.grant).toBe(2);
+
+    // Another writer wins every race the commit runs.
+    const setQueueState = driver.setQueueState.bind(driver);
+    let losing = true;
+    driver.setQueueState = async (...args) =>
+      losing && args[1] === LIMITER_STATE ? null : await setQueueState(...args);
+
+    // The claim took two jobs of another name, so `capped` is owed both back.
+    await first.commit(reservation!, ["plain", "plain"], Date.now());
+    losing = false;
+
+    await first.renew(Date.now());
+
+    const stored = (await driver.getQueueState(ref, LIMITER_STATE))?.value as {
+      holders: Record<string, { total: number; names: Record<string, number> }>;
+    };
+    expect(stored.holders.first!.total).toBe(2);
+    expect(stored.holders.first!.names).toEqual({});
+
+    // Another worker can run the capped name again.
+    const next = await second.reserve(6, Date.now());
+    expect(next?.excludeNames).toEqual([]);
+    expect(next?.grant).toBe(2);
+  });
+});
+
 describe("queue limits: enforcement", () => {
   it("runs as before when the queue has no limits", async () => {
     const { queue, seen, worker } = setup();

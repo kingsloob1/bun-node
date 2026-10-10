@@ -16,6 +16,14 @@ export interface SpawnedProcess {
   proc: Subprocess<"ignore", "pipe", "pipe">;
   /** Resolves with everything it wrote to stdout. */
   output: Promise<string>;
+  /**
+   * Resolves `true` once its stdout so far contains `text`, or `false` if
+   * stdout ends without it. For a test that must not act on the process —
+   * signal it, above all — before it has reached a line it prints: how long
+   * a `bun` process takes to get there is not a constant (0.4-0.7 s idle,
+   * past 1.5 s in a loaded 16-worker run).
+   */
+  printed: (text: string) => Promise<boolean>;
   /** Resolves with everything it wrote to stderr. */
   errors: Promise<string>;
   /** Resolves with its exit code. */
@@ -35,9 +43,46 @@ export function spawnBun(
     stderr: "pipe",
   });
 
+  // Read as it arrives, so `printed` can answer before the process ends.
+  let text = "";
+  let ended = false;
+  const watchers = new Set<{
+    wanted: string;
+    resolve: (found: boolean) => void;
+  }>();
+  const settle = (): void => {
+    for (const watcher of watchers) {
+      if (text.includes(watcher.wanted) || ended) {
+        watchers.delete(watcher);
+        watcher.resolve(text.includes(watcher.wanted));
+      }
+    }
+  };
+  const output = (async () => {
+    const decoder = new TextDecoder();
+    try {
+      for await (const chunk of proc.stdout) {
+        text += decoder.decode(chunk, { stream: true });
+        settle();
+      }
+      text += decoder.decode();
+    } finally {
+      ended = true;
+      settle();
+    }
+    return text;
+  })();
+
+  const printed = async (wanted: string): Promise<boolean> =>
+    await new Promise<boolean>((resolve) => {
+      watchers.add({ wanted, resolve });
+      settle();
+    });
+
   return {
     proc,
-    output: new Response(proc.stdout).text(),
+    output,
+    printed,
     errors: new Response(proc.stderr).text(),
     exited: proc.exited,
   };

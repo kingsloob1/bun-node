@@ -6,7 +6,7 @@ import type {
   JobState,
 } from "../lib/index";
 import { Buffer } from "node:buffer";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, setSystemTime } from "bun:test";
 import {
   BunQueue,
   ConfigError,
@@ -893,13 +893,25 @@ describe("jobs list cursor: drivers that cannot seek", () => {
     // Priorities spread across the `waiting` block, so its own order is by
     // priority and disagrees with creation order — the condition that makes
     // the two interpretations differ at all.
-    await queue.addBulk(
-      Array.from({ length: 18 }, (_, i) => ({
-        name: "row",
-        data: { i },
-        opts: { jobId: id(i), priority: i % 3 },
-      })),
-    );
+    //
+    // On a clock held still, so the whole block shares one creation
+    // millisecond, which the last assertion needs. `addBulk` stamps each job
+    // as it builds it, so a millisecond turning over part way through the 18
+    // gave the later ones a later `createdAt`, and the block, read in priority
+    // order, went back in time: once in three seeds of the 16-worker suite,
+    // in 17 ms, and every time with `Date.now` ticked mid-bulk.
+    setSystemTime(Date.now());
+    try {
+      await queue.addBulk(
+        Array.from({ length: 18 }, (_, i) => ({
+          name: "row",
+          data: { i },
+          opts: { jobId: id(i), priority: i % 3 },
+        })),
+      );
+    } finally {
+      setSystemTime();
+    }
     await queue.addBulk(
       Array.from({ length: 9 }, (_, i) => ({
         name: "row",
@@ -962,10 +974,12 @@ describe("jobs list cursor: drivers that cannot seek", () => {
     expect(repeats).toBeGreaterThan(0);
 
     // And why it cannot be repaired here: the listing is *also* non-decreasing
-    // by creation time, because one `addBulk` gives every job the same
-    // millisecond. Nothing about these rows says which of the two orders they
-    // are in, so the driver is the only place that knows — see
-    // `scanAfterCursor`'s JSDoc, and Redis's own `SEEK_JOBS`.
+    // by creation time whenever one `addBulk` lands in a single millisecond,
+    // as it usually does and as it does here on a held clock (above): a
+    // blocked listing can be both orders at once. Nothing about these rows
+    // says which of the two orders they are in, so the driver is the only
+    // place that knows — see `scanAfterCursor`'s JSDoc, and Redis's own
+    // `SEEK_JOBS`.
     const created = expected.map((job) => seenCreated.get(job) ?? Number.NaN);
     expect(created.every((at, i) => i === 0 || at >= created[i - 1]!)).toBe(
       true,

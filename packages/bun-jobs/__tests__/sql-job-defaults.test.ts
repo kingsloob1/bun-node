@@ -83,7 +83,15 @@ afterAll(async () => {
   for (const cleanup of cleanups.toReversed()) {
     await cleanup().catch(() => undefined);
   }
-});
+  // Its own timeout. This deletes every row the file wrote, over 23,000 per
+  // server (20,000 of them the plan case's), one namespace and table at a time
+  // in about 45 steps: 0.8 s idle, but 4.7-11 s with four copies of the file
+  // at a load of 50-60, where no one step stood out (0.1-1.7 s each). Past
+  // bun's 5 s default that failed the file, reported as "(unnamed) … a
+  // beforeEach/afterEach hook timed out" (Bun names the wrong hook:
+  // oven-sh/bun#42361). It checks nothing, so its bound only has to catch a
+  // hang.
+}, 60_000);
 
 /** A client for what the driver has no API for: `EXPLAIN`, raw reads, DDL. */
 function rawClient(adapter: SqlAdapter, url: string): SQL {
@@ -178,15 +186,16 @@ async function walk(
   return { total, calls };
 }
 
-/** Claims everything claimable, in claim order, and answers the ids. */
-async function drain(
+/** Claims up to `limit` jobs, one claim each, and answers their ids in claim order. */
+async function claimIds(
   driver: SqlDriver,
   q: QueueRef,
   now: number,
+  limit: number,
 ): Promise<string[]> {
   const ids: string[] = [];
 
-  for (;;) {
+  while (ids.length < limit) {
     const job = await driver.claimJob(q, {
       workerId: "w-sql-jdef",
       token: newId(),
@@ -195,11 +204,13 @@ async function drain(
     });
 
     if (!job) {
-      return ids;
+      break;
     }
 
     ids.push(job.id);
   }
+
+  return ids;
 }
 
 for (const engine of ENGINES) {
@@ -403,10 +414,25 @@ for (const engine of ENGINES) {
           ...jobs.filter((_, index) => index % 10 === 0),
           ...jobs.filter((_, index) => index % 10 !== 0),
         ].map((job) => job.id);
-        expect(await drain(driver, q, now + 10)).toEqual(expected);
-        // Its own timeout: 1,007 jobs claimed one commit at a time took 2.4-3.6 s
-        // on MySQL alone, most of bun's 5 s default, and a full seeded run
-        // once timed out here on MySQL and MariaDB. It checks order, not time.
+
+        // The whole order in one read: a waiting listing is in claim order,
+        // `priority`, `created_at`, `id`, the very columns the claim sorts on.
+        // Draining all 1,007 one commit at a time took 2.4 s on an idle MySQL
+        // and over 30 s at a load of 85, which timed the test out: it checks
+        // order, and that many sequential transactions measured the scheduler.
+        const listed = await driver.listJobs(q, ["waiting"], {
+          offset: 0,
+          limit: count + 1,
+          order: "asc",
+        });
+        expect(listed.map((job) => job.id)).toEqual(expected);
+
+        // And the claim agrees, past the point the rewrite moved: every
+        // explicit job, then the first rewritten ones in their old order.
+        const explicit = Math.ceil(count / 10);
+        expect(await claimIds(driver, q, now + 10, explicit + 3)).toEqual(
+          expected.slice(0, explicit + 3),
+        );
       }, 30_000);
 
       it("never half-writes a job a claim takes while the rewrite runs", async () => {

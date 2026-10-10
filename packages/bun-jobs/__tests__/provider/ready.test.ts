@@ -84,6 +84,8 @@ function asyncProvider(options: {
   delayOf?: (n: number) => number;
   /** The first validation waits for this before answering: its timing is the test's. */
   latch?: Promise<void>;
+  /** Validation `n` waits for the promise this answers, if any, before answering: its timing is the test's. */
+  latchOf?: (n: number) => Promise<void> | undefined;
   /** Validate synchronously instead: the control twin of an async provider. */
   sync?: boolean;
   capabilities?: Partial<SummonCapabilities>;
@@ -109,6 +111,7 @@ function asyncProvider(options: {
         if (n === 1 && options.latch !== undefined) {
           await options.latch;
         }
+        await options.latchOf?.(n);
         await Bun.sleep(options.delayOf?.(n) ?? options.delay ?? 20);
         return options.fail?.(n)
           ? {
@@ -695,29 +698,42 @@ describe("SummonController and a provider's ready", () => {
 
   it("abandons only the validation a caller waited on: one controller's timeout never abandons another's newer one (PR-p2 round 2, E2)", async () => {
     const { controller, add } = await setup();
-    // Validation 1 hangs; every later one takes 250 ms and succeeds.
+    // Validation 1 hangs; validation 2 answers only when the test lands it,
+    // and every later one after 5 ms. Landing 2 by hand, once b's second
+    // check has had time to join it, keeps it in flight across b's first
+    // timeout and inside b's second wait on a loaded machine: a fixed
+    // 250 ms left b's second wait (200 ms) about 50 ms to spare, and a
+    // check that reached validation 2 that much later (as under
+    // `bun test --parallel=16`) failed b's second check.
+    let land = (): void => {};
+    const second = new Promise<void>((resolve) => {
+      land = resolve;
+    });
     const { provider, counts } = asyncProvider({
       hang: (n) => n === 1,
-      delayOf: () => 250,
+      latchOf: (n) => (n === 2 ? second : undefined),
+      delayOf: () => 5,
     });
     await add("a");
     await add("b");
     await add("c");
     const configured = provider({ region: "eu" });
+    // a's wait ends well inside b's, and b's well after c has started
+    // validation 2: the margins are hundreds of ms, not tens.
     const a = controller({
       summoner: configured,
       queue: "a",
-      summonTimeout: 100,
+      summonTimeout: 300,
     });
     const b = controller({
       summoner: configured,
       queue: "b",
-      summonTimeout: 200,
+      summonTimeout: 1_500,
     });
     const c = controller({
       summoner: configured,
       queue: "c",
-      summonTimeout: 5_000,
+      summonTimeout: 10_000,
     });
     // b and a both wait on validation 1; a gives up first and abandons it.
     const bFirst = b.check();
@@ -726,9 +742,16 @@ describe("SummonController and a provider's ready", () => {
     // must abandon 1 (already abandoned), never c's validation 2.
     const cFirst = c.check();
     expect(await bFirst).toMatchObject({ outcome: "failed" });
+    // Validation 2 was in flight when b gave up, and has not answered.
+    expect(counts.validations).toBe(2);
     await afterBackoff();
     // So b's next check joins validation 2 rather than starting a third.
-    expect(await b.check()).toMatchObject({ outcome: "started" });
+    // It is landed only after that check has had 300 ms to join it, and a
+    // second check that started a third (the bug) answers without it.
+    const bSecond = b.check();
+    await Bun.sleep(300);
+    land();
+    expect(await bSecond).toMatchObject({ outcome: "started" });
     expect(await cFirst).toMatchObject({ outcome: "started" });
     expect(counts.validations).toBe(2);
   });
