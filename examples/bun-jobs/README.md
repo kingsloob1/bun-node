@@ -139,7 +139,7 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`postgres-and-mysql.ts`](./08-drivers/postgres-and-mysql.ts) | Postgres / MySQL / MariaDB via `Bun.sql`, connection fields, `NOTIFY` wake-ups — needs a URL |
 | [`redis.ts`](./08-drivers/redis.ts) | blocking waits (sub-millisecond pick-up), pushed events, the key layout — needs a URL |
 | [`mongodb.ts`](./08-drivers/mongodb.ts) | `MongoDriver`, competing workers, index sync — needs a URL |
-| [`cross-process/main.ts`](./08-drivers/cross-process/main.ts) | two producer and three consumer **processes**; every job exactly once; `SIGTERM` shutdown |
+| [`cross-process/main.ts`](./08-drivers/cross-process/main.ts) | two producer and three consumer **processes**; every job exactly once; a readiness line before the producers start, so a `SIGTERM` always finds its handler; `SIGTERM` shutdown, each consumer reporting even when `close()` fails |
 
 ### 09 — Integrations
 
