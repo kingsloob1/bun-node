@@ -1,14 +1,17 @@
 import type { JobsDriver, QueueRef, QueueStateEntry } from "../drivers/index";
 import type { Logger } from "../shared/logger";
-import type { SummonGroupOptions } from "./types";
+import type { MarkerRead } from "./marker";
+import type { SummonGroupOptions, SummonMarker } from "./types";
 import { RESERVED_STATE_PREFIX, setReservedState } from "../queue/windows";
 import { ConfigError } from "../shared/errors";
 import { assertSegment, RESERVED_QUEUE } from "../shared/keys";
 import {
   DAY_MS,
   HOUR_MS,
+  isSummonMarker,
   newEpoch,
   newerMarkerVersion,
+  readMarker,
   rollBudget,
 } from "./marker";
 
@@ -110,6 +113,8 @@ export interface ResolvedSummonGroup {
   budget: SummonGroupLimits | false;
   /** Whether the circuit is shared, and any thresholds of its own. */
   circuit: ResolvedGroupCircuit;
+  /** `group.unit`: one controller per queue (the default), or one shared unit for the group. */
+  unit: "per-queue" | "shared";
 }
 
 /** A group's circuit for one provider kind, in the entry. */
@@ -230,9 +235,15 @@ export function resolveSummonGroup(
   }
   const name = assertSegment(group.name, "group.name");
   const circuit = resolveCircuit(group.circuit);
+  const unit = group.unit ?? "per-queue";
+  if (unit !== "per-queue" && unit !== "shared") {
+    throw new ConfigError('group.unit must be "per-queue" or "shared"', {
+      unit: String(unit),
+    });
+  }
   const budget = group.budget;
   if (budget === false) {
-    return { name, budget: false, circuit };
+    return { name, budget: false, circuit, unit };
   }
   if (
     budget !== undefined &&
@@ -246,6 +257,7 @@ export function resolveSummonGroup(
   return {
     name,
     circuit,
+    unit,
     budget: {
       perHour: limit(
         "group.budget.perHour",
@@ -429,7 +441,11 @@ export function ownValue<T>(
  * Sets `record[key]` as an own, enumerable property: a plain assignment to
  * `__proto__` (a valid queue name) would set the prototype instead.
  */
-function setOwn<T>(record: Record<string, T>, key: string, value: T): void {
+export function setOwn<T>(
+  record: Record<string, T>,
+  key: string,
+  value: T,
+): void {
   Object.defineProperty(record, key, {
     value,
     enumerable: true,
@@ -505,6 +521,82 @@ function circuitStates(
     });
   }
   return Object.keys(circuits).length === 0 ? undefined : circuits;
+}
+
+/**
+ * A shared unit's marker (`group.unit: "shared"`): the group's entry, carrying
+ * every `SummonMarker` field beside the group's own — its queues' shares, its
+ * kinds' circuits and its reset count — which per-queue controllers of the
+ * same group still read and write (`chargeGroup`, `noteGroupCircuit`), and
+ * which a shared controller keeps as they are.
+ */
+export type SharedSummonMarker = SummonMarker &
+  Pick<SummonGroupEntry, "queues" | "circuits"> & {
+    /** The marker's budget, with the group's reset count. */
+    budget: SummonMarker["budget"] & Pick<SummonGroupEntry["budget"], "clears">;
+  };
+
+/** A shared unit's marker as read, with the version to write it back at. */
+export interface SharedMarkerRead extends MarkerRead {
+  /** The marker, a private copy with its windows rolled to `now`. */
+  marker: SharedSummonMarker;
+}
+
+/**
+ * A group's entry read as a shared unit's marker (plan §4.3): the entry
+ * becomes a full marker, and stays a group entry.
+ *
+ * An entry only Part A has written (a group budget's counts, shares and
+ * circuits, no attempts) is **lifted**: given `pending: []` and
+ * `failures: 0`, with everything else kept — its epoch, counts, limits,
+ * shares, circuits and reset count. Plain `readMarker` would call it
+ * garbage and start a fresh marker over it, losing the counts, so a group
+ * switched from per-queue to shared keeps its budget and circuits. Then
+ * read as `readMarker` reads a marker (no entry, garbage and a newer
+ * version as there), with the group's own fields checked as
+ * `readGroupEntry` checks them, and the windows rolled to `now` (a day that
+ * rolls empties the shares).
+ */
+export function readSharedMarker(
+  /** What `getQueueState` answered for the group's entry. */
+  stored: QueueStateEntry | null,
+  /** The time to roll the windows to, epoch ms. */
+  now: number,
+): SharedMarkerRead {
+  let entry = stored;
+  if (
+    entry !== null &&
+    newerMarkerVersion(entry.value) === undefined &&
+    isSummonGroupEntry(entry.value) &&
+    !isSummonMarker(entry.value)
+  ) {
+    const value = entry.value as unknown as Record<string, unknown>;
+    if (value.pending === undefined && value.failures === undefined) {
+      entry = { ...entry, value: { ...value, pending: [], failures: 0 } };
+    }
+  }
+  const read = readMarker(entry, now) as SharedMarkerRead;
+  if (read.newer !== undefined) {
+    return read;
+  }
+  const marker = read.marker;
+  marker.queues = queueShares(marker.queues);
+  if (marker.queues === undefined) {
+    delete marker.queues;
+  }
+  marker.circuits = circuitStates(marker.circuits);
+  if (marker.circuits === undefined) {
+    delete marker.circuits;
+  }
+  const clears: unknown = marker.budget.clears;
+  if (
+    clears !== undefined &&
+    !(typeof clears === "number" && Number.isSafeInteger(clears) && clears > 0)
+  ) {
+    delete marker.budget.clears;
+  }
+  roll(marker as unknown as SummonGroupEntry, now);
+  return read;
 }
 
 /** Whether the entry's circuit for `kind` is open at `now`. */

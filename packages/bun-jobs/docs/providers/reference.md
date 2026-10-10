@@ -1031,6 +1031,15 @@ has the rules.
   `kind`, fed by every failure and registration of its queues; while open,
   no queue of the group using that kind is summoned for. Defaults to
   `false`. Each queue's own circuit still applies.
+- `unit`: optional. `"per-queue"` (default): one controller per queue.
+  `"shared"`: one controller for the group (`SummonControllerOptions.queues`),
+  whose every unit runs a worker for each of its queues; its attempts,
+  failures, backoff, circuit and budget live in the group's entry. Its
+  circuit is always shared (`circuit` is accepted and ignored; an open
+  circuit per-queue controllers of the group wrote for its `kind` still holds
+  it back), and the policy's `budget` and this `budget` both apply: per
+  period, the stricter limit. A shared unit refuses a provider that
+  negotiated summon `0.1` and one that passes `"none"`.
 
 ### `SummonGroup`
 
@@ -1066,7 +1075,9 @@ compare-and-set, so any number of controllers summon once per backlog. Emits
 driver. Built by `jobs.summonController(queue)`, from
 `BunJobsOptions.summon`, or directly.
 
-- `queue`: the queue it watches.
+- `queue`: the queue it watches; for a shared unit, the first of `queues`.
+- `queues`: every queue it watches, in order, frozen: `[queue]`, or a shared
+  unit's queues.
 - `namespace`: the queue's namespace.
 - `inert`: whether it is inert (built in a summoned process or runner child
   without `fromSummoned`, or it found a newer bun-jobs's marker). An inert
@@ -1092,7 +1103,12 @@ A [`SummonPolicy`](#summonpolicy) plus where the queue lives.
 - `driver`: the driver the queue lives on: multi-process, with queue state
   and worker records, or a `ConfigError`.
 - `namespace`: the queue's namespace.
-- `queue`: the queue to watch.
+- `queue`: the queue to watch. Exactly one of `queue` and `queues`.
+- `queues`: a shared unit's queues, in order (`group.unit: "shared"`, which
+  it requires): each named once. Exactly one of `queue` and `queues`.
+- `overrides`: optional, a shared unit's only. Per-queue `jobsPerWorker` and
+  `maxWorkers` (at most the policy's), keyed by a queue in `queues`; any
+  other key is a `ConfigError` naming it.
 - `logger`: optional. Any `LoggerLike`. Defaults to the package's logger,
   named `"summon"`.
 
