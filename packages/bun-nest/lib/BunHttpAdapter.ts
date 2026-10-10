@@ -425,9 +425,12 @@ export class BunHttpAdapter<
     // (`parseBody.inflate: false`, an unsupported coding, a corrupt stream)
     // goes to the error handling with the request, as body-parser's
     // `next(err)` does — answered with its 415/400 rather than routed with no
-    // body.
+    // body. Unless the route that would handle it opted in
+    // (`acceptUndecodableBody`): then it is routed, the refusal on
+    // `req.bodyDecodingError`, as `router.fetch()` routes it.
+    const router = this.instance;
     const decodingError = req.bodyDecodingError;
-    if (decodingError) {
+    if (decodingError && !router.routesUndecodableBody(req)) {
       defineHidden(decodingError, "req", req);
       throw decodingError;
     }
@@ -436,7 +439,6 @@ export class BunHttpAdapter<
       etag: this.etagEnabled,
       views: this.views,
     });
-    const router = this.instance;
     // The host and the full target are read only if a route needs them.
     const options = new RequestPipelineOptions(
       req,

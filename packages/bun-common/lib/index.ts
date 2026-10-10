@@ -400,6 +400,7 @@ export type {
   ValidationShape,
 } from "./types/routeTyping";
 export {
+  acceptUndecodableBody,
   awaitPipelineOrStream,
   BunRouter,
   type CachedRouteMatch,

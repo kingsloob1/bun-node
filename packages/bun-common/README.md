@@ -606,6 +606,46 @@ route decides what to say and when: bun-jobs' management API authorizes the
 caller first and only then answers `400 INVALID_JSON`. `router.fetch()` and a
 `BunWebSocket` dedicated server serving the router behave the same here.
 
+A router, or one route, can opt in to receive such a body on the adapter too:
+
+```ts
+import { acceptUndecodableBody, BunRouter } from "@kingsleyweb/bun-common";
+
+// A router, mounted on an adapter that did not opt in:
+const api = new BunRouter({ acceptUndecodableBody: true });
+app.use("/api", api);
+
+// One route:
+app.post("/hooks", acceptUndecodableBody(), handler);
+
+// Everything on the adapter (bun-nest's adapter takes the same option):
+export const everything = new BunHttpAdapter(0, {
+  router: { acceptUndecodableBody: true },
+});
+```
+
+It is routed as `router.fetch()` routes it, `req.bodyDecodingError` set, and
+every route that did not opt in keeps the early refusal. Off by default.
+
+- **Which route decides:** the first route handler the request matches, in
+  pipeline order; with none (a mounted router's own not-found middleware,
+  say), the middleware of the most deeply mounted router it reaches; with
+  nothing matched, the adapter's own setting. Middleware ahead of an opted-in
+  route still runs, with `req.body` unset.
+- **Nested mounts:** the innermost router that set the option wins. A router
+  that left it unset takes its mount's setting, `false` refuses inside an
+  opted-in router, and a route's `acceptUndecodableBody()` marker wins over
+  both.
+- **413 is not covered.** A body over its cap is refused before routing
+  whatever the setting: that guard protects the server, and bun-jobs' API
+  answers its own cap before `authorize` for the same reason.
+- **Only the early refusal.** A body read later, inside the pipeline
+  (`deferBody`, a body parser middleware, `parseBody()`), is answered through
+  the error handling as before.
+- The option is read when routes are registered, so set it in the
+  constructor. The adapter consults `routesUndecodableBody(req)` only for a
+  body that failed to decode, and it answers at once while nothing opted in.
+
 Examples:
 [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts),
 [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts).
