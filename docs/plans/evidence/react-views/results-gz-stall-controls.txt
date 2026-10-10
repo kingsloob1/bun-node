@@ -1,0 +1,3 @@
+(1) Bun.serve, chunks enqueued outside pull(): finished, body "chunk1\nchunk2\n"
+(2) node:zlib gzip: two write callbacks ran; after end(): 'end' fired, 32 bytes out
+(2) node:zlib br: two write callbacks ran; after end(): 'end' fired, 24 bytes out

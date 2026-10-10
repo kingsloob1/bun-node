@@ -1,0 +1,23 @@
+bun 1.4.3, NODE_ENV=production, load 17.2 28.7 22.9
+
+## TTFB over a socket (median of 15, ms; a stalled path is tried twice). Suspense section waits 50 ms.
+path | accept-encoding | status | content-encoding | headers | first byte | last byte | bytes on the wire
+/string | identity | 200 | - | 5.9 | 6.0 | 6.0 | 96282
+/stream | identity | 200 | - | 7.8 | 7.8 | 7.9 | 96282
+/buffered-suspense | identity | 200 | - | 53.8 | 53.9 | 53.9 | 96374
+/stream-suspense | identity | 200 | - | 5.8 | 5.8 | 51.9 | 97428
+/stream-suspense-flush | identity | 200 | - | 5.1 | 5.1 | 51.9 | 97428
+/gz/string | gzip | 200 | gzip | 4.5 | 4.5 | 4.5 | 4204
+/gz/stream | gzip | 200 | gzip | 5.5 | 5.5 | 5.6 | 4204
+/gz/buffered-suspense | gzip | 200 | gzip | 54.6 | 54.6 | 54.7 | 4260
+/gz/stream-suspense | gzip | 200 | gzip | 12.0 | 12.1 | STALLED 2/2 (10 bytes arrived) | -
+/gz/stream-suspense-flush | gzip | 200 | gzip | 7.1 | 7.1 | 52.4 | 4869
+
+## HEAD on a streamed page
+5 HEAD requests: renders started 5, streams read to the end 0, cancelled 5
+HEAD status 200, content-type text/html, content-length null, transfer-encoding chunked
+
+## Errors
+/shell-error: status 500, bytes 61, client read error none, ends with </html> false, body starts "<!DOCTYPE html><p>error handler: Error: boom in the shell</p>"
+/late-boundary-error: status 200, bytes 445, client read error none, ends with </html> true, body starts "<!DOCTYPE html><html><head></head><body><p>shell</p><!--$?--><template id=\"B:0\">"
+/hard-stream-error: status 200, bytes 1000, client read error TypeError: ECONNRESET: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch(), ends with </html> false, body starts "READ FAILED: TypeError: ECONNRESET: The socket connection was closed unexpectedl"

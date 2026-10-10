@@ -1,0 +1,23 @@
+bun 1.4.3 (bbdc5a519), NODE_ENV=(unset)
+
+## Bun.build of the client entries (browser, minified, splitting)
+cold build of 3 entries: 49 ms
+entry-point client-Counter-global-2gcp75dk.js: 0.4 KiB, gzip 0.3 KiB
+chunk client-Counter-global-hz3647qx.js: 0.4 KiB, gzip 0.3 KiB
+chunk client-Counter-global-f46m4fcy.js: 421.6 KiB, gzip 128.9 KiB
+entry-point client-Counter-json-0664sev5.js: 0.5 KiB, gzip 0.3 KiB
+entry-point client-AsyncPage-global-jx629ttr.js: 0.9 KiB, gzip 0.4 KiB
+
+## The served HTML (page A)
+props script present, raw </script> from props absent: true
+every <script> carries a nonce: true
+module script carries integrity: true
+modulepreload with integrity: true
+
+## Chrome (/usr/bin/google-chrome)
+- A: props via bootstrapScriptContent: hydrated true (754 ms from navigate), after click "count 6", injected script ran false, evil text round-trips as "</script><script>self.__xss=1</script> <!--", async text "n/a", CSP violations []
+  console: ["info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"]
+- B: props in a server-only <script type=application/json>: hydrated true (119 ms from navigate), after click "count 6", injected script ran false, evil text round-trips as "</script><script>self.__xss=1</script> <!--", async text "n/a", CSP violations []
+  console: ["info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold","error: recoverable: Error: Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Compon"]
+- C: async server component in the hydrated tree: hydrated true (49 ms from navigate), after click "n/a", injected script ran false, evil text round-trips as n/a, async text "async server data", CSP violations []
+  console: ["info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold","error: %s is an async Client Component. Only Server Components can be async at the moment. This error is often caused by accidentally adding `'use client'` to a module that was originally written for "]

@@ -1,0 +1,6 @@
+typing/typing.type-test.tsx, TypeScript 6.0.3, experimentalDecorators, 2026-10-10
+$ ../../../../node_modules/.bin/tsc -p typing   (run from docs/plans/evidence/react-views)
+exit 0 (0 = every @ts-expect-error line is an error, and every other line compiles)
+
+Negative control: the same file with the TypedRender fix reverted to the naive overload pair fails with:
+typing/neg.type-test.tsx(97,1): error TS2578: Unused '@ts-expect-error' directive.

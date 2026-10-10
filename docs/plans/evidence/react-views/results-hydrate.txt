@@ -1,0 +1,23 @@
+bun 1.4.3 (bbdc5a519), NODE_ENV=production
+
+## Bun.build of the client entries (browser, minified, splitting)
+cold build of 3 entries: 21 ms
+entry-point client-Counter-global-6qs0nz1z.js: 0.4 KiB, gzip 0.2 KiB
+chunk client-Counter-global-vb9wr4tq.js: 0.3 KiB, gzip 0.2 KiB
+chunk client-Counter-global-21q08pyy.js: 207.3 KiB, gzip 65.4 KiB
+entry-point client-Counter-json-yaythxyr.js: 0.4 KiB, gzip 0.2 KiB
+entry-point client-AsyncPage-global-2kbr4q4e.js: 0.6 KiB, gzip 0.4 KiB
+
+## The served HTML (page A)
+props script present, raw </script> from props absent: true
+every <script> carries a nonce: true
+module script carries integrity: true
+modulepreload with integrity: true
+
+## Chrome (/usr/bin/google-chrome)
+- A: props via bootstrapScriptContent: hydrated true (398 ms from navigate), after click "count 6", injected script ran false, evil text round-trips as "</script><script>self.__xss=1</script> <!--", async text "n/a", CSP violations []
+  console: []
+- B: props in a server-only <script type=application/json>: hydrated true (36 ms from navigate), after click "count 6", injected script ran false, evil text round-trips as "</script><script>self.__xss=1</script> <!--", async text "n/a", CSP violations []
+  console: ["error: recoverable: Error: Minified React error #418; visit https://react.dev/errors/418?args[]=HTML&args[]= for the full message or use the non-minified dev environment for full errors and additional"]
+- C: async server component in the hydrated tree: hydrated true (22 ms from navigate), after click "n/a", injected script ran false, evil text round-trips as n/a, async text "async server data", CSP violations []
+  console: []
