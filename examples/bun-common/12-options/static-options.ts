@@ -515,11 +515,13 @@ checkEqual(
   200,
 );
 
-// The bare prefix. A route on `${prefix}/*` (what `site()` registers, and
-// what bun-common's `adapter.useStaticAssets()` registers) never sees
-// `/static` itself. Mounted with `use()`, as Express mounts
+// The bare prefix. A route on `${prefix}/*` alone (what `site()` registers)
+// never sees `/static` itself. Mounted with `use()`, as Express mounts
 // `app.use("/static", serveStatic(root))`, the handler sees it as the root
 // directory without its slash, and redirects it like any other directory.
+// bun-common's `adapter.useStaticAssets()` registers a route on the prefix
+// itself beside `${prefix}/*`, with the same result (asserted in
+// `http-adapter-options.ts`).
 checkEqual(
   "a route on the prefix plus /* does not match the bare prefix",
   (await site().fetch("/static")).status,

@@ -1032,8 +1032,9 @@ export class BunResponse<
       etag?: EtagOption;
       /**
        * The application's views, which {@link render} renders through —
-       * Express's `req.app` view settings, engines and `app.locals`. bun-nest's
-       * adapter passes its own; without one, `render` uses a default
+       * Express's `req.app` view settings, engines and `app.locals`. Both
+       * HTTP adapters, `BunRouter.fetch()` and a `BunWebSocket`'s dedicated
+       * server pass their own (`views`); without one, `render` uses a default
        * {@link BunViews} (templates under `./views`, no default engine), as an
        * Express app with no view settings would.
        */

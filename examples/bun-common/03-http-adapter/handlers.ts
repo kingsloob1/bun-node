@@ -172,6 +172,11 @@ show(
   "GET /static/missing.txt",
   (await assets.fetch("/static/missing.txt")).status,
 );
+const bareStatic = await assets.fetch("/static");
+show("GET /static — the bare prefix, redirected as a directory", [
+  bareStatic.status,
+  bareStatic.headers.get("Location"),
+]);
 
 /* ------------------------------------------------------------------ */
 step("registerParserMiddleware() and useBodyParser(): req.rawBody");

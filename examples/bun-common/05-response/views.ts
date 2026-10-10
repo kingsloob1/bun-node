@@ -20,13 +20,19 @@
  *   (`views`), `defaultEngine` (`view engine`), `cache` (`view cache`),
  *   `viewOptions` (`view options`), `engine(ext, fn)` (`app.engine`) and
  *   `locals` (`app.locals`).
- * - A response renders through the `BunViews` given as its constructor's
- *   `views` option. bun-common's `BunHttpAdapter` and `router.fetch()` give
- *   their responses none (bun-nest's adapter gives its own), so a
- *   `res.render()` there uses a fresh default: `./views`, no engine
- *   registered and no default engine. This example therefore builds each
- *   response itself, with `views`, and runs the router with `router.handle()`
- *   under `Bun.serve`, as the adapters do inside.
+ * - A response renders through its application's `BunViews`: the `views`
+ *   option of `new BunHttpAdapter(timeout, { views })` or
+ *   `new BunRouter({ views })`, else the adapter's or router's own
+ *   (`adapter.views`, which `setBaseViewsDir()`, `setViewEngine()`,
+ *   `engine()`, `setLocal()` and `set()` configure). Every response gets that
+ *   one instance — a served request's, `adapter.fetch()`'s, the error
+ *   handlers' and `router.fetch()`'s — so the view cache and `locals` are
+ *   shared. A router or adapter never configured renders with Express's
+ *   defaults: `./views`, no engine registered and no default engine.
+ * - The view cache (`cache`, Express's `view cache`) keeps each name's
+ *   resolved view — the file found and its engine — so a cached name is never
+ *   looked up again. Engines are told too (the `cache` local), and ejs-like
+ *   ones keep the compiled template.
  * - An engine is Express's `(path, options, callback)`. The one here
  *   replaces `{{key}}` with the HTML-escaped local `key`.
  * - A view is looked up as `<root>/<name>.<ext>`, then as
@@ -47,13 +53,15 @@
  * - A `HEAD` request gets the rendered page's `Content-Length` and no body.
  */
 import type {
-  BunServer,
   RenderCallback,
   RouterErrorMiddlewareHandler,
 } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BunHttpAdapter,
   BunRequest,
   BunResponse,
   BunRouter,
@@ -121,7 +129,8 @@ await checkRejects(
 /* ------------------------------------------------------------------ */
 step("An app whose responses render through those views");
 
-const app = new BunRouter();
+const app = new BunHttpAdapter(0, { views });
+checkEqual("adapter.views is the option given", app.views, views);
 
 app.get("/home", (_req, res) => {
   res.render("home", { title: "Welcome", name: "Zoë" });
@@ -166,31 +175,14 @@ app.use(((err, _req, res, _next) => {
     .json({ name: (err as Error).name, error: (err as Error).message });
 }) satisfies RouterErrorMiddlewareHandler);
 
-/**
- * Runs `app` for one request on a response given `views` — the adapter's
- * job, done by hand because bun-common's adapter passes no views.
- */
-async function handle(native: Request, server: BunServer): Promise<Response> {
-  const request = await BunRequest.init(native, server, { parseBody: false });
-  const response = new BunResponse(request, { views });
-  await app.handle({
-    requestHost: request.host,
-    requestMethod: request.method,
-    requestUrl: request.originalUrl,
-    request,
-    response,
-  });
-  return await response.getNativeResponse(1000);
-}
+await app.listen(0);
 
-const server = Bun.serve({ port: 0, fetch: handle });
-
-/** Status, Content-Type and body of `path` on the app. */
+/** Status, Content-Type and body of `path` on the app, served. */
 async function get(
   path: string,
   method = "GET",
 ): Promise<[number, string | null, string]> {
-  const response = await fetch(new URL(path, server.url), { method });
+  const response = await fetch(`${app.url}${path}`, { method });
   return [
     response.status,
     response.headers.get("Content-Type"),
@@ -272,7 +264,7 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("HEAD: the rendered length, no body");
 
-const headResponse = await fetch(new URL("/home", server.url), {
+const headResponse = await fetch(`${app.url}/home`, {
   method: "HEAD",
 });
 checkEqual(
@@ -354,7 +346,7 @@ await checkRejects(
 await Bun.sleep(0);
 checkEqual("…and neither callback is called", calledBack, false);
 
-server.stop(true);
+await app.close();
 
 /* ------------------------------------------------------------------ */
 step("What a plain router gives res.render(): the default views");
@@ -381,6 +373,126 @@ check(
   unregistered.startsWith("Cannot find module 'tpl'"),
   unregistered,
 );
+
+/* ------------------------------------------------------------------ */
+step("One BunViews for the app: every response shares its cache");
+
+// A template in a directory of its own, removed after the first render: from
+// then on only the view cache knows where it was. The engine, like ejs,
+// compiles a template once per path when the `cache` local is set, and
+// counts its reads.
+const cacheDir = mkdtempSync(join(tmpdir(), "bun-common-views-cache-"));
+await Bun.write(join(cacheDir, "page.tpl"), "<p>{{via}}</p>");
+const compiled = new Map<string, string>();
+let templateReads = 0;
+
+/** `tplEngine`, compiling each template once while the cache is on. */
+function cachingEngine(
+  path: string,
+  options: Record<string, unknown>,
+  callback: RenderCallback,
+): void {
+  const local = (_match: string, key: string): string =>
+    escapeHtml(options[key]);
+  const fill = (text: string): string => text.replace(/\{\{(\w+)\}\}/g, local);
+  const template = options.cache === true ? compiled.get(path) : undefined;
+  if (template !== undefined) {
+    callback(null, fill(template));
+    return;
+  }
+  templateReads++;
+  Bun.file(path)
+    .text()
+    .then((text) => {
+      if (options.cache === true) {
+        compiled.set(path, text);
+      }
+      callback(null, fill(text));
+    })
+    .catch((error: Error) => callback(error));
+}
+
+const shared = new BunViews();
+shared.root = cacheDir;
+shared.engine("tpl", cachingEngine);
+shared.defaultEngine = "tpl";
+shared.cache = true; // Express's "view cache"; on by default in production
+
+const site = new BunHttpAdapter(0, { views: shared });
+site.get("/page", (_req, res) => res.render("page", { via: "a route" }));
+site.get("/boom", () => {
+  throw new Error("boom");
+});
+// The adapter's error handlers get a response of their own, which renders
+// through the same views.
+site.setErrorHandler((_error, _req, res) => {
+  res.status(500).render("page", { via: "setErrorHandler" });
+});
+await site.listen(0);
+const testing = new BunRouter({ views: shared });
+testing.get("/page", (_req, res) => {
+  res.render("page", { via: "router.fetch()" });
+});
+
+/** Status, Content-Type and body of a response. */
+async function seen(
+  response: Response,
+): Promise<[number, string | null, string]> {
+  return [
+    response.status,
+    response.headers.get("Content-Type"),
+    await response.text(),
+  ];
+}
+
+checkEqual(
+  "a served request renders page.tpl",
+  await seen(await fetch(`${site.url}/page`)),
+  [200, "text/html; charset=utf-8", "<p>a route</p>"],
+);
+rmSync(join(cacheDir, "page.tpl"));
+checkEqual(
+  "with the file gone: adapter.fetch() renders it from the cache",
+  await seen(await site.fetch("/page")),
+  [200, "text/html; charset=utf-8", "<p>a route</p>"],
+);
+checkEqual(
+  "…setErrorHandler, served, renders it too",
+  await seen(await fetch(`${site.url}/boom`)),
+  [500, "text/html; charset=utf-8", "<p>setErrorHandler</p>"],
+);
+checkEqual(
+  "…and through adapter.fetch()",
+  await seen(await site.fetch("/boom")),
+  [500, "text/html; charset=utf-8", "<p>setErrorHandler</p>"],
+);
+checkEqual(
+  "…and a router given the same views, through router.fetch()",
+  await seen(await testing.fetch("/page")),
+  [200, "text/html; charset=utf-8", "<p>router.fetch()</p>"],
+);
+checkEqual("the template was read once in total", templateReads, 1);
+
+// The control: views configured the same way, but another instance, have no
+// cache entry, and look the file up.
+const elsewhere = new BunViews();
+elsewhere.root = cacheDir;
+elsewhere.engine("tpl", cachingEngine);
+elsewhere.defaultEngine = "tpl";
+elsewhere.cache = true;
+const separate = new BunRouter({ views: elsewhere });
+separate.get("/page", (_req, res) => res.render("page", { via: "separate" }));
+separate.use(((err, _req, res, _next) => {
+  res.status(500).send((err as Error).message);
+}) satisfies RouterErrorMiddlewareHandler);
+checkEqual(
+  "another BunViews, configured alike, cannot find the removed file",
+  await (await separate.fetch("/page")).text(),
+  `Failed to lookup view "page" in views directory "${cacheDir}"`,
+);
+
+await site.close();
+rmSync(cacheDir, { recursive: true, force: true });
 
 /* ------------------------------------------------------------------ */
 step("BunViews.render(): a template without a response");

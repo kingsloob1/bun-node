@@ -64,6 +64,9 @@
  *   request is built, it fails before routing and reaches `setErrorHandler`;
  *   read inside the pipeline (`deferBody` with `requestParsing()`), it goes
  *   to `next(err)`. A body with no `Content-Type` is only *tried* as JSON.
+ *   A bare `BunRouter`'s `fetch()` does not refuse it: the request is
+ *   routed, with `req.body` unset and the 400 on `req.bodyDecodingError`, so
+ *   a route decides what to answer, and when.
  * - The final handler logs a 4xx at `warn` and a 5xx at `error` (nothing
  *   under `NODE_ENV=test`); `err.req` is attached non-enumerable.
  * - A body-parser middleware (`useBodyParser`, `registerParserMiddleware`,
@@ -108,6 +111,7 @@ import {
 import {
   BunHttpAdapter,
   BunRequest,
+  BunRouter,
   compressionDictionaryHash,
   createTestLogger,
   DEFAULT_MAX_CONTENT_LENGTH,
@@ -1544,6 +1548,33 @@ checkEqual(
     /<pre>Bad Request<\/pre>/.test(await plainAnswer.text()),
   ],
   [400, "text/html; charset=utf-8", true],
+);
+
+// A bare router refuses nothing before routing: router.fetch() runs the route,
+// which finds no body and the refusal on req.bodyDecodingError. A route can
+// then answer in its own time — bun-jobs' management API authorizes the
+// caller before saying anything about the body.
+const bareRouter = new BunRouter();
+let bareRouteRan = false;
+bareRouter.post("/echo", (req, res) => {
+  bareRouteRan = true;
+  const refused = req.bodyDecodingError as
+    | (Error & { status: number; type: string })
+    | undefined;
+  res.json({
+    body: req.body === undefined ? "undefined" : describeBody(req),
+    refused: refused ? [refused.name, refused.status, refused.type] : null,
+  });
+});
+const bareAnswer = await bareRouter.fetch("/echo", brokenJson);
+checkEqual(
+  "router.fetch() routes it: the handler runs, req.body is undefined, the 400 is on req.bodyDecodingError",
+  [bareAnswer.status, bareRouteRan, await bareAnswer.json()],
+  [
+    200,
+    true,
+    { body: "undefined", refused: ["SyntaxError", 400, "entity.parse.failed"] },
+  ],
 );
 
 checkEqual(

@@ -7,12 +7,13 @@
  * ```
  *
  * `createServeStaticHandler(root, options)` answers `{ prefix, handler }`.
- * Register the handler on `${prefix}/*` — which is exactly what
- * `adapter.useStaticAssets(root, options)` does for you. That route never
- * sees the bare prefix (`/static` is a 404 here); mounted with
- * `router.use(prefix, handler)` instead, as Express mounts `serve-static`,
- * the handler redirects `/static` to `/static/` like any other directory
- * (asserted in `12-options/static-options.ts`).
+ * This example registers the handler on `${prefix}/*` alone, a route that
+ * never sees the bare prefix, so `/static` is a 404 here.
+ * `adapter.useStaticAssets(root, options)` registers it on the prefix as well,
+ * and mounted with `router.use(prefix, handler)`, as Express mounts
+ * `serve-static`, it sees the prefix too: either way `/static` is the
+ * directory without its slash, redirected to `/static/` (asserted in
+ * `12-options/static-options.ts` and `12-options/http-adapter-options.ts`).
  *
  * The files served live in `fixtures/public/`:
  *

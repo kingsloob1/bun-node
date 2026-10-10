@@ -193,8 +193,10 @@ export class BunHttpAdapter<
    * `view cache` settings, engines and `app.locals` — which every response's
    * `render()` (and so `@Render()`) uses. Set through {@link setBaseViewsDir},
    * {@link setViewEngine}, {@link engine}, {@link setLocal} and {@link set}.
+   * The underlying bun-common router (`getInstance()`) is given the same
+   * instance, so its own `fetch()` renders through it too.
    */
-  readonly views: BunViews = new BunViews();
+  readonly views: BunViews;
   /** The `etag` option every response starts with (see `BunResponse.etag`). */
   protected etagEnabled: EtagOption = false;
   /**
@@ -282,8 +284,12 @@ export class BunHttpAdapter<
         ? { routeCacheMax: options.routeCacheMax }
         : {}),
     };
-    const router = new BunRouter(routerOptions);
+    // One BunViews for the adapter and its router, so the router's own
+    // `fetch()` renders as the adapter does.
+    const views = new BunViews();
+    const router = new BunRouter({ ...routerOptions, views });
     super(router);
+    this.views = views;
 
     const logger = options?.logger || new Logger();
     this.setInstance(router);
@@ -3187,7 +3193,7 @@ export class BunHttpAdapter<
    * loaded on first render and its `__express` export used, as in Express.
    */
   public setViewEngine(engine: string) {
-    this.views.defaultEngine = engine;
+    this.views.set("view engine", engine);
     return this;
   }
 
@@ -3197,7 +3203,7 @@ export class BunHttpAdapter<
    * `views` under the working directory.
    */
   public setBaseViewsDir(path: string | string[]) {
-    this.views.root = path;
+    this.views.set("views", path);
     return this;
   }
 
@@ -3226,31 +3232,16 @@ export class BunHttpAdapter<
    * which logs a warning naming it once.
    */
   public set(setting: string, value: unknown) {
-    switch (setting) {
-      case "views": {
-        this.views.root = value as string | string[];
-        break;
-      }
-      case "view engine": {
-        this.views.defaultEngine = value as string;
-        break;
-      }
-      case "view cache": {
-        this.views.cache = Boolean(value);
-        break;
-      }
-      case "view options": {
-        this.views.viewOptions = value as Record<string, unknown> | undefined;
-        break;
-      }
-      default: {
-        if (!this.#ignoredSettings.has(setting)) {
-          this.#ignoredSettings.add(setting);
-          this.logger.warn(
-            `app.set("${setting}") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply`,
-          );
-        }
-      }
+    // `BunViews.set` holds the view settings, shared with bun-common's
+    // adapter so the two cannot drift.
+    if (
+      !this.views.set(setting, value) &&
+      !this.#ignoredSettings.has(setting)
+    ) {
+      this.#ignoredSettings.add(setting);
+      this.logger.warn(
+        `app.set("${setting}") has no effect on BunHttpAdapter: only the view settings (${BunViews.SETTINGS.map((name) => `"${name}"`).join(", ")}) apply`,
+      );
     }
     return this;
   }

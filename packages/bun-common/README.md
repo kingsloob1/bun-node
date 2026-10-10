@@ -290,8 +290,11 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
+| `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
-Example tour:
+Examples:
+[`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts),
+tour
 [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts).
 
 #### Sub-routers, groups and domains
@@ -459,6 +462,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
+| `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
 
@@ -592,8 +596,19 @@ Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
 upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
 `parseBody: true`; use the adapter to test request options.
 
-Example:
-[`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts).
+A body that cannot be parsed — declared JSON that does not, or a
+`Content-Encoding` that cannot be decoded — is treated differently by the two.
+The adapter refuses it before routing, as Express's global `json()` parser
+does: its `setErrorHandler` handlers get the `400` `SyntaxError` (or the
+`415`/`400`), and without one it is finalhandler's `400`. A bare router routes
+it, with `req.body` unset and the refusal on `req.bodyDecodingError`, so a
+route decides what to say and when: bun-jobs' management API authorizes the
+caller first and only then answers `400 INVALID_JSON`. `router.fetch()` and a
+`BunWebSocket` dedicated server serving the router behave the same here.
+
+Examples:
+[`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts),
+[`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts).
 
 #### Adapter helpers
 
@@ -601,6 +616,17 @@ Example:
 |---|---|
 | `useBodyParser(kind, rawBody, options)` | Registers one body parser (`"json"`, `"urlencoded"`, `"text"` or `"raw"`), once per kind. `options` follows body-parser: `type`, `limit` (over it: 413), `inflate` (`false`: 415), plus the [body-decoding](#body-decoding) options. `rawBody: true` keeps the bytes on `req.rawBody`. |
 | `registerParserMiddleware(prefix?, rawBody?)` | Registers a parser for every body type, optionally under a prefix. |
+| `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
+| `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`, and on the prefix itself, which answers `301` to `${prefix}/` as Express's `app.use(prefix, static)` does; see [Static files](#static-files). |
+| `setBaseViewsDir(dir \| dirs)`, `setViewEngine(ext)`, `engine(ext, fn)`, `setLocal(key, value)` | Configure `adapter.views`, as `@nestjs/platform-express`'s adapter does Express's: the `views` and `view engine` settings, an engine, an `app.locals` entry. |
+| `set(setting, value)`, `enable(setting)`, `disable(setting)` | Express's `app.set` for the view settings (`views`, `view engine`, `view cache`, `view options`). Any other setting has no effect and is warned about once. |
+| `render(res, view, locals?)` | `res.render(view, locals)` through `adapter.views`, as platform-express's adapter. A `status` key is only a local. |
+| `redirect(res, status, url)` | `res.redirect(status \|\| 302, url)`: Express's encoded `Location` and "Redirecting to" body. |
+| `getRequestHostname(req)` | `req.hostname`: the host without its port, or `127.0.0.1`. |
+| `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
+| `setTimeout(ms, callback)` | Sets `requestTimeout` and calls back with the server once it is listening. |
+| `setInstance(router)` | Routes requests through another `BunRouter`. Register routes on the new instance afterwards. |
+| `setLogger(logger)` | Replaces the logger. |
 
 Either parser passes a request with no body (`req.hasBody` false) on
 synchronously, before its type, encoding or size, as body-parser's `read()`
@@ -613,15 +639,12 @@ default. Only `requestParsing({ parseBody })` turns parsing back on, for the
 routes it is mounted on: it reads the body itself, and a parser registered
 **after** it then runs with its own options (one registered before it ran while
 parsing was still off).
-| `enableCors(options \| delegate, prefix?)` | Registers the [CORS](#cors) middleware plus an `OPTIONS *` preflight route. |
-| `useStaticAssets(root, options)` | Serves a directory on `${options.prefix}/*`; see [Static files](#static-files). |
-| `setRequestOpts(options)` | Replaces the request options, merged over the defaults (not over the options set before). The `requestOpts` setter does the same. |
-| `setTimeout(ms, callback)` | Sets `requestTimeout` and calls back with the server once it is listening. |
-| `setInstance(router)` | Routes requests through another `BunRouter`. Register routes on the new instance afterwards. |
-| `setLogger(logger)` | Replaces the logger. |
 
-Example:
-[`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts).
+Examples:
+[`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts),
+[`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts),
+tour
+[`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/http-adapter-options.ts).
 
 ### BunRequest
 
@@ -1074,8 +1097,10 @@ with `download: true`.
   accepted too; `redirect(url, init)` with a `ResponseInit` is Bun's
   `Response.redirect(url, init)`.
 - `res.render(view, locals?, callback?)` is Express's, through the response's
-  `views` (a `BunViews`, the constructor's `views` option; bun-nest's adapter
-  passes its own). `BunViews` is Express's `app.render`: `root` (`views`),
+  `views` (a `BunViews`, the constructor's `views` option). Both adapters,
+  `BunRouter.fetch()` and a `BunWebSocket` dedicated server give every
+  response the application's one instance: `adapter.views` / `router.views`
+  (the `views` option, else their own). `BunViews` is Express's `app.render`: `root` (`views`),
   `defaultEngine` (`view engine`), `cache` (`view cache`), `viewOptions`,
   `engine(ext, fn)` and `locals` (`app.locals`). Locals are `app.locals`, then
   `res.locals`, then `locals`. Without a callback the result is sent as
@@ -1241,7 +1266,9 @@ tour
 ### Static files
 
 `adapter.useStaticAssets(root, options)` serves a directory on
-`${prefix}/*`. `createServeStaticHandler(root, options)` returns
+`${prefix}/*`, and on `${prefix}` itself, which is the directory without its
+slash: a `301` to `${prefix}/`, as Express's `app.use(prefix, static)`.
+`createServeStaticHandler(root, options)` returns
 `{ prefix, handler }`, for registering the handler on any router yourself. The
 contract is `serve-static`'s, plus precompressed siblings and on-the-fly
 compression.
@@ -1291,6 +1318,7 @@ app.useStaticAssets(`${import.meta.dir}/public`, {
 
 Examples:
 [`serve-static.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/07-cors-and-static/serve-static.ts),
+[`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts),
 tour
 [`static-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/static-options.ts).
 
@@ -1574,7 +1602,7 @@ await app.listen(0);
 | `router` | a private empty router | The router upgrade routes register on. |
 | `onUpgrade` | none | Instance-wide `WebSocketUpgradeHook`, for routes registered without one. |
 | `customDataToWsClientFn` | none | **Deprecated.** Treated as `onUpgrade: async (req, res) => ({ custom: await fn(req, res) })`. Given beside `onUpgrade`, it is ignored and a warning is logged once. |
-| `responseTimeout`, `serverOptions`, `bunRequestOpts` | `0`, none, none | Dedicated server only: HTTP response timeout, base `Bun.serve` options, request parsing. |
+| `responseTimeout`, `serverOptions`, `bunRequestOpts` | `0`, none, none | Dedicated server only: HTTP response timeout, base `Bun.serve` options, request parsing. A body that cannot be parsed is routed, as by `router.fetch()`, with the refusal on `req.bodyDecodingError`. Responses render through the router's `views`. |
 
 The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
 `ping`, `pong` and `drain`. `port`, `getServer()` and `setRouteHandler()` are
@@ -1789,7 +1817,7 @@ The full export list is in [`lib/index.ts`](lib/index.ts).
 
 | Project | What it covers |
 |---|---|
-| [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | 47 examples of this package: routing, the HTTP adapter, requests and responses, validation, CORS, static files, compression, multipart uploads, WebSockets, logging and utilities, including 12 option tours |
+| [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | Examples of this package: routing, the HTTP adapter, requests and responses, views, validation, CORS, static files, compression, multipart uploads, WebSockets, logging and utilities, plus option tours that assert every option of one part of the API |
 | [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, plus option tours |
 | [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | Background work: queues, workers, the job registry, scheduling, flow control, failures, the runner, every driver and integrations, plus option tours |
 
@@ -1808,14 +1836,14 @@ Each file is a standalone script whose opening comment says what it shows.
 | `02-routing` | [`route-cache.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/route-cache.ts) | The route cache and `routeCacheMax`, named routes, `RouteClass`, `toNativeRequest` |
 | `03-http-adapter` | [`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts) | Every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
 | `03-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts) | Every constructor option |
-| `03-http-adapter` | [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts) | Not-found and error handlers, `enableCors`, `useStaticAssets`, body parsers, `setTimeout` |
+| `03-http-adapter` | [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts) | Not-found and error handlers, `enableCors`, `useStaticAssets` and its bare prefix, body parsers, `setTimeout` |
 | `04-request` | [`reading-a-request.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/reading-a-request.ts) | Every request property, query options, freshness, ranges, content negotiation |
-| `04-request` | [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts) | Every body-parsing option, size limits, compressed and stacked bodies, raw bodies |
+| `04-request` | [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts) | Every body-parsing option, size limits, compressed and stacked bodies, raw bodies, invalid JSON refused by the adapter and routed by `router.fetch()` |
 | `04-request` | [`cookies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/cookies.ts) | Parsing cookies, signed cookies and secrets, JSON cookies |
 | `05-response` | [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts) | Status, every `send` body type, `json`/`jsonp`, headers, ETags, `format()`, attachments |
 | `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events, redirects |
 | `05-response` | [`cookies-and-caching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
-| `05-response` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts) | `res.render()` and `BunViews`: engines, view lookup, locals, the callback form, every render failure |
+| `05-response` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts) | `res.render()` and `BunViews`: engines, view lookup, locals, the callback form, every render failure, one `BunViews` and its cache shared by the adapter, its error handler and `router.fetch()` |
 | `06-validation` | [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts) | Every target and failure mode, hooks, chained validators, `ValidationError` |
 | `06-validation` | [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts) | The same schema in zod, yup, valibot and arktype, and superstruct through `toStandardSchema` |
 | `06-validation` | [`typed-handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/typed-handlers.ts) | Handler types from the validator, `InferValidatedShape`, typed mounts |
@@ -1835,8 +1863,8 @@ Each file is a standalone script whose opening comment says what it shows.
 | `11-utilities` | [`http-helpers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/http-helpers.ts) | `etag`, `fresh`, ranges, `vary`, dates and byte sizes, cookie helpers, `accepts`, `typeIs`, `mime` |
 | `11-utilities` | [`async-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/async-control.ts) | `sleep`, `withTimeout`, `waitUntil`, `retry`, `computeBackoff`, `Mutex`, `Semaphore`, `getPort` |
 | `11-utilities` | [`errors-xml-files.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/11-utilities/errors-xml-files.ts) | Serialising errors, parsing XML, random bytes, unique filenames, streams to buffers |
-| `12-options` | [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts) | Tour: every `BunRouter` option and public method |
-| `12-options` | [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/http-adapter-options.ts) | Tour: every `BunHttpAdapter` option and public method |
+| `12-options` | [`router-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/router-options.ts) | Tour: every `BunRouter` option and public method, `views` included |
+| `12-options` | [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/http-adapter-options.ts) | Tour: every `BunHttpAdapter` option and public method, the view helpers included |
 | `12-options` | [`request-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/request-options.ts) | Tour: every request property, body-parsing and query option |
 | `12-options` | [`response-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/response-options.ts) | Tour: every response method and option |
 | `12-options` | [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts) | Tour: every validation option, execution order, `toStandardSchema` |
