@@ -1,13 +1,14 @@
 import type { ApiClient } from "./client";
 import type {
   SummonCheckDto,
+  SummonGroupListDto,
   SummonListDto,
   SummonResetBody,
   SummonStatusDto,
 } from "./types";
 import { ApiError } from "./errors";
 import { queryKeys } from "./queryKeys";
-import { assertShape } from "./shape";
+import { assertShape, isRecord } from "./shape";
 
 /**
  * Summoning: `GET /queues/:queue/summon` (a queue's status), the two opt-in
@@ -41,6 +42,8 @@ export const summonKeys = {
   status: (queue: string) => [...queryKeys.queue(queue), "summon"] as const,
   /** `GET /summon`. */
   list: ["summon"] as const,
+  /** `GET /summon/groups`. */
+  groups: ["summon", "groups"] as const,
 };
 
 /** Whether `error` says the queue has no summoner here, or the server has no summon routes. */
@@ -138,6 +141,36 @@ export async function listSummonControllers(
               (item as { budget?: unknown }).budget !== null)),
       ),
     "the summon controllers",
+    path,
+  );
+}
+
+/** Whether `value` has the parts of a summon group every answer carries. */
+function isGroup(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    isRecord(value.budget) &&
+    isRecord(value.queues)
+  );
+}
+
+/**
+ * `GET /summon/groups` (action `queues.list`): every summon group with shared
+ * state in the namespace, read from storage, each redacted to the member
+ * queues the caller may read (`queues.read`) — so a group's `queues` is never
+ * its whole membership. Served where `features.summonRemoteStatus` is on.
+ */
+export async function listSummonGroups(
+  api: ApiClient,
+  signal?: AbortSignal,
+): Promise<SummonGroupListDto> {
+  const path = "/summon/groups";
+  const body = await api.request<unknown>("GET", path, { signal });
+  return assertShape<SummonGroupListDto>(
+    body,
+    (fields) => Array.isArray(fields.groups) && fields.groups.every(isGroup),
+    "the summon groups",
     path,
   );
 }
