@@ -13,29 +13,11 @@
  * Express's behaviour here is measured, not assumed: whatever the Express
  * application answers is the expectation.
  */
-import type { Booted, Observed, Side } from "./expressCompat/app";
+import type { Booted, Side } from "./expressCompat/app";
 import type { ProbeGroup } from "./expressCompat/probes";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootBoth, observe } from "./expressCompat/app";
+import { bootBoth, comparable as fields, observe } from "./expressCompat/app";
 import { GROUPS, KNOWN } from "./expressCompat/probes";
-
-/** Flattens an observation into comparable fields, normalised as described above. */
-function fields(observed: Observed): Record<string, string> {
-  const out: Record<string, string> = {
-    status: String(observed.status),
-    body: observed.body,
-  };
-  for (const [name, value] of Object.entries(observed.headers)) {
-    if (name === "content-type") {
-      out[name] = value.toLowerCase().replace(/;\s*/g, "; ");
-    } else if (name === "etag") {
-      out[name] = value.replace(/-[^"]+"/, '-*"');
-    } else {
-      out[name] = value;
-    }
-  }
-  return out;
-}
 
 function describeGroup(group: ProbeGroup) {
   describe(`bun-nest vs platform-express: ${group.name}`, () => {

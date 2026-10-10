@@ -727,7 +727,9 @@ export class BunWebSocket<
             },
           ));
 
-        const res = createOpts?.response || new BunResponse<TCustom>(req);
+        const res =
+          createOpts?.response ||
+          new BunResponse<TCustom>(req, { views: this.router.views });
         let routeUsed: matchedRoute | true | undefined;
 
         try {
