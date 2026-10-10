@@ -105,10 +105,13 @@ http.setRequestOpts({ parseBody: false });
 type _renderOptions = Expect<
   Equal<Parameters<typeof http.render>[2], RenderOptions | null | undefined>
 >;
-http.render({} as Parameters<typeof http.render>[0], "view.html", {
-  // @ts-expect-error a status is a number
+// Every key is a view local, as on platform-express: `status` included.
+http.render({} as Parameters<typeof http.render>[0], "index", {
   status: "200",
+  title: "Home",
 });
+// @ts-expect-error the view is a name, not a number
+http.render({} as Parameters<typeof http.render>[0], 404, {});
 
 void http.listen("3000", "127.0.0.1", (_server) => {
   type _ = Expect<Equal<typeof _server, Server>>;

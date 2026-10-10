@@ -12,6 +12,7 @@ import type {
   SendFileOptions,
 } from "./types/general";
 import type { CookieSerializeOptions, Deferred } from "./utils/native";
+import type { RenderCallback, RenderLocals } from "./views";
 import { EventEmitter } from "node:events";
 import { stat } from "node:fs/promises";
 import { STATUS_CODES } from "node:http";
@@ -54,15 +55,29 @@ import {
   isObject,
   isString,
   isUndefined,
-  merge,
   rangeParser,
   serializeCookie,
   signCookie,
   toHttpDate,
 } from "./utils/native";
 import { mergeUpgradeHeaders } from "./utils/wsUpgrade";
+import { BunViews } from "./views";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
+
+/** The replacements {@link escapeHtml} makes. */
+const HTML_ESCAPES: Record<string, string> = {
+  '"': "&quot;",
+  "&": "&amp;",
+  "'": "&#39;",
+  "<": "&lt;",
+  ">": "&gt;",
+};
+
+/** HTML-escapes `value` as the `escape-html` package Express uses does. */
+function escapeHtml(value: string): string {
+  return value.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char] ?? char);
+}
 /** Writable view of `ResponseInit`, since its members are `readonly`. */
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -952,6 +967,9 @@ export class BunResponse<
    */
   #sentBody: BunResponseSentBody = undefined;
 
+  /** The views {@link render} renders through; see the `views` option. */
+  #views: BunViews | undefined = undefined;
+
   /** {@link locals}, once read or assigned. */
   #locals: Record<string, unknown> | undefined = undefined;
 
@@ -1012,9 +1030,20 @@ export class BunResponse<
        * per response with {@link setEtag} or {@link etag}.
        */
       etag?: EtagOption;
+      /**
+       * The application's views, which {@link render} renders through —
+       * Express's `req.app` view settings, engines and `app.locals`. bun-nest's
+       * adapter passes its own; without one, `render` uses a default
+       * {@link BunViews} (templates under `./views`, no default engine), as an
+       * Express app with no view settings would.
+       */
+      views?: BunViews;
     },
   ) {
     this.#etag = normalizeEtagOption(options?.etag);
+    if (options?.views !== undefined) {
+      this.#views = options.views;
+    }
     // Bind the pair at construction, as Express does with `req.res`, so
     // `req.fresh` / `req.stale` can be computed from the moment the response
     // exists — not only once `send()` runs.
@@ -2330,14 +2359,124 @@ export class BunResponse<
     return this.send(chunk);
   }
 
+  /**
+   * Redirects, as Express 5's `res.redirect([status,] url)`: sets `Location`
+   * to `url`, URL-encoded (`"back"` is not special, as in Express 5), and
+   * answers `status` (default `302`) with a short body negotiated on
+   * `Accept` — `text/plain` `"Found. Redirecting to <url>"`, `text/html`
+   * `<p>Found. Redirecting to <url></p>` (escaped), or empty when neither is
+   * acceptable — adding `Vary: Accept` and `Content-Length`. A `HEAD`
+   * request gets the headers and no body. No `ETag` is computed: Express
+   * ends a redirect without one.
+   *
+   * `redirect(url, status)` — the URL first — is accepted too, as before.
+   * With a `ResponseInit` second argument the response is Bun's
+   * `Response.redirect(url, init)`, unchanged.
+   */
+  redirect(url: string): BunResponse;
+  redirect(status: number, url: string): BunResponse;
+  redirect(url: string, status: ResponseInit | number | undefined): BunResponse;
   redirect(
-    url: string,
-    status: ResponseInit | number | undefined = 302,
+    first: string | number,
+    second?: string | ResponseInit | number,
   ): BunResponse {
-    this.response = Number.isFinite(status)
-      ? Response.redirect(url, status as number)
-      : Response.redirect(url, status as ResponseInit | undefined);
+    if (this.headersSent) {
+      return this;
+    }
+
+    let address: string;
+    let status = 302;
+    if (typeof first === "number") {
+      status = first;
+      address = String(second ?? "");
+    } else {
+      address = first;
+      if (isObject(second)) {
+        this.response = Response.redirect(first, second as ResponseInit);
+        return this;
+      }
+      if (typeof second === "number" && Number.isFinite(second)) {
+        status = second;
+      }
+    }
+
+    address = encodeUrl(String(address));
+    this.setHeader("Location", address);
+
+    // Express's `res.format({ text, html, default })`.
+    this.vary("Accept");
+    const accepted = this.req.accepts(["text", "html"]);
+    const reason = STATUS_CODES[status] ?? String(status);
+    let body = "";
+    if (accepted === "text") {
+      this.setHeader("Content-Type", "text/plain; charset=utf-8");
+      body = `${reason}. Redirecting to ${address}`;
+    } else if (accepted === "html") {
+      this.setHeader("Content-Type", "text/html; charset=utf-8");
+      body = `<p>${reason}. Redirecting to ${escapeHtml(address)}</p>`;
+    }
+
+    this.status(status);
+    this.setHeader(
+      "Content-Length",
+      String(new TextEncoder().encode(body).byteLength),
+    );
+    this.req.setResponse(this);
+    this.#sentBody = body;
+    this.options.headers = this.headersObj;
+    this.response = new Response(
+      this.req.method === "HEAD" || body === "" ? null : body,
+      this.options,
+    );
     return this;
+  }
+
+  /**
+   * Renders the view `view` and sends it, as Express's `res.render(view[,
+   * locals][, callback])`, through the response's views (the `views`
+   * constructor option): the locals are the views' `locals`, then
+   * {@link locals}, then `locals`.
+   *
+   * Without `callback`, the result is sent as `text/html; charset=utf-8`
+   * (unless a Content-Type is already set) and an error goes to the
+   * pipeline's `next(err)`, as Express's default callback does — or, with no
+   * pipeline, is answered `500`. With `callback`, it receives `(err, html)`
+   * and nothing is sent. A name with no extension and no default engine, or
+   * an engine that cannot be loaded, throws, as in Express.
+   */
+  render(
+    view: string,
+    locals?: Record<string, unknown> | RenderCallback,
+    callback?: RenderCallback,
+  ): void {
+    let done = callback;
+    let opts: RenderLocals = {};
+    if (typeof locals === "function") {
+      done = locals;
+    } else if (locals) {
+      opts = { ...locals };
+    }
+    opts._locals = this.locals;
+
+    const finish: RenderCallback =
+      done ??
+      ((err, html) => {
+        if (err) {
+          const next = this.req.next;
+          if (next) {
+            next(err);
+          } else {
+            this.#respondWithStatus(500);
+          }
+          return;
+        }
+        if (!this.hasHeader("Content-Type")) {
+          this.setHeader("Content-Type", "text/html; charset=utf-8");
+        }
+        this.send(html ?? "");
+      });
+
+    (this.#views ??= new BunViews()).render(view, opts, finish);
   }
 
   public get nativeResponseOptions(): ResponseInit | undefined {
@@ -3061,9 +3200,18 @@ export class BunResponse<
     return this;
   }
 
+  /**
+   * Expires the cookie `name`, as Express 5's `res.clearCookie`: `path`
+   * defaults to `/`, `expires` is always the epoch, and a `maxAge` given is
+   * dropped — it would otherwise outrank `Expires` and keep the cookie alive.
+   */
   public clearCookie(name: string, opts?: BunCookieOptions) {
-    const options = merge({ expires: new Date(1), path: "/" }, opts || {});
-    return this.cookie(name, "", options);
+    const { maxAge: _maxAge, ...rest } = opts ?? {};
+    return this.cookie(name, "", {
+      path: "/",
+      ...rest,
+      expires: new Date(1),
+    });
   }
 
   public vary(fields: string | string[]) {

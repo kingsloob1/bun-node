@@ -25,6 +25,7 @@ import type {
   ServeStaticOptions,
   UnmountedRouter,
   ValidatorMiddleware,
+  ViewEngine,
 } from "@kingsleyweb/bun-common";
 import type { NestApplicationOptions } from "@nestjs/common";
 // `@nestjs/*` has no `exports` map, so a deep path is resolved as a file: it
@@ -47,6 +48,7 @@ import {
   BunRequest,
   BunResponse,
   BunRouter,
+  BunViews,
   cors,
   createServeStaticHandler,
   defineHidden,
@@ -114,12 +116,11 @@ export type MiddlewareFactoryRespType<
 
 /**
  * The `options` of {@link BunHttpAdapter.render}: what a `@Render()` handler
- * returned — view locals, opaque to the adapter — plus an optional `status`.
+ * returned — the view's locals, as on `@nestjs/platform-express`. Every key
+ * is a local, `status` included (set a status with `@HttpCode()`).
  */
 export interface RenderOptions {
-  /** HTTP status to send; `200` when absent or not a positive integer. */
-  status?: number;
-  /** View locals: whatever else the handler returned. */
+  /** A view local: whatever the handler returned. */
   [local: string]: unknown;
 }
 
@@ -187,7 +188,13 @@ export class BunHttpAdapter<
    * once while different kinds (`json` beside `text`, …) stack.
    */
   #registeredBodyParsers = new Set<string>();
-  /** When true, every response computes an `ETag`. Opt-in (off by default). */
+  /**
+   * The application's views — Express's `views` / `view engine` /
+   * `view cache` settings, engines and `app.locals` — which every response's
+   * `render()` (and so `@Render()`) uses. Set through {@link setBaseViewsDir},
+   * {@link setViewEngine}, {@link engine}, {@link setLocal} and {@link set}.
+   */
+  readonly views: BunViews = new BunViews();
   /** The `etag` option every response starts with (see `BunResponse.etag`). */
   protected etagEnabled: EtagOption = false;
   /**
@@ -421,6 +428,7 @@ export class BunHttpAdapter<
 
     const res = new BunResponse<customWebsocketDataType>(req, {
       etag: this.etagEnabled,
+      views: this.views,
     });
     const router = this.instance;
     // The host and the full target are read only if a route needs them.
@@ -1074,7 +1082,10 @@ export class BunHttpAdapter<
 
     let currentError: unknown = error;
     try {
-      const response = new BunResponse(req, { etag: this.etagEnabled });
+      const response = new BunResponse(req, {
+        etag: this.etagEnabled,
+        views: this.views,
+      });
       for (const handler of this._errorHandlers) {
         const nextInvoked = Promise.withResolvers<undefined>();
         let nextCalled = false;
@@ -1228,37 +1239,34 @@ export class BunHttpAdapter<
   }
 
   /**
-   * Sends the file at `view` with its content type. `options` is what Nest
-   * passes for `@Render()`: the handler's return value, which may be
-   * anything — a positive `status` on it sets the status (default `200`).
+   * Renders the view `view` with `options` as its locals and sends it — what
+   * `@Render()` calls, and what `@nestjs/platform-express` does:
+   * `res.render(view, options)`, through this adapter's {@link views} (see
+   * {@link setBaseViewsDir} and {@link setViewEngine}). The status is the
+   * route's (`@HttpCode()`); a `status` local is only a local.
+   *
+   * A view that cannot be found, or a template that throws, goes to the
+   * error handling, as Express's `next(err)`; with no view engine set and no
+   * extension on `view`, it throws `No default engine was specified and no
+   * extension was provided.`
    */
   public render(
     response: BunResponse,
     view: string,
     options?: RenderOptions | null,
   ) {
-    const file = Bun.file(view);
-    response.setHeader("Content-Type", file.type);
-    const status = options?.status;
-    return response
-      .status(
-        typeof status === "number" && Number.isInteger(status) && status > 0
-          ? status
-          : 200,
-      )
-      .send(file.stream());
+    return response.render(view, options ?? undefined);
   }
 
   /**
-   * Redirects to `url`: sets `Location` and the status (`302` when
-   * `statusCode` is `0`), then sends the response with an empty body. Like
-   * Express's `res.redirect` (what `@Redirect()` calls on
-   * `@nestjs/platform-express`), this finishes the response — nothing needs to
-   * follow it — but it sends no "Redirecting to" body.
+   * Redirects to `url` with `statusCode` (`302` when it is `0`) — what
+   * `@Redirect()` calls, and what `@nestjs/platform-express` does:
+   * `res.redirect(statusCode, url)`. `Location` is URL-encoded and the body
+   * is Express's short "Redirecting to" text or HTML, chosen by `Accept`
+   * (see `BunResponse.redirect`).
    */
   public redirect(response: BunResponse, statusCode: number, url: string) {
-    response.setHeader("Location", url);
-    return response.status(statusCode || 302).send(undefined);
+    return response.redirect(statusCode || 302, url);
   }
 
   public isHeadersSent(response: BunResponse) {
@@ -1302,13 +1310,21 @@ export class BunHttpAdapter<
   public useStaticAssets(path: string, options: ServeStaticOptions) {
     const { prefix, handler } = createServeStaticHandler(path, options);
 
+    // The mount itself too, as Express's `app.use(prefix, static)`: `/static`
+    // is the directory without its slash, redirected (301) to `/static/`.
+    if (prefix) {
+      this.instance.get(prefix, handler);
+    }
     return this.instance.get(`${prefix}/*`, handler);
   }
 
+  /**
+   * The request's host name without its port — Express's `req.hostname`,
+   * which `@nestjs/platform-express` returns and Nest matches
+   * `@Controller({ host })` against.
+   */
   public getRequestHostname(request: BunRequest): string {
-    const defaultHostname = "127.0.0.1";
-    const headerHost = request.host;
-    return headerHost || defaultHostname;
+    return request.hostname || "127.0.0.1";
   }
 
   public getRequestMethod(request: BunRequest): string {
@@ -3163,10 +3179,94 @@ export class BunHttpAdapter<
     return this.registerVerb("options", p, c);
   }
 
+  /**
+   * Sets the extension a view name without one is rendered with (`"ejs"`,
+   * `"hbs"`, …) — Express's `view engine` setting, which
+   * `app.setViewEngine()` sets on `@nestjs/platform-express`. Unless an engine
+   * was registered for it with {@link engine}, the module of that name is
+   * loaded on first render and its `__express` export used, as in Express.
+   */
   public setViewEngine(engine: string) {
-    if (engine) return this;
+    this.views.defaultEngine = engine;
     return this;
   }
+
+  /**
+   * Sets the directory, or directories in lookup order, views are found in —
+   * Express's `views` setting, which `app.setBaseViewsDir()` sets. Defaults to
+   * `views` under the working directory.
+   */
+  public setBaseViewsDir(path: string | string[]) {
+    this.views.root = path;
+    return this;
+  }
+
+  /**
+   * Registers `fn` as the template engine for `ext`, as Express's
+   * `app.engine(ext, fn)` (`app.engine()` on a Nest app).
+   */
+  public engine(ext: string, fn: ViewEngine) {
+    this.views.engine(ext, fn);
+    return this;
+  }
+
+  /**
+   * Sets an application-wide view local — Express's `app.locals[key] =
+   * value`, which `app.setLocal()` does on `@nestjs/platform-express`.
+   */
+  public setLocal(key: string, value: unknown) {
+    this.views.locals[key] = value;
+    return this;
+  }
+
+  /**
+   * Sets an Express application setting (`app.set()` on a Nest app). The
+   * view settings apply: `views`, `view engine`, `view cache` and
+   * `view options`. Any other is accepted and has no effect on this adapter,
+   * which logs a warning naming it once.
+   */
+  public set(setting: string, value: unknown) {
+    switch (setting) {
+      case "views": {
+        this.views.root = value as string | string[];
+        break;
+      }
+      case "view engine": {
+        this.views.defaultEngine = value as string;
+        break;
+      }
+      case "view cache": {
+        this.views.cache = Boolean(value);
+        break;
+      }
+      case "view options": {
+        this.views.viewOptions = value as Record<string, unknown> | undefined;
+        break;
+      }
+      default: {
+        if (!this.#ignoredSettings.has(setting)) {
+          this.#ignoredSettings.add(setting);
+          this.logger.warn(
+            `app.set("${setting}") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply`,
+          );
+        }
+      }
+    }
+    return this;
+  }
+
+  /** `set(setting, true)`, as Express's `app.enable()`. */
+  public enable(setting: string) {
+    return this.set(setting, true);
+  }
+
+  /** `set(setting, false)`, as Express's `app.disable()`. */
+  public disable(setting: string) {
+    return this.set(setting, false);
+  }
+
+  /** Settings {@link set} was given and ignores, each warned about once. */
+  #ignoredSettings = new Set<string>();
 
   public getRequestMethodStr(requestMethod: RequestMethod): string {
     let method = "";
