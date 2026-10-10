@@ -31,8 +31,12 @@ import {
  * re-reading on a lost write, so a group needs no lock and no multi-entry
  * transaction. The one ordering rule is the controller's: charge the group
  * **before** claiming the queue's marker, and refund it when that claim is
- * lost. A refund that never lands over-counts by one; it can never let the
- * group overspend.
+ * lost. Replicas racing for one queue all charge, and all but one refund at
+ * once, so the controller first skips the charge when the queue's marker has
+ * already moved, and a refund gets more rounds than a charge, jittered. A
+ * refund that still never lands — every round lost to other writers, or a
+ * crash between the two writes — over-counts by one (logged at `warn`); it
+ * can never let the group overspend.
  *
  * Internal: nothing here is exported from the package.
  */
@@ -48,8 +52,18 @@ export const SUMMON_GROUP_PREFIX = `${RESERVED_STATE_PREFIX}summon-group:`;
  */
 export const GROUP_CHARGE_ROUNDS = 8;
 
-/** Rounds a refund or a reset makes: best effort, as a lost refund only over-counts. */
+/** Rounds a circuit note or a reset makes: best effort, as each queue's own circuit is the backstop. */
 export const GROUP_WRITE_ROUNDS = 3;
+
+/**
+ * Rounds a refund makes, jittered: twice a charge's. The losers of a claim
+ * race refund one entry at once (seven of eight replicas, measured), and
+ * each lost refund over-counts the group until its window rolls.
+ */
+export const GROUP_REFUND_ROUNDS = GROUP_CHARGE_ROUNDS * 2;
+
+/** The most a refund waits between two rounds, in ms (uniformly from 0). */
+const REFUND_JITTER_MS = 8;
 
 /** The default limits of a group's budget, the same as a queue's own. */
 const DEFAULT_GROUP_BUDGET = Object.freeze({ perHour: 30, perDay: 300 });
@@ -388,6 +402,33 @@ export function readGroupEntry(
   return { entry, version: stored.version, unreadable: false };
 }
 
+/**
+ * `record[key]` when it is the record's own property, else `undefined`. Keys
+ * here are queue names and provider kinds, and `__proto__` is a valid one:
+ * a plain `record[key]` would read `Object.prototype` for it.
+ */
+export function ownValue<T>(
+  record: Readonly<Record<string, T>> | undefined,
+  key: string,
+): T | undefined {
+  return record !== undefined && Object.hasOwn(record, key)
+    ? record[key]
+    : undefined;
+}
+
+/**
+ * Sets `record[key]` as an own, enumerable property: a plain assignment to
+ * `__proto__` (a valid queue name) would set the prototype instead.
+ */
+function setOwn<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 /** The well-formed shares of an entry's `queues`, dropping anything else. */
 function queueShares(
   value: unknown,
@@ -404,7 +445,7 @@ function queueShares(
       isNumber(fields.day) &&
       isNumber(fields.lastAt)
     ) {
-      shares[queue] = { day: fields.day, lastAt: fields.lastAt };
+      setOwn(shares, queue, { day: fields.day, lastAt: fields.lastAt });
     }
   }
   return Object.keys(shares).length === 0 ? undefined : shares;
@@ -440,13 +481,13 @@ function circuitStates(
             ...(typeof by.detail === "string" ? { detail: by.detail } : {}),
           }
         : undefined;
-    circuits[kind] = {
+    setOwn(circuits, kind, {
       failures: fields.failures,
       ...(fields.openUntil === undefined
         ? {}
         : { openUntil: fields.openUntil as number }),
       ...(openedBy === undefined ? {} : { openedBy }),
-    };
+    });
   }
   return Object.keys(circuits).length === 0 ? undefined : circuits;
 }
@@ -457,7 +498,7 @@ export function groupCircuitOpen(
   kind: string,
   now: number,
 ): boolean {
-  const openUntil = entry.circuits?.[kind]?.openUntil;
+  const openUntil = ownValue(entry.circuits, kind)?.openUntil;
   return openUntil !== undefined && openUntil > now;
 }
 
@@ -594,7 +635,7 @@ export async function chargeGroup(
     ) {
       return {
         outcome: "circuit-open",
-        until: entry.circuits![options.circuitKind]!.openUntil!,
+        until: ownValue(entry.circuits, options.circuitKind)!.openUntil!,
       };
     }
     if (groupBudgetSpent(entry, group.budget)) {
@@ -602,7 +643,8 @@ export async function chargeGroup(
     }
     entry.budget.hour++;
     entry.budget.day++;
-    const share = entry.queues?.[options.queue];
+    const share = ownValue(entry.queues, options.queue);
+    // A computed key, so `__proto__` is an own property like any queue's.
     entry.queues = {
       ...entry.queues,
       [options.queue]: { day: (share?.day ?? 0) + 1, lastAt: now },
@@ -634,9 +676,11 @@ export async function chargeGroup(
  * when its queue's claim was lost, or its provider was never called. Only in
  * windows that are still the charge's (a window that rolled on dropped the
  * count with it), only while no reset has cleared the counts since the
- * charge (the clear dropped it already), never below `0`, for at most
- * {@link GROUP_WRITE_ROUNDS} rounds. Best effort: answers whether it landed, and a refund that does not
- * only over-counts.
+ * charge (the clear dropped it already), only in the entry the charge was
+ * made in (one deleted and created afresh since — a purge — dropped it too),
+ * never below `0`, for at most {@link GROUP_REFUND_ROUNDS} rounds, jittered.
+ * Best effort: answers whether it landed, and a refund that does not only
+ * over-counts.
  */
 export async function refundGroup(
   driver: JobsDriver,
@@ -651,13 +695,22 @@ export async function refundGroup(
     chargedAt: number;
     /** The clears the charge was made under: {@link SummonGroupCharge}'s `clears`. */
     clears: number;
+    /**
+     * The epoch of the entry the charge was made in: the `entry.epoch` of
+     * {@link SummonGroupCharge}. Unset, any entry's counts are given back to.
+     */
+    epoch?: string;
   },
 ): Promise<boolean> {
   const ref = summonGroupRef(namespace);
   const stateName = summonGroupStateName(name);
   const hourStart = Math.floor(options.chargedAt / HOUR_MS) * HOUR_MS;
   const dayStart = Math.floor(options.chargedAt / DAY_MS) * DAY_MS;
-  for (let round = 0; round < GROUP_WRITE_ROUNDS; round++) {
+  for (let round = 0; round < GROUP_REFUND_ROUNDS; round++) {
+    if (round > 0) {
+      // Spread the losers out, so that each round some refund lands.
+      await Bun.sleep(Math.random() * REFUND_JITTER_MS);
+    }
     const read = readGroupEntry(
       await driver.getQueueState!(ref, stateName),
       Date.now(),
@@ -667,8 +720,11 @@ export async function refundGroup(
       return false;
     }
     const { entry, version } = read;
-    if ((entry.budget.clears ?? 0) !== options.clears) {
-      // Cleared since the charge, and the charge with it.
+    if (
+      (entry.budget.clears ?? 0) !== options.clears ||
+      (options.epoch !== undefined && entry.epoch !== options.epoch)
+    ) {
+      // Cleared since the charge, or the entry replaced: the charge with it.
       return true;
     }
     let changed = false;
@@ -679,7 +735,7 @@ export async function refundGroup(
     if (entry.budget.dayStart === dayStart && entry.budget.day > 0) {
       entry.budget.day--;
       changed = true;
-      const share = entry.queues?.[options.queue];
+      const share = ownValue(entry.queues, options.queue);
       if (share !== undefined && share.day > 0) {
         share.day--;
       }
@@ -746,7 +802,9 @@ export async function resetGroup(
     if (options.circuit === true) {
       delete entry.circuits;
     } else if (options.circuit !== undefined && entry.circuits !== undefined) {
-      delete entry.circuits[options.circuit];
+      if (Object.hasOwn(entry.circuits, options.circuit)) {
+        delete entry.circuits[options.circuit];
+      }
     }
     if (
       (await setReservedState(driver, ref, stateName, entry, version)) !== null
@@ -838,7 +896,7 @@ export async function noteGroupCircuit(
       return { landed: false };
     }
     const { entry, version } = read;
-    const before = entry.circuits?.[options.kind];
+    const before = ownValue(entry.circuits, options.kind);
     const wasOpen = groupCircuitOpen(entry, options.kind, now);
     const circuit: SummonGroupCircuit =
       before === undefined ? { failures: 0 } : { ...before };

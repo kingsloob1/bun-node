@@ -1361,7 +1361,12 @@ export interface SummonStatusDto {
   budget?: SummonBudgetDto;
   /** The most recent outcome. */
   last?: SummonLastOutcomeDto;
-  /** The summon group the queue's controller is in, when it is in one. */
+  /**
+   * The summon group the queue's controller is in, when it is in one: only
+   * what the caller may read of it — another member queue's share, and the
+   * `openedBy` of a circuit another member opened, only where `authorize`
+   * allows `queues.read` on that queue.
+   */
   group?: SummonGroupStatusDto;
 }
 
@@ -1438,6 +1443,9 @@ export interface SummonGroupStatusDto {
  * `GET /summon/groups` (operation `listSummonGroups`, action `queues.list`):
  * every summon group with shared state in the namespace, by name, read from
  * storage — whether or not a controller in it runs in the API's process.
+ * Each redacted to the member queues `authorize` allows `queues.read` on (a
+ * refused member's share and `openedBy` left out), and a group with none
+ * left out.
  */
 export interface SummonGroupListDto {
   /** The groups, in name order. */
@@ -1474,6 +1482,13 @@ export interface SummonBudgetDto {
   perDay?: number;
   /** `true` when the policy turned the budget off (`budget: false`): no limit applies. Absent otherwise. */
   off?: true;
+  /**
+   * Set when no limits were stored with this state (it was written before
+   * limits were persisted): the counts are real, the limits are not known.
+   * Cleared on the queue's next summon. Only read from storage
+   * (`local: false`); `perHour`, `perDay` and `off` are then absent.
+   */
+  limitsUnknown?: true;
   /** When the hour window ends and `hour` starts again from `0`, epoch ms: the next UTC hour. */
   hourResetsAt: number;
   /** When the day window ends and `day` starts again from `0`, epoch ms: the next UTC midnight. */
@@ -1493,7 +1508,7 @@ export interface SummonListItemDto {
   /**
    * Whether its controller runs in the API's process. `false`: read from the
    * queue's shared summon state alone, as `GET /queues/{queue}/summon`
-   * answers with `local: false`; then there is no `readiness` or `inert`.
+   * answers with `local: false`; then there is no `readiness`.
    */
   local: boolean;
   /**
@@ -1508,7 +1523,9 @@ export interface SummonListItemDto {
   readiness?: "ready" | "pending" | "failed";
   /**
    * Whether the controller is inert, as `SummonStatusDto.inert` has it: it
-   * summons nothing, whatever `readiness` says. Only when `local`.
+   * summons nothing, whatever `readiness` says. Read from storage
+   * (`local: false`), `true` only for summon state a newer bun-jobs wrote
+   * (`inertReason: "newer-marker"`).
    */
   inert?: boolean;
   /** Why it is inert, when it is, as `SummonStatusDto.inertReason` has it. */
@@ -1517,8 +1534,13 @@ export interface SummonListItemDto {
   circuitOpenUntil?: number;
   /** The most recent outcome, as `SummonStatusDto.last` has it. */
   last?: SummonLastOutcomeDto;
-  /** Budget usage, the limits and the window reset times, as `SummonStatusDto.budget` has them. */
-  budget: SummonBudgetDto;
+  /**
+   * Budget usage, the limits and the window reset times, as
+   * `SummonStatusDto.budget` has them. Absent for a queue whose summon state a
+   * newer bun-jobs wrote (`inert: true`, `inertReason: "newer-marker"`): this
+   * build cannot read its counts.
+   */
+  budget?: SummonBudgetDto;
 }
 
 /**

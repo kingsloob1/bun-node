@@ -17,7 +17,13 @@ import type { Infer, Schema } from "../schema/builder";
 import type { QueueSource, RunnerSource } from "../sources";
 import { validate } from "@kingsleyweb/bun-common";
 import { ConfigError } from "../../shared/errors";
-import { authorizeHandler, csrfGuard, deferFailure } from "../auth";
+import {
+  authorizeHandler,
+  csrfGuard,
+  decide,
+  deferFailure,
+  denialError,
+} from "../auth";
 import {
   bodySizeGuard,
   declaredBodySizeGuard,
@@ -25,6 +31,7 @@ import {
   jsonBodyGuard,
 } from "../body";
 import { isMutation } from "../config";
+import { tagRequestAction } from "../errors";
 
 /**
  * One route definition feeds three things: the router (validation, CSRF,
@@ -171,6 +178,17 @@ export interface RouteDef<P, Q, B, R extends RouteResponses> {
    * no target at all.
    */
   pathTarget?: (params: P) => AuthorizeTarget;
+  /**
+   * The handler asks `authorize` itself, about each target it reads (a summon
+   * group's member queues, which no path names), so the registration step
+   * asks nothing of a request whose checks passed: an untargeted question
+   * would refuse every caller a per-queue allow-list admits. A request whose
+   * checks (CSRF, body, validation) failed is still asked `action` without a
+   * target first, so what was wrong reaches only a caller it allows.
+   * `actions` and `readOnly` prune the route as for any other. Defaults to
+   * `false`.
+   */
+  authorizesItself?: boolean;
   /** Answers the request. */
   handler: (
     ctx: RouteContext<P, Q, B>,
@@ -377,6 +395,35 @@ export function joinPath(basePath: string, path: string): string {
 }
 
 /**
+ * The authorize step of a route that {@link RouteDef.authorizesItself}: tags
+ * the request's action, and answers a request whose deferred checks failed
+ * only after `authorize` allows `action` without a target — its denial
+ * first, else the failure. A request whose checks passed goes on to the
+ * handler, which asks `authorize` about each target it reads.
+ */
+function selfAuthorizedGate(
+  def: AnyRouteDef,
+  config: ResolvedJobsApiConfig,
+  failures: WeakMap<BunRequest, unknown>,
+): RouterHandler {
+  return async (req, _res, next) => {
+    tagRequestAction(req, def.action);
+    if (!failures.has(req)) {
+      return next();
+    }
+    const decision = await decide(config, req, {
+      action: def.action,
+      transport: "http",
+      route: { method: def.method, path: def.path },
+    });
+    if (!decision.allow) {
+      return next(denialError(decision));
+    }
+    return next(failures.get(req) as Error);
+  };
+}
+
+/**
  * Registers routes on a router, in this order per route:
  *
  * 1. `declaredBodySizeGuard` — routes reading a body: a `Content-Length` over
@@ -384,7 +431,9 @@ export function joinPath(basePath: string, path: string): string {
  * 2. `csrfGuard` — mutations only, when CSRF is on;
  * 3. `bodySizeGuard` and `jsonBodyGuard` — routes reading a body;
  * 4. `validate({ params, query, body })`;
- * 5. `authorizeHandler` — with the target read from the **validated** inputs;
+ * 5. `authorizeHandler` — with the target read from the **validated** inputs
+ *    (for a route that {@link RouteDef.authorizesItself}, a gate that asks
+ *    only when a check failed, and the handler asks per target);
  * 6. the handler.
  *
  * Steps 2–4 are deferred ({@link deferFailure}): a failure is recorded, not
@@ -467,23 +516,27 @@ export function registerRoutes(
     }
     const target = def.target;
     const pathTarget = targetFromPath(def);
-    handlers.push(
-      authorizeHandler(config, def.action, {
-        route: { method: def.method, path: def.path },
-        pending: (req) => failures.get(req),
-        ...(pathTarget ? { pathTarget } : {}),
-        ...(target
-          ? {
-              target: (req: BunRequest) =>
-                target({
-                  params: req.params,
-                  query: req.query,
-                  body: req.body,
-                }),
-            }
-          : {}),
-      }),
-    );
+    if (def.authorizesItself === true) {
+      handlers.push(selfAuthorizedGate(def, config, failures));
+    } else {
+      handlers.push(
+        authorizeHandler(config, def.action, {
+          route: { method: def.method, path: def.path },
+          pending: (req) => failures.get(req),
+          ...(pathTarget ? { pathTarget } : {}),
+          ...(target
+            ? {
+                target: (req: BunRequest) =>
+                  target({
+                    params: req.params,
+                    query: req.query,
+                    body: req.body,
+                  }),
+              }
+            : {}),
+        }),
+      );
+    }
     handlers.push(respond(def, services));
 
     const verb = def.method.toLowerCase() as Lowercase<RouteMethod>;

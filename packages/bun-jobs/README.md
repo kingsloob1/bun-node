@@ -3586,11 +3586,11 @@ is read from storage instead (`local: false`):
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness` and `inert`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, the last outcome, the open circuit's end and the budget usage. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons |
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one, and — from a local controller — the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
-| GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here |
-| GET | `/summon/groups/:group` | `queues.read` | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller |
-| POST | `/summon/groups/:group/reset` | `queues.summon` | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. Needs a controller in the group in the API's process |
+| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out). Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts |
+| GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here. Each group redacted to the members the caller may read (below), and left out when it may read none |
+| GET | `/summon/groups/:group` | `queues.read`, per member | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller, and — answered alike — for one none of whose members the caller may read |
+| POST | `/summon/groups/:group/reset` | `queues.summon`, on every member | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. 403 unless `authorize` allows `queues.summon` on every member. Needs a controller in the group in the API's process |
 | POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
 | POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset({ budget })`, then the `SummonStatusDto` after it. The optional body `{ "budget": true }` also clears the budget's usage (`/meta.features.summonResetBudget` says it is accepted); without it the usage is kept |
 
@@ -3601,14 +3601,35 @@ controller's limits, and when each window resets (epoch ms: the next UTC hour
 and midnight). For a policy with `budget: false` the limits are absent and
 `off: true` is there instead.
 
+**A group shows only what its reader may read.** A summon group's state
+names its member queues: each queue's share of today's attempts, and the
+attempt that opened a shared circuit (`openedBy`, with its queue and the
+failure's detail). Wherever a group is answered — `GET /summon/groups`,
+`GET /summon/groups/:group`, the `group` of a queue's status, a reset —
+`authorize` is asked `queues.read` about each member queue as
+`GET /queues/:queue/summon` asks it (the members are the queues with a
+share, every `openedBy` queue and the queues of the group's controllers in
+the API's process), and a member it refuses is left out: no share, and no
+`openedBy` on a circuit it opened. The group's counts, limits and each
+circuit's state stay, since they govern every member. A group with no
+member the caller may read is left out of the list, and
+`GET /summon/groups/:group` answers it as it answers an unknown group: the
+denial of `queues.read` asked without a queue, else 409. Resetting a group
+asks `queues.summon` about every member, and needs all of them (a group with
+no member is asked about without a queue). These two routes ask no
+untargeted question otherwise, so a per-queue allow-list reads and resets a
+group whose members it covers.
+
 **Status without a local controller** (`local: false`, advertised by
 `/meta.features.summonRemoteStatus`). Every claim persists its controller's
 summoner `kind`, budget limits (or that the budget was off) and group on the
 queue's summon state, so any API process on the namespace can show a queue
 whose controller runs elsewhere: the state as it is, with no `summoner`, the
 limits the last claim persisted (`off: true` for a budget that was off;
-neither the limits nor `off` while no claim has persisted them), and the
-group's state. "Summon now" and reset still need a controller here.
+`limitsUnknown: true`, with the counts and neither the limits nor `off`,
+for state written before claims persisted them, until the queue's next
+summon), and the group's state. "Summon now" and reset still need a
+controller here.
 
 A queue with no controller in the API's process answers **409
 `SUMMON_NOT_CONFIGURED`** for "summon now" and reset, and for the status only
@@ -3768,16 +3789,27 @@ export const jobs = new BunJobs({
 - **It never overspends.** Each attempt is charged to the group *before* its
   queue's claim, re-checking the limit on the very read its compare-and-set
   depends on; a claim that is then lost, or a provider that was never called,
-  gives the charge back. A refund that never lands (a crash between the two
-  writes) over-counts the group by one: it can only under-spend. Eight
-  controllers in four processes racing over a limit of five summon exactly
-  five, on every backend.
+  gives the charge back. Replicas racing for one queue all reach the charge
+  and all but one lose the claim, so a controller skips the charge when the
+  queue's summon state has moved since it read it, a refund gets twice a
+  charge's rounds, and a refusal is retried (up to about 1.5 s, once per
+  window per controller) before it is believed and told as
+  `budget-exhausted`. A refund that still never lands
+  (every round lost to other writers, or a crash between the two writes) is
+  logged at `warn` and over-counts the group by one until the window rolls:
+  it can only under-spend. Eight controllers in four processes racing over a
+  limit of five summon exactly five, and eight replicas of one service on
+  the same queues are counted exactly, on every backend.
 - **The name is the key.** The group's state is one entry,
   `__win:summon-group:<name>`, stored under the namespace's reserved
   pseudo-queue `__bunjobs` (no queue may take that name). Adding, removing or
   reordering queues keeps the budget; renaming the group starts it afresh.
   Every policy naming a group should give it the same `budget`: each
-  controller checks the shared counts against its own.
+  controller checks the shared counts against its own. An `overrides` entry
+  merges `group` one level deep like the rest, so its `group.budget`
+  replaces the entry's whole: `overrides.d.group = { budget: { perHour: 5 } }`
+  leaves `d` with the default `perDay` (300), not the entry's. Repeat every
+  limit in such an override.
 - **A queue may be in two groups** through two controllers (a team budget
   and an org budget): each attempt is charged to its controller's group.
 - **During a rolling upgrade**, a process that predates groups charges only
@@ -3797,6 +3829,10 @@ controllers use different summoners keeps their outages apart. The group's
 count is written after each queue's own, best effort: a lost write
 under-counts, and each queue's circuit still applies. `onSummonFailed` hears
 `circuit-open` with `group` once per opening of the group's circuit.
+The group's circuit does not see a crash loop: any registration on any queue
+of the group resets its count, so workers that register and then crash keep
+it closed. Each queue's own circuit is the backstop there, counting the
+crashes through its loss streak (above), which a registration does not reset.
 
 ```ts
 const group = { name: "media", budget: { perHour: 60 }, circuit: true };

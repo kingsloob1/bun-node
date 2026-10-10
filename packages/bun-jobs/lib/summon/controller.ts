@@ -12,6 +12,7 @@ import type { SummonClaim } from "./claim";
 import type {
   GroupCircuitNote,
   ResolvedSummonGroup,
+  SummonGroupCharge,
   SummonGroupEntry,
 } from "./group";
 import type { MarkerRead } from "./marker";
@@ -77,6 +78,7 @@ import { DEFAULT_BOOT_BUDGET, toSummoner } from "./define";
 import {
   chargeGroup,
   noteGroupCircuit,
+  ownValue,
   refundGroup,
   resetGroup,
   resolveSummonGroup,
@@ -138,6 +140,36 @@ const WATCH_FLOOR = 8;
 const WATCH_CAP = 256;
 /** How often old claim-once entries are swept, at most, in ms. */
 const CLAIM_SWEEP_EVERY = 3_600_000;
+/**
+ * The least delay before a check runs again after a contended group charge,
+ * in ms, whatever `triggers.debounce` says: `0` would re-run a check whose
+ * every write loses at once, hundreds of reads a second.
+ */
+const RETRY_FLOOR_MS = 50;
+/**
+ * How long a check whose group charge the budget refused first waits (plus
+ * up to as long again, jittered) before charging once more, in ms, doubling
+ * for each of {@link GROUP_RECHECKS} tries: time for replicas that lost
+ * their claims to give their passing charges back, so those never read as
+ * the group's budget being spent. At most about 1.5 s in all (25, 50, 100,
+ * 200 and 400 ms, each plus up to as long again), paid by a controller only
+ * until it confirms an exhaustion in the window.
+ */
+const GROUP_RECHECK_MS = 25;
+/**
+ * How many times a refused group charge is tried again before it is
+ * believed. Three (about 350 ms) still let a replica race on Redis, MySQL,
+ * MongoDB and the file driver tell a false exhaustion now and then.
+ */
+const GROUP_RECHECKS = 5;
+/**
+ * How recent a charge for the check's own queue, in ms before the check
+ * began, counts as a replica's attempt still being claimed: the gap between
+ * a charge and its claim is two driver writes, so a slow backend under load
+ * fits. A refusal while one is that recent is answered `contended`, not
+ * `budget`; a group really spent is told at most this much later.
+ */
+const GROUP_IN_FLIGHT_MS = 5_000;
 
 /**
  * The events from other processes that can create demand, so the events
@@ -733,6 +765,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #groupBudgetNoted: string | undefined;
   /** Whether the one `warn` about a group entry a newer bun-jobs wrote was logged. */
   #warnedGroupNewer = false;
+  /**
+   * When this controller's last group charge was made, epoch ms (its share's
+   * `lastAt`): a refused charge tells it apart from a replica's in flight.
+   */
+  #lastGroupChargeAt: number | undefined;
   /** The timer that runs a check again after a contended group charge, while armed. */
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -1612,16 +1649,71 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     // refunded, and a refund that is lost too over-counts by one — whereas a
     // claim whose charge was lost would be an attempt the group never
     // counted.
-    let charged: { at: number; clears: number } | undefined;
+    let charged: { at: number; clears: number; epoch: string } | undefined;
     const group = this.#group;
     if (group !== undefined) {
-      const charge = await chargeGroup(this.#driver, this.namespace, group, {
-        queue: this.queue,
-        ...(group.circuit === false
-          ? {}
-          : { circuitKind: this.#summoner.provider.kind }),
-        logger: this.#logger,
-      });
+      // A replica racing for this queue that has claimed it already moved
+      // the marker: this claim would lose, so it charges nothing — its
+      // passing charge would only crowd the group's other queues, and its
+      // refund race the other losers' (review A1, A2).
+      if (await this.#markerMoved(version)) {
+        return { action: "skipped", reason: "contended", demand };
+      }
+      let charge = await this.#chargeGroup(group);
+      if (charge.outcome === "charged") {
+        this.#lastGroupChargeAt = charge.at;
+      }
+      // Refused by the budget: by attempts this queue no longer needs (a
+      // replica claimed it meanwhile), or by other replicas' passing charges
+      // not yet given back. Neither is the group being spent, so before it is
+      // told as such, the marker is read again and the charge retried a few
+      // times, backing off — unless this window's exhaustion was already
+      // confirmed here, when it is answered at once.
+      for (
+        let recheck = 0;
+        charge.outcome === "budget" &&
+        !this.#groupBudgetConfirmed(charge.entry) &&
+        recheck <= GROUP_RECHECKS;
+        recheck++
+      ) {
+        if (await this.#markerMoved(version)) {
+          return { action: "skipped", reason: "contended", demand };
+        }
+        // A replica charged for this very queue since this check began, and
+        // its claim is not in yet: the count includes this queue's own
+        // attempt in flight. Not exhaustion; checked again a debounce later.
+        // (This controller's own last charge is not one: its claim is not
+        // in flight, and a refund of it that was lost is a real over-count.)
+        const share = ownValue(charge.entry.queues, this.queue);
+        if (
+          share !== undefined &&
+          share.lastAt >= now - GROUP_IN_FLIGHT_MS &&
+          share.lastAt !== this.#lastGroupChargeAt
+        ) {
+          this.#armRetry();
+          return { action: "skipped", reason: "contended", demand };
+        }
+        if (recheck === GROUP_RECHECKS) {
+          break;
+        }
+        const wait = GROUP_RECHECK_MS * 2 ** recheck;
+        await Bun.sleep(wait + Math.random() * wait);
+        charge = await this.#chargeGroup(group);
+        if (charge.outcome === "charged") {
+          this.#lastGroupChargeAt = charge.at;
+        }
+        if (
+          charge.outcome === "charged" &&
+          (await this.#markerMoved(version))
+        ) {
+          await this.#refundGroup({
+            at: charge.at,
+            clears: charge.clears,
+            epoch: charge.entry.epoch,
+          });
+          return { action: "skipped", reason: "contended", demand };
+        }
+      }
       if (charge.outcome !== "charged") {
         await this.#settle(
           marker,
@@ -1654,7 +1746,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         }
         return { action: "skipped", reason: "budget", demand };
       }
-      charged = { at: charge.at, clears: charge.clears };
+      charged = {
+        at: charge.at,
+        clears: charge.clears,
+        epoch: charge.entry.epoch,
+      };
     }
 
     // Step 6b: claim. Nothing has been called yet, so losing costs nothing —
@@ -2093,13 +2189,46 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }
 
   /**
+   * Whether this controller already told the group's budget exhausted in
+   * `entry`'s windows: a refusal then needs no second look.
+   */
+  #groupBudgetConfirmed(entry: SummonGroupEntry): boolean {
+    return (
+      this.#groupBudgetNoted ===
+      `${entry.budget.hourStart}:${entry.budget.dayStart}`
+    );
+  }
+
+  /**
+   * Whether the queue's marker is no longer at `version`, the one this check
+   * read: another controller wrote it since, so a claim at `version` would
+   * lose. One driver read.
+   */
+  async #markerMoved(version: number | null): Promise<boolean> {
+    const entry = await this.#driver.getQueueState!(this.#ref, SUMMON_MARKER);
+    return (entry?.version ?? null) !== version;
+  }
+
+  /** One {@link chargeGroup} of this controller's attempt against `group`. */
+  async #chargeGroup(group: ResolvedSummonGroup): Promise<SummonGroupCharge> {
+    return await chargeGroup(this.#driver, this.namespace, group, {
+      queue: this.queue,
+      ...(group.circuit === false
+        ? {}
+        : { circuitKind: this.#summoner.provider.kind }),
+      logger: this.#logger,
+    });
+  }
+
+  /**
    * Gives back the group's charge `charged`, best effort: a refund
-   * that does not land over-counts the group by one, which only under-spends.
-   * Never throws; a failure is logged.
+   * that does not land over-counts the group by one, which only under-spends
+   * — and is logged at `warn`, since the group then refuses an attempt it
+   * could have afforded until the window rolls. Never throws.
    */
   async #refundGroup(
-    /** The charge: when it was made, and the clears it was made under. */
-    charged: { at: number; clears: number },
+    /** The charge: when it was made, the clears and the entry's epoch it was made under. */
+    charged: { at: number; clears: number; epoch: string },
   ): Promise<void> {
     const group = this.#group;
     if (group === undefined) {
@@ -2114,10 +2243,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           queue: this.queue,
           chargedAt: charged.at,
           clears: charged.clears,
+          epoch: charged.epoch,
         },
       );
       if (!landed) {
-        this.#logger.debug(
+        this.#logger.warn(
           "could not refund the summon group's charge; it over-counts by one",
           { group: group.name },
         );
@@ -2147,7 +2277,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     ) {
       return;
     }
-    const debounce = Math.max(this.#policy.debounce, 1);
+    // Floored: with `debounce: 0`, a check whose every write loses would
+    // otherwise run again at once, hundreds of reads a second.
+    const debounce = Math.max(this.#policy.debounce, RETRY_FLOOR_MS);
     this.#retryTimer = setTimeout(
       () => {
         this.#retryTimer = undefined;

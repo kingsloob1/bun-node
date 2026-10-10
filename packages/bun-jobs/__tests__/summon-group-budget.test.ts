@@ -311,6 +311,9 @@ describe("one budget for several queues", () => {
         group: "media",
       },
     ]);
+    // `onSummonFailed` is called on a later turn (`setImmediate`): one more
+    // turn queued now runs after q5's, so its call is in.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(hook.failures).toHaveLength(2);
     expect(hook.failures[0]).toEqual({
       outcome: "budget-exhausted",

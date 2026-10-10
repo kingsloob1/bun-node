@@ -89,6 +89,8 @@ import type {
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
+  SummonGroupListSchema,
+  SummonListSchema,
   SummonNowBodySchema,
   SummonStatusSchema,
   ThroughputBucketSchema,
@@ -587,6 +589,42 @@ export type SummonStatusNegative = Expect<
       pending: Omit<Contract.PendingSummonDto, "until">[];
     },
     Infer<typeof SummonStatusSchema>
+  >
+>;
+// The summon list and the group list compare whole against their schemas;
+// a list row's budget is optional (absent for a newer marker), and
+// `limitsUnknown` is `true` or absent, in the contract and the runtime both.
+export type SummonListOk = Expect<
+  DeepEqual<Contract.SummonListDto, Infer<typeof SummonListSchema>>
+>;
+export type SummonGroupListOk = Expect<
+  DeepEqual<Contract.SummonGroupListDto, Infer<typeof SummonGroupListSchema>>
+>;
+export type SummonListBudgetOptionalOk = Expect<
+  Equal<
+    Contract.SummonListItemDto["budget"],
+    Contract.SummonBudgetDto | undefined
+  >
+>;
+export type SummonLimitsUnknownOk = Expect<
+  Equal<Contract.SummonBudgetDto["limitsUnknown"], true | undefined>
+>;
+export type SummonLimitsUnknownRuntimeOk = Expect<
+  Equal<
+    NonNullable<Root.SummonStatus["budget"]>["limitsUnknown"],
+    true | undefined
+  >
+>;
+// Negative control: a list row whose budget is required is not the schema's.
+export type SummonListNegative = Expect<
+  // @ts-expect-error -- the schema's `budget` is optional
+  DeepEqual<
+    {
+      controllers: (Omit<Contract.SummonListItemDto, "budget"> & {
+        budget: Contract.SummonBudgetDto;
+      })[];
+    },
+    Infer<typeof SummonListSchema>
   >
 >;
 // Compute providers: each route's body compares whole against its schema,

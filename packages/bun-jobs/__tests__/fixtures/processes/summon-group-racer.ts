@@ -13,7 +13,9 @@ import { createDriver, SummonController } from "../../../lib/index";
  * of them check in the same instant, and runs `SUMMON_TEST_CHECKS` checks per
  * controller, its controllers in parallel.
  *
- * Prints one JSON line per summoner call and one per check.
+ * Prints one JSON line per summoner call, one per check, and one per
+ * `onSummonFailed` (`{ round, queue, alert }`). Several processes may name
+ * the same queues: then each runs a replica controller on each.
  */
 
 const driver = createDriver(
@@ -40,6 +42,11 @@ for (const [round, namespace] of namespaces.entries()) {
           );
         },
         group: { name: "media", budget: { perHour, perDay: perHour * 10 } },
+        onSummonFailed: (failure) => {
+          process.stdout.write(
+            `${JSON.stringify({ round, queue, alert: failure.outcome })}\n`,
+          );
+        },
         triggers: { onAdd: false, events: false, poll: false },
         cooldown: 0,
         logger: noopLogger,
