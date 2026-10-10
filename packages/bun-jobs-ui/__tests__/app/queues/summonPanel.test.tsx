@@ -9,7 +9,9 @@ import { describe, expect, it } from "bun:test";
 import {
   summonActionsOffered,
   summonEventSummary,
+  summonInert,
   summonOutcome,
+  summonStateKnown,
 } from "../../../app/screens/queues/panels/summonText";
 import { expectAbsent, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
@@ -30,6 +32,10 @@ setupDom();
  */
 
 const NOW = Date.now();
+
+/** What the panel says of summon state the server could not read. */
+const UNREADABLE_TEXT =
+  "This queue's summon state cannot be read: it is not in a shape any version of bun-jobs writes, so its attempts, failures and budget are unknown here.";
 
 /** A summon status: a local, working controller with one attempt on its way. */
 function statusFixture(
@@ -258,6 +264,71 @@ describe("the Summon panel", () => {
     expect(within(panel).getByTestId("summon-inert").textContent).toContain(
       "newer version",
     );
+  });
+
+  it("shows no counts for summon state that cannot be read, only why", async () => {
+    // What `GET /queues/:queue/summon` answers for it: nothing pending, no
+    // failures and no budget, as placeholders rather than facts.
+    const { panel } = await openPanel(
+      granted(
+        statusFixture({
+          local: false,
+          summoner: undefined,
+          inert: true,
+          inertReason: "unreadable-marker",
+          budget: undefined,
+          pending: [],
+          failures: 0,
+          last: undefined,
+        }),
+      ),
+    );
+    expect(within(panel).getByTestId("summon-inert").textContent).toBe(
+      UNREADABLE_TEXT,
+    );
+    expect(within(panel).getByTestId("summon-remote").textContent).toContain(
+      "another process",
+    );
+    expect(within(panel).getByTestId("summon-last").textContent).toBe(
+      "None yet",
+    );
+    for (const testId of [
+      "summon-pending-count",
+      "summon-failures",
+      "summon-budget",
+      "summon-backoff",
+      "summon-circuit",
+    ]) {
+      expectAbsent(within(panel).queryByTestId(testId));
+    }
+    expect(panel.textContent).not.toContain("On their way");
+    expect(panel.textContent).not.toContain("Consecutive failures");
+    expectAbsent(within(panel).queryByRole("table"));
+  });
+
+  it("still shows the counts of other inert state, zeros included", async () => {
+    // The control for the test above: the same remote, budgetless, inert
+    // status, but for a reason whose counts were read.
+    const { panel } = await openPanel(
+      granted(
+        statusFixture({
+          local: false,
+          summoner: undefined,
+          inert: true,
+          inertReason: "newer-marker",
+          budget: undefined,
+          pending: [],
+          failures: 0,
+          last: undefined,
+        }),
+      ),
+    );
+    expect(within(panel).getByTestId("summon-pending-count").textContent).toBe(
+      "0",
+    );
+    expect(within(panel).getByTestId("summon-failures").textContent).toBe("0");
+    expect(panel.textContent).toContain("On their way");
+    expect(panel.textContent).toContain("Consecutive failures");
   });
 
   it("shows an outcome this build does not know as its raw string", async () => {
@@ -568,6 +639,20 @@ describe("summon text", () => {
       "auth or misconfiguration error opens the circuit at once",
     );
     expect(failed).toContain("counts only if no worker registers in time");
+  });
+
+  it("says why summon state that cannot be read is inert, in its own words", () => {
+    expect(summonInert("unreadable-marker")).toBe(UNREADABLE_TEXT);
+    expect(summonInert("unreadable-marker")).not.toContain(
+      'This controller is inert ("',
+    );
+  });
+
+  it("treats only unreadable summon state as unknown", () => {
+    expect(summonStateKnown({ inertReason: "unreadable-marker" })).toBe(false);
+    expect(summonStateKnown({ inertReason: "newer-marker" })).toBe(true);
+    expect(summonStateKnown({ inertReason: "summoned-process" })).toBe(true);
+    expect(summonStateKnown({})).toBe(true);
   });
 
   it("names every outcome the contract lists", () => {
