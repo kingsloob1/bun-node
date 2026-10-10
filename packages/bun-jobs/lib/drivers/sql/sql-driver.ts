@@ -6747,7 +6747,9 @@ export class SqlDriver implements JobsDriver {
    *   and the outer `SELECT` reads the count and the earliest `run_at` left.
    *   The outer query sees the table as it was *before* the CTE's update, so
    *   the rows just moved are excluded by id; each side is an ordered probe
-   *   of `ix_…_due` that skips at most `limit` entries.
+   *   of `ix_…_due` that skips at most `limit` entries. It never waits on a
+   *   row another transaction holds (`SKIP LOCKED`): concurrent promotions
+   *   deadlocked on each other.
    * - **SQLite, MySQL, MariaDB**: the earliest due time first — the read
    *   `nextDelayedAt` makes, one index probe — and the promotion only when
    *   that says something is due. An idle pass is then one read-only
@@ -6773,21 +6775,39 @@ export class SqlDriver implements JobsDriver {
            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
              AND state = '${state}' AND id NOT IN (SELECT id FROM moved)
            ORDER BY run_at ASC LIMIT 1)`;
+      const jobs = this.#tables.jobs;
+      // `SKIP LOCKED`: a due row another transaction holds — nearly always
+      // another worker's promotion of the same row — is left to it, and one
+      // still due afterwards reads as `next` in the past, so the next pass
+      // runs at once. Waiting on it instead deadlocked: every worker runs two
+      // promotions (its sweep and its loop's empty pass), each update locked
+      // its rows in its own plan's order, and the engine broke the cycles one
+      // `deadlock_timeout` (1s) at a time while the lock retry walked
+      // straight into the next. Measured with 4 workers and 120 jobs:
+      // promotion stopped for 5-20s, and each loop, waiting on its own
+      // promotion, claimed nothing meanwhile.
+      //
+      // The rows are picked in a CTE of their own, not in `IN (…)`, for the
+      // reason the dialect's `claim` gives: a `SKIP LOCKED` sub-plan may be
+      // evaluated again and pick other rows, a CTE exactly once.
       const row = await this.#one<{
         promoted: number | string;
         next: number | string | null;
       }>(
-        `WITH moved AS (
-           UPDATE ${this.#tables.jobs} SET state = 'waiting'
+        `WITH due AS (
+           SELECT id FROM ${jobs}
             WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-              AND state IN ('delayed', 'failed')
-              AND id IN (
-                SELECT id FROM ${this.#tables.jobs}
-                 WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-                   AND state IN ('delayed', 'failed') AND run_at <= ${bind(now)}
-                 ORDER BY run_at ASC
-                 LIMIT ${batch})
-           RETURNING id)
+              AND state IN ('delayed', 'failed') AND run_at <= ${bind(now)}
+            ORDER BY run_at ASC
+            LIMIT ${batch}
+            FOR UPDATE SKIP LOCKED),
+         moved AS (
+           UPDATE ${jobs} SET state = 'waiting'
+             FROM due
+            WHERE ${jobs}.ns = ${bind(q.ns)} AND ${jobs}.queue = ${bind(q.queue)}
+              AND ${jobs}.id = due.id
+              AND ${jobs}.state IN ('delayed', 'failed')
+           RETURNING ${jobs}.id)
          SELECT (SELECT COUNT(*) FROM moved) AS promoted,
                 LEAST(${earliest("delayed")}, ${earliest("failed")}) AS next`,
         values,
