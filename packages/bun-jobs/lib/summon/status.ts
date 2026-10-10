@@ -6,6 +6,7 @@ import type {
 } from "./group";
 import type { SummonGroupStatus, SummonStatus } from "./types";
 import {
+  ownValue,
   readGroupEntry,
   SUMMON_GROUP_PREFIX,
   summonGroupRef,
@@ -37,15 +38,23 @@ export interface StoredSummonStatus {
   status: SummonStatus;
   /** The `kind` the last claim persisted, when one did. */
   kind?: string;
+  /**
+   * `true` when the marker is neither this build's shape nor a newer one's:
+   * `status` then holds nothing read from it (no budget, no failures), so a
+   * list leaves the queue out rather than show zeros.
+   */
+  unreadable?: true;
 }
 
 /**
  * A queue's summon status from its marker alone, with its group's when the
  * marker names one; `undefined` when the queue has no summon state (no
  * controller has ever written it). The budget's limits are the last claim's
- * (`off: true` for a budget that was off, none when no claim persisted them);
- * a marker a newer bun-jobs wrote answers `inert` with `newer-marker` and
- * nothing it cannot read.
+ * (`off: true` for a budget that was off, `limitsUnknown: true` when no claim
+ * persisted them); a marker a newer bun-jobs wrote answers `inert` with
+ * `newer-marker` and no budget, and an unreadable one `unreadable: true` and
+ * nothing read from it. The group, when there is one, is unfiltered: a caller
+ * serving it redacts what its reader may not see.
  */
 export async function readStoredSummonStatus(
   driver: JobsDriver,
@@ -66,6 +75,7 @@ export async function readStoredSummonStatus(
   const { marker, newer, unreadable } = readMarker(stored, now);
   if (newer !== undefined || unreadable) {
     return {
+      ...(unreadable ? { unreadable: true as const } : {}),
       status: {
         queue,
         local: false,
@@ -107,7 +117,9 @@ export async function readStoredSummonStatus(
         ...(limits === false
           ? { off: true as const }
           : limits === undefined
-            ? {}
+            ? // Written before claims persisted limits: the counts are
+              // real, the limits unknown — never shown as "off".
+              { limitsUnknown: true as const }
             : { perDay: limits.perDay }),
         ...budgetResets(marker),
       },
@@ -177,7 +189,7 @@ function groupStatus(
   const kind = view.local?.kind ?? view.kind;
   const showCircuit =
     view.local === undefined
-      ? kind !== undefined && entry.circuits?.[kind] !== undefined
+      ? kind !== undefined && ownValue(entry.circuits, kind) !== undefined
       : view.local.circuit !== false;
   const circuits = entry.circuits ?? {};
   return {
@@ -220,7 +232,7 @@ function circuitStatus(
   kind: string,
   now: number,
 ): NonNullable<SummonGroupStatus["circuit"]> {
-  const circuit = entry.circuits?.[kind];
+  const circuit = ownValue(entry.circuits, kind);
   return {
     failures: circuit?.failures ?? 0,
     ...(circuit?.openUntil !== undefined && circuit.openUntil > now

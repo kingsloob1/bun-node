@@ -330,10 +330,14 @@ export interface SummonPolicy {
    * nothing is shared (each queue's own `budget` applies alone).
    *
    * Each attempt is charged to the group **before** the queue's own marker
-   * is claimed, so racing controllers can over-count by an attempt whose
-   * claim was lost and not refunded, but never summon past the group's
-   * limit. Backoff, cooldown, the circuit, `maxPending` and `maxWorkers`
-   * stay per queue.
+   * is claimed, and given back when that claim is lost, so racing
+   * controllers never summon past the group's limit. Replicas racing for one
+   * queue skip the charge once a replica has moved its marker, and refunds
+   * get more rounds than charges; a refund that still never lands (every
+   * round lost under heavy contention, or a crash between the writes) is
+   * logged at `warn` and over-counts by one until the window rolls.
+   * Backoff, cooldown, the circuit, `maxPending` and `maxWorkers` stay per
+   * queue.
    */
   group?: SummonGroupOptions;
   /** Scale-style only: when to set the count back to zero. */
@@ -850,6 +854,13 @@ export interface SummonStatus {
      * limit). Absent otherwise.
      */
     off?: true;
+    /**
+     * Set when no limits were stored with this state (it was written before
+     * limits were persisted): the counts are real, the limits are not known.
+     * Cleared on the queue's next summon. Only on a status read from storage
+     * (`local: false`): a controller always knows its own limits.
+     */
+    limitsUnknown?: true;
     /** When the hour window ends and `hour` starts again from `0`, epoch ms: the next UTC hour. */
     hourResetsAt: number;
     /** When the day window ends and `day` starts again from `0`, epoch ms: the next UTC midnight. */
@@ -885,6 +896,12 @@ export interface SummonGroupStatus {
     perDay?: number;
     /** `true` when the group's budget is off (`group.budget: false`); absent otherwise. */
     off?: true;
+    /**
+     * As `SummonStatus.budget.limitsUnknown`, whose shape this shares. Never
+     * set for a group: every charge stores its limits, or that its group
+     * budget was off.
+     */
+    limitsUnknown?: true;
     /** When the hour window ends, epoch ms: the next UTC hour. */
     hourResetsAt: number;
     /** When the day window ends, epoch ms: the next UTC midnight. */

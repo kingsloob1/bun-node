@@ -996,9 +996,10 @@ function toSummonCapabilitiesDto(
 /**
  * Shapes one summoning queue's status as an item of `GET /summon`: its
  * queue, its summoner's kind, the last outcome, the budget usage and the
- * circuit, field by field as {@link toSummonStatusDto} has them, and — for a
- * controller in this process — its readiness and whether it is inert. `kind`
+ * circuit, field by field as {@link toSummonStatusDto} has them, whether it
+ * is inert, and — for a controller in this process — its readiness. `kind`
  * is the summoner's for a local controller, else the one storage persisted.
+ * No `budget` when the status has none (a marker a newer bun-jobs wrote).
  */
 export function toSummonListItemDto(
   /** The queue's namespace. */
@@ -1018,25 +1019,19 @@ export function toSummonListItemDto(
     local: status.local,
     kind: status.summoner?.provider.kind ?? storedKind ?? "",
     ...(status.local
-      ? {
-          readiness: status.summoner?.readiness ?? "ready",
-          inert: status.inert,
-          ...(status.inertReason === undefined
-            ? {}
-            : { inertReason: status.inertReason }),
-        }
+      ? { readiness: status.summoner?.readiness ?? "ready" }
       : {}),
+    inert: status.inert,
+    ...(status.inertReason === undefined
+      ? {}
+      : { inertReason: status.inertReason }),
     ...(status.circuitOpenUntil === undefined
       ? {}
       : { circuitOpenUntil: status.circuitOpenUntil }),
     ...(full.last === undefined ? {} : { last: full.last }),
-    // `status()` always reports the budget; the fallback keeps the type total.
-    budget: full.budget ?? {
-      hour: 0,
-      day: 0,
-      hourResetsAt: 0,
-      dayResetsAt: 0,
-    },
+    // `status()` always reports the budget; storage has none to report for
+    // a marker a newer bun-jobs wrote, and then none is sent — never zeros.
+    ...(full.budget === undefined ? {} : { budget: full.budget }),
   };
 }
 

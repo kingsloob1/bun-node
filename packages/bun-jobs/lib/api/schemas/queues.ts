@@ -586,6 +586,12 @@ export const SummonBudgetSchema = s.named(
             "Present, and `true`, when the policy turned the budget off (`budget: false`): no limit applies, and the counts are shown for information.",
         }),
       ),
+      limitsUnknown: s.optional(
+        s.literal(true, {
+          description:
+            "Set when no limits were stored with this state (it was written before limits were persisted): the counts are real, the limits are not known. Cleared on the queue's next summon. Only read from storage (`local: false`); `perHour`, `perDay` and `off` are then absent.",
+        }),
+      ),
       hourResetsAt: Instant(
         "When the hour window ends and `hour` starts again from 0, epoch ms: the next UTC hour.",
       ),
@@ -786,7 +792,6 @@ export const SummonNowBodySchema = s.object({
   ),
 });
 
-/** `POST /queues/:queue/summon/reset` body. Mirrors `SummonResetBody`. */
 /** `POST /summon/groups/{group}/reset` body. Mirrors `SummonGroupResetBody`. */
 export const SummonGroupResetBodySchema = s.object({
   circuit: s.optional(
@@ -821,6 +826,7 @@ export const SummonGroupListSchema = s.named(
   ),
 );
 
+/** `POST /queues/:queue/summon/reset` body. Mirrors `SummonResetBody`. */
 export const SummonResetBodySchema = s.object({
   budget: s.optional(
     s.boolean({
@@ -837,7 +843,7 @@ export const SummonListItemSchema = s.object({
   queue: s.string({ description: "The queue." }),
   local: s.boolean({
     description:
-      "Whether its controller runs in the API's process. `false`: read from the queue's summon state in storage, as `GET /queues/{queue}/summon` answers with `local: false`; then `readiness` and `inert` are absent.",
+      "Whether its controller runs in the API's process. `false`: read from the queue's summon state in storage, as `GET /queues/{queue}/summon` answers with `local: false`; then `readiness` is absent.",
   }),
   kind: s.string({
     description:
@@ -851,7 +857,7 @@ export const SummonListItemSchema = s.object({
   inert: s.optional(
     s.boolean({
       description:
-        "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says. Only when `local`.",
+        "Whether the controller is inert, as `GET /queues/{queue}/summon` has it: it summons nothing, whatever `readiness` says. Read from storage (`local: false`), `true` only for summon state a newer bun-jobs wrote (`inertReason: newer-marker`).",
     }),
   ),
   inertReason: s.optional(
@@ -866,7 +872,9 @@ export const SummonListItemSchema = s.object({
     ),
   ),
   last: s.optional(SummonLastSchema),
-  budget: SummonBudgetSchema,
+  // Absent for a queue whose summon state a newer bun-jobs wrote (`inert`,
+  // `newer-marker`): this build cannot read its counts.
+  budget: s.optional(SummonBudgetSchema),
 });
 
 /** `GET /summon`. Mirrors `SummonListDto`. */

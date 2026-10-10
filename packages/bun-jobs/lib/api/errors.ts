@@ -137,7 +137,7 @@ const TITLES: Record<string, string> = {
   LOGS_NOT_RETAINED: "Run logs are not retained",
   OPERATION_IN_PROGRESS: "Operation already in progress",
   DEFAULTS_CHANGED: "Job defaults changed since they were confirmed",
-  SUMMON_NOT_CONFIGURED: "No summon controller for this queue here",
+  SUMMON_NOT_CONFIGURED: "No summon controller runs here",
   SUMMON_MARKER_CONTENDED: "Summon state kept changing concurrently",
   BULK_LIMIT: "Too many ids",
   RANGE_NOT_RETAINED: "Range is older than the backend keeps",

@@ -147,6 +147,7 @@ for (const backend of BACKENDS) {
             queue: "renders",
             local: false,
             kind: "remote-kind",
+            inert: false,
             last: expect.objectContaining({ outcome: "started" }),
             budget: renders.body.budget,
           },
@@ -155,6 +156,7 @@ for (const backend of BACKENDS) {
             queue: "thumbs",
             local: false,
             kind: "broken-kind",
+            inert: false,
             circuitOpenUntil: thumbs.circuitOpenUntil,
             last: expect.objectContaining({ outcome: "failed" }),
             budget: thumbs.budget,
@@ -258,7 +260,8 @@ describe("in one process, on the file backend", () => {
     for (const remote of [list[0], list[2]]) {
       expect(remote).toMatchObject({ local: false, kind: "rec" });
       expect(remote).not.toHaveProperty("readiness");
-      expect(remote).not.toHaveProperty("inert");
+      // Inert only for state a newer bun-jobs wrote.
+      expect(remote).toMatchObject({ inert: false });
     }
     expect(h.mismatches()).toEqual([]);
   });
@@ -386,7 +389,10 @@ describe("in one process, on the file backend", () => {
       null,
     );
     const old = (await h.call("GET", "/queues/old/summon")).body;
-    expect(old).toMatchObject({ local: false, budget: { hour: 0, day: 0 } });
+    expect(old).toMatchObject({
+      local: false,
+      budget: { hour: 0, day: 0, limitsUnknown: true },
+    });
     expect(old.budget).not.toHaveProperty("perHour");
     expect(old.budget).not.toHaveProperty("off");
     const item = (await h.call("GET", "/summon")).body.controllers.find(

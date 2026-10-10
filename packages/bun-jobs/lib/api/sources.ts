@@ -1,7 +1,7 @@
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { SummonController } from "../summon/controller";
-import type { LocalGroupView } from "../summon/status";
+import type { LocalGroupView, StoredSummonStatus } from "../summon/status";
 import type { SummonStatus } from "../summon/types";
 import type { ResolvedJobsApiConfig } from "./config";
 import { RunnerController } from "../runner/RunnerController";
@@ -440,7 +440,7 @@ export class QueueSource {
    */
   async storedSummonStatus(
     name: string,
-  ): Promise<{ status: SummonStatus; kind?: string } | undefined> {
+  ): Promise<StoredSummonStatus | undefined> {
     const { driver, namespace } = this.#config;
     if (
       driver === undefined ||

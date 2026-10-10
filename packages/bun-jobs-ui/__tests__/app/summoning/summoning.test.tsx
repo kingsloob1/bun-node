@@ -265,7 +265,7 @@ describe("the Summoning screen", () => {
             at: NOW,
             detail: "no capacity",
           },
-          budget: { ...controller().budget, day: 300 },
+          budget: { ...controller().budget!, day: 300 },
         }),
       ]),
     });

@@ -28,7 +28,12 @@ export const QueueNameSchema = s.documented(
 /** `:queue`. */
 export const QueueParams = s.query(s.object({ queue: QueueNameSchema }));
 
-/** `:group`: a summon group's name, the same rule as a queue name. */
+/**
+ * `:group`: a summon group's name, the same rule as a queue name. The
+ * package's reserved pseudo-queue name, `__bunjobs`, passes this pattern but
+ * is refused by the route (`parseSegment`) with 400 `INVALID_NAME`, as a
+ * queue named so is.
+ */
 export const SummonGroupParams = s.query(
   s.object({
     group: s.documented(
@@ -36,7 +41,7 @@ export const SummonGroupParams = s.query(
         minLength: 1,
         maxLength: MAX_NAME_LENGTH,
         description:
-          'A summon group\'s name (`SummonPolicy.group.name`): letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME.',
+          'A summon group\'s name (`SummonPolicy.group.name`): letters, digits, "_", "." and "-", and not ".", ".." or the reserved "__bunjobs". Anything else is 400 INVALID_NAME.',
       }),
       { pattern: NAME_PARAM_PATTERN },
     ),
