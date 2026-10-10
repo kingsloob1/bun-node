@@ -1,0 +1,37 @@
+bun test v1.4.3-canary.1 (bbdc5a519)
+
+swr-core/react.test.tsx:
+(pass) useQuery > renders pending, then success, with a bounded render count [20.88ms]
+(pass) useQuery > two components with the same key cause one fetch [4.21ms]
+(pass) useQuery > suspense: the boundary shows its fallback, then the data [7.19ms]
+(pass) useMutation > an optimistic mutation shows the new value, then rolls back on error [9.70ms]
+
+swr-core/core.test.ts:
+(pass) keys > stable stringify sorts object keys at every depth; array order still matters [0.09ms]
+(pass) dedupe > two concurrent fetches share one promise and one call [0.33ms]
+(pass) dedupe > negative control: with dedupe disabled, two calls make two fetches [0.14ms]
+(pass) dedupe > dedupeMs: a settled fetch satisfies calls inside the window, not after it [0.43ms]
+(pass) store > getSnapshot is identity-stable between changes and changes on update [0.15ms]
+(pass) stale-while-revalidate > a subscriber to stale data sees it at once while a background refetch runs [0.20ms]
+(pass) stale-while-revalidate > fresh data (inside staleTime) does not refetch on subscribe [0.17ms]
+(pass) revalidation triggers > focus refetches stale observed entries only, and respects refetchOnFocus: false [0.48ms]
+(pass) revalidation triggers > refetchInterval polls while subscribed and stops after [0.23ms]
+(pass) retries > computeBackoff: exponential, capped, jittered within ±jitter [0.11ms]
+(pass) retries > retries with backoff then succeeds; exhausted retries end in error [0.42ms]
+(pass) abort > abortOnUnsubscribe aborts when the last subscriber leaves; the default does not [0.15ms]
+(pass) cache writes > setQueryData with an updater notifies subscribers [0.13ms]
+(pass) cache writes > invalidate by key prefix: observed matches refetch, unobserved matches go stale, others untouched [0.51ms]
+(pass) cache writes > invalidate by tags [0.35ms]
+(pass) mutations > optimistic update shows at once and rolls back on error [0.22ms]
+(pass) mutations > success invalidates tags and the observed query refetches [0.21ms]
+(pass) garbage collection > unobserved entries are dropped after gcTime; observed ones are kept [0.24ms]
+(pass) dehydrate / hydrate > round-trips through JSON; fresh hydrated data does not refetch [0.36ms]
+(pass) conditional revalidation > the fetcher sees the previous ETag; notModified keeps the data identity and bumps updatedAt [0.21ms]
+(pass) structural sharing > replaceEqualDeep keeps unchanged subtrees [0.11ms]
+(pass) structural sharing > a refetch returning equal JSON keeps the snapshot's data identity [0.13ms]
+(pass) infinite > pages append via getNextPageParam; a refetch reloads every loaded page [0.50ms]
+
+ 27 pass
+ 0 fail
+ 82 expect() calls
+Ran 27 tests across 2 files. [178.00ms]

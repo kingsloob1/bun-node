@@ -1,0 +1,7 @@
+{
+  // Bun reads experimentalDecorators/emitDecoratorMetadata from the WORKING
+  // DIRECTORY's tsconfig (oven-sh/bun#28605): run the spike from this folder.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true },
+  "include": ["./*.ts"]
+}

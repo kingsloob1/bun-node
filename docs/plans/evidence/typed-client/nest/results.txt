@@ -1,0 +1,11 @@
+explored 6 routes in 8.72 ms, hash 1b1503131d867aa0
+  GET /api/__bun/types               devtypes.model     no @TypedRoute or swagger metadata: untyped
+  GET /api/health                    health.ok          from @nestjs/swagger metadata: responses only
+  GET /api/users                     users.list         
+  GET /api/users/:id                 users.one          
+  GET /api/users/untyped/legacy      users.legacy       no @TypedRoute or swagger metadata: untyped
+  POST /api/users                    users.create       
+registered on the adapter: 6; explored keys missing from it: none
+dev endpoint: no token 403, token 200 (etag "1b1503131d867aa0"), if-none-match 304
+production: REFUSED: DevTypesModule: refused under NODE_ENV=production
+tsc clean
