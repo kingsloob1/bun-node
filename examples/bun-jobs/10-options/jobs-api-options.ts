@@ -27,7 +27,10 @@
  *   only a caller it allows is told what was wrong. That is what keeps a
  *   caller from probing a route's schema, and why a host that refuses one
  *   queue answers 403 there even to a bad body. Only an invalid *path* is
- *   asked about with no target.
+ *   asked about with no target. It holds on an adapter too: the API's router
+ *   opts in to a body that failed to decode (`acceptUndecodableBody`), so a
+ *   `BunHttpAdapter` routes it to the API rather than refusing it with its
+ *   own HTML 400 — which a host route beside the API still gets.
  * - **A 5xx never carries the underlying message.** Its `detail` is the
  *   generic title, always.
  * - **Adding a queue's first job creates it**, as `BunQueue.add` does: a
@@ -73,7 +76,11 @@ import type {
   RunnerListItemDto,
   WorkerDto,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
+import {
+  BunHttpAdapter,
+  BunRouter,
+  createTestLogger,
+} from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   BunQueueWorker,
@@ -1173,6 +1180,154 @@ check(
   capped.calls[0]!.jobIds === undefined,
   capped.calls[0],
 );
+
+/* ------------------------------------------------------------------ */
+step("Mounted on an adapter, a malformed body still reaches authorize first");
+
+// The probes above go through a bare `BunRouter`, which routes a body that
+// failed to decode. A `BunHttpAdapter` refuses such a body before routing,
+// with its own HTML 400, unless the router it reaches opts in
+// (`acceptUndecodableBody`). The API's router does, so on an adapter it
+// answers as it does above, served or through `adapter.fetch()`. A host route
+// beside it has not opted in and keeps the adapter's refusal, and a body over
+// the adapter's size cap is still refused before any route runs.
+
+/** The adapter's body cap, in bytes: one byte more is a 413. */
+const BODY_CAP = 1024;
+/** Every `authorize` call the adapter-mounted API made. */
+const adapterAsked: JobsApiAuthorizeContext[] = [];
+const onAdapter = createJobsApi({
+  jobs: context("adapter"),
+  basePath: "/admin/jobs",
+  logger: createTestLogger().logger,
+  limits: { queueCacheMs: 0 },
+  actions: [...JOBS_API_ACTIONS],
+  websocket: false,
+  // `x-role: guest` is refused; any other caller is allowed.
+  authorize: (req, authorizeContext) => {
+    adapterAsked.push(authorizeContext);
+    return req.getHeader("x-role") === "guest"
+      ? { allow: false, status: 403 }
+      : true;
+  },
+});
+const adapter = new BunHttpAdapter(0, {
+  logger: createTestLogger().logger,
+  request: { parseBody: { maxContentLength: BODY_CAP } },
+});
+adapter.use(onAdapter.basePath, onAdapter.router);
+let hostRouteRan = false;
+adapter.post("/hooks", (_req, res) => {
+  hostRouteRan = true;
+  return res.json({ ok: true });
+});
+const adapterServer = await adapter.listen(0);
+
+/** A JSON POST from `role`; the default body is malformed. */
+const jsonPost = (role: string, body = '{"ids": ['): RequestInit => ({
+  method: "POST",
+  headers: { "content-type": "application/json", "x-role": role },
+  body,
+});
+/** Valid JSON one byte over the adapter's cap. */
+const oversized = `{"ids":["${"x".repeat(BODY_CAP + 1 - '{"ids":[""]}'.length)}"]}`;
+/** A response's status, media type (without parameters) and body text. */
+const answerOf = async (response: Response) => ({
+  status: response.status,
+  type: (response.headers.get("content-type") ?? "").split(";")[0]!.trim(),
+  text: await response.text(),
+});
+/** The `code` of a JSON body, or the start of a body that is not JSON. */
+const codeOf = (text: string): unknown => {
+  try {
+    return (JSON.parse(text) as { code?: unknown }).code;
+  } catch {
+    return text.slice(0, 60);
+  }
+};
+
+/** Each way into the adapter: its socket-free `fetch()`, and a real socket. */
+const intoAdapter: Record<
+  string,
+  (path: string, init: RequestInit) => Promise<Response>
+> = {
+  "adapter.fetch()": async (path, init) => await adapter.fetch(path, init),
+  served: async (path, init) =>
+    await fetch(`http://127.0.0.1:${adapterServer.port}${path}`, init),
+};
+
+for (const [via, send] of Object.entries(intoAdapter)) {
+  adapterAsked.length = 0;
+  const allowed = await answerOf(
+    await send("/admin/jobs/queues/mail/jobs/retry", jsonPost("admin")),
+  );
+  checkEqual(
+    `${via}: an allowed caller gets the API's 400 problem JSON`,
+    [allowed.status, allowed.type, codeOf(allowed.text)],
+    [400, "application/problem+json", "INVALID_JSON"],
+  );
+  checkEqual(
+    `${via}: titled as a malformed body`,
+    allowed.type === "application/problem+json"
+      ? (JSON.parse(allowed.text) as { title?: string }).title
+      : allowed.text.slice(0, 60),
+    "Malformed JSON body",
+  );
+  checkEqual(
+    `${via}: after authorize was asked once, for the path's action and queue`,
+    adapterAsked,
+    [
+      {
+        action: "jobs.retry",
+        mutation: true,
+        transport: "http",
+        queue: "mail",
+        route: { method: "POST", path: "/queues/:queue/jobs/retry" },
+      },
+    ],
+  );
+
+  adapterAsked.length = 0;
+  const denied = await answerOf(
+    await send("/admin/jobs/queues/mail/jobs/retry", jsonPost("guest")),
+  );
+  checkEqual(
+    `${via}: a denied caller gets 403 FORBIDDEN, not the body error`,
+    [denied.status, codeOf(denied.text), adapterAsked.length],
+    [403, "FORBIDDEN", 1],
+  );
+
+  const unknown = await answerOf(
+    await send("/admin/jobs/no-such-route", jsonPost("admin")),
+  );
+  checkEqual(
+    `${via}: an unknown path under the API gets its JSON 404`,
+    [unknown.status, unknown.type, codeOf(unknown.text)],
+    [404, "application/problem+json", "ROUTE_NOT_FOUND"],
+  );
+
+  const host = await answerOf(await send("/hooks", jsonPost("admin")));
+  checkEqual(
+    `${via}: a host route beside it still gets the adapter's HTML 400`,
+    [host.status, host.type, hostRouteRan],
+    [400, "text/html", false],
+  );
+
+  adapterAsked.length = 0;
+  const tooLarge = await answerOf(
+    await send(
+      "/admin/jobs/queues/mail/jobs/retry",
+      jsonPost("admin", oversized),
+    ),
+  );
+  checkEqual(
+    `${via}: a body ${oversized.length - BODY_CAP} byte over the cap is still a 413 before routing`,
+    [tooLarge.status, tooLarge.type, adapterAsked.length],
+    [413, "application/json", 0],
+  );
+}
+await onAdapter.close();
+await adapter.close();
 
 /* ------------------------------------------------------------------ */
 step("A bad request is 400 or 403 by what authorize says about its target");

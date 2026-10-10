@@ -83,7 +83,7 @@ every option of one part of the API and checks what happens with
 | [`http-adapter-options.ts`](./10-options/http-adapter-options.ts) | every `BunHttpAdapter` method and option inside a Nest application, including the view methods (`setBaseViewsDir`, `setViewEngine`, `engine`, `setLocal`, `set`/`enable`/`disable`, `render` with a `status` local), `redirect()`'s body, `parseQuery`/`parseCookies` options, `server.routes`, and `etag: "weak"` overruled per route from a controller (`@Res({ passthrough: true }) res.setEtag(false)`, `res.etag = "strong"`), a JSON body and a 413 answered alike served and through `fetch()`, a bad `parseBody` coding failing at construction, `setRequestOpts()` and `requestParsing()` before Nest starts, and `router: { acceptUndecodableBody: true }` routing bad JSON (left unset, a 400 before routing) |
 | [`interceptor-options.ts`](./10-options/interceptor-options.ts) | every file interceptor and its options |
 | [`websocket-adapter-options.ts`](./10-options/websocket-adapter-options.ts) | every WebSocket adapter method, option and message type |
-| [`jobs-api-module-options.ts`](./10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, and the rules for sharing a server between its live-events socket and a gateway |
+| [`jobs-api-module-options.ts`](./10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, a malformed JSON body (the API asks `authorize`, then answers its own 400 `INVALID_JSON` or 403; a controller beside it keeps Nest's 400), and the rules for sharing a server between its live-events socket and a gateway |
 
 ## Checking the examples
 

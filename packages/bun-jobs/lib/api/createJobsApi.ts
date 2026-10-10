@@ -150,7 +150,11 @@ export function buildJobsApi(
     socketPort,
   };
 
-  const router = new BunRouter();
+  // A body that failed to decode still reaches the API's own pipeline, with
+  // `req.bodyDecodingError` set, wherever it is mounted: an adapter otherwise
+  // refuses it before routing with its own HTML 400, so a denied caller learnt
+  // "bad body" instead of 401/403, and nobody got the API's INVALID_JSON.
+  const router = new BunRouter({ acceptUndecodableBody: true });
   if (
     socket &&
     config.websocket !== false &&

@@ -13,6 +13,8 @@
  *   `useFactory`), `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`, `@InjectJobsApi()`.
  * - **Options passed through to the API** — `basePath`, `authorize`,
  *   `readOnly`, `websocket: false`, `websocket: { port }`.
+ * - **A malformed JSON body** — the API's routes ask `authorize`, then answer
+ *   with the API's own 400; a controller beside them keeps Nest's 400.
  * - **The module's own option** — `attachWebSocket`.
  * - **Lifecycle** — where the router is mounted, where the socket is attached,
  *   and the `1001` a client is told on shutdown.
@@ -44,7 +46,7 @@ import {
   BunJobsApiModule,
   InjectJobsApi,
 } from "@kingsleyweb/bun-nest/jobs";
-import { Injectable, Module } from "@nestjs/common";
+import { Controller, Injectable, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { SubscribeMessage, WebSocketGateway } from "@nestjs/websockets";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
@@ -327,6 +329,95 @@ step("authorize and readOnly reach the API through the module");
     "an allowed read still answers",
     (await adapter.fetch("/admin/jobs/meta")).status,
     200,
+  );
+
+  await app.close();
+  await jobs.close();
+}
+
+/* ------------------------------------------------------------------ */
+step(
+  "a malformed body: the API answers it, a controller still gets Nest's 400",
+);
+{
+  // The adapter refuses a body that failed to decode before routing, unless
+  // the router it reaches opts in. The API's router does, so the module's
+  // routes ask `authorize` and answer with the API's own problem JSON; a
+  // controller beside them has not, and keeps the adapter's refusal.
+  const jobs = context("malformed");
+  /** The action of every `authorize` call. */
+  const asked: string[] = [];
+  let controllerRan = false;
+
+  @Controller("hooks")
+  class HooksController {
+    @Post()
+    receive() {
+      controllerRan = true;
+      return { ok: true };
+    }
+  }
+
+  @Module({
+    imports: [
+      BunJobsApiModule.forRoot({
+        jobs,
+        basePath: "/admin/jobs",
+        // `x-role: guest` is refused; any other caller is allowed.
+        authorize: (req, ctx) => {
+          asked.push(ctx.action);
+          return req.getHeader("x-role") !== "guest";
+        },
+      }),
+    ],
+    controllers: [HooksController],
+  })
+  class AppModule {}
+
+  const { app, adapter } = await start(AppModule, { listen: false });
+  /** A POST with a malformed JSON body, from `role`. */
+  const malformed = (role: string): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/json", "x-role": role },
+    body: '{"ids": [',
+  });
+  /** Status, media type and parsed body of one request. */
+  const send = async (path: string, role: string) => {
+    const response = await adapter.fetch(path, malformed(role));
+    const text = await response.text();
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text.slice(0, 60);
+    }
+    return {
+      status: response.status,
+      type: (response.headers.get("content-type") ?? "").split(";")[0],
+      body,
+    };
+  };
+
+  const allowed = await send("/admin/jobs/queues/emails/pause", "admin");
+  checkEqual(
+    "an allowed caller gets the API's 400 INVALID_JSON, after authorize",
+    [allowed.status, allowed.type, allowed.body.code, asked],
+    [400, "application/problem+json", "INVALID_JSON", ["queues.pause"]],
+  );
+
+  asked.length = 0;
+  const denied = await send("/admin/jobs/queues/emails/pause", "guest");
+  checkEqual(
+    "a denied caller gets 403 FORBIDDEN, not the body error",
+    [denied.status, denied.body.code, asked],
+    [403, "FORBIDDEN", ["queues.pause"]],
+  );
+
+  const controller = await send("/hooks", "admin");
+  checkEqual(
+    "a controller beside it still gets Nest's 400, its handler never run",
+    [controller.status, controller.type, controller.body.error, controllerRan],
+    [400, "application/json", "Bad Request", false],
   );
 
   await app.close();
