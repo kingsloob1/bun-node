@@ -17,8 +17,11 @@
  * - Whatever a handler returns goes through `BunResponse.send`, so a
  *   `ReadableStream`, a Node `Readable`, a `Bun.file()`, a `Blob` or an async
  *   generator is streamed as-is.
- * - `@Redirect(url, status)` answers straight away with `Location` and an
- *   empty body, as on `@nestjs/platform-express`.
+ * - `@Redirect(url, status)` answers as Express's `res.redirect(status, url)`
+ *   does on `@nestjs/platform-express`: `Location`, `Vary: Accept` and a short
+ *   body — here `text/plain` "Moved Permanently. Redirecting to …", since
+ *   `fetch()` accepts any type by default. `express-parity.ts` shows the HTML
+ *   and empty bodies other `Accept` headers get.
  * - A returned `StreamableFile` is streamed, its `type`, `disposition` and
  *   `length` filling in any header the handler did not set.
  * - `@Sse()` streams Nest's own event stream, over a socket and through
@@ -32,13 +35,16 @@
  *   adapter's `server.idleTimeout`): Nest calls `req.socket.setTimeout(0)`,
  *   which exempts the request. A stream sent through `@Res()` without that
  *   call is cut once it has been quiet for the idle timeout.
- * - `@Render(path)` differs from `@nestjs/platform-express`: it serves the
- *   file at `path` as-is, with no template engine behind it.
+ * - `@Render(view)` renders `view` with the view engine, as on
+ *   `@nestjs/platform-express`: here a small `{{name}}` engine registered for
+ *   `.html` with `adapter.engine()`, the handler's return value being the
+ *   template's locals. `views.ts` covers views in full.
  */
 import type {
   BunRequest,
   BunResponse,
   JsonValue,
+  ViewEngine,
 } from "@kingsleyweb/bun-common";
 import type { MessageEvent } from "@nestjs/common";
 import { Buffer } from "node:buffer";
@@ -96,12 +102,33 @@ import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
-/** A scratch directory for the page `@Render` serves. */
+/** A scratch directory for the file a handler returns and the view `@Render` renders. */
 const scratch = await mkdtemp(join(tmpdir(), "bun-nest-routing-"));
 
-/** The file `@Render` sends. Decorator arguments are evaluated at class definition. */
+/** The file a handler returns as a `Bun.file()`. */
 const PAGE = join(scratch, "welcome.html");
 await Bun.write(PAGE, "<h1>Hello from a rendered page</h1>\n");
+
+/** The views directory, holding the template `@Render("welcome")` finds. */
+const VIEWS = join(scratch, "views");
+await Bun.write(
+  join(VIEWS, "welcome.html"),
+  "<h1>Hello from a rendered page, {{name}}</h1>\n",
+);
+
+/** A `{{name}}` template engine, as Express's `app.engine()` takes one. */
+const htmlEngine: ViewEngine = (path, locals, callback) => {
+  void Bun.file(path)
+    .text()
+    .then((source) =>
+      callback(
+        null,
+        source.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+          return String(locals[key] ?? "");
+        }),
+      ),
+    );
+};
 
 /* ------------------------------------------------------------------ */
 /** One handler per HTTP method decorator, each echoing the method it serves. */
@@ -321,11 +348,11 @@ class ResponsesController {
     return Bun.file(PAGE);
   }
 
-  /** `@Render(path)` sends the file at `path`; a returned `status` sets the code. */
+  /** `@Render(view)` renders `welcome.html`; what the handler returns are its locals. */
   @Get("page")
-  @Render(PAGE)
+  @Render("welcome")
   page() {
-    return { status: 200 };
+    return { name: "Nest" };
   }
 }
 
@@ -418,6 +445,9 @@ class AppModule {}
 title("Controllers and routing on BunHttpAdapter");
 
 const adapter = new BunHttpAdapter();
+// The views `@Render()` renders through: Express's `views` and `view engine`
+// settings, and `app.engine("html", fn)`.
+adapter.setBaseViewsDir(VIEWS).setViewEngine("html").engine("html", htmlEngine);
 const app = await NestFactory.create(AppModule, adapter, {
   logger: false,
   abortOnError: false,
@@ -529,10 +559,25 @@ show("@Res({ passthrough: true })", {
 });
 
 const moved = await fetch(`${url}/responses/moved`, { redirect: "manual" });
-show("@Redirect()", {
+const movedSeen = {
   status: moved.status,
   location: moved.headers.get("location"),
-});
+  vary: moved.headers.get("vary"),
+  contentType: moved.headers.get("content-type"),
+  body: await moved.text(),
+};
+show("@Redirect()", movedSeen);
+checkEqual(
+  "@Redirect(url, 301): Express's redirect, with its short body",
+  movedSeen,
+  {
+    status: 301,
+    location: "/responses/raw",
+    vary: "Accept",
+    contentType: "text/plain; charset=utf-8",
+    body: "Moved Permanently. Redirecting to /responses/raw",
+  },
+);
 
 /* ------------------------------------------------------------------ */
 step("Streaming and files");
@@ -555,11 +600,21 @@ show("Bun.file()", {
 });
 
 const page = await fetch(`${url}/responses/page`);
-show("@Render", {
+const pageSeen = {
   status: page.status,
   contentType: page.headers.get("content-type"),
   body: await page.text(),
-});
+};
+show("@Render", pageSeen);
+checkEqual(
+  "@Render('welcome'): the template rendered with the handler's locals",
+  pageSeen,
+  {
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: "<h1>Hello from a rendered page, Nest</h1>\n",
+  },
+);
 
 /* ------------------------------------------------------------------ */
 step("Server-sent events: @Sse()");

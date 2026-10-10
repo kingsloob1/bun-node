@@ -17,7 +17,10 @@
  * - `setErrorHandler` runs for served requests and `adapter.fetch()` alike.
  * - The Nest-shaped helpers (`reply`, `status`, `end`, `render`, `redirect`,
  *   `setHeader`, …) take the response as their first argument; `redirect`
- *   sends the response itself.
+ *   sends the response itself. On this adapter they are not `res.render()`
+ *   and `res.redirect()`: `render(res, path, { status })` streams the file at
+ *   `path`, and `redirect(res, status, url)` sets `Location` as given and
+ *   sends an empty body.
  * - `close()` keeps routes and the error/not-found handlers.
  * - Static files and the rendered view live in a temporary directory, removed
  *   at the end.
@@ -905,9 +908,9 @@ checkEqual(
 );
 const moved = await helpers.fetch("/redirect");
 checkEqual(
-  "redirect() sends the response itself",
-  [moved.status, moved.headers.get("Location")],
-  [301, "/elsewhere"],
+  "redirect() sends the response itself, with an empty body",
+  [moved.status, moved.headers.get("Location"), await moved.text()],
+  [301, "/elsewhere", ""],
 );
 const rendered = await helpers.fetch("/render");
 checkEqual(

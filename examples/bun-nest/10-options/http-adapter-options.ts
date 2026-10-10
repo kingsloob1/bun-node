@@ -25,6 +25,7 @@ import type {
   JsonValue,
   RouterHandler,
   RouterVerbMethod,
+  ViewEngine,
 } from "@kingsleyweb/bun-common";
 import type {
   BunWebSocketServerType,
@@ -857,6 +858,14 @@ step("request and response helpers");
     [moved.status, moved.headers.get("location")],
     [301, "/elsewhere"],
   );
+  checkEqual(
+    "…and sends Express's short body (text/plain, as no Accept prefers HTML)",
+    [moved.headers.get("content-type"), await moved.text()],
+    [
+      "text/plain; charset=utf-8",
+      "Moved Permanently. Redirecting to /elsewhere",
+    ],
+  );
 
   adapter.get("/redirect-default", (_req, res) => {
     adapter.redirect(res, 0, "/elsewhere");
@@ -868,34 +877,97 @@ step("request and response helpers");
     302,
   );
 
-  const page = join(scratch, "page.html");
-  await Bun.write(page, "<p>rendered</p>");
+  checkEqual("getType() reports 'express'", adapter.getType(), "express");
+}
+
+/* ------------------------------------------------------------------ */
+step("views: setBaseViewsDir, setViewEngine, engine, setLocal, set, render");
+{
+  const adapter = new BunHttpAdapter();
+  const views = join(scratch, "views");
+  await Bun.write(
+    join(views, "page.tpl"),
+    "<p>{{greeting}}, {{name}} ({{status}})</p>",
+  );
+
+  /** A `{{name}}` engine: Express's `(path, locals, callback)` contract. */
+  const tpl: ViewEngine = (path, locals, callback) => {
+    void Bun.file(path)
+      .text()
+      .then((source) =>
+        callback(
+          null,
+          source.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+            return String(locals[key] ?? "");
+          }),
+        ),
+      );
+  };
+  check(
+    "setBaseViewsDir(), setViewEngine(), engine() and setLocal() return the adapter",
+    adapter.setBaseViewsDir(views) === adapter &&
+      adapter.setViewEngine("tpl") === adapter &&
+      adapter.engine("tpl", tpl) === adapter &&
+      adapter.setLocal("greeting", "Hello") === adapter,
+  );
+  checkEqual(
+    "…and fill the adapter's views",
+    {
+      root: adapter.views.root,
+      defaultEngine: adapter.views.defaultEngine,
+      engines: Object.keys(adapter.views.engines),
+      locals: { ...adapter.views.locals },
+    },
+    {
+      root: views,
+      defaultEngine: "tpl",
+      engines: [".tpl"],
+      locals: { greeting: "Hello" },
+    },
+  );
+
   adapter.get("/render", (_req, res) => {
-    adapter.render(res, page, { status: 203 });
+    adapter.render(res, "page", { name: "Ada", status: 203 });
   });
   const rendered = await adapter.fetch("/render");
   checkEqual(
-    "render(res, file, { status }) sends the file",
+    "render(res, view, { status }) renders the view; `status` is a local, not the code",
     [rendered.status, await rendered.text()],
-    [203, "<p>rendered</p>"],
+    [200, "<p>Hello, Ada (203)</p>"],
   );
-  check(
-    "…with the file's content type",
-    rendered.headers.get("content-type")?.startsWith("text/html") === true,
+  checkEqual(
+    "…as text/html",
     rendered.headers.get("content-type"),
+    "text/html; charset=utf-8",
   );
 
   // What `@Render()` passes when the handler returns nothing.
   adapter.get("/render-bare", (_req, res) => {
-    adapter.render(res, page, undefined);
+    adapter.render(res, "page", undefined);
   });
   checkEqual(
-    "render(res, file, undefined) is a 200",
-    (await adapter.fetch("/render-bare")).status,
-    200,
+    "render(res, view, undefined) is a 200 with app.locals alone",
+    await (await adapter.fetch("/render-bare")).text(),
+    "<p>Hello,  ()</p>",
   );
 
-  checkEqual("getType() reports 'express'", adapter.getType(), "express");
+  const viaSet = new BunHttpAdapter();
+  check(
+    "set(), enable() and disable() return the adapter",
+    viaSet.set("views", views) === viaSet &&
+      viaSet.set("view engine", ".tpl") === viaSet &&
+      viaSet.enable("view cache") === viaSet &&
+      viaSet.disable("view cache") === viaSet,
+  );
+  checkEqual(
+    "set('views' | 'view engine') and disable('view cache') are the view settings",
+    {
+      root: viaSet.views.root,
+      defaultEngine: viaSet.views.defaultEngine,
+      cache: viaSet.views.cache,
+    },
+    { root: views, defaultEngine: ".tpl", cache: false },
+  );
   check(
     "setViewEngine() returns the adapter",
     adapter.setViewEngine("hbs") === adapter,
