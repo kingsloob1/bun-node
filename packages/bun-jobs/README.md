@@ -3930,6 +3930,8 @@ for the controller's kind; `reset({ group: true, budget: true })` also clears
 the group's counts (and the queue's own); `reset({ budget: true })` alone
 leaves the group alone.
 
+Example: [`02-queues/summon-group-budget.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-group-budget.ts), with a second process in the group in [`02-queues/helpers/summon-group-member.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summon-group-member.ts).
+
 ### Summon policy
 
 | Option | Default | Meaning |
