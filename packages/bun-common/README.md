@@ -48,7 +48,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Sending a body](#sending-a-body)
     - [Headers and response cookies](#headers-and-response-cookies)
     - [Files and byte ranges](#files-and-byte-ranges)
-    - [Redirects and format](#redirects-and-format)
+    - [Redirects, views and format](#redirects-views-and-format)
     - [Streaming and server-sent events](#streaming-and-server-sent-events)
   - [Validation](#validation)
   - [CORS](#cors)
@@ -1027,7 +1027,8 @@ Example:
   lines in `getHeaders()` and in `get("Set-Cookie")`, as in Node.
 
 `res.cookie(name, value, options)` appends a `Set-Cookie`. An object value is
-written as a `j:` JSON cookie. `clearCookie(name, options)` expires one.
+written as a `j:` JSON cookie. `clearCookie(name, options)` expires one, as
+Express 5 does: `Expires` is always the epoch and a `maxAge` given is dropped.
 
 | Cookie option | Meaning |
 |---|---|
@@ -1063,10 +1064,23 @@ fresh one 304. A missing file or a directory is answered with its status and
 an empty body. `res.download(path, filename?, options?, cb?)` is `sendFile`
 with `download: true`.
 
-#### Redirects and format
+#### Redirects, views and format
 
-- `res.redirect(url, status = 302)` builds a fresh `Response.redirect`, so
-  headers set earlier on `res` are **not** carried over.
+- `res.redirect([status,] url)` is Express 5's: `Location` is URL-encoded
+  (`"back"` is literal), the status defaults to `302`, and the body is
+  `Found. Redirecting to <url>` as `text/plain`, `<p>…</p>` as `text/html`, or
+  empty, by `Accept`, with `Vary: Accept` and `Content-Length` (no body for
+  `HEAD`, no `ETag`). Headers set earlier are kept. `redirect(url, status)` is
+  accepted too; `redirect(url, init)` with a `ResponseInit` is Bun's
+  `Response.redirect(url, init)`.
+- `res.render(view, locals?, callback?)` is Express's, through the response's
+  `views` (a `BunViews`, the constructor's `views` option; bun-nest's adapter
+  passes its own). `BunViews` is Express's `app.render`: `root` (`views`),
+  `defaultEngine` (`view engine`), `cache` (`view cache`), `viewOptions`,
+  `engine(ext, fn)` and `locals` (`app.locals`). Locals are `app.locals`, then
+  `res.locals`, then `locals`. Without a callback the result is sent as
+  `text/html; charset=utf-8` and an error goes to `next(err)`; a name with no
+  extension and no default engine throws, as in Express.
 - `res.format({ json: h, html: h, default: h })` runs the handler matching
   `Accept`. With no match and no `default` it passes a 406 error to `next`,
   or answers 406 directly outside a pipeline.
