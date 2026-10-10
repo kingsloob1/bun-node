@@ -422,6 +422,15 @@ export class QueueLimiter {
    * Records what a reservation actually claimed: gives back the unused part of
    * the grant and the tentative per-name counts, and counts each limited name
    * that was actually claimed.
+   *
+   * The running counts go back the way a finished job's do, as pending
+   * releases, rather than inside this write alone. The write is a
+   * compare-and-set that gives up after {@link UPDATE_ATTEMPTS} lost races, and
+   * a give-back that went with it stayed charged to this worker's own lease —
+   * which it keeps renewing — so the name read as full until the worker
+   * closed. Pending, it rides along with this worker's next write instead. A
+   * rate window's give-back is still written here only: lost, the window
+   * counts a few starts that never happened, until it ends.
    */
   async commit(
     reservation: Reservation,
@@ -435,9 +444,29 @@ export class QueueLimiter {
     const limits = this.#limits?.value ?? null;
     const unused = reservation.grant - names.length;
 
+    const claimed = new Map<string, number>();
+    for (const name of names) {
+      claimed.set(name, (claimed.get(name) ?? 0) + 1);
+    }
+
+    /** What each tentatively charged name is owed back. */
+    const giveBacks = reservation.tentative.names.map(
+      (name) => [name, reservation.grant - (claimed.get(name) ?? 0)] as const,
+    );
+
+    this.#pending.total += Math.max(0, unused);
+    for (const [name, giveBack] of giveBacks) {
+      const nameLimits = limits?.names?.[name];
+      if (
+        giveBack > 0 &&
+        (nameLimits?.concurrency !== undefined || !nameLimits)
+      ) {
+        this.#pending.names[name] = (this.#pending.names[name] ?? 0) + giveBack;
+      }
+    }
+
     await this.#update(now, (state, at) => {
-      const holder = this.#ownHolder(state, at);
-      holder.total = Math.max(0, holder.total - unused);
+      this.#ownHolder(state, at);
 
       const queueWindow = state.windows[""];
       if (
@@ -448,25 +477,7 @@ export class QueueLimiter {
         queueWindow.count = Math.max(0, queueWindow.count - unused);
       }
 
-      const claimed = new Map<string, number>();
-      for (const name of names) {
-        claimed.set(name, (claimed.get(name) ?? 0) + 1);
-      }
-
-      for (const name of reservation.tentative.names) {
-        const actual = claimed.get(name) ?? 0;
-        const giveBack = reservation.grant - actual;
-        const nameLimits = limits?.names?.[name];
-
-        if (nameLimits?.concurrency !== undefined || !nameLimits) {
-          const left = (holder.names[name] ?? 0) - giveBack;
-          if (left > 0) {
-            holder.names[name] = left;
-          } else {
-            delete holder.names[name];
-          }
-        }
-
+      for (const [name, giveBack] of giveBacks) {
         const window = state.windows[name];
         if (
           window &&
@@ -736,7 +747,11 @@ function applyReleases(
 ): void {
   const holder = state.holders[self];
 
-  if (!holder || pending.total === 0) {
+  // A commit's give-back can owe a name without owing the total.
+  if (
+    !holder ||
+    (pending.total === 0 && Object.keys(pending.names).length === 0)
+  ) {
     return;
   }
 

@@ -5402,18 +5402,34 @@ export class BunQueueWorker<
    * holding, a repeat series whose pending occurrence went with it — and
    * waiting a full interval to look would leave the queue stuck in the
    * meantime.
+   *
+   * A pass never overlaps the one before it: a tick that finds the last pass
+   * still running is skipped. The promotion sweep runs at the poll interval,
+   * which can be a few milliseconds, and its statement can wait on row locks
+   * — under load, measured on Postgres, the ticks kept starting passes that
+   * queued behind the slow ones until every connection in the driver's pool
+   * held a promotion waiting on another, and the worker's claims, completions
+   * and lock renewals waited behind them for over a minute.
    */
   #every(
     ms: number,
     work: () => Promise<void>,
   ): ReturnType<typeof setInterval> {
+    /** Whether a pass is still running, so the next tick skips. */
+    let running = false;
+
     const run = () => {
-      if (this.#closing) {
+      if (this.#closing || running) {
         return;
       }
-      void work().catch((error: unknown) => {
-        this.#emitError(error, "maintenance");
-      });
+      running = true;
+      void work()
+        .catch((error: unknown) => {
+          this.#emitError(error, "maintenance");
+        })
+        .finally(() => {
+          running = false;
+        });
     };
 
     const timer = setInterval(run, ms);
