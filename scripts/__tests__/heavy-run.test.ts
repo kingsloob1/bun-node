@@ -1013,6 +1013,77 @@ describe("heavy-run.sh: history and keys", () => {
   );
 
   scenario(
+    "the key leaves out where a run writes its logs and results",
+    async (box) => {
+      const plain = await box.key(["bun", "scripts/test-seeded.ts"]);
+      expect(plain).toEndWith(": bun scripts/test-seeded.ts");
+      for (const command of [
+        ["bun", "scripts/test-seeded.ts", "--log-dir", "/x/w2-logs"],
+        ["bun", "scripts/test-seeded.ts", "--log-dir=/x/w3-logs"],
+        [
+          "nice",
+          "-n",
+          "10",
+          "timeout",
+          "2400",
+          "bun",
+          "scripts/test-seeded.ts",
+          "--seed",
+          "2",
+          "--log-dir",
+          "/x/s1-logs",
+        ],
+        [
+          "bun",
+          "scripts/test-seeded.ts",
+          "--logdir",
+          "a",
+          "--outdir=b",
+          "--out-file",
+          "c",
+          "--output",
+          "d",
+          "--reporter-outfile=e.xml",
+        ],
+      ]) {
+        expect(await box.key(command)).toBe(plain);
+      }
+      // A flag with no path after it stays, and so does what a path is not.
+      expect(await box.key(["bun", "x", "--log-dir", "--verbose"])).toEndWith(
+        ": bun x --log-dir --verbose",
+      );
+      expect(await box.key(["bun", "test", "--output"])).toEndWith(
+        ": bun test --output",
+      );
+      expect(await box.key(["bun", "test", "--reporter=junit"])).toEndWith(
+        ": bun test --reporter=junit",
+      );
+
+      // Runs recorded with their own log directory now share one estimate.
+      const base = box.dir.split("/").pop();
+      const now = Math.floor(Date.now() / 1000);
+      const lines = [372, 401, 463].map(
+        (seconds, at) =>
+          `${now}\t${base}: bun scripts/test-seeded.ts --log-dir /x/w${at}-logs\t${seconds}\t0\n`,
+      );
+      writeFileSync(box.history, lines.join(""));
+      const stats = await exec(
+        [
+          "bash",
+          HEAVY_RUN,
+          "--stats",
+          "bun",
+          "scripts/test-seeded.ts",
+          "--log-dir",
+          "/x/new-logs",
+        ],
+        { cwd: box.dir, env: box.env() },
+      );
+      expect(stats.stdout).toBe("401 3 - 0\n");
+    },
+  );
+
+  scenario(
     "the queue shows the whole command, quoted, with its EXAMPLE_DRIVER",
     async (box) => {
       const name =

@@ -186,7 +186,8 @@ floor. So plain `bun test` is still the one-process run, as is
     count for EST); the key is the directory relative
     to its git top level, the command without what does not change how long
     it takes (a leading `timeout N` or `nice`, and `--seed`/`--randomize`
-    anywhere, so every seed of a suite shares one estimate; older history
+    and output paths such as `--log-dir <path>` anywhere, so every seed of a
+    suite shares one estimate, wherever it logs; older history
     lines are read the same way), and `[exclusive]` and `EXAMPLE_DRIVER` when
     set, so a run in any worktree counts (`bun-node-heavy-run.sh --key
     <command>` prints it). The queue's COMMAND column is the whole command
