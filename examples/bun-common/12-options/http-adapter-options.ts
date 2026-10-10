@@ -15,12 +15,22 @@
  *   port rather than moving, and resolves with the running server when asked
  *   for the address it already has (or for port `0`).
  * - `setErrorHandler` runs for served requests and `adapter.fetch()` alike.
+ * - `views` is the application's one `BunViews`, which every response the
+ *   adapter builds renders through, its error handlers' included.
+ *   `setBaseViewsDir`, `setViewEngine`, `engine`, `setLocal`, `set`, `enable`
+ *   and `disable` configure it as `@nestjs/platform-express`'s adapter
+ *   configures Express, and each returns the adapter. `set` applies only the
+ *   view settings; any other is ignored, with one warning.
  * - The Nest-shaped helpers (`reply`, `status`, `end`, `render`, `redirect`,
- *   `setHeader`, …) take the response as their first argument; `redirect`
- *   sends the response itself. On this adapter they are not `res.render()`
- *   and `res.redirect()`: `render(res, path, { status })` streams the file at
- *   `path`, and `redirect(res, status, url)` sets `Location` as given and
- *   sends an empty body.
+ *   `setHeader`, …) take the response as their first argument and behave as
+ *   platform-express's: `redirect(res, status, url)` is Express's
+ *   `res.redirect`, with an encoded `Location` and a "Redirecting to" body,
+ *   and `render(res, view, locals)` is `res.render(view, locals)` through
+ *   `views`. The status is the response's own: a `status` key is only a
+ *   local.
+ * - `useStaticAssets` also answers the bare prefix, a `301` to the prefix
+ *   with its slash, and `getRequestHostname` is `req.hostname`, the host
+ *   without its port.
  * - `close()` keeps routes and the error/not-found handlers.
  * - Static files and the rendered view live in a temporary directory, removed
  *   at the end.
@@ -29,14 +39,17 @@ import type {
   BunServer,
   EtagOption,
   JsonValue,
+  RenderCallback,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import {
   BunHttpAdapter,
   BunRouter,
+  BunViews,
   BunWebSocket,
   createTestLogger,
   etag,
@@ -69,7 +82,24 @@ function postJson(value: JsonValue): RequestInit {
 
 const dir = mkdtempSync(join(tmpdir(), "bun-common-adapter-tour-"));
 await Bun.write(join(dir, "public", "hello.txt"), "hello, static\n");
-await Bun.write(join(dir, "view.html"), "<h1>rendered</h1>\n");
+await Bun.write(
+  join(dir, "view.html"),
+  "<h1>{{title}}</h1><p>{{status}}</p>\n",
+);
+
+/** A tiny template engine: `{{key}}` becomes the local `key`. */
+function braces(
+  path: string,
+  options: Record<string, unknown>,
+  callback: RenderCallback,
+): void {
+  const fill = (_match: string, key: string): string =>
+    String(options[key] ?? "");
+  Bun.file(path)
+    .text()
+    .then((text) => callback(null, text.replace(/\{\{(\w+)\}\}/g, fill)))
+    .catch((error: Error) => callback(error));
+}
 
 /* ------------------------------------------------------------------ */
 step("Defaults");
@@ -98,6 +128,21 @@ checkEqual(
   [false, false, undefined],
 );
 checkEqual("init() before listening", await defaults.init(), undefined);
+check(
+  "views is a BunViews of its own",
+  defaults.views instanceof BunViews &&
+    defaults.views !== new BunHttpAdapter().views,
+  defaults.views,
+);
+checkEqual(
+  "…with Express's defaults: ./views, no default engine, no engines",
+  [
+    defaults.views.root,
+    defaults.views.defaultEngine,
+    Object.keys(defaults.views.engines),
+  ],
+  [join(process.cwd(), "views"), undefined, []],
+);
 defaults.get("/tagged", (_req, res) => res.send({ a: 1 }));
 checkEqual(
   "etag is off by default",
@@ -689,6 +734,12 @@ checkEqual(
   (await statics.fetch("/hello.txt")).status,
   404,
 );
+const bareAssets = await statics.fetch("/assets?v=2");
+checkEqual(
+  "the bare prefix is the directory without its slash: 301 to /assets/",
+  [bareAssets.status, bareAssets.headers.get("Location")],
+  [301, "/assets/?v=2"],
+);
 
 /* ------------------------------------------------------------------ */
 step("registerParserMiddleware() and useBodyParser()");
@@ -839,6 +890,120 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("views, and the view settings: setBaseViewsDir() … disable()");
+
+const appViews = new BunViews();
+appViews.root = dir;
+appViews.engine("html", braces);
+const viewing = new BunHttpAdapter(0, { views: appViews });
+checkEqual("views is the option given", viewing.views, appViews);
+viewing.get("/page", (_req, res) => {
+  res.render("view.html", { title: "option" });
+});
+const optionPage = await viewing.fetch("/page");
+checkEqual(
+  "…which every response renders through",
+  [optionPage.status, await optionPage.text()],
+  [200, "<h1>option</h1><p></p>\n"],
+);
+
+const configured = new BunHttpAdapter();
+const configuredLog = createTestLogger();
+configured.setLogger(configuredLog.logger);
+checkEqual(
+  "setBaseViewsDir() returns the adapter",
+  configured.setBaseViewsDir(dir),
+  configured,
+);
+checkEqual(
+  "…and sets views.root (Express's views)",
+  configured.views.root,
+  dir,
+);
+configured.setBaseViewsDir([join(dir, "missing"), dir]);
+checkEqual("…or several directories, in lookup order", configured.views.root, [
+  join(dir, "missing"),
+  dir,
+]);
+checkEqual(
+  "engine() returns the adapter",
+  configured.engine("html", braces),
+  configured,
+);
+checkEqual(
+  "…and registers the engine (app.engine)",
+  configured.views.engines[".html"],
+  braces,
+);
+checkEqual(
+  "setViewEngine() returns the adapter",
+  configured.setViewEngine("html"),
+  configured,
+);
+checkEqual(
+  "…and sets views.defaultEngine (view engine)",
+  configured.views.defaultEngine,
+  "html",
+);
+checkEqual(
+  "setLocal() returns the adapter",
+  configured.setLocal("title", "app.locals"),
+  configured,
+);
+checkEqual(
+  "…and sets views.locals (app.locals)",
+  configured.views.locals.title,
+  "app.locals",
+);
+configured.get("/page", (_req, res) => res.render("view"));
+const settingsPage = await configured.fetch("/page");
+checkEqual(
+  'render("view"): the second directory, the default engine, the local',
+  [settingsPage.status, await settingsPage.text()],
+  [200, "<h1>app.locals</h1><p></p>\n"],
+);
+
+checkEqual(
+  "set() returns the adapter",
+  configured.set("view cache", true),
+  configured,
+);
+checkEqual("…and applies a view setting", configured.views.cache, true);
+configured.disable("view cache");
+checkEqual("disable() sets it false", configured.views.cache, false);
+checkEqual(
+  "enable() returns the adapter",
+  configured.enable("view cache"),
+  configured,
+);
+checkEqual("…and sets it true", configured.views.cache, true);
+configured.set("view options", { delimiter: "?" });
+configured.set("view engine", "tpl").set("views", dir);
+checkEqual(
+  "set() covers view options, view engine and views too",
+  [
+    configured.views.viewOptions,
+    configured.views.defaultEngine,
+    configured.views.root,
+  ],
+  [{ delimiter: "?" }, "tpl", dir],
+);
+checkEqual(
+  "any other setting is accepted and returns the adapter",
+  configured.set("trust proxy", true).enable("trust proxy"),
+  configured,
+);
+checkEqual(
+  "…with no effect but one warning naming it",
+  configuredLog.events
+    .filter((event) => event.level === "warn")
+    .map((event) => event.message),
+  [
+    'set("trust proxy") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
+  ],
+);
+
+/* ------------------------------------------------------------------ */
 step("The Nest-shaped response helpers");
 
 const helpers = new BunHttpAdapter();
@@ -874,8 +1039,16 @@ helpers.get("/status", (_req, res) => {
 helpers.get("/redirect", (_req, res) => {
   helpers.redirect(res, 301, "/elsewhere");
 });
+helpers.get("/redirect-default", (_req, res) => {
+  helpers.redirect(res, 0, "/a b");
+});
+helpers.get("/host", (req, res) => {
+  res.json([helpers.getRequestHostname(req), req.host]);
+});
+helpers.setBaseViewsDir(dir).engine("html", braces);
 helpers.get("/render", (_req, res) => {
-  helpers.render(res, join(dir, "view.html"), { status: 203 });
+  res.status(203);
+  helpers.render(res, "view.html", { title: "rendered", status: 410 });
 });
 
 const replied = await helpers.fetch("/reply?x=1");
@@ -908,20 +1081,53 @@ checkEqual(
 );
 const moved = await helpers.fetch("/redirect");
 checkEqual(
-  "redirect() sends the response itself, with an empty body",
-  [moved.status, moved.headers.get("Location"), await moved.text()],
-  [301, "/elsewhere", ""],
+  "redirect() is Express's res.redirect: it sends a short body",
+  [
+    moved.status,
+    moved.headers.get("Location"),
+    moved.headers.get("Content-Type"),
+    await moved.text(),
+  ],
+  [
+    301,
+    "/elsewhere",
+    "text/plain; charset=utf-8",
+    "Moved Permanently. Redirecting to /elsewhere",
+  ],
+);
+const movedHtml = await helpers.fetch("/redirect", {
+  headers: { Accept: "text/html" },
+});
+checkEqual(
+  "…as HTML when Accept asks for it",
+  [movedHtml.headers.get("Content-Type"), await movedHtml.text()],
+  [
+    "text/html; charset=utf-8",
+    "<p>Moved Permanently. Redirecting to /elsewhere</p>",
+  ],
+);
+const found = await helpers.fetch("/redirect-default");
+checkEqual(
+  "…status 0 is a 302, and Location is URL-encoded",
+  [found.status, found.headers.get("Location"), await found.text()],
+  [302, "/a%20b", "Found. Redirecting to /a%20b"],
 );
 const rendered = await helpers.fetch("/render");
 checkEqual(
-  "render() streams the file",
-  [rendered.status, await rendered.text()],
-  [203, "<h1>rendered</h1>\n"],
+  "render() is res.render through views: the status is the response's, status is a local",
+  [
+    rendered.status,
+    rendered.headers.get("Content-Type"),
+    await rendered.text(),
+  ],
+  [203, "text/html; charset=utf-8", "<h1>rendered</h1><p>410</p>\n"],
 );
-check(
-  "…with its content type",
-  String(rendered.headers.get("Content-Type")).startsWith("text/html"),
-  rendered.headers.get("Content-Type"),
+await serve(helpers);
+const servedHost = await fetch(`${helpers.url}/host`);
+checkEqual(
+  "getRequestHostname() served: the Host without its port",
+  await servedHost.json(),
+  ["127.0.0.1", `127.0.0.1:${helpers.listeningPort}`],
 );
 
 /* ------------------------------------------------------------------ */

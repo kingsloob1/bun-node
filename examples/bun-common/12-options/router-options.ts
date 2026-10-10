@@ -24,18 +24,28 @@
  * - Only verb methods, `all()` and `any()` register *route handlers*; `use()`,
  *   `useMethod()` and a bare `setRoute()` register middleware, which is never
  *   reordered and never binds `req.params`.
+ * - `views` is the `BunViews` every response `fetch()` builds renders
+ *   through: the option, else one of the router's own, made on first read.
+ *   A mounted sub-router renders with the views of the router serving the
+ *   request, as an Express `Router` has no settings of its own.
  */
 import type {
   JsonValue,
   LogEvent,
+  RenderCallback,
   RouterErrorMiddlewareHandler,
   RouterHandler,
   RouterVerbMethod,
 } from "@kingsleyweb/bun-common";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import process from "node:process";
 import {
   BunRequest,
   BunResponse,
   BunRouter,
+  BunViews,
   BunWebSocket,
   createTestLogger,
   DEFAULT_ROUTE_CACHE_MAX,
@@ -1129,6 +1139,87 @@ checkEqual(
   await text(echo, "/missing"),
   "404 ",
 );
+
+/* ------------------------------------------------------------------ */
+step("views: the option, the property, and a bare router's own");
+
+const viewsDir = mkdtempSync(join(tmpdir(), "bun-common-router-views-"));
+await Bun.write(join(viewsDir, "hello.tpl"), "hello {{who}}");
+
+/** `{{key}}` becomes the local `key`. */
+function tpl(
+  path: string,
+  options: Record<string, unknown>,
+  callback: RenderCallback,
+): void {
+  const fill = (_match: string, key: string): string =>
+    String(options[key] ?? "");
+  Bun.file(path)
+    .text()
+    .then((text) => callback(null, text.replace(/\{\{(\w+)\}\}/g, fill)))
+    .catch((error: Error) => callback(error));
+}
+
+const siteViews = new BunViews();
+siteViews.root = viewsDir;
+siteViews.engine("tpl", tpl);
+siteViews.defaultEngine = "tpl";
+siteViews.locals.who = "app.locals";
+const viewed = new BunRouter({ views: siteViews });
+checkEqual("views is the option given", viewed.views, siteViews);
+viewed.get("/hello", (_req, res) => res.render("hello"));
+const hello = await viewed.fetch("/hello");
+checkEqual(
+  "fetch()'s responses render through it, app.locals included",
+  [hello.status, hello.headers.get("Content-Type"), await hello.text()],
+  [200, "text/html; charset=utf-8", "hello app.locals"],
+);
+
+const own = new BunRouter();
+const ownViews = own.views;
+check(
+  "without the option: a BunViews of the router's own",
+  ownViews instanceof BunViews && ownViews !== new BunRouter().views,
+  ownViews,
+);
+check(
+  "…made once: the same one on every read",
+  own.views === ownViews && ownViews instanceof BunViews,
+  own.views,
+);
+checkEqual(
+  "…with Express's defaults: ./views, no default engine",
+  [ownViews.root, ownViews.defaultEngine, Object.keys(ownViews.engines)],
+  [join(process.cwd(), "views"), undefined, []],
+);
+own.get("/hello", (_req, res) => res.render("hello"));
+own.use(((err, _req, res, _next) => {
+  res.status(500).send((err as Error).message);
+}) satisfies RouterErrorMiddlewareHandler);
+checkEqual(
+  "…so a name without an extension fails as in Express",
+  await text(own, "/hello"),
+  "500 No default engine was specified and no extension was provided.",
+);
+ownViews.root = viewsDir;
+ownViews.engine("tpl", tpl).defaultEngine = "tpl";
+ownViews.locals.who = "its own";
+checkEqual(
+  "…until the property is configured",
+  await text(own, "/hello"),
+  "200 hello its own",
+);
+
+// A sub-router with views of its own, which know no engine at all.
+const mountedViews = new BunRouter({ views: new BunViews() });
+mountedViews.get("/hello", (_req, res) => res.render("hello"));
+viewed.use("/sub", mountedViews);
+checkEqual(
+  "a mounted sub-router renders with the views of the router serving it",
+  await text(viewed, "/sub/hello"),
+  "200 hello app.locals",
+);
+rmSync(viewsDir, { recursive: true, force: true });
 
 /* ------------------------------------------------------------------ */
 step("The exports around the router");
