@@ -1,0 +1,19 @@
+$ for w in react vue vue-bare svelte preact solid solid-bare; do NODE_ENV=production bun errors-probe.ts $w; done   # 2026-10-10, bun 1.4.3
+react: render settled at 5 ms: rejected: Error: view failed: react
+react: process exits at 10 ms; no unhandled rejection
+vue: render settled at 25 ms: rejected: Error: view failed: vue
+vue: process exits at 25 ms; no unhandled rejection
+vue-bare: render settled at 28 ms: "<!---->"
+vue-bare: process exits at 28 ms; no unhandled rejection
+svelte: render settled at 17 ms: rejected: Error: view failed: svelte
+svelte: process exits at 17 ms; no unhandled rejection
+preact: render settled at 2 ms: rejected: Error: view failed: preact
+preact: process exits at 2 ms; no unhandled rejection
+solid: render settled at 54 ms: rejected: Error: view failed: solid
+solid: process exits at 54 ms; no unhandled rejection
+solid-bare: render settled at 71 ms: rejected: Error: view failed: solid
+solid-bare: process exits at 30072 ms; 30071 ms: unhandled rejection renderToString timed out
+$ bun errors-probe.ts vue-bare   # NODE_ENV unset: Vue's development build
+[Vue warn]: Unhandled error during execution of setup function 
+vue-bare: render settled at 22 ms: "rejected: Error: view failed: vue"
+vue-bare: process exits at 22 ms; no unhandled rejection

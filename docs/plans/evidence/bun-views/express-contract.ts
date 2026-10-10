@@ -13,7 +13,7 @@ import express from "express";
 import { createElement as h } from "react";
 import { renderToString } from "react-dom/server";
 
-const root = process.argv[2] ?? mkdtempSync(join(tmpdir(), "react-views-contract-"));
+const root = process.argv[2] ?? mkdtempSync(join(tmpdir(), "bun-views-contract-"));
 rmSync(root, { recursive: true, force: true });
 mkdirSync(join(root, "views", "users"), { recursive: true });
 symlinkSync(join(import.meta.dir, "node_modules"), join(root, "node_modules"));

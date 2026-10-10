@@ -1,0 +1,7 @@
+bun 1.4.3 (bbdc5a519), NODE_ENV=(unset)
+react: hydrated true (381 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "Hydration: react", every <script> nonced true, CSP violations [], bundle 422.0 KiB; console ["info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"]
+vue: hydrated true (355 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "", every <script> nonced true, CSP violations [], bundle 104.8 KiB; console []
+svelte: hydrated true (339 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "Hydration: svelte", every <script> nonced true, CSP violations [], bundle 50.1 KiB; console []
+svelte-official: hydrated true (335 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "Hydration: svelte-official", every <script> nonced true, CSP violations [], bundle 50.1 KiB; console ["warning: Failed to hydrate:  [object Object]"]
+preact: hydrated true (356 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "", every <script> nonced true, CSP violations [], bundle 13.6 KiB; console []
+solid: hydrated true (322 ms), click -> "count 6", buttons 1, injected script ran false, evil text round-trips true, title "", every <script> nonced true, CSP violations [], bundle 17.3 KiB; console []

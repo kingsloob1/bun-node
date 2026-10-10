@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { createElement as h } from "react";
 import { renderToString } from "react-dom/server";
 
-const root = process.argv[2] ?? mkdtempSync(join(tmpdir(), "react-views-loading-"));
+const root = process.argv[2] ?? mkdtempSync(join(tmpdir(), "bun-views-loading-"));
 rmSync(root, { recursive: true, force: true });
 mkdirSync(join(root, "views", "layouts"), { recursive: true });
 symlinkSync(join(import.meta.dir, "node_modules"), join(root, "node_modules"));

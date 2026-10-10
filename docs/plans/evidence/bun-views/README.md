@@ -1,16 +1,22 @@
-# Evidence: React views
+# Evidence: bun-views
 
-The evidence behind [`../../react-views.md`](../../react-views.md). Gathered
-on **2026-10-10**, on one shared laptop: i9-11900H with 16 threads, Linux
+The evidence behind [`../../bun-views.md`](../../bun-views.md) (which began
+as the React views plan; this folder was `react-views/`, and the
+`results-*.txt` files captured then still print that path). Gathered on
+**2026-10-10**, on one shared laptop: i9-11900H with 16 threads, Linux
 7.0.0-38-generic, Bun 1.4.3 (`bbdc5a519`, the canary build the repo runs),
-Node v24.2.0, React and React DOM 19.3.0, Express 5.3.0, TypeScript 6.0.3.
-Peer sessions ran at the same time, at a 1-minute load average between 8 and
-41, so compare within a run rather than across machines.
+Node v24.2.0, React and React DOM 19.3.0, Express 5.3.0, Vue 3.5.43, Svelte
+5.57.2 (and `bun-plugin-svelte` 0.0.6), `bun-plugin-vue3` 1.1.0, Preact
+11.0.1 (and `preact-render-to-string` 6.8.0), Solid 1.9.17 (and
+`babel-preset-solid` 1.9.16, Babel 7.29), TypeScript 6.0.3. Peer sessions
+ran at the same time, at a 1-minute load average between 4 and 47, so
+compare within a run rather than across machines.
 
 Nothing here is part of a published package, and the repo's tooling does not
 build, typecheck or lint it ([`../README.md`](../README.md) says why). This
 folder is its own Bun project: `react`, `react-dom` and `express` are
-installed here, in `node_modules/`, and nowhere else. Run `bun install` in
+installed here, in `node_modules/` (git-ignored), and nowhere else, as are
+the Vue, Svelte, Preact and Solid packages. Run `bun install` in
 this folder first. The bun-common scripts import the package source by
 relative path, so they also need `bun install` at the repo root.
 
@@ -29,6 +35,15 @@ relative path, so they also need `bun install` at the repo root.
 | `express-contract.ts` | A React engine on the Express contract, driven by real Express 5 on Bun: what `options` holds, directory index, `.jsx` beside `.tsx`, a view with no default export, view names climbing out of the views directory, `res.render`'s callback form, a view engine with no engine registered | `NODE_ENV=production bun express-contract.ts` |
 | `hydrate.tsx` | Hydration in headless Chrome (`Bun.WebView`): per-view client entries built in memory by `Bun.build`, served by bun-common under a nonce CSP with SRI, props carried two ways, and an async server component in a hydrated tree. **Heavy** (Chrome): run it through the wrapper | `NODE_ENV=production bun hydrate.tsx`, and again without `NODE_ENV` (`results-hydrate-dev.txt`) |
 | `typing/` | A type-level spike: `@RenderComponent(Component)` and `@RenderView("Name")` constraining a handler's return type under `experimentalDecorators`, a typed `res.render` and the overload trap beside it. Each `@ts-expect-error` is a negative control | `../../../../node_modules/.bin/tsc -p typing` |
+| `core/interface.ts` | The adapter interface the plan proposes (§3.2): `ViewAdapter`, `RenderInput`, `RenderOutput`, `StreamOutput`, `ClientEntryInput` | — |
+| `core/mini-core.ts` | A minimal framework-agnostic core over that interface: load a view by path (registering the adapter's compile step with `Bun.plugin`), render, wrap a fragment in a shell, stream, build per-view client entries as virtual modules with `Bun.build`, and an Express engine with the optional `renderToStream` | — |
+| `adapters/` | Five adapters (`react.tsx`, `vue.ts`, `svelte.ts`, `preact.ts`, `solid.ts`) and the compile steps in `adapters/plugins/` (`vue-sfc.ts`, `svelte-compile.ts`, `solid-babel.ts`) | — |
+| `fviews/` | The catalogue page, a counter and a throwing view per framework (`fviews/<framework>/`), plus Svelte's async pages; `fviews/data.ts` is the shared catalogue data | — |
+| `frameworks-ssr.ts` | All five adapters through the core in one process: cold and warm loads, the catalogue as a string (bytes, title in head, escaping), 50 ms async data as a string and a stream, a throwing view, a client bundle per framework, real Express 5 rendering `.tsx`, `.vue` and `.svelte` through the core's engine, then render time per framework in a rotating order | `NODE_ENV=production bun frameworks-ssr.ts` |
+| `plugins-compare.ts` | The compile step, ours against what exists, each case in its own process: Vue through our SSR compile step against `bun-plugin-vue3`; Svelte through ours against the official `bun-plugin-svelte`; Svelte's `experimental.async` | `NODE_ENV=production bun plugins-compare.ts` |
+| `errors-probe.ts` | What a throwing view leaves behind, per framework and per raw API: Vue without an `errorHandler` (production and development), Solid's `renderToStringAsync` timer | `NODE_ENV=production bun errors-probe.ts <react\|vue\|vue-bare\|svelte\|preact\|solid\|solid-bare>` (and `bun errors-probe.ts vue-bare` for Vue's development build) |
+| `frameworks-hydrate.ts` | Hydration of every adapter's counter view through the core, in headless Chrome (`Bun.WebView`), under a nonce CSP with SRI, each framework in its own process (`svelte-official` uses `bun-plugin-svelte`). **Heavy** (Chrome): run it through the wrapper. `HYDRATE_NO_CHROME=1` serves the pages without Chrome | `NODE_ENV=production bun frameworks-hydrate.ts`, and again without `NODE_ENV` (`results-frameworks-hydrate-dev.txt`) |
+| `frameworks-typing/` | A type-level spike: one `PropsOf<C>` with a resolver per framework, checked against React, Vue, Svelte, Solid and Preact components, and the shim hole for `.vue` and `.svelte` files. Each `@ts-expect-error` is a negative control | `../../../../node_modules/.bin/tsc -p frameworks-typing` |
 | `results-*.txt` | The output of each script, as run on 2026-10-10 | — |
 
 `hydrate.tsx`, `view-loading.ts` and `express-contract.ts` take an optional

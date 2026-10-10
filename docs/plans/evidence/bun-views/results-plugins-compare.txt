@@ -1,0 +1,11 @@
+$ NODE_ENV=production bun plugins-compare.ts
+bun 1.4.3 (bbdc5a519), NODE_ENV=production, 300 iterations per case
+vue-ours: cold load 283 ms; 200 cards, 99466 bytes; render p50 0.63 ms, p90 1.07 ms; client build OK in 35 ms, 18.2 KiB
+vue-bun-plugin-vue3: cold load 62 ms; 200 cards, 99466 bytes; render p50 1.38 ms, p90 2.94 ms; client build OK in 32 ms, 18.1 KiB
+svelte-ours: cold load 63 ms; 200 cards, 97840 bytes, whitespace between tags true; render p50 0.33 ms, p90 0.65 ms; client build OK in 27 ms, 48.7 KiB
+svelte-official: cold load 99 ms; 200 cards, 102259 bytes, whitespace between tags true; render p50 0.37 ms, p90 0.87 ms; client build OK in 30 ms, 48.7 KiB
+svelte-async: cold load 64 ms; 200 cards, 97840 bytes, whitespace between tags true; render p50 0.70 ms, p90 0.90 ms; client build OK in 34 ms, 48.7 KiB
+  AsyncPage: sync read throws "Svelte error: await_invalid
+Encountered asynchronous work while rendering synchronously.
+h"; awaited after 51 ms: data true, fallback false, head "<!--1jzai4e--><!----><title>T</title>"
+  AsyncBoundary: sync body "<!--[--><main><h1>T</h1> <!--[!--><p id=\"recs-loading\">Loadi"; awaited after 0 ms: data false, fallback true, head ""

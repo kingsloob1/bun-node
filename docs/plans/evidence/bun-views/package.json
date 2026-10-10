@@ -1,0 +1,26 @@
+{
+  "name": "bun-views-evidence",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@babel/core": "^7",
+    "@babel/preset-typescript": "^7",
+    "babel-preset-solid": "^1.9.16",
+    "bun-plugin-svelte": "^0.0.6",
+    "bun-plugin-vue3": "^1.1.0",
+    "express": "^5.1.0",
+    "preact": "^11.0.1",
+    "preact-render-to-string": "^6.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "solid-js": "^1.9.17",
+    "svelte": "^5",
+    "vue": "^3.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/express": "^5.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  }
+}
