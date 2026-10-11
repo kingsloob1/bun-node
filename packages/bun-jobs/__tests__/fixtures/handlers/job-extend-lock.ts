@@ -1,10 +1,10 @@
 import { defineProcessor } from "../../../lib/index";
 
 /**
- * Renews its lock three ways — `ctx.heartbeat()`, `job.extendLock()` and
- * `job.extendLock(data.ms)` — reporting each through `updateProgress` with the
- * instant it returned, and pausing after each so the test can read the lock's
- * expiry before the next one moves it.
+ * Renews its lock four ways — `ctx.heartbeat()`, `job.extendLock()`,
+ * `job.touch()` and `job.extendLock(data.ms)` — reporting each through
+ * `updateProgress` with the instant it returned, and pausing after each so the
+ * test can read the lock's expiry before the next one moves it.
  */
 export default defineProcessor<{ ms: number; pause: number }>(
   async (job, ctx) => {
@@ -21,6 +21,10 @@ export default defineProcessor<{ ms: number; pause: number }>(
       held: byDefault,
       at: Date.now(),
     });
+    await pause();
+
+    const byTouch = await job.touch();
+    await job.updateProgress({ step: "touch", held: byTouch, at: Date.now() });
     await pause();
 
     const byMs = await job.extendLock(job.data.ms);

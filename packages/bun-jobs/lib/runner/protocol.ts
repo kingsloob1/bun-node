@@ -143,9 +143,10 @@ export interface JobChannelRequest {
   line?: string;
   /**
    * For `"heartbeat"`: how long to extend the lock by, in milliseconds, as
-   * `job.extendLock(ms)` asked. Absent for `ctx.heartbeat()` — and from a
-   * child older than this field — in which case the worker renews for its own
-   * `lockDuration`, as its heartbeat always has.
+   * `job.extendLock(ms)` asked. Absent for `ctx.heartbeat()` and for a bare
+   * `job.extendLock()` / `job.touch()` — and from a child older than this
+   * field — in which case the worker renews for its own `lockDuration`, as
+   * its heartbeat always has.
    */
   ms?: number;
 }

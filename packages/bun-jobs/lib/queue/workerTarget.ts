@@ -1475,8 +1475,12 @@ async function valueFor(
     case "log":
       return await job.log(request.line ?? "");
     case "heartbeat":
-      // No duration: `ctx.heartbeat()`, or a child that predates `ms` —
-      // renew for the worker's own lockDuration, as before.
+      // No duration: `ctx.heartbeat()`, a bare `job.extendLock()` /
+      // `job.touch()`, or a child that predates `ms` — renew for this
+      // worker's own lockDuration, the one source of that number. A lost lock
+      // therefore aborts the attempt here as the worker's heartbeat would,
+      // where in-process a bare call only answers `false` and leaves that to
+      // the next heartbeat.
       if (request.ms === undefined) {
         await context.heartbeat();
         return !signal.aborted;
@@ -1488,7 +1492,8 @@ async function valueFor(
       return (
         (await job.extendLock(
           // A non-number (NaN arrives as null over JSON) falls back to
-          // extendLock's own default, as it would in-process.
+          // extendLock's own default — this worker's lockDuration, through
+          // the owned view's hook — as it would in-process.
           typeof request.ms === "number" ? request.ms : undefined,
         )) && !signal.aborted
       );

@@ -765,7 +765,7 @@ The processor receives the [`Job`](#the-job-api) and a `ProcessorContext`:
 | `logger` | `Logger` | A logger bound to the job's ids. |
 | `workerId` | `string` | The worker's id. |
 | `attempt` | `number` | The attempt number, starting at 1. |
-| `heartbeat()` | `() => Promise<void>` | Extends the lock now, for a step longer than `lockDuration`. |
+| `heartbeat()` | `() => Promise<void>` | Extends the lock now, by `lockDuration`, for a step longer than `lockDuration`. |
 | `log(line)` | `(line) => Promise<number>` | Appends to the job's persistent log, and returns how many lines it keeps. |
 
 Examples:
@@ -1244,7 +1244,7 @@ with a job answer `this` type, or `null`: a job narrowed by a
 | `promote()` | Makes a delayed or retry-pending job claimable now, and emits and publishes `promoted`. |
 | `retry({ resetAttempts })` | Returns a finished job to the queue, and emits and publishes `retried`. |
 | `remove()` | Removes the job, and emits and publishes `removed`. Refused while it is active. |
-| `extendLock(ms?)` / `touch(ms?)` | Extends the lock, from the job the processor was handed only. Returns `false` once the lock is no longer yours, and always from any other view. |
+| `extendLock(ms?)` / `touch(ms?)` | Extends the lock by `ms`, or by the claiming worker's `lockDuration` when none is given, from the job the processor was handed only. Returns `false` once the lock is no longer yours, and always from any other view. |
 | `refresh()` | Re-reads the job, or returns `null` if it is gone. |
 | `getChildrenValues()` / `getChildrenFailures()` | Flow results, keyed `queue:id`. |
 | `toJSON()` | The stored record. |

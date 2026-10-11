@@ -85,6 +85,13 @@ export interface JobHooks {
    */
   onFail?: (error: UnrecoverableJobError) => boolean;
   /**
+   * The claiming worker's `lockDuration`, read at each call so a changed
+   * configuration applies: how long a bare `extendLock()` / `touch()` renews
+   * the lock for. Present only on the view a worker hands its processor; when
+   * absent, a bare call renews for `DEFAULT_LOCK_DURATION`.
+   */
+  lockDuration?: () => number;
+  /**
    * Told after `remove()`, `promote()`, `retry()` or an outside `fail()` took
    * effect, so the queue or worker that made this view emits and publishes
    * what its own method of the same name would.
@@ -301,6 +308,11 @@ export class Job<TData = unknown, TResult = unknown> {
    * Only the processor's own view can: any other view of an active job
    * carries its lock token too, and renewing a lock one does not hold would
    * keep a stalled job from ever being recovered. It answers `false`.
+   *
+   * @param ms How long the lock lives from now, in milliseconds. Defaults to
+   *   the claiming worker's `lockDuration` — what its own heartbeat renews for
+   *   — so a bare call never stretches a short lock past the worker's stall
+   *   detection.
    */
   async extendLock(ms?: number): Promise<boolean> {
     if (!this.#owned || !this.#record.lockToken) {
@@ -311,7 +323,7 @@ export class Job<TData = unknown, TResult = unknown> {
       this.#ref,
       this.id,
       this.#record.lockToken,
-      ms ?? DEFAULT_LOCK_DURATION,
+      ms ?? this.#hooks.lockDuration?.() ?? DEFAULT_LOCK_DURATION,
       Date.now(),
     );
   }
@@ -556,6 +568,9 @@ export class Job<TData = unknown, TResult = unknown> {
   /**
    * Extends the lock, as {@link Job.extendLock} does, and only from the
    * processor's own view; the name Agenda uses.
+   *
+   * @param ms How long the lock lives from now, in milliseconds. Defaults to
+   *   the claiming worker's `lockDuration`.
    */
   async touch(ms?: number): Promise<boolean> {
     return await this.extendLock(ms);

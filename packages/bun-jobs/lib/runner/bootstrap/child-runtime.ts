@@ -29,7 +29,6 @@ import {
   serializeError,
 } from "@kingsleyweb/bun-common/lib/utils/native";
 import { displayRepeatKey } from "../../queue/options";
-import { DEFAULT_LOCK_DURATION } from "../../shared/constants";
 import {
   JobTimeoutError,
   ProtocolError,
@@ -533,11 +532,13 @@ function isolatedJob(
   };
 
   const log = async (line: string) => await ask("log", { line: String(line) });
-  // Exactly what `Job.extendLock(ms)` does: the duration asked for, or
-  // `DEFAULT_LOCK_DURATION` when none was, never the worker's `lockDuration`.
-  // It used to ask for a plain heartbeat and so ignored `ms` altogether.
+  // What `Job.extendLock(ms)` does: the duration asked for, or the worker's
+  // `lockDuration` when none was. A bare call sends no `ms`, and the worker
+  // renews for its own `lockDuration`, as for `ctx.heartbeat()`: the worker
+  // holds that number (and may have it changed while the job runs), so the
+  // child never carries a copy of it.
   const extendLock = async (ms?: number) =>
-    await ask("heartbeat", { ms: ms ?? DEFAULT_LOCK_DURATION });
+    await ask("heartbeat", ms === undefined ? undefined : { ms });
 
   // Built exactly as `Job.fail()` builds it — the message, the job's id, and
   // the reason as `cause` when it is an `Error` — so the stored failure reads

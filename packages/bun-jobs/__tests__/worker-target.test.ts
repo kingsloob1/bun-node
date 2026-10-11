@@ -336,10 +336,14 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
       );
     }, 30_000);
 
-    it("extends the lock by what extendLock(ms) asks, and heartbeat by lockDuration", async () => {
+    it("extends the lock by what extendLock(ms) asks, and a bare extendLock, touch or heartbeat by lockDuration", async () => {
       // The worker's own renewal is pushed out of the way, and its
-      // lockDuration made distinct from both the default and the asked-for
-      // duration, so each of the three is visible in the lock's expiry.
+      // lockDuration made distinct from both DEFAULT_LOCK_DURATION and the
+      // asked-for duration, so which one each call used is visible in the
+      // lock's expiry. A bare `extendLock()` or `touch()` renews for the
+      // claiming worker's lockDuration, as its heartbeat does: on develop it
+      // stretched the lock to DEFAULT_LOCK_DURATION whatever the worker was
+      // configured with.
       const lockDuration = 10_000;
       const { queue, worker, driver } = setup(mode, "job-extend-lock", {
         lockDuration,
@@ -387,8 +391,11 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
         expect(byStep[step]?.ahead).toBeGreaterThan(duration - 2_000);
       };
       expectAhead("heartbeat", lockDuration);
-      expectAhead("default", DEFAULT_LOCK_DURATION);
+      expectAhead("default", lockDuration);
+      expectAhead("touch", lockDuration);
       expectAhead("ms", 60_000);
+      // Distinct, or the assertions above could not tell the two apart.
+      expect(lockDuration).not.toBe(DEFAULT_LOCK_DURATION);
     }, 30_000);
 
     it("fails a job for good with job.fail(), however it then returns", async () => {
