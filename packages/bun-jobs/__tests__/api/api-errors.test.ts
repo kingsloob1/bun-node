@@ -25,6 +25,7 @@ import {
   ConfigError,
   DriverError,
   InvalidHandlerError,
+  JobsClosedError,
   JobsError,
   JobTimeoutError,
   LockLostError,
@@ -145,6 +146,13 @@ describe("the §3.3 mapping", () => {
       error: () => new WorkerClosedError(SECRET),
       status: 503,
       code: "WORKER_CLOSED",
+    },
+    {
+      name: "JobsClosedError",
+      error: () => new JobsClosedError(SECRET, "queue()"),
+      status: 503,
+      code: "JOBS_CLOSED",
+      retryAfter: "1",
     },
     {
       name: "RunnerStoppedError",

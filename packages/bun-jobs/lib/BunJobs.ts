@@ -56,7 +56,11 @@ import { JobDraft } from "./queue/JobDraft";
 import { JOB_ROUTER } from "./queue/jobRouter";
 import { BunRunnerManager } from "./runner/index";
 import { mapConcurrent } from "./shared/bounded";
-import { ConfigError, NotSupportedError } from "./shared/errors";
+import {
+  ConfigError,
+  JobsClosedError,
+  NotSupportedError,
+} from "./shared/errors";
 import { assertDateParser, parseDuration } from "./shared/humanTime";
 import { assertNamespace, assertSegment } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
@@ -411,11 +415,12 @@ export class BunJobs<
   /** The shared units among them, each with its summon group's name. */
   readonly #sharedUnits = new Map<SummonController, string>();
   /**
-   * The `summon` option expanded, by queue: the entry each queue's
-   * controller is built from (a shared unit's under each of its queues), for
-   * `summonController()` to find a queue's policy in.
+   * The kinds of thing `close()` has started closing, so is no longer built
+   * here. Each is added just before `close()` takes the list of that kind it
+   * closes, so whatever is built is either on that list or refused with
+   * {@link JobsClosedError} — never left running. Only grows.
    */
-  readonly #summonEntries: ReadonlyMap<string, SummonEntry>;
+  readonly #closing = new Set<ClosingKind>();
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: RegistryWorker<TJobs> | undefined;
   /**
@@ -483,11 +488,6 @@ export class BunJobs<
     // Expanded (and refused, for a duplicate or an empty group) before any
     // controller exists, so a bad option starts nothing.
     const entries = expandSummonOption(options.summon);
-    this.#summonEntries = new Map(
-      entries.flatMap((entry) =>
-        entry.queues.map((queue): [string, SummonEntry] => [queue, entry]),
-      ),
-    );
     try {
       for (const entry of entries) {
         this.#buildSummonController(entry);
@@ -547,10 +547,13 @@ export class BunJobs<
   /**
    * Creates a runner in this namespace, registered with {@link runners} so
    * `startAll()`/`stopAll()` reach it.
+   *
+   * @throws {JobsClosedError} once `close()` has reached the runners.
    */
   runner<TArgs = unknown, TResult = unknown>(
     options: Omit<BunRunnerOptions<TArgs>, "namespace" | "driver">,
   ): BunRunner<TArgs, TResult> {
+    this.#assertOpen("work", "runner()");
     this.#followInNotifiers("runner", options.id);
     return this.runners.add<TArgs, TResult>({
       ...this.#runnerDefaults,
@@ -583,6 +586,9 @@ export class BunJobs<
    * that name's payload, and reads are discriminated by name. That is the
    * queue every defined job is added to, so that vocabulary is what it
    * carries.
+   *
+   * Throws {@link JobsClosedError} once `close()` has reached the queues — not
+   * before, so a job still running while the workers close can add jobs.
    *
    * Every other name answers with a plain queue, as on a context with no map:
    * `jobs.queue<Payload>("mail")` names its types. A name only known at
@@ -620,6 +626,7 @@ export class BunJobs<
     name: string,
     options?: Omit<BunQueueOptions, "namespace" | "driver">,
   ): BunQueue<any, any, any, any> {
+    this.#assertOpen("queue", "queue()");
     const existing = this.#queues.get(name);
     if (existing) {
       if (options !== undefined) {
@@ -686,9 +693,9 @@ export class BunJobs<
   }
 
   /**
-   * The summon controller for a queue, created on first use — from `policy`
-   * when given, else from this context's `summon` option — and returned as
-   * it is afterwards (a `policy` passed then is ignored).
+   * The summon controller for a queue: the one this context's `summon`
+   * option built with it, or else one created on first use from `policy` —
+   * and returned as it is afterwards (a `policy` passed then is ignored).
    *
    * ```ts
    * const controller = jobs.summonController("emails", {
@@ -709,21 +716,23 @@ export class BunJobs<
    *   `policy` is itself a shared unit's (one is written in the `summon`
    *   option, or built with `new SummonController({ queues, … })`); or when
    *   the policy or driver cannot summon (see `SummonController`).
+   * @throws {JobsClosedError} once `close()` has been called, even for a
+   *   queue whose controller it is still closing.
    */
   summonController(queue: string, policy?: SummonPolicy): SummonController {
+    this.#assertOpen("summon", "summonController()");
+    // Until close() begins, every queue the summon option names has its
+    // controller — the constructor built them all, and only close() clears
+    // them — so a queue without one has no entry either: only a `policy`
+    // can build it.
     const existing = this.#summonControllers.get(queue);
-    const entry = this.#summonEntries.get(queue);
     if (policy !== undefined) {
       // Q7: a queue a shared unit serves takes no policy of its own — never
       // a second controller beside the unit, and never the unit silently.
       const unit =
-        existing === undefined
-          ? entry?.shared === true
-            ? (sharedUnitGroup(entry.policy) ?? "")
-            : undefined
-          : this.#sharedUnits.get(existing);
-      if (unit !== undefined) {
-        const queues = existing === undefined ? entry!.queues : existing.queues;
+        existing === undefined ? undefined : this.#sharedUnits.get(existing);
+      if (existing !== undefined && unit !== undefined) {
+        const queues = existing.queues;
         throw new ConfigError(
           `Queue "${queue}" is served by summon group "${unit}"'s shared unit (group.unit "shared", for ${queues.join(", ")}), so summonController() takes no policy for it: change the unit's entry in the summon option — its overrides.${queue} for jobsPerWorker and maxWorkers — or take "${queue}" out of its queues to give it a controller of its own`,
           { queue, group: unit, queues: [...queues] },
@@ -740,21 +749,18 @@ export class BunJobs<
     if (existing) {
       return existing;
     }
-    if (policy !== undefined) {
-      return this.#buildSummonController({
-        queues: [queue],
-        policy,
-        shared: false,
-        at: "summonController()",
-      });
-    }
-    if (entry === undefined) {
+    if (policy === undefined) {
       throw new ConfigError(
         `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,
         { queue },
       );
     }
-    return this.#buildSummonController(entry);
+    return this.#buildSummonController({
+      queues: [queue],
+      policy,
+      shared: false,
+      at: "summonController()",
+    });
   }
 
   /**
@@ -805,6 +811,10 @@ export class BunJobs<
     }
     for (const queue of controller.queues) {
       this.#summonControllers.set(queue, controller);
+      // Only a controller `summonController(queue, policy)` builds can find
+      // its queue here already: the summon option's, every shared unit among
+      // them, are built in the constructor, before any queue exists, and
+      // nothing is built once close() begins. Later queues attach in queue().
       const existingQueue = this.#queues.get(queue);
       if (existingQueue) {
         controller[ATTACH_QUEUE](existingQueue);
@@ -871,12 +881,17 @@ export class BunJobs<
     return { metrics: merged as MetricsOptions };
   }
 
-  /** Creates a worker consuming a queue in this namespace. */
+  /**
+   * Creates a worker consuming a queue in this namespace.
+   *
+   * @throws {JobsClosedError} once `close()` has reached the workers.
+   */
   worker<TData = unknown, TResult = unknown>(
     name: string,
     processor: JobProcessor<TData, TResult> | string | URL,
     options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
   ): BunQueueWorker<TData, TResult> {
+    this.#assertOpen("work", "worker()");
     const ordinal = (this.#workerOrdinals.get(name) ?? 0) + 1;
     this.#workerOrdinals.set(name, ordinal);
 
@@ -1244,6 +1259,8 @@ export class BunJobs<
    * One worker for every name, dispatching on `job.name` — which is why the
    * definitions live in one place. Calling it twice is a no-op rather than a
    * second consumer.
+   *
+   * @throws {JobsClosedError} once `close()` has reached the workers.
    */
   async start(
     options?: Omit<
@@ -1251,6 +1268,7 @@ export class BunJobs<
       "namespace" | "driver" | "concurrency"
     > & { concurrency?: number },
   ): Promise<RegistryWorker<TJobs>> {
+    this.#assertOpen("work", "start()");
     if (this.#registryWorker) {
       return this.#registryWorker;
     }
@@ -1460,6 +1478,15 @@ export class BunJobs<
    * Stops the runners and workers created here and closes the queues, then
    * the driver if this context built it. A driver passed in is left open —
    * whoever created it may still be using it.
+   *
+   * Nothing is built here that this would not close: in the order it closes
+   * them — summon controllers, notifiers, runners and workers, queues — each
+   * kind is refused with {@link JobsClosedError} from the moment it is
+   * reached. So `summonController()` is refused from the call on, while a job
+   * still running as the workers close can add jobs (`jobs.now()`,
+   * `queue()`), to a queue then closed with the rest. After it resolves,
+   * `queue()`, `worker()`, `runner()`, `notifier()`, `start()`,
+   * `summonController()` and the verbs that reach a queue all throw it.
    */
   async close(options?: { timeout?: number }): Promise<void> {
     // Held until everything below has settled: the workers each hold the
@@ -1492,10 +1519,18 @@ export class BunJobs<
    * Hears only what is published: set `publishEvents` here, or `publish` on
    * the queues, workers and runners concerned, in whichever processes produce
    * the events. Closed with the context.
+   *
+   * @throws {JobsClosedError} once `close()` has reached the notifiers.
    */
   async notifier(options?: JobsNotifierOptions): Promise<JobsNotifier> {
+    this.#assertOpen("notifier", "notifier()");
     const notifier = new JobsNotifier(this.driver, this.namespace, options);
     await notifier.start();
+    if (this.#closing.has("notifier")) {
+      // close() took its list of notifiers while this one was starting.
+      await notifier.close();
+      throw new JobsClosedError(this.namespace, "notifier()");
+    }
     this.#notifiers.add(notifier);
 
     // What this context already created, followed now rather than on the next
@@ -1554,8 +1589,29 @@ export class BunJobs<
     }
   };
 
+  /**
+   * Refuses to build a `kind` of thing once `close()` has taken its list of
+   * them to close: one built after that would never be closed.
+   *
+   * @throws {JobsClosedError} naming `method`.
+   */
+  #assertOpen(
+    /** The kind `method` builds. */
+    kind: ClosingKind,
+    /** The public method asked, as `"queue()"`. */
+    method: string,
+  ): void {
+    if (this.#closing.has(kind)) {
+      throw new JobsClosedError(this.namespace, method);
+    }
+  }
+
   /** The body of {@link BunJobs.close}, under its hold on the process. */
   async #close(options?: { timeout?: number }): Promise<void> {
+    // Each kind is refused from the moment its list is taken below (see
+    // #closing): a queue only once the workers are done, so a job still
+    // running while they close can add jobs, to a queue closed with the rest.
+    this.#closing.add("summon");
     // First, so no check is in flight when the queues and the driver go.
     // Each once: a shared unit is registered under every queue it serves.
     await Promise.allSettled(
@@ -1566,16 +1622,19 @@ export class BunJobs<
     this.#summonControllers.clear();
     this.#sharedUnits.clear();
 
+    this.#closing.add("notifier");
     await Promise.allSettled(
       [...this.#notifiers].map((notifier) => notifier.close()),
     );
     this.#notifiers.clear();
 
+    this.#closing.add("work");
     await Promise.allSettled([
       this.runners.stopAll(options),
       ...[...this.#workers].map((worker) => worker.close(options)),
     ]);
 
+    this.#closing.add("queue");
     await Promise.allSettled(
       [...this.#queues.values()].map((queue) => queue.close()),
     );
@@ -1703,6 +1762,13 @@ function readProcessEvery(interval: number | string): number {
 
 /** The options `BunJobs.queue()` takes: a queue's, less what the context sets. */
 type QueueCreateOptions = Omit<BunQueueOptions, "namespace" | "driver">;
+
+/**
+ * What `BunJobs.close()` closes, one kind at a time and in this order: each
+ * kind is refused from the moment `close()` takes the list of it to close.
+ * `"work"` is the runners and workers, closed together.
+ */
+type ClosingKind = "summon" | "notifier" | "work" | "queue";
 
 /**
  * Queue options that are objects with behaviour rather than data — a logger,

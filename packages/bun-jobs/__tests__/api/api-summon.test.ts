@@ -35,6 +35,7 @@ import {
   BunQueue,
   ConfigError,
   defineSummoner,
+  JobsClosedError,
 } from "../../lib/index";
 import { setReservedState } from "../../lib/queue/windows";
 import { queueEvent } from "../../lib/shared/events";
@@ -529,16 +530,21 @@ describe("finding the controller", () => {
     );
     expect((await h.call("GET", "/queues/plain/summon")).status).toBe(409);
     expect(build).not.toHaveBeenCalled();
-    // The lookup answers only what exists: nothing for `plain`, and nothing
-    // once the context is closed — where `summonController()` would build one
-    // from the `summon` option (the negative control).
+    // The lookup answers only what exists: nothing for `plain` until
+    // `summonController()` builds one there (the negative control), and
+    // nothing once the context is closed — when `summonController()` builds
+    // nothing either.
     expect(jobs[FIND_SUMMON_CONTROLLER]("plain")).toBeUndefined();
     build.mockRestore();
+    const built = jobs.summonController("plain", {
+      summoner: async () => {},
+      triggers: { poll: false },
+    });
+    expect(jobs[FIND_SUMMON_CONTROLLER]("plain")).toBe(built);
     await jobs.close();
     expect(jobs[FIND_SUMMON_CONTROLLER]("work")).toBeUndefined();
-    const built = jobs.summonController("work");
-    expect(jobs[FIND_SUMMON_CONTROLLER]("work")).toBe(built);
-    await built.close();
+    expect(jobs[FIND_SUMMON_CONTROLLER]("plain")).toBeUndefined();
+    expect(() => jobs.summonController("work")).toThrow(JobsClosedError);
   });
 
   it("documents 409 SUMMON_NOT_CONFIGURED and 503 DRIVER_ERROR, and answers the 503 once the context is closed", async () => {

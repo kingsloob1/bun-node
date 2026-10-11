@@ -14,6 +14,7 @@ import {
   ConfigError,
   DriverError,
   InvalidHandlerError,
+  JobsClosedError,
   JobsError,
   JobTimeoutError,
   LockLostError,
@@ -92,6 +93,7 @@ export const API_ERROR_STATUS = {
   SERIALIZATION: 400,
   QUEUE_CLOSED: 503,
   WORKER_CLOSED: 503,
+  JOBS_CLOSED: 503,
   QUEUE_FULL: 503,
   DRIVER_ERROR: 503,
   RUNNER_STOPPED: 409,
@@ -157,6 +159,7 @@ const TITLES: Record<string, string> = {
   SERIALIZATION: "Value is not JSON-serialisable",
   QUEUE_CLOSED: "Queue is closed",
   WORKER_CLOSED: "Worker is closed",
+  JOBS_CLOSED: "Jobs context is closed",
   RUNNER_STOPPED: "Runner is stopped",
   LOCK_UNAVAILABLE: "Lock is held elsewhere",
   LOCK_LOST: "Lock was lost",
@@ -490,6 +493,15 @@ function classify(error: unknown): Classified {
   }
   if (error instanceof WorkerClosedError) {
     return { status: 503, code: "WORKER_CLOSED" };
+  }
+  if (error instanceof JobsClosedError) {
+    // The `jobs` the API was given has closed, so it builds no queue for a
+    // request: this process is shutting down, and another may answer.
+    return {
+      status: 503,
+      code: "JOBS_CLOSED",
+      headers: { "Retry-After": "1" },
+    };
   }
   if (error instanceof QueueFullError) {
     return { status: 503, code: "QUEUE_FULL", headers: { "Retry-After": "1" } };
