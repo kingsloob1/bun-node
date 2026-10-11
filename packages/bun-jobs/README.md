@@ -8138,9 +8138,23 @@ bun scripts/setup-databases.ts --print-env # just the env vars for the suites
 Then, in `packages/bun-jobs`:
 
 ```bash
-bunx eslint .    # lint the whole package; 0 errors
-bun test         # tests
+bunx eslint .          # lint the whole package; 0 errors
+bun run test           # tests, one worker per core
+bun run test:seeded    # the order-leak check: serial shards, no database URLs
 ```
+
+`bun run test` runs the files in parallel, each in a fresh global, so it
+cannot see one test file leaking state into another. `bun run test:seeded`
+is the check for that: it deals the files into 4 groups by a shuffle seeded
+with `--seed` (picked and printed when not given), and runs each group as one
+serial `bun test --randomize --seed=N` process, all four at once. A different
+seed puts different files together. The database URLs below are removed for
+it unless `--with-databases` is given; its summary prints each group's
+command, to reproduce a failure serially. The groups are balanced by the
+per-file durations in `bun-timings.seeded.json`;
+`bun run test:seeded --update-timings` refreshes them. Shard logs go under
+`~/.cache/bun-node/test-seeded/` (the newest 20 runs are kept), or
+`--log-dir`.
 
 The setup script is safe to run repeatedly. It never reinstalls a server, and
 it configures one only when connecting with the expected credentials fails.

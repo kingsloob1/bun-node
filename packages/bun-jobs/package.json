@@ -133,6 +133,7 @@
     "bun-version": "bun --version",
     "prepack": "bun scripts/build-declarations.ts",
     "test": "bun test --check --parallel --timings=bun-timings.json",
+    "test:seeded": "bun scripts/test-seeded.ts",
     "test:serial": "bun test --check",
     "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
     "check": "bun check"
