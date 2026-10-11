@@ -439,12 +439,21 @@ function defaultLogDir(seed: number): string {
     "test-seeded",
   );
   mkdirSync(parent, { recursive: true });
+  // Stat each run once, dropping any that vanished meanwhile: a run started
+  // beside this one may prune the same directories.
   const runs = readdirSync(parent, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => join(parent, entry.name))
-    .sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
+    .flatMap((entry) => {
+      const path = join(parent, entry.name);
+      try {
+        return [{ path, mtimeMs: statSync(path).mtimeMs }];
+      } catch {
+        return [];
+      }
+    })
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const old of runs.slice(0, Math.max(0, runs.length - (KEPT_RUNS - 1))))
-    rmSync(old, { recursive: true, force: true });
+    rmSync(old.path, { recursive: true, force: true });
   const time = new Date()
     .toISOString()
     .replace(/[-:]/g, "")
@@ -609,6 +618,20 @@ function signalGroup(child: Subprocess, signal: NodeJS.Signals): void {
   }
 }
 
+/**
+ * Whether any process is left in a shard's group. The leader can exit while a
+ * test's child that handles or ignores the signal (a worker's graceful close
+ * on SIGTERM) lives on in the group, so the leader alone is not the answer.
+ */
+function groupAlive(child: Subprocess): boolean {
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The CLI: type-check, partition, run every shard at once, summarise. */
 async function main(): Promise<number> {
   const options = parseCli(process.argv.slice(2));
@@ -683,16 +706,14 @@ async function main(): Promise<number> {
       interrupted = true;
       const stopping = [...children];
       for (const child of stopping) signalGroup(child, signal);
-      // Wait for them, then make sure: a group still there after 5 s is killed.
-      const exited = Promise.all(stopping.map((child) => child.exited));
-      const late = await Promise.race([
-        exited.then(() => false),
-        Bun.sleep(5_000).then(() => true),
-      ]);
-      if (late) {
-        for (const child of stopping) signalGroup(child, "SIGKILL");
-        await exited;
-      }
+      // Wait up to 5 s for every GROUP to empty, not just its leader, then
+      // SIGKILL whatever is left in it.
+      const deadline = performance.now() + 5_000;
+      while (stopping.some(groupAlive) && performance.now() < deadline)
+        await Bun.sleep(100);
+      for (const child of stopping)
+        if (groupAlive(child)) signalGroup(child, "SIGKILL");
+      await Promise.all(stopping.map((child) => child.exited));
       console.error(
         `test-seeded: ${signal}; stopped ${stopping.length} shard(s). Logs in ${options.logDir}`,
       );
