@@ -23,7 +23,7 @@ import {
 } from "../helpers/remoteExecutor";
 
 /**
- * Idempotency and fencing (`worker-runtimes.md` §5.8, `remote-transports.md`
+ * Idempotency and fencing (`worker-runtimes/README.md` §5.8, `remote-transports.md`
  * §4.9): a redelivered attempt is answered from the store rather than run
  * again, and an attempt from an older claim is refused `STALE_FENCE`. Each
  * mechanism has a control that turns it off and shows the double run it

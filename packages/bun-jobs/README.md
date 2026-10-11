@@ -3125,9 +3125,9 @@ is as privileged as root on its host (rootless Docker or Podman avoids that).
 A job can still return a wrong result for its own attempt, and read its own
 input. Which platforms can run a container inside a worker at all (EC2 and
 VMs can; Lambda, Fargate, Cloud Run and most PaaS cannot) is in the
-[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-gateway-and-isolation.md#56-platform-reality),
+[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/worker-gateway-and-isolation.md#56-platform-reality),
 with its sources in
-[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/evidence/worker-gateway-and-isolation/platform-isolation.md).
+[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/evidence/worker-gateway-and-isolation/platform-isolation.md).
 
 **Fixed, not options**: `--read-only`, `--cap-drop=ALL`, `--ipc=none`,
 `--security-opt=no-new-privileges`, `--init` (a small init as PID 1 —
@@ -3697,7 +3697,7 @@ untargeted question otherwise, so a per-queue allow-list reads and resets a
 group whose members it covers.
 
 **Status without a local controller** (`local: false`, advertised by
-`/meta.features.summonRemoteStatus`). Every claim persists its controller's
+`/meta.features.summonStoredStatus`). Every claim persists its controller's
 summoner `kind`, budget limits (or that the budget was off) and group on the
 queue's summon state, so any API process on the namespace can show a queue
 whose controller runs elsewhere: the state as it is, with no `summoner`, the
@@ -5898,7 +5898,7 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-`providers`, `summonResetBudget`, `summonList`, `summonRemoteStatus`, and `analytics` beside `features` for what the analytics routes
+`providers`, `summonResetBudget`, `summonList`, `summonStoredStatus`, and `analytics` beside `features` for what the analytics routes
 can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
@@ -6955,7 +6955,7 @@ cannot" from "you may not":
 | `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
 | `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
-| `summonRemoteStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
+| `summonStoredStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under
@@ -7050,7 +7050,7 @@ How the summon pieces fit a deployment: where a
 runs, how long each platform gives it to stop, and how a platform's own scaler
 reads the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput)
 instead. The design and its evidence are in the
-[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/summon-compute.md)
+[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/summon-compute/README.md)
 (sections cited as §).
 
 **How far each recipe is checked.** Code written against this package is

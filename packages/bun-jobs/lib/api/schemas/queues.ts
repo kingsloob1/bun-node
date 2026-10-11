@@ -730,7 +730,7 @@ export const SummonStatusSchema = s.named(
       ),
       local: s.boolean({
         description:
-          "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted; for a shared unit, the group's own limits, since a stricter `budget` in its policy is known only to its controller), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. A queue a shared unit in another process serves is answered with the unit's status, read from its group's state, when the unit claimed at or after the queue's own summon state did. Advertised by `/meta.features.summonRemoteStatus`.",
+          "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted; for a shared unit, the group's own limits, since a stricter `budget` in its policy is known only to its controller), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. A queue a shared unit in another process serves is answered with the unit's status, read from its group's state, when the unit claimed at or after the queue's own summon state did. Advertised by `/meta.features.summonStoredStatus`.",
       }),
       inert: s.boolean({
         description:

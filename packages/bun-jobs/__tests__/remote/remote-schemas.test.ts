@@ -11,7 +11,7 @@ import {
 } from "../../lib/remote/schemas";
 
 /**
- * Every envelope (`worker-runtimes.md` §5.3–§5.5) and session message
+ * Every envelope (`worker-runtimes/README.md` §5.3–§5.5) and session message
  * (`remote-transports.md` §4.1–§4.2) validates its documented example, keeps
  * unknown fields, and refuses what it must. The examples are the plans' own,
  * with only their elisions (`…`) filled in.
@@ -565,7 +565,7 @@ describe("negative cases", () => {
   });
 
   it("an outcome with no op, or keyed by id rather than job", () => {
-    // `worker-runtimes.md` §5.5's outcome predates `remote-transports.md`
+    // `worker-runtimes/README.md` §5.5's outcome predates `remote-transports.md`
     // §4.2, which makes outcomes the `result`/`fail` bodies; the newer wins.
     const legacy = {
       ...ENVELOPES["invoke-result"],

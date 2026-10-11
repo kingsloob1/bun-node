@@ -29,7 +29,7 @@ export interface SummonGroupsSectionProps {
  * linked to its Summon tab.
  *
  * The screen renders it only where the API reads summon state from storage
- * (`features.summonRemoteStatus`) and the caller may list queues
+ * (`features.summonStoredStatus`) and the caller may list queues
  * (`queues.list`, the route's action). Each group arrives redacted to the
  * member queues the caller may read, so a row never claims a member count.
  *

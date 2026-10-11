@@ -8,8 +8,8 @@
  * bundle it. Every value here is a **wire string**: once an executor speaks
  * it, changing it is as hard as changing a stored value.
  *
- * Designed in `docs/plans/worker-runtimes.md` §5.3–§5.6 and
- * `docs/plans/remote-transports.md` §4.1–§4.2, §4.10.
+ * Designed in `docs/plans/worker-runtimes/README.md` §5.3–§5.6 and
+ * `docs/plans/worker-runtimes/remote-transports.md` §4.1–§4.2, §4.10.
  */
 
 /**
@@ -41,7 +41,7 @@ export const REMOTE_HEADERS = Object.freeze({
  *
  * The first twenty are the session messages of `remote-transports.md` §4.1.
  * The last three exist only on the HTTP exchange shape: `handshake` (the
- * `GET` answer, `worker-runtimes.md` §5.4), `invoke-result` (the unary invoke
+ * `GET` answer, `worker-runtimes/README.md` §5.4), `invoke-result` (the unary invoke
  * answer, §5.5) and `cancel-result` (the cancel answer, §5.3).
  */
 export const REMOTE_OPS = [

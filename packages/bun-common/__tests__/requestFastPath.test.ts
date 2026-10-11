@@ -6,7 +6,7 @@ import { BunRequest } from "../lib/BunRequest";
 import { testServer } from "./helpers";
 
 /**
- * The bodiless-request fast path (PR-2 of docs/plans/bun-native-routes.md):
+ * The bodiless-request fast path (PR-2 of docs/plans/bun-native-routes/README.md):
  * a request with no body finishes its parse while it is built, so
  * `BunRequest.init` returns it without a promise. It must reach exactly the
  * state the full read reaches, which these tests take from the same request

@@ -96,7 +96,7 @@ export function SummonGroupCard({ group, queue, kind }: SummonGroupCardProps) {
 /**
  * The group's name, linked to its row on the Summoning screen where that
  * screen is routed (`features.summonList`, `queues.list`) and lists groups
- * (`features.summonRemoteStatus`); plain text elsewhere, since the link
+ * (`features.summonStoredStatus`); plain text elsewhere, since the link
  * would land on a page without it.
  */
 function GroupName({
@@ -106,10 +106,10 @@ function GroupName({
   name: string;
 }) {
   const listed = useFeature("summonList") === true;
-  const remote = useFeature("summonRemoteStatus") === true;
+  const stored = useFeature("summonStoredStatus") === true;
   // The untargeted map: what the nav, and so the routes, were built from.
   const canList = useUntargetedCanFn()("queues.list");
-  if (!(listed && remote && canList)) {
+  if (!(listed && stored && canList)) {
     return <span data-testid="summon-group-name">{name}</span>;
   }
   return (

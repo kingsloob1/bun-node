@@ -75,7 +75,7 @@
     "__tests__/registry-create.test.ts": 6677,
     "__tests__/runner-modes.test.ts": 6663,
     "__tests__/jobs-list-cursor.test.ts": 6525,
-    "__tests__/api/api-summon-remote.test.ts": 6437,
+    "__tests__/api/api-summon-stored.test.ts": 6437,
     "__tests__/job-fail-once.test.ts": 6357,
     "__tests__/worker-failure-landed.test.ts": 6204,
     "__tests__/fix-mongo.test.ts": 6054,

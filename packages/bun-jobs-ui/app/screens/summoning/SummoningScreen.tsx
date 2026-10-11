@@ -32,7 +32,7 @@ const SUMMONING_REFRESH_MS = POLL_INTERVAL_MS;
 /**
  * `/summon`: every summon controller in the API's process (`GET /summon`),
  * and, where the API reads summon state from storage
- * (`features.summonRemoteStatus`), every queue whose controller runs
+ * (`features.summonStoredStatus`), every queue whose controller runs
  * elsewhere (`local: false`: "Elsewhere", no actions), one row each — its queue (linked to the queue's Summon tab), the
  * summoner's kind and readiness, the last outcome and when, and the budget
  * left in each UTC window with when it resets, and an open circuit.
@@ -49,8 +49,9 @@ export function SummoningScreen() {
   const api = useApiClient();
   // `queues.list` is also what routes the queue screen, so every row links.
   const canList = useCan("queues.list");
-  // Whether the API also lists queues whose controller runs elsewhere.
-  const remote = useMeta().features.summonRemoteStatus === true;
+  // Whether the API reads summon state from storage, and so also lists the
+  // queues whose controller runs in another process.
+  const stored = useMeta().features.summonStoredStatus === true;
   const list = useQuery({
     queryKey: summonKeys.list,
     queryFn: ({ signal }) => listSummonControllers(api, signal),
@@ -83,7 +84,7 @@ export function SummoningScreen() {
         <EmptyState
           title="No summon controllers here"
           description={
-            remote
+            stored
               ? "No queue summons here: none has a controller in the API's own process, or summon state in the store that you may read."
               : "Summon controllers run in the API's own process, from its BunJobs context's summon option or jobs.summonController(). None runs in this one, so there is nothing to list. A controller running in another process is not listed."
           }
@@ -109,7 +110,7 @@ export function SummoningScreen() {
           </tbody>
         </Table>
       )}
-      {canList && remote && (
+      {canList && stored && (
         <SummonGroupsSection refetchInterval={SUMMONING_REFRESH_MS} />
       )}
     </div>

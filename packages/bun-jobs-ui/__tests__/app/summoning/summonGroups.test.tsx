@@ -18,7 +18,7 @@ setupDom();
 /**
  * The Summoning screen's summon groups (`GET /summon/groups`), under the
  * controllers table where the API reads summon state from storage
- * (`features.summonRemoteStatus`): one row per group — its budget, its shared
+ * (`features.summonStoredStatus`): one row per group — its budget, its shared
  * circuit per kind, and the member queues charged today — with `?group=`
  * marking one row and scrolling it into view. And a controller row's
  * "Circuit open" badge.
@@ -96,11 +96,11 @@ function groups(list: SummonGroupStatusDto[]): MockReply {
   return { body };
 }
 
-/** Meta with `summonRemoteStatus` set to `value`. */
+/** Meta with `summonStoredStatus` set to `value`. */
 function remote(value: boolean): MockReply {
   return {
     body: metaFixture({
-      features: { ...metaFixture().features, summonRemoteStatus: value },
+      features: { ...metaFixture().features, summonStoredStatus: value },
     }),
   };
 }
@@ -156,7 +156,7 @@ async function withScrollIntoView(
 }
 
 describe("the Summoning screen's summon groups", () => {
-  it("is absent, and the groups are not read, where the API reads no remote summon state (negative control)", async () => {
+  it("is absent, and the groups are not read, where the API reads no summon state from storage (negative control)", async () => {
     const { screen, calls } = await openScreen({ "GET /meta": remote(false) });
     // Give a stray read the chance to be made.
     await new Promise((resolve) => setTimeout(resolve, 50));

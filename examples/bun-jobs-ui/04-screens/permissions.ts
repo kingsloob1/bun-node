@@ -90,7 +90,7 @@
  * - **The Summon tab needs summon state, and `/meta` cannot say so.** The
  *   queue screen reads `GET /queues/:queue/summon` itself, with `queues.read`,
  *   and offers the tab on any status: a controller in the API's process
- *   (`local: true`), or, where `features.summonRemoteStatus` is on, summon
+ *   (`local: true`), or, where `features.summonStoredStatus` is on, summon
  *   state another process's controller wrote (`local: false`). A queue with
  *   neither answers 409 `SUMMON_NOT_CONFIGURED` (a server without the routes,
  *   404) and has no tab. The memory driver refuses a `summon` policy, so the
@@ -116,7 +116,7 @@
  *   `queues.read` on each controller's queue and leaves out the ones refused,
  *   so on the summon host it lists `audit` and `mail`, never `payroll`. Its
  *   Summon groups section needs the entry's needs and
- *   `features.summonRemoteStatus`, which a driver without `listQueueState`
+ *   `features.summonStoredStatus`, which a driver without `listQueueState`
  *   (and `runner` mode) turns off; `GET /summon/groups` redacts each group to
  *   the members the caller may read.
  * - **Providers are the process's, and `/providers` reads the untargeted
@@ -1513,7 +1513,7 @@ const GATES = [
     // `canSummon && status.local`). `local` is `true` for a queue whose
     // controller runs in the API's process, and `false` for one whose
     // controller runs in another process, which the API answers from the
-    // summon state in storage wherever `features.summonRemoteStatus` is on
+    // summon state in storage wherever `features.summonStoredStatus` is on
     // (bun-jobs #314): the panel is then read-only, and the API answers both
     // POSTs 409 `SUMMON_NOT_CONFIGURED` even where `queues.summon` is granted.
     name: "summon: Summon now…",
@@ -1597,7 +1597,7 @@ const GATES = [
     // Local or not: a status read from storage carries the group too. Its name
     // links to `/summon?group=<name>` only where the Summoning screen lists
     // groups (`GroupName` in `SummonGroupCard.tsx`: `features.summonList`,
-    // `features.summonRemoteStatus` and the untargeted `queues.list`), and is
+    // `features.summonStoredStatus` and the untargeted `queues.list`), and is
     // plain text otherwise; that is a detail of the link, not of the card, so
     // it is no part of this gate, as the README row says.
     name: "summon: group card",
@@ -1932,7 +1932,7 @@ const GATES = [
   {
     // `SummoningScreen.tsx`: `canList && remote && <SummonGroupsSection>`,
     // where `canList` is the untargeted `queues.list` and `remote` is
-    // `features.summonRemoteStatus === true`. Below the controllers whatever
+    // `features.summonStoredStatus === true`. Below the controllers whatever
     // their list answered, and `GET /summon/groups` (`listSummonGroups` in
     // `api/summon.ts`) is requested only from inside the section, so not at
     // all without it. Like the rows, the UI filters nothing: the API redacts
@@ -1941,7 +1941,7 @@ const GATES = [
     row: "Summoning groups section",
     map: "boot",
     needsOf: ["Summoning: nav and /summon"],
-    features: ["summonRemoteStatus"],
+    features: ["summonStoredStatus"],
   },
   // Providers: `/providers` is outside any queue, so the untargeted map
   // decides everything on it, Test connection included.
@@ -7788,7 +7788,7 @@ checkEqual(
 );
 
 // The groups section: on the Summoning screen, with the untargeted
-// `queues.list` and `features.summonRemoteStatus`. A backend whose driver
+// `queues.list` and `features.summonStoredStatus`. A backend whose driver
 // cannot list queue state (`listQueueState`, which the group list pages
 // through) has the feature off and no group routes, while `GET /summon` and
 // the Summoning entry stay: a MemoryDriver without that one method stands in
@@ -7847,10 +7847,10 @@ function groupsStatus(host: SummonHost): () => Promise<number> {
   return async () => (await host.call<object>("GET", "/summon/groups")).status;
 }
 // An API older than the groups leaves the flag out of `/meta`.
-const { summonRemoteStatus: _summonRemoteStatus, ...preGroupFeatures } =
+const { summonStoredStatus: _summonStoredStatus, ...preGroupFeatures } =
   summonHostAll.meta.features;
 checkEqual(
-  "the Summon groups section: there with the Summoning entry and features.summonRemoteStatus; absent where authorize refuses the untargeted queues.list (entry and section, 403), on a driver without listQueueState (the entry stays, the feature is off and GET /summon/groups is not routed: 404), on an older API that leaves the flag out, and in runner mode",
+  "the Summon groups section: there with the Summoning entry and features.summonStoredStatus; absent where authorize refuses the untargeted queues.list (entry and section, 403), on a driver without listQueueState (the entry stays, the feature is off and GET /summon/groups is not routed: 404), on an older API that leaves the flag out, and in runner mode",
   {
     all: await groupsSection({
       ...summonHostAll,
@@ -7889,11 +7889,11 @@ checkEqual(
   },
 );
 checkEqual(
-  "features.summonRemoteStatus as each /meta reports it: on for the summon host, off without listQueueState and in runner mode",
+  "features.summonStoredStatus as each /meta reports it: on for the summon host, off without listQueueState and in runner mode",
   [
-    summonHostAll.meta.features.summonRemoteStatus,
-    unlistableMeta.features.summonRemoteStatus,
-    summonRunner.meta.features.summonRemoteStatus,
+    summonHostAll.meta.features.summonStoredStatus,
+    unlistableMeta.features.summonStoredStatus,
+    summonRunner.meta.features.summonStoredStatus,
   ],
   [true, false, false],
 );

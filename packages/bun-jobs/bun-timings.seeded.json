@@ -105,7 +105,7 @@
     "__tests__/api/api-jobs.test.ts": 1385,
     "__tests__/summon-groups.test.ts": 1342,
     "__tests__/sqlite-driver.test.ts": 1329,
-    "__tests__/api/api-summon-remote.test.ts": 1276,
+    "__tests__/api/api-summon-stored.test.ts": 1276,
     "__tests__/repeat-first-claim.test.ts": 1235,
     "__tests__/api/api-summon.test.ts": 1187,
     "__tests__/remote/remote-executor-hardening.test.ts": 1155,
