@@ -1,6 +1,6 @@
 /**
  * `createRemoteExecutor()`: the reference remote executor, as a fetch
- * handler (`worker-runtimes.md` §5.3–§5.12, §6.1; `remote-transports.md`
+ * handler (`worker-runtimes/README.md` §5.3–§5.12, §6.1; `remote-transports.md`
  * §4.9, §5.3, §5.5, §7.2).
  *
  * One handler serves every operation of the unary `http` binding:
@@ -22,7 +22,7 @@
  *
  * **A job's failure is never an HTTP error.** It is a `fail` outcome inside
  * a 200; only transport problems (signature, size, protocol, op, a malformed
- * message) are HTTP statuses (`worker-runtimes.md` §5.3).
+ * message) are HTTP statuses (`worker-runtimes/README.md` §5.3).
  *
  * Browser-safe: Web APIs (`Request`, `Response`, `crypto`, `TextDecoder`,
  * timers) and the protocol core only. The host injects `node:crypto` through

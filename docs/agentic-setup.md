@@ -56,7 +56,7 @@ Once they start, the features agent hands bun-common and bun-nest work to
 them, and keeps its cross-package work (it still writes code in their
 packages when a feature spans several, under their review). At hand-over, its
 only planned work in those packages is the SSE helpers, PR-sse2 to sse5
-(`docs/plans/bun-native-routes.md` §16, not started); nothing else is open.
+(`docs/plans/bun-native-routes/README.md` §16, not started); nothing else is open.
 
 Update the dated table when a session is replaced. Nothing else in this file
 should need to change for that.
@@ -447,6 +447,19 @@ agreements between sessions, measured gotchas, pointers to external issues.
 Not code structure, git history or anything already in `CLAUDE.md`. Update a
 memory rather than duplicating it; another session may have written the same
 fact.
+
+## Plans
+
+Plans live in [`docs/plans/`](plans/README.md), one folder per main plan (the
+user's decision, 2026-10-11): `docs/plans/<plan>/README.md` is the main plan,
+a sub-plan that helps implement it sits in that folder
+(`<plan>/<sub-plan>.md`, or `<plan>/<sub-plan>/README.md` when it has
+sub-plans of its own), and evidence goes in `<plan>/evidence/` (a file
+sub-plan's under the parent's `evidence/<sub-plan>/`). A new plan starts in
+that shape; a follow-up plan goes in the folder of the plan it extends, not
+beside it. `docs/plans/README.md` is the index: add the plan, sub-plan or
+evidence folder to it in the same change. Moving a plan file changes every
+relative link into and out of it, so check them all, `#anchors` included.
 
 ## Bun bugs
 

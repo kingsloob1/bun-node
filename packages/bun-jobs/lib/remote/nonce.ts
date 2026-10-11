@@ -1,6 +1,6 @@
 /**
  * Replay protection: remembering which signed requests were already seen
- * within the replay window (`worker-runtimes.md` §5.6, "Nonce cache").
+ * within the replay window (`worker-runtimes/README.md` §5.6, "Nonce cache").
  *
  * Browser-safe: imports only the package's error types, which import nothing.
  */

@@ -15,7 +15,7 @@
  * Measured against busboy fed the same buffer: about 5× faster on a small
  * upload or a 50-field form, 6× on a 1 MiB file, and faster than Bun's native
  * `Request.formData()` on every shape measured, which answers differently
- * anyway (see `docs/plans/research-trailing-scenarios.md` §7).
+ * anyway (see `docs/plans/bun-native-routes/research-trailing-scenarios.md` §7).
  */
 import { Buffer } from "node:buffer";
 import { createRequire } from "node:module";

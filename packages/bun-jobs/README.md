@@ -3124,9 +3124,9 @@ is as privileged as root on its host (rootless Docker or Podman avoids that).
 A job can still return a wrong result for its own attempt, and read its own
 input. Which platforms can run a container inside a worker at all (EC2 and
 VMs can; Lambda, Fargate, Cloud Run and most PaaS cannot) is in the
-[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-gateway-and-isolation.md#56-platform-reality),
+[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/worker-gateway-and-isolation.md#56-platform-reality),
 with its sources in
-[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/evidence/worker-gateway-and-isolation/platform-isolation.md).
+[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/evidence/worker-gateway-and-isolation/platform-isolation.md).
 
 **Fixed, not options**: `--read-only`, `--cap-drop=ALL`, `--ipc=none`,
 `--security-opt=no-new-privileges`, `--init` (a small init as PID 1 —
@@ -7040,7 +7040,7 @@ How the summon pieces fit a deployment: where a
 runs, how long each platform gives it to stop, and how a platform's own scaler
 reads the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput)
 instead. The design and its evidence are in the
-[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/summon-compute.md)
+[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/summon-compute/README.md)
 (sections cited as §).
 
 **How far each recipe is checked.** Code written against this package is

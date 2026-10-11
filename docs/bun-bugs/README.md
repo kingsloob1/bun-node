@@ -15,8 +15,8 @@ it and the test that guards it.
 
 Found earlier, while planning native routes, and filed upstream; their
 reproductions live with that plan's evidence
-([`docs/plans/evidence/bun-native-routes/bun-repros/`](../plans/evidence/bun-native-routes/bun-repros/),
-discussed in [§14 of the plan](../plans/bun-native-routes.md#14-bun-behaviour-worth-reporting-upstream)):
+([`docs/plans/bun-native-routes/evidence/bun-repros/`](../plans/bun-native-routes/evidence/bun-repros/),
+discussed in [§14 of the plan](../plans/bun-native-routes/README.md#14-bun-behaviour-worth-reporting-upstream)):
 
 | Report | Bun | Upstream |
 |---|---|---|

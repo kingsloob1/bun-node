@@ -7,7 +7,7 @@
  * Built with the management API's builder (`api/schema/builder.ts`), whose
  * runtime graph is browser-safe: it imports bun-common for types only. Every
  * object here allows unknown properties and passes them through, because a
- * receiver ignores what it does not know (`worker-runtimes.md` §5.12).
+ * receiver ignores what it does not know (`worker-runtimes/README.md` §5.12).
  *
  * Internal: `./remote` exports the types, not these values, so its
  * declarations never reach bun-common's (and with it Bun's) types.

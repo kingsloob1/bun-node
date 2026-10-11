@@ -1,5 +1,5 @@
 /**
- * Signing and verifying an HTTP envelope (`worker-runtimes.md` §5.6).
+ * Signing and verifying an HTTP envelope (`worker-runtimes/README.md` §5.6).
  *
  * ```
  * payload   = t "." d "." raw    a request (d = "q") or a response (d = "r") with a body

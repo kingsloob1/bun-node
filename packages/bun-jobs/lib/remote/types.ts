@@ -2,7 +2,7 @@
  * The remote-worker protocol's message shapes, as TypeScript types.
  *
  * Two families. The **envelopes** are what the HTTP exchange shape sends and
- * answers (`worker-runtimes.md` §5.3–§5.5): each carries `v` and an `id`,
+ * answers (`worker-runtimes/README.md` §5.3–§5.5): each carries `v` and an `id`,
  * because an HTTP request is signed and identified on its own. The **session
  * messages** are `remote-transports.md` §4.1–§4.2's twenty, which ride inside
  * an authenticated session (or a streamed response) and so carry neither.
@@ -10,7 +10,7 @@
  * `status`), the session message is the envelope without `v`/`id`.
  *
  * **Unknown fields are allowed everywhere** (forward compatibility,
- * `worker-runtimes.md` §5.12): a receiver ignores what it does not know.
+ * `worker-runtimes/README.md` §5.12): a receiver ignores what it does not know.
  * `at` is the sender's clock, informative only, and never required: the
  * gateway's `now` and `deadlineAt` are the authoritative times.
  *

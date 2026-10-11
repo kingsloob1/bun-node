@@ -17,7 +17,7 @@ import { signEnvelopeWith, verifyEnvelopeWith } from "../../lib/remote/signing";
 import { ConfigError } from "../../lib/shared/errors";
 
 /**
- * `signEnvelope`/`verifyEnvelope`: `worker-runtimes.md` §5.6. Every clock is
+ * `signEnvelope`/`verifyEnvelope`: `worker-runtimes/README.md` §5.6. Every clock is
  * passed in (`now`), so the window is tested to the millisecond without
  * waiting or patching `Date`.
  */
