@@ -12,7 +12,6 @@ import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { listWorkerRecords } from "../lib/drivers/index";
 import {
-  BunJobs,
   BunQueue,
   BunQueueWorker,
   ConfigError,
@@ -309,39 +308,7 @@ describe("shared unit: options", () => {
     ).toEqual([false, false, false, false, false, false, false, false]);
   });
 
-  it("is refused by BunJobs, which does not build shared units yet, saying so", async () => {
-    const { driver, namespace } = await freshDriver();
-    const { summoner } = recordingSummoner();
-    const group = { name: "media", unit: "shared" } as const;
-    const message =
-      /a shared summon unit \(group\.unit "shared"\) is not supported through BunJobs' summon option or summonController\(\) yet; build a SummonController with queues directly/i;
-    // Refused at construction, before any controller starts.
-    for (const summon of [
-      [{ queues: ["renders", "thumbs"], summoner, group }],
-      { renders: { summoner, group } },
-    ]) {
-      let thrown: unknown;
-      try {
-        const jobs = new BunJobs({
-          namespace,
-          driver,
-          logger: noopLogger,
-          summon,
-        });
-        perTest.unshift(async () => await jobs.close());
-      } catch (error) {
-        thrown = error;
-      }
-      expect(thrown).toBeInstanceOf(ConfigError);
-      expect((thrown as Error).message).toMatch(message);
-    }
-    // And summonController() with such a policy.
-    const jobs = new BunJobs({ namespace, driver, logger: noopLogger });
-    perTest.unshift(async () => await jobs.close());
-    expect(() => jobs.summonController("renders", { summoner, group })).toThrow(
-      message,
-    );
-  });
+  // BunJobs builds shared units since PR-B3b: summon-shared-unit-jobs.test.ts.
 
   /** Each case: what to change, and what the `ConfigError` must say. */
   const REFUSALS: [
@@ -1490,6 +1457,130 @@ describe("shared unit: triggers and events (§4.6)", () => {
         group: "media",
       }),
     ]);
+  });
+
+  it("names the queues and the group on its own budget-exhausted, one eventId on every copy", async () => {
+    const { driver, namespace } = await freshDriver();
+    const published: { target: string; payload: SummonEventPayload }[] = [];
+    const wrapped = wrap(driver, {
+      publish: async (envelope: {
+        target: string;
+        type: string;
+        payload: SummonEventPayload;
+      }) => {
+        if (envelope.type === "summon") {
+          published.push({
+            target: envelope.target,
+            payload: envelope.payload,
+          });
+        }
+        await driver.publish(envelope as never);
+      },
+    });
+    await seed(driver, namespace, "renders", 5);
+    const { controller, events } = build(
+      sharedOptions(wrapped, namespace, {
+        summoner: defineSummoner({
+          kind: "fake",
+          invoke: async () => {
+            throw new Error("down");
+          },
+        }),
+        // The unit's own budget: one attempt this hour.
+        budget: { perHour: 1, perDay: 10 },
+        maxPending: 10,
+        circuit: { failures: 100 },
+      }),
+    );
+    expect(await controller.check()).toMatchObject({ outcome: "failed" });
+    // Past the failure's 1 ms backoff, so the budget is the gate that holds.
+    await Bun.sleep(10);
+    expect(await controller.check()).toMatchObject({
+      action: "skipped",
+      reason: "budget",
+    });
+    await controller.close();
+    const exhausted = events.filter(
+      (event) => event.outcome === "budget-exhausted",
+    );
+    expect(exhausted).toEqual([
+      {
+        id: "",
+        outcome: "budget-exhausted",
+        kind: "fake",
+        group: "media",
+        queues: ["renders", "thumbs", "previews"],
+        eventId: expect.any(String),
+      },
+    ]);
+    const copies = published.filter(
+      (one) => one.payload.outcome === "budget-exhausted",
+    );
+    expect(copies.map((one) => one.target).sort()).toEqual([
+      "previews",
+      "renders",
+      "thumbs",
+    ]);
+    for (const copy of copies) {
+      expect(copy.payload).toEqual(exhausted[0]!);
+    }
+  });
+
+  it("gives each event one eventId, the same on every queue's copy, and names the queues", async () => {
+    const { driver, namespace } = await freshDriver();
+    const published: { target: string; payload: SummonEventPayload }[] = [];
+    const wrapped = wrap(driver, {
+      publish: async (envelope: {
+        target: string;
+        type: string;
+        payload: SummonEventPayload;
+      }) => {
+        if (envelope.type === "summon") {
+          published.push({
+            target: envelope.target,
+            payload: envelope.payload,
+          });
+        }
+        await driver.publish(envelope as never);
+      },
+    });
+    await seed(driver, namespace, "renders");
+    const { controller, events } = build(
+      sharedOptions(wrapped, namespace, {
+        summoner: defineSummoner({
+          kind: "fake",
+          invoke: async () => {
+            throw new Error("down");
+          },
+        }),
+        circuit: { failures: 100 },
+      }),
+    );
+    // Two attempts, two `failed` events.
+    expect(await controller.check()).toMatchObject({ outcome: "failed" });
+    expect(await controller.check()).toMatchObject({ outcome: "failed" });
+    await controller.close();
+    expect(events).toHaveLength(2);
+    const [first, second] = events;
+    expect(first!.eventId).toBeString();
+    expect(second!.eventId).toBeString();
+    expect(first!.eventId).not.toBe(second!.eventId);
+    // Three copies of each, one per queue, all with the local event's id.
+    expect(published).toHaveLength(6);
+    for (const event of events) {
+      const copies = published.filter(
+        (one) => one.payload.eventId === event.eventId,
+      );
+      expect(copies.map((one) => one.target).sort()).toEqual([
+        "previews",
+        "renders",
+        "thumbs",
+      ]);
+      for (const copy of copies) {
+        expect(copy.payload).toEqual(event);
+        expect(copy.payload.queues).toEqual(["renders", "thumbs", "previews"]);
+      }
+    }
   });
 });
 

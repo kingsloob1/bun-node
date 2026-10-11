@@ -191,6 +191,24 @@ export const QUEUE_EVENT_PAYLOADS = {
           "The summon group it was decided in: on every event of an attempt a controller in a group made, and on a `budget-exhausted` of the group's budget. Absent otherwise.",
       }),
     ),
+    queues: s.optional(
+      s.array(s.string(), {
+        description:
+          "For a shared unit (`group.unit: \"shared\"`): every queue it serves, in the policy's order, on each of its events. The event is published once on every one of those queues, so a client following several of them receives the same event once per queue: dedupe by `eventId`. Only the queues this connection may see (`events.subscribe` on the channel, for that queue), always the event's own target; `missing` and a `partial:` detail likewise (bare `partial` when it names none of them). Absent for a controller of one queue.",
+      }),
+    ),
+    eventId: s.optional(
+      s.string({
+        description:
+          "This event's own id, a time-sortable UUID: one per event, given once before it is emitted, so every copy published (a shared unit's event goes out once on each of its queues) carries the same one. Dedupe a shared unit's copies by it; `id` names the attempt, and one attempt has several events. Set on every event a controller of this version emits; absent on one an older bun-jobs published.",
+      }),
+    ),
+    missing: s.optional(
+      s.array(s.string(), {
+        description:
+          "The queues a shared unit's attempt registered no worker on, when it registered on its other queues: a `registered` event with the detail `partial:<queues>`, which names the same queues (kept for readers that parse it). Absent otherwise.",
+      }),
+    ),
   }),
 } satisfies {
   [K in QueueEventName]: Schema<WirePayload<QueueEventPayloads[K]>, any>;

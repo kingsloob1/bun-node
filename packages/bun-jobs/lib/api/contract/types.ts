@@ -1270,8 +1270,32 @@ export interface SummonLastOutcomeDto {
  * neither.
  */
 export interface SummonStatusDto {
-  /** The queue. */
+  /**
+   * The queue. For a shared unit, the first of {@link SummonStatusDto.queues}:
+   * the first of its queues the caller may read.
+   */
   queue: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): the queues it serves that
+   * the caller may read (`queues.read`, asked as this route asks it), in the
+   * policy's order — always including the one asked about. The status is
+   * the unit's, the same whichever of its queues was asked about; a
+   * `partial:` detail on `last` names only these queues too (bare
+   * `partial` when it names none of them). Absent for a controller of one
+   * queue.
+   */
+  queues?: string[];
+  /**
+   * Summon groups whose shared units also summon for this controller's
+   * queues, as of its last check: the group named on live summoned worker
+   * records of its queues, other than its own. One queue with two summoning
+   * controllers can start a unit for each in a cold start. Only the groups
+   * seen on queues the caller may read (`queues.read`). Sorted; absent
+   * when there are none, before the first check, and read from storage
+   * (`local: false`). A unit summoned for one queue writes no group on its
+   * records, so it is never listed.
+   */
+  overlaps?: string[];
   /**
    * Whether the controller runs in the API's process. `false`: the status
    * was read from the queue's shared summon state alone, for a queue whose
@@ -1508,8 +1532,27 @@ export interface SummonBudgetDto {
 export interface SummonListItemDto {
   /** The queue's namespace. */
   namespace: string;
-  /** The queue. */
+  /**
+   * The queue. A shared unit (`group.unit: "shared"`) is one item, whose
+   * `queue` is the first of its `queues` the caller may read.
+   */
   queue: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): the queues it serves that
+   * this API can reach and the caller may read (`queues.read`), in the
+   * policy's order, the first being `queue`. A shared unit is listed once,
+   * and only when the caller may read at least one of its queues; a
+   * `partial:` detail on `last` names only these queues. Absent for a
+   * controller of one queue.
+   */
+  queues?: string[];
+  /**
+   * For a shared unit: the summon group it is the unit of
+   * (`SummonPolicy.group.name`), as `group.name` of
+   * `GET /queues/{queue}/summon` has it. Absent for a controller of one
+   * queue (its group, if any, is on its own status).
+   */
+  group?: string;
   /**
    * Whether its controller runs in the API's process. `false`: read from the
    * queue's shared summon state alone, as `GET /queues/{queue}/summon`
@@ -1610,7 +1653,12 @@ export interface SummonCheckDto {
   id?: string;
   /** For `summoned`: what the summoner answered, or `failed`. */
   outcome?: SummonOutcomeKind;
-  /** The demand reading it decided on. */
+  /**
+   * The demand reading it decided on, labelled with the queue it is about:
+   * for a shared unit (`group.unit: "shared"`), its most-starved queue's,
+   * which may not be the queue the route names. Left out when the caller
+   * may not read that queue (`queues.read`): the counts are its backlog.
+   */
   demand?: QueueDemandDto;
 }
 
@@ -1808,6 +1856,34 @@ export interface SummonEventDto {
    * budget. Absent otherwise.
    */
   group?: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): every queue it serves, in
+   * the policy's order, on each of its events. The event is published once
+   * on every one of those queues, so a client following several of them
+   * receives the same event once per queue: dedupe by `eventId`. On the
+   * socket, only the queues the connection may see (`events.subscribe` on
+   * the channel, for that queue) — always the event's own target — and
+   * `missing` and a `partial:` detail likewise (bare `partial` when it
+   * names none of them). Absent for a controller of one queue.
+   */
+  queues?: string[];
+  /**
+   * This event's own id, a time-sortable UUID: one per event, given once
+   * before it is emitted, so the copy heard locally and every copy published
+   * — a shared unit's event goes out once on each of its queues — carry the
+   * same one. Dedupe a shared unit's copies by it; `id` names the attempt,
+   * and one attempt has several events. Set on every event a controller of
+   * this version emits, for one queue as for a shared unit; absent on an
+   * event a bun-jobs older than it published.
+   */
+  eventId?: string;
+  /**
+   * The queues a shared unit's attempt registered no worker on, when it
+   * registered on its other queues: a `registered` event with the detail
+   * `partial:<queues>`, which names the same queues (kept for readers that
+   * parse it). Absent otherwise.
+   */
+  missing?: string[];
 }
 
 /* ------------------------------------------------------------------ *

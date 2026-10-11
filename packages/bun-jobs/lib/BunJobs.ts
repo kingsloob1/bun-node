@@ -33,7 +33,7 @@ import type { JobRoute, JobRouter } from "./queue/JobBuilder";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
-import type { SummonOption } from "./summon/groups";
+import type { SummonEntry, SummonOption } from "./summon/groups";
 import type { SummonPolicy } from "./summon/types";
 import {
   countQueues,
@@ -66,7 +66,7 @@ import {
   LIST_SUMMON_CONTROLLERS,
   SummonController,
 } from "./summon/controller";
-import { expandSummonOption } from "./summon/groups";
+import { expandSummonOption, sharedUnitGroup } from "./summon/groups";
 
 /** Options for a {@link BunJobs} context. */
 export interface BunJobsOptions {
@@ -171,6 +171,13 @@ export interface BunJobsOptions {
    * shorthand: it still builds one ordinary controller per queue, each with
    * its own marker, budget, backoff and circuit. A queue named twice anywhere
    * in the option, or a group with no queues, is a `ConfigError`.
+   *
+   * **A shared unit** — a policy with `group: { name, unit: "shared" }` — is
+   * the exception: an array entry's `queues` (or a record's one queue) get
+   * **one** controller, whose every unit runs a worker for each of them, and
+   * `jobs.summonController(queue)` answers it for any of them. Its
+   * `overrides` take only `jobsPerWorker` and `maxWorkers`, and one group's
+   * shared unit written twice is a `ConfigError`.
    *
    * Needs a driver another process can reach, with queue state and worker
    * records (a `ConfigError` at construction otherwise — the memory driver
@@ -395,10 +402,20 @@ export class BunJobs<
   readonly #workerOrdinals = new Map<string, number>();
   /** Notifiers opened here, closed with the context. */
   readonly #notifiers = new Set<JobsNotifier>();
-  /** Summon controllers, by queue name: from the `summon` option and `summonController()`. */
+  /**
+   * Summon controllers, by queue name: from the `summon` option and
+   * `summonController()`. A shared unit is one controller under each of its
+   * queues, so iterate the distinct values ({@link #distinctSummonControllers}).
+   */
   readonly #summonControllers = new Map<string, SummonController>();
-  /** The `summon` option expanded to one policy per queue, for `summonController()` to find a queue's policy in. */
-  readonly #summonPolicies: ReadonlyMap<string, SummonPolicy>;
+  /** The shared units among them, each with its summon group's name. */
+  readonly #sharedUnits = new Map<SummonController, string>();
+  /**
+   * The `summon` option expanded, by queue: the entry each queue's
+   * controller is built from (a shared unit's under each of its queues), for
+   * `summonController()` to find a queue's policy in.
+   */
+  readonly #summonEntries: ReadonlyMap<string, SummonEntry>;
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: RegistryWorker<TJobs> | undefined;
   /**
@@ -465,14 +482,19 @@ export class BunJobs<
 
     // Expanded (and refused, for a duplicate or an empty group) before any
     // controller exists, so a bad option starts nothing.
-    this.#summonPolicies = expandSummonOption(options.summon);
+    const entries = expandSummonOption(options.summon);
+    this.#summonEntries = new Map(
+      entries.flatMap((entry) =>
+        entry.queues.map((queue): [string, SummonEntry] => [queue, entry]),
+      ),
+    );
     try {
-      for (const queue of this.#summonPolicies.keys()) {
-        this.summonController(queue);
+      for (const entry of entries) {
+        this.#buildSummonController(entry);
       }
     } catch (error) {
       // A policy refused half-way must not leave the ones before it polling.
-      for (const controller of this.#summonControllers.values()) {
+      for (const controller of this.#distinctSummonControllers()) {
         void controller.close();
       }
       throw error;
@@ -676,54 +698,124 @@ export class BunJobs<
    * ```
    *
    * It hears the adds of the queue by this name that this context creates,
-   * and is closed first by `close()`.
+   * and is closed first by `close()`. For a queue the `summon` option puts
+   * in a shared unit (`group.unit: "shared"`), it is that unit's one
+   * controller, whichever of its queues is named (`controller.queues` lists
+   * them all).
    *
-   * @throws {ConfigError} when there is no policy for the queue, the policy
-   *   is a shared unit's (`group.unit: "shared"`, built with
-   *   `new SummonController({ queues, … })` for now), or the policy or
-   *   driver cannot summon (see `SummonController`).
+   * @throws {ConfigError} when there is no policy for the queue; when a
+   *   `policy` is passed for a queue a shared unit serves (its policy is the
+   *   unit's: change the unit's entry in the `summon` option instead); when
+   *   `policy` is itself a shared unit's (one is written in the `summon`
+   *   option, or built with `new SummonController({ queues, … })`); or when
+   *   the policy or driver cannot summon (see `SummonController`).
    */
   summonController(queue: string, policy?: SummonPolicy): SummonController {
     const existing = this.#summonControllers.get(queue);
+    const entry = this.#summonEntries.get(queue);
+    if (policy !== undefined) {
+      // Q7: a queue a shared unit serves takes no policy of its own — never
+      // a second controller beside the unit, and never the unit silently.
+      const unit =
+        existing === undefined
+          ? entry?.shared === true
+            ? (sharedUnitGroup(entry.policy) ?? "")
+            : undefined
+          : this.#sharedUnits.get(existing);
+      if (unit !== undefined) {
+        const queues = existing === undefined ? entry!.queues : existing.queues;
+        throw new ConfigError(
+          `Queue "${queue}" is served by summon group "${unit}"'s shared unit (group.unit "shared", for ${queues.join(", ")}), so summonController() takes no policy for it: change the unit's entry in the summon option — its overrides.${queue} for jobsPerWorker and maxWorkers — or take "${queue}" out of its queues to give it a controller of its own`,
+          { queue, group: unit, queues: [...queues] },
+        );
+      }
+      const group = sharedUnitGroup(policy);
+      if (group !== undefined) {
+        throw new ConfigError(
+          `summonController() builds a controller for one queue, and this policy is a shared unit's (group.unit "shared"): write the unit in the summon option, { queues: [...], group: { name: "${group}", unit: "shared" }, … }, or build it with new SummonController({ queues, … })`,
+          { queue, group },
+        );
+      }
+    }
     if (existing) {
       return existing;
     }
-    const resolved = policy ?? this.#summonPolicies.get(queue);
-    if (resolved === undefined) {
+    if (policy !== undefined) {
+      return this.#buildSummonController({
+        queues: [queue],
+        policy,
+        shared: false,
+        at: "summonController()",
+      });
+    }
+    if (entry === undefined) {
       throw new ConfigError(
         `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,
         { queue },
       );
     }
-    const group: unknown = resolved.group;
-    if (
-      typeof group === "object" &&
-      group !== null &&
-      (group as { unit?: unknown }).unit === "shared"
-    ) {
-      // Failing closed until the summon option builds shared units itself:
-      // a controller per queue here would summon one unit set per queue,
-      // the very thing a shared unit exists to avoid.
-      throw new ConfigError(
-        `A shared summon unit (group.unit "shared") is not supported through BunJobs' summon option or summonController() yet; build a SummonController with queues directly`,
-        { queue, group: (group as { name?: unknown }).name ?? null },
-      );
+    return this.#buildSummonController(entry);
+  }
+
+  /**
+   * Builds the controller for one entry of the `summon` option (or one
+   * `summonController()` call), registers it under each of its queues and
+   * attaches the queues of those names this context already has.
+   */
+  #buildSummonController(
+    /** What to build: one queue's policy, or a shared unit's. */
+    entry: SummonEntry,
+  ): SummonController {
+    let controller: SummonController;
+    try {
+      controller = new SummonController({
+        ...entry.policy,
+        driver: this.driver,
+        namespace: this.namespace,
+        ...(entry.shared
+          ? {
+              queues: entry.queues,
+              ...(entry.overrides === undefined
+                ? {}
+                : { overrides: entry.overrides }),
+            }
+          : { queue: assertSegment(entry.queues[0]!, "queue") }),
+        ...(this.#loggerOption === undefined
+          ? {}
+          : { logger: this.#loggerOption }),
+      });
+    } catch (error) {
+      // A shared unit names several queues, so its refusal names where in
+      // the summon option it was written (a per-queue controller's names its
+      // queue already).
+      if (
+        entry.shared &&
+        error instanceof ConfigError &&
+        (error.context as { at?: unknown } | undefined)?.at === undefined
+      ) {
+        throw new ConfigError(`${error.message} (at ${entry.at})`, {
+          ...error.context,
+          at: entry.at,
+        });
+      }
+      throw error;
     }
-    const controller = new SummonController({
-      ...resolved,
-      driver: this.driver,
-      namespace: this.namespace,
-      queue: assertSegment(queue, "queue"),
-      ...(this.#loggerOption === undefined
-        ? {}
-        : { logger: this.#loggerOption }),
-    });
-    this.#summonControllers.set(queue, controller);
-    const existingQueue = this.#queues.get(queue);
-    if (existingQueue) {
-      controller[ATTACH_QUEUE](existingQueue);
+    if (entry.shared) {
+      this.#sharedUnits.set(controller, sharedUnitGroup(entry.policy) ?? "");
+    }
+    for (const queue of controller.queues) {
+      this.#summonControllers.set(queue, controller);
+      const existingQueue = this.#queues.get(queue);
+      if (existingQueue) {
+        controller[ATTACH_QUEUE](existingQueue);
+      }
     }
     return controller;
+  }
+
+  /** Every summon controller here, once each, in the order they were built. */
+  #distinctSummonControllers(): SummonController[] {
+    return [...new Set(this.#summonControllers.values())];
   }
 
   /**
@@ -740,11 +832,12 @@ export class BunJobs<
 
   /**
    * Internal ({@link LIST_SUMMON_CONTROLLERS}): every summon controller this
-   * context has, in the order they were built. Never builds one; after
-   * `close()`, none.
+   * context has, in the order they were built, each once (a shared unit
+   * too). Never builds one; after `close()`, none.
    */
   [LIST_SUMMON_CONTROLLERS](): SummonController[] {
-    return [...this.#summonControllers.values()];
+    // A shared unit is listed once, though it is registered per queue.
+    return this.#distinctSummonControllers();
   }
 
   /**
@@ -1464,12 +1557,14 @@ export class BunJobs<
   /** The body of {@link BunJobs.close}, under its hold on the process. */
   async #close(options?: { timeout?: number }): Promise<void> {
     // First, so no check is in flight when the queues and the driver go.
+    // Each once: a shared unit is registered under every queue it serves.
     await Promise.allSettled(
-      [...this.#summonControllers.values()].map(
+      this.#distinctSummonControllers().map(
         async (controller) => await controller.close(),
       ),
     );
     this.#summonControllers.clear();
+    this.#sharedUnits.clear();
 
     await Promise.allSettled(
       [...this.#notifiers].map((notifier) => notifier.close()),

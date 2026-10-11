@@ -405,11 +405,14 @@ for (const backend of BACKENDS) {
             )!;
             if (skip === "") {
               expect(first.detail).toBeUndefined();
+              expect(Object.hasOwn(first, "missing")).toBe(false);
               expect((await controller.status()).failures).toBe(0);
               await controller.close();
               return;
             }
             expect(first.detail).toBe("partial:thumbs");
+            // The same queues as a list, beside the detail.
+            expect(first.missing).toEqual(["thumbs"]);
             const after = await controller.status();
             expect(after.failures).toBe(1);
             expect(after.last).toMatchObject({

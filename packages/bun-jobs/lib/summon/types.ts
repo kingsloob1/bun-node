@@ -412,8 +412,14 @@ export interface SummonFailure {
   kind: string;
   /** The queue's namespace. */
   namespace: string;
-  /** The queue. */
+  /** The queue. For a shared unit, the first of {@link SummonFailure.queues}. */
   queue: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): every queue it serves, in
+   * the policy's order, so a hook can name them all rather than only the
+   * first. Absent for a controller of one queue.
+   */
+  queues?: readonly string[];
   /**
    * The attempt it concerns. For `circuit-open`, the attempt whose failure
    * opened it. Absent for `budget-exhausted`, which no attempt owns.
@@ -461,6 +467,12 @@ export interface SummonFailure {
 /**
  * A summon group: a name every controller that shares it gives, and what
  * they share. `SummonPolicy.group`.
+ *
+ * Not to be confused with `SummonGroup`, an entry of `BunJobsOptions.summon`'s
+ * array form (one policy written once for several queues, which shares
+ * nothing by itself): this is the policy's `group` field, which shares a
+ * budget, a circuit or one unit. The state it shares is read back as
+ * `SummonGroupStatus`.
  *
  * ```ts
  * summon: [{
@@ -815,8 +827,24 @@ export interface SummonMarker {
 
 /** What the status route and the UI read: the marker plus the local policy. */
 export interface SummonStatus {
-  /** The queue. */
+  /** The queue. For a shared unit, the first of {@link SummonStatus.queues}. */
   queue: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): every queue it serves, in
+   * the policy's order — the status is the unit's, the same whichever of
+   * them was asked about. Absent for a controller of one queue.
+   */
+  queues?: readonly string[];
+  /**
+   * Summon groups whose shared units also summon for this controller's
+   * queues, as of its last check: the `summon.group` of live summoned worker
+   * records on its queues, other than its own group's. One queue with two
+   * summoning controllers can start a unit for each of them in a cold start;
+   * keep one summoning controller per queue. Sorted; absent when there are
+   * none, and before the first check. A unit summoned for one queue writes
+   * no group on its records, so it is never listed here.
+   */
+  overlaps?: readonly string[];
   /**
    * Whether a controller runs in *this* process: always `true` from
    * `controller.status()`. `false` for a status read from storage alone (the
@@ -1054,6 +1082,31 @@ export interface SummonEventPayload {
    * controller in no group.
    */
   group?: string;
+  /**
+   * For a shared unit (`group.unit: "shared"`): every queue it serves, in
+   * the policy's order, on each of its events. Its event is published once
+   * on every one of those queues, so a listener on several of them hears
+   * the same event once per queue: the copies share one `eventId`. Absent
+   * for a controller of one queue.
+   */
+  queues?: string[];
+  /**
+   * This event's own id, a time-sortable UUID: one per event, given once
+   * before it is emitted, so the copy heard locally and every copy published
+   * — a shared unit's event goes out once on each of its queues — carry the
+   * same one. Dedupe a shared unit's copies by it; `id` names the attempt,
+   * and one attempt has several events. Set on every event a controller of
+   * this version emits, for one queue as for a shared unit; absent on an
+   * event a bun-jobs older than it published.
+   */
+  eventId?: string;
+  /**
+   * The queues a shared unit's attempt registered no worker on, when it
+   * registered on its other queues: a `registered` event with the detail
+   * `partial:<queues>`, which names the same queues (kept for readers that
+   * parse it). Absent otherwise.
+   */
+  missing?: string[];
 }
 
 /**

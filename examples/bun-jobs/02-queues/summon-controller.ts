@@ -53,6 +53,7 @@ import { BunJobs, defineSummoner } from "@kingsleyweb/bun-jobs";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
+import { A_UUID_V7, markEventId } from "../shared/summon-events";
 
 title("Summoning a worker");
 
@@ -550,8 +551,8 @@ checkEqual(
   [["started", "registered"], 0, 0],
 );
 checkEqual(
-  "it exits 0 with no close: the same attempt is reported lost, died, once",
-  [crashCode, crashingEvents.slice(2)],
+  "it exits 0 with no close: the same attempt is reported lost, died, once, the event with an eventId of its own (a UUIDv7)",
+  [crashCode, crashingEvents.slice(2).map(markEventId)],
   [
     0,
     [
@@ -561,6 +562,7 @@ checkEqual(
         kind: "example-spawn",
         count: 1,
         detail: "died",
+        eventId: A_UUID_V7,
       },
     ],
   ],

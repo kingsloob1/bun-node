@@ -69,7 +69,7 @@ import { CHILD_ENV } from "../runner/protocol";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, JobsError } from "../shared/errors";
 import { queueEvent } from "../shared/events";
-import { newToken } from "../shared/ids";
+import { newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
@@ -620,6 +620,43 @@ function circuitOpen(marker: SummonMarker, now: number): boolean {
  */
 export const SUMMON_ARGV_MAX_BYTES = 8 * 1024;
 
+/**
+ * The queue each demand reading a check took is about, by the reading
+ * itself: a shared unit's result carries the most-starved queue's reading,
+ * which is not always its first queue's. Weak, so a reading goes with its
+ * result. Internal: read through {@link demandQueueOf}.
+ */
+const DEMAND_QUEUES = new WeakMap<QueueDemand, string>();
+
+/**
+ * The overlaps behind each status a controller answered, by the queue each
+ * group was seen on. Weak, so it goes with the status. Internal: read
+ * through {@link overlapsByQueueOf}.
+ */
+const STATUS_OVERLAPS = new WeakMap<
+  SummonStatus,
+  ReadonlyMap<string, readonly string[]>
+>();
+
+/**
+ * Internal: the groups behind `status.overlaps`, by the queue each was seen
+ * on — what the management API filters by the queues a caller may read. An
+ * empty map for a status with none, or one no controller answered.
+ */
+export function overlapsByQueueOf(
+  status: SummonStatus,
+): ReadonlyMap<string, readonly string[]> {
+  return STATUS_OVERLAPS.get(status) ?? new Map();
+}
+
+/**
+ * Internal: the queue a check result's `demand` reading is about, or
+ * `undefined` for a reading no check of this build took.
+ */
+export function demandQueueOf(demand: QueueDemand): string | undefined {
+  return DEMAND_QUEUES.get(demand);
+}
+
 /** The bytes `argv` takes on a command line: each argument in UTF-8, plus one separator. */
 function argvBytes(argv: readonly string[]): number {
   let bytes = 0;
@@ -1028,6 +1065,18 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   #circuitNotes: GroupCircuitNote[] = [];
   /** When claim-once entries were last swept, epoch ms. */
   #claimsSweptAt = 0;
+  /**
+   * The summon groups whose shared units also summon for these queues, as
+   * of the last check (§4.9), by the queue they were seen on: each sorted,
+   * frozen; a queue with none is left out. `status().overlaps` is their
+   * union; the management API shows a caller only those seen on queues it
+   * may read ({@link overlapsByQueueOf}).
+   */
+  #overlaps: ReadonlyMap<string, readonly string[]> = new Map();
+  /** The (queue, group) overlaps already warned about, as `queue\0group`: one `warn` each. */
+  readonly #warnedOverlaps = new Set<string>();
+  /** The queues already warned about for summoned records with no group (Q9): one `warn` each. */
+  readonly #warnedGroupless = new Set<string>();
   /**
    * This controller's token on the events it publishes, so every queue
    * that subscribes — in this process or another — re-emits them, and none
@@ -1882,6 +1931,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           }),
           records,
         ]);
+        DEMAND_QUEUES.set(demand, ref.queue);
         return { queue: ref.queue, demand, workers };
       }),
     ]);
@@ -1892,6 +1942,69 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
     }
     return { readings, read };
+  }
+
+  /**
+   * Reads, from this check's live worker records, who else summons for these
+   * queues (§4.9): a summoned record carrying `summon.group` that is not
+   * this shared unit's own group is another shared unit's — for a
+   * controller that is not a shared unit, any group on a record is — and is
+   * listed in `status().overlaps` and warned about once per (queue, group).
+   * On a shared unit of several queues, a summoned record with no group
+   * (a per-queue controller's unit, or one from a build older than the
+   * group) is warned about once per queue (Q9), and not listed: it names no
+   * group. A shared unit of one queue cannot tell such a record from its
+   * own — a one-queue summon writes no group — so it never warns of one.
+   */
+  #noteOverlaps(readings: readonly QueueReading[]): void {
+    const own = this.#shared ? this.#group!.name : undefined;
+    const overlaps = new Map<string, Set<string>>();
+    for (const reading of readings) {
+      for (const worker of reading.workers) {
+        const summon = worker.summon;
+        if (summon === undefined) {
+          continue;
+        }
+        const group = summon.group;
+        if (group === undefined) {
+          if (
+            this.#shared &&
+            this.queues.length > 1 &&
+            !this.#warnedGroupless.has(reading.queue)
+          ) {
+            this.#warnedGroupless.add(reading.queue);
+            this.#logger.warn(
+              `queue "${reading.queue}" has a summoned worker naming no summon group while group "${own}"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one this group summoned while it served a single queue (a one-queue summon names no group). Keep one summoning controller per queue`,
+              { queue: reading.queue, worker: worker.id, id: summon.id },
+            );
+          }
+          continue;
+        }
+        if (group === own) {
+          continue;
+        }
+        let seen = overlaps.get(reading.queue);
+        if (seen === undefined) {
+          seen = new Set();
+          overlaps.set(reading.queue, seen);
+        }
+        seen.add(group);
+        const key = `${reading.queue}\0${group}`;
+        if (!this.#warnedOverlaps.has(key)) {
+          this.#warnedOverlaps.add(key);
+          this.#logger.warn(
+            `queue "${reading.queue}" also has workers summoned by summon group "${group}"'s shared unit: two controllers summoning for one queue can each start a unit for one backlog. Keep one summoning controller per queue`,
+            { queue: reading.queue, overlapGroup: group, worker: worker.id },
+          );
+        }
+      }
+    }
+    this.#overlaps = new Map(
+      [...overlaps].map(([queue, groups]) => [
+        queue,
+        Object.freeze([...groups].sort()),
+      ]),
+    );
   }
 
   /**
@@ -1940,6 +2053,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       );
       return { action: "skipped", reason: "inert" };
     }
+    this.#noteOverlaps(readings);
 
     const { marker, version } = read;
     const capabilities = this.#capabilities;
@@ -2086,6 +2200,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           kind: attempt.kind,
           count: attempt.count,
           detail,
+          missing,
         });
         continue;
       }
@@ -2808,11 +2923,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           outcome: "budget-exhausted",
           kind: this.#summoner.provider.kind,
           ...(group === undefined ? {} : { group }),
+          ...(this.#shared ? { queues: [...this.queues] } : {}),
         };
-        this.safeEmit("summon", exhausted);
         // Published like every other outcome: an operator watching another
         // process is the one who needs to know the jobs are waiting.
-        this.#publish(exhausted);
+        this.#emitEvent(exhausted);
         this.#notifyFailure({
           outcome: "budget-exhausted",
           kind: exhausted.kind,
@@ -2865,8 +2980,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       kind: this.#summoner.provider.kind,
       group: group.name,
     };
-    this.safeEmit("summon", exhausted);
-    this.#publish(exhausted);
+    this.#emitEvent(exhausted);
     this.#notifyFailure({
       outcome: "budget-exhausted",
       kind: exhausted.kind,
@@ -3234,9 +3348,22 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (hook === undefined) {
       return;
     }
+    // Q10: a shared unit's failure names every queue it serves.
+    const tagged: SummonFailure =
+      this.#shared && failure.queues === undefined
+        ? { ...failure, ...this.#unitQueues() }
+        : failure;
     setImmediate(() => {
-      this.#callHook(hook, failure);
+      this.#callHook(hook, tagged);
     });
+  }
+
+  /**
+   * `{ queues }` for a shared unit (every queue it serves, frozen), `{}` for
+   * a controller of one queue: what its events, failures and status add.
+   */
+  #unitQueues(): { queues?: readonly string[] } {
+    return this.#shared ? { queues: this.queues } : {};
   }
 
   /** Runs `onSummonFailed` once, logging what it throws or rejects with. */
@@ -3278,12 +3405,18 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     for (const untagged of events) {
       // An attempt of a controller in a group was charged to the group; a
       // shared unit's every event is the group's.
-      const event: SummonEventPayload =
+      const grouped: SummonEventPayload =
         group === undefined ||
         (untagged.id === "" && !this.#shared) ||
         untagged.group !== undefined
           ? untagged
           : { ...untagged, group };
+      // Q10: a shared unit's every event names its queues, as it is
+      // published once on each of them.
+      const event: SummonEventPayload =
+        this.#shared && grouped.queues === undefined
+          ? { ...grouped, queues: [...this.queues] }
+          : grouped;
       const fields = {
         id: event.id,
         kind: event.kind,
@@ -3320,8 +3453,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         default:
           this.#logger.info(`summon attempt ${event.outcome}`, fields);
       }
-      this.safeEmit("summon", event);
-      this.#publish(event);
+      this.#emitEvent(event);
       if (
         event.outcome === "failed" ||
         event.outcome === "lost" ||
@@ -3340,6 +3472,18 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         });
       }
     }
+  }
+
+  /**
+   * Gives `event` its `eventId` — once, so the copy emitted here and every
+   * copy published (one per queue of a shared unit) carry the same one —
+   * then emits it locally and publishes it.
+   */
+  #emitEvent(event: SummonEventPayload): void {
+    const stamped: SummonEventPayload =
+      event.eventId === undefined ? { ...event, eventId: newId() } : event;
+    this.safeEmit("summon", stamped);
+    this.#publish(stamped);
   }
 
   /**
@@ -4184,8 +4328,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           )?.openUntil ?? 0)
         : 0,
     );
-    return {
+    const overlaps = [...new Set([...this.#overlaps.values()].flat())].sort();
+    const status: SummonStatus = {
       queue: this.queue,
+      ...this.#unitQueues(),
+      ...(overlaps.length === 0 ? {} : { overlaps }),
       local: true,
       inert: this.inert,
       ...(this.#inertReason === undefined
@@ -4212,6 +4359,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         ? {}
         : { group: await this.#groupStatus(this.#group, now) }),
     };
+    if (overlaps.length > 0) {
+      STATUS_OVERLAPS.set(status, this.#overlaps);
+    }
+    return status;
   }
 
   /** Internal ({@link SUMMON_GROUP_VIEW}): the controller's group and its view of it. */

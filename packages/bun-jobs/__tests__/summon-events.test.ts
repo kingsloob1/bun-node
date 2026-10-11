@@ -150,6 +150,9 @@ for (const backend of BACKENDS) {
             count: 1,
             handles: ["unit-1"],
             reason: "manual",
+            // One per event, given before it is emitted: the copy heard in
+            // the other process carries the same one (below).
+            eventId: expect.any(String),
           },
         ]);
 

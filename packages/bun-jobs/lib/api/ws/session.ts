@@ -1,6 +1,6 @@
 import type { BunRequest, WebSocketClient } from "@kingsleyweb/bun-common";
 import type { NotifierFollowSource } from "../../notifier";
-import type { EventKind } from "../../shared/events";
+import type { DriverEvent, EventKind } from "../../shared/events";
 import type { AuthDecision } from "../auth";
 import type {
   JobsApiSocketData,
@@ -23,6 +23,7 @@ import { Buffer } from "node:buffer";
 import { decide } from "../auth";
 import { validateJson } from "../schema/validate";
 import { toEventDto } from "../serialize";
+import { redactSummonPayload } from "../summonRedact";
 import { BROAD_CHANNELS, parseChannel } from "./channels";
 import {
   JOBS_API_WS_CLOSE,
@@ -1073,8 +1074,13 @@ export class Session implements HubSubscriber {
 
   /**
    * Before a resume replays: waits for events held behind a pending decision
-   * to go out, and settles every per-target decision the replay will need, so
-   * the replayed events can be sent synchronously — ahead of the ack.
+   * to go out, and settles the per-target decisions the replay will need —
+   * a broad channel's target, and a shared unit's other queues named by its
+   * `summon` events — so the replayed events can be sent synchronously,
+   * ahead of the ack. At most `REPLAY_PREPARE_ROUNDS` rounds, each waiting
+   * for the decisions it started: an `authorize` that never answers holds
+   * the resume, as it holds every event behind it in the outbox (there is no
+   * timeout).
    */
   async #prepareReplay(
     resume: NonNullable<JobsApiSubscribeMessage["resume"]>,
@@ -1096,8 +1102,23 @@ export class Session implements HubSubscriber {
           continue;
         }
         for (const key of this.#unsent(stamped.seq, stamped.keys)) {
-          if (scope.has(key) && BROAD_CHANNELS.has(key)) {
+          if (!scope.has(key)) {
+            continue;
+          }
+          if (BROAD_CHANNELS.has(key)) {
             const pending = this.#resolveTarget(key, stamped);
+            if (pending) {
+              waits.push(pending);
+            }
+          }
+          // A shared unit's summon event: its other queues' decisions too.
+          for (const member of unitMembers(stamped)) {
+            const pending = this.#resolveDecision(
+              memberKey(key, member),
+              key,
+              "queue",
+              member,
+            );
             if (pending) {
               waits.push(pending);
             }
@@ -1131,9 +1152,9 @@ export class Session implements HubSubscriber {
         hub.unsubscribe(this, key);
       }
       this.#release(key);
-      if (BROAD_CHANNELS.has(key)) {
-        this.#forgetTargets(key);
-      }
+      // Broad channels' targets, and any channel's decisions about a shared
+      // unit's other queues.
+      this.#forgetTargets(key);
     }
     this.#send({
       type: "ack",
@@ -1190,13 +1211,33 @@ export class Session implements HubSubscriber {
     channel: string,
     stamped: StampedEvent,
   ): Promise<void> | undefined {
-    const key = this.#targetKey(channel, stamped);
+    const { event } = stamped;
+    return this.#resolveDecision(
+      this.#targetKey(channel, stamped),
+      channel,
+      event.kind,
+      event.target,
+    );
+  }
+
+  /**
+   * Starts settling the per-target decision `key` names — `events.subscribe`
+   * on `channel` about `target` — returning the wait, or `undefined` when it
+   * is already known. Shared by an event's own target and the other queues
+   * of a shared unit its `summon` event names.
+   */
+  #resolveDecision(
+    key: string,
+    channel: string,
+    kind: EventKind,
+    target: string,
+  ): Promise<void> | undefined {
     if (this.#targetDecisions.has(key)) {
       return undefined;
     }
     let pending = this.#targetPending.get(key);
     if (!pending) {
-      const { event } = stamped;
+      const event = { target };
       pending = decide(this.#ctx.config, this.request, {
         action: "events.subscribe",
         transport: "ws",
@@ -1204,9 +1245,7 @@ export class Session implements HubSubscriber {
         // A worker event's target is the queue its workers consume, so a host
         // deciding by queue answers it exactly as it answers that queue's own
         // events.
-        ...(event.kind === "runner"
-          ? { runner: event.target }
-          : { queue: event.target }),
+        ...(kind === "runner" ? { runner: target } : { queue: target }),
       })
         .then(
           (decision) => {
@@ -1245,6 +1284,21 @@ export class Session implements HubSubscriber {
     for (const key of keys) {
       if (BROAD_CHANNELS.has(key) && this.#resolveTarget(key, stamped)) {
         waiting = true;
+      }
+      // A shared unit's `summon` event names its other queues: each is
+      // decided too, so the event is sent naming only those this connection
+      // may see (Q4).
+      for (const member of unitMembers(stamped)) {
+        if (
+          this.#resolveDecision(
+            memberKey(key, member),
+            key,
+            "queue",
+            member,
+          ) !== undefined
+        ) {
+          waiting = true;
+        }
       }
     }
     return waiting;
@@ -1373,13 +1427,28 @@ export class Session implements HubSubscriber {
       return "lagged";
     }
 
+    // A shared unit's `summon` event names only the queues this connection
+    // may see on every channel it is sent for (its own target always).
+    const members = unitMembers(stamped);
+    const source: DriverEvent =
+      members.length === 0
+        ? stamped.event
+        : ({
+            ...stamped.event,
+            payload: redactSummonPayload(
+              stamped.event.payload as Record<string, unknown>,
+              (queue) =>
+                queue === stamped.event.target ||
+                keys.every(
+                  (key) =>
+                    this.#targetDecisions.get(memberKey(key, queue))?.allow ===
+                    true,
+                ),
+            ),
+          } as DriverEvent);
     let event;
     try {
-      event = toEventDto(
-        stamped.event,
-        this.request,
-        this.#ctx.config.serialize,
-      );
+      event = toEventDto(source, this.request, this.#ctx.config.serialize);
     } catch (error) {
       this.#ctx.config.logger.error("jobs api serialize.event failed", {
         error,
@@ -1577,4 +1646,38 @@ export class Session implements HubSubscriber {
     }
     this.#ctx.onEnded(this);
   }
+}
+
+/**
+ * The queues besides its target that a shared unit's `summon` event names
+ * (`payload.queues`, `group.unit: "shared"`), each to be decided before the
+ * event is sent; none for any other event.
+ *
+ * Each is asked as `events.subscribe` with the channel and that queue
+ * (`{ channel: "queue/thumbs", queue: "renders" }`), so a host deciding on
+ * `channel` alone allows it. Like a broad channel's target decision, a
+ * pending one holds the session's events in its outbox (an `authorize` that
+ * never answers stalls them, with no timeout); one that throws denies the
+ * event it was asked for, is logged, and is asked again. Only `authorize`
+ * decides here: the API's configured `queues` list, which the REST routes
+ * also apply, is not consulted.
+ */
+function unitMembers(stamped: StampedEvent): string[] {
+  const { event } = stamped;
+  if (event.kind !== "queue" || event.type !== "summon") {
+    return [];
+  }
+  const queues = (event.payload as { queues?: unknown } | undefined)?.queues;
+  if (!Array.isArray(queues)) {
+    return [];
+  }
+  return queues.filter(
+    (queue): queue is string =>
+      typeof queue === "string" && queue !== event.target,
+  );
+}
+
+/** The per-target decision key for a shared unit's other queue `member`, on `channel`. */
+function memberKey(channel: string, member: string): string {
+  return `${channel}\0queue:${member}`;
 }

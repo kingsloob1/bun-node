@@ -1041,11 +1041,18 @@ has the rules.
   `reset()` closes it with its own. The policy's `budget` and this `budget`
   both apply: per period, the stricter limit. A shared unit refuses a
   provider that negotiated summon `0.1` and one that passes `"none"`.
+  `BunJobsOptions.summon` builds one: an array entry's `queues` (or a
+  record's one queue) become one controller, registered under each queue;
+  its `overrides` take only `jobsPerWorker` and `maxWorkers`, and
+  `jobs.summonController(queue, policy)` for one of its queues is a
+  `ConfigError`.
 
 ### `SummonGroup`
 
 A `SummonPolicy` written once for several queues: an entry of the array form
-of `BunJobsOptions.summon`. Shorthand, not a shared controller: it expands
+of `BunJobsOptions.summon` (not to be confused with
+[`SummonGroupOptions`](#summongroupoptions), the policy's `group` field).
+Shorthand, not a shared controller: it expands
 into one `SummonController` per queue, each with its own marker, budget,
 backoff and circuit (a group's `budget` applies to each queue; its `group`
 is passed to each, which is how its queues share one budget). The package
@@ -1060,11 +1067,18 @@ has an example.
   `budget`, `scaleDown`, `env`) is merged field by field; anything else,
   `summoner` always, replaces the group's value.
 
+An entry whose policy is a shared unit (`group.unit: "shared"`) is the
+exception: one controller for all of its `queues`, its `overrides` limited
+to `jobsPerWorker` and `maxWorkers`.
+
 ### `SummonOption`
 
 What `BunJobsOptions.summon` takes: `SummonPolicy` values keyed by queue
 name, or an array of `SummonGroup`s and such records, mixed. Every form
-expands to one `SummonController` per queue.
+expands to one `SummonController` per queue, except a shared unit
+(`group.unit: "shared"`): one controller for an array entry's `queues`, or
+for a record's one queue. One group's shared unit written twice is a
+`ConfigError`.
 
 ### `SummonController`
 
@@ -1136,6 +1150,15 @@ The payload of a `summon` event, locally and across processes.
 - `group`: optional. The summon group it was decided in: on every event of
   an attempt a grouped controller made, and on a `budget-exhausted` of the
   group's budget.
+- `queues`: optional. A shared unit's queues, in order, on each of its
+  events (absent for one queue). The event is published once on each of
+  them.
+- `eventId`: optional in the type, set on every event a controller emits:
+  the event's own id (a UUIDv7), the same on the local event and on every
+  published copy, so a shared unit's N copies dedupe by it. Absent on an
+  event an older bun-jobs published.
+- `missing`: optional. On a shared unit's `registered` event with the
+  detail `partial:<queues>`: those queues, as a list.
 
 ### `SummonCheckResult`
 
@@ -1157,7 +1180,9 @@ What `SummonPolicy.onSummonFailed` is told: one failure, secret-free.
 - `outcome`: a [`SummonFailureOutcome`](#summonfailureoutcome).
 - `kind`: the summoner's kind.
 - `namespace`: the queue's namespace.
-- `queue`: the queue.
+- `queue`: the queue; for a shared unit, the first of `queues`.
+- `queues`: optional. A shared unit's queues, in order; absent for one
+  queue.
 - `id`: optional. The attempt; for `circuit-open`, the one whose failure
   opened it. Absent for `budget-exhausted`.
 - `reason`: optional. Why the check that made the call ran, for `failed` and
@@ -1211,7 +1236,12 @@ What an attempt ended as, on the shared state and in events:
 
 What `status()` answers, and the status route serves.
 
-- `queue`: the queue.
+- `queue`: the queue; for a shared unit, the first of `queues`.
+- `queues`: optional. A shared unit's queues, in order; absent for one
+  queue.
+- `overlaps`: optional. Summon groups whose shared units also summon for
+  these queues, as of the controller's last check (from the `summon.group`
+  of live worker records, other than its own); absent when none.
 - `local`: whether a controller runs in this process: always `true` from
   `status()`; `false` for a status the management API read from storage
   alone (no `summoner`, the limits the last claim persisted).

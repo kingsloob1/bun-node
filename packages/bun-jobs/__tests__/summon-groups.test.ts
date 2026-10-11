@@ -388,7 +388,7 @@ describe("summon groups: more refusals, and null", () => {
     expect(() => jobs.summonController("emails")).toThrow(
       /No summon policy for queue "emails"/,
     );
-    expect(expandSummonOption(null).size).toBe(0);
+    expect(expandSummonOption(null)).toHaveLength(0);
   });
 
   it("refuses a record entry that is not a policy, naming the queue", () => {
@@ -423,7 +423,9 @@ describe("summon groups: how an override merges", () => {
 
   /** The policy `queue` expands to under `option`. */
   function expanded(option: SummonOption, queue: string): SummonPolicy {
-    return expandSummonOption(option).get(queue)!;
+    return expandSummonOption(option).find((entry) =>
+      entry.queues.includes(queue),
+    )!.policy;
   }
 
   it("merges plain-object fields one level deep, the override's over the group's", () => {

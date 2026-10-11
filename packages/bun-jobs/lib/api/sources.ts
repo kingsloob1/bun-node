@@ -371,27 +371,47 @@ export class QueueSource {
   }
 
   /**
-   * Every summon controller the `jobs` context runs in this process, on a
-   * queue this API can reach, sorted by queue name: what `GET /summon`
-   * lists. Reachability as {@link summonController} decides it, without a
-   * backend read: with `queues: "all"` a controller proves its queue; a
-   * configured list keeps its members only. Empty without `jobs`.
+   * Every summon controller the `jobs` context runs in this process with a
+   * queue this API can reach ({@link summonMembers}), each once (a shared
+   * unit too): what `GET /summon` lists. Reachability as
+   * {@link summonController} decides it, without a backend read: with
+   * `queues: "all"` a controller proves its queues; a configured list keeps a
+   * controller when **any** of its queues is in it. In the order built.
+   * Empty without `jobs`.
    */
   summonControllers(): SummonController[] {
     const jobs = this.#config.jobs;
     if (!jobs) {
       return [];
     }
+    return jobs[LIST_SUMMON_CONTROLLERS]().filter(
+      (controller) => this.summonMembers(controller).length > 0,
+    );
+  }
+
+  /**
+   * The queues of `controller` this API can reach, in its order: all of
+   * `controller.queues` with `queues: "all"` (the controller proves them),
+   * else those in the configured list. One queue for a per-queue
+   * controller; a shared unit's every reachable member.
+   */
+  summonMembers(controller: SummonController): string[] {
+    return this.summonReachable(controller.queues);
+  }
+
+  /**
+   * The queues of `queues` (a shared unit's) this API can reach, order kept:
+   * all of them with `queues: "all"`, else those in the configured list. No
+   * backend read: a summoning controller proves its queues.
+   */
+  summonReachable(queues: readonly string[]): string[] {
     const configured =
       this.#known === undefined
         ? (this.#config.queues as ReadonlyMap<string, unknown>)
         : undefined;
-    return jobs[LIST_SUMMON_CONTROLLERS]()
-      .filter(
-        (controller) =>
-          configured === undefined || configured.has(controller.queue),
-      )
-      .sort((a, b) => (a.queue < b.queue ? -1 : a.queue > b.queue ? 1 : 0));
+    return queues.filter(
+      (queue) => configured === undefined || configured.has(queue),
+    );
   }
 
   /**

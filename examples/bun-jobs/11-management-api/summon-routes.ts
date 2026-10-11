@@ -83,6 +83,7 @@ import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { withinOneHour } from "../shared/budget-window";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
+import { A_UUID_V7, markEventId } from "../shared/summon-events";
 import { connectJobsSocket } from "./helpers/jobs-socket";
 
 title("The management API: summoning over HTTP");
@@ -580,14 +581,15 @@ checkEqual("both channels accepted", hidden.ack.channels, [
   "queue/alerts/job/anything",
 ]);
 checkEqual(
-  "by default: the attempt's id, outcome, kind, count and reason — no handles",
-  hidden.frame.event.payload,
+  "by default: the attempt's id, outcome, kind, count and reason, and the event's own eventId (a UUIDv7) — no handles",
+  markEventId(hidden.frame.event.payload),
   {
     id: hidden.pressed.id,
     outcome: "started",
     kind: "example-record",
     count: 1,
     reason: "manual",
+    eventId: A_UUID_V7,
   },
 );
 checkEqual(

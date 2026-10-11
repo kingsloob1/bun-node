@@ -3659,13 +3659,13 @@ is read from storage instead (`local: false`):
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out, and answered by its own `GET /queues/:queue/summon` as `inert` with `inertReason: "unreadable-marker"`). Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
+| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out, and answered by its own `GET /queues/:queue/summon` as `inert` with `inertReason: "unreadable-marker"`). A [shared unit](#one-unit-for-several-queues-groupunit-shared) is one item, listed when the caller may read any of its queues: `queues` names those it may read (of those the API can reach), `queue` is the first of them and `group` its summon group. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — for a queue a local shared unit serves, the unit's status with `queues` (only those the caller may read; `queue` the first of them) (and `overlaps`, the other groups' units seen on its queues at the last check); and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
 | GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here. Each group redacted to the members the caller may read (below), and left out when it may read none |
 | GET | `/summon/groups/:group` | `queues.read`, per member | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller, and — answered alike — for one none of whose members the caller may read |
 | POST | `/summon/groups/:group/reset` | `queues.summon`, on every member | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. 403 unless `authorize` allows `queues.summon` on every member. Needs a controller in the group in the API's process |
-| POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto` |
-| POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset({ budget })`, then the `SummonStatusDto` after it. The optional body `{ "budget": true }` also clears the budget's usage (`/meta.features.summonResetBudget` says it is accepted); without it the usage is kept |
+| POST | `/queues/:queue/summon` | `queues.summon` | "Summon now": `check({ reason: "manual", force })`, `force` defaulting to `true` (it skips the cooldown only), as a `SummonCheckDto`. For a shared unit's queue, `queues.summon` on every queue of the unit |
+| POST | `/queues/:queue/summon/reset` | `queues.summon` | `reset({ budget })`, then the `SummonStatusDto` after it. The optional body `{ "budget": true }` also clears the budget's usage (`/meta.features.summonResetBudget` says it is accepted); without it the usage is kept. For a shared unit's queue, `queues.summon` on every queue of the unit, and the status redacted as `GET` redacts it |
 
 The status's `budget` (and each `GET /summon` item's) is `{ hour, perHour,
 day, perDay, hourResetsAt, dayResetsAt }`: the attempts counted this UTC hour
@@ -3754,7 +3754,8 @@ Examples:
 `summon` also takes an array of **groups**: one policy written once, with the
 `queues` it applies to. A group is shorthand, not a shared controller — it
 builds one ordinary `SummonController` per queue, exactly as if each queue had
-its own key, so each queue keeps its own marker, `maxWorkers`, backoff,
+its own key (unless its policy is a
+[shared unit](#one-unit-for-several-queues-groupunit-shared)), so each queue keeps its own marker, `maxWorkers`, backoff,
 circuit and **budget** (`perHour: 20` on a group of two queues allows 20 an
 hour for each; to share one budget, name a
 [summon group](#one-budget-for-several-queues-group)). Records may sit in
@@ -3936,6 +3937,109 @@ the group's counts (and the queue's own); `reset({ budget: true })` alone
 leaves the group alone.
 
 Example: [`02-queues/summon-group-budget.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-group-budget.ts), with a second process in the group in [`02-queues/helpers/summon-group-member.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summon-group-member.ts).
+
+### One unit for several queues: `group.unit: "shared"`
+
+With `unit: "shared"`, a summon group is **one controller** for all of its
+queues, and every unit it summons runs a worker for each of them (built with
+[`runSummoned(workers)`](#summoned-workers-several-queues)): one burst across
+the queues costs one attempt, one platform task and one database pool
+instead of one per queue.
+
+```ts
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: process.env.REDIS_URL! },
+  summon: [
+    {
+      queues: ["renders", "thumbs", "previews"],
+      summoner,
+      maxWorkers: 4,
+      group: { name: "media", unit: "shared" },
+      // Only these two may differ per queue: everything else is the unit's.
+      overrides: { renders: { jobsPerWorker: 10, maxWorkers: 2 } },
+    },
+  ],
+});
+jobs.summonController("thumbs") === jobs.summonController("renders"); // true
+```
+
+Or by hand, `new SummonController({ driver, namespace, queues, group: { name,
+unit: "shared" }, summoner, … })`.
+
+- **Demand is combined by the most-starved queue**, never summed: if renders
+  needs 3 units and thumbs 1, three units serve both. Each queue's capacity
+  is counted apart, from its own `jobsPerWorker` and `maxWorkers`.
+- **Its state is the group's entry**: attempts in flight, failures, backoff,
+  circuit and budget. The policy's `budget` and `group.budget` both apply;
+  per period the stricter wins. `group.circuit` changes nothing (the unit's
+  circuit is always shared).
+- **One controller, one entry.** In `BunJobs` it is registered under every
+  queue it serves and listed, closed and shown once. A group's shared unit
+  written in two places, an `overrides` key other than `jobsPerWorker` and
+  `maxWorkers`, and a queue named twice are each a `ConfigError` naming
+  where. `jobs.summonController(queue)` answers the unit for any of its
+  queues; **passing a `policy` for one of them is a `ConfigError`** naming
+  the group — change the unit's entry (its `overrides`), or take the queue
+  out of its `queues`. A shared unit's policy passed to `summonController()`
+  is refused too: write the unit in the `summon` option.
+- **One queue is allowed**, as an array entry or a record
+  (`{ renders: { summoner, group: { name: "media", unit: "shared" } } }`).
+  A one-queue summon writes no group in its arguments, so its workers'
+  records carry none, and the overlap warning (below) cannot see such a
+  unit.
+- **Every queue of the unit gets `+1` to its share of the group's day per
+  attempt**, since one unit serves them all.
+- **A provider must pass its arguments whole**: a shared unit refuses a
+  provider that negotiated summon `0.1`, and one whose `passes` is `"none"`
+  (it could not tell the unit which queues it serves).
+- **A unit that registers on some of its queues only** — an entry script
+  that forgot a queue — is `registered` with the detail
+  `partial:<queues>` and `missing: [<queues>]` on its event, logged at
+  `error`, and counted as one failure, so it opens the circuit rather than
+  summoning forever. `onSummonFailed` is not called for it.
+- **Its status, events and failures name the queues**: `status().queues`,
+  `SummonEventPayload.queues` and `SummonFailure.queues` (absent for one
+  queue), `queue` being the first. Each event is published once on every
+  queue's channel; the copies share one `eventId` (which every summon event
+  now carries), so a client following several queues dedupes them by it.
+  `GET /summon` lists the unit once, with `queues` and `group`;
+  `GET /queues/<any of them>/summon` answers the unit's status.
+- **The management API shows a caller only the unit's queues it may
+  read** (`queues.read`; on the socket, `events.subscribe` on the
+  channel for that queue): `queues`, `queue` (the first of those),
+  a socket event's `missing`, a `partial:` detail (bare `partial` when it
+  names none of them) and the group's shares all leave the others out, and
+  a unit none of whose queues the caller may read is not listed. **"Summon
+  now" and a reset on one of its queues act for all of them**, so they
+  need `queues.summon` on every one: any refusal is 401/403 before anything
+  runs, naming no queue, as `POST /summon/groups/:group/reset` answers.
+- **Overlaps.** One queue should have one summoning controller. A controller
+  that finds live workers on its queues summoned by another group's shared
+  unit warns once per queue and group, and lists the groups in
+  `status().overlaps` (as of its last check). A shared unit of several
+  queues that finds a summoned worker with no group on one of them — a
+  per-queue controller's, or a unit from an older build — warns once per
+  queue, without listing it.
+- **Resets.** `reset()` clears the unit's failures, backoff and circuit (and
+  the circuit per-queue controllers of the group opened for its kind);
+  `reset({ budget: true })` also the group's counts. `POST
+  /summon/groups/:group/reset` does the same to the unit's entry.
+
+**Upgrading.** During a rolling deploy, a unit started from an entry script
+that predates the group's queues registers on some of them only, so each of
+its attempts is `partial` until every image is updated. Switching a group
+from per-queue controllers to a shared unit keeps the group's budget counts
+and circuits (it is the same entry), and leaves the old per-queue markers in
+place, unused; their units in flight drain and exit on idle.
+
+**Naming.** `SummonGroupOptions` is the policy's `group` field — what
+controllers share, one budget, a circuit or one unit. `SummonGroup` is an
+entry of the `summon` option's array form, several queues written as one
+policy, which shares nothing by itself. A group's shared state is read back
+as `SummonGroupStatus` (`SummonGroupStatusDto` in the management API).
+
+Example: [`02-queues/summon-shared-unit.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-shared-unit.ts), with the unit's entry file in [`02-queues/helpers/summoned-unit-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-unit-entry.ts).
 
 ### Summon policy
 
@@ -6483,6 +6587,23 @@ needs first; one still pending then delays the `ack`, so the replay still
 precedes it. At most 1000 events are held; past that the connection is treated
 as a slow consumer — it stops receiving events and gets a `slow-consumer`
 `gap` once the backlog clears.
+
+**A shared unit's `summon` events.** A [shared unit](#one-unit-for-several-queues-groupunit-shared)
+publishes each `summon` event on every queue it serves, naming them all in
+`queues` (and `missing`, and a `partial:` detail). Before such an event goes
+out on a channel, `authorize` is asked `events.subscribe` about each of the
+unit's other queues, with that channel and the other queue —
+`{ channel: "queue/thumbs", queue: "renders" }` — once per channel and queue
+for the subscription, and the event names only the queues allowed on
+**every** channel it is sent for (its own target always). A host that
+decides on `channel` alone therefore allows them all: decide on `queue` too.
+These decisions behave as a broad channel's do: while one is pending the
+connection's events are held, in order, so an `authorize` that never answers
+stalls that connection's events — now also on a `queue/<q>` channel — with no
+timeout (the 1000-event limit applies); one that throws counts as a refusal
+for the event, is logged, and is asked again for the next. The socket redacts
+by `authorize` alone; the REST routes also keep to the API's configured
+`queues` list.
 
 **Backpressure.** A client that cannot keep up stops receiving events, gets one
 `gap` when its socket drains, and is closed `4008` after
