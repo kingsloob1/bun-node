@@ -39,6 +39,7 @@ import { isSummonEvent, summonEventSummary } from "../queues/panels/summonText";
 import { useUrlParams } from "../queues/urlState";
 import {
   channelName,
+  dedupeSummon,
   defaultChoice,
   matchesTypes,
   MAX_PAUSED,
@@ -593,6 +594,9 @@ export function EventsScreen() {
   pausedRef.current = paused;
   const typesRef = useRef(types);
   typesRef.current = types;
+  // The summon event ids heard, for `dedupeSummon`: kept across Clear and a
+  // channel change, since a shared unit's copies may still be arriving.
+  const seenRef = useRef<readonly string[]>([]);
 
   const add = useCallback((row: LogRow) => {
     if (pausedRef.current) {
@@ -611,6 +615,13 @@ export function EventsScreen() {
       // Another screen may hold this channel with a wider filter, and the
       // client merges filters per channel, so filter here too.
       if (!matchesTypes(event, typesRef.current)) {
+        return;
+      }
+      // A shared summon unit's event arrives once per queue it serves: one
+      // row. Checked after the filter, so only an id that was shown counts.
+      const dedupe = dedupeSummon(seenRef.current, event);
+      seenRef.current = dedupe.seen;
+      if (dedupe.duplicate) {
         return;
       }
       add({

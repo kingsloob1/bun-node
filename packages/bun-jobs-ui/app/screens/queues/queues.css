@@ -312,6 +312,13 @@ tr[aria-selected="true"] {
   gap: var(--space-2);
 }
 
+/* A shared summon unit's queues: under the queue on the Summoning screen. */
+.summoning-unit {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: normal;
+}
+
 /* A summon budget: one line per UTC window, a meter of what is left first. */
 .summon-budget {
   display: inline-grid;

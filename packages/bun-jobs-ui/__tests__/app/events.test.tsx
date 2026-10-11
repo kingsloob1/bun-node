@@ -7,9 +7,11 @@ import {
 import { describe, expect, it } from "bun:test";
 import {
   channelName,
+  dedupeSummon,
   defaultChoice,
   MAX_PAUSED,
   MAX_ROWS,
+  MAX_SEEN_EVENT_IDS,
   parseChannel,
   parseTypes,
   prependRows,
@@ -93,6 +95,30 @@ function completedMany(prefix: string, count: number) {
     events.push(completed(`${prefix}-${index}`));
   }
   return events;
+}
+
+/**
+ * A `summon` event on `target`: one copy of a shared unit's event when
+ * `eventId` is given (every copy carries the same), one from an older
+ * server without it otherwise.
+ */
+function summon(
+  target: string,
+  eventId: string | undefined,
+  extra: Record<string, unknown> = {},
+) {
+  return queueEvent({
+    type: "summon",
+    target,
+    payload: {
+      id: "s-1",
+      outcome: "started",
+      kind: "ecs",
+      count: 1,
+      ...(eventId === undefined ? {} : { eventId }),
+      ...extra,
+    },
+  });
 }
 
 /** Waits for a target field to become a select (its list has loaded). */
@@ -251,6 +277,52 @@ describe("eventLog", () => {
   });
 });
 
+describe("dedupeSummon", () => {
+  it("drops a summon event whose eventId was heard, and remembers each new one", () => {
+    const first = dedupeSummon([], summon("renders", "e-1"));
+    expect(first).toEqual({ duplicate: false, seen: ["e-1"] });
+    // The same event's copy on another of the unit's queues.
+    const copy = dedupeSummon(first.seen, summon("thumbs", "e-1"));
+    expect(copy.duplicate).toBe(true);
+    expect(copy.seen).toBe(first.seen);
+    expect(dedupeSummon(first.seen, summon("thumbs", "e-2"))).toEqual({
+      duplicate: false,
+      seen: ["e-1", "e-2"],
+    });
+  });
+
+  it("never drops a summon event without an eventId, nor any other event", () => {
+    const seen = ["e-1"];
+    // An older server's summon events carry no eventId: each is its own.
+    const old = dedupeSummon(seen, summon("renders", undefined));
+    expect(old).toEqual({ duplicate: false, seen });
+    expect(old.seen).toBe(seen);
+    expect(dedupeSummon(seen, summon("renders", "")).duplicate).toBe(false);
+    // A non-summon event carrying the same field is not a summon copy.
+    const other = queueEvent({
+      type: "completed",
+      target: "renders",
+      id: "j-1",
+      payload: { id: "j-1", eventId: "e-1" },
+    });
+    expect(dedupeSummon(seen, other)).toEqual({ duplicate: false, seen });
+  });
+
+  it("remembers the newest ids up to the cap, forgetting the oldest", () => {
+    let seen: readonly string[] = [];
+    for (const id of ["a", "b", "c", "d"]) {
+      seen = dedupeSummon(seen, summon("q", id), 3).seen;
+    }
+    expect(seen).toEqual(["b", "c", "d"]);
+    expect(dedupeSummon(seen, summon("q", "a"), 3).duplicate).toBe(false);
+    expect(dedupeSummon(seen, summon("q", "b"), 3).duplicate).toBe(true);
+  });
+
+  it("remembers at least every row the log and a pause can hold", () => {
+    expect(MAX_SEEN_EVENT_IDS).toBeGreaterThanOrEqual(MAX_ROWS + MAX_PAUSED);
+  });
+});
+
 describe("the Events console", () => {
   it("subscribes to `all` in mode both, and shows events newest first with links", async () => {
     await renderEvents();
@@ -318,6 +390,61 @@ describe("the Events console", () => {
       summon!.querySelector('[aria-label^="Payload of summon"]'),
     ).toBeTruthy();
     expectAbsent(within(job!).queryByTestId("event-summon-summary"));
+  });
+
+  it("shows a shared unit's event once, naming its queues and the ones it missed", async () => {
+    await renderEvents();
+    const extra = {
+      outcome: "registered",
+      queues: ["renders", "thumbs", "previews"],
+      missing: ["previews"],
+      detail: "partial:previews",
+    };
+    await emit(
+      summon("renders", "e-1", extra),
+      summon("thumbs", "e-1", extra),
+      summon("previews", "e-1", extra),
+    );
+    const shown = rows();
+    expect(shown).toHaveLength(1);
+    expect(
+      within(shown[0]!).getByTestId("event-summon-summary").textContent,
+    ).toBe(
+      "Registered 1 worker (ecs), for renders, thumbs, previews; missing previews",
+    );
+    // A different event of the same unit is a row of its own.
+    await emit(summon("renders", "e-2", extra));
+    expect(rows()).toHaveLength(2);
+  });
+
+  it("keeps every summon event without an eventId, as an older server sends them", async () => {
+    await renderEvents();
+    await emit(summon("renders", undefined), summon("renders", undefined));
+    expect(rows()).toHaveLength(2);
+  });
+
+  it("drops a late copy of a summon event the 500-row cap pushed out of the log", async () => {
+    await renderEvents();
+    await emit(summon("renders", "e-1"));
+    await emit(...completedMany("j", MAX_ROWS));
+    expect(rows()).toHaveLength(MAX_ROWS);
+    expect(rows().filter((row) => row.dataset.type === "summon")).toHaveLength(
+      0,
+    );
+    await emit(summon("thumbs", "e-1"));
+    expect(rows().filter((row) => row.dataset.type === "summon")).toHaveLength(
+      0,
+    );
+    expect(rows()[0]!.textContent).toContain(`j-${MAX_ROWS - 1}`);
+  });
+
+  it("drops a copy that arrives while paused, of an event already held", async () => {
+    await renderEvents();
+    fireEvent.click(page().getByRole("button", { name: "Pause" }));
+    await emit(summon("renders", "e-1"), summon("thumbs", "e-1"));
+    expect(page().getByTestId("events-held").textContent).toBe("1 held");
+    fireEvent.click(page().getByRole("button", { name: "Resume" }));
+    expect(rows()).toHaveLength(1);
   });
 
   it("links a worker event's target to its queue, under a kind badge of its own", async () => {

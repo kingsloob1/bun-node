@@ -1,8 +1,10 @@
 import type { SummonStatusDto } from "../../../api/types";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { demandKeys } from "../../../api/demand";
+import { isApiError } from "../../../api/errors";
 import { listProviders, providerKeys } from "../../../api/providers";
+import { queryKeys } from "../../../api/queryKeys";
 import { queueKeys } from "../../../api/queues";
 import {
   getSummonStatus,
@@ -20,12 +22,15 @@ import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
 import { Spinner } from "../../../components/Spinner";
 import { Table } from "../../../components/Table";
+import { useToast } from "../../../components/toast";
 import { useApiClient } from "../../../context";
-import { displayText, formatNumber } from "../../../format";
+import { displayText, formatNumber, plural } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
-import { useCan, useFeature, useMeta } from "../../../meta/hooks";
+import { canPerform, useCan, useFeature, useMeta } from "../../../meta/hooks";
+import { Link } from "../../../router";
 import { providerReadiness } from "../../providers/providerText";
 import { TestConnection } from "../../providers/TestConnection";
+import { summonTabPath } from "../../summoning/paths";
 import { formatMs } from "../duration";
 import { useCanMutate } from "../gating";
 import { useRefreshInterval } from "../live";
@@ -33,6 +38,7 @@ import { budgetUsedText } from "./budgetText";
 import { SummonBudget } from "./SummonBudget";
 import { SummonGroupCard } from "./SummonGroupCard";
 import {
+  SHARED_UNIT_FORBIDDEN,
   summonActionsOffered,
   summonCheckSummary,
   summonInert,
@@ -57,6 +63,11 @@ export interface SummonPanelProps {
  * offering the tab, and a queue with no summoner in the API's process (409
  * `SUMMON_NOT_CONFIGURED`) has no tab at all.
  *
+ * A shared summon unit (a status with `queues`) is one process serving
+ * several queues: the panel names them, warns when another group's units
+ * were seen on them, and offers the actions only where the caller may
+ * summon every one of them ({@link useUnitCanSummon}).
+ *
  * `local` is always `true` today. A `false` answer — a controller in another
  * process, read from the store — is shown read-only: no actions, since both
  * need a controller in the API's own process.
@@ -77,6 +88,21 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     refetchInterval,
     placeholderData: keepPreviousData,
   });
+  const toast = useToast();
+  const unitCanSummon = useUnitCanSummon(status.data?.queues);
+  // A shared unit's actions need queues.summon on every queue it serves,
+  // hidden ones included, and the 403 names none of them: say so.
+  const onActionError = (error: Error) => {
+    if (
+      status.data?.queues !== undefined &&
+      isApiError(error) &&
+      error.status === 403
+    ) {
+      toast.error(SHARED_UNIT_FORBIDDEN, {
+        description: error.detail ?? error.title,
+      });
+    }
+  };
   const invalidate = [
     summonKeys.status(queue),
     summonKeys.list,
@@ -88,6 +114,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     successMessage: (result) => summonCheckSummary(result),
     invalidate,
     toastErrors: false,
+    onError: onActionError,
   });
   const reset = useApiMutation({
     mutationFn: (budget: boolean) =>
@@ -98,6 +125,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
         : `Reset the summon state of ${queue}: failures, backoff and circuit cleared`,
     invalidate,
     toastErrors: false,
+    onError: onActionError,
   });
 
   if (status.isPending) {
@@ -126,7 +154,12 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     );
   }
   const data = status.data;
-  const actionable = summonActionsOffered(data, canMutate("queues.summon"));
+  const actionable = summonActionsOffered(
+    data,
+    // A single queue's own map decides, as it always has; a shared unit's,
+    // every member's map.
+    unitCanSummon ?? canMutate("queues.summon"),
+  );
   return (
     <div
       className="summon-panel"
@@ -151,7 +184,21 @@ export function SummonPanel({ queue }: SummonPanelProps) {
           from the store, and it can be summoned or reset only from there.
         </p>
       )}
-      <SummonState status={data} />
+      {data.overlaps !== undefined && data.overlaps.length > 0 && (
+        <p
+          className="notice"
+          role="note"
+          data-testid="summon-overlaps"
+        >
+          {data.queues === undefined
+            ? `Workers summoned for another summon group (${data.overlaps.map(displayText).join(", ")}) were seen on this queue at the last check: two units may be serving the same queue.`
+            : `Workers summoned for another summon group (${data.overlaps.map(displayText).join(", ")}) were seen on this unit's queues at the last check: two units may be serving the same queues.`}
+        </p>
+      )}
+      <SummonState
+        status={data}
+        queue={queue}
+      />
       {data.group !== undefined && (
         <SummonGroupCard
           group={data.group}
@@ -228,17 +275,74 @@ export function SummonPanel({ queue }: SummonPanelProps) {
 }
 
 /**
+ * Whether the caller may summon or reset a shared unit (`queues`): only with
+ * `queues.summon` on **every** queue the status lists, each judged by its own
+ * targeted map (`GET /meta/permissions?queue=<member>`, the request the
+ * queue screen's own scope makes, so its own queue's is shared with it), and
+ * not read-only. `false` while any map is loading or after one failed: the
+ * server refuses the action on any member, so a guess would offer a button
+ * that fails. Members hidden from the caller cannot be asked about; the
+ * server's 403 covers them.
+ *
+ * `undefined` for a single queue's status (`queues` absent), which reads no
+ * other map: its own scope decides, as before.
+ */
+function useUnitCanSummon(
+  queues: readonly string[] | undefined,
+): boolean | undefined {
+  const api = useApiClient();
+  const { readOnly } = useMeta();
+  const maps = useQueries({
+    queries: (queues ?? []).map((member) => ({
+      queryKey: queryKeys.permissions({ queue: member }),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        api.getPermissions({ queue: member }, signal),
+    })),
+  });
+  if (queues === undefined) {
+    return undefined;
+  }
+  return (
+    !readOnly &&
+    maps.length > 0 &&
+    maps.every(
+      (map) => map.data !== undefined && canPerform(map.data, "queues.summon"),
+    )
+  );
+}
+
+/** Props of {@link SummonState}. */
+interface SummonStateProps {
+  /** The status. */
+  status: SummonStatusDto;
+  /** The queue whose Summon tab this is: marked among a shared unit's queues. */
+  queue: string;
+}
+
+/**
  * What holds the next attempt back, and the last thing that happened. For
  * summon state the server could not read ({@link summonStateKnown}), only
- * the last outcome: the rest would be placeholders.
+ * the last outcome: the rest would be placeholders. For a shared unit, first
+ * the queues it serves.
  */
-function SummonState({ status }: { status: SummonStatusDto }) {
+function SummonState({ status, queue }: SummonStateProps) {
   const last =
     status.last === undefined ? undefined : summonOutcome(status.last.outcome);
   const known = summonStateKnown(status);
   return (
     <KeyValue
       items={[
+        status.queues !== undefined && {
+          key: "unit",
+          label: "Shared unit",
+          value: (
+            <UnitQueues
+              queue={queue}
+              queues={status.queues}
+            />
+          ),
+          hint: "One summoned process serves these queues, and this status is the unit's. Only the queues you may read are listed.",
+        },
         {
           key: "last",
           label: "Last outcome",
@@ -324,6 +428,43 @@ function SummonState({ status }: { status: SummonStatusDto }) {
           },
       ]}
     />
+  );
+}
+
+/** Props of {@link UnitQueues}. */
+interface UnitQueuesProps {
+  /** The queue whose Summon tab this is: marked in the list. */
+  queue: string;
+  /** The unit's queues the caller may read (`status.queues`). */
+  queues: readonly string[];
+}
+
+/**
+ * A shared unit's queues in a line, "One process for 3 queues: renders,
+ * thumbs, previews", each linked to its Summon tab and this one marked.
+ * The count is of the queues listed: ones hidden from the caller are not
+ * in it, so it never claims the unit's total.
+ */
+function UnitQueues({ queue, queues }: UnitQueuesProps) {
+  return (
+    <span data-testid="summon-unit">
+      One process for {plural(queues.length, "queue")}:{" "}
+      {queues.map((member, index) => {
+        const current = member === queue;
+        return (
+          <span key={member}>
+            {index > 0 && ", "}
+            <Link
+              to={summonTabPath(member)}
+              title={`The Summon tab of ${member}`}
+            >
+              {displayText(member)}
+            </Link>
+            {current && <span className="muted"> (this queue)</span>}
+          </span>
+        );
+      })}
+    </span>
   );
 }
 

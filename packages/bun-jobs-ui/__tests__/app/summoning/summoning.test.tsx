@@ -417,3 +417,41 @@ describe("the Summoning screen", () => {
     await within(screen).findByTestId("summoning-row-emails");
   });
 });
+
+describe("a shared summon unit's row", () => {
+  it("names the group and links each of the unit's queues to its Summon tab, its own queue too", async () => {
+    const { screen } = await openScreen({
+      "GET /summon": list([
+        controller({
+          queue: "renders",
+          queues: ["renders", "thumbs", "previews"],
+          group: "media",
+        }),
+        controller(),
+      ]),
+    });
+    const row = await within(screen).findByTestId("summoning-row-renders");
+    // The queue cell keeps its own link first.
+    const head = within(row).getByRole("rowheader");
+    expect(within(head).getAllByRole("link")[0]!.getAttribute("href")).toBe(
+      `/jobs${summonTabPath("renders")}`,
+    );
+    const unit = within(row).getByTestId("summoning-unit-renders");
+    expect(unit.textContent).toBe(
+      "Shared unit of media: renders, thumbs, previews",
+    );
+    expect(
+      within(unit)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).toEqual(
+      ["renders", "thumbs", "previews"].map(
+        (queue) => `/jobs${summonTabPath(queue)}`,
+      ),
+    );
+    // A controller of one queue has no unit line.
+    const single = within(screen).getByTestId("summoning-row-emails");
+    expectAbsent(within(single).queryByTestId("summoning-unit-emails"));
+    expect(single.textContent).not.toContain("Shared unit");
+  });
+});

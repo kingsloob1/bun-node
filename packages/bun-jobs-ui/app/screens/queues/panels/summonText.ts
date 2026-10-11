@@ -185,7 +185,22 @@ export function summonStyle(style: SummonStyle): string {
   return known(STYLES, style) ? STYLES[style] : displayText(style);
 }
 
-/** A `summon` event's payload in one line, e.g. "Started 1 worker (ecs), because a job was added". */
+/**
+ * A list of names from an event payload, which arrives unchecked: each made
+ * safe as text, `[]` for anything but an array.
+ */
+function nameList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((name) => displayText(name)) : [];
+}
+
+/**
+ * A `summon` event's payload in one line, e.g. "Started 1 worker (ecs),
+ * because a job was added". A shared unit's event names the queues it
+ * serves (`queues`, as many as the connection may see) and the ones its
+ * attempt registered no worker on (`missing`): "Registered 1 worker (ecs),
+ * for renders, thumbs; missing previews". The `partial:<queues>` detail
+ * such an event carries says what `missing` says, so it is left out then.
+ */
 export function summonEventSummary(event: SummonEventDto): string {
   const outcome = summonOutcome(event.outcome).label;
   const workers =
@@ -193,9 +208,19 @@ export function summonEventSummary(event: SummonEventDto): string {
   const kind = event.kind ? ` (${displayText(event.kind)})` : "";
   const reason =
     event.reason === undefined ? "" : `, because ${summonReason(event.reason)}`;
+  const queues = nameList(event.queues);
+  const missing = nameList(event.missing);
+  const unit = queues.length > 0 ? `, for ${queues.join(", ")}` : "";
+  const absent = missing.length > 0 ? `; missing ${missing.join(", ")}` : "";
+  const partial =
+    missing.length > 0 &&
+    typeof event.detail === "string" &&
+    (event.detail === "partial" || event.detail.startsWith("partial:"));
   const detail =
-    event.detail === undefined ? "" : `: ${displayText(event.detail)}`;
-  return `${outcome}${workers}${kind}${reason}${detail}`;
+    event.detail === undefined || partial
+      ? ""
+      : `: ${displayText(event.detail)}`;
+  return `${outcome}${workers}${kind}${reason}${unit}${absent}${detail}`;
 }
 
 /** Whether a queue event's payload is a summon event's. */
@@ -227,13 +252,23 @@ export function summonCheckSummary(result: SummonCheckDto): string {
     case "released":
       return "Released: the summoner was set back to zero";
     case "none":
+      // The reading names its queue: for a shared unit, its most-starved
+      // queue's, which may not be the queue the check was asked about.
       return result.demand === undefined
         ? "Nothing to summon"
-        : `Nothing to summon: demand is ${formatNumber(result.demand.demand)}`;
+        : `Nothing to summon: demand on ${displayText(result.demand.queue)} is ${formatNumber(result.demand.demand)}`;
     default:
       return `Summon check: ${displayText(result.action)}`;
   }
 }
+
+/**
+ * The error toast of a 403 on "summon now" or reset of a shared unit: both
+ * need `queues.summon` on every queue the unit serves, and the server's
+ * refusal names none, since some may be hidden from the caller.
+ */
+export const SHARED_UNIT_FORBIDDEN =
+  "This needs queues.summon on every queue of the shared unit, including any you cannot see.";
 
 /**
  * Whether "summon now" and reset are offered: the caller may (`queues.summon`,

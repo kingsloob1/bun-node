@@ -61,6 +61,59 @@ export function prependRows(
   return next.length > cap ? next.slice(0, cap) : next;
 }
 
+/**
+ * Most summon event ids {@link dedupeSummon} remembers. At least
+ * {@link MAX_ROWS} + {@link MAX_PAUSED}, so every summon row still in the log
+ * or held by a pause is remembered: a copy of one is never added again,
+ * however far the log's cap has moved on.
+ */
+export const MAX_SEEN_EVENT_IDS = MAX_ROWS + MAX_PAUSED;
+
+/** What {@link dedupeSummon} decided about one event. */
+export interface DedupeResult {
+  /** Whether the event is a copy of a summon event already heard: drop it. */
+  duplicate: boolean;
+  /** The ids remembered afterwards, oldest first; the same array when nothing changed. */
+  seen: readonly string[];
+}
+
+/**
+ * Whether `event` repeats a summon event already heard, and the memory with
+ * its id remembered. A shared summon unit's event is published once on each
+ * of its queues, so a channel spanning several of them (`all`, `queues`)
+ * hears it once per queue, every copy with the same `eventId`; the console
+ * shows it once.
+ *
+ * Only a `summon` frame with an `eventId` is ever a duplicate: one from a
+ * server older than `eventId` (none) is always kept, and so is every other
+ * event. `seen` keeps the newest `cap` ids, oldest first.
+ */
+export function dedupeSummon(
+  seen: readonly string[],
+  event: EventWire,
+  cap: number = MAX_SEEN_EVENT_IDS,
+): DedupeResult {
+  if (event.kind !== "queue" || event.type !== "summon") {
+    return { duplicate: false, seen };
+  }
+  const payload: unknown = event.payload;
+  const eventId =
+    typeof payload === "object" && payload !== null
+      ? (payload as { eventId?: unknown }).eventId
+      : undefined;
+  if (typeof eventId !== "string" || eventId === "") {
+    return { duplicate: false, seen };
+  }
+  if (seen.includes(eventId)) {
+    return { duplicate: true, seen };
+  }
+  const next = [...seen, eventId];
+  return {
+    duplicate: false,
+    seen: next.length > cap ? next.slice(next.length - cap) : next,
+  };
+}
+
 /** What the channel picker chose. */
 export type ChannelChoice =
   | {

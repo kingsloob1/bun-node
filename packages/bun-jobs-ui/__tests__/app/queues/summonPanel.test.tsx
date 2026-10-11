@@ -3,11 +3,13 @@ import type {
   SummonOutcomeKind,
   SummonStatusDto,
 } from "../../../app/api/types";
-import type { MockReply } from "../mockFetch";
+import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { SUMMON_OUTCOMES } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import {
+  SHARED_UNIT_FORBIDDEN,
   summonActionsOffered,
+  summonCheckSummary,
   summonEventSummary,
   summonInert,
   summonOutcome,
@@ -16,7 +18,12 @@ import {
 import { expectAbsent, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
-import { findDialog, notifications, renderQueue } from "./fixtures";
+import {
+  errorToasts,
+  findDialog,
+  notifications,
+  renderQueue,
+} from "./fixtures";
 
 setupDom();
 
@@ -107,7 +114,7 @@ function granted(
 }
 
 /** Opens the Summon panel of `emails`. */
-async function openPanel(handlers: Record<string, MockReply>) {
+async function openPanel(handlers: Record<string, MockHandler | MockReply>) {
   const rendered = renderQueue({
     path: "/queues/emails?panel=summon",
     handlers,
@@ -679,5 +686,302 @@ describe("summon text", () => {
         detail: "hourly",
       }),
     ).toBe("Budget exhausted (ecs): hourly");
+  });
+});
+
+describe("a shared summon unit", () => {
+  /** The unit's queues the caller may read, `emails` (this tab's) first. */
+  const UNIT = ["emails", "thumbs", "previews"];
+
+  /** A shared unit's status, as any of its queues answers it. */
+  function unitStatus(
+    overrides: Partial<SummonStatusDto> = {},
+  ): SummonStatusDto {
+    return statusFixture({ queues: UNIT, ...overrides });
+  }
+
+  /**
+   * `GET /meta/permissions` answered per target: the untargeted map without
+   * `queues.summon`, so only a queue's own map can grant it; each queue in
+   * `grants` with `queues.summon` as given, `"pending"` never answering.
+   */
+  function perQueue(grants: Record<string, boolean | "pending">): MockHandler {
+    return (call: RecordedCall) => {
+      const queue = call.query.get("queue");
+      if (queue === null) {
+        return { body: permissionsFixture() };
+      }
+      const grant = grants[queue] ?? false;
+      if (grant === "pending") {
+        return new Promise<MockReply>(() => {});
+      }
+      return { body: permissionsFixture({ "queues.summon": grant }) };
+    };
+  }
+
+  /** The queues `/meta/permissions` was asked about, `null` for untargeted. */
+  function askedAbout(calls: readonly RecordedCall[]): (string | null)[] {
+    return calls
+      .filter((call) => call.path === "/meta/permissions")
+      .map((call) => call.query.get("queue"));
+  }
+
+  /** Handlers for a shared unit's tab: its status and per-queue grants. */
+  function unitHandlers(
+    grants: Record<string, boolean | "pending">,
+    status: SummonStatusDto = unitStatus(),
+    extra: Record<string, MockReply> = {},
+  ): Record<string, MockHandler | MockReply> {
+    return {
+      "GET /meta/permissions": perQueue(grants),
+      "GET /queues/emails/summon": { body: status },
+      ...extra,
+    };
+  }
+
+  /**
+   * Opens the tab and waits until every member's map has been asked for
+   * and a moment has passed for the answers to land.
+   */
+  async function openUnit(handlers: Record<string, MockHandler | MockReply>) {
+    const opened = await openPanel(handlers);
+    await waitFor(() =>
+      expect(new Set(askedAbout(opened.calls))).toEqual(
+        new Set([null, ...UNIT]),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return opened;
+  }
+
+  it("names the unit's queues, this one marked, each linked to its Summon tab", async () => {
+    const { panel } = await openUnit(
+      unitHandlers({ emails: true, thumbs: true, previews: true }),
+    );
+    const unit = within(panel).getByTestId("summon-unit");
+    expect(unit.textContent).toBe(
+      "One process for 3 queues: emails (this queue), thumbs, previews",
+    );
+    expect(
+      within(unit)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).toEqual([
+      "/jobs/queues/emails?panel=summon",
+      "/jobs/queues/thumbs?panel=summon",
+      "/jobs/queues/previews?panel=summon",
+    ]);
+    // No overlaps reported: no notice.
+    expectAbsent(within(panel).queryByTestId("summon-overlaps"));
+  });
+
+  it("warns when another group's summoned workers were seen on the unit's queues", async () => {
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus({ overlaps: ["batch", "media"] }),
+      ),
+    );
+    const notice = within(panel).getByTestId("summon-overlaps");
+    expect(notice.className).toContain("notice");
+    expect(notice.textContent).toBe(
+      "Workers summoned for another summon group (batch, media) were seen on this unit's queues at the last check: two units may be serving the same queues.",
+    );
+  });
+
+  it("offers Summon now and Reset where every member allows queues.summon", async () => {
+    const { panel } = await openUnit(
+      unitHandlers({ emails: true, thumbs: true, previews: true }),
+    );
+    await within(panel).findByRole("button", { name: "Summon now…" });
+    expect(within(panel).getByRole("button", { name: "Reset…" })).toBeTruthy();
+  });
+
+  it("offers neither where one member refuses queues.summon", async () => {
+    const { panel } = await openUnit(
+      unitHandlers({ emails: true, thumbs: true, previews: false }),
+    );
+    // The queue's own map has answered: its header's Pause is there.
+    const header = await page().findByRole("group", { name: "Queue actions" });
+    await within(header).findByRole("button", { name: /Pause/ });
+    expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: "Reset…" }));
+  });
+
+  it("offers neither while a member's map is still loading", async () => {
+    const { panel } = await openUnit(
+      unitHandlers({ emails: true, thumbs: "pending", previews: true }),
+    );
+    expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: "Reset…" }));
+  });
+
+  it("offers neither read-only, whatever the members allow", async () => {
+    const { panel } = await openUnit({
+      ...unitHandlers({ emails: true, thumbs: true, previews: true }),
+      "GET /meta": { body: metaFixture({ readOnly: true }) },
+    });
+    expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
+    expectAbsent(within(panel).queryByRole("button", { name: "Reset…" }));
+  });
+
+  it("says a 403 on Summon now needs queues.summon on every queue of the unit", async () => {
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus(),
+        {
+          "POST /queues/emails/summon": {
+            status: 403,
+            body: problem(403, "FORBIDDEN", "Forbidden", {
+              detail: "Not allowed to summon this unit",
+            }),
+          },
+        },
+      ),
+    );
+    fireEvent.click(
+      await within(panel).findByRole("button", { name: "Summon now…" }),
+    );
+    const dialog = await findDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Summon now" }));
+    await waitFor(() =>
+      expect(errorToasts().textContent).toContain(SHARED_UNIT_FORBIDDEN),
+    );
+    expect(errorToasts().textContent).toContain(
+      "Not allowed to summon this unit",
+    );
+  });
+
+  it("says the same of a 403 on Reset", async () => {
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus(),
+        {
+          "POST /queues/emails/summon/reset": {
+            status: 403,
+            body: problem(403, "FORBIDDEN", "Forbidden"),
+          },
+        },
+      ),
+    );
+    fireEvent.click(
+      await within(panel).findByRole("button", { name: "Reset…" }),
+    );
+    const dialog = await findDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(errorToasts().textContent).toContain(SHARED_UNIT_FORBIDDEN),
+    );
+  });
+
+  it("keeps a single queue's tab as it was: no unit line, no overlaps notice, its own map alone decides", async () => {
+    const { panel, calls } = await openPanel(granted());
+    await within(panel).findByRole("button", { name: "Summon now…" });
+    expect(within(panel).getByRole("button", { name: "Reset…" })).toBeTruthy();
+    expectAbsent(within(panel).queryByTestId("summon-unit"));
+    expectAbsent(within(panel).queryByTestId("summon-overlaps"));
+    expect(panel.textContent).not.toContain("Shared unit");
+    // No other queue's map is read.
+    expect(
+      askedAbout(calls).filter((queue) => queue !== null && queue !== "emails"),
+    ).toEqual([]);
+  });
+
+  it("gates a single queue by its own map even when it is not granted elsewhere", async () => {
+    // The untargeted map refuses, `emails`' own map grants: offered, as before.
+    const { panel } = await openPanel({
+      "GET /meta/permissions": perQueue({ emails: true }),
+      "GET /queues/emails/summon": { body: statusFixture() },
+    });
+    await within(panel).findByRole("button", { name: "Summon now…" });
+  });
+
+  it("shows no shared-unit toast for a single queue's 403", async () => {
+    const { panel } = await openPanel(
+      granted(statusFixture(), {
+        "POST /queues/emails/summon": {
+          status: 403,
+          body: problem(403, "FORBIDDEN", "Forbidden"),
+        },
+      }),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Summon now…" }));
+    const dialog = await findDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Summon now" }));
+    // The dialog shows the refusal in place, as it always has.
+    await within(dialog).findByText("Forbidden");
+    expect(errorToasts().textContent).not.toContain(SHARED_UNIT_FORBIDDEN);
+  });
+
+  it("warns of overlaps on a single queue too, in its own words", async () => {
+    const { panel } = await openPanel(
+      granted(statusFixture({ overlaps: ["media"] })),
+    );
+    expect(within(panel).getByTestId("summon-overlaps").textContent).toBe(
+      "Workers summoned for another summon group (media) were seen on this queue at the last check: two units may be serving the same queue.",
+    );
+    expectAbsent(within(panel).queryByTestId("summon-unit"));
+  });
+});
+
+describe("a shared unit's summon text", () => {
+  it("names the queues a shared unit's event is for, and the ones it missed", () => {
+    expect(
+      summonEventSummary({
+        id: "s-1",
+        outcome: "registered",
+        kind: "ecs",
+        count: 1,
+        queues: ["renders", "thumbs", "previews"],
+        missing: ["previews"],
+        detail: "partial:previews",
+        eventId: "e-1",
+      }),
+    ).toBe(
+      "Registered 1 worker (ecs), for renders, thumbs, previews; missing previews",
+    );
+    expect(
+      summonEventSummary({
+        id: "s-1",
+        outcome: "started",
+        kind: "ecs",
+        reason: "add",
+        queues: ["renders", "thumbs"],
+      }),
+    ).toBe("Started (ecs), because a job was added, for renders, thumbs");
+    // A detail other than the partial one stays.
+    expect(
+      summonEventSummary({
+        id: "s-1",
+        outcome: "failed",
+        kind: "ecs",
+        queues: ["renders"],
+        detail: "quota",
+      }),
+    ).toBe("Failed (ecs), for renders: quota");
+  });
+
+  it("names the queue whose demand a check read", () => {
+    const demand = {
+      queue: "thumbs",
+      at: NOW,
+      paused: false,
+      waiting: 0,
+      dueNow: 0,
+      stalled: 0,
+      active: 0,
+      workers: 0,
+      nextDueAt: null,
+      demand: 0,
+      outstanding: 0,
+      capped: false,
+      exact: true,
+    };
+    expect(summonCheckSummary({ action: "none", demand })).toBe(
+      "Nothing to summon: demand on thumbs is 0",
+    );
+    expect(summonCheckSummary({ action: "none" })).toBe("Nothing to summon");
   });
 });
