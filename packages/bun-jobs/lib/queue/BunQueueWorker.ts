@@ -185,6 +185,17 @@ interface SweepLease {
 const SWEEP_LEASE_LIFETIMES = 2;
 
 /**
+ * How long a forced close waits for a maintenance pass already running
+ * before it goes on without it. A pass is a few driver calls and stops at its
+ * next step once the worker is closing, so this is far longer than one takes;
+ * it bounds the case where a call is itself waiting — on a file lock or hold
+ * a paused process keeps, up to `LOCK_WAIT_MS`, or on a stalled pool. A pass
+ * left behind then is what every pass was before: its lease lapses at expiry.
+ * A graceful close waits for it, until an escalation.
+ */
+const FORCED_CLOSE_PASS_WAIT_MS = 1_000;
+
+/**
  * How much longer than its own a holder's cadence must be before a worker
  * takes a live lease from it: the lease settles on the fastest sweeper rather
  * than on whoever won the first race, so a worker deliberately given a short
@@ -1719,7 +1730,7 @@ export class BunQueueWorker<
     this.#disarmMaintenance();
     // A parked worker runs no sweeps, so it must not go on holding the leases
     // for them; the expiry would cover it, three cadences later.
-    void this.#releaseSweepLeases();
+    void this.#releaseSweepLeasesAfterPasses();
     void this.#report();
 
     const cancel = createDeferred<void>();
@@ -2020,8 +2031,10 @@ export class BunQueueWorker<
 
     // Before either path below closes the driver: a worker leaving hands the
     // queue's sweeps to another straight away, rather than leaving them to
-    // wait out the lease it will never renew again.
-    await this.#releaseSweepLeases();
+    // wait out the lease it will never renew again. It waits for a pass
+    // already running first, which then takes no lease and stops at its next
+    // step, so none is left calling the driver once this has resolved.
+    await this.#releaseSweepLeasesAfterPasses();
 
     if (this.#reportTimer) {
       clearInterval(this.#reportTimer);
@@ -3586,6 +3599,13 @@ export class BunQueueWorker<
     const entry = await this.driver.getQueueState(this.ref, name);
     const lease = entry?.value as SweepLease | null;
 
+    // Closed or parked while that read was out: the passes are over, so take
+    // nothing. What it holds already stays recorded, for the release to give
+    // back — a lease taken now would be one nothing ever gives back.
+    if (this.#passesOver) {
+      return false;
+    }
+
     // Held by someone else and still live. Take it anyway if this worker
     // sweeps materially more often than the holder does; otherwise stand down.
     if (
@@ -3633,8 +3653,19 @@ export class BunQueueWorker<
    * hand-over, and a worker that is killed, or whose driver has already gone,
    * simply lets its lease lapse. It only ever clears a lease still recorded
    * against itself, never one another worker has since taken over.
+   *
+   * Called once the passes already running have ended (see
+   * {@link #passesEnded}): one of them may be taking or renewing a lease that
+   * very moment, and a release that looked before it had recorded it left
+   * that lease naming a worker that was gone, for its whole lifetime. A parked
+   * worker started again meanwhile keeps its leases — its passes are armed
+   * again, and are using them.
    */
   async #releaseSweepLeases(): Promise<void> {
+    if (!this.#passesOver) {
+      return;
+    }
+
     const held = [...this.#sweepLeases];
     this.#sweepLeases.clear();
 
@@ -3674,6 +3705,57 @@ export class BunQueueWorker<
    * expiry. Empty on a driver without queue state, which has no leases.
    */
   readonly #sweepLeases = new Set<string>();
+
+  /**
+   * The maintenance and promotion passes running now, each until it ends (see
+   * {@link #every}). A close waits for them before releasing the sweep leases
+   * and closing the driver, so none goes on taking a lease or calling the
+   * driver behind it.
+   */
+  readonly #passes = new Set<Promise<void>>();
+
+  /**
+   * Whether the worker's passes are over — it is closing, or parked — so a
+   * pass still running takes no lease and starts no further step.
+   */
+  get #passesOver(): boolean {
+    return this.#closing || !this.#passesArmed;
+  }
+
+  /**
+   * Resolves when the passes running now have ended. Closing, a graceful
+   * close waits for them until it is escalated, and a forced one for up to
+   * {@link FORCED_CLOSE_PASS_WAIT_MS}; parking, for as long as they take, as
+   * nothing waits on it.
+   */
+  async #passesEnded(): Promise<void> {
+    const ended = Promise.allSettled([...this.#passes]);
+    if (!this.#closing) {
+      await ended;
+      return;
+    }
+
+    await this.#untilEscalated(ended);
+    if (!this.#closeForced) {
+      return;
+    }
+
+    const patience = new AbortController();
+    await Promise.race([
+      ended,
+      sleep(FORCED_CLOSE_PASS_WAIT_MS, {
+        unref: true,
+        signal: patience.signal,
+      }).catch(() => undefined),
+    ]);
+    patience.abort();
+  }
+
+  /** Releases the sweep leases once the passes running now have ended. */
+  async #releaseSweepLeasesAfterPasses(): Promise<void> {
+    await this.#passesEnded();
+    await this.#releaseSweepLeases();
+  }
 
   /**
    * Whether this worker holds `name` according to what its last pass recorded
@@ -4448,7 +4530,7 @@ export class BunQueueWorker<
       if (stopped) {
         this.#setPhase("stopped", "stopped persistently");
         this.#disarmMaintenance();
-        void this.#releaseSweepLeases();
+        void this.#releaseSweepLeasesAfterPasses();
         changed = true;
       }
     }
@@ -5307,11 +5389,15 @@ export class BunQueueWorker<
     this.#every(this.#options.stalledInterval, async () => {
       await this.#redeliverPending();
 
+      // Each step looks first: a close waits for this pass to end, so one
+      // that has begun must not be kept waiting on steps nobody will use.
       if (
+        this.#passesOver ||
         !(await this.#holdsSweepLease(
           STALLED_SWEEP_LEASE,
           this.#options.stalledInterval,
-        ))
+        )) ||
+        this.#passesOver
       ) {
         return;
       }
@@ -5330,6 +5416,9 @@ export class BunQueueWorker<
         this.#wake.abort();
       }
 
+      if (this.#passesOver) {
+        return;
+      }
       await this.#healFlows();
     });
 
@@ -5354,10 +5443,17 @@ export class BunQueueWorker<
         return;
       }
 
-      await this.#pruneExpired();
-      await this.#healRepeats();
-      await this.#sweepWindows();
-      await this.#sweepWorkerControls();
+      for (const sweep of [
+        async () => await this.#pruneExpired(),
+        async () => await this.#healRepeats(),
+        async () => await this.#sweepWindows(),
+        async () => await this.#sweepWorkerControls(),
+      ]) {
+        if (this.#passesOver) {
+          return;
+        }
+        await sweep();
+      }
     });
   }
 
@@ -5596,6 +5692,9 @@ export class BunQueueWorker<
    * queued behind the slow ones until every connection in the driver's pool
    * held a promotion waiting on another, and the worker's claims, completions
    * and lock renewals waited behind them for over a minute.
+   *
+   * Each pass is in {@link #passes} until it ends, so a close or a park can
+   * wait for the one already running instead of leaving it behind them.
    */
   #every(
     ms: number,
@@ -5609,13 +5708,15 @@ export class BunQueueWorker<
         return;
       }
       running = true;
-      void work()
+      const pass: Promise<void> = work()
         .catch((error: unknown) => {
           this.#emitError(error, "maintenance");
         })
         .finally(() => {
           running = false;
+          this.#passes.delete(pass);
         });
+      this.#passes.add(pass);
     };
 
     const timer = setInterval(run, ms);
