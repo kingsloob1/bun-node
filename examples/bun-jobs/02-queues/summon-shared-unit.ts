@@ -770,6 +770,14 @@ const partialNs = partialJobs.namespace;
 /** The queues the partial unit's entry builds workers for: thumbs is missing. */
 const PARTIAL = ["renders", "previews"];
 const MISSING = MEDIA.filter((queue) => !PARTIAL.includes(queue));
+/**
+ * The boot budget of the attempts that start the partial unit. The missing
+ * queue's place settles only once it has passed, so the tour waits that long,
+ * not the default three minutes; but the unit must also register before it,
+ * or the attempt settles `lost`, with no detail. At one second a loaded
+ * machine booted the child too slowly for that; five leave it room.
+ */
+const PARTIAL_BOOT_BUDGET = 5_000;
 const waitingJob = await partialJobs.queue("thumbs").add("work", {});
 const partialCalls: SummonRequest[] = [];
 const partialUnits: ReturnType<typeof spawnUnit>[] = [];
@@ -780,9 +788,7 @@ const partialController = controller({
   queues: [...MEDIA],
   group: SHARED,
   triggers: ONE_SHOT.triggers,
-  // The missing queue's place settles only once the attempt's boot budget
-  // has passed: kept short, so the tour waits a second, not three minutes.
-  bootBudget: 1_000,
+  bootBudget: PARTIAL_BOOT_BUDGET,
   summoner: defineSummoner({
     kind: "example-spawn",
     invoke: async (request: SummonRequest) => {
@@ -1852,7 +1858,7 @@ const narrowJobs = new BunJobs({
       queues: [...MEDIA],
       group: SHARED,
       ...ONE_SHOT,
-      bootBudget: 1_000,
+      bootBudget: PARTIAL_BOOT_BUDGET,
       summoner: defineSummoner({
         kind: "example-spawn",
         invoke: async (request: SummonRequest) => {
