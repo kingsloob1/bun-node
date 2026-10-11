@@ -40,6 +40,7 @@ import {
   ServerMessageSchema,
 } from "../../lib/api/ws/protocol";
 import { BunJobs, ConfigError, MemoryDriver } from "../../lib/index";
+import { JobsClosedError } from "../../lib/shared/errors";
 import { queueEvent, runnerEvent, workerEvent } from "../../lib/shared/events";
 import { testNamespace, waitFor } from "../helpers";
 import { apiConfig, ECHO_HANDLER, openContexts } from "./fixtures";
@@ -359,6 +360,49 @@ describe("connecting", () => {
     });
     await connect(listed.url, { headers: { Origin: "https://ops.example" } });
     expect(listed.api.websocket!.sessions).toBe(1);
+  });
+
+  it("logs a retryable 503 upgrade refusal at warn without a stack, any other 5xx at error with it", async () => {
+    // `authorize` throwing is how a refusal reaches `refuse` as a 5xx.
+    const closedError = new JobsClosedError("shop", "queue()");
+    const closing = await served({
+      authorize: () => {
+        throw closedError;
+      },
+    });
+    const refused = await refusedUpgrade(closing.origin);
+    expect(refused).toMatchObject({
+      status: 503,
+      body: { code: "JOBS_CLOSED", status: 503 },
+    });
+    const warned = closing.events.filter(
+      (event) => event.message === "jobs api upgrade failed",
+    );
+    expect(warned.map((event) => event.level)).toEqual(["warn"]);
+    expect(warned[0]!.error).toBeUndefined();
+    expect(warned[0]!.fields).toMatchObject({
+      code: "JOBS_CLOSED",
+      status: 503,
+      action: "events.connect",
+      path: "/admin/jobs/ws",
+      errorMessage: closedError.message,
+      retryAfter: "1",
+    });
+    expect(JSON.stringify(warned[0]!.fields)).not.toContain("    at ");
+
+    // The control: an unexpected error is still an error, with its stack.
+    const broken = await served({
+      authorize: () => {
+        throw new Error("authorize blew up");
+      },
+    });
+    expect((await refusedUpgrade(broken.origin)).status).toBe(500);
+    const failed = broken.events.filter(
+      (event) => event.message === "jobs api upgrade failed",
+    );
+    expect(failed.map((event) => event.level)).toEqual(["error"]);
+    expect(failed[0]!.error?.stack).toContain("    at ");
+    expect(failed[0]!.fields).not.toHaveProperty("errorMessage");
   });
 
   it("lets a plain GET of the socket path fall through to the API's JSON 404", async () => {

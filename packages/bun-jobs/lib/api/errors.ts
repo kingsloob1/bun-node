@@ -620,9 +620,82 @@ export function requestActionOf(req: BunRequest): JobsApiAction | undefined {
   return REQUEST_ACTIONS.get(req);
 }
 
+/** The `Retry-After` header a problem is sent with, whatever its case. */
+function retryAfterOf(result: ProblemResult): string | undefined {
+  for (const [name, value] of Object.entries(result.headers)) {
+    if (name.toLowerCase() === "retry-after") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether an answer is a retryable refusal: a 503 sent with a `Retry-After`.
+ *
+ * Read from the answer the mapping produced, not from a list of codes, so it
+ * stays true as the table changes. Today that is `QUEUE_CLOSED`, `JOBS_CLOSED`
+ * and `QUEUE_FULL` — a shutdown or a full queue, where another process or a
+ * later attempt answers — plus any {@link ApiError} raised as a 503 with that
+ * header. A 503 without one (`WORKER_CLOSED`, `DRIVER_ERROR`) promises nothing
+ * about a retry, and stays a server fault.
+ */
+export function isRetryableProblem(result: ProblemResult): boolean {
+  return result.status === 503 && retryAfterOf(result) !== undefined;
+}
+
+/** The request-side fields {@link logApiFailure} records. */
+export interface ApiFailureLogFields {
+  /** The action the request was attempting, when one was recorded. */
+  action?: JobsApiAction;
+  /** The request method; left out where the call site has none to report. */
+  method?: string;
+  /** The request path. */
+  path: string;
+}
+
+/**
+ * Logs a failed API request at the level its answer deserves:
+ *
+ * - a retryable 503 ({@link isRetryableProblem}) at `warn`, with the code, the
+ *   error's message and the `Retry-After`, but not the error itself, so no
+ *   stack: during a shutdown every request answers one, and each is a normal,
+ *   expected refusal;
+ * - any other 5xx at `error`, with the error and so its stack;
+ * - a 4xx at `debug`, with the error.
+ */
+export function logApiFailure(
+  logger: Logger,
+  message: string,
+  error: unknown,
+  result: ProblemResult,
+  request: ApiFailureLogFields,
+): void {
+  const base = {
+    code: result.problem.code,
+    status: result.status,
+    ...request,
+  };
+  if (isRetryableProblem(result)) {
+    logger.warn(message, {
+      ...base,
+      ...(error instanceof Error ? { errorMessage: error.message } : {}),
+      retryAfter: retryAfterOf(result),
+    });
+  } else if (result.status >= 500) {
+    logger.error(message, { error, ...base });
+  } else {
+    logger.debug(message, { error, ...base });
+  }
+}
+
 /** Options for {@link createApiErrorHandler}. */
 export interface ApiErrorHandlerOptions {
-  /** Where failures are logged: `error` level for 5xx, `debug` for 4xx. */
+  /**
+   * Where failures are logged: `warn` without a stack for a retryable 503
+   * (`Retry-After` set), `error` with the stack for any other 5xx, `debug` for
+   * 4xx. See {@link logApiFailure}.
+   */
   logger: Logger;
 }
 
@@ -637,19 +710,11 @@ export function createApiErrorHandler(
   const { logger } = options;
   return ((error, req, res, _next) => {
     const result = toProblem(error, { instance: req.path });
-    const fields = {
-      error,
-      code: result.problem.code,
-      status: result.status,
+    logApiFailure(logger, "jobs api request failed", error, result, {
       action: requestActionOf(req),
       method: req.method,
       path: req.path,
-    };
-    if (result.status >= 500) {
-      logger.error("jobs api request failed", fields);
-    } else {
-      logger.debug("jobs api request failed", fields);
-    }
+    });
     sendProblem(res, result);
   }) satisfies RouterErrorMiddlewareHandler;
 }

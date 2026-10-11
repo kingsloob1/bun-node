@@ -534,6 +534,112 @@ describe("the error handler and catch-all", () => {
     });
   });
 
+  describe("a retryable 503 logs at warn, without a stack", () => {
+    /** The handler's records for one request. */
+    const failures = (events: LogEvent[]) =>
+      events.filter((event) => event.message === "jobs api request failed");
+
+    /** Asserts a record carries no stack anywhere: no `Error`, no frame text. */
+    const expectNoStack = (event: LogEvent) => {
+      expect(event.error).toBeUndefined();
+      expect(
+        Object.values(event.fields).some((value) => value instanceof Error),
+      ).toBe(false);
+      expect(JSON.stringify(event.fields)).not.toContain("    at ");
+    };
+
+    const retryable: { name: string; error: () => Error; code: string }[] = [
+      {
+        name: "JobsClosedError",
+        error: () => new JobsClosedError(`closed ${SECRET}`, "queue()"),
+        code: "JOBS_CLOSED",
+      },
+      {
+        name: "QueueClosedError",
+        error: () => new QueueClosedError(`mail ${SECRET}`),
+        code: "QUEUE_CLOSED",
+      },
+      {
+        name: "QueueFullError",
+        error: () => new QueueFullError(`mail ${SECRET}`, 10),
+        code: "QUEUE_FULL",
+      },
+      {
+        // Decided by the answer, not a list of codes: an ApiError the API
+        // raises itself as a 503 with Retry-After (any header case) is one too.
+        name: "an ApiError 503 with a retry-after header",
+        error: () =>
+          new ApiError("SOMETHING_BUSY", 503, `busy ${SECRET}`, {
+            headers: { "retry-after": "5" },
+          }),
+        code: "SOMETHING_BUSY",
+      },
+    ];
+
+    for (const testCase of retryable) {
+      it(`${testCase.name} → one warn record with the code and message`, async () => {
+        const error = testCase.error();
+        const { response, events } = await answer(error);
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).not.toBeNull();
+        const records = failures(events);
+        expect(records.map((event) => event.level)).toEqual(["warn"]);
+        expect(records[0]!.fields).toMatchObject({
+          code: testCase.code,
+          status: 503,
+          action: "jobs.read",
+          method: "GET",
+          path: "/boom",
+          errorMessage: error.message,
+          retryAfter: response.headers.get("retry-after"),
+        });
+        expectNoStack(records[0]!);
+      });
+    }
+
+    const notRetryable: { name: string; error: () => Error; status: number }[] =
+      [
+        {
+          name: "an unexpected Error",
+          error: () => new Error(SECRET),
+          status: 500,
+        },
+        {
+          // A 503 sent without Retry-After promises nothing about a retry.
+          name: "WorkerClosedError",
+          error: () => new WorkerClosedError(SECRET),
+          status: 503,
+        },
+        {
+          name: "DriverError",
+          error: () => new DriverError("redis", "claimJob", new Error(SECRET)),
+          status: 503,
+        },
+        {
+          // Retry-After on a status other than 503 changes nothing.
+          name: "an ApiError 500 with Retry-After",
+          error: () =>
+            new ApiError("INTERNAL", 500, SECRET, {
+              headers: { "Retry-After": "1" },
+            }),
+          status: 500,
+        },
+      ];
+
+    for (const testCase of notRetryable) {
+      it(`${testCase.name} → still one error record, with the stack`, async () => {
+        const error = testCase.error();
+        const { response, events } = await answer(error);
+        expect(response.status).toBe(testCase.status);
+        const records = failures(events);
+        expect(records.map((event) => event.level)).toEqual(["error"]);
+        expect(records[0]!.error).toBe(error);
+        expect(records[0]!.error!.stack).toContain("    at ");
+        expect(records[0]!.fields).not.toHaveProperty("errorMessage");
+      });
+    }
+  });
+
   it("leaves a response that has already started alone", async () => {
     const router = new BunRouter();
     router.get("/half", (_req, res) => {
