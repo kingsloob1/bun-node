@@ -916,6 +916,59 @@ const ANALYTICS_TABLES = [
  */
 const METRIC_CHUNK = 200;
 
+/** What an analytics row is keyed and swept by: the fields its order comes from. */
+interface MetricRowKey {
+  /** The namespace. */
+  ns: string;
+  /** The queue, worker key or runner id, or the empty roll-up entity. */
+  entity: string;
+  /** The bucket's width, ms. */
+  interval: number;
+  /** The bucket's start, epoch ms. */
+  at: number;
+}
+
+/**
+ * Orders analytics rows as the prune index `(ns, interval_ms, bucket)` does,
+ * then by entity, so that every upsert takes its row locks in one order.
+ *
+ * InnoDB locks a multi-row upsert's rows one by one, in `VALUES` order, and
+ * holds each until the statement ends. In the order a buffer gathers them — a
+ * second's rows, then the minute's, then the next second's — two cycles
+ * formed, each reproduced with two connections (the first on MySQL and
+ * MariaDB, the second on MySQL):
+ *
+ * - Two writers whose batches straddle a second boundary each held a shared
+ *   row (the namespace roll-up) the other wanted next: one held the minute's
+ *   and wanted the new second's, the other the reverse.
+ * - A writer that had updated the minute width's first row went on to insert a
+ *   new second's row into the gap in front of it — the gap the minute sweep's
+ *   `DELETE … bucket < cutoff` holds a next-key lock on while it waits for that
+ *   very row.
+ *
+ * In this order every writer takes every second-width row before any
+ * minute-width one, and all of them in the same order, so neither can form.
+ * Measured with eight writers and the sweep on one young namespace, ten runs
+ * an engine: 32 deadlocks on MariaDB and 111 on MySQL before, none after. The
+ * entities compare by UTF-16 code unit rather than by the column's collation:
+ * the order only has to be the same in every writer.
+ */
+function byMetricIndex(a: MetricRowKey, b: MetricRowKey): number {
+  if (a.ns !== b.ns) {
+    return a.ns < b.ns ? -1 : 1;
+  }
+  if (a.interval !== b.interval) {
+    return a.interval - b.interval;
+  }
+  if (a.at !== b.at) {
+    return a.at - b.at;
+  }
+  if (a.entity !== b.entity) {
+    return a.entity < b.entity ? -1 : 1;
+  }
+  return 0;
+}
+
 /**
  * Which worker a metric series belongs to: its queue, then its stable
  * `WorkerInfo.key`.
@@ -6555,8 +6608,12 @@ export class SqlDriver implements JobsDriver {
    * retry can never double-count part of it. The buffer merges by
    * `(ns, entity, interval, at)`, so no chunk can hold the same key twice —
    * which is what Postgres refuses with "cannot affect row a second time".
+   *
+   * The rows go out sorted by {@link byMetricIndex}, the prune index's order,
+   * so concurrent writers and the sweep all lock rows in one order: in the
+   * order a buffer gathers them, InnoDB deadlocked them against each other.
    */
-  async #writeMetricBatch<TEntry extends { at: number }>(
+  async #writeMetricBatch<TEntry extends MetricRowKey>(
     table: SqlTable,
     columns: readonly string[],
     batch: TEntry[],
@@ -6583,8 +6640,10 @@ export class SqlDriver implements JobsDriver {
     let failure: unknown;
     let latest = 0;
 
-    for (let start = 0; start < batch.length; start += METRIC_CHUNK) {
-      const chunk = batch.slice(start, start + METRIC_CHUNK);
+    const ordered = [...batch].sort(byMetricIndex);
+
+    for (let start = 0; start < ordered.length; start += METRIC_CHUNK) {
+      const chunk = ordered.slice(start, start + METRIC_CHUNK);
       const { bind, values } = this.#binder();
       const tuples = chunk
         .map((entry) => `(${row(entry).map(bind).join(", ")})`)

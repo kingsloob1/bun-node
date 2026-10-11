@@ -151,14 +151,20 @@ function makePrefix(client: SQL, label: string): string {
  * connection — so what it records is exactly what the driver ran, not an
  * approximation of it.
  */
-function recordingClient(real: SQL): { sql: SQL; statements: string[] } {
+function recordingClient(real: SQL): {
+  sql: SQL;
+  statements: string[];
+  calls: RecordedCall[];
+} {
   const statements: string[] = [];
+  const calls: RecordedCall[] = [];
 
   const sql = new Proxy(real, {
     get(target, property, receiver) {
       if (property === "unsafe") {
         return (text: string, params?: unknown[]) => {
           statements.push(text);
+          calls.push({ text, params: params ?? [] });
           return target.unsafe(text, params as never);
         };
       }
@@ -168,7 +174,15 @@ function recordingClient(real: SQL): { sql: SQL; statements: string[] } {
     },
   }) as SQL;
 
-  return { sql, statements };
+  return { sql, statements, calls };
+}
+
+/** One statement {@link recordingClient} saw, with what was bound to it. */
+interface RecordedCall {
+  /** The statement's text, placeholders and all. */
+  text: string;
+  /** The values bound to its placeholders, in placeholder order. */
+  params: unknown[];
 }
 
 /** How many of `statements` are a write of `kind` against `table`. */
@@ -514,6 +528,75 @@ function engineCases(
         3,
       );
     }, 60_000);
+
+    it("writes a batch in the prune index's order, whatever order it was counted in", async () => {
+      const { client, prefix } = make();
+      const recorder = recordingClient(client);
+      const driver = open({ sql: recorder.sql });
+      const ns = testNamespace("mx-order");
+      const q: QueueRef = { ns, queue: "orders" };
+      const minute = lastMinute();
+      const first = minute + 1_000;
+      const next = minute + 2_000;
+
+      await driver.connect();
+
+      // Gathered the way a flush that straddles a second boundary gathers
+      // them: one second's rows, then the minute's, then the next second's,
+      // with the later worker key first. Written in that order, InnoDB took
+      // the minute's roll-up row before the next second's rows, and two
+      // writers — or a writer and the minute sweep's DELETE — each held what
+      // the other wanted next: a deadlock (1213), reproduced on MySQL and
+      // MariaDB with two connections.
+      await driver.countWorkerJobs!(q, "w-b", first, { completed: 1 });
+      await driver.countWorkerJobs!(q, "w-a", next, { completed: 1 });
+      await driver.countWorkerJobs!(q, "w-a", first, { completed: 1 });
+      recorder.calls.length = 0;
+      await driver.flushMetrics!();
+
+      const table = `${prefix}worker_metrics`;
+      const inserts = recorder.calls.filter((call) =>
+        call.text.includes(`INSERT INTO ${table}`),
+      );
+      expect(inserts).toHaveLength(1);
+
+      // Every tuple binds its key first — ns, entity, interval, bucket — and
+      // every tuple binds the same number of values.
+      const { params } = inserts[0]!;
+      const rows = 8;
+      expect(params.length % rows).toBe(0);
+      const width = params.length / rows;
+      const keys = Array.from({ length: rows }, (_, index) => {
+        const [boundNs, entity, interval, bucket] = params.slice(
+          index * width,
+          index * width + METRIC_KEY_COLUMNS.length,
+        );
+        expect(boundNs).toBe(ns);
+        return [String(entity), Number(interval), Number(bucket)];
+      });
+
+      // The prune index's order — width, then bucket — then the entity, so
+      // every second-width row is taken before any minute-width one, and every
+      // writer takes them in one order.
+      expect(keys).toEqual([
+        ["", SECOND_BUCKET_MS, first],
+        ["orders:w-a", SECOND_BUCKET_MS, first],
+        ["orders:w-b", SECOND_BUCKET_MS, first],
+        ["", SECOND_BUCKET_MS, next],
+        ["orders:w-a", SECOND_BUCKET_MS, next],
+        ["", MINUTE_BUCKET_MS, minute],
+        ["orders:w-a", MINUTE_BUCKET_MS, minute],
+        ["orders:w-b", MINUTE_BUCKET_MS, minute],
+      ]);
+
+      // And sorting changed nothing about what landed.
+      const [stored] = (await client.unsafe(
+        `SELECT SUM(completed) AS total FROM ${table}
+          WHERE ns = ${adapter === "postgres" ? "$1" : "?"} AND entity = ''`,
+        [ns] as never,
+      )) as { total: number | string }[];
+      expect(Number(stored?.total)).toBe(6);
+    }, 45_000);
 
     it("sweeps by range once a minute, not per entity and not per flush", async () => {
       const { client, prefix } = make();
