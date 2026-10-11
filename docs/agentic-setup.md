@@ -275,8 +275,12 @@ short:
 - `CI=1 bunx eslint .` in each changed package or examples directory —
   0 errors.
 - `bun run test` in each changed package (it type-checks the tests first,
-  `bun test --check`), plus `bun test --randomize` (serial)
-  for bun-jobs-ui. After a bun-common change, also bun-nest and bun-jobs;
+  `bun test --check`), plus `bun test --randomize` (serial) for bun-jobs-ui
+  and `bun run test:seeded` for bun-jobs: 4 serial shards side by side,
+  without the database URLs, in an ordinary slot through the heavy-run
+  wrapper with a ticket, about 6 minutes (the user's decision, 2026-10-10). bun-jobs' serial `--randomize` run with all
+  five URLs is exclusive and runs once per merge window, not per PR. After a
+  bun-common change, also bun-nest and bun-jobs;
   after a bun-jobs `api/contract` change, also bun-jobs-ui, whose fixtures and
   tests type against the contract.
 - `bun run-all.ts` in each affected `examples/*` directory. A bun-jobs-ui
@@ -316,7 +320,8 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
   `/tmp/claude-1000/bun-node-heavy-jobs/<ticket>.status`.
 
 - **Exclusive** (`HEAVY_EXCLUSIVE=1`): bun-jobs' full suite with database
-  URLs, and its `--randomize` run.
+  URLs, and its serial `--randomize` run with them, once per merge window.
+  Its per-PR `bun run test:seeded` removes the URLs and takes a slot.
 - **Wrapper:** full suites, every bun-jobs-ui test (DOM and Chrome), the
   bun-jobs and bun-jobs-ui run-alls, `check-types.ts`, benches, and repeat,
   concurrent-copy and load loops.

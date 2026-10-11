@@ -109,6 +109,53 @@ So plain `bun test` is still the one-process run, as is
   catch one file leaking into another. `bun test --randomize --seed=N`
   (serial) is the check for that, with bun-jobs-ui's `domLeak.test.ts`; keep
   them in any gate.
+- **bun-jobs' order check per PR is `bun run test:seeded`** (the user's
+  decision, 2026-10-10). `scripts/test-seeded.ts` deals the test files into 4
+  shards by a shuffle seeded with `--seed`, and runs each shard as one serial
+  `bun test --randomize --seed=N ./file …` process, the four side by side,
+  with the database URLs removed (the database suites skip visibly;
+  `--with-databases` keeps them). So it takes an ordinary slot, not the whole
+  machine — run it through the heavy-run wrapper with a ticket, like any
+  full suite:
+  `HEAVY_TICKET=<session>-seeded /tmp/claude-1000/bun-node-heavy-run.sh nice -n 10 timeout 2400 bun run test:seeded > <log> 2>&1`.
+  Measured with seeds 1–3, 5m10s–6m20s at 1.1–1.9 cores, 5309 pass, 579
+  skip, 0 fail each, against 21m36s for the same serial run unsharded and
+  about 24 min serial with all five URLs. It type-checks once
+  first (a bare `bun --check` in the package, about a second) and starts no shard when that
+  fails. The seed is printed first when it was picked; `--seed N` reproduces
+  a run, and the summary gives each shard's serial command. Each shard runs
+  in its own process group, so SIGINT or SIGTERM stops everything the tests
+  spawned too; a SIGKILL to the script does not reach the shards, so never
+  stop it with `kill -9` or `timeout -k` (a plain `timeout N` sends SIGTERM).
+  - **The shards are balanced by `bun-timings.seeded.json`**, per-file
+    durations measured serially without the URLs (`bun-timings.json` is
+    parallel with them, and predicted a serial shard poorly). Dealt
+    round-robin, the shortest shard ended 3–5 minutes before the longest;
+    balanced, within a minute. Refresh it like `bun-timings.json`, with
+    `bun run test:seeded --update-timings`, and commit it with the change
+    that made it stale. The heavy files (a quarter of a shard's share or
+    more: three today) are placed first, each on a shard the seed picks among
+    those it still fits on under the fair share, so two of them can share a
+    shard but three never pile up. Measured on seed 7: before the refresh,
+    two new untimed files dealt at the median put one shard at 7m24s against
+    4m58s–5m17s; after it, 5m18s–6m28s.
+  - **A shard sees only the leaks between its own files, and only when the
+    leaking file runs first** — `--randomize` shuffles the file order too. At
+    4 shards, simulated over 1000 seeds with the timings of 2026-10-11, two
+    light files share a shard 0.32 of the time, so one seed catches a leak
+    between them about one time in six (the right order is half of that); a
+    heavy and a light file 0.17, about one in twelve. Of the three heavy
+    files, `summon-shared-unit-xproc` and `summon-register-claim` share 0.33
+    of the time, and `provider/testing/conformance` never shares with either
+    (208 s plus either passes a shard's fair share of 334 s), so those two
+    pairs are left to the merge-window run. A single serial run catches any
+    pair one time in two. That is why the seed varies from run to run.
+    The negative control: a planted leak between two files passed
+    `bun run test` and failed the shard that held both (seed 4).
+  - **The serial seeded run with all five URLs runs once per merge window**,
+    not per PR: `HEAVY_EXCLUSIVE=1`, `bun test --randomize --seed=N` with the
+    five `BUN_JOBS_TEST_*_URL`s set. bun-jobs-ui keeps its serial
+    `--randomize` seeds in its own gate, unchanged.
 - **bun-jobs runs one worker per core too**, with no cap (the user's
   decision, 2026-10-10): its database servers grow with the host instead.
   At about 11 connections per worker per server, a 64-core host opens about
@@ -137,8 +184,10 @@ So plain `bun test` is still the one-process run, as is
   a plain `flock` on it still counts. The command's exit status is passed
   through; giving up after `HEAVY_WAIT` (default 90 min) exits 75.
   - **bun-jobs' full suite with database URLs runs alone**: `bun run test`
-    and its `--randomize` run. Prefix `HEAVY_EXCLUSIVE=1`. It shares five
-    servers and asserts on durations.
+    and, once per merge window, its serial `--randomize` run. Prefix
+    `HEAVY_EXCLUSIVE=1`. It shares five servers and asserts on durations.
+    The per-PR `bun run test:seeded` removes the URLs and takes an ordinary
+    slot (the user's decision, 2026-10-10).
   - **Heavy:** full suites, every bun-jobs-ui test (they drive the DOM and
     Chrome), the bun-jobs and bun-jobs-ui `run-all.ts`, `check-types.ts`,
     benches, and repeat, concurrent-copy and load loops.
@@ -492,7 +541,8 @@ canary (TS2322, TS2339, TS2307, TS7006, TS2578, TS2584, TS2305; tsc exits 2,
   a tagged, multi-line format for AI agents, and a bare `bun --check` ignores
   `--no-pretty`. `scripts/typecheck.ts`, bun-jobs-ui's
   `__tests__/app/pkg/typecheck.test.ts`, bun-jobs'
-  `scripts/prove-type-controls.ts` and the template's `check-types.ts` do this.
+  `scripts/prove-type-controls.ts` and `scripts/test-seeded.ts`, and the
+  template's `check-types.ts` do this.
   Inside a package's `check` script, `bun check` is the checker.
 - **Packages:** `bun run check` is `bun check`, and in bun-jobs-ui `bun check
   && bun check -p app && bun check -p __tests__/app/pkg`, its three projects.
