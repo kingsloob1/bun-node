@@ -99,6 +99,7 @@ import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { withinOneHour } from "../shared/budget-window";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
+import { A_UUID_V7, markEventId } from "../shared/summon-events";
 
 title("Summon groups: one budget, and one circuit, for several queues");
 
@@ -401,14 +402,15 @@ check(
   attemptEvents,
 );
 checkEqual(
-  "the group's budget-exhausted: one summon event on previews, with an empty id and the group",
-  mediaEvents.previews,
+  "the group's budget-exhausted: one summon event on previews, with an empty id, the group and an eventId (a UUIDv7)",
+  mediaEvents.previews!.map(markEventId),
   [
     {
       id: "",
       outcome: "budget-exhausted",
       kind: "example-busy",
       group: MEDIA.name,
+      eventId: A_UUID_V7,
     },
   ],
 );
@@ -541,11 +543,20 @@ checkEqual(
 checkEqual(
   "a budget-exhausted of the queue's own budget names no group, on the event or the hook",
   [
-    weeklyEvents.filter((event) => event.outcome === "budget-exhausted"),
+    weeklyEvents
+      .filter((event) => event.outcome === "budget-exhausted")
+      .map(markEventId),
     toldFor("weekly", "budget-exhausted").map(({ at: _at, ...rest }) => rest),
   ],
   [
-    [{ id: "", outcome: "budget-exhausted", kind: "example-busy" }],
+    [
+      {
+        id: "",
+        outcome: "budget-exhausted",
+        kind: "example-busy",
+        eventId: A_UUID_V7,
+      },
+    ],
     [
       {
         outcome: "budget-exhausted",

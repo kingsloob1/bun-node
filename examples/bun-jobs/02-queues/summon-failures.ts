@@ -64,6 +64,7 @@ import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { withinOneHour } from "../shared/budget-window";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
+import { A_UUID_V7, markEventId } from "../shared/summon-events";
 
 title("When summoning goes wrong: onSummonFailed and the budget");
 
@@ -484,9 +485,18 @@ checkEqual(
   ],
 );
 checkEqual(
-  "the controller's summon event says the same, once: an empty id, the outcome and the kind",
-  reportEvents.filter((event) => event.outcome === "budget-exhausted"),
-  [{ id: "", outcome: "budget-exhausted", kind: "example-busy" }],
+  "the controller's summon event says the same, once: an empty id, the outcome and the kind, and an eventId of its own (a UUIDv7)",
+  reportEvents
+    .filter((event) => event.outcome === "budget-exhausted")
+    .map(markEventId),
+  [
+    {
+      id: "",
+      outcome: "budget-exhausted",
+      kind: "example-busy",
+      eventId: A_UUID_V7,
+    },
+  ],
 );
 show("status().budget", reports.budget);
 checkEqual(
