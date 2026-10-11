@@ -4039,6 +4039,8 @@ entry of the `summon` option's array form, several queues written as one
 policy, which shares nothing by itself. A group's shared state is read back
 as `SummonGroupStatus` (`SummonGroupStatusDto` in the management API).
 
+Example: [`02-queues/summon-shared-unit.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/summon-shared-unit.ts), with the unit's entry file in [`02-queues/helpers/summoned-unit-entry.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/helpers/summoned-unit-entry.ts).
+
 ### Summon policy
 
 | Option | Default | Meaning |
