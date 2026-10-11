@@ -17,9 +17,10 @@
  * ```
  *
  * Each child is `02-queues/helpers/summoned-unit-entry.ts`, started with
- * arguments built here by hand, the way a summoner would pass them. **No
- * summoner in this package passes several queues yet**: a controller summons
- * for its one queue, and this tour asserts exactly what it sends today. The
+ * arguments built here by hand, the way a summoner would pass them. A
+ * controller for one queue sends that one queue, which this tour asserts; a
+ * shared unit (`group.unit: "shared"`) sends several, shown end to end in
+ * [`summon-shared-unit.ts`](./summon-shared-unit.ts). The
  * child logs each decision as a JSON line, the last one carrying the
  * `SummonedExit`, and this tour reads that, the exit code and the backend.
  * The memory driver lives inside one process, so on memory the two share a
