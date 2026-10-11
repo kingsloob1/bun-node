@@ -28,12 +28,17 @@
  * appears: it cannot read the result, or terminate anything, until the thread
  * is already blocked.
  */
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { defineHandler } from "@kingsleyweb/bun-jobs";
 
 /** Arguments the busy handler accepts. */
 export interface BusyHeartbeatArgs {
-  /** The file the heartbeat is written to, overwritten on every turn. */
+  /**
+   * The file the heartbeat is written to, replaced on every turn: written to
+   * `<beaconFile>.tmp` and renamed over it, so it always holds a whole beat:
+   * a reader never sees half of one, even when the thread is stopped
+   * mid-write.
+   */
   beaconFile: string;
   /** How long to spin before returning, in milliseconds. */
   spinMs: number;
@@ -54,9 +59,10 @@ export default defineHandler<BusyHeartbeatArgs, string>((ctx) => {
   const until = Date.now() + spinMs;
   while (Date.now() < until) {
     writeFileSync(
-      beaconFile,
+      `${beaconFile}.tmp`,
       String(performance.timeOrigin + performance.now()),
     );
+    renameSync(`${beaconFile}.tmp`, beaconFile);
     if (releaseFile !== undefined && existsSync(releaseFile)) {
       break;
     }
