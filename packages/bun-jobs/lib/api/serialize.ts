@@ -1016,6 +1016,12 @@ export function toSummonListItemDto(
   return {
     namespace,
     queue: status.queue,
+    ...(status.queues === undefined ? {} : { queues: [...status.queues] }),
+    // A shared unit's item names its group; a per-queue item's is in its
+    // `GET /queues/{queue}/summon`.
+    ...(status.queues === undefined || status.group === undefined
+      ? {}
+      : { group: status.group.name }),
     local: status.local,
     kind: status.summoner?.provider.kind ?? storedKind ?? "",
     ...(status.local
@@ -1052,6 +1058,10 @@ export function toSummonStatusDto(
   const provider = summoner?.provider;
   return {
     queue: status.queue,
+    ...(status.queues === undefined ? {} : { queues: [...status.queues] }),
+    ...(status.overlaps === undefined
+      ? {}
+      : { overlaps: [...status.overlaps] }),
     local: status.local,
     inert: status.inert,
     ...(status.inertReason === undefined
@@ -1161,10 +1171,16 @@ function toGroupCircuitDto(
  */
 export function toSummonCheckDto(
   result: SummonCheckResult,
-  queue: string,
+  /**
+   * The queue the reading is about, its label; `undefined` leaves the
+   * reading out (a queue the caller may not read).
+   */
+  queue: string | undefined,
 ): SummonCheckDto {
   const demand: QueueDemandDto | undefined =
-    result.demand === undefined ? undefined : { queue, ...result.demand };
+    result.demand === undefined || queue === undefined
+      ? undefined
+      : { queue, ...result.demand };
   return {
     action: result.action,
     ...(result.action === "skipped" ? { reason: result.reason } : {}),

@@ -6,6 +6,7 @@ import { RESERVED_STATE_PREFIX, setReservedState } from "../queue/windows";
 import { ConfigError } from "../shared/errors";
 import { assertSegment, RESERVED_QUEUE } from "../shared/keys";
 import {
+  clearBudget,
   DAY_MS,
   HOUR_MS,
   isSummonMarker,
@@ -887,7 +888,12 @@ export async function refundGroup(
  * Clears what an operator asks of a group's entry, for at most
  * {@link GROUP_WRITE_ROUNDS} × 2 rounds: with `budget`, the counts of the
  * current hour and day and every queue's share; with `circuit`, that provider
- * kind's shared circuit and its count. Answers whether it landed
+ * kind's shared circuit and its count. On an entry that is also a shared
+ * unit's marker (`group.unit: "shared"`) it clears what that unit's
+ * `reset()` clears too: with `budget`, the marks of attempts its claims
+ * counted (so a refund of one claimed before the reset gives nothing back),
+ * and with `circuit` — `true`, or the kind the unit last claimed with — its
+ * failures, loss streak, backoff and open circuit. Answers whether it landed
  * (`true` when there was nothing to clear); `false` when every round lost
  * its write, or the entry is a newer bun-jobs'.
  */
@@ -924,11 +930,22 @@ export async function resetGroup(
       return true;
     }
     const { entry, version } = read;
+    // A shared unit's marker (`group.unit: "shared"`) lives in this entry,
+    // so the reset clears what the marker's own reset clears there too.
+    const marker = isSummonMarker(entry)
+      ? (entry as unknown as SummonMarker)
+      : undefined;
     if (options.budget === true) {
       entry.budget.hour = 0;
       entry.budget.day = 0;
       entry.budget.clears = (entry.budget.clears ?? 0) + 1;
       delete entry.queues;
+      if (marker !== undefined) {
+        // The unit's refund marks go with the counts: an attempt it claimed
+        // before the reset was cleared with them, so its refund must not
+        // give back a count taken after it.
+        clearBudget(marker, Date.now());
+      }
     }
     if (options.circuit === true) {
       delete entry.circuits;
@@ -936,6 +953,19 @@ export async function resetGroup(
       if (Object.hasOwn(entry.circuits, options.circuit)) {
         delete entry.circuits[options.circuit];
       }
+    }
+    if (
+      marker !== undefined &&
+      (options.circuit === true ||
+        (options.circuit !== undefined && marker.kind === options.circuit))
+    ) {
+      // The unit's own circuit — for every kind, or for the kind it last
+      // claimed with — closes as its `reset()` closes it: the failures, the
+      // loss streak, the backoff they set and the open circuit.
+      marker.failures = 0;
+      delete marker.lossStreak;
+      delete marker.backoffUntil;
+      delete marker.circuitOpenUntil;
     }
     if (
       (await setReservedState(driver, ref, stateName, entry, version)) !== null

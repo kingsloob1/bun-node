@@ -309,6 +309,7 @@ describe("one budget for several queues", () => {
         outcome: "budget-exhausted",
         kind: "rec",
         group: "media",
+        eventId: expect.any(String),
       },
     ]);
     // `onSummonFailed` is called on a later turn (`setImmediate`): one more

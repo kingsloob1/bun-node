@@ -759,6 +759,7 @@ describe("the summon event", () => {
       id: "",
       outcome: "budget-exhausted",
       kind: "fake",
+      eventId: expect.any(String),
     });
   });
 
@@ -834,6 +835,8 @@ describe("the summon event", () => {
         kind: "fake",
         count: 1,
         reason: "manual",
+        // The event's own id reaches the socket too.
+        eventId: expect.any(String),
       },
     });
     // Once, on the queue channel alone: never on a job channel.

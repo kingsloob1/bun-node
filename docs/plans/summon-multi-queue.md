@@ -37,27 +37,27 @@ each measurement there can be re-run with one command.
   composes with all four (§3.8). *This is #289. The flag shipped as
   `off?: true`, with `perHour` and `perDay` absent while it is set.*
 
-### Status (2026-10-08)
+### Status (2026-10-11)
 
-Checked against git and GitHub on 2026-10-08, against `develop` at
-`2aa5ed0` (after #289 and #294 merged). "Local" means signed commits in a
-worktree, not pushed; the two worktrees holding them have nothing
-uncommitted.
+Checked against GitHub on 2026-10-11, against `develop` at `5106f61`.
 
 | PR | Scope | State | Left |
 |---|---|---|---|
 | expansion form | one policy, several queues | merged #283; docs fix #295; examples #296 | — |
 | hooks PR | `onSummonFailed`, `budget: false`, `GET /summon` | merged #289 (`4d3364e`), with UI #297 and examples #290, #305 in it | playground follow-up |
-| PR-A1 | group budget | local `41f18a5`, `feat/summon-group-budget` | rebase, re-gate, PR |
-| PR-A2 | shared circuit | local `9c67a3c`, same branch | as A1 |
-| PR-A3 | status without a controller; group routes | local `77ca70d`, same branch | as A1; fold into #289's `GET /summon` |
-| UI-A | Group card, groups view (§5.3) | not started; per-controller usage shipped in #297 | after PR-A3 |
-| EX-A | group budget example | not started | after PR-A1 |
+| PR-A1..A3 | group budget, shared circuit, status without a controller, group routes | merged #314 (`5345411`); review follow-ups #339 (`476efd5`) | — |
+| UI-A | Group card, groups view (§5.3) | merged #342 (`858afb1`) | — |
+| EX-A | group budget example | merged #327 (`212f9e0`) | — |
 | PR-B1 | arguments and request | merged #294 (`2aa5ed0`) | — |
-| PR-B2 | `runSummoned(workers[])` | local `14481c2`, `feat/summon-run-several` | rebase on #294, re-gate, PR |
-| PR-B3 | shared-unit controller | not started | needs PR-A1 and PR-B1 |
-| PR-B4 | API, kit handoff, docs | not started | needs PR-B2, PR-B3 |
-| UI-B, EX-B | coverage, "unit of", example, playground | not started | after PR-B4 |
+| PR-B2 | `runSummoned(workers[])` | merged #313 (`47171f0`) | — |
+| PR-B3a | shared-unit controller, built by hand (C1–C7) | merged #326 (`ae492e0`) | — |
+| EX-B (controller side) | `02-queues/summon-shared-unit.ts` | merged #354 (`b1ba799`) | its three BunJobs-refusal checks flip with PR-B3b |
+| PR-B3b | `BunJobs` wiring (C8), reset and status (C9), Q5–Q11, `eventId` and `missing` on summon events, the group reset's fix for a shared unit's entry | this PR, `feat/summon-shared-unit-b3b` | review, gates, examples fix in the same window |
+| PR-B4 | per-queue coverage, remote group views, kit handoff, full docs | not started | needs PR-B3b |
+| UI-B, EX-B (rest) | coverage, "unit of", dedupe by `eventId`, playground | not started | after PR-B4 |
+
+*The notes below are from 2026-10-08, kept for the record; the table above
+supersedes them.*
 
 **#289 and #294** merged on 2026-10-08, in that order (`4d3364e`,
 `2aa5ed0`), each gated on the exact tree it produced.

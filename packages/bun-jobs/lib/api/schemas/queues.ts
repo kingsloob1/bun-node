@@ -700,7 +700,22 @@ export const SummonStatusSchema = s.named(
   "SummonStatus",
   s.object(
     {
-      queue: s.string({ description: "The queue." }),
+      queue: s.string({
+        description:
+          "The queue. For a shared unit, the first of `queues`: the first of its queues the caller may read.",
+      }),
+      queues: s.optional(
+        s.array(s.string(), {
+          description:
+            "For a shared unit (`group.unit: \"shared\"`): the queues it serves that the caller may read (`queues.read`, asked as this route asks it), in the policy's order, always including the one asked about. The status is the unit's, the same whichever of its queues was asked about, and `queue` is the first of these; a `partial:` detail on `last` names only these queues too (bare `partial` when it names none of them). Absent for a controller of one queue.",
+        }),
+      ),
+      overlaps: s.optional(
+        s.array(s.string(), {
+          description:
+            "Summon groups whose shared units also summon for this controller's queues, as of its last check: the group named on live summoned worker records of its queues, other than its own. One queue with two summoning controllers can start a unit for each in a cold start. Only the groups seen on queues the caller may read (`queues.read`). Sorted; absent when there are none, before the first check, and read from storage (`local: false`). A unit summoned for one queue writes no group on its records, so it is never listed.",
+        }),
+      ),
       local: s.boolean({
         description:
           "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. Advertised by `/meta.features.summonRemoteStatus`.",
@@ -840,7 +855,22 @@ export const SummonResetBodySchema = s.object({
 /** One summon controller in `GET /summon`. Mirrors `SummonListItemDto`. */
 export const SummonListItemSchema = s.object({
   namespace: s.string({ description: "The queue's namespace." }),
-  queue: s.string({ description: "The queue." }),
+  queue: s.string({
+    description:
+      'The queue. A shared unit (`group.unit: "shared"`) is one item, whose `queue` is the first of its `queues` the caller may read.',
+  }),
+  queues: s.optional(
+    s.array(s.string(), {
+      description:
+        'For a shared unit (`group.unit: "shared"`): the queues it serves that this API can reach and the caller may read (`queues.read`), in the policy\'s order, the first being `queue`. A shared unit is listed once, and only when the caller may read at least one of its queues; a `partial:` detail on `last` names only these queues. Absent for a controller of one queue.',
+    }),
+  ),
+  group: s.optional(
+    s.string({
+      description:
+        "For a shared unit: the summon group it is the unit of (`SummonPolicy.group.name`), as `group.name` of `GET /queues/{queue}/summon` has it. Absent for a controller of one queue (its group, if any, is on its own status).",
+    }),
+  ),
   local: s.boolean({
     description:
       "Whether its controller runs in the API's process. `false`: read from the queue's summon state in storage, as `GET /queues/{queue}/summon` answers with `local: false`; then `readiness` is absent.",
