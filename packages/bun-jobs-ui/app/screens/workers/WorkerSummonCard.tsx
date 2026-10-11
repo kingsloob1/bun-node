@@ -3,7 +3,12 @@ import { Card } from "../../components/Card";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Table } from "../../components/Table";
 import { displayText, plural } from "../../format";
-import { SUMMON_NOTE, summonModeHint, summonModeLabel } from "./summon";
+import {
+  SUMMON_NOTE,
+  summonModeHint,
+  summonModeLabel,
+  summonUnitHint,
+} from "./summon";
 
 /** Props of {@link WorkerSummonCard}. */
 export interface WorkerSummonCardProps {
@@ -23,9 +28,11 @@ interface Summoned {
 
 /**
  * Where a worker key's summoned instances came from: one row per instance
- * reporting `summon`, with the attempt's id, the summoner's kind, the mode
- * and deadline the summoner **requested**, and the platform's handle when the
- * API sends it (`serialize.exposeSummonHandles`).
+ * reporting `summon`, with the attempt's id, the summoner's kind, the summon
+ * group whose shared unit it runs in, the mode and deadline the summoner
+ * **requested**, and the platform's handle when the API sends it
+ * (`serialize.exposeSummonHandles`). The group's column shows "—" for an
+ * instance summoned for one queue, beside one that names a group.
  *
  * **Rendered only when an instance reports a summon.** An instance with no
  * `summon` was not summoned or is too old to say which, so it has no row, and
@@ -50,6 +57,9 @@ export function WorkerSummonCard({
   }
   const others = instances.length - summoned.length;
   const showKind = summoned.some(({ summon }) => summon.kind !== undefined);
+  // The summon group whose shared unit it runs in: absent for a unit
+  // summoned for one queue, so the column exists only when one names a group.
+  const showGroup = summoned.some(({ summon }) => summon.group !== undefined);
   // The mode it actually runs in, beside the one requested: absent on a
   // worker not run by `runSummoned`, or too old to say.
   const showResolved = summoned.some(
@@ -72,6 +82,7 @@ export function WorkerSummonCard({
               <th scope="col">Instance</th>
               <th scope="col">Summon</th>
               {showKind && <th scope="col">Summoner</th>}
+              {showGroup && <th scope="col">Unit of</th>}
               {showResolved && <th scope="col">Runs as</th>}
               {showMode && <th scope="col">Requested mode</th>}
               {showDeadline && <th scope="col">Requested deadline</th>}
@@ -93,6 +104,19 @@ export function WorkerSummonCard({
                 {showKind && (
                   <td>
                     {summon.kind !== undefined && displayText(summon.kind)}
+                  </td>
+                )}
+                {showGroup && (
+                  <td
+                    title={
+                      summon.group === undefined
+                        ? undefined
+                        : summonUnitHint(summon.group)
+                    }
+                  >
+                    {summon.group === undefined
+                      ? "—"
+                      : displayText(summon.group)}
                   </td>
                 )}
                 {showResolved && (

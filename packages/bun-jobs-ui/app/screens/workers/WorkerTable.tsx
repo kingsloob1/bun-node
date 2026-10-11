@@ -16,7 +16,12 @@ import {
   useCanControlWorkers,
   workerActionGates,
 } from "./actions/gating";
-import { summonBadgeLabel, summonHint } from "./summon";
+import {
+  summonBadgeLabel,
+  summonHint,
+  summonUnitHint,
+  summonUnitLabel,
+} from "./summon";
 import { targetBadgeLabel, targetHint } from "./target";
 
 /**
@@ -145,7 +150,9 @@ function heartbeatHint(worker: WorkerDto): string | undefined {
  * rule: a worker with no `summon` was not summoned or is too old to say, so
  * it shows nothing rather than a "not summoned" it never claimed. It names
  * the summoner's kind when there is one, and its tooltip gives what the
- * summoner requested, called a request.
+ * summoner requested, called a request. A worker in a summon group's shared
+ * unit (`summon.group`) gets a second neutral badge right after it, "Unit of
+ * <group>"; one summoned for a single queue gets none.
  *
  * The state badge carries `data-testid="worker-state"`, so a test or example
  * reads the state by name. Picking it by position would silently read
@@ -194,6 +201,15 @@ function StateCell({ worker }: { worker: WorkerDto }) {
           testId="worker-summon-badge"
         >
           {summonBadgeLabel(worker.summon)}
+        </Badge>
+      )}{" "}
+      {worker.summon?.group !== undefined && (
+        <Badge
+          className="worker-summon"
+          title={summonUnitHint(worker.summon.group)}
+          testId="worker-summon-unit"
+        >
+          {summonUnitLabel(worker.summon.group)}
         </Badge>
       )}
     </>
