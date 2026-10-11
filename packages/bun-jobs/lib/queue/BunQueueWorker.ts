@@ -4959,21 +4959,27 @@ export class BunQueueWorker<
         return;
       }
 
-      const now = Date.now();
-
       if (!this.#checkedDuplicateId) {
         this.#checkedDuplicateId = true;
-        await this.#detectDuplicateId(now);
+        await this.#detectDuplicateId(Date.now());
       }
 
       // Claim-once, before any record says this worker was summoned; and on
       // every later report, that nobody has taken the place over since. The
       // record says `summon` only when this report's own read confirmed it.
+      // Its own clock reading: a claim starts when it is made, not before
+      // the duplicate-id listing.
       const summonedNow =
         this.#summon !== undefined &&
         this.#summonClaim !== "lost" &&
-        (await this.#claimSummon(now));
+        (await this.#claimSummon(Date.now()));
 
+      // Read after those round trips, not before: the record is stamped when
+      // it is written. Stamped before them, it landed short of its lifetime
+      // by however long they took — expired on arrival once they outlasted
+      // one, and, for a summoned worker whose claim read is slow on every
+      // report, absent from every listing between its reports while alive.
+      const now = Date.now();
       const active = this.#active.size;
       const concurrency = this.#concurrency;
       // Two samples that cost the report no driver call of its own: the
