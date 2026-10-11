@@ -27,11 +27,20 @@
  *   `job.log()` and the rest — raises it, with `context.driver`,
  *   `context.method` and `context.needs`. It keeps the `CONFIG` code, so a
  *   branch on `CONFIG` catches both.
+ * - **A closed `BunJobs` builds nothing.** After `close()`, `queue()`,
+ *   `worker()`, `runner()`, `start()`, `notifier()` and `summonController()`
+ *   throw `JobsClosedError` (`JOBS_CLOSED`, with `context.namespace` and
+ *   `context.method`), the management API answering it 503. Each is refused
+ *   from its own point in the close: summoning at once, workers before they
+ *   are closed, queues only after, so a job still finishing can add jobs. A
+ *   queue taken before `close()` is closed with the context, and says so
+ *   with `QueueClosedError`.
  * - **JSON is the boundary.** A cycle or a `BigInt` in job data is a
  *   `SerializationError` at `add()`; a function is silently dropped, because
  *   that is what JSON does with one.
  */
 import type { JobsDriver, RunRecord } from "@kingsleyweb/bun-jobs";
+import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   BunQueue,
@@ -41,8 +50,10 @@ import {
   ChildExitError,
   ConfigError,
   createDriver,
+  createJobsApi,
   DriverError,
   InvalidHandlerError,
+  JobsClosedError,
   JobsError,
   JobTimeoutError,
   LockLostError,
@@ -155,6 +166,137 @@ check("QueueClosedError: instanceof", closedError instanceof QueueClosedError);
 checkEqual("QueueClosedError: context.queue", fields(closedError).context, {
   queue: "closed-queue",
 });
+
+/* ------------------------------------------------------------------ */
+step("JobsClosedError: building on a BunJobs after close()");
+
+// A worker whose one job holds until released keeps close() in its worker
+// step for as long as the tour likes: by then summoning and new workers are
+// refused, and queues are not, so the job could still add one.
+const closingJobs = new BunJobs({ namespace, driver });
+/** Releases the held job. */
+let releaseHeld = (): void => {};
+/** Set by the handler itself, once it is really running. */
+let heldRunning = false;
+const heldRun = closingJobs
+  .worker("held", async () => {
+    heldRunning = true;
+    await new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+  })
+  .run();
+const queueBefore = closingJobs.queue("held");
+await queueBefore.add("hold", {});
+await waitFor("the held job's handler to start", () => heldRunning);
+
+/** What a builder threw, or `undefined`; sync and async alike. */
+async function refusal(build: () => unknown): Promise<unknown> {
+  try {
+    await build();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+/** A builder's refusal as `"JOBS_CLOSED queue()"`, or `"built"`. */
+async function refusedAs(build: () => unknown): Promise<string> {
+  const error = fields(await refusal(build));
+  return error.code === undefined
+    ? "built"
+    : `${error.code} ${String(error.context?.method)}`;
+}
+
+/** Every builder the guard covers, each asked for something new. */
+const BUILDERS: Record<string, () => unknown> = {
+  "queue()": () => closingJobs.queue("held-follow-up"),
+  "worker()": () => closingJobs.worker("late", async () => {}),
+  "runner()": () =>
+    closingJobs.runner({ id: "late", file: helper("errors-exit.ts") }),
+  "start()": () => closingJobs.start(),
+  "notifier()": () => closingJobs.notifier(),
+  "summonController()": () => closingJobs.summonController("held"),
+};
+
+// The management API over the same context, built while it is open.
+const closingApi = createJobsApi({
+  jobs: closingJobs,
+  basePath: "/jobs-api",
+  authorize: () => true,
+  logger: noopLogger,
+});
+const closingApp = new BunHttpAdapter();
+closingApp.use(closingApi.basePath, closingApi.router);
+
+const closing = closingJobs.close();
+const summonRefused = await refusal(BUILDERS["summonController()"]!);
+checkJobsError(
+  "JobsClosedError",
+  summonRefused as Error | undefined,
+  "JobsClosedError",
+  "JOBS_CLOSED",
+);
+check("JobsClosedError: instanceof", summonRefused instanceof JobsClosedError);
+checkEqual(
+  "summonController() is refused from the call to close(), naming the context and the method",
+  [
+    fields(summonRefused).context,
+    (summonRefused as Error | undefined)?.message,
+  ],
+  [
+    { namespace, method: "summonController()" },
+    `Jobs context "${namespace}" is closed: summonController() builds nothing after close()`,
+  ],
+);
+await waitFor(
+  "worker() to be refused while the held job runs",
+  async () => (await refusedAs(BUILDERS["worker()"]!)) !== "built",
+);
+checkEqual(
+  "while the held job runs: worker() and runner() refused, queue() still builds",
+  [
+    await refusedAs(BUILDERS["worker()"]!),
+    await refusedAs(BUILDERS["runner()"]!),
+    await refusedAs(BUILDERS["queue()"]!),
+  ],
+  ["JOBS_CLOSED worker()", "JOBS_CLOSED runner()", "built"],
+);
+
+releaseHeld();
+await closing;
+await heldRun;
+const after: string[] = [];
+for (const build of Object.values(BUILDERS)) {
+  after.push(await refusedAs(build));
+}
+checkEqual(
+  "once close() resolves, every builder is refused, each naming itself",
+  after,
+  Object.keys(BUILDERS).map((method) => `JOBS_CLOSED ${method}`),
+);
+await checkRejects(
+  "the queue taken before close() was closed with the context: add() is QueueClosedError",
+  () => queueBefore.add("x", {}),
+  { name: "QueueClosedError", code: "QUEUE_CLOSED" },
+);
+
+// The API reads a queue through the context, so a closed one answers 503
+// with Retry-After, as it does for QUEUE_CLOSED: the context may be shutting
+// down for a restart. The queue list reads the driver and builds nothing.
+const closedRead = await closingApp.fetch("/jobs-api/queues/held");
+const closedList = await closingApp.fetch("/jobs-api/queues");
+checkEqual(
+  "the API over the closed context: GET /queues/held is 503 JOBS_CLOSED with Retry-After: 1; GET /queues still lists",
+  [
+    closedRead.status,
+    closedRead.headers.get("retry-after"),
+    ((await closedRead.json()) as { code?: string }).code,
+    closedList.status,
+  ],
+  [503, "1", "JOBS_CLOSED", 200],
+);
+await closingApi.close();
 
 /* ------------------------------------------------------------------ */
 step("SerializationError: job data that is not JSON");
