@@ -113,6 +113,166 @@ longer matches the code; the `SummonStatusDto.summoner` DTO field by field
 (unchanged by 1.5p); the breaking changes; the public names, each needing
 approval; and eleven open questions. No code was changed.
 
+**Updated 2026-10-11: brought up to date with `develop`, and synced with
+summon groups.** Checked against `origin/develop` at `9e76b32f`, the open
+PR-B3b (#366) and the uncommitted PR-B4 plan. No code was changed. What
+changed here:
+
+- **A [Status](#status-2026-10-11) section** below: what is done, in flight
+  and left, per sub-phase, with PR numbers, and the remaining effort
+  re-estimated.
+- **Eight places where this plan no longer matched the code are corrected
+  in place**, each marked *superseded* or *as built* with its PR, rather
+  than deleted: 1.5p is approved and merged (§13.10); the provider routes
+  were taken into it (#246, Q-p4); a first-party provider this plan never
+  named, `localCompute` (#268), lives in `lib/providers/local.ts` and is
+  exported from `./provider` (§4.1, §8.4, P10); the summon facet is at
+  `0.2` (#294); a status can be read without a local controller,
+  `local: false` (#314, §13.7); the test helper is `spawningSummoner`, and
+  `fakePlatform` is the kit's (§11.1); this plan now links the summon-groups
+  plan; and none of the six first-party summoners exists yet (decision 9).
+- **[§7.8 Shared units on every provider](#78-shared-units-on-every-provider)**
+  is new: how each first-party cloud provider (1.5c–1.5e) carries a unit's
+  several queues, which platforms can serve a shared unit at all, and what
+  1.5g and the 1.5s gate add for it. It cites
+  [`summon-multi-queue.md`](summon-multi-queue.md) (as **MQ §n**) rather
+  than repeating it. Each provider's subsection in §7 gains one line.
+- **Open questions** (§12.2): Q43 now has a recommendation; Q44–Q46 are new;
+  Q37, Q38 and Q39 are closed, and so are the Q-p questions the code
+  settled (§13.10).
+
+**Updated 2026-10-11 (later): the user's answers to Q43–Q46.**
+- **Q43:** Lambda's payload is `{ "bunJobsSummon": { "argv": [...] } }`, read
+  with `summonedFromArgs(argv)`, the key exported as a constant from
+  `./providers/aws`.
+- **Q44:** each cloud provider gets its own `./providers/<name>`;
+  `localCompute` stays on `./provider`. Q-p2 and Q-p3 are decided with it.
+- **Q45:** all three providers that passed no identity get a path. Fly gets
+  a `create` mode. ACA re-sends its job's template. Cloud Run worker pools,
+  against the recommendation, now have each unit look its identity up
+  (§7.8.3: a new `passes: "lookup"`, summon `0.3`).
+- **Q46:** the 1.5s gate requires the shared-unit check.
+- **Q47** (raised by Q45's answer, approved the same day): the worker
+  pool's lookup design as recommended. That is `passes: "lookup"` (summon
+  `0.3`), `--bun-jobs-summon-lookup`, the boot helper, `maxPending` clamped
+  to 1, and the docs command that prints a pool's static arguments. Exact
+  names are approved with 1.5d's names. 1.5g must still show that a
+  scale-up does not restart busy instances, or the pool is clamped to one
+  unit.
+
+Also: #366 merged (`352ad028`).
+
+**Updated 2026-10-11 (review): the bun-jobs session (4c) reviewed this
+plan** against `develop` `a158b748` and the B4 tree. It found the plan sound
+except the worker pool's lookup, which is revised here, keeping the approved
+direction:
+- **H1:** the provider sizes the pool from its own count, never from the
+  controller's records-based `target`, and never lowers it.
+- **H2:** `runSummoned` gains a `summon` option, because it reads
+  `process.argv`. This also corrects Q43's "every rule carries over".
+- **M1:** `"lookup"` is refused for a one-queue shared unit.
+- **M2:** the lookup's checks.
+- **M3:** widening `passes` reaches the wire contract, so it is re-priced.
+- **L1–L5:** each design item is recorded.
+- **Nits:** #366's state, SSH unit names hashed, Lambda's `env` refused at
+  construction.
+
+New public names are listed as Q48 (§12.2). Code citations in §7.8 are
+re-pinned to `a3c66d0d`. The remaining effort is **~27.25 d**.
+
+**Updated 2026-10-11 (later): Q48 approved, and a rename.**
+- **Q48:** the user approved all four names as proposed:
+  - `RunSummonedOptions.summon` and `SummonFacet.preflight?(request)`
+    (summon `0.3`), built in 1.5c;
+  - `cloudRunWorkerPool`'s required `maxInstances` and the exit reason
+    `"lookup-members"`, built in 1.5d.
+- **A rename (the user's decision, under the control-plane naming rule):**
+  the API flag `features.summonRemoteStatus` becomes `summonStoredStatus`,
+  and the UI test id `summon-remote` becomes `summon-stored`. It lands as its
+  own PR after B4 (Status, below).
+
+**Updated 2026-10-11 (review, round 2).** 4c checked the revision against
+`develop` `a3c66d0d`: H1, M1 and M2 are fixed and H2 mostly; three MEDs and
+four LOWs remained, none a redesign. Changes here (§7.8.3, §7.8.4, §7.8.8):
+- **M-a:** a new `at-capacity` answer. The concept is decided by the user;
+  the name is Q49.
+- **M-b:** controllers in a pool unit and in Lambda are kept inert.
+- **M-c:** the restart takeover holds only within the watch window.
+- **L-a to L-d, and the nit.**
+
+The remaining effort is **~30 d**.
+
+**Updated 2026-10-11 (review, round 3).** 4c found no HIGH, and confirms
+once three MED corrections are in (§7.8.3):
+- **M1:** the `at-capacity` group refund runs only when `#record` wrote
+  the outcome.
+- **M2:** `capacityUntil` is clamped, cleared on release and reset, exposed
+  in the status (pending with Q49), and placed in the gate, with `force`
+  bypassing it. A kit check stops a `0.3` provider answering `at-capacity`
+  to a `0.2` host.
+- **M3:** a release's failure is recorded in the write that clears the
+  stamp, with its own retry loop and a documented lost-write policy.
+- **The LOWs and the nit are documented**, including what 1.5d must
+  update for an `id: ""` failure, with CHANGE REPORTs.
+
+The remaining effort is **~31.25 d**.
+
+### Status (2026-10-11)
+
+At `origin/develop` `9e76b32f`. Everything but the cloud providers has
+merged: about 50 PRs between 2026-09-26 and 2026-10-11. The six cloud
+summoners, and everything that waits on them, have not started: there is no
+`lib/providers/{aws,fly,google,azure,render,ssh}.ts`, no `lib/provider/auth/`,
+and no `./providers/*` or `./provider/auth` key in `package.json`.
+
+| Sub-phase | State | Merged | In flight | Left |
+|---|---|---|---|---|
+| **1.5a** core (PR-1 to PR-4) | **done** | PR-1 `countDemand` #189; PR-2 provenance #178; PR-3 controller #208, with #217 (registration counts claim holders); PR-4 `runSummoned` #195, #213; fixes since: #234, #344. UI #184; examples #186, #202, #215, #221, #227 | — | `bench/demand.ts`, the timing follow-up §13.2 records; Q32's aggregate measurement at `maxWorkers: 50` |
+| **1.5b** depth endpoint, routes, recipes (PR-5 to PR-7) | **done** | PR-5 #193; PR-6 #218; PR-7 #214, held to the API by #216. UI #200, #220, #223; examples #206, #219, #222, #225 | — | handles stripped at the source (needs a public option, §13.7); "Summon now" and reset without a local controller (still 409; reads work remotely since #314); Q12; one manual KEDA run on a cluster (tier 2, §11.1) |
+| **1.5p** provider plugin API (PR-p1 to PR-p6) | **done**, summon facet at `0.2` | PR-p1 #230; PR-p2 #232 (UI hints #233); PR-p3 #240; PR-p4 #243; PR-p5 #245, hardened by #250, #256; PR-p6 provider routes #246 (UI #247). Examples #244, #248, #251, #254, #257; playground #255 | PR-B4 (multi-queue; built, uncommitted, under review): the kit's `summon.handoff.shared-unit` check (a should), the template at summon `0.2`, the provider docs | `SummonPolicy.validateOnStart` (Q-p8; 0 hits in `packages/`); the UI's provider "experimental" badge (no hit for "experimental" in `bun-jobs-ui/app`) |
+| *`localCompute`* (not in this plan's list) | **done** | #268; examples #303; playground #301 | B4 runs the shared-unit check on it | the parent-death check for orphaned units (#268's own follow-up) |
+| **1.5c** AWS (ECS, Lambda) and Fly | not started | — | — | §13's 1.5c, plus §7.8 for shared units (Q43, Q44 and Q45 decided: Lambda's payload, `./providers/<name>`, Fly's `create` mode); Q48 approved: `runSummoned`'s `summon` option and the facet's `preflight`, built here |
+| **1.5d** Google and Azure | not started | — | — | §13's 1.5d, plus §7.8 (Q45 and Q47 decided: ACA's template copy, the worker pool's lookup, revised after 4c's review; exact names with 1.5d's; Q48 approved: `maxInstances` and `"lookup-members"`, built here; Q49: the `at-capacity` name) |
+| **1.5e** Render and SSH | not started | — | — | §13's 1.5e, plus §7.8 |
+| **1.5f** UI and examples | **done** for everything that needs no cloud provider | UI #184, #200, #223, #247, #297, #342, #359; examples above, plus the custom provider that passes the kit (#244) | UI-B and EX-B for shared units (MQ §11.2) | one example per first-party provider, blocked on 1.5c–1.5e |
+| **1.5g** live verification | not started | — | — | the tier-3 script (§11.1); §7.8 adds a shared-unit run per platform |
+| **1.5s** stability gate, summon → `1.0` | not started; cannot start before 1.5c–1.5e | — (`COMPUTE_PROVIDER_API` is `{ core: "0.1", summon: "0.2" }`, `provider/version.ts:22-31`; the lookup takes summon to `0.3` first) | — | the gate includes `summon.handoff.shared-unit` (Q46, decided) |
+
+**Summon groups** ([`summon-multi-queue.md`](summon-multi-queue.md)), which
+extend this plan's controller, arguments, `runSummoned` and routes: merged
+#283 (one policy, several queues), #289 (`onSummonFailed`, budget off), #294
+(PR-B1: repeated `--bun-jobs-summon-queue=`, summon `0.2`), #313 (PR-B2:
+`runSummoned` over several workers), #314 (PR-A1 to A3: group budget, shared
+circuit, `local: false`), #326 (PR-B3a: the shared-unit controller), #339,
+#362; UI #297, #323, #342, #343, #359; examples #296, #310, #315, #317, #327,
+#345, #354; and **#366** (PR-B3b: shared units through `BunJobs`, `eventId`,
+`missing` and `queues` on summon events, per-member redaction, `queues.summon`
+on every member), **merged as `352ad028`** with its examples (#367).
+**Built, uncommitted, under review:** PR-B4 (coverage, remote views of a
+shared unit, the kit's two-queue handoff, the template at `0.2`, the
+playground). Then UI-B and EX-B.
+
+**Decided 2026-10-11 (the user, control-plane naming rule):** the API flag
+`features.summonRemoteStatus`, which advertises summon status read from
+storage (`local: false`, #314), is renamed `features.summonStoredStatus`, and
+the UI test id `summon-remote` becomes `summon-stored`. It lands as its own PR
+after B4. Plans that cite the old name (MQ §5.2, §12) are read with the new
+one.
+
+**Remaining effort, re-estimated for shared units on every provider** (the
+user's answers to Q43–Q46; §7.8.9 has the reasons):
+
+| Work | Was | Now |
+|---|---|---|
+| 1.5c AWS and Fly | ~6.5 d | **~9.5 d**, with Fly's `create` mode, `runSummoned`'s `summon` option (H2) and `preflight` (L5) |
+| 1.5d Google and Azure | ~4.5 d | **~13.75 d**, with ACA's template copy (+0.5 d), the worker pool's lookup (+6.5 d after 4c's three rounds) and the core `at-capacity` answer (+2 d) |
+| 1.5e Render and SSH | ~3.5 d | **~4 d** |
+| 1.5g live verification | ~1.5 d + cents | **~2.75 d** + cents |
+| 1.5s stability gate | ~1 d | **~1.25 d** |
+| **Features and bun-jobs sessions** | **~17 d** | **~31.25 d** |
+| 1.5f examples (examples session) | ~2 d | **~2.5 d** |
+| Follow-ups in the table above | not estimated | not estimated |
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -197,7 +357,7 @@ provider.
 | 6 | **`countDemand` is an optional driver method, bounded by a cap.** | `countJobs` on SQL is a `GROUP BY state` over the queue's whole retained history, plus, since #159, a `UNION ALL` branch per guarded state (`drivers/sql/sql-driver.ts:4320-4340`; the guard is `#countNotNull`, `:4570-4580`) [S]. Polling that every 30 s is the wrong cost. §6.4 |
 | 7 | **The depth endpoint returns `demand` and `outstanding`, and does not reuse `/counts`.** | Reading `waiting` has the blind spot in decision 2. On an app-style scaler, a `waiting`-only metric also SIGTERMs a busy worker after cooldown [I, google-azure §6.3]. §6 |
 | 8 | **No cloud SDK. Providers ship as subpaths with no dependencies.** | `CLAUDE.md`'s dependency policy. A SigV4 signer reproduced AWS's published signatures for 5 vectors and differed on 2 [M, aws §5.2]. The Google and Azure token helper is 65 lines [M, google-azure §2.3], and was never run against either cloud [U]. §8 |
-| 9 | **Six first-party summoners, in this order: ECS `RunTask`, Fly Machines, Cloud Run (jobs and worker pools), ACA manual jobs, Render one-off jobs, SSH via `systemd-run`.** Lambda ships beside ECS because it costs little once the signer exists. Everything else is a recipe on `invoke()` or a third-party plugin. | Drawn from the three evidence rankings. §7 |
+| 9 | **Six first-party summoners, in this order: ECS `RunTask`, Fly Machines, Cloud Run (jobs and worker pools), ACA manual jobs, Render one-off jobs, SSH via `systemd-run`.** Lambda ships beside ECS because it costs little once the signer exists. Everything else is a recipe on `invoke()` or a third-party plugin. *Status 2026-10-11: none of the six is built yet (1.5c–1.5e). The one first-party provider on `develop` is `localCompute` (#268), which starts units on this host; it is not one of the six and does not count toward the 1.5s gate.* | Drawn from the three evidence rankings. §7 |
 | 10 | **Summoners are provider plugins with declared capabilities, and the first-party ones get no privileged internals.** The plugin API and its conformance kit are built (sub-phase 1.5p) before the first-party summoners, and stay `experimental` until those six and one outside provider pass the kit. | The platforms differ on every axis the controller reads (style, dedupe, boot budget, shutdown), so the controller must read declarations rather than know platforms by name. Building the API first means six real implementations test it before it is promised. §14, and [`compute-provider-plugins.md`](compute-provider-plugins.md) §5, §10.4, §16 |
 
 ### What it is not
@@ -422,7 +582,8 @@ everything else was read.**
 | `countDemand` driver method | each driver, contract in `lib/drivers/driver.ts` | — |
 | the marker (reserved entry `__win:summon`, S14) | `lib/summon/marker.ts`, written with `setReservedState` (`queue/windows.ts:79-92`) [S] | not exported |
 | `runSummoned` (S4), `summonedFromArgs`, `SUMMON_ARGS` (S8, superseded 2026-09-26, §5.5) | `lib/summon/worker.ts`, `lib/summon/args.ts` | root |
-| first-party providers | `lib/providers/{aws,google,azure,fly,render,ssh}.ts`, importing only the public entries (plugins §5) | `./providers/*` subpaths (§8.4) |
+| first-party providers | `lib/providers/{aws,google,azure,fly,render,ssh}.ts`, importing only the public entries (plugins §5) | `./providers/*` subpaths (§8.4; Q44, decided) |
+| *as built, 2026-10-11:* `localCompute` (#268), the one first-party provider so far | `lib/providers/local.ts`, with private helpers in `lib/providers/local/` (no `index.ts`, so no packaging key) | `./provider` only (`provider/index.ts:54-66`; not the package root); there is no `./providers/local` key (§8.4) |
 | signing helpers | `lib/provider/auth/{sigv4,aws-credentials,google-token,azure-token,jwt}.ts` | `./provider/auth`, public (plugins §6.4) |
 
 `setReservedState` writes with the package's internal token. Nothing outside
@@ -1902,6 +2063,12 @@ and 1.5c–e]:
 - **Lambda has no command line**: its identity must come from the invoke
   payload (Q43).
 - `request.env` keeps the policy's static `env` only.
+- **Settled per provider on 2026-10-11, in [§7.8](#78-shared-units-on-every-provider)**,
+  which also covers a shared unit's repeated `--bun-jobs-summon-queue=` and
+  `--bun-jobs-summon-group=` (#294). Q43 is decided there: the payload
+  carries the same `argv`, read with `summonedFromArgs(argv)`. Cloud Run
+  worker pools, which cannot take per-attempt arguments, look the identity
+  up instead (§7.8.3, Q47, decided).
 
 **Claim-once, added to PR-3** [D]. With arguments a platform double-start can
 still start two processes with the same id. PR-3 adds **claim-once**: the
@@ -2476,6 +2643,17 @@ with the published conformance kit against a `fakePlatform()` fake (§11.1).
 | 5 | **Render one-off jobs**, `./providers/render` | launch | **none** [V, paas-ssh §4.2] | 180 s | The nicest PaaS launch API. Bun is native, and the base can be the existing web service [V, paas-ssh §4.2] |
 | 6 | **SSH + `systemd-run`**, `./providers/ssh` | launch on a host | fixed unit name [M, paas-ssh §4.4] | 60 s | Serves "I already have a box". It ships last because it alone adds a system dependency and a security surface [I, paas-ssh §9] |
 
+*Added 2026-10-11:* whether each row can serve a shared unit (one unit for
+several queues, MQ §4), and how, is §7.8's table. In short, every row can
+(the user's answer to Q45):
+- ECS, Lambda (through its payload, Q43), Cloud Run jobs, Render and SSH
+  pass the arguments;
+- Fly does so through a new `create` mode, and ACA by re-sending its job's
+  template;
+- Cloud Run worker pools have each unit look its identity up (§7.8.3).
+
+Only Fly's default wake pool cannot serve one.
+
 The evidence rankings put Fly first on PaaS [I, paas-ssh §9], ECS first on AWS
 [V/I, aws §1], and Cloud Run jobs, then worker pools, first on Google
 [I, google-azure §0.1]. The order across files is this plan's own [D]:
@@ -2583,7 +2761,17 @@ whether your use case is allowed, ask us before deploying" [V, railway-vms
   - `clientToken` ≤ 64 characters, idempotent per cluster, TTL ≤ 24 h. The
     same token with different parameters is a `ConflictException`, whose
     `resourceIds` name the existing tasks.
-  - Env overrides are limited to 8,192 characters in total.
+  - Env overrides are limited to 8,192 characters in total. *Corrected
+    2026-10-11:* the evidence reads "A total of 8192 characters are allowed
+    for overrides" [V, aws §4.1], so the limit is on the whole `overrides`
+    value, `command` included, which since §5.5 carries the summon arguments.
+- **Shared units (§7.8)**: yes. The arguments go in
+  `containerOverrides[].command` after the configured command. The provider
+  measures the serialised `overrides` against the 8,192 at construction
+  (`preflight`, §7.8.2; 4c's L5) and again per call, where it throws a
+  `misconfigured` `ProviderError`. It never truncates. `count` is
+  RunTask's own `count`, every task with the same arguments. Lambda can too,
+  through the payload Q43 settled (§7.8.2).
 - **Two traps in the response**:
   - A `200` carrying only `failures` (capacity) is a failure [V, aws §7 item
     6]. It maps to `unavailable`.
@@ -2663,11 +2851,22 @@ when it has an id to go with it.
   handler, `kill_timeout = 300`, no `services` block (so Fly Proxy never
   auto-stops it) [V/I, paas-ssh §5.1], and exit 0 on a drain (the default
   restart policy restarts only non-zero exits) [V, paas-ssh §5.1].
+- **Shared units (§7.8)**: **not as a wake pool.** With `passes: "none"` a
+  controller refuses a shared unit (`controller.ts:1194-1198`), and the kit
+  skips the check. **Decided 2026-10-11 (Q45):** `flyMachines` gains a
+  `create` mode. It creates an `auto_destroy` Machine per unit with the
+  arguments in `config.init.cmd` [V, paas-ssh §5.1], at a "low double digit
+  seconds" create [V]. It is launch-style, `passes: "argv"`, and can serve a
+  shared unit. The wake pool stays the default.
 
 ### 7.4 Cloud Run jobs and worker pools
 
 **Jobs.** Sketch in `google-azure.md` §3.2. It calls `POST …/jobs/{job}:run`
 with `overrides.containerOverrides[].env` and `taskCount` [V~].
+*Superseded 2026-09-26 (§5.5):* the identity goes in
+`containerOverrides[].args`, not `env` (the same body accepts `args` and
+`clearArgs` [V~, google-azure §3.2]). **Shared units (§7.8)**: yes; `taskCount`
+is `count`, every task with the same arguments.
 
 - There is no dedupe, so the marker is the whole guard [V~, google-azure
   §3.2]. The adapter also pre-checks `latestCreatedExecution.completionStatus`
@@ -2684,6 +2883,16 @@ with `overrides.containerOverrides[].env` and `taskCount` [V~].
 `summon()` sets the count to `target`, and `release()` sets it to 0 after
 `scaleDown.after` (§4.7). The worker runs `runSummoned(worker, { mode: "until-stopped" })`.
 
+*Added 2026-10-11:* a pool's arguments and env come from its revision, and
+changing them creates a revision [I, google-azure §3.3], so the pool cannot
+be told a per-attempt identity. **Revised the same day (Q45, decided):** each
+unit **looks its identity up** at boot instead. It reads the attempt id from
+the group's marker, with static arguments deployed once, `passes: "lookup"`,
+and a count PATCH that makes no revision [W]. That makes it a shared unit
+too. §7.8.3 has the design, §7.8.4 the release and the "two controllers on
+one pool" guard, and §7.8.8 what 1.5g must verify. The design is approved
+(Q47); its exact names are approved with 1.5d's.
+
 ### 7.5 ACA manual jobs
 
 Sketch in `google-azure.md` §4.2. It calls
@@ -2694,6 +2903,16 @@ body**. The response is `200 { name, id }` or `202` with a `Location` header
 - **Do not send per-execution env.** An override replaces the job's entire
   template, secrets included [V]. So `passes: "none"`, and attempts release by
   start time.
+- **Shared units (§7.8)**: **yes, decided 2026-10-11 (Q45).** The start body
+  is the whole `JobExecutionTemplate`, with `args` and `env` entries that may
+  be `secretRef` names [V, google-azure §4.2]. So the provider reads the job
+  and re-sends its own template with the arguments added to the container's
+  `args`, copying `env` as read: `passes: "argv"`. The bullet above is
+  amended accordingly: no env is overridden, and the template goes back
+  whole. Whether a read returns `env` as references only is [U]; if 1.5g
+  finds it returns secret values, the provider drops back to
+  `passes: "none"` before release. The identity needs read access to that
+  one job as well as start.
 - **Scope the summoner's identity to exactly one job.** "An identity that can
   start a job can use an execution template to reference job secrets whose
   names it knows" [V, google-azure §4.2]. The README must say this plainly:
@@ -2707,6 +2926,9 @@ Sketch in `paas-ssh.md` §4.2. It calls `POST /v1/services/{id}/jobs` with a
 - The attempt travels in `request.argv` (`--bun-jobs-summon-id=…`) through
   `startCommand`, and `summonedFromArgs()` reads it [V/I, paas-ssh §4.2]. Since
   2026-09-26 that is every provider's channel (§5.5).
+- **Shared units (§7.8)**: yes. Each argument is quoted for the shell that
+  may run `startCommand` (whether one does is [U]); the fake runs it through
+  `sh -c`, so the kit's argument round trip tests the quoting.
 - `429` becomes `unavailable` with `retryAfterMs` from `Ratelimit-Reset`. The
   limit is 100/min for `POST /v1/jobs` [V].
 - Gotcha for the README: the job runs the base service's **last successful
@@ -2737,7 +2959,20 @@ and throws a `ConfigError` if it is missing [I, paas-ssh §7.1].
 - **Must not** default to `StrictHostKeyChecking=accept-new` [I, paas-ssh
   §7.3].
 - **Queue names cross a remote shell.** The adapter validates them against
-  `^[a-z0-9._-]{1,64}$` [I, paas-ssh §7.5].
+  `^[a-z0-9._-]{1,64}$` [I, paas-ssh §7.5]. *Corrected 2026-10-11:* a queue
+  or group name is any `[A-Za-z0-9_.-]`, up to 200 characters
+  (`shared/keys.ts:25-28`), none of them special to a POSIX shell, so that
+  pattern would refuse valid names; validate against the segment rule and
+  quote every argument anyway.
+- **Shared units (§7.8)**: yes. *Revised after 4c's review (nit):* the
+  unit name is not spelled from the names. `bun-jobs-<ns>-<queue>` collides
+  (namespace `a-b` with queue `c` against namespace `a` with queue `b-c`),
+  and with 200-character segments it can pass systemd's 255-character limit
+  (as 4c notes). So the name is `bun-jobs-` plus a hash of the identity:
+  namespace and queue, or namespace and group for a shared unit, joined by
+  a separator no segment holds and truncated in base32. The readable names
+  go in `--description=`. "Already loaded" then means one unit per queue,
+  or per group, per host, with no collision and no length problem.
 - **On Railway VMs, assume `systemd-run --user` is unavailable** [I,
   railway-vms §5.3]: no systemd is documented for either VM [U], and they run
   Railway's own `vm-init`, with sessions as root [V-src, railway-vms §5.3]. So
@@ -2746,6 +2981,845 @@ and throws a `ConfigError` if it is missing [I, paas-ssh §7.1].
   railway-vms §5.3]. On a **sandbox**, do not use SSH at all: use the
   detached exec, because "a background process outside an active session
   doesn't keep the sandbox alive on its own" [V, railway-vms §3.2, §5.3].
+
+### 7.8 Shared units on every provider
+
+*Added 2026-10-11, at the user's request: every first-party cloud provider
+(1.5c–1.5e) supports shared units from the day it ships, wherever its
+platform allows one.*
+
+Summon groups ([`summon-multi-queue.md`](summon-multi-queue.md), cited
+**MQ §n**) added a second kind of unit. With `group: { name, unit: "shared" }`
+one controller summons one unit that runs a worker for each of several queues
+(MQ §4). Built so far: the arguments and summon `0.2` (PR-B1, #294),
+`runSummoned` over several workers (PR-B2, #313) and the shared-unit
+controller (PR-B3a, #326), and `BunJobs` wiring and the API (PR-B3b, #366,
+merged as `352ad028`). Built, uncommitted and under review: the kit check
+and the template (PR-B4). **The
+provider contract did not change** (MQ §1.2 B7): a provider hands
+`request.argv` to its platform whole. This section is what that means for each
+of the six providers, and where a platform cannot do it.
+
+#### 7.8.1 What the code already does, for every provider
+
+Read at `9e76b32f` [S]; *re-pinned 2026-10-11 to `develop` `a3c66d0d`*,
+where `controller.ts` lines past ~650 have moved by about +150. A provider
+writes none of this:
+
+- **Arguments.** `wireRequest` (`summon/controller.ts:684-771`) writes one
+  `--bun-jobs-summon-queue=` per queue in the policy's order, and one
+  `--bun-jobs-summon-group=` only when there are two or more queues. One queue
+  gives exactly the arguments it always had (MQ §4.7).
+- **The 8 KiB refusal.** `SUMMON_ARGV_MAX_BYTES` is 8 × 1,024 bytes, counting
+  each argument in UTF-8 plus one separator (`controller.ts:615-631`). It
+  counts **the summon arguments only**: not the provider's own command, not
+  `env`, and not the platform's JSON framing. A group over it is a
+  `ConfigError` at construction (MQ §4.8, its Q10).
+- **Two refusals for a shared unit.** A provider that negotiated summon below
+  `0.2` (`controller.ts:1146-1154`), and one that declares `passes: "none"`
+  (`:1243-1248`; the user kept this refusal in B3b, its Q6). Both are
+  `ConfigError`s at construction.
+- **`count`** is clamped to `maxCountPerCall` (`:2489-2492`). For `count > 1`
+  the controller opens a claim of capacity `count` on **every** member queue
+  before the call (`:2573-2585`; MQ §4.5).
+- **A scale-style `target`** is `max over queues (counted + onTheirWay) +
+  count` (`:2612-2618`), read from worker records. §7.8.3 explains why the
+  worker pool does not use it (4c's H1).
+- **Release.** A scale-style unit is released only once every member queue has
+  been idle for `scaleDown.after` (`:2288-2316`), and the release request names
+  `queues` and, for a shared unit, `group` (`#release`, `:4054-4069`).
+
+#### 7.8.2 Per provider
+
+What each provider must do [D], against what its platform offers. "Shared"
+says whether a controller can use it for a shared unit as specified in
+§7.2–§7.7.
+
+| Provider | Style | How the arguments reach the unit | Cap beyond the 8 KiB | `passes` | Shared | `count` per call | Kit `shared-unit` | 1.5g shared run |
+|---|---|---|---|---|---|---|---|---|
+| `ecsRunTask` | launch | `containerOverrides[].command`: the configured command, then `request.argv` [V, aws §4.1] | "A total of 8192 characters are allowed for overrides" [V, aws §4.1]: the whole `overrides` JSON, with `environment` and the quoting. The provider measures it at construction through `preflight` (L5, below), and again per call | `"argv"` | **yes** | RunTask's `count`; its maximum is not in the evidence [U] | pass | yes, and `count: 2` |
+| `lambdaInvoke` | launch; the worker runs `"in-invocation"` | the invoke payload, `{ "bunJobsSummon": { "argv": [...] } }`, read with `summonedFromArgs(argv)` (Q43, decided; below) | async payload ≤ 1 MB [V, aws §4.4]: never binds | `"argv"`, through the payload | **yes** | 1 (`maxCountPerCall: 1`) | pass | yes |
+| `flyMachines`, wake pool (default) | wake | none: env and `init.cmd` are fixed at create; per-start overrides [U] (Q27) | — | `"none"` | **no** (refused) | one Machine per unit, up to `poolSize` | skip: passes none | no |
+| `flyMachines`, `create` mode (Q45, decided) | launch | `config.init.cmd` of an `auto_destroy` Machine per unit: the configured command, then `request.argv` [V, paas-ssh §5.1] | [U] | `"argv"` | **yes** | one create per unit; a per-call maximum [U] | pass | yes |
+| `cloudRunJob` | launch | `overrides.containerOverrides[].args` [V~, google-azure §3.2]; needs `run.jobs.runWithOverrides` [V~] | [U] | `"argv"` | **yes** | `taskCount`, ≤ 10,000 tasks per execution [V] | pass | yes, and `taskCount: 2` |
+| `cloudRunWorkerPool` | scale | **looked up** (§7.8.3): the pool's revision carries the static arguments and `--bun-jobs-summon-lookup`; each unit reads the attempt id from the group's marker at boot. Only `manualInstanceCount` is PATCHed, which makes no revision [W] | the container's `args` length [U] (static, set once) | `"lookup"` (Q47, approved) | **yes** (Q45), except a one-queue shared unit (M1) | the provider PATCHes `min(current + count, maxInstances)` from the pool's own count, never `request.target` (H1); `maxPending` clamped to 1 | pass | yes, with two scale-ups while the first unit is busy |
+| `acaJob` | launch | the job's own template, re-sent with the arguments added to its container's `args` and its `env` copied as `secretRef` names (Q45, decided; §7.8.3). An override replaces the whole template [V, google-azure §4.2], so it must be the whole template | [U] | `"argv"`; `"none"` if 1.5g finds a read returns secret values | **yes** | 1 per start; replicas per execution come from the job's own config [U] | pass | yes |
+| `renderJob` | launch | `startCommand`: the configured command, then every argument shell-quoted [V for `startCommand`, paas-ssh §4.2; whether a shell runs it is U] | [U] | `"argv"` | **yes** | 1 | pass | yes |
+| `sshSystemdRun` | launch on a host | the remote command after `systemd-run …`, every argument quoted for the remote shell | the remote `ARG_MAX` [U] | `"argv"` | **yes** | 1 per host per call | pass | tier 2 (`ssh localhost`), and on a host |
+| *`localCompute` (#268, not one of the six)* | launch | `Bun.spawn` with `request.argv` | — | `"argv"` (`providers/local.ts:239`) | yes | `maxUnits` (`:244`) | pass (B4 runs it) | — |
+
+**What every provider in the "yes" rows does** [D] (`cloudRunWorkerPool`'s
+arguments are static, so points 1 and 5 apply to its deployed revision, not
+to each call):
+
+1. **Pass `request.argv` whole**: every argument separate, in order; never
+   joined, deduplicated, sorted or keyed by flag. The kit's
+   `summon.argv.round-trip` is a `must` at summon `0.2` (#294).
+2. **Declare `apiVersion.summon: "0.2"`** and `passes: "argv"`.
+3. **Check its own platform's cap** where framing makes it tighter than the
+   8 KiB (ECS is the one known case). Never truncate. *Revised after 4c's
+   review (L5):* the check runs **at construction**, through a new optional
+   facet member, `preflight(request)`. The controller already builds one
+   sample request at construction for the 8 KiB check, and it hands that to
+   `preflight`; a throw is a `ConfigError` there, before anything is
+   summoned. The summon arguments' length does not depend on the attempt,
+   so the sample measures the real size. The call-time check stays, as a
+   `misconfigured` `ProviderError`. `preflight` is a new public name, approved (Q48,
+   summon `0.3`). 1.5g records each real cap (MQ Q10 asked the providers'
+   slices to).
+4. **Read `request.queues ?? [request.queue]` and `request.group` only for
+   display**: a tag, a label, a fact. Never to build arguments.
+5. **Start every unit of one call with the same arguments.** No per-unit
+   argument exists on these calls; claim-once sorts the units out per queue.
+
+**Q43, Lambda's payload: decided by the user on 2026-10-11, as recommended.**
+The payload carries the same arguments, as an array under one key:
+
+```ts
+// The provider's Invoke body (X-Amz-Invocation-Type: Event).
+{ "bunJobsSummon": { "argv": ["--bun-jobs-summon-id=sm_…", "--bun-jobs-summon-group=media",
+                              "--bun-jobs-summon-queue=renders", "--bun-jobs-summon-queue=thumbs", …] } }
+
+// The function's handler.
+export const handler = async (event: { bunJobsSummon?: { argv: string[] } }, context: LambdaContext) => {
+  const summon = summonedFromArgs(event.bunJobsSummon?.argv ?? []);
+  const workers = (summon?.queues ?? ["emails"]).map((queue) => jobs.worker(queue, handlers[queue], { summon }));
+  await runSummoned(workers, { summon, mode: "in-invocation", deadline: Date.now() + context.getRemainingTimeInMillis() });
+};
+```
+
+- **No new reader.** `summonedFromArgs` already takes the argument list as a
+  parameter (`summon/args.ts:238-243`), so `queues`, `group`, the id and the
+  rest come out exactly as on a command line, in order. The `BUN_JOBS_CHILD`
+  refusal still applies, and no environment is read.
+- **The argument rules carry over**: the 8 KiB check, the purity of a
+  request (the payload is a function of `argv` alone), and the kit's round
+  trip (the Lambda fake hands the payload's `argv` to the fixture unit).
+  *Corrected after 4c's review (H2):* `runSummoned`'s own reading does
+  **not** carry over. It reads `process.argv`, which in Lambda holds no
+  summon, so the handler passes `summon` to it (below).
+- **Rejected: named fields** (`{ id, kind, queues, group, … }`). They need a
+  second parser and a second format to version, and Lambda's provenance would
+  drift from every other platform's.
+- **`request.env`**: a Lambda's environment is the function's configuration,
+  not per invocation [I]. So a policy with a non-empty `env` is refused at
+  construction, by `preflight` (above). Without it, the refusal would come
+  only at the first call (4c's nit).
+- **Build the function's `BunJobs` with no `summon` policies** (round 2's
+  M-b). `BunJobs` is built at module load, before any event, so
+  `inSummonedProcess()` cannot know the invocation was summoned: its
+  arguments hold no id. A `summon` option shared with the producer's config
+  would therefore run live controllers inside Lambda. The recipe builds the
+  worker side's context without `summon`. `fromSummoned: false`, the
+  default, does not help here: it matters only where `inSummonedProcess()`
+  is already true. It is a documentation item, priced in 1.5c's recipe row.
+- **A shared unit in Lambda** runs every queue's worker inside one invocation,
+  so within its 900 s [V, aws §4.4] and one memory size. Async may deliver an
+  event twice [V, aws §4.4]: the second invocation loses each queue's claim
+  and runs unsummoned (MQ §4.5).
+- **Names:** the key `bunJobsSummon` is approved, and `./providers/aws`
+  exports it as a constant (the constant's own name is approved with 1.5c's
+  other names; say `SUMMON_PAYLOAD_KEY`).
+
+**`runSummoned` must be told the provenance (4c's H2)** [D; core]. Today
+`runSummoned` calls `summonedFromArgs()`, which reads `process.argv`, twice:
+- in `resolveOptions` (`summon/worker.ts:471-475`), for the mode, the
+  deadline from the max lifetime, and the grace (`:523`);
+- in `checkUnit` (`:1528-1556`), to refuse a queue named with no worker.
+
+Wherever the identity does not arrive on the process's own command line,
+that read finds nothing. That is Lambda's payload (Q43) and the worker
+pool's lookup (Q47). Such a unit runs `exit-on-idle` (a pool unit would then
+exit on idle and be restarted), has no lifetime deadline and only the
+default grace, and a missing queue is never refused.
+
+- **The change:** a new option, `RunSummonedOptions.summon?: SummonedArgs`,
+  the same object the workers were built with. `runSummoned` takes its
+  provenance from `options.summon`, and only without it from
+  `summonedFromArgs()`. Both `resolveOptions` and `checkUnit` read the
+  resolved one.
+- **A refusal:** when the workers carry a summon id and the resolved
+  provenance has none, or another one, it is a `ConfigError` ("pass
+  `runSummoned` the `summon` you built the workers with"). The mistake is
+  then loud, not a unit with the wrong mode.
+- **Rejected: reading the provenance from the workers' own `summon` alone.**
+  The record's provenance (`WorkerSummonProvenance`) has no `queues`,
+  `graceMs` or `maxLifetimeMs` (`summon/args.ts:107-127` adds them only to
+  `SummonedArgs`), so `checkUnit` and the grace could still not be
+  resolved. The workers' id is used only for the refusal.
+- **Name:** `RunSummonedOptions.summon` is approved (Q48, 2026-10-11).
+- **Where and how much:** `lib/summon/worker.ts`, reviewed by the bun-jobs
+  session, ~0.75 d, in 1.5c, since Lambda is its first user.
+
+#### 7.8.3 `passes`: who can pass identity, and what it means for shared units
+
+*Revised 2026-10-11, after the user's answer to Q45: all three providers that
+passed no identity get a way to.*
+
+- **Arguments, as specified:** ECS, Lambda (through the payload, Q43),
+  Cloud Run jobs, Render and SSH, and `localCompute`.
+- **Arguments, through a new path (Q45, decided):**
+  - **Fly: a `create` mode.** An `auto_destroy` Machine per unit, with the
+    arguments in `config.init.cmd` [V, paas-ssh §5.1]. It is launch-style
+    and `passes: "argv"`. It costs a slower start ("low double digit
+    seconds" against "well under a second" [V, paas-ssh §5.1]) and the pool's
+    dedupe. The wake pool stays the default, with `passes: "none"`, and still
+    cannot serve a shared unit.
+  - **ACA: the job's own template, re-sent.** The provider reads the job and
+    sends its template back as the start body, with the arguments added to
+    the container's `args`. Its `env` entries are copied as read:
+    `secretRef` names, never values [I from V, google-azure §4.2]. The
+    summoner's identity also needs read access to that one job. Whether a
+    read returns references only is [U]: if 1.5g finds it returns secret
+    values, the provider drops back to `passes: "none"` before release.
+- **Lookup, a new `passes` value (Q45 decided; the design approved as Q47,
+  exact names with 1.5d's): Cloud Run worker pools.** Designed below.
+- **Still none:** the Fly wake pool. A shared unit is a `ConfigError` there,
+  and the kit skips its check with "passes is none". A per-queue group still
+  works, with Part A's group budget and shared circuit (MQ §3).
+
+**Cloud Run worker pools: the unit looks its identity up.** *Designed
+2026-10-11 at the user's request (Q45), against the recommendation not to
+build it. **Approved by the user the same day (Q47)** as recommended:
+`passes: "lookup"` (summon `0.3`), `--bun-jobs-summon-lookup`, the boot
+helper, `maxPending` clamped to 1, and the docs command that prints a pool's
+static arguments. The exact names are approved together with 1.5d's. The
+condition stands: 1.5g must show that a scale-up does not restart busy
+instances, or the pool is clamped to one unit (§7.8.8).*
+
+**What Google's API allows.** Re-read with WebFetch on 2026-10-11 (tagged
+[W], so treat them like `V~`):
+
+- **Scaling does not make a revision.** "Changing scaling mode or changing
+  the manual instance count does not create a new revision" [W:
+  docs.cloud.google.com/run/docs/configuring/workerpools/manual-scaling].
+  Whether a scale-up leaves running instances alone, rather than restarting
+  them, is not stated [U].
+- **One template for every instance.** The pool's `template`
+  (`WorkerPoolRevisionTemplate`, with `containers[]`) belongs to a revision.
+  `instanceSplits` divides instances between revisions **by percent**, and
+  with no split "defaults to 100% instances assigned to the latest `Ready`
+  Revision" [W: the `projects.locations.workerPools` REST reference]. That
+  page mentions no per-instance override [W].
+- **No index for an instance.** The container contract sets
+  `CLOUD_RUN_WORKER_POOL` and `CLOUD_RUN_REVISION`, and no per-instance index
+  like jobs' `CLOUD_RUN_TASK_INDEX` [W: docs.cloud.google.com/run/docs/container-contract].
+  The metadata server's `/computeMetadata/v1/instance/id` is a "Unique
+  identifier of the instance" [W], but nobody knows it before the instance
+  starts.
+- **Shutdown.** `SIGTERM`, then `SIGKILL` 10 s later [W, the same page;
+  V, google-azure §3.3].
+
+**So nothing can be pushed into one instance.** What was considered:
+
+| Candidate | Verdict |
+|---|---|
+| A revision per attempt: PATCH the template's `args` with the attempt id, and the count | **Rejected.** Every template change makes a revision, and instances go to the latest `Ready` revision by default [W]. A scale-up from k > 0 running units would therefore replace those units in the middle of their jobs. It is safe only from zero, and then churns a revision per attempt (retention limits [U]) |
+| `instanceSplits` keeping the old revision's instances | **Rejected.** Splits are percentages across revisions [W], so they cannot say "keep these k instances" |
+| A per-instance label, metadata or index read at boot | **Rejected.** No index exists for pools [W]. The instance id exists [W], but only the instance knows it |
+| **The unit pulls its identity from bun-jobs' own state** | **Chosen.** It needs only the count PATCH, which makes no revision [W], plus one more read at boot |
+
+**The design** [D]. *Revised 2026-10-11 after the bun-jobs session's
+review (4c): H1, the pool's count; M1, one queue; M2, the lookup's checks;
+L1, L2 and L4. Code citations are at `develop` `a3c66d0d`.*
+
+1. **Deployed once by the user.** The pool's revision runs the entry script
+   with **static** summon arguments: everything `wireRequest`
+   (`summon/controller.ts:684-771`) writes except the id, so kind, mode
+   `until-stopped`, namespace, group, the queues in policy order, max
+   lifetime and grace, plus `--bun-jobs-summon-lookup`. The docs give the
+   command that prints them from the policy.
+2. **The provider** declares `style: "scale"` and `passes: "lookup"`.
+   - **It sizes the pool from the platform's own number, never from the
+     request's `target` (H1).** `summon()` reads the pool (one GET, which the
+     guard needs anyway), takes its `scaling.manualInstanceCount` as
+     `current`, and PATCHes
+     `next = min(current + request.count, config.maxInstances)`. It PATCHes
+     only when `next > current`, so it never lowers the count.
+   - **When `current` is already at `maxInstances`**, it answers
+     **`at-capacity`** (below; round 2's M-a, decided) with `retryAfterMs` of
+     one `bootBudget`. *Superseded:* round 1 had it throw `throttled`, which
+     still charged the budget and the group's shares on every retry.
+   - **Replicas (L-b; softened in round 3).** `maxPending: 1` admits one
+     pending attempt, so two summons rarely overlap. They can, though: an
+     attempt that registers fast, or answers `at-capacity`, leaves `pending`
+     while its own call may still be in flight, and the next claim can then
+     call too. A hand edit of the pool is the other way to lose an
+     increment. **Chosen:** send the pool's `etag` on the PATCH if the API
+     accepts one [U], which closes both cases. Without it, accept being short
+     by one: the next check summons again.
+   - **`release()` sets `0`**: the only call that lowers the count.
+   - *Why the platform's number, not a census the controller sends.* The
+     controller's `target` is
+     `max over queues (counted + onTheirWay) + count`
+     (`controller.ts:2612-2618`). `counted` is every serving record under
+     the default `servedBy: "any-worker"`, and nothing remembers the last
+     PATCH. So it counts workers that are not the pool's (an always-on app
+     worker, a paused worker) and misses the pool's own when their records
+     have lapsed, or when a restarted instance runs unsummoned. The PATCH
+     would then be too small, too large or, worst, **lower** than the pool
+     already is, and Cloud Run would choose which busy instance to stop. A
+     pool-only census from records cannot fix that: an unsummoned or lapsed
+     instance carries nothing to tell it apart. The platform's own count is
+     the one figure that is exactly "units this pool runs". The controller
+     still decides *whether* to summon and *how many more* (`count`); the
+     provider decides the absolute number.
+   - **`maxInstances`** is required in the provider's config (no default).
+     It is the hard ceiling, which the controller's own cap cannot be: that
+     cap reads units alive from summoned records (`controller.ts:2330-2344`)
+     and so undercounts restarted, unsummoned instances. A new public name
+     (§12.2, Q48, approved).
+   - **The guard (M2):** `summon()` and `release()` compare the request with
+     the pool's static arguments. For `summon()`, that is the whole
+     `request.argv` without `--bun-jobs-summon-id=`, against the template's
+     arguments without `--bun-jobs-summon-lookup`: namespace, kind, mode,
+     group, queues in order, max lifetime and grace. For `release()`, which
+     carries no `argv`, it is `namespace`, `group` and `queues`. A mismatch
+     is a `misconfigured` `ProviderError`. `validate()` reads the pool and
+     fails when the template lacks `--bun-jobs-summon-lookup`. That a read
+     returns the template's `args` is [U]; the resource has the field [W].
+3. **The controller** [core]:
+   - accepts `passes: "lookup"` for a shared unit (the refusal stays for
+     `"none"`, `controller.ts:1243-1248`), and **refuses it below summon
+     `0.3`**, as it refuses a shared unit below `0.2`
+     (`controller.ts:1146-1154`);
+   - **refuses `"lookup"` for a one-queue shared unit (M1)**, with a
+     `ConfigError` pointing to `unit: "per-queue"`. `wireRequest` writes no
+     `--bun-jobs-summon-group=` for one queue (`:731-736`), so the static
+     arguments would carry no group and the unit would read the queue's
+     marker, not the group's. One queue on a pool gains nothing from a
+     shared unit, so refusing beats changing the arguments of every
+     one-queue summon. A **per-queue** pool with one queue works: no group
+     either side, and the unit reads `__win:summon`. (Separately, 4c is
+     fixing on `develop` a release that names a group the summon of a
+     one-queue unit did not.)
+   - clamps `maxPending` to 1 for it, the way it clamps `maxWorkers` to
+     `poolSize` for a wake pool;
+   - **sends no release while `pending` is non-empty (L2)**, so a unit still
+     booting is never stopped;
+   - **guards a release against a concurrent summon (L-b).** Before calling
+     `release()`, it writes `releasingUntil = now + summonTimeout` to the
+     marker by compare-and-set, and only if `pending` is still empty. While
+     that is in the future, the claim step skips with `pending`, so no
+     replica can claim and PATCH up while a release to 0 is in flight. It
+     clears the field after the call. An internal, optional marker field.
+     The window it closes: replica B decides to release, A claims and
+     PATCHes up, and B's 0 lands last, killing A's unit while it boots.
+     **Residuals, documented (round 3):**
+     - a release PATCH that times out and lands after `releasingUntil` has
+       expired can still stop a unit a later summon started;
+     - the stamp is serialised with claims by the compare-and-set, but not
+       with an attempt that registered and left `pending` just before it,
+       whose unit is then running. That is the normal "release only when
+       every queue is idle" case: an idle running unit is meant to stop;
+   - **maps a release's `auth` and `misconfigured` `ProviderError` into the
+     circuit (L1, L-c).** Today a failed `release()` is only logged, on
+     every poll (`#release`, `controller.ts:4054-4069`). Now:
+     - **The failure is recorded in the write that clears the stamp**
+       (corrected in round 3, M3). The stamp is written before the call,
+       and the failure is known only after it, so the two cannot share a
+       write. That clearing write is `#release`'s own record step. It sets
+       `failures` and `circuitOpenUntil` as a summon's `#failAtOnce` does,
+       with its own retry loop against fresh reads, `RECORD_ATTEMPTS` times
+       as `#record`'s.
+     - **A lost write:** if every write loses its compare-and-set, the
+       failure is not counted, one `warn` says so, and the stamp lapses on
+       its own at `releasingUntil`. That is accepted and documented: the
+       next poll's release fails again and is recorded then.
+     - Once that write lands, it is announced as a `summon` event with no
+       attempt id (`id: ""`, as `released` already is), `outcome:
+       "failed"` and `detail: "release:<code>"`, and then noted on the
+       group's circuit for its `kind`, after the queue's own event, as
+       `#record` does.
+
+     **Release runs before the gate** (step 3, before step 5), so without a
+     rule a failing release would extend `circuitOpenUntil` on every poll.
+     **Deliberate rule:** while the circuit is open, no release is
+     attempted, and that includes the group's circuit for this kind
+     (`groupCircuitOpen`, which `#gate` already reads). Once
+     `circuit.resetAfter` passes, one release is tried (half-open), and a
+     failure reopens the circuit. **A successful release does not reset
+     `failures` or `lossStreak`:** it proves the platform's API, not a unit,
+     so the circuit stays half-open until a summon registers.
+     **Documented trades:**
+     - an open circuit holds the pool at its count, which bills, until the
+       provider is fixed or reset;
+     - a circuit opened by **summon** failures also stops scale-to-zero for
+       `resetAfter`, so an idle pool keeps billing through it.
+
+     One `error` is logged per opening.
+     **What 1.5d must also update for an `id: ""` failure** (round 3), with
+     CHANGE REPORTs to the UI and examples agents before merge:
+     - a per-queue controller's event is not group-tagged
+       (`controller.ts:3410`), so a group's view misses it;
+     - the group circuit's `openedBy.id` becomes `""`;
+     - the WS schema text (`api/ws/events.ts`, ~`:160`) says an empty id
+       means `budget-exhausted` or `released`;
+     - the UI's "Failed" hint describes a call;
+     - `examples/bun-jobs/02-queues/summon-group-budget.ts:395` treats
+       `id === ""` as `budget-exhausted` only.
+   - The request's `argv` is still built (purity, the 8 KiB check) and
+     handed to the provider, which compares it with the pool's instead of
+     sending it.
+4. **The unit, at boot**, calls the boot helper (say
+   `lookupSummon(jobs, argv?)`) before it builds workers. It reads the home
+   marker: the group entry for a shared unit, or `__win:summon` for one
+   queue. Then, in order:
+   - **Members (M2).** It reads the stored `members` through the sanitiser
+     (`sharedMembers` / `readSharedMarker`, B4's `group.ts:578`, `:612`), not
+     the local view. **Absent `members`** (an entry from before B4, or one a
+     per-queue controller wrote) means "not mine": the unit runs
+     unsummoned, and it is not a `ConfigError`.
+   - **A mismatch with its static queues (L4)** is a `ConfigError` that
+     names both lists, logged as one `error`. The unit then **parks** instead
+     of exiting. It does not exit, because a pool restarts an instance that
+     exits (Q17, [U]), so exit 1 would become a restart loop that bills.
+     Before parking, it takes the attempt's place on **every member queue**
+     and marks each one exited, code `1`, reason `"lookup-members"` (Q48,
+     approved). An attempt settles only once every queue's claim has
+     decided, so marking one queue would leave it waiting until `until`
+     (round 2's L-a). It is then settled `lost` (`exited-with-error`) at the
+     next check, with the reason carried to `last.detail`. This is the only
+     place the helper claims: on the normal path it only **picks** the id,
+     and each worker claims on its own queue in its first report. A
+     placeholder claim would block a worker's own claim until `until`.
+     **With `count > 1`** every instance has the same static arguments, so
+     every one parks, and each bills until the controller releases the pool.
+     The full-`argv` guard bounds this: a policy whose queues no longer match
+     the pool is refused at `summon()` before any PATCH, so a park needs an
+     entry written before B4, a hand-edited pool, or a redeploy racing a
+     policy change. **`"lookup-members"`** (Q48, approved) widens
+     `SummonClaimExit.reason` and `SummonedExit["reason"]` (nit), and so
+     every display of them: the UI's exit-reason text and the docs.
+   - **The attempt.** It takes the one pending attempt whose `kind` equals
+     its static `--bun-jobs-summon-kind=` and whose `until` has not passed
+     (M2), and returns that provenance as a `SummonedArgs`. It carries the
+     id, mode `until-stopped`, `deadlineAt` from the static max lifetime,
+     `graceMs`, `group` and `queues`.
+   - **A restart takes its place back, within the watch window**
+     (4c's restart-after-settle finding; narrowed in round 2, M-c). With
+     no such pending attempt, it looks at the attempts still in the
+     marker's `watching` list, and takes the place of a holder that is gone,
+     by the existing takeover rule (§5.5, "A restart is not a double
+     start"). An attempt is watched from its release until its `until`,
+     plus at most one record-lifetime extension (§4.3, "The watch's end").
+     **Outside that window**, a restarted instance finds nothing and runs
+     unsummoned. That is unlike an argument platform, where the restart
+     re-reads its own id and the claim entry outlives it by at least a day
+     (§5.5: claims are swept after `max(24 h, maxLifetime + bootBudget)`).
+     With neither a pending nor a watched attempt, the helper returns
+     `undefined`.
+   - The workers are built with that `summon`, and **`runSummoned` is passed
+     it too** (H2, §7.8.2): without it, `runSummoned` would read the
+     process's arguments, which here carry no id.
+   - **The recipe always passes `mode: "until-stopped"` and the pool's
+     `grace` to `runSummoned`** (round 2's L-d). It does so whether or not an
+     attempt was found. An instance with no attempt has `summon` undefined,
+     and would otherwise default to `exit-on-idle`: it would exit on idle
+     and be restarted by the pool. *Chosen over* having the helper return
+     its static settings without an attempt: `lookupSummon`'s answer keeps
+     one meaning, `SummonedArgs` when summoned and `undefined` when not, as
+     approved (Q47).
+
+   `summonedFromArgs()` is unchanged: arguments without an id still read as
+   not summoned (§5.5).
+5. **Settling is the normal claim path**, so coverage, partial units, the
+   watch, budgets and the group circuit work as for any provider
+   (§7.8.7).
+6. **The unit's own controllers are inert** (round 2's M-b).
+   `inSummonedProcess()` (`controller.ts:298-311`, read at `:1185`) makes a
+   controller inert only on an argument `--bun-jobs-summon-id=…` or
+   `BUN_JOBS_CHILD`. A pool unit has static arguments with no id, so a
+   `BunJobs` built in it with a `summon` policy would run a live
+   controller for its own pool. **Fix:** `inSummonedProcess()` also answers
+   `true` on `--bun-jobs-summon-lookup`. That is refuse-only, so safe:
+   reading it can only make a controller inert, never grant anything.
+   ~0.25 d, in 1.5d. Lambda has the same gap, since its identity arrives in
+   the event, after `BunJobs` is built. Its fix is in the recipe (§7.8.2).
+
+**At capacity: a provider's own ceiling is not a failure** (4c's round-2
+M-a; *the concept was decided by the user on 2026-10-11, and the exact name
+is approved with 1.5d's names, Q49*) [D; core].
+
+- **What it is.** A provider that reaches **its own configured ceiling**
+  answers *at capacity*. The case in mind is `cloudRunWorkerPool` at
+  `maxInstances`, which it knows from its GET before any PATCH. Nothing
+  reached the platform. Such an answer:
+  - charges no budget: no hour or day count, and no group share;
+  - counts no failure toward the circuit or `lossStreak`;
+  - sets off no "platform has throttled" warning.
+
+  The controller just waits: until `retryAfterMs` when the provider gives
+  one, and otherwise until the cooldown has passed. **Real platform
+  throttling** (a 429) stays a `throttled` `ProviderError`, charged as it is
+  today, so no existing provider's meaning changes.
+- **Why today's `throttled` path charges.** The budget, and a group's
+  shares, are counted at the claim (step 6, before the call). That keeps
+  racing controllers inside the limit. The counts are given back only when
+  the provider was **never called**:
+  - `#record`'s refund runs when `claimedAt` is given, which is `!called`
+    (`controller.ts:2625-2639`, its doc at `:3777-3780`);
+  - the group refund is `if (!called && charged !== undefined)`
+    (`:2636-2639`).
+
+  A provider throws `throttled` from inside the call, after `#summon` has
+  set `called = true` (`:2696`), so nothing is refunded. A pool sitting at
+  `maxInstances` would therefore spend one attempt of the hour's budget, and
+  one share of every member, every `retryAfterMs`. On top of that,
+  `#noteThrottled` warns "the platform has throttled …" after
+  `circuit.failures` of them in a row (`:4023-4046`).
+- **How a provider signals it: a new result status, not a `ProviderError`
+  kind.** `SummonResult` gains
+  `{ status: "at-capacity"; reason?: string; retryAfterMs?: number }`.
+  The reasons:
+  - **Every `ProviderError` kind means a failure.** `classify` maps each
+    kind into backoff and the circuit, the provider's error log and the
+    group circuit. A seventh kind would have to be carved out of all four.
+  - **Q-P6 kept the six kinds** and left a capacity *error* out.
+  - **A returned result is already how a provider says "declined without
+    an error"** (`unavailable`). A sibling result keeps `unavailable`'s
+    meaning, and its charging, exactly as it is.
+  - **Version gating.** It is additive in summon `0.3`, which the lookup
+    already brings. A provider returns it only when the host negotiated
+    `0.3` or later (`context.api.summon`), and otherwise throws `throttled`
+    as before.
+  - **Why the version gate needs a kit check (round 3, M2).** A host that
+    negotiated `0.2` is an older build that does not know the status. It
+    does not validate `result.status` (`controller.ts:3797`), so it would
+    keep the attempt pending until `until` and then count it `lost`, a
+    failure. Only the provider can prevent that, so **the kit gains a
+    `must` for a provider declaring `0.3`**: run at its ceiling under a
+    context negotiated at `0.2`, it must not answer `at-capacity`. The new
+    host also accepts the status whatever the negotiated version, which is
+    harmless, but that does not fix the older host, which is why the kit
+    check is the chosen fix.
+- **The controller changes:**
+  - **`#summon`:** unchanged (`called` stays `true`).
+  - **`#record`:** a branch for `at-capacity` that:
+    - removes the attempt from `pending`;
+    - gives back its hour and day counts in the same write, as the
+      never-called path does (it is passed `claimedAt` for this outcome);
+    - sets the optional `capacityUntil = now + (#retryAfter(retryAfterMs) ??
+      cooldown)`. `retryAfterMs` goes through `#retryAfter`
+      (`controller.ts:3686-3700`), so it is clamped to the larger of
+      `backoff.max` and `circuit.resetAfter`, like any provider wait
+      (round 3, M2a);
+    - leaves `failures`, `lossStreak`, `backoffUntil` and the circuit
+      alone;
+    - writes `last = { outcome: "at-capacity", detail: reason }`.
+  - **The group refund** after `#record` runs for `at-capacity` **only when
+    `#record` actually wrote that outcome** (round 3, M1). `#record` returns
+    whether it wrote. `refundGroup` is not idempotent (no per-charge mark,
+    `summon/group.ts`), so refunding unconditionally would be wrong twice:
+    - when every write is lost, the attempt stays pending and is later
+      counted `lost`, with its share already given back;
+    - when the attempt is already gone, settled `registered` by another check
+      while the call ran, it is refunded for an attempt that did run.
+
+    The hour and day refund needs no such condition. It happens inside
+    `#record`'s own marker write (`refundBudget`, `marker.ts:381`, gated by
+    the claim's mark and its window), so it lands exactly when the outcome
+    does.
+  - **No `#fail`, no `#noteThrottled`** (the run of throttles is left as it
+    was), **no `#notifyFailure`** (`onSummonFailed` is not called: it is not
+    a failure), **no group-circuit note**. Logging is one `info` line, not
+    the provider-error `warn`.
+  - **The gate** (step 5, `#gate`, `controller.ts:2869`) skips while
+    `capacityUntil` is in the future, with a new skip reason
+    `"at-capacity"`. Its place: after the circuit and backoff checks, before
+    the cooldown. **Recommended: `force` ("Summon now") bypasses it**, as it
+    bypasses the cooldown. An `at-capacity` answer costs nothing, so an
+    operator who has just raised the ceiling can try at once.
+  - **`capacityUntil` is cleared** by a successful `release()` (the pool is
+    at 0, so below any ceiling) and by `reset()` (round 3, M2b).
+  - **It is exposed in the status**, as `backoffUntil` is:
+    `SummonStatus.capacityUntil`, `SummonStatusDto.capacityUntil` and its
+    schema field. Without it the UI could show the skip reason but not until
+    when. A public name, pending with Q49 (round 3, M2c).
+  - A claim opened for `count > 1` before the call has no holders and is
+    swept like any old claim.
+- **Event and shape.** The `summon` event carries `outcome: "at-capacity"`
+  with the attempt's `id`, `kind`, `count`, `reason` and `detail`, so the UI
+  can show "at the provider's ceiling". It is a new value of
+  `SummonOutcomeKind` and of `SummonSkipReason`. **What that touches**
+  (4c's list, round 3):
+  - **lib:** `summon/types.ts` (`:41`, `:596`), `api/contract/constants.ts`
+    (`SUMMON_OUTCOMES` ~`:293`, `SUMMON_SKIP_REASONS` ~`:326`),
+    `api/schemas/queues.ts` (~`:411`, ~`:936`), `api/ws/events.ts`
+    (~`:163`), and the status field above;
+  - **UI (CHANGE REPORT before merge):** `summonText.ts`'s `OUTCOMES` and
+    `SKIPS` (~`:33`, ~`:92`) are exhaustive records, so the UI's build fails
+    until they gain the value, by design. Also the Summon panel test
+    (~`summonPanel.test.tsx:666`), and the recorded AsyncAPI fixtures
+    `both.json` and `jobs-secured.json`, which must be regenerated;
+  - **mixed versions, documented:** an older API with
+    `validateResponses: true` reading a marker whose `last.outcome` is
+    `at-capacity` fails its response validation. That is an upgrade note:
+    upgrade the API processes before the controllers.
+- **The kit:** a check that an `at-capacity` answer leaves the budget,
+  `failures` and the circuit as they were, run when a provider's fake
+  declares a ceiling.
+- **Where, and how much:** core in `lib/summon/**` and the contract, in
+  1.5d (the pool is its first user), **~2 d** (was ~1.5 d). Round 3 adds
+  the conditional group refund, the clamp, clearing, the status field, the
+  version kit check and the touch list. The pool's step 2 answers
+  `at-capacity` at `maxInstances`.
+
+
+**Risks, and how each is bounded:**
+
+- **A scale-up might restart running instances** [U]. The docs say no
+  revision is made [W], but not that running instances stay. **1.5g must
+  show it** (§7.8.8). If they are restarted, the provider clamps
+  `maxInstances` to 1, and the pool serves one unit.
+- **A second scale-up waits** until the first attempt registers or is lost
+  (at most a `bootBudget`), because of the `maxPending: 1` clamp. Slower to
+  scale out, never wrong.
+- **The restart takeover works only within the watch window** (M-c,
+  accepted). Past it, a restarted instance runs unsummoned: it serves under
+  `servedBy: "any-worker"`, but no attempt is credited. Within the window:
+  - **a takeover hides the crash.** The taken-over holder is never counted
+    `died`: the watch ends clean, and a clean end resets `lossStreak`. A
+    pool that crash-loops inside the window therefore never opens the
+    circuit; the budget caps the bill, and 1.5g watches for it;
+  - **a takeover ignores exit marks** (§5.5's rule reads liveness, not
+    marks), so a holder that exited cleanly can be replaced. That is
+    harmless: the place it held was finished.
+- **A restart during an `at-capacity` call** (nit) can pick the pending
+  attempt by lookup just before `#record` removes it. It then runs summoned
+  on a claim no one settles, and the claim is swept later. Harmless.
+- **The pool's count can sit above what the records show** (restarted
+  instances that lost their place, units whose attempt was lost). That
+  costs money, not correctness. The controller's release to 0, once every
+  queue is idle and nothing is pending, resets it.
+- **A redeploy of the pool while units run** replaces them (latest `Ready`
+  revision [W]): at-least-once covers the jobs. The recipe says: redeploy
+  at zero.
+- **Two controllers on one pool** (§7.8.4): the guard refuses the wrong
+  controller's summon, and its release now opens its circuit (L1).
+- **Billing:** the count only goes up, or to 0 once every queue is idle,
+  so idle units of a busy group bill until then ("billed as *active*
+  instances, even if they happen to be idle" [V, google-azure §3.3]).
+
+**What it changes outside the provider** (M3; built by the features session
+with the bun-jobs session's review). Widening `passes` is a contract
+change, not a local one:
+
+- the `passes` union and provider validation (`provider/configure.ts:190-191`);
+- the kit's capability checks (`testing/checks.ts`, ~`:52`) and its handoff
+  (`testing/handoff.ts`, ~`:167`);
+- the **public wire contract**: the enum in `api/schemas/queues.ts`
+  (~`:471`), `api/contract/types.ts` (~`:1202`) and `api/serialize.ts`
+  (~`:976`), so the UI is told before merge (its fixtures and its
+  capability display);
+- the summon facet goes to `0.3`, and the controller refuses `"lookup"`
+  below it (step 3);
+- plus `SUMMON_ARGS.lookup`, the boot helper, the controller items in step
+  3, and the kit's lookup handoffs (§7.8.6).
+
+**Effort: ~6.5 d** for the lookup. 4c estimated 4.5–5 d in round 1;
+round 2 added the release guard, the circuit mapping and the inert check,
+and round 3 the release's own record write and the `id: ""` surfaces. Plus
+**~2 d for `at-capacity`** (above), which is core and serves any provider.
+It was ~3 d before the review.
+
+| Work | Effort |
+|---|---|
+| Widening `passes`: the union, `configure.ts`, the kit's checks, the API enum, contract and serializer, the `0.3` refusal; UI told | 1 d |
+| The flag and the boot helper: the `members` sanitiser, `kind` and `until` checks, the parked mismatch marked on every member queue with its `lookup-members` reason, the restart takeover within the watch window; tests on the cross-process backends with negative controls | 1.5 d |
+| The controller: accept and clamp, the one-queue refusal, no release while pending, the release stamp against a concurrent summon (L-b), and the release's failure recorded in the write that clears the stamp, with its own retry loop, lost-write policy, event, group-circuit note and half-open rule including the group circuit (L1, L-c, round 3's M3) | 2 d (was 0.75 d) |
+| The `id: ""` release failure's surfaces in `lib`: the WS schema text and the per-queue group tag; CHANGE REPORTs to the UI and examples agents | 0.25 d |
+| `inSummonedProcess()` reads `--bun-jobs-summon-lookup` (M-b) | 0.25 d |
+| The kit: both handoffs under `lookup`, through a fake pool with restarts and a non-pool worker (§7.8.6) | 0.75 d |
+| The provider: sizing from `current`, `maxInstances`, the full-`argv` guard, `validate()`, the recipe | 0.5 d |
+| Docs (provider page, the reference's `passes`) | 0.25 d |
+
+*Superseded by Q47's approval, kept for the record:* had Q47 been declined,
+the closest safe option was the one specified before: `passes: "none"`, one
+pool per queue, and Cloud Run jobs for a shared unit on Google. It remains
+the fallback if 1.5g shows the API cannot do this safely.
+
+#### 7.8.4 Release and scale-down
+
+*Revised 2026-10-11 after 4c's review (H1, L1–L3).*
+
+- **Only `cloudRunWorkerPool` is scale-style** among the six (§7.1), and
+  with lookup (§7.8.3) it can be a shared unit.
+- **When.** The controller decides: only once every member queue has been
+  idle for `scaleDown.after` (`controller.ts:2288-2316`), and, new for
+  lookup, only while no attempt is pending (L2), so a unit still booting is
+  never stopped.
+- **What.** `release()` sets the count to `0`. Before that, it checks the
+  request's `namespace`, `group` and `queues` against the pool's static
+  arguments (the guard, §7.8.3 step 2); it does not just log them.
+- **The count is only ever raised by the provider, from the platform's own
+  number, or set to 0** (H1). Nothing lowers it part-way, so which instance
+  a decrease would stop [U] never matters. All units stop together, on
+  `SIGTERM` with 10 s of grace [W], once every queue is idle and nothing is
+  pending. A job added between that check and the release reaches a unit
+  that is already draining, and at-least-once covers it (§4.7).
+- **Every other provider is launch- or wake-style and has no release.** A
+  shared unit's process exits only when every queue is idle (`runSummoned`
+  over several workers, #313; MQ §4.7), and then the platform stops
+  billing. In Lambda, the invocation resolves on that joint idle, or at its
+  deadline.
+- **ACA apps, ECS services and Cloud Run services** are scale-style
+  platforms, but they belong to KEDA and the depth endpoint (§2.2), not to
+  a first-party summoner.
+- **Two controllers on one pool.** Two controllers driving one pool (two
+  per-queue controllers, or a per-queue one beside a group) each decide idle
+  from their own queues. So one could release to zero while the other's job
+  runs [I from the release rule]. Bounded by:
+  - **the guard.** The wrong controller's `summon()` and `release()` throw
+    `misconfigured`. A summon's opens its circuit at once (PR-p2). A
+    release's does too once step 3's mapping lands (L1, L-c), after which
+    no release is tried while the circuit is open, then one half-open. Until
+    that lands, it is logged on every poll and stops nothing, since the
+    provider throws before any PATCH;
+  - **the unit's `members` check** (§7.8.3 step 4);
+  - **`BunJobs`' in-process refusal**, and the cross-process overlap warning
+    from `group` on the records (MQ §4.9).
+
+  The recipe's rule: **one pool, one controller**, and a pool serving
+  several queues is a shared unit.
+
+#### 7.8.5 `count` and claim-once
+
+- The controller wants units by the **maximum** over queues, not the sum
+  (MQ §4.4), clamps `count` to `maxCountPerCall`, and opens a claim of
+  capacity `count` on every member queue (§7.8.1). So each queue counts at
+  most `count` summoned places for the attempt, whatever the platform
+  starts.
+- Per provider, the table's `count` column: RunTask's `count`, Cloud Run's
+  `taskCount`, and 1 elsewhere. The Fly pool walks Machines, and `poolSize`
+  clamps `maxWorkers` (§4.7). A worker pool raises its own count by
+  `count` (from the platform's figure, not `target`; H1), and the `count`
+  new instances share the one pending attempt they look up, capacity
+  `count` on every queue (§7.8.3).
+- A platform double start (Lambda's redelivery, a retried call on a platform
+  with no dedupe) can split places: one process wins `renders`, the other
+  `thumbs`. Each still drains and exits, and the accounting stays right per
+  queue (MQ §4.5). Nothing for the provider to do.
+
+#### 7.8.6 The kit, the fakes and the template
+
+- **The checks.** `summon.argv.round-trip`, a `must` at `0.2` (#294), and
+  `summon.handoff.shared-unit`, a `should` (B4; the user's B4 answer Q2). The
+  shared check skips, with its reason, under `passes: "none"`, below summon
+  `0.2`, and when `summon.handoff.released` did not pass. Each first-party
+  provider in a "yes" row must **pass** it; the Fly wake pool records the skip
+  and its reason on its docs page. Under `passes: "lookup"` the kit runs
+  both handoffs through a fake pool. The pool keeps its own instance count,
+  starts fixture units with the static arguments when the count rises, and
+  the fixture looks its id up (§7.8.3). *Added after 4c's review (H1):* the
+  fake pool also **restarts an instance** without its id, and the kit adds
+  **an always-on worker on one queue that is not the pool's**. A provider
+  that sized the pool from `request.target` would then PATCH too small, too
+  large or lower, and fail the check; one sizing from the pool's own count
+  passes.
+- **Each fake accepts several queues** by delivering the request's arguments
+  the way its platform does, not by a shortcut. ECS reads `command`; Lambda
+  reads the payload's `argv`; Cloud Run reads `args`; Render runs
+  `startCommand` through `sh -c`; the SSH fake's `ssh` runs the remote command
+  through `sh -c`; Fly's create mode reads `init.cmd`; ACA's fake checks that
+  the start body is the job's whole template with the arguments added. B4's fixture worker
+  then builds one worker per queue it is given. So the round trip and the
+  shared handoff test the provider's own quoting and framing.
+- **The template.** B4 moves `templates/compute-provider` to summon `0.2`
+  (`src/index.ts:141` and `package.json`'s `"bun-jobs".apiVersion`), so its
+  gate runs the shared handoff (B4 plan, its Q3). It declares `0.1` on
+  `develop` today. The first-party providers are written to the same shape.
+
+#### 7.8.7 Coverage, partial units, budgets and groups
+
+- **Coverage needs nothing from a provider.** Per-queue coverage
+  (`PendingSummon.coverage`, `last.missing`; B4) is worked out from each
+  member queue's claim and live worker records (MQ §4.5). A provider only has
+  to pass the arguments whole and start the user's entry script. `status()`
+  and `cancel()` stay per unit, by handle.
+- **A platform cannot start a unit for only some queues** by itself, once
+  it passes the round trip: every call here starts whole processes with the
+  whole argument list. A partial unit comes from elsewhere:
+  - **the image**: an entry script that builds no worker for a named queue is
+    refused by `runSummoned`, exits 1 and is `lost`; one whose worker for a
+    queue is built without `summon` registers partially, which counts one
+    failure (B4's `forget-queue` fault in the playground);
+  - **version skew**: an older entry script that reads one queue (MQ §4.7);
+  - **a provider bug** that drops an argument, which the round trip exists
+    to catch.
+
+  A double start splits places but leaves every queue covered.
+- **Budgets and groups: nothing provider-specific.** An attempt is one
+  charge, with +1 to every member's share (the user's B3b answer Q8). The
+  group's shared circuit is keyed by the provider's `kind` (MQ §1.2 A4), so
+  each provider's `kind` should name one platform API, not a vendor. An ECS
+  outage must not stop Lambda. Proposed: `ecs`, `lambda`, `fly`,
+  `cloud-run-job`, `cloud-run-pool`, `aca-job`, `render`, `ssh`, approved with
+  each provider's other names. Remote reads, redaction and `eventId` are the
+  API's (#366, B4): nothing there for providers either.
+
+#### 7.8.8 Live verification (1.5g) and the stability gate (1.5s)
+
+- **1.5g gains a shared-unit run per platform in a "yes" row.** A group of
+  two queues, a burst on both, then:
+  - one attempt, settled `registered` and not partial, with coverage
+    `registered` on both;
+  - time to first claim on each queue;
+  - the unit exits 0, and billing stops.
+
+  On ECS and Cloud Run jobs, also `count: 2`, with two holders on each
+  queue's claim. In Lambda, the unit runs `"in-invocation"`. Each run also
+  records the platform's real argument cap. The Fly wake pool is skipped;
+  Fly's create mode, ACA's template copy and the worker pool are run.
+- **What 1.5g must verify for the worker pool** before it ships:
+  - a scale-up from 1 to 2 leaves the busy first instance running, with
+    no restart and its record unbroken. **If it does not, the provider
+    clamps `maxInstances` to 1, and the pool serves one unit** (§7.8.3; the
+    condition of Q47's approval);
+  - the provider reads `scaling.manualInstanceCount` back as it was last
+    set, and sizes from it (H1), with an always-on app worker on one queue
+    and one restarted instance in play;
+  - a count PATCH makes no revision (`latestCreatedRevision` unchanged)
+    [W says so];
+  - the template read returns the container's `args`, which `validate()`
+    and the request guard need;
+  - the `updateMask` path, and whether a pool restarts an instance that
+    exits (both Q17);
+  - the static arguments' length limit;
+  - time to first claim for a looked-up unit;
+  - a release to 0 stops every unit within the 10 s grace, and none is sent
+    while an attempt is pending (L2), or while another replica's
+    `releasingUntil` stamp holds (L-b);
+  - at `maxInstances`, the provider answers `at-capacity`: no PATCH, no
+    budget or group share spent, no failure counted (M-a);
+  - a restarted instance takes its place back by lookup, and runs
+    summoned;
+  - a second controller's summon and release are refused as
+    `misconfigured`;
+  - and that a redeploy at zero is clean.
+- **And for ACA:** that reading the job returns `env` as `secretRef` names
+  only. If it returns values, ACA goes back to `passes: "none"` before
+  release.
+- **1.5s (Q46, decided by the user on 2026-10-11, as recommended):** the gate requires
+  `summon.handoff.shared-unit` to **pass** on every first-party provider
+  whose capabilities allow a shared unit, and to skip elsewhere only with the
+  kit's documented reasons. The outside provider must pass it too. The check
+  stays a `should` in the kit for everyone else (the user's B4 answer Q2), so
+  third parties are not held to it. Why: shared units are half of what
+  summon `0.2` added, and `1.0` should not freeze a contract that only a fake
+  has proven. With the worker pool's lookup, scale style with a shared unit
+  is proven on a real platform too, not only on the kit's scale fake (B4).
+
+#### 7.8.9 What it adds to 1.5c–1.5s
+
+| Sub-phase | Added | Why |
+|---|---|---|
+| 1.5c | +3 d | ECS: the overrides measure, and a fake that reads `command` (+0.25 d). Lambda: the Q43 payload and its exported key, a fake that reads it, and the several-worker handler recipe (+0.5 d). Fly's `create` mode, its fake and kit run (+0.75 d, Q45). **After 4c's review:** `runSummoned`'s `summon` option (H2, +0.75 d); the facet's `preflight` in the controller (+0.5 d), and ECS's and Lambda's preflights (+0.25 d) |
+| 1.5d | +9.25 d | Cloud Run jobs: `args` and `taskCount` with per-queue claims in the fake (+0.25 d). The worker pool's lookup, **re-priced after 4c's three rounds** (+6.5 d, §7.8.3; was +3 d). The core `at-capacity` outcome (+2 d, M-a). ACA's template copy, its fake and kit run (+0.5 d, Q45) |
+| 1.5e | +0.5 d | Render: quoting, and a fake that runs `sh -c` (+0.25 d). SSH: hashed unit names, the name rule, quoting (+0.25 d) |
+| 1.5f | +0.5 d (examples session) | each provider's example shows a shared unit where its row says yes |
+| 1.5g | +1.25 d + cents | the shared run per platform, the argument caps, and the worker pool's and ACA's checks (§7.8.8), including sizing from the pool's own count, the restart takeover, `at-capacity` and the release guard |
+| 1.5s | +0.25 d | the shared-unit rows of the gate (Q46) |
 
 ---
 
@@ -2818,6 +3892,35 @@ check. That is the outcome `worker-runtimes.md` §6.2 aimed for, and it is
 cheaper here because summoners are server-side (no browser entry to protect).
 
 ### 8.4 The exact `package.json` shape
+
+**As built, and the recommendation for 1.5c–1.5e (2026-10-11).** The one
+first-party provider so far did not take this section's shape. `localCompute`
+(#268) lives in `lib/providers/local.ts`, with private helpers in
+`lib/providers/local/` (`config.ts`, `units.ts`; no `index.ts`, so no
+packaging key). It is exported from `./provider` with its types
+(`provider/index.ts:54-66`). There is no `./providers/local` key, and no
+`./providers/*` key at all. That works for it because it holds no
+credentials, signs nothing and needs nothing beyond `Bun.spawn`, so
+`./provider` loads little more for having it. It already costs a load-order
+rule, though: its module calls `defineComputeProvider` as it loads, so it
+must be `./provider`'s last import (`provider/index.ts:54-60`).
+
+- **Decided (Q44, the user, 2026-10-11, as recommended):** the six cloud providers take the shape below, one
+  `./providers/<name>` subpath each (`aws`, `fly`, `google`, `azure`,
+  `render`, `ssh`). The three reasons below bind harder for them than for
+  `localCompute`: SigV4, JWT code, credentials and `ssh`.
+- **`localCompute` stays on `./provider`**, documented as the exception: no
+  credentials and no platform API, and the kit documents it as its
+  self-hosted case (`provider/testing/index.ts:46`). Moving it to
+  `./providers/local` would change a public spelling that examples (#303)
+  and the playground (#301) use. The
+  packages are unpublished, so that costs edits, not an alias. Decided: it
+  stays (Q44).
+- **"Providers are files, not directories" is refined, as built:** a provider
+  is a file, plus optionally its own helper directory with no `index.ts`. The
+  first-party import test allows a provider's own files under
+  `lib/providers/<name>/` (`__tests__/provider/first-party-imports.test.ts:14`,
+  `:85`).
 
 **One subpath per provider, not one `./summoners` entry** [D]. The subpaths
 are named for the **provider**, `./providers/<name>`, not for summoning,
@@ -3083,6 +4186,12 @@ say which choice incurs which line.
   style })`, a real `Summoner`. On `summon()`, after `coldStartMs`, it
   `Bun.spawn`s `bun __tests__/fixtures/summoned-worker.ts` with
   `request.argv` (§5.5). That fixture runs `runSummoned` against a **shared** driver.
+  *Renamed (PR-p3, #240), as P8 planned:* the test helper is now
+  **`spawningSummoner`** (`__tests__/helpers/summon.ts:89`), with the same
+  options. **`fakePlatform`** is the conformance kit's HTTP fake, published
+  from `./provider/testing` (`lib/provider/testing/fake.ts:323`), and is what
+  every mention of `fakePlatform()` in §4.1, §7 and the provider bullet below
+  means.
   - Which driver: SQLite or file on one host, and Redis or Postgres when their
     URLs are set, skipping visibly under the repo's existing rule.
   - Failure injection: throws, `unavailable`, a start that never registers, a
@@ -3136,6 +4245,10 @@ say which choice incurs which line.
   - **Azure token and ACA start**: `200` and `202` with `Location`.
   - **Fly**: a Machine state machine, including `429`.
   - **Render**: `201`, and `429` with `Ratelimit-Reset`.
+  - *Added 2026-10-11:* each fake hands the request's arguments to its unit
+    the way its platform would, so the kit's argument round trip and its
+    shared-unit handoff test the provider's real quoting and framing
+    (§7.8.6).
 
   Every adapter takes an `endpoint` override for this. The same override
   serves sovereign and partner partitions [D].
@@ -3326,6 +4439,10 @@ plan unless it says so.
     document it (recommended: the poll is the correctness mechanism); or have
     `BunJobs` publish the demand-creating events whenever a controller exists
     anywhere, which it cannot know. Raised by the reconciliation.
+    **Closed 2026-10-11, as recommended:** documented, not changed. The
+    README says the events trigger hears only producers that publish, and
+    never a bulk add, and that the poll covers both (`README.md:3579`,
+    `:6827`).
 38. **Q38** **Narrowed 2026-09-26, per #166 (pending its merge).** The
     target's share of the close is now measured and derived (≤ 4,500 ms
     graceful, from `DEFAULT_CLOSE_TIMEOUT`; §5.3, the close rule), so it no
@@ -3333,11 +4450,15 @@ plan unless it says so.
     **~12 ms, at most 500 ms** (the reap cap). What stays open: measure the
     post-target remainder (`#unregister` … `driver.close()`) that
     `tailReserve`'s 1,000 ms default [I] still guesses; PR-4 measures it.
+    **Closed:** PR-4 measured it (§5.3): the tail after the target is 5–15 ms
+    on local servers, and `tailReserve` stays 1,000 ms for a remote database.
 39. **Q39** **Does a summoned worker want a shorter `stalledInterval`** to take
     the sweep lease over from a crashed predecessor at once (§4.0 R12)? The
     lever exists; making it a `runSummoned` default would change the
     queue's sweep cadence for every worker on it. Recommended: document, do
-    not default.
+    not default. **Closed 2026-10-11, as recommended:** the README documents
+    the takeover lever (`README.md:1192`), and `runSummoned` sets no
+    `stalledInterval`.
 42. **Q42** **Should a summoned worker's descendants treat a
     `SummonController` as inert, and how would they know?** Raised by
     the bun-jobs session's review of #178, 2026-09-26, for PR-3. Under the argument channel (§5.5) a
@@ -3345,9 +4466,198 @@ plan unless it says so.
     which means "not summoned", so §3.2's `fromSummoned` rule does not reach
     it, and a descendant building a `BunJobs` with `summon` configured would
     summon. Not solved in PR-2.
+    **Partly answered (2026-10-11).** PR-3's claim-once stops a descendant
+    that *sees* the arguments: it loses the claim and runs unsummoned.
+    Controllers are inert in a summoned process and in a runner child
+    (`BunJobs.ts:177-180`). A `Bun.spawn` descendant still reads as not
+    summoned, and would summon. **Recommended:** document it ("a summoned
+    worker's own child processes are ordinary processes: give them no `summon`
+    policy") and build no mechanism. Any signal would have to reach the
+    descendant through the environment, which is the leak §5.5 removed.
 43. **Q43** **Lambda's identity channel.** An invocation has no command line,
     so a Lambda worker's provenance must come from the invoke payload. Which
     field, and which helper reads it, is for PR-3/1.5c (§5.5).
+    **Closed: decided by the user on 2026-10-11, as recommended (§7.8.2).**
+    The payload
+    carries the summon arguments themselves, `{ "bunJobsSummon": { "argv":
+    [...] } }`, read with the existing `summonedFromArgs(argv)`. That way a
+    shared unit's `queues` and `group` arrive exactly as on a command line,
+    and the 8 KiB check, request purity and the kit's round trip apply
+    unchanged. No new reader is needed. The key `bunJobsSummon` is
+    approved, and `./providers/aws` exports it as a constant, whose own name
+    is approved with 1.5c's names. *Amended after 4c's review (H2):*
+    `runSummoned` reads `process.argv` for its mode, deadline, grace and
+    missing-queue check, so the handler must also pass it the `summon`
+    (`RunSummonedOptions.summon`, Q48). The decision itself stands.
+44. **Q44** **Where the cloud providers are exported** (new, 2026-10-11;
+    §8.4). `localCompute` shipped on `./provider` (#268), not on a
+    `./providers/local` subpath as §8.4 planned. **Closed: decided by the
+    user on 2026-10-11, as recommended**, and with it Q-p2 and Q-p3. The six
+    cloud providers get one `./providers/<name>` subpath each, as planned
+    (`aws`, `fly`, `google`, `azure`, `render`, `ssh`). They carry signing
+    code, credentials and `ssh`, which `./provider`'s importers should not
+    load. `localCompute` stays on `./provider`, documented as the exception,
+    so no public spelling changes. The alternative, moving it to
+    `./providers/local` for one rule everywhere, changes a spelling that
+    examples and the playground use. That costs edits only, since nothing
+    is published. (Q-p2, `./provider/auth`, is created in 1.5c with the
+    SigV4 signer; Q-p3, each `./providers/<name>` key lands with its
+    provider.)
+45. **Q45** **An argument path for the three providers that pass no
+    identity** (new, 2026-10-11; §7.8.3). As specified, the Fly wake pool,
+    Cloud Run worker pools and ACA manual jobs declare `passes: "none"`, so
+    a controller refuses a shared unit on them. A per-queue group still
+    works there, with its group budget and shared circuit.
+    **Closed: decided by the user on 2026-10-11: all three get a path.** Fly
+    and ACA as recommended. The worker pool **against the recommendation**:
+    it is designed in §7.8.3 and approved as Q47. The recommendation,
+    kept for the record:
+    - **Fly: yes.** Add a `create` mode to `flyMachines`, an `auto_destroy`
+      Machine per unit with the arguments in `config.init.cmd`. It is
+      launch-style, so it gets a shared unit at the price of a slower start
+      and no pool dedupe. The wake pool stays the default. +0.75 d.
+    - **ACA: yes, conditionally.** Re-send the job's own template with the
+      arguments added to its container's `args`, its `env` entries copied
+      as read (`secretRef` names, never values). The summoner's identity
+      also needs read access to that one job. If 1.5g finds that reading a
+      job returns secret values, drop back to `passes: "none"` before
+      release. +0.5 d.
+    - **Cloud Run worker pools: no.** Per-attempt arguments would mean a
+      revision per attempt, restarting running instances. Allowing
+      `passes: "none"` for a scale-style shared unit would reopen the
+      user's B3b decision (Q6). The recipe says one pool per queue; on
+      Google, a shared unit uses Cloud Run jobs. *(Not taken. The design
+      in §7.8.3 avoids both objections: it makes no revision per attempt,
+      and it adds a new `passes` value, `"lookup"`, rather than relaxing the
+      refusal of `"none"`.)*
+46. **Q46** **Does the 1.5s stability gate include the shared-unit check?**
+    (new, 2026-10-11; §7.8.8). **Closed: decided by the user on 2026-10-11,
+    yes, as recommended.** For `summon` to move
+    to `1.0`, `summon.handoff.shared-unit` must **pass** on every
+    first-party provider whose capabilities allow a shared unit, and on the
+    outside provider, and may skip elsewhere only with the kit's documented
+    reason. It stays a `should` in the kit for third parties (the user's B4
+    answer Q2). Shared units are half of what summon `0.2` added, and `1.0`
+    should not freeze a contract only a fake has proven.
+
+47. **Q47** **The worker pool's lookup: approve its design and names**
+    (new, 2026-10-11; §7.8.3). It follows from Q45's decision for Cloud Run
+    worker pools. **Closed: approved by the user on 2026-10-11, as
+    recommended.** The exact names are approved together with 1.5d's. The
+    1.5g condition below stands.
+    - **The change:** a third `passes` value, `"lookup"`, which takes the
+      summon facet to `0.3` (additive; a provider at `0.2` is unaffected).
+    - **The names:**
+      - a summon argument `--bun-jobs-summon-lookup` (`SUMMON_ARGS.lookup`);
+      - an async helper the unit calls before it builds its workers (say
+        `lookupSummon(jobs, argv?)`);
+      - the docs' command that prints a pool's static arguments.
+    - **The rules:**
+      - the controller clamps `maxPending` to 1 for it;
+      - the unit refuses a marker whose persisted `members` (B4) are not its
+        static queues;
+      - the provider refuses a summon or release whose `group` and `queues`
+        are not the pool's.
+    - **Effort:** ~3 d, in `lib/summon/**`, reviewed by the bun-jobs session.
+    - **Revised after the bun-jobs session's review (4c), 2026-10-11, keeping
+      the approved direction (lookup)** (§7.8.3, §7.8.4):
+      - **H1:** the provider sizes the pool from its own count
+        (`current + count`, capped by a required `maxInstances`), never from
+        the controller's records-based `target`, and never lowers it;
+      - **M1:** `"lookup"` is refused for a one-queue shared unit;
+      - **M2:** the lookup checks `kind` and `until`, reads `members`
+        through the sanitiser (absent means "not mine"), and the guard
+        compares the whole `argv` without the id;
+      - **L1, L2:** a release's `auth` and `misconfigured` errors open the
+        circuit, and no release is sent while an attempt is pending;
+      - **L4:** a members mismatch parks the unit with a reason rather than
+        exiting into a restart loop;
+      - **a restart takes its place back** through the existing takeover
+        rule;
+      - **M3:** widening `passes` reaches the API's wire contract.
+      - **Effort:** ~4.75 d (was ~3 d). New public names are in Q48.
+    - **Revised again after 4c's round 2 (2026-10-11):**
+      - **M-a:** a new **`at-capacity`** answer for the provider's own
+        ceiling, uncharged and uncounted (decided by the user; name in Q49);
+      - **M-b:** `inSummonedProcess()` also reads
+        `--bun-jobs-summon-lookup`, and Lambda's recipe builds `BunJobs`
+        without `summon`;
+      - **M-c:** the restart takeover holds only within the watch window,
+        accepted as a risk;
+      - **L-a:** the helper only picks the id; a park marks every member
+        queue;
+      - **L-b:** an etag on the PATCH if the API takes one, or accept being
+        short by one; a `releasingUntil` stamp against a release racing a
+        summon;
+      - **L-c:** a release's failure is written by compare-and-set and
+        announced with no attempt id; no release while the circuit is open,
+        then half-open;
+      - **L-d:** the recipe always passes `mode: "until-stopped"`.
+      - **Effort:** the lookup ~5.75 d, plus ~1.5 d for `at-capacity`.
+    - **Recommended:** approve, with those names. It is the one way Google's
+      API leaves: a count PATCH makes no revision [W], and nothing can be
+      pushed into a single instance [W].
+    - **The closest safe alternative**, if it is declined: the pool as first
+      specified (`passes: "none"`, one pool per queue, and Cloud Run jobs for
+      a shared unit on Google).
+    - **1.5g must first show** that a scale-up leaves running instances
+      alone [U]. If it does not, the pool is clamped to one unit (§7.8.8).
+
+48. **Q48** **New public names from the bun-jobs session's review (4c)**
+    (new, 2026-10-11; §7.8.2, §7.8.3). **Closed: the user approved all four
+    names as proposed on 2026-10-11.**
+    - **Built in 1.5c:** `RunSummonedOptions.summon` and
+      `SummonFacet.preflight?(request)` (summon `0.3`).
+    - **Built in 1.5d:** `cloudRunWorkerPool`'s required `maxInstances`,
+      and the `SummonedExit` reason `"lookup-members"`.
+
+    The proposal, kept for the record (recommended: approve them as listed,
+    so 1.5c can start):
+    - **`RunSummonedOptions.summon?: SummonedArgs`** (H2). `runSummoned`
+      takes its provenance from this before `process.argv`, and refuses
+      workers whose `summon` id it does not match. Needed by Lambda (1.5c)
+      and the worker pool (1.5d). ~0.75 d.
+    - **`SummonFacet.preflight?(request)`** (L5, and the Lambda `env` nit).
+      An optional facet member the controller calls once at construction
+      with its sample request; a throw is a `ConfigError`. Additive, in
+      summon `0.3`. ~0.5 d, plus ~0.25 d for ECS's and Lambda's.
+    - **`cloudRunWorkerPool`'s config `maxInstances`**, required (H1): the
+      pool's hard ceiling. It could equally be approved with 1.5d's other
+      names.
+    - **A `SummonedExit` reason `"lookup-members"`** (L4), or another way
+      to carry that reason to `last.detail`, decided when it is built.
+      *(Approved as the exit reason `"lookup-members"`.)*
+
+49. **Q49** **The "at capacity" answer's name** (new, 2026-10-11; §7.8.3).
+    **The concept is decided by the user (2026-10-11).** A provider at its
+    own configured ceiling is not charged a budget count or group share,
+    counts no failure, and sets off no throttling warning. Real platform
+    throttling keeps today's charging. **Still open: the exact names**, to
+    be approved with 1.5d's names. **Recommended:**
+    - the result status `"at-capacity"` on `SummonResult`
+      (`{ status: "at-capacity"; reason?; retryAfterMs? }`, summon `0.3`);
+    - the same value on `SummonOutcomeKind` and on `SummonSkipReason`, and
+      so in the contract's `SUMMON_OUTCOMES` and `SUMMON_SKIP_REASONS`;
+    - **`SummonStatus.capacityUntil`** and `SummonStatusDto.capacityUntil`
+      with its schema field (round 3, M2c). Until when the provider's
+      ceiling holds summoning back, beside `backoffUntil`.
+
+    The marker fields `capacityUntil` and `releasingUntil` are internal, and
+    need no approval. The status field above is the public one.
+
+**Carried decisions, each with a recommendation (2026-10-11):**
+
+- **Q12** (an `unserved` field or `?minus=workers` on the demand route):
+  **defer to the tier-2 KEDA run** (§11.1). The ScaledJob recipe works with
+  `demand` today; decide on a measured over-start, not before. The field has
+  0 hits in `lib/` today.
+- **Handles stripped at the source** (§13.7's follow-up): **decide in
+  1.5c**, when ECS task ARNs, which contain the account id, first reach
+  `handles`. Recommended: a `SummonPolicy` option, off by default to match
+  `exposeSummonHandles`, its name to approve then.
+- **Q-p8**, `SummonPolicy.validateOnStart` (§13.10): **build it in 1.5c**
+  with the first provider whose `validate()` reaches a real API (ECS). The
+  routes it waited for (Q-p4) merged in #246.
 
 ### 12.3 Risks
 
@@ -3683,7 +4993,14 @@ run-all.ts` in `examples/bun-jobs-ui`.
     controller in the API's process, the reset included (the brief's rule;
     §6.2 said a reset "works from any process"). `SummonStatusDto.local` is
     therefore always `true` today; a marker-only read for a queue whose
-    controller runs elsewhere is a follow-up. A queue with a controller is
+    controller runs elsewhere is a follow-up. *Superseded for reads
+    (2026-10-11):* multi-queue PR-A3 (#314) persisted the limits on the marker
+    and made `GET /queues/:queue/summon` and `GET /summon` answer from storage
+    with `local: false` (`api/contract/types.ts:1269-1290`; MQ §5.1),
+    advertised by `features.summonRemoteStatus` (to be renamed
+    `summonStoredStatus` in its own PR after B4; Status); #366 and
+    B4 extend that to shared units. "Summon now" and reset still answer 409
+    without a local controller. A queue with a controller is
     reachable (with `queues: "all"`) before its first job; an unknown one is
     404 as elsewhere.
   - **"Summon now" is `check({ reason: "manual", force })`**, `force` from an
@@ -3759,8 +5076,13 @@ run-all.ts` in `examples/bun-jobs-ui`.
 
 ### 1.5p — The provider plugin API, `experimental` (new)
 
-**Sliced into PR-p1 to PR-p6 in [§13.10](#1310-15p-as-prs-sliced-2026-09-27-not-yet-approved)**,
+**Sliced into PR-p1 to PR-p6 in [§13.10](#1310-15p-as-prs-sliced-2026-09-27-merged-2026-09-30)**,
 reconciled against the code at `54ace84`; the table below is the draft's.
+**As built: all six merged on 2026-09-30** (#230, #232, #240, #243, #245,
+#246), with hardening in #250 and #256. The summon facet has been at `0.2`
+since multi-queue PR-B1 (#294), which added `SummonRequest.queues`, `group`
+and `demands` and `SummonReleaseRequest.queues` and `group`; `core` is still
+`0.1` (`provider/version.ts:22-31`).
 
 The core and the `summon` facet of
 [`compute-provider-plugins.md`](compute-provider-plugins.md), its conformance
@@ -3786,7 +5108,11 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 | `flyMachines` (the `wake` style), its fake and kit run | 1.25 d |
 | `exports` and `consumer-check.json` rows for `./providers/aws` and `./providers/fly` (the wiring itself is 1.5p's) | 0.5 d |
 | Recipes: worker Dockerfile, ECS task definition notes, Fly `fly.toml` (`kill_signal`, `kill_timeout`) | 0.5 d |
-| **Total** | **~6.5 d** |
+| *Added 2026-10-11:* shared units (§7.8): ECS's overrides measure and a fake that reads `command`; Lambda's payload (Q43), its fake and the several-worker handler recipe; Fly's skip documented | 0.75 d |
+| *Decided (Q45):* Fly's `create` mode, its fake and kit run | 0.75 d |
+| *After 4c's review:* `RunSummonedOptions.summon` (H2, §7.8.2) | 0.75 d |
+| *After 4c's review:* the facet's `preflight` in the controller, and ECS's and Lambda's (L5, §7.8.2) | 0.75 d |
+| **Total** | **~9.5 d** (was ~6.5 d) |
 
 ### 1.5d — Google and Azure, on the provider API
 
@@ -3795,7 +5121,11 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 | Token helper: JWT, Google key and metadata, Azure secret, federated and managed identity, in `./provider/auth` | 1.5 d |
 | `cloudRunJob` + `cloudRunWorkerPool` (the scale path, `release`), fakes and kit runs | 1.75 d |
 | `acaJob`, its fake and kit run, and the scoped-identity README section | 1.25 d |
-| **Total** | **~4.5 d** |
+| *Added 2026-10-11:* shared units (§7.8): Cloud Run jobs' `args` and `taskCount` with per-queue claims in the fake | 0.25 d |
+| *Decided (Q45):* the worker pool's lookup: `passes: "lookup"` and summon `0.3` in `lib/summon/**`, the kit's lookup handoffs, the pool's fake, request guard and recipe (§7.8.3; design approved as Q47, names with 1.5d's). *Re-priced after 4c's two rounds* (H1, M1–M3, L1, L2, L4; then M-b, M-c, L-a to L-d): the wire contract, sizing from the pool's own count, the lookup's checks and restart takeover, the fake pool with restarts, the release guard and its circuit rule, the inert check | 6.5 d (was 3 d; round 3 adds the release's record write and the `id: ""` surfaces) |
+| *Decided (M-a, round 2):* the core `at-capacity` answer: the result status, outcome and skip reason in the contract, `#record`'s uncharged branch with the conditional group refund, the clamp and clearing, the status field, the gate, the event, the version kit check, the UI touch list (§7.8.3; names Q49) | 2 d |
+| *Decided (Q45):* ACA's template copy, its fake and kit run | 0.5 d |
+| **Total** | **~13.75 d** (was ~4.5 d; 4c estimated ~9.75 d before round 2) |
 
 ### 1.5e — Render and SSH, on the provider API
 
@@ -3803,7 +5133,8 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 |---|---|
 | `renderJob` (the `argv` path), its fake and kit run | 0.75 d |
 | `sshSystemdRun`: pinned options, known-hosts file from `hostKey`, host choice, the `authorized_keys` and `bun-jobs-summon` recipe, a fake `ssh` for the kit, tier-2 systemd test | 2.75 d |
-| **Total** | **~3.5 d** |
+| *Added 2026-10-11:* shared units (§7.8): Render's quoting and a fake that runs `sh -c`; SSH's group unit names, the name rule and quoting | 0.5 d |
+| **Total** | **~4 d** (was ~3.5 d) |
 
 ### 1.5f — UI and examples (other owners)
 
@@ -3813,18 +5144,26 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 | The provider card, the experimental badge, "Test connection", the Providers section (plugins §14) | the UI session | ~0.5 d |
 | One example per first-party summoner against the fake platform; the invoke recipe; the model (c) one-shot | the examples session | ~2 d |
 | A custom summon provider against a local fake that passes the kit (plugins §15.5). It is also the outside provider the stability gate needs | the examples session | ~1 d |
+| *Added 2026-10-11:* each first-party provider's example shows a shared unit where §7.8 says it can serve one | the examples session | ~0.5 d |
+
+*Status 2026-10-11:* every row but the per-provider examples is done (see
+[Status](#status-2026-10-11)): the UI in #184, #200, #223, #247, #297 and
+#342, the custom provider in #244. The "experimental" badge was not found in
+`bun-jobs-ui/app`.
 
 ### 1.5g — Live verification
 
 | Work | Effort |
 |---|---|
 | The tier-3 script and one run per first-party summoner, closing the [U]s it can (Q2 and Q15 among them) and recording time-to-first-claim | 1.5 d + cents |
+| *Added 2026-10-11:* a shared-unit run per platform, with `count: 2` on ECS and Cloud Run jobs, each platform's real argument cap, and the worker pool's and ACA's checks (§7.8.8), including sizing from the pool's own count, the restart takeover, `at-capacity` and the release guard | 1.25 d + cents |
 
 ### 1.5s — The summon facet's stability gate (new)
 
 | Work | Effort |
 |---|---|
 | Confirm the six first-party providers and one outside provider pass the kit, across all three styles and all three `passes` values; review the API; move `summon` to `1.0`; move `core` to `1.0` only if the execute gate has also passed (plugins §10.4) | ~1 d |
+| *Added 2026-10-11 (Q46, decided):* `summon.handoff.shared-unit` passes on every provider whose capabilities allow a shared unit, and the outside provider; skips elsewhere carry the kit's documented reason (§7.8.8). Two `passes` values remain, not three (P14) | 0.25 d |
 
 ### Totals
 
@@ -3832,6 +5171,7 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 |---|---|---|
 | 1.5a + 1.5b (minimum useful), PR-1 to PR-7 | **~19.75 d** (was ~17.5 d; §13.1): PR-1 ~4.5 d the bun-jobs session, PR-2 to PR-7 ~15.25 d the features session | UI ~1 d for the demand card |
 | All of 1.5 | **~49.25 d** (was ~47 d: +2.25 d from the 1.5a/1.5b reconciliation; before that ~32.5 d, +12.5 d for 1.5p, +1 d for fakes and kit runs in 1.5d–e, +1 d for 1.5s) | UI ~3.5 d, examples ~3 d |
+| *Remaining at 2026-10-11:* 1.5c, 1.5d, 1.5e, 1.5g, 1.5s, re-estimated for shared units on every provider (§7.8.9, Q45, 4c's three reviews) | **~31.25 d** (was ~17 d) | examples ~2.5 d (was ~2 d) |
 
 The order is 1.5a → (1.5b ∥ 1.5p) → 1.5c → 1.5d → 1.5e → 1.5g → 1.5s, with
 1.5f following each bun-jobs sub-phase it depends on and 1.5g before the
@@ -3839,7 +5179,8 @@ release that ships an adapter. 1.5b is independent of 1.5p and 1.5c. Within
 1.5a and 1.5b the PR order is §13.1's: PR-2 now; PR-1 after #166; then PR-3,
 PR-4 and PR-5 in parallel; then PR-6 and PR-7. 1.5p can start once PR-3 has
 fixed the controller's shape, since its summon facet replaces PR-3's
-internal stand-in.
+internal stand-in. *As of 2026-10-11, 1.5a, 1.5b and 1.5p are done, and the
+order of the rest is unchanged: 1.5c → 1.5d → 1.5e → 1.5g → 1.5s.*
 
 ### 13.9 Names approved (2026-09-25)
 
@@ -3877,7 +5218,14 @@ same tree: 0.
 | S17 | the API action | `queues.summon` | (kept) | In all three action sets (§6.2) | unused |
 | S18 | who counts as serving | `SummonPolicy.servedBy: "any-worker" \| "summoned-only"` | `satisfiedBy` | `satisfiedBy` is already a field of the worker routes' instruction table with another meaning (worker states that satisfy an instruction, `api/routes/workers.ts:192`) | `servedBy` unused |
 
-### 13.10 1.5p as PRs (**sliced 2026-09-27, not yet approved**)
+### 13.10 1.5p as PRs (**sliced 2026-09-27, merged 2026-09-30**)
+
+*Updated 2026-10-11.* This section was headed "not yet approved". All six PRs
+merged on 2026-09-30: PR-p1 #230, PR-p2 #232, PR-p3 #240, PR-p4 #243, PR-p5
+#245 and PR-p6 #246 (the provider routes, which Q-p4 had recommended
+leaving for later), with hardening in #250 and #256. The text below is the
+slicing as written, kept for the record; where the code went another way, a
+note says so. The open questions' outcomes are after their table.
 
 Written against `origin/develop` at `54ace84`, after all seven 1.5a/1.5b PRs
 merged. **No code was changed.** Every `file:line` here is at `54ace84` and
@@ -3902,9 +5250,9 @@ read** [S].
 | P5 | Six `ProviderError` kinds set the gates (plugins §6.5) | No `ProviderError`. Every throw is `failed` and counts; a returned `unavailable` counts too (`#record`, `:1509-1605`, into `#fail`, `:1270`). `last.detail` is the thrown value's `code`, else its `name` (`errorDetail`, `:211-220`) | PR-p2. Once it lands, a `ProviderError`'s `code` would become the detail by itself; the plan wants `platformCode` first |
 | P6 | `ctx.logger` redacts; `ctx.fetch` is replaceable (plugins §6.2, §13.3) | `#call` builds `{ signal, logger: child, fetch: globalThis.fetch, now: Date.now }` (`:1463-1491`): no redaction, no seam for the kit | PR-p1 (redaction), PR-p3 (the seam, Q-p7) |
 | P7 | `SummonStatusDto.summoner` "gains `provider` and `capabilities`" (plugins §14.1) | **Done by PR-6**: `SummonProviderDto` and `SummonCapabilitiesDto` (`api/contract/types.ts:1090-1174`), their schemas (`api/schemas/queues.ts:462-520`, `:542-578`), copied field by field (`api/serialize.ts:925-1018`), held equal to the runtime types by `__tests__/api/api-contract.type-test.ts:499-512` | No contract work is left in 1.5p (see "The DTO, before and after") |
-| P8 | The kit's handoff harness is "moved from `__tests__/helpers/summon.ts`" (plugins §12.2) | That helper's `fakePlatform(options)` (`helpers/summon.ts:74-150`) is an **in-process `defineSummoner`** that spawns `fixtures/summoned-worker.ts` through `spawnBun`. It is not plugins §12.4's `fakePlatform(routes)`, an HTTP server. One name, two things | The kit takes the spawn-and-fixture half (its handoff `startUnit`). The test helper is renamed (a test-only name) and rebuilt on it; three test files follow |
+| P8 | The kit's handoff harness is "moved from `__tests__/helpers/summon.ts`" (plugins §12.2) | That helper's `fakePlatform(options)` (`helpers/summon.ts:74-150`) is an **in-process `defineSummoner`** that spawns `fixtures/summoned-worker.ts` through `spawnBun`. It is not plugins §12.4's `fakePlatform(routes)`, an HTTP server. One name, two things | The kit takes the spawn-and-fixture half (its handoff `startUnit`). The test helper is renamed (a test-only name) and rebuilt on it; three test files follow. *As built: `spawningSummoner` (#240, `__tests__/helpers/summon.ts:89`)* |
 | P9 | A packaging row: `exports`, `consumer-check.json` and the packaging test for every entry (1.5p row 4) | The packaging test demands a `./lib/<dir>` key for every `lib/` directory with an `index.ts` (`__tests__/packaging.test.ts:46-57`), and the build refuses an `exports` target that does not exist | Packaging **cannot be its own PR**: each PR that adds an entry adds its keys and rows. `./providers/*` cannot be wired before a provider file exists, so it moves to 1.5c (whose 0.5 d row already has it). `./provider/auth` has nothing to export until the SigV4 signer (Q-p2) |
-| P10 | The first-party import test scans `lib/providers/` (plugins §5) | No `lib/providers/` until 1.5c | It lands in PR-p1 anyway; its negative control is what makes it mean something until then |
+| P10 | The first-party import test scans `lib/providers/` (plugins §5) | No `lib/providers/` until 1.5c | It lands in PR-p1 anyway; its negative control is what makes it mean something until then. *As built (2026-10-11): `lib/providers/` exists since `localCompute` (#268, `local.ts` and `local/`), before 1.5c, and the test covers it (`first-party-imports.test.ts:150`); it is exported from `./provider`, not a `./providers/*` key (§8.4, Q44)* |
 | P11 | The template's config uses "bun-jobs' `toStandardSchema`" (plugins §11.3) | bun-jobs exports neither `toStandardSchema` nor `StandardSchemaV1`; bun-common does (`bun-common/lib/index.ts:329`, `:340`) | `./provider` re-exports both (Q-p10) |
 | P12 | The template's `tsconfig` has no `customConditions` (plugins §11.3) | In-repo projects resolve `@kingsleyweb/*` through the source condition, so `scripts/typecheck.ts` passes with `dts/` absent (`CLAUDE.md`) | The template ships a consumer `tsconfig`; the repo checks it through a second config with the condition, and `scripts/check-types.ts` is the consumer view [I] |
 | P13 | `consumer-check.json`'s `./provider` snippet declares `passes: "env"`, and the entry lists execute types (plugins §11.1) | `"env"` was withdrawn on 2026-09-26 (§5.5); no execute facet exists | The snippet uses `"argv"`; the execute types and `runExecuteConformance` wait for Phase 2 |
@@ -3920,7 +5268,7 @@ read** [S].
 | **PR-p3** `./provider/testing` | `runProviderConformance`, `assertConformance`, the report, `fakePlatform()` over `Bun.serve` on port 0, the summon checks (plugins §12.2) including the handoff and the two-process CAS; the test helper rebuilt on it | PR-p1; PR-p2 before merge (the `errors` group) | the features session; **the bun-jobs session reviews** (the handoff drives `SummonController`, the claim path and the drivers across processes); examples told (it unblocks 1.5f's custom provider) | ~3.5 d | no |
 | **PR-p4** starter template | `templates/compute-provider/` (summon half): the Acme Compute worked example, its fake, a green conformance test, `scripts/check-types.ts`; in `scripts/typecheck.ts` and the gate | PR-p3 | the features session; no bun-jobs review needed (no worker, driver, claim or gate code); examples told (the model for their example) | ~1.5 d | no |
 | **PR-p5** documentation | `docs/providers/`: README, author guide (summon half), reference with its drift test, user guide, security page; code blocks typechecked; `files` gains `docs`; a README section | PR-p4 (the guide's examples are the template's files) | the features session; the bun-jobs session reviews the security page and the gate descriptions; examples told (links) | ~2.5 d | no |
-| *PR-p6* provider routes (**only if Q-p4 says so**) | `GET /providers`, `POST /providers/:id/validate`, `/schema`, their two actions, `/meta` `features.providers`, a provider id on `SummonStatusDto.summoner` (plugins §14.1) | PR-p1 | the features session; the bun-jobs session reviews; **UI and examples told before merge** (new actions and permission rows) | *~2 d* | no |
+| *PR-p6* provider routes (**only if Q-p4 says so**; *built: #246, UI #247*) | `GET /providers`, `POST /providers/:id/validate`, `/schema`, their two actions, `/meta` `features.providers`, a provider id on `SummonStatusDto.summoner` (plugins §14.1) | PR-p1 | the features session; the bun-jobs session reviews; **UI and examples told before merge** (new actions and permission rows) | *~2 d* | no |
 | | | | | **~11.75 d** (+ ~2 d for PR-p6) | |
 
 Each PR passes the full gate alone and leaves the package coherent if the next
@@ -4092,7 +5440,7 @@ The packages are unpublished, so nothing gets an alias. **For a user of
 - **The UI's Summon panel**: no contract change (above). Its hints change only
   if the UI session rewords them after PR-p2.
 - **Tests**: `__tests__/helpers/summon.ts`'s `fakePlatform` is renamed in
-  PR-p3 (test-only), and `summon-platform`, `summon-race` and
+  PR-p3 (test-only; *as built: `spawningSummoner`, #240*), and `summon-platform`, `summon-race` and
   `summon-register-claim` follow.
 
 #### Public names each PR introduces
@@ -4167,6 +5515,32 @@ exported**, quoting what ran, not what was green. In addition:
 | Q-p10 | Does `./provider` re-export `toStandardSchema` and `StandardSchemaV1`? | **Yes**, so a plugin depends on bun-jobs alone (plugins §11.1–§11.3) |
 | Q-P6 | A `capacity` kind beside `quota` (plugins Q-P6)? | **Not in `0.1`**: six kinds; ECS's capacity-200 stays the `unavailable` result. A `0.x` minor may add it when a platform needs it |
 
+**Where these stand (2026-10-11)**, read against `develop` `9e76b32f`:
+
+- **Closed by the code, as recommended:**
+  - **Q-p1**: a definition with an `execute` key is a `ConfigError`
+    (`provider/version.ts:81-84`).
+  - **Q-p7**: the kit routes a controller's `fetch` through an internal
+    symbol, `PROVIDER_FETCH_PROBE` (`provider/context.ts`, read at
+    `summon/controller.ts:1112`).
+  - **Q-p9**: the brand is an own, enumerable `Symbol.for` key
+    (`provider/define.ts:32`, `:298`).
+  - **Q-p10**: `./provider` re-exports `toStandardSchema` and
+    `StandardSchemaV1` (`provider/index.ts:46-52`).
+- **Closed the other way:** **Q-p4**. The provider routes were taken into
+  1.5p as PR-p6 (#246, UI #247), not left for later.
+- **Decided since:**
+  - *Decided 2026-10-11 with Q44:* **Q-p2**, `./provider/auth`, is created
+    in 1.5c with the SigV4 signer; **Q-p3**, each `./providers/<name>` key,
+    lands with its provider.
+- **Still open:**
+  - **Q-p8**, `SummonPolicy.validateOnStart`, is unbuilt (0 hits in
+    `packages/`). Its blocker, Q-p4, is gone; §12.2 carries it with a
+    recommendation.
+- **Not re-verified here:** Q-p5, Q-p6 and Q-P6.
+- **The names under "Public names each PR introduces"** shipped with the
+  merged PRs.
+
 #### Effort
 
 **~11.75 d, was ~12.5 d**, plus ~2 d for PR-p6 if Q-p4 takes it into 1.5p.
@@ -4207,7 +5581,8 @@ it changes here.
 - **First-party summoners get no privileged internals**: they live in
   `lib/providers/`, import only the public entries, and a test fails on any
   other import (plugins §5). Their subpaths are `./providers/*`, not
-  `./summon/*` (§8.4), and the credential helpers are public from
+  `./summon/*` (§8.4; as built, `localCompute` is on `./provider`, where it
+  stays, Q44), and the credential helpers are public from
   `./provider/auth` (§8.1, §8.2).
 - **A published conformance kit** (`./provider/testing`) runs any provider
   against a local fake of its platform, with no cloud credentials. The
