@@ -23,7 +23,13 @@ import {
 } from "@kingsleyweb/bun-common";
 import { ConfigError } from "../../shared/errors";
 import { decide, denialError, originGuard } from "../auth";
-import { ApiError, sendProblem, tagRequestAction, toProblem } from "../errors";
+import {
+  ApiError,
+  logApiFailure,
+  sendProblem,
+  tagRequestAction,
+  toProblem,
+} from "../errors";
 import { EventHub, SYSTEM_CLOCK } from "./hub";
 import { JOBS_API_WS_CLOSE, JOBS_API_WS_SUBPROTOCOL } from "./protocol";
 import { Session } from "./session";
@@ -233,18 +239,16 @@ export function createJobsApiWebSocket(
       return next(error as Error);
     }
     const result = toProblem(error, { instance: req.path });
-    const fields = {
+    // A retryable 503 is logged at `warn` without its stack; see logApiFailure.
+    logApiFailure(
+      config.logger,
+      result.status >= 500
+        ? "jobs api upgrade failed"
+        : "jobs api upgrade refused",
       error,
-      code: result.problem.code,
-      status: result.status,
-      action: "events.connect",
-      path: req.path,
-    };
-    if (result.status >= 500) {
-      config.logger.error("jobs api upgrade failed", fields);
-    } else {
-      config.logger.debug("jobs api upgrade refused", fields);
-    }
+      result,
+      { action: "events.connect", path: req.path },
+    );
     sendProblem(res, result);
   };
 
