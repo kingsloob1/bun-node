@@ -953,8 +953,28 @@ export class BunQueueWorker<
   #firstReason: string | undefined;
   /** Resolved by `start()` to call off a stop that is still draining. */
   #stopCancel: ReturnType<typeof createDeferred<void>> | undefined;
-  /** Instruction applications chained, so the latest wins rather than a queue of stale steps. */
+  /**
+   * The latest control pass — waiting behind the one in flight, or in flight
+   * itself — so passes never overlap and `close()` can wait for it;
+   * {@link SETTLED} once the last one has finished.
+   */
   #controlChain: Promise<void> = SETTLED;
+  /**
+   * The control pass waiting for the one in flight, until it starts. Every
+   * pass asked for meanwhile — an event, a move of the change counter, a
+   * `syncControl()` — joins it rather than queueing one more, which loses
+   * nothing: it reads the stored entries when it starts, so it applies every
+   * instruction written before then. So at most one pass runs and one waits,
+   * however slow the store; a chain of one per ask grew without bound while
+   * passes outlasted the asks, and a caller awaiting a pass waited for all
+   * of it.
+   */
+  #controlQueued: Promise<void> | undefined;
+  /**
+   * Whether the waiting pass is also the startup pass: set when `run()`'s
+   * initial pass joins it, so it still reads a stop recorded against the key.
+   */
+  #controlQueuedInitial = false;
   /** Whether an adoption is running, so a report does not start another. */
   #adopting = false;
   /** Whether an instruction has been accepted and is still being carried out. */
@@ -4486,6 +4506,12 @@ export class BunQueueWorker<
    * Reads what has been asked of this worker and does it — chained, so an
    * instruction arriving mid-apply is coalesced into "apply the latest"
    * rather than replayed as a sequence of stale steps.
+   *
+   * The chain is at most two long: a call made while one pass is in flight
+   * queues one more behind it, and every call made before that one starts
+   * joins it ({@link BunQueueWorker.#controlQueued}) — so a caller awaiting a
+   * pass waits for at most the pass in flight and its own, never a backlog of
+   * events a slow store let pile up.
    */
   async #adoptControl(options?: {
     /** The first pass, at `run()`: a persistent stop is honoured here. */
@@ -4495,9 +4521,34 @@ export class BunQueueWorker<
       return;
     }
 
+    if (this.#controlQueued !== undefined) {
+      // It starts after this call, so it reads whatever this call was asked
+      // to see; only the startup pass's key-stop read has to be carried over.
+      if (options?.initial === true) {
+        this.#controlQueuedInitial = true;
+      }
+      await this.#controlQueued;
+      return;
+    }
+
     const previous = this.#controlChain;
+    // Behind another pass, this one waits as the queued one. While it waits
+    // every call joins it, so when it starts the queued one is still itself.
+    const queued = previous !== SETTLED;
+    if (queued) {
+      this.#controlQueuedInitial = options?.initial === true;
+    }
     const adopting = (async () => {
       await previous.catch(() => undefined);
+
+      let initial = options?.initial === true;
+      // Started: a call from here on may come after the reads below, so it
+      // queues behind this pass instead of joining it.
+      if (queued) {
+        initial = this.#controlQueuedInitial;
+        this.#controlQueued = undefined;
+        this.#controlQueuedInitial = false;
+      }
 
       if (this.#closing) {
         return;
@@ -4505,7 +4556,7 @@ export class BunQueueWorker<
 
       this.#adopting = true;
       try {
-        await this.#adoptOnce(options?.initial === true);
+        await this.#adoptOnce(initial);
       } catch (error) {
         this.#emitError(error, "control");
       } finally {
@@ -4514,7 +4565,14 @@ export class BunQueueWorker<
     })();
 
     this.#controlChain = adopting;
+    if (queued) {
+      this.#controlQueued = adopting;
+    }
     await adopting;
+
+    if (this.#controlChain === adopting) {
+      this.#controlChain = SETTLED;
+    }
   }
 
   /** One pass of {@link BunQueueWorker.#adoptControl}. */
