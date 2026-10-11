@@ -1,4 +1,5 @@
 import type { DriverConfig } from "../../lib/index";
+import { join } from "node:path";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, runSummoned, summonedFromArgs } from "../../lib/index";
@@ -19,6 +20,12 @@ import { BunJobs, runSummoned, summonedFromArgs } from "../../lib/index";
  * - `SUMMON_TEST_IDLE_MS`: how long idle before exiting (default 400).
  * - `SUMMON_TEST_CRASH_AFTER_MS`: take a job, then exit 1 this long after
  *   start, holding it.
+ * - `SUMMON_TEST_CRASH_GO_DIR`: a directory; with `SUMMON_TEST_CRASH_AFTER_MS`,
+ *   the crash countdown starts only once a file named after this worker's
+ *   attempt id (`summon.id`, so argv identity is required) exists there,
+ *   instead of at start. A test writes it once the controller has seen the
+ *   attempt, so "crashes after it was seen running" holds whatever the load:
+ *   a countdown from start can beat a starved worker's first report.
  * - `SUMMON_TEST_STALLED_MS`: the worker's `stalledInterval`.
  * - `SUMMON_TEST_LOCK_MS`: the worker's `lockDuration`.
  * - `SUMMON_TEST_RUN_SUMMONED_IDLE_MS`: hand the worker to the real
@@ -100,7 +107,21 @@ void worker.run();
 say({ event: "ready", pid: process.pid, id: worker.id });
 
 if (crashAfter !== undefined) {
-  setTimeout(() => process.exit(1), Number(crashAfter));
+  const crashGo = process.env.SUMMON_TEST_CRASH_GO_DIR;
+  if (crashGo === undefined) {
+    setTimeout(() => process.exit(1), Number(crashAfter));
+  } else {
+    if (summon === undefined) {
+      throw new Error("SUMMON_TEST_CRASH_GO_DIR needs argv identity");
+    }
+    const file = join(crashGo, summon.id);
+    void (async () => {
+      while (!(await Bun.file(file).exists())) {
+        await Bun.sleep(20);
+      }
+      setTimeout(() => process.exit(1), Number(crashAfter));
+    })();
+  }
 }
 
 // Its own record, once it is listed: what the controller releases the

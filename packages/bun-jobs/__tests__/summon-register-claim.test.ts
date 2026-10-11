@@ -14,6 +14,7 @@ import type {
   SummonClaimant,
   SummonClaimExit,
 } from "../lib/summon/claim";
+import { join } from "node:path";
 import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
 import {
   afterAll,
@@ -46,7 +47,7 @@ import {
   readMarker,
   SUMMON_MARKER,
 } from "../lib/summon/marker";
-import { testNamespace, waitFor } from "./helpers";
+import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 import { spawningSummoner, workerLines } from "./helpers/summon";
 
@@ -2039,9 +2040,20 @@ for (const backend of BACKENDS.filter((one) =>
         const { logger, events: logs } = createTestLogger();
         const opening = () =>
           logs.find((log) => log.message.startsWith("summon circuit open"));
+        // Each worker crashes once its attempt has been seen, not on a
+        // timer from its start: under load (seen at a load of 28-46) a
+        // starved worker's first claim and report outlasted 400 ms, so it
+        // died before reporting and every attempt was lost unseen — rightly
+        // counted with no detail, but not the case this proves.
+        const gate = await makeTmpDir("bun-jobs-summon-a2");
+        perTest.push(gate.cleanup);
         const { queue, controller, events } = await setup(
-          // Every worker, not only the first: exit(1) 400 ms after start.
-          { SUMMON_TEST_CRASH_AFTER_MS: "400" },
+          // Every worker, not only the first: exit(1) 400 ms after the
+          // test's go file for its attempt appears.
+          {
+            SUMMON_TEST_CRASH_AFTER_MS: "400",
+            SUMMON_TEST_CRASH_GO_DIR: gate.path,
+          },
           false,
           {
             // Room for a spawn and first report under load: an attempt
@@ -2062,11 +2074,25 @@ for (const backend of BACKENDS.filter((one) =>
         await queue.add("a", {});
         // The events announced up to and including the check that opened it.
         let atOpen: SummonEventPayload[] | undefined;
+        // The attempts whose workers have been told to crash.
+        const told = new Set<string>();
         await waitFor(
           async () => {
             const result = await controller.check();
             if (atOpen === undefined && opening() !== undefined) {
               atOpen = events.slice();
+            }
+            // Seen running: its worker may crash now. Given up on unseen
+            // (a spawn past the boot budget): its straggler, if any, too,
+            // rather than holding the job for good.
+            for (const event of events) {
+              if (
+                (event.outcome === "registered" || event.outcome === "lost") &&
+                !told.has(event.id)
+              ) {
+                told.add(event.id);
+                await Bun.write(join(gate.path, event.id), "");
+              }
             }
             return (
               result.action === "skipped" && result.reason === "circuit-open"
@@ -2080,8 +2106,9 @@ for (const backend of BACKENDS.filter((one) =>
         ).toBeGreaterThanOrEqual(2);
         // Seen running first, then counted as it died — the case a live
         // record alone let through — and among what opened the circuit.
-        // Normally every loss is one; under heavy load an attempt can be
-        // lost unseen instead, counted as before, so only one is required.
+        // Every worker crashes only once seen, so every loss is one, except
+        // an attempt whose spawn outlasted the boot budget, lost unseen and
+        // counted as before: so only one is required.
         expect(lateLosses(atOpen!).length).toBeGreaterThanOrEqual(1);
         for (const event of lateLosses(events)) {
           expect(event.detail).toBe("died");
