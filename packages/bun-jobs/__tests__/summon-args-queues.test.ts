@@ -93,13 +93,25 @@ describe("wireRequest: one queue is byte-identical (§6)", () => {
     expect("demands" in request).toBe(false);
   });
 
-  it("writes no group argument for one queue, even when given a group", () => {
+  it("writes the group for one queue when given one: a shared unit of one queue", () => {
     const request = wireRequest(
       { id: PINNED_ID, count: 1, target: 1 },
       { ...ONE, queues: ["emails"], group: "media" },
     );
-    expect([...request.argv]).toEqual(PINNED_ARGV);
-    expect("group" in request).toBe(false);
+    // The pinned argv with the group after the namespace, as for several
+    // queues; nothing else moves.
+    expect([...request.argv]).toEqual([
+      ...PINNED_ARGV.slice(0, 4),
+      `${SUMMON_ARGS.group}=media`,
+      ...PINNED_ARGV.slice(4),
+    ]);
+    expect(request.group).toBe("media");
+    expect(request.queues).toEqual(["emails"]);
+    // The worker reads the group back, so it can find the unit's state in
+    // the group's entry.
+    expect(
+      parseSummonArgs(["bun", "x.ts", ...request.argv], undefined),
+    ).toMatchObject({ group: "media", queue: "emails", queues: ["emails"] });
   });
 });
 

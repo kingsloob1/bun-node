@@ -2240,8 +2240,9 @@ queues repeats `--bun-jobs-summon-queue=` once per queue, in the policy's
 order, and adds `--bun-jobs-summon-group=<name>`: `summon.queues` lists the
 queues (repeats dropped), `summon.queue` is the first, and the group is
 written on each worker's record as `summon.group`, so a Workers page can say
-which group's unit it belongs to. A one-queue summon passes exactly the
-arguments it always has, and answers `queues: [queue]`. On a command line
+which group's unit it belongs to. A shared unit of one queue passes the
+group too. A per-queue controller's summon passes exactly the arguments it
+always has, and answers `queues: [queue]`. On a command line
 that repeats a flag, `--bun-jobs-summon-queue=` collects every value (the
 first is `summon.queue`) and every other flag, the group included, takes its
 last value; a group must be a key segment like a queue name, or
@@ -3986,9 +3987,12 @@ unit: "shared" }, summoner, … })`.
   is refused too: write the unit in the `summon` option.
 - **One queue is allowed**, as an array entry or a record
   (`{ renders: { summoner, group: { name: "media", unit: "shared" } } }`).
-  A one-queue summon writes no group in its arguments, so its workers'
-  records carry none, and the overlap warning (below) cannot see such a
-  unit.
+  Its summons name the group, in `request.group` and
+  `--bun-jobs-summon-group=`, as its release does, so its workers' records
+  carry it and a worker can find the unit's state in the group's entry.
+  So a summoned worker with no group on its queue is another controller's
+  (or an older build's), and it warns of one as a unit of several queues
+  does (below).
 - **Every queue of the unit gets `+1` to its share of the group's day per
   attempt**, since one unit serves them all.
 - **A provider must pass its arguments whole**: a shared unit refuses a
@@ -4018,8 +4022,8 @@ unit: "shared" }, summoner, … })`.
 - **Overlaps.** One queue should have one summoning controller. A controller
   that finds live workers on its queues summoned by another group's shared
   unit warns once per queue and group, and lists the groups in
-  `status().overlaps` (as of its last check). A shared unit of several
-  queues that finds a summoned worker with no group on one of them — a
+  `status().overlaps` (as of its last check). A shared unit, of one queue
+  too, that finds a summoned worker with no group on one of its queues — a
   per-queue controller's, or a unit from an older build — warns once per
   queue, without listing it.
 - **Resets.** `reset()` clears the unit's failures, backoff and circuit (and
@@ -4032,7 +4036,12 @@ that predates the group's queues registers on some of them only, so each of
 its attempts is `partial` until every image is updated. Switching a group
 from per-queue controllers to a shared unit keeps the group's budget counts
 and circuits (it is the same entry), and leaves the old per-queue markers in
-place, unused; their units in flight drain and exit on idle.
+place, unused; their units in flight drain and exit on idle. A shared unit of
+one queue names its group in its summons from this version on: during a
+rolling upgrade, old and new controllers send different `argv` for its
+attempts (without and with `--bun-jobs-summon-group=`), and its workers
+summoned by an older version carry no group, so a new controller warns about
+them once per queue until they exit.
 
 **Naming.** `SummonGroupOptions` is the policy's `group` field — what
 controllers share, one budget, a circuit or one unit. `SummonGroup` is an
