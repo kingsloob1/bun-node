@@ -839,6 +839,17 @@ who builds whole workers inside their own threads must pass `summon` in
   and `wireRequest` refuses argv over 8 KiB with a `ConfigError` at
   construction.
 
+**The first-party cloud providers (2026-10-11).** For each provider SC plans
+(ECS and Lambda, Fly, Cloud Run jobs and worker pools, ACA, Render, SSH),
+[SC §7.8](summon-compute.md#78-shared-units-on-every-provider) says how it
+carries this section's repeated arguments, which platforms cannot serve a
+shared unit (`passes: "none"`), and what the kit check, 1.5g and the 1.5s
+gate add. The user decided SC's Q43–Q46 on 2026-10-11. Every provider can
+serve a shared unit except Fly's default wake pool. Cloud Run worker pools
+do it by having each unit look its attempt up from the group's marker,
+using this plan's persisted `members` (SC §7.8.3; design approved as SC's
+Q47).
+
 ### 4.9 Overlap: a queue in a shared unit and in another controller [D]
 
 A shared-unit group and a per-queue controller (or a second group) over the
@@ -907,7 +918,9 @@ shipped first, in #289 and its UI #297, rather than as a groups list:
 
 **PR-A3 still owes the group routes.** Its local commit `77ca70d` has
 `GET /summon/groups`, `GET /summon/groups/:group` and
-`POST /summon/groups/:group/reset`, and `features.summonRemoteStatus`. It
+`POST /summon/groups/:group/reset`, and `features.summonRemoteStatus` (to be
+renamed `summonStoredStatus`, with the UI test id `summon-remote` →
+`summon-stored`: the user's decision of 2026-10-11, its own PR after B4). It
 also extends `GET /summon` to queues with no local controller (a `local`
 flag), on #289's earlier `GET /summon`; the rebase must redo that on the
 shipped one. Two choices there differ from the table above (the user's,
@@ -1281,7 +1294,8 @@ and B2's in local commits (Status, at the top); the rest is not built.*
 group budget's `off`, `queues[q].lastAt` (A1); `openedBy`,
 `circuit.failures` and `resetAfter` (A2); `SummonGroupListDto`,
 `SummonGroupResetBody`, `SummonGroupStatusDto.circuits`,
-`features.summonRemoteStatus`, `SummonListItemDto.circuitOpenUntil`, and
+`features.summonRemoteStatus` (renamed `summonStoredStatus` after B4, by the
+user's decision of 2026-10-11), `SummonListItemDto.circuitOpenUntil`, and
 `kind`, `limits` and `group` on `SummonMarker` (A3).
 
 ---
