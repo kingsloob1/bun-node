@@ -52,7 +52,10 @@ The summon facet only: bun-jobs has no execute facet yet.
 3. **Identity**: `name` and `version` equal to `package.json`'s; a `kind` of
    1-24 lowercase letters, digits and dashes; `apiVersion` written as a
    literal, and repeated in `package.json`'s `"bun-jobs"` field. A test holds
-   the two equal.
+   the two equal. The template declares summon `0.2`, the version that
+   serves a summon group's shared unit (one unit for several queues), which
+   the kit's `summon.handoff.shared-unit` proves; under `0.1` a controller
+   refuses a shared unit, and the kit skips that check.
 4. **Config**: any Standard Schema. Validate synchronously where you can, so a
    bad config throws at once. List every secret's path in `secrets`: it is
    redacted from every log. `describe()` returns facts, never a secret.
@@ -64,7 +67,9 @@ The summon facet only: bun-jobs has no execute facet yet.
 6. **`summon()`**: send `request.dedupeKey` as the platform's token, and
    `request.argv` as the unit's arguments, whole and in order: a unit for
    several queues repeats `--bun-jobs-summon-queue=`, and the kit's
-   `summon.argv.round-trip` checks that every argument arrives, in order. Under a strict token, send nothing
+   `summon.argv.round-trip` checks that every argument arrives, in order;
+   `summon.handoff.shared-unit` then summons one real unit for two queues
+   and checks that it registers on both, drains both and exits 0. Under a strict token, send nothing
    that is not a function of the request's id: never `demand` or `reason`.
    Call through `ctx.fetch` with `ctx.signal`, never the global `fetch`.
 7. **Errors**: a `SummonResult` when the platform answered normally

@@ -13,8 +13,13 @@ import { runScript } from "./spawn";
  *
  * ```ts
  * const summon = summonedFromArgs();
- * const worker = jobs.worker(summon?.queue ?? queue, handler, { summon });
- * await runSummoned(worker, { idleFor });
+ * const workers = (summon?.queues ?? [queue]).map((name) =>
+ *   jobs.worker(name, handler, { summon }),
+ * );
+ * // One worker alone, as the single-queue recipe; a shared unit's together.
+ * await (workers.length === 1
+ *   ? runSummoned(workers[0], { idleFor })
+ *   : runSummoned(workers, { idleFor }));
  * ```
  *
  * Its identity arrives only as the `--bun-jobs-summon-*=` arguments the
@@ -22,8 +27,9 @@ import { runScript } from "./spawn";
  * ({@link FIXTURE_ENV}): the driver config, and the namespace and queue for
  * a platform that passes no arguments.
  *
- * Prints one JSON line per fact: `ready`, `record` (its own heartbeat
- * record's `summon`, once listed), `processed`, `exit`. In echo mode
+ * Prints one JSON line per fact: `ready` (one per worker), `record` (each
+ * worker's own heartbeat record's `summon` and its `queue`, once listed),
+ * `processed` (with the job's `queue`), `exit`. In echo mode
  * ({@link FIXTURE_ENV}`.echo`), it writes its arguments and what
  * `summonedFromArgs()` read from them to that file instead, and exits.
  *
@@ -97,31 +103,42 @@ async function main(): Promise<never> {
   const idleFor = Number(process.env[FIXTURE_ENV.idleMs] ?? 300);
 
   const jobs = new BunJobs({ namespace, driver, logger: noopLogger });
-  const worker = jobs.worker(
-    queue,
-    async (job) => {
-      say({ event: "processed", id: job.id, pid: process.pid });
-    },
-    {
-      summon,
-      concurrency: 4,
-      pollInterval: 20,
-      reportInterval: 200,
-    },
+  // One worker per queue the arguments name: a shared unit's are several.
+  const queues = summon?.queues ?? [queue];
+  const workers = queues.map((name) =>
+    jobs.worker(
+      name,
+      async (job) => {
+        say({ event: "processed", id: job.id, pid: process.pid, queue: name });
+      },
+      {
+        summon,
+        concurrency: 4,
+        pollInterval: 20,
+        reportInterval: 200,
+      },
+    ),
   );
-  say({ event: "ready", pid: process.pid, id: worker.id });
+  for (const worker of workers) {
+    say({ event: "ready", pid: process.pid, id: worker.id });
+  }
 
-  // Its own record, once listed: what the controller releases the attempt
-  // by. Watched beside the run, so a worker that drains at once still exits.
+  // Each worker's own record, once listed: what the controller releases the
+  // attempt by, on that worker's queue. Watched beside the run, so a worker
+  // that drains at once still exits.
   const run = { done: false };
-  const watching = (async () => {
+  const watching = workers.map(async (worker, index) => {
     while (!run.done) {
       try {
         const mine = (await jobs.listWorkers()).find(
           (one) => one.id === worker.id,
         );
         if (mine !== undefined) {
-          say({ event: "record", summon: mine.summon ?? null });
+          say({
+            event: "record",
+            summon: mine.summon ?? null,
+            queue: queues[index],
+          });
           return;
         }
       } catch {
@@ -129,15 +146,16 @@ async function main(): Promise<never> {
       }
       await Bun.sleep(20);
     }
-  })();
-
-  const result = await runSummoned(worker, {
-    idleFor,
-    idleCheckInterval: 50,
-    exit: false,
   });
+
+  const options = { idleFor, idleCheckInterval: 50, exit: false } as const;
+  // One worker runs alone, exactly as the single-queue recipe does.
+  const result =
+    workers.length === 1
+      ? await runSummoned(workers[0]!, options)
+      : await runSummoned(workers, options);
   run.done = true;
-  await watching;
+  await Promise.all(watching);
   await jobs.close();
   say({
     event: "exit",

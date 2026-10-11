@@ -38,6 +38,7 @@ import {
  * | a **record**, mixed in | `obinna-queue` | `obinna`, a `localCompute()` | the user's own worker, jobs sent with `.toQueue()` and `jobs.queue(name).schedule()`; `env: "inherit"`, output to a logger, `SIGINT` to stop |
  * | | `ledger` | `replicas`, a scale-style `defineSummoner` over a `localCompute()` | `scaleDown`: units that stay up until released |
  * | | `secure-exports` | Vault Compute `…~1` (`compute/provider.ts`), over the media `localCompute()` | a third-party provider: pending readiness, a declared secret, `throttled`/`auth`/… answers |
+ * | the **uploads group**, a shared unit | `ingest`, `captions`, `search-index` | `uploads`, a `localCompute()` | one controller and one unit for three queues (`group.unit: "shared"`): demand combined by the most-starved queue, per-queue coverage while an attempt is pending, a `partial` attempt when the entry forgets a queue. Its controller is on this context, or on the mailer's with `PLAYGROUND_SHARED_UNIT=mailer` |
  *
  * `compute/units.ts` wraps each `localCompute()` instance's facet to record
  * its units and inject faults per queue (`/playground/compute`), and stops
@@ -59,9 +60,23 @@ export interface SummoningOptions {
 export interface Summoning {
   /**
    * The context's `summon` option: groups and records, mixed. `undefined` on
-   * the memory driver, which cannot summon.
+   * the memory driver, which cannot summon. Holds the uploads shared unit too,
+   * unless {@link sharedUnitHost} is `"mailer"`.
    */
   summon: SummonOption | undefined;
+  /**
+   * Which context hosts the uploads group's shared unit (its controller):
+   * `"main"` by default, `"mailer"` with `PLAYGROUND_SHARED_UNIT=mailer`, so
+   * the management API, which runs on the main context, reads the unit from
+   * storage as another member would (`local: false`).
+   */
+  sharedUnitHost: "main" | "mailer";
+  /**
+   * The mailer context's `summon` option: the uploads shared unit when
+   * {@link sharedUnitHost} is `"mailer"`, otherwise (and on the memory
+   * driver) `undefined`.
+   */
+  mailerSummon: SummonOption | undefined;
   /** Mounts the control page (`/playground/compute`) on the adapter. */
   mount: (app: BunHttpAdapter) => void;
   /** Where the control page is mounted. */
@@ -107,6 +122,9 @@ const FAULT_CYCLE: readonly (CycleFault | undefined)[] = [
   { queue: "renders", kind: "slow-boot" },
   undefined,
   { queue: "marathon", kind: "ignore-stop" },
+  undefined,
+  // The shared unit's first queue: its starts take the unit's faults.
+  { queue: "ingest", kind: "forget-queue" },
 ];
 
 /** What a job is about. */
@@ -117,6 +135,15 @@ const SUBJECTS = [
   "map-flyover",
   "acct-1042",
   "acct-2210",
+];
+
+/** What an upload is called: what the uploads group's jobs carry. */
+const UPLOADS = [
+  "keynote-2026.mp4",
+  "podcast-ep42.mp3",
+  "webinar-q3.mov",
+  "tutorial-setup.mp4",
+  "interview-raw.wav",
 ];
 
 /** A random integer in [min, max]. */
@@ -146,6 +173,7 @@ export async function createSummoning(
     "./compute/obinna-queue-worker.ts",
     import.meta.url,
   );
+  const sharedEntry = new URL("./compute/shared-unit.ts", import.meta.url);
   // Every unit this run starts is recorded (pid, start time, command line) in
   // one file per checkout, so a later run can stop what a killed run, or a
   // `--watch` reload, left behind (`compute/leftovers.ts`). That happens
@@ -154,6 +182,7 @@ export async function createSummoning(
   const pids = new UnitPidFile(unitPidFilePath(join(here, "..")), [
     fileURLToPath(groupEntry),
     fileURLToPath(obinnaEntry),
+    fileURLToPath(sharedEntry),
   ]);
   const leftover = await stopRecordedUnits(pids.file);
   if (leftover > 0) {
@@ -173,7 +202,7 @@ export async function createSummoning(
 
   // The instances, kept here for the process's life: the provider registry
   // behind `GET /providers` holds them weakly. In this order, so the
-  // Providers screen lists them `…local@0.1.0~1` to `~4`.
+  // Providers screen lists them `…local@0.1.0~1` to `~5`.
 
   /**
    * `media`: the group's queues and the vault's. One entry serves them all;
@@ -246,9 +275,28 @@ export async function createSummoning(
     ...inCgroup,
   });
 
+  /**
+   * `uploads`: the uploads group's shared unit, one process serving
+   * `ingest`, `captions` and `search-index` (`compute/shared-unit.ts`). Two
+   * units at most, each of which must register within 15 s; output appended
+   * to the media instance's log. After `unbuilt`, so `~1`..`~4` keep their
+   * numbers and this is `~5`.
+   */
+  const uploads = localCompute({
+    entry: sharedEntry,
+    cwd: here,
+    maxUnits: 2,
+    bootBudget: 15_000,
+    shutdown: { signal: "SIGTERM", graceMs: 3_000 },
+    output: options.driver === undefined ? "ignore" : { file: unitsLogFile() },
+    env: { PLAYGROUND_POOL: "uploads" },
+    ...inCgroup,
+  });
+
   const mediaUnits = board.instrument(media, "media");
   const obinnaUnits = board.instrument(obinna, "obinna");
   const ledgerUnits = board.instrument(ledger, "ledger");
+  const uploadsUnits = board.instrument(uploads, "uploads");
 
   // The third-party provider, whose starts go through the media instance.
   storeSecret("vault/token", TOKEN);
@@ -313,6 +361,9 @@ export async function createSummoning(
     board.addQueue(queue, ALL_UNIT_FAULTS);
   }
   board.addQueue("obinna-queue", ["crash", "die"]);
+  // The uploads shared unit: its starts are its first queue's, so its faults
+  // go there; `compute/shared-unit.ts` acts on these three.
+  board.addQueue("ingest", ["crash", "slow-boot", "forget-queue"]);
   board.addQueue("secure-exports", [
     ...ALL_UNIT_FAULTS,
     ...ALL_PROVIDER_FAULTS,
@@ -323,6 +374,40 @@ export async function createSummoning(
     options.driver === undefined
       ? {}
       : { PLAYGROUND_SUMMON_DRIVER: JSON.stringify(options.driver) };
+
+  /**
+   * The uploads group: **one shared unit for three queues**
+   * (`group.unit: "shared"`). One controller, one marker, one budget and one
+   * circuit for the three; every unit runs a worker per queue
+   * (`compute/shared-unit.ts`). Its demand is the most-starved queue's, not
+   * the sum: an upload of six files wants two units for `ingest` (4 per
+   * worker) and one each for the others, so two units serve all three.
+   */
+  const uploadsGroup = {
+    queues: ["ingest", "captions", "search-index"],
+    summoner: uploadsUnits,
+    group: {
+      name: "uploads",
+      unit: "shared",
+      budget: { perHour: 120, perDay: 1_000 },
+    },
+    maxWorkers: 2,
+    maxPending: 1,
+    triggers: { poll: 10_000 },
+    circuit: { failures: 3, resetAfter: 60_000 },
+    // A shared unit's overrides take `jobsPerWorker` and `maxWorkers` only:
+    // each queue's capacity is counted apart, the unit's decision is the
+    // maximum over them.
+    overrides: { ingest: { jobsPerWorker: 4, maxWorkers: 2 } },
+    env,
+  } satisfies SummonGroup;
+
+  /**
+   * Where the shared unit's controller runs (`PLAYGROUND_SHARED_UNIT`): on
+   * this, the main context, by default; on the mailer's with `mailer`.
+   */
+  const sharedUnitHost =
+    process.env.PLAYGROUND_SHARED_UNIT === "mailer" ? "mailer" : "main";
 
   const summon: SummonOption | undefined =
     options.driver === undefined
@@ -421,6 +506,7 @@ export async function createSummoning(
               env,
             },
           },
+          ...(sharedUnitHost === "main" ? [uploadsGroup] : []),
         ];
 
   const timers: ReturnType<typeof setInterval>[] = [];
@@ -438,7 +524,12 @@ export async function createSummoning(
 
   return {
     summon,
-    providers: [media, obinna, ledger, unbuilt, ...vaults, replicas],
+    sharedUnitHost,
+    mailerSummon:
+      options.driver === undefined || sharedUnitHost === "main"
+        ? undefined
+        : [uploadsGroup],
+    providers: [media, obinna, ledger, unbuilt, uploads, ...vaults, replicas],
     basePath: board.basePath,
     mount: (app) => board.mount(app),
     start: async (jobs) => {
@@ -511,6 +602,37 @@ export async function createSummoning(
           }
         }, 5_000);
         await jobs.queue("secure-exports").add("export", work(3, 6));
+        // Uploads: each one fans out to the shared unit's three queues, one
+        // job on each. Two to six at once, so `ingest` (4 per worker) wants
+        // one or two units and the others one: the unit asks for the
+        // maximum, never the sum.
+        for (let index = between(2, 6); index > 0; index--) {
+          const upload = UPLOADS[between(0, UPLOADS.length - 1)]!;
+          await jobs
+            .queue("ingest")
+            .add("ingest", { upload, steps: between(4, 8) });
+          await jobs
+            .queue("captions")
+            .add("caption", { upload, steps: between(3, 6) });
+          await jobs
+            .queue("search-index")
+            .add("index", { upload, steps: between(2, 4) });
+        }
+        // Now and then, captions alone (a re-caption of old uploads): one
+        // queue's demand still summons the whole unit, all three workers.
+        if (round % 3 === 2) {
+          later(async () => {
+            await jobs.queue("captions").addBulk(
+              Array.from({ length: between(3, 6) }, () => ({
+                name: "caption",
+                data: {
+                  upload: UPLOADS[between(0, UPLOADS.length - 1)]!,
+                  steps: between(3, 6),
+                },
+              })),
+            );
+          }, 30_000);
+        }
         // Every other burst: enough for two replicas.
         if (round % 2 === 1) {
           await jobs.queue("ledger").addBulk(

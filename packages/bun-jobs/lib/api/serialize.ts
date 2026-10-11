@@ -1093,6 +1093,10 @@ export function toSummonStatusDto(
       ...(options.exposeSummonHandles && attempt.handles !== undefined
         ? { handles: [...attempt.handles] }
         : {}),
+      // `Object.fromEntries` defines own keys: `__proto__` is a valid queue.
+      ...(attempt.coverage === undefined
+        ? {}
+        : { coverage: Object.fromEntries(Object.entries(attempt.coverage)) }),
     })),
     failures: status.failures,
     ...(status.backoffUntil === undefined
@@ -1112,6 +1116,9 @@ export function toSummonStatusDto(
             ...(status.last.detail === undefined
               ? {}
               : { detail: status.last.detail }),
+            ...(status.last.missing === undefined
+              ? {}
+              : { missing: [...status.last.missing] }),
           },
         }),
     ...(status.group === undefined
@@ -1126,6 +1133,7 @@ export function toSummonGroupStatusDto(
 ): SummonGroupStatusDto {
   return {
     name: group.name,
+    ...(group.unit === undefined ? {} : { unit: group.unit }),
     budget: { ...group.budget },
     queues: Object.fromEntries(
       Object.entries(group.queues).map(([queue, share]) => [

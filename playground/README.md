@@ -14,6 +14,7 @@ PLAYGROUND_DRIVER=redis PLAYGROUND_URL=redis://localhost:6379/12 bun playground/
 PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
 PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgroup (Linux, cgroup v2)
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
+PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -52,7 +53,7 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 |---|---|---|
 | `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
-| `compute` | `compute.renders.render`, `compute.transcodes.transcode`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`, `compute.ledger.post`, `compute.secure-exports.export`, `compute.obinna-queue.obinna-pinger-local-compute` | **summoned**: child processes the library's `localCompute()` starts when one of those queues has work, each gone again once its queue is idle (or, for `ledger`, once it is released); its Summon card names the attempt |
+| `compute` | `compute.renders.render`, `compute.transcodes.transcode`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`, `compute.ledger.post`, `compute.secure-exports.export`, `compute.obinna-queue.obinna-pinger-local-compute`, and the uploads unit's `compute.ingest.ingest`, `compute.captions.caption`, `compute.search-index.index` | **summoned**: child processes the library's `localCompute()` starts when one of those queues has work, each gone again once its queue is idle (or, for `ledger`, once it is released); its Summon card names the attempt |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
 survives a restart of the playground and reaches every replica carrying it.
@@ -86,7 +87,7 @@ than piled onto one (each is commented where it is set):
 | `reports` | 1 at a time, 6–15 s each | an object progress (`{ step, done, of }`), a backlog |
 | `webhooks` | 2 at a time, rate-limited 20/min | retries with exponential backoff; `umbrella` always fails, so dead jobs pile up |
 | `images` | none in `api` — its only worker is `mailer.images.thumbs` (see above) | a backlog that drains slowly, one job at a time; pause that worker and it only grows |
-| `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle`, `obinna-queue`, `ledger`, `secure-exports` | none always on — summoned on demand (`summoning.ts`) | see "Summoning" below |
+| `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle`, `obinna-queue`, `ledger`, `secure-exports`, `ingest`, `captions`, `search-index` | none always on — summoned on demand (`summoning.ts`) | see "Summoning" below |
 
 Also on `emails`: two repeat series (`weekly-digest`, `daily-summary`: try
 Disable/Enable), a delayed `reminder-tomorrow`, and a flow
@@ -185,7 +186,7 @@ run's because capture attributes each `console` call to the run that made it
 
 ### Summoning (`summoning.ts`, `compute/`)
 
-Eight queues have **no** always-on worker. When one has work, its summon
+Eleven queues have **no** always-on worker. When one has work, its summon
 controller asks its summoner for one, and the library's **`localCompute()`**
 (from `@kingsleyweb/bun-jobs/provider`) starts a real worker process on this
 machine: a child of the playground, in a process group of its own. The worker
@@ -210,6 +211,14 @@ export const summon = [
     "ledger": { summoner: replicas, scaleDown: { after: 20_000 } },
     "secure-exports": { summoner: vault },
   },
+  // A shared unit: one controller and one unit for three queues.
+  {
+    queues: ["ingest", "captions", "search-index"],
+    summoner: uploads,
+    group: { name: "uploads", unit: "shared", budget: { perHour: 120, perDay: 1_000 } },
+    maxWorkers: 2,
+    overrides: { ingest: { jobsPerWorker: 4, maxWorkers: 2 } },
+  },
 ];
 ```
 
@@ -226,17 +235,40 @@ share its circuit (`group.circuit` stays off): `brittle` crashes every unit,
 and a shared circuit for the `local` kind would hold the other four queues
 back with it.
 
+The **uploads group** shares the most there is to share: `group: { name:
+"uploads", unit: "shared" }` makes `ingest`, `captions` and `search-index`
+**one controller** with one marker, budget, backoff and circuit, and every
+unit it summons runs a worker for each of the three
+(`compute/shared-unit.ts`, `runSummoned(workers)`). One upload is one job on
+each queue, so one burst costs one attempt and one process instead of three.
+Demand is combined by the **most-starved** queue, never summed: six uploads
+want two units for `ingest` (`jobsPerWorker: 4`) and one each for the
+others, and two units serve all three.
+
+**Where its controller runs.** On the main context, by default. With
+`PLAYGROUND_SHARED_UNIT=mailer` the mailer context (`mailer.ts`) hosts it
+instead, with the uploads entry as its whole `summon` option, and the main
+context has none for those queues. The management API runs on the main
+context, so it then reads the unit from storage as any member of the
+namespace would: `GET /jobs-api/queues/ingest/summon` answers `local: false`,
+and the Summon panel is read-only (no "Summon now", no Reset). Until the
+unit's first attempt has written its state there, nothing is stored to read,
+so for the first second or so that route answers 409
+`SUMMON_NOT_CONFIGURED` and the queue has no Summon tab. Everything
+else (the bursts, the units, the faults) is unchanged.
+
 | File | What it is |
 |---|---|
-| `summoning.ts` | the four `localCompute()` instances, the vault provider, the scale-style summoner, the `summon` option, and the bursts of jobs |
+| `summoning.ts` | the five `localCompute()` instances, the vault provider, the scale-style summoner, the `summon` option, and the bursts of jobs |
 | `compute/worker.ts` | the entry the `media` and `ledger` instances run: **one file serving every queue of the group**, choosing its processor by `summonedFromArgs().queue` |
 | `compute/obinna-queue-worker.ts` | the entry the `obinna` instance runs: `obinna-queue`, whose jobs "ping obinna" |
+| `compute/shared-unit.ts` | the entry the `uploads` instance runs: **one unit for three queues**, a worker per queue in `summonedFromArgs().queues`, all handed to `runSummoned(workers)`; a 3 s pause before the workers exist, so the attempt's per-queue coverage can be read while it is pending |
 | `compute/units.ts` | the playground's wrapper around each instance's summon facet (a spread of a configured provider keeps its brand and its Providers id): it records the units, injects a fault into one queue's next start, and on shutdown stops every unit and awaits its exit. It also serves `/playground/compute` |
 | `compute/provider.ts` | "Vault Compute", a third-party provider made with `defineComputeProvider` whose units are started by the `media` `localCompute()` underneath. It shows what `localCompute()` cannot: a declared secret, an asynchronous config (and so Pending and Failed readiness), and the `throttled`/`quota`/`auth`/`transient` answers of a remote platform |
 | `compute/cgroup.ts` | the run's cgroup when `PLAYGROUND_CGROUP` asks for one |
 | `compute/leftovers.ts` | records every unit this run starts, and at startup stops the units a killed run (or a `--watch` reload) left running |
 
-**The `localCompute()` instances** (Providers screen, `@kingsleyweb/bun-jobs:local@0.1.0~1` to `~4`):
+**The `localCompute()` instances** (Providers screen, `@kingsleyweb/bun-jobs:local@0.1.0~1` to `~5`):
 
 | Instance | Options | What to see |
 |---|---|---|
@@ -244,6 +276,7 @@ back with it.
 | `~2` `obinna` | `entry: compute/obinna-queue-worker.ts`, `maxUnits: 1`, `maxLifetime: 300_000` (the platform's cap: a policy `maxLifetime` above it is a `ConfigError`), `shutdown: { signal: "SIGINT", graceMs: 5_000 }`, `env: "inherit"`, `output: { logger }` | each unit's `obinna unit up…` line in the playground's terminal, logged by the `obinna-units` logger with the unit's handle; a job's `returnValue.hostEnv` is `"inherited"`: the whole host environment, secret included |
 | `~3` `ledger` | the group's entry again, `args: ["--tier=replica"]`, `maxUnits: 2`, `output: "ignore"` | driven by a scale-style summoner, below |
 | `~4` | `entry: "compute/not-built-yet.ts"` | it configures (the schema reads no file), and **Test connection** fails its `entry` check. Nothing summons with it: a summon would be a `misconfigured` `ProviderError`, which opens a circuit at once |
+| `~5` `uploads` | `entry: compute/shared-unit.ts`, `maxUnits: 2`, `bootBudget: 15_000`, `shutdown: { signal: "SIGTERM", graceMs: 3_000 }`, `output: { file: ".data/units-<pid>.log" }` (the media instance's file), `env: { PLAYGROUND_POOL: "uploads" }` | the uploads group's shared unit: each unit one process with three workers, one `--bun-jobs-summon-queue=` per queue in its command line (`ps`); its `shared unit up: queues ingest, captions, search-index…` line in the units log |
 
 **Use cases** — what to watch, and how to make it happen:
 
@@ -271,6 +304,14 @@ back with it.
 | `cgroup` | every instance, with `PLAYGROUND_CGROUP` | Providers → each `Local processes` card: a `cgroup` fact, and Test connection's `cgroup` check passes; each unit in a cgroup of its own under `…/app.slice/bun-node-playground-<pid>` (`memory.max` 1 GiB, `pids.max` 512, binding every unit of the run together). Where that cannot be made (no systemd user slice, no cgroup v2, no permission), one warning at startup and the units run without a cgroup | `PLAYGROUND_CGROUP=auto` (Linux, cgroup v2, a user-delegated subtree; `PLAYGROUND_CGROUP_SLICE` names another parent), or a path to an existing cgroup |
 | `.toQueue()` (#278) | `obinna-queue` | each burst's `ping-obinna` job: added through the registry's builder, `jobs.schedule("ping-obinna", data).toQueue("obinna-queue")`. Its definition's `attempts: 5` does **not** follow it: the job has the queue's default | always on |
 | `jobs.queue(name).schedule()` (#278) | `obinna-queue` | a delayed `ping-obinna` 20 s after each burst, and the `obinna-heartbeat` series (Repeatables: every 2 minutes), each summoning a unit | always on |
+| **One unit for three queues** (`group.unit: "shared"`) | `ingest`, `captions`, `search-index`, `uploads` `~5` | each of the three queues' Summon panels shows **the same unit**: its queues, its attempts and outcomes; the Summoning list has **one row** for the three (`GET /jobs-api/summon` lists it once, with `queues` and `group`). `/playground/compute`'s Queues column names all three for each unit, and `ps` shows one process per unit. A burst of six uploads asks for two units (ingest's `jobsPerWorker: 4`), not four | always on: two to six uploads per burst |
+| **Per-attempt coverage** | the uploads unit | while an attempt is pending, `pending[0].coverage` on `GET /jobs-api/queues/ingest/summon` (and the panel): each queue `pending`, then `registered` as its worker reports; the unit waits 3 s before building its workers, so the pending state stays long enough to read | any burst |
+| A **partial** attempt | `ingest` (the unit's first queue: its starts take the unit's faults) | the attempt is `registered` with detail **`partial:search-index`** and `missing: ["search-index"]` (`last` on the panel, the `summon` event), logged at `error`, and **one failure** counted: three in a row open the unit's circuit, for all three queues. The `search-index` worker still runs, as an ordinary worker | `?kind=forget-queue&queue=ingest` (also in the fault cycle) |
+| A shared unit **lost** | `ingest` | `crash`: the unit exits before any worker exists, so every queue is missing and the attempt is **`lost`** at the boot budget, detail the unit's stderr line (`shared unit: cannot open the upload store…`); `slow-boot`: lost at 15 s, then the late workers drain the queues | `?kind=crash&queue=ingest`, `?kind=slow-boot&queue=ingest` |
+| Workers: **a unit of uploads** | Workers → `compute` | `compute.ingest.ingest`, `compute.captions.caption`, `compute.search-index.index`: three workers of one process, each Summon card naming the same attempt and the unit's group, `uploads` | any burst |
+| Events **deduped by `eventId`** | Events console, `queue/ingest`, `queue/captions`, `queue/search-index` | each `summon` event of the unit is published once on every queue's channel, with its `queues` (and `missing` on a partial); the copies share one `eventId`, so a client following several of the queues dedupes them by it. Open two of the channels and compare the copies' `eventId` | any burst |
+| Summon groups: **`unit: shared`** beside per-queue | `GET /jobs-api/summon/groups/uploads` vs `…/groups/media` | `uploads` reads `unit: "shared"`, with one budget (`120` an hour, `1,000` a day) for the unit; `media` has no `unit` (per-queue controllers sharing a budget) | always on |
+| Hosted **elsewhere**: the read-only view | the uploads unit, with `PLAYGROUND_SHARED_UNIT=mailer` | `GET /jobs-api/queues/ingest/summon` answers `local: false` from storage, as for any member: the panel shows the unit read-only, without "Summon now" or Reset | start with `PLAYGROUND_SHARED_UNIT=mailer` |
 | A third-party provider: readiness, a declared secret, platform answers | `secure-exports`, Vault Compute `~1` | Providers: `…vault-compute@0.1.0~1` Pending until the slow secret store answers (`PLAYGROUND_SECRET_DELAY_MS`, default 12 s), then Ready; `~2` Ready but Test connection `auth` (`InvalidToken`); `~3` Pending, then Failed. Test connection on `~1` names the token as `[REDACTED]` and lists the `media` instance's own checks. The queue's Summon panel shows the same readiness | `?kind=throttled&queue=secure-exports` (also `quota`, `auth`, `transient`; only on this queue) |
 
 **Faults, per queue.** `/playground/compute` queues a fault for **one
@@ -286,25 +327,28 @@ curl http://localhost:4000/playground/compute/state     # queued faults and ever
 
 | Fault | Queues | What it does | The Summon panel shows |
 |---|---|---|---|
-| `crash` | every queue | the unit exits 1 before its worker reports | pending, then **`lost`** after the boot budget, detail the unit's last stderr line |
-| `die` | every queue | the unit `SIGKILL`s itself after its first job | registered, then **`lost`**, detail `SIGKILL`; `/playground/compute` shows `failed 137` |
-| `slow-boot` | every queue but `obinna-queue` | the unit sleeps 25 s before building its worker | **`lost`** at the boot budget (15 s on `media`, 20 s on `ledger`), then a late worker drains the queue |
-| `ignore-stop` | every queue but `obinna-queue` (use `marathon`, which never goes idle; elsewhere the unit still exits on idle) | the unit ignores its signals and its deadline | nothing counted (it registered long before); at `maxLifetime`, `localCompute()` stops it, then kills it: `failed 137`, `max-lifetime` on `/playground/compute` |
+| `crash` | every queue | the unit exits 1 before its worker reports (on `ingest`, before any of the uploads unit's three workers exists) | pending, then **`lost`** after the boot budget, detail the unit's last stderr line |
+| `die` | every queue but `ingest` | the unit `SIGKILL`s itself after its first job | registered, then **`lost`**, detail `SIGKILL`; `/playground/compute` shows `failed 137` |
+| `slow-boot` | every queue but `obinna-queue` (on `ingest`, the whole uploads unit) | the unit sleeps 25 s before building its worker | **`lost`** at the boot budget (15 s on `media`, 20 s on `ledger`), then a late worker drains the queue |
+| `forget-queue` | `ingest` (the uploads unit) | the shared unit builds its last queue's (`search-index`) worker without `summon` | **`registered`**, detail `partial:search-index`, `missing: ["search-index"]`, one failure counted |
+| `ignore-stop` | every queue but `obinna-queue` and `ingest` (use `marathon`, which never goes idle; elsewhere the unit still exits on idle) | the unit ignores its signals and its deadline | nothing counted (it registered long before); at `maxLifetime`, `localCompute()` stops it, then kills it: `failed 137`, `max-lifetime` on `/playground/compute` |
 | `throttled` | `secure-exports` | Vault Compute throws `throttled`, retry after 8 s | `unavailable`, **not counted**; backoff 8 s |
 | `quota` | `secure-exports` | `quota`, retry after 20 s | counted; backoff 20 s |
 | `auth` | `secure-exports` | `auth` (`TokenRevoked`) | the **circuit opens at once**, for a minute. Reset closes it |
 | `transient` | `secure-exports` | `transient` | `failed`, counted, backoff |
 
 Each queue takes only the faults its units act on, and the page offers only
-those: `obinna-queue-worker.ts` knows `crash` and `die` alone, and the four
+those: `obinna-queue-worker.ts` knows `crash` and `die` alone,
+`shared-unit.ts` `crash`, `slow-boot` and `forget-queue` (queued on
+`ingest`, its first queue, since a shared unit's start is that queue's), and the four
 provider faults are what a remote platform answers and `localCompute()` never
 does, so they go only to the queue the vault provider summons for. Any other
 kind, an unknown queue, or a fourth fault queued for one queue
 (`MAX_QUEUED_PER_QUEUE` is 3) is a 400 naming what it takes. On `brittle`,
 a queued unit fault replaces its override's `crash` for that one start. Before some bursts the playground queues one
 itself, in turn: `renders` crash, `secure-exports` throttled, `transcodes`
-die, `secure-exports` auth, `renders` slow-boot, `marathon` ignore-stop, with
-a clean burst between each. `PLAYGROUND_SUMMON_FAULTS=off` turns that off.
+die, `secure-exports` auth, `renders` slow-boot, `marathon` ignore-stop,
+`ingest` forget-queue, with a clean burst between each. `PLAYGROUND_SUMMON_FAULTS=off` turns that off.
 
 **Stopping.** Ctrl+C (or `SIGTERM`) stops the bursts and then every unit
 still running: `localCompute()` sends each its stop signal as the signal
@@ -341,7 +385,7 @@ checkout keeps its own. A clean stop drops its records too
 start, the old units may still take a job or two.
 
 With `PLAYGROUND_CGROUP=auto`, every instance's units (`media`, `obinna`,
-`ledger`) are in the run's cgroup, and the next start also kills whatever
+`ledger`, `uploads`) are in the run's cgroup, and the next start also kills whatever
 still runs in a cgroup an earlier run left (`cgroup.kill`) and removes it,
 and removes the units log it left.
 
@@ -368,9 +412,6 @@ that detail, until a registration or a Reset clears it.
 - TODO(Part A): group budgets and circuits, and status from storage: one
   budget and circuit for the whole media group, where today each of its five
   queues has its own.
-- TODO(Part B, #294): multi-queue units — one `localCompute()` unit serving
-  several of the group's queues at once, instead of one unit per queue
-  choosing its processor by `summonedFromArgs().queue`.
 
 ## Things to try
 
@@ -402,6 +443,8 @@ that detail, until a registration or a Reset clears it.
 - Open `renders` when a burst lands: a pending attempt, then registered, then a worker under `compute` on the Workers page; a minute later, no worker at all.
 - Queue `auth` for `secure-exports` on `/playground/compute`, then press "Summon now" on that queue: the circuit opens at once. Reset closes it.
 - Queue `crash` for `renders`, add a job to `renders`, and watch the attempt go from pending to lost 15 s later, with the unit's own stderr line as its detail.
+- Open `ingest` as a burst lands: a pending attempt whose coverage reads `pending` for all three queues for about 3 s, then `registered`; open `captions` and `search-index` and see the same unit. Then queue `forget-queue` for `ingest` on `/playground/compute`: the next attempt is `registered` with `partial:search-index`, and one failure.
+- Start with `PLAYGROUND_SHARED_UNIT=mailer` and open `ingest`: the same unit, read-only (`local: false`), its controller on the mailer context.
 - Watch `brittle`'s panel for two minutes: two lost attempts, the circuit open, a trial a minute later, open again.
 - Open Workers after a burst that added `ledger` jobs: its `compute.ledger.post` workers (two when the burst brought 5 or more jobs, at `jobsPerWorker: 4`) stay after `ledger` drains, then 20 s later are released and go (Events console, `queue/ledger`: a `summon` event, `released`).
 - Open a completed `renders` job and a completed `obinna-queue` job: `env.hostSecret: "kept out"` beside `hostEnv: "inherited"`.

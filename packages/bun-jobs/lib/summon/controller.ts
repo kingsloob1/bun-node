@@ -74,12 +74,15 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { SUMMON_ARGS } from "./args";
 import {
+  liveWithId,
   openSummonClaim,
   readSummonClaims,
+  START_TIME_SLACK,
   SUMMON_CLAIM_RETENTION_MS,
   sweepSummonClaims,
   tallySummonClaim,
 } from "./claim";
+import { coverageWarner, withCoverage } from "./coverage";
 import { DEFAULT_BOOT_BUDGET, toSummoner } from "./define";
 import {
   chargeGroup,
@@ -138,11 +141,6 @@ const DEFAULT_MAX_LIFETIME = 3_600_000;
 const DEFAULT_SCALE_DOWN_AFTER = 300_000;
 /** How long one summoner call may take when none is given, in ms. */
 const DEFAULT_SUMMON_TIMEOUT = 30_000;
-/**
- * With `passes: "none"` an attempt is released by a live worker that started
- * at most this long before the attempt was claimed (a clock-skew allowance).
- */
-const START_TIME_SLACK = 5_000;
 /** How many times a result is written back against a fresh read before giving up. */
 const RECORD_ATTEMPTS = 3;
 /** The fewest attempts the watch list holds, whatever the policy. */
@@ -253,6 +251,16 @@ export const LIST_SUMMON_CONTROLLERS: unique symbol = Symbol(
 );
 
 /**
+ * Internal: `status()` without a shared unit's per-queue `coverage`, which
+ * costs a claim read per attempt per queue: what the management API's
+ * `GET /summon` reads, whose items carry no attempts. Exported from this
+ * module alone, like {@link SUMMON_GROUP_VIEW}.
+ */
+export const SUMMON_STATUS_WITHOUT_COVERAGE: unique symbol = Symbol(
+  "bun-jobs: summon status without coverage",
+);
+
+/**
  * Internal: the key of a controller's view of its summon group — its name,
  * limits, circuit setting and summoner kind — or `undefined` when it is in
  * none. What the management API's group routes use to answer with a local
@@ -316,11 +324,6 @@ function isServing(worker: WorkerInfo): boolean {
     return worker.state === "running" || worker.state === "restarting";
   }
   return !worker.paused;
-}
-
-/** How many live records carry an attempt's id: its workers still running. */
-function liveWithId(workers: readonly WorkerInfo[], id: string): number {
-  return workers.filter((worker) => worker.summon?.id === id).length;
 }
 
 /** A positive whole number, or a `ConfigError` naming the option. */
@@ -2188,11 +2191,14 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         const detail = `partial:${missing.join(",")}`;
         this.#fail(marker, now);
         noteOpening(attempt.id, detail);
+        // `missing` beside the detail that names the same queues: stored, so
+        // a status read from storage has it too.
         marker.last = {
           id: attempt.id,
           outcome: "registered",
           at: now,
           detail,
+          missing: [...missing],
         };
         events.push({
           id: attempt.id,
@@ -2543,6 +2549,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         });
       }
       shared.queues = shares;
+      // The unit's queues, for a reader with no controller (Q1): the shares
+      // cannot say, since they empty at UTC midnight and, beside per-queue
+      // controllers of the group, hold theirs too.
+      shared.members = [...this.queues];
     } else {
       marker.limits =
         this.#policy.budget === false
@@ -4295,6 +4305,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
 
   /** The marker as it stands, plus this controller's policy. Reads; writes nothing. */
   async status(): Promise<SummonStatus> {
+    return await this.#status(true);
+  }
+
+  /** Internal ({@link SUMMON_STATUS_WITHOUT_COVERAGE}): `status()` with no coverage reads. */
+  async [SUMMON_STATUS_WITHOUT_COVERAGE](): Promise<SummonStatus> {
+    return await this.#status(false);
+  }
+
+  /** `status()`, with a shared unit's coverage only when `coverage` asks for it. */
+  async #status(coverage: boolean): Promise<SummonStatus> {
     await this.#connect();
     // A late provider ready by now is adopted here too, so its summoner shows
     // before any check. Its errors are kept for the next check to throw.
@@ -4339,7 +4359,19 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         ? {}
         : { inertReason: this.#inertReason }),
       summoner: this.#summonerStatus(),
-      pending: marker.pending,
+      // A shared unit's attempts in flight carry each queue's coverage:
+      // copies, worked out from the claims and records now, never stored.
+      pending:
+        coverage && this.#shared && marker.pending.length > 0
+          ? await withCoverage(
+              this.#driver,
+              this.namespace,
+              this.queues,
+              marker.pending,
+              now,
+              coverageWarner(this.#logger, { group: this.#group!.name }),
+            )
+          : marker.pending,
       failures: marker.failures,
       ...(marker.backoffUntil !== undefined && marker.backoffUntil > now
         ? { backoffUntil: marker.backoffUntil }
@@ -4376,6 +4408,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
             budget: group.budget,
             circuit: group.circuit,
             kind: this.#summoner.provider.kind,
+            ...(this.#shared ? { unit: "shared" as const } : {}),
           },
         };
   }
@@ -4395,6 +4428,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           budget: group.budget,
           circuit: group.circuit,
           kind: this.#summoner.provider.kind,
+          ...(this.#shared ? { unit: "shared" as const } : {}),
         },
       },
     ))!;

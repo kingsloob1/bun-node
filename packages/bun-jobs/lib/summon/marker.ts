@@ -275,6 +275,21 @@ export function readMarker(
   if (typeof marker.group !== "string" || marker.group.length === 0) {
     delete marker.group;
   }
+  // A partial unit's missing queues, stored with its outcome: anything but a
+  // list of names is dropped (the detail still names them), never a reason
+  // to call the marker unreadable.
+  const last = marker.last as Record<string, unknown> | undefined;
+  if (
+    typeof last === "object" &&
+    last !== null &&
+    last.missing !== undefined &&
+    !(
+      Array.isArray(last.missing) &&
+      last.missing.every((one: unknown) => typeof one === "string")
+    )
+  ) {
+    delete last.missing;
+  }
   return { marker, version: entry.version, unreadable: false };
 }
 

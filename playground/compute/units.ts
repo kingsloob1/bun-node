@@ -27,8 +27,10 @@ import { noopLogger } from "@kingsleyweb/bun-common";
  * - **Inject a fault into the next start for one queue**, by adding
  *   `LOCAL_COMPUTE_FAULT=<kind>` to that start's environment, so it reaches
  *   every unit the start asks for. The unit's entry (`worker.ts`,
- *   `obinna-queue-worker.ts`) reads it. A fault is spent only by a start
- *   that happens; one that answered `unavailable` leaves it queued.
+ *   `obinna-queue-worker.ts`, `shared-unit.ts`) reads it. A fault is spent
+ *   only by a start that happens; one that answered `unavailable` leaves it
+ *   queued. A shared unit's start is `request.queue`'s, its first queue, so
+ *   its faults are queued there (`ingest`).
  * - **Stop every unit and await its exit** when the playground stops, through
  *   the facet's own `cancel()`, which resolves on the real exit (after the
  *   stop signal, and `SIGKILL` once the grace has passed).
@@ -39,7 +41,12 @@ import { noopLogger } from "@kingsleyweb/bun-common";
  */
 
 /** Faults injected into a unit, through its environment (`LOCAL_COMPUTE_FAULT`). */
-export type UnitFault = "crash" | "die" | "slow-boot" | "ignore-stop";
+export type UnitFault =
+  | "crash"
+  | "die"
+  | "slow-boot"
+  | "ignore-stop"
+  | "forget-queue";
 
 /** Faults the vault provider answers with, before any unit starts. */
 export type ProviderFault = "throttled" | "quota" | "auth" | "transient";
@@ -56,6 +63,8 @@ export const UNIT_FAULTS: Readonly<Record<UnitFault, string>> = {
     "the unit sleeps 25 s before building its worker, past the 15 s boot budget: the attempt is lost, then the worker registers late and drains the queue anyway",
   "ignore-stop":
     "the unit ignores SIGTERM and its own deadline: at the policy's maxLifetime localCompute sends the stop signal, then SIGKILL after the grace (exit 137, detail max-lifetime). Use it on marathon, which never goes idle",
+  "forget-queue":
+    "a shared unit's entry builds its last queue's worker without summon, as a script that forgot a queue would: the unit registers on the others only, so the attempt is registered with detail partial:<queue> and missing [<queue>], and counts one failure",
 };
 
 /** Every provider fault, with what the vault provider answers. */
@@ -73,6 +82,7 @@ export const ALL_UNIT_FAULTS: readonly UnitFault[] = [
   "die",
   "slow-boot",
   "ignore-stop",
+  "forget-queue",
 ];
 
 /** Every provider fault, in the order the control page lists them. */
@@ -105,8 +115,10 @@ export const MAX_QUEUED_PER_QUEUE = 3;
 interface UnitRecord {
   /** Which configured instance started it: the facet that answers its `status()`. */
   pool: string;
-  /** The queue it was summoned for. */
+  /** The queue it was summoned for: for a shared unit, the first of {@link queues}. */
   queue: string;
+  /** Every queue a shared unit was summoned for (`request.queues`); absent for one queue. */
+  queues?: readonly string[];
   /** Its handle, as `localCompute()` answered it. */
   handle: string;
   /** The fault it was started with, if any. */
@@ -119,8 +131,10 @@ interface UnitRecord {
 export interface UnitView extends UnitStatus {
   /** The instance that started it. */
   pool: string;
-  /** The queue it was summoned for. */
+  /** The queue it was summoned for: for a shared unit, the first of {@link queues}. */
   queue: string;
+  /** Every queue a shared unit was summoned for; absent for one queue. */
+  queues?: readonly string[];
   /** The fault it was started with, if any. */
   fault?: string;
   /** When it was started, ISO. */
@@ -292,6 +306,11 @@ export class UnitBoard {
           this.#record({
             pool,
             queue: request.queue,
+            // A shared unit's queues, for the page: its faults go by the
+            // first (`request.queue`), which is where they are queued.
+            ...(request.queues === undefined || request.queues.length < 2
+              ? {}
+              : { queues: [...request.queues] }),
             handle,
             // A fault from the policy's own env (brittle's override) shows too.
             ...(env.LOCAL_COMPUTE_FAULT === undefined
@@ -369,6 +388,7 @@ export class UnitBoard {
           ...(statuses[index] ?? { handle: unit.handle, state: "unknown" }),
           pool,
           queue: unit.queue,
+          ...(unit.queues === undefined ? {} : { queues: unit.queues }),
           ...(unit.fault === undefined ? {} : { fault: unit.fault }),
           startedAt: new Date(unit.startedAt).toISOString(),
         });
@@ -456,7 +476,7 @@ export class UnitBoard {
       .slice(0, 80)
       .map(
         (unit) =>
-          `<tr><td>${unit.queue}</td><td>${unit.pool}</td><td>${unit.handle}</td><td>${unit.state}</td><td>${unit.exitCode ?? ""}</td><td>${unit.fault ?? ""}</td><td>${escapeHtml(unit.detail ?? "")}</td><td>${unit.startedAt}</td></tr>`,
+          `<tr><td>${(unit.queues ?? [unit.queue]).join(", ")}</td><td>${unit.pool}</td><td>${unit.handle}</td><td>${unit.state}</td><td>${unit.exitCode ?? ""}</td><td>${unit.fault ?? ""}</td><td>${escapeHtml(unit.detail ?? "")}</td><td>${unit.startedAt}</td></tr>`,
       )
       .join("\n");
     const running = units.filter((unit) => unit.state === "running").length;
@@ -482,7 +502,7 @@ provider's own <code>status()</code>. The Summon panels are on each queue's page
 ${sections}
 <form method="post" action="${this.basePath}/faults/clear"><button>clear</button> <span>forget every queued fault</span></form>
 <h2>Units (${running} running)</h2>
-<table><tr><th>Queue</th><th>Pool</th><th>Handle</th><th>State</th><th>Exit</th><th>Fault</th><th>Detail</th><th>Started</th></tr>
+<table><tr><th>Queues</th><th>Pool</th><th>Handle</th><th>State</th><th>Exit</th><th>Fault</th><th>Detail</th><th>Started</th></tr>
 ${rows}
 </table>
 </body></html>`;
