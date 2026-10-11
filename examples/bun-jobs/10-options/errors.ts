@@ -40,7 +40,7 @@
  *   that is what JSON does with one.
  */
 import type { JobsDriver, RunRecord } from "@kingsleyweb/bun-jobs";
-import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
+import { BunHttpAdapter, createTestLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   BunQueue,
@@ -219,12 +219,14 @@ const BUILDERS: Record<string, () => unknown> = {
   "summonController()": () => closingJobs.summonController("held"),
 };
 
-// The management API over the same context, built while it is open.
+// The management API over the same context, built while it is open, with
+// its log collected rather than printed.
+const { logger: apiLogger, events: apiLog } = createTestLogger();
 const closingApi = createJobsApi({
   jobs: closingJobs,
   basePath: "/jobs-api",
   authorize: () => true,
-  logger: noopLogger,
+  logger: apiLogger,
 });
 const closingApp = new BunHttpAdapter();
 closingApp.use(closingApi.basePath, closingApi.router);
@@ -295,6 +297,39 @@ checkEqual(
     closedList.status,
   ],
   [503, "1", "JOBS_CLOSED", 200],
+);
+// A 503 sent with Retry-After is an expected refusal, not a server fault:
+// during a shutdown every request gets one. So the API logs it at warn, with
+// the code, the error's message and the Retry-After, but no error and so no
+// stack. Any other 5xx stays an error with its stack; a 4xx is debug.
+const closedLog = apiLog.find((event) => event.fields.code === "JOBS_CLOSED");
+checkEqual(
+  "and logs it at warn, as an expected refusal: the code, the error's message and the Retry-After, with no error and so no stack",
+  [
+    closedLog?.level,
+    closedLog?.message,
+    closedLog?.fields.status,
+    closedLog?.fields.retryAfter,
+    closedLog?.fields.errorMessage,
+    closedLog?.error,
+  ],
+  [
+    "warn",
+    "jobs api request failed",
+    503,
+    "1",
+    `Jobs context "${namespace}" is closed: queue() builds nothing after close()`,
+    undefined,
+  ],
+);
+const missingRead = await closingApp.fetch("/jobs-api/queues/never-made");
+const missingLog = apiLog.find(
+  (event) => event.fields.code === "QUEUE_NOT_FOUND",
+);
+checkEqual(
+  "a 4xx on the same API is debug, with its error: GET /queues/never-made is 404 QUEUE_NOT_FOUND",
+  [missingRead.status, missingLog?.level, missingLog?.error?.name],
+  [404, "debug", "ApiError"],
 );
 await closingApi.close();
 
