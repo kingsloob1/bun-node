@@ -721,8 +721,8 @@ const longJob = await heartbeatQueue.add(
     label: "heartbeats",
     beats: BEATS,
     beatEvery: BEAT_EVERY,
-    // `touch()` and `extendLock()` hold a lock for 30s by default: long
-    // enough to see the job out, heartbeats or none.
+    // A bare `touch()` or `extendLock()` renews the lock as a heartbeat does,
+    // for the worker's `lockDuration`; left out, only the heartbeats keep it.
     touchLock: false,
   },
   { removeOnComplete: false },
