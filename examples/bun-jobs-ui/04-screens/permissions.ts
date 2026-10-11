@@ -573,6 +573,13 @@ interface ScreenInputs {
    */
   summon?: SummonStatusDto | null;
   /**
+   * `GET /meta/permissions?queue=<member>` for each queue of a shared summon
+   * unit's status (`summon.queues`), as the Summon panel holds them
+   * (`useUnitCanSummon` in `SummonPanel.tsx`): `undefined` for one still
+   * loading or failed. Absent for a single queue's status.
+   */
+  members?: Readonly<Record<string, PermissionsBody | undefined>>;
+  /**
    * One controller of `GET /summon`, as the Summoning screen draws its row:
    * listed only where the API granted the caller `queues.read` on its queue.
    * Absent off a row.
@@ -796,6 +803,13 @@ interface Gate {
   readonly mutations?: readonly JobsApiAction[];
   /** Mutations of which at least one must be granted; off when `meta.readOnly`. */
   readonly anyMutation?: readonly JobsApiAction[];
+  /**
+   * For a shared summon unit's status (one with `queues`), `mutations` must
+   * be granted on every member queue's own targeted map too, and the gate is
+   * closed while any of them is unread ("each by its own queue map" in the
+   * README row). A single queue's status reads no other map.
+   */
+  readonly memberMaps?: boolean;
   /** `/meta` features that must all be on. */
   readonly features?: readonly Feature[];
   /** UI sections that must all be on. */
@@ -1507,6 +1521,10 @@ const GATES = [
     map: "queue",
     needsOf: ["panel=summon"],
     mutations: ["queues.summon"],
+    // A shared unit's status (`queues`): the action is sent for the whole
+    // unit, so the panel asks every member queue's own map
+    // (`useUnitCanSummon`), and offers nothing while one is unread.
+    memberMaps: true,
     when: ({ summon }) => summon?.local === true,
   },
   {
@@ -1587,6 +1605,27 @@ const GATES = [
     map: "queue",
     needsOf: ["panel=summon"],
     when: ({ summon }) => summon?.group !== undefined,
+  },
+  {
+    // `SummonState` in `SummonPanel.tsx`: the "Shared unit" line
+    // (`UnitQueues`) wherever the status carries `queues`, reading nothing of
+    // its own. The API lists only the members the caller may read, so the
+    // line never names, or counts, one it may not.
+    name: "summon: shared unit",
+    row: "Summon panel shared unit",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => summon?.queues !== undefined,
+  },
+  {
+    // `SummonPanel.tsx`: the notice wherever `overlaps` is non-empty. The
+    // API leaves `overlaps` out when there are none (never `[]`), so "a
+    // status with `overlaps`" and a non-empty one are the same answer.
+    name: "summon: overlaps warning",
+    row: "Summon panel overlaps warning",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => (summon?.overlaps?.length ?? 0) > 0,
   },
   {
     name: "panel=throughput",
@@ -2519,9 +2558,33 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
       gate.anyOf.some((action) => can(permissions, action))) &&
     (gate.mutations ?? []).every(mutable) &&
     (gate.anyMutation === undefined || gate.anyMutation.some(mutable)) &&
+    membersAllow(gate, inputs) &&
     (gate.features ?? []).every((feature) => meta.features[feature]) &&
     itemAllows(gate, inputs.item, meta, permissions) &&
     (gate.when?.(inputs) ?? true)
+  );
+}
+
+/**
+ * A `memberMaps` gate on a shared unit's status: its mutations granted on
+ * every member's map, none of them unread, and not read-only
+ * (`useUnitCanSummon`). Anything else passes.
+ */
+function membersAllow(gate: Gate, inputs: ScreenInputs): boolean {
+  const queues = inputs.summon?.queues;
+  if (gate.memberMaps !== true || queues === undefined) {
+    return true;
+  }
+  return (
+    !inputs.meta.readOnly &&
+    queues.length > 0 &&
+    queues.every((member) => {
+      const map = inputs.members?.[member];
+      return (
+        map !== undefined &&
+        (gate.mutations ?? []).every((action) => can(map, action))
+      );
+    })
   );
 }
 
@@ -2804,6 +2867,8 @@ function needsOfCell(
       .sort(),
     refs: refs.sort(),
     mutation: /\bmutation\b/.test(needs),
+    // "each by its own queue map": a shared unit's members decide too.
+    memberMaps: /\beach by its own queue map\b/.test(needs),
     extendsAbove: needs.startsWith("the above"),
     notNeeded: notNeeded.sort(),
     // "`meta.mode` offers": the mode decides, without naming its values.
@@ -2856,6 +2921,7 @@ function needsOfGates(gates: readonly Gate[]) {
         gate.itemMutation === true ||
         gate.forMutation === true,
     ),
+    memberMaps: gates.some((gate) => gate.memberMaps === true),
     extendsAbove: gates.some((gate) => gate.extends !== undefined),
     notNeeded: unique(gates.flatMap((gate) => gate.notNeeded ?? [])),
     namesMode: gates.some(
@@ -4214,6 +4280,8 @@ checkEqual(
     "summon: what the summoner declares": false,
     "summon: Test connection": false,
     "summon: group card": false,
+    "summon: shared unit": false,
+    "summon: overlaps warning": false,
     // A Summoning row needs a controller `GET /summon` lists, and this host
     // runs none: asked on the summon host, with its list.
     "summoning: row": false,
@@ -7433,6 +7501,292 @@ checkEqual(
   undefined,
 );
 
+// A shared summon unit: one controller for the summon group `media`'s three
+// queues, whose status each member queue answers, its `queues` naming the
+// members the caller may read. The Summon panel shows a "Shared unit" line on
+// it, and Summon now… and Reset… ask every member's own targeted map: the
+// POST summons for the whole unit, so the server refuses it when any member
+// refuses `queues.summon`, one the caller cannot see included.
+/** The `media` unit's queues. */
+const MEDIA = ["renders", "thumbs", "previews"] as const;
+const unitJobs = new BunJobs({
+  namespace: exampleNamespace("examples-ui-permissions-unit"),
+  driver: crossProcessDriver(),
+  logger: noopLogger,
+  summon: [
+    {
+      queues: [...MEDIA],
+      group: { name: "media", unit: "shared" },
+      // The summon host's summoner, so `GET /providers` lists no new one.
+      summoner: recordingSummoner,
+      triggers: ONE_SHOT,
+    },
+  ],
+});
+// A job on each, so every queue exists (an unknown one is 404
+// QUEUE_NOT_FOUND) and the unit has demand to summon for.
+for (const queue of MEDIA) {
+  await unitJobs.queue(queue).add("render", {}, { jobId: `${queue}-1` });
+}
+
+/** Which member queue an {@link unitAuthorize} hides, or refuses `queues.summon` on. */
+interface UnitPolicy {
+  /** Refused everything, `queues.read` included: the caller never sees it. */
+  hidden?: string;
+  /** Readable, but refused `queues.summon`. */
+  noSummon?: string;
+}
+
+/** An `authorize` allowing everything on the unit's queues but what `policy` takes away. */
+function unitAuthorize(policy: UnitPolicy): JobsApiAuthorize {
+  return (_req, ctx) =>
+    ctx.queue !== undefined && ctx.queue === policy.hidden
+      ? { allow: false, reason: `${ctx.queue} is restricted` }
+      : ctx.action === "queues.summon" && ctx.queue === policy.noSummon
+        ? { allow: false, reason: `no summoning on ${ctx.queue}` }
+        : true;
+}
+
+/**
+ * An API over `unitJobs` with every action and `policy`'s `authorize`, and
+ * what each member's queue screen reads: its map and, with `queues.read`, its
+ * summon status.
+ */
+async function unitHost(
+  policy: UnitPolicy,
+  config: Partial<JobsApiConfig> = {},
+) {
+  const unitApi = createJobsApi({
+    jobs: unitJobs,
+    basePath: "/unit-api",
+    mode: "jobs",
+    actions: [...JOBS_API_ACTIONS],
+    authorize: unitAuthorize(policy),
+    logger: noopLogger,
+    ...config,
+  });
+  const unitApp = new BunHttpAdapter();
+  unitApp.use(unitApi.basePath, unitApi.router);
+  /** A request through the real pipeline: its status, and its parsed body. */
+  async function call<T>(method: "GET" | "POST", path: string) {
+    const response = await unitApp.fetch(`/unit-api${path}`, {
+      method,
+      ...(method === "POST"
+        ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+        : {}),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as T & { code?: string },
+    };
+  }
+  const meta = (await call<MetaDto>("GET", "/meta")).body;
+  const boot = (await call<PermissionsBody>("GET", "/meta/permissions")).body;
+  const maps: Record<string, PermissionsBody> = {};
+  const statuses: Record<string, SummonStatusDto | undefined> = {};
+  for (const queue of MEDIA) {
+    maps[queue] = (
+      await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
+    ).body;
+    if (can(maps[queue]!, "queues.read")) {
+      const read = await call<SummonStatusDto>(
+        "GET",
+        `/queues/${queue}/summon`,
+      );
+      statuses[queue] = read.status === 200 ? read.body : undefined;
+    }
+  }
+  /**
+   * Every gate on `queue`'s screen: its map, its status, and the map of each
+   * member the status lists, as the panel reads them. `inputs` overrides any.
+   */
+  function gatesOf(queue: string, inputs: Partial<ScreenInputs> = {}): Gates {
+    const summon = statuses[queue];
+    return screenGates({
+      meta,
+      sections,
+      boot,
+      queue: maps[queue]!,
+      summon,
+      members: Object.fromEntries(
+        (summon?.queues ?? []).map((member) => [member, maps[member]]),
+      ),
+      ...inputs,
+    });
+  }
+  return { api: unitApi, call, maps, statuses, gatesOf };
+}
+
+/** The shared unit's gates on one member's screen, in a fixed order. */
+const UNIT_GATES = [
+  "panel=summon",
+  "summon: shared unit",
+  "summon: Summon now…",
+  "summon: Reset…",
+  "summon: overlaps warning",
+] as const;
+/** {@link UNIT_GATES} on each of `queues`, as `[queue, ...gates]`. */
+function unitGatesOn(
+  host: Awaited<ReturnType<typeof unitHost>>,
+  queues: readonly string[] = MEDIA,
+  inputs: Partial<ScreenInputs> = {},
+) {
+  return queues.map((queue) => {
+    const set = host.gatesOf(queue, inputs);
+    return [queue, ...UNIT_GATES.map((name) => set[name])];
+  });
+}
+
+step("A shared summon unit: every member's map decides its Summon now…");
+const unitOpen = await unitHost({});
+show(
+  "GET /unit-api/queues/:queue/summon, queues",
+  Object.fromEntries(
+    MEDIA.map((queue) => [queue, unitOpen.statuses[queue]?.queues]),
+  ),
+);
+checkEqual(
+  "every member answers the unit's status: local, in the group media, listing all three queues for a caller who may read them",
+  MEDIA.map((queue) => {
+    const status = unitOpen.statuses[queue];
+    return [status?.local, status?.group?.name, status?.queues];
+  }),
+  MEDIA.map(() => [true, "media", [...MEDIA]]),
+);
+checkEqual(
+  "with every member's map granting queues.summon: the tab, the Shared unit line, Summon now… and Reset… on each member; no overlaps warning",
+  unitGatesOn(unitOpen),
+  MEDIA.map((queue) => [queue, true, true, true, true, false]),
+);
+checkEqual(
+  "while one member's map is still loading (or failed), Summon now… and Reset… are not offered on any member; the line stays",
+  unitGatesOn(unitOpen, MEDIA, {
+    members: {
+      renders: unitOpen.maps.renders,
+      thumbs: undefined,
+      previews: unitOpen.maps.previews,
+    },
+  }),
+  MEDIA.map((queue) => [queue, true, true, false, false, false]),
+);
+const openSummon = await unitOpen.call<{ action?: string }>(
+  "POST",
+  "/queues/thumbs/summon",
+);
+checkEqual(
+  "and the server agrees: POST /queues/thumbs/summon answers 200",
+  openSummon.status,
+  200,
+);
+
+const unitNoSummon = await unitHost({ noSummon: "thumbs" });
+checkEqual(
+  "an authorize refusing queues.summon on thumbs: renders' own map still grants it, and thumbs' map refuses it",
+  [
+    can(unitNoSummon.maps.renders!, "queues.summon"),
+    can(unitNoSummon.maps.thumbs!, "queues.summon"),
+  ],
+  [true, false],
+);
+checkEqual(
+  "so no member offers Summon now… or Reset…, renders included; the tab and the line stay",
+  unitGatesOn(unitNoSummon),
+  MEDIA.map((queue) => [queue, true, true, false, false, false]),
+);
+checkEqual(
+  "and the server agrees: POST /queues/renders/summon answers 403, since thumbs refuses it",
+  (await unitNoSummon.call("POST", "/queues/renders/summon")).status,
+  403,
+);
+checkEqual(
+  "renders' gates with thumbs' map replaced by one that grants it: Summon now… and Reset… back, so it is the member's map that decided",
+  unitGatesOn(unitNoSummon, ["renders"], {
+    members: { ...unitNoSummon.maps, thumbs: unitOpen.maps.thumbs },
+  }),
+  [["renders", true, true, true, true, false]],
+);
+
+const unitHidden = await unitHost({ hidden: "previews" });
+checkEqual(
+  "an authorize hiding previews: renders and thumbs list only the two members the caller may read, and previews' screen reads no status",
+  MEDIA.map((queue) => unitHidden.statuses[queue]?.queues),
+  [["renders", "thumbs"], ["renders", "thumbs"], undefined],
+);
+checkEqual(
+  "the Shared unit line, Summon now… and Reset… on renders and thumbs, whose maps grant queues.summon; nothing on previews (no queues.read, no tab)",
+  unitGatesOn(unitHidden),
+  [
+    ["renders", true, true, true, true, false],
+    ["thumbs", true, true, true, true, false],
+    ["previews", false, false, false, false, false],
+  ],
+);
+const hiddenSummon = await unitHidden.call<{ code?: string }>(
+  "POST",
+  "/queues/renders/summon",
+);
+checkEqual(
+  "yet the server refuses it, 403: previews, which the caller cannot see, refuses queues.summon, and the panel toasts that the action needs every queue of the unit",
+  hiddenSummon.status,
+  403,
+);
+
+const unitReadOnly = await unitHost({}, { readOnly: true });
+checkEqual(
+  "readOnly: the tab and the Shared unit line on each member; no Summon now… or Reset…",
+  unitGatesOn(unitReadOnly),
+  MEDIA.map((queue) => [queue, true, true, false, false, false]),
+);
+
+checkEqual(
+  "a single queue's status lists no queues, so mail and audit show no Shared unit line, and Summon now… is decided on mail's own map as before",
+  [
+    summonHostAll.statuses.mail?.queues,
+    summonHostAll.statuses.audit?.queues,
+    summonHostAll.gatesOf("mail")["summon: shared unit"],
+    summonHostAll.gatesOf("audit")["summon: shared unit"],
+    summonHostAll.gatesOf("mail")["summon: Summon now…"],
+  ],
+  [undefined, undefined, false, false, true],
+);
+
+// The overlaps warning. The API names another summon group on `overlaps`
+// only when its controller's last check saw live workers summoned for that
+// group on its queues: two units starting in one cold start, which
+// `examples/bun-jobs/02-queues/summon-shared-unit.ts` produces with real
+// processes. Here no other group ever ran, so the real statuses carry none,
+// and the notice is shown on a status that does.
+const rendersStatus = unitOpen.statuses.renders!;
+checkEqual(
+  "no other group's workers were ever seen, so no status carries overlaps (absent, never []), and no member shows the warning",
+  [
+    ...MEDIA.map((queue) => unitOpen.statuses[queue]?.overlaps),
+    summonHostAll.statuses.mail?.overlaps,
+    ...MEDIA.map(
+      (queue) => unitOpen.gatesOf(queue)["summon: overlaps warning"],
+    ),
+  ],
+  [undefined, undefined, undefined, undefined, false, false, false],
+);
+checkEqual(
+  "the warning on a status with overlaps, a shared unit's or a single queue's; not without the tab (previews, hidden), and not on an empty list, which the panel ignores",
+  [
+    unitOpen.gatesOf("renders", {
+      summon: { ...rendersStatus, overlaps: ["video"] },
+    })["summon: overlaps warning"],
+    summonHostAll.gatesOf("mail", {
+      summon: { ...summonHostAll.statuses.mail!, overlaps: ["video"] },
+    })["summon: overlaps warning"],
+    unitHidden.gatesOf("previews", {
+      summon: undefined,
+    })["summon: overlaps warning"],
+    unitOpen.gatesOf("renders", {
+      summon: { ...rendersStatus, overlaps: [] },
+    })["summon: overlaps warning"],
+  ],
+  [true, true, false, false],
+);
+
 // The groups section: on the Summoning screen, with the untargeted
 // `queues.list` and `features.summonRemoteStatus`. A backend whose driver
 // cannot list queue state (`listQueueState`, which the group list pages
@@ -8615,6 +8969,11 @@ for (const host of [summonHostAll, summonReadOnly, summonDefault]) {
 // Only this run's namespace: a persistent backend is shared.
 await summonJobs.purge();
 await summonJobs.close();
+for (const host of [unitOpen, unitNoSummon, unitHidden, unitReadOnly]) {
+  await host.api.close();
+}
+await unitJobs.purge();
+await unitJobs.close();
 
 await mailWorker.close({ timeout: 1_000 });
 await auditWorker.close({ timeout: 1_000 });
