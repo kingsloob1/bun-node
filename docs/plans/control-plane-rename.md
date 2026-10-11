@@ -1,12 +1,18 @@
 # Renaming the control planes: `RemoteWorker` and `RemoteRunner`
 
-Status: **decided** (2026-09-25). This is the implementation plan; nothing is
-implemented yet.
+Status: **implemented** (merged 2026-09-25). Decided 2026-09-25; the rename
+landed the same day as #157 (PR 1) and #158 (PR 2), one merge commit
+`a29b06ea`, and the example-file follow-up landed as #161. What is left is
+small and optional: [§0](#0-status-2026-10-11).
 Tree read: `origin/develop` at `d54d1fe` (it includes #146, #151 and #152).
-Every `file:line` below is from that tree unless it says "simulated head".
+Every `file:line` below is from that tree unless it says "simulated head",
+"as built" or "on develop". Code has moved since, so a line number in §1 to
+§12 and the appendices points at `d54d1fe`, not at today's tree. The status
+section cites `develop` at `e7246b69` (2026-10-11).
 
 ### Contents
 
+0. [Status (2026-10-11)](#0-status-2026-10-11)
 1. [Decisions](#1-decisions)
 2. [Old to new: the mapping](#2-old-to-new-the-mapping)
 3. [Corrections recorded](#3-corrections-recorded)
@@ -23,6 +29,120 @@ Every `file:line` below is from that tree unless it says "simulated head".
 
 ---
 
+## 0. Status (2026-10-11)
+
+Audited against `origin/develop` at `e7246b69`. Each claim was checked in the
+code, not taken from this plan or a PR body.
+
+**Summary.** Everything the plan required has landed. Phase 0 was merged on
+2026-09-25 exactly as §8 sequenced it: #154 landed first (13:35 UTC), #158
+was merged into #157's branch (`90bcdc81`), and #157 then landed as the one
+merge commit `a29b06ea`. Taken at that commit, both §10.1 greps print **0**
+(the base `d54d1fe` prints 475) and §10.2 prints **0**, so the prose pass was
+complete. #161 then renamed the two example files (§7.1). Since then, Phase 1
+(#164) has used the freed name `WorkerTarget`, as D4 intended. Phase 2 has
+begun using *remote* in its new sense (`./remote`, `createRemoteExecutor`,
+#261, #263, #270), but no `RemoteWorker` or `RemoteRunner` class exists yet.
+What is left:
+- one line in `CLAUDE.md` (§11), never added;
+- the optional test-file renames (§9, step 6);
+- the examples' own non-local helper names, which are on the examples session's schedule;
+- one new naming drift that needs a decision: `summonRemoteStatus` (below).
+
+| Deliverable | State | PRs | Evidence on develop | Left |
+|---|---|---|---|---|
+| D1: `WorkerController` / `WorkerControllerOptions` / `WorkerControllerManager`, file `lib/queue/WorkerController.ts` | DONE | #157 | `queue/WorkerController.ts:160,203,579`; `BunJobs.workers: WorkerControllerManager` (`BunJobs.ts:346`) | — |
+| D1: `RunnerController` / `RunnerControllerOptions`, file `lib/runner/RunnerController.ts` | DONE | #157 | `runner/RunnerController.ts:37,99`; `consumer-check.json:13-14` lists both controllers | — |
+| D1: `.controller(x)` on both managers | DONE | #157 | `WorkerController.ts:609`, `runner/BunRunnerManager.ts:211` | — |
+| D1: logger names `"worker-controller"` / `"runner-controller"` | DONE | #157 | `WorkerController.ts:226`, `RunnerController.ts:133` | — |
+| D1: `supportsWorkerControlRoutes` | DONE | #157 | `api/routes/workers.ts:99`, exported at `api/index.ts:156` | — |
+| `SharedRunnerInfo`, `TypedRunRecord`, `TypedRunHistoryPage` | DONE; `TypedRunHistoryPage` stays unexported, as decided (§8) | #157 | `runner/types.ts:382,391,412`; root exports at `lib/index.ts:800,802`; no export of `TypedRunHistoryPage` anywhere | Exporting it, or absorbing it into `RunHistoryPage`, is still a separate API decision (§3.1). Nobody has raised it |
+| D2: `control`, `WorkerControlOptions` (worker) | DONE | #157 | `queue/types.ts:892,1005`; the JSDoc sentence on the `control` getter that §11 asked for is at `queue/types.ts:1000-1003` | — |
+| D2: `control` (runner), `resolveControl` | DONE | #157 | `runner/types.ts:999`; `runner/options.ts:132,276` | — |
+| D2: `allowedOverrides`, `RunnerAllowedOverrides`, the two `ConfigError` messages | DONE | #157 | `runner/types.ts:355,1006,1073`; `runner/options.ts:80,88` | — |
+| D2: internal names `#controlOptions`, test env `RUNNER_CONTROL` | DONE | #157 | `BunQueueWorker.ts:927`; `__tests__/fixtures/processes/runner-owner.ts:40` | — |
+| D3: `RunnerSource.list()` returns `{ local, nonLocal }`; `NON_LOCAL_LATENCY_NOTE` | DONE | #157 | `api/sources.ts:570-579`; `api/routes/support.ts:196`; `api/index.ts:140` | — |
+| D3: UI testids, constants, gate, copy ("Other process", "N runners in other processes", "No (another process)") | DONE | #157 | `RunnerScreen.tsx:112,291`; `RunnersListScreen.tsx:248`; `TriggerDialog.tsx:93`; `actions/gating.ts:31,67`; `actions/index.tsx:135`; `runnerFormat.ts:61,197`; the per-badge assertion at `screen.test.tsx:192` | — |
+| D3: the parsed README row and its three example sites | DONE | #157 (README), #158 (examples) | UI `README.md:439`; `examples/bun-jobs-ui/04-screens/permissions.ts:1888,1889,4848`; `06-browser/runner-and-job-tools.ts:2225` | — |
+| D4: `WorkerTarget` → `WorkerSelector` | DONE; the freed name is in use | #157; Phase 1 #164 | `WorkerController.ts:41`, `lib/index.ts:617`; Phase 1's `WorkerTarget` at `queue/workerTarget.ts:103` | — |
+| D5: `workerControl` on `BunJobs` | DONE | #157 | `BunJobs.ts:144,396,454,888`; reworded flag JSDoc at `api/contract/types.ts:4011` | — |
+| OpenAPI description assertion uses the backticked form (§6.3, §11) | DONE | #157 | `__tests__/api/api-runners.test.ts:981,984` | — |
+| Prose pass (§9 step 5, Appendix C) | DONE | #157 | §10.2 prints 0 at `a29b06ea`. The headers now read "… from another process" (`lib/index.ts:138,674,794`, `runner/config.ts:16`, `contract/types.ts:4009`) | — |
+| `docs/plans/worker-runtimes.md` references, and a line saying the name is free | DONE | #157 | `worker-runtimes.md:17-20,242-264,1204` | — |
+| `playground/` option spelling | DONE | #157 | `playground/scheduling.ts:145` | — |
+| PR 2: examples follow the mapping | DONE | #158 | 16 of 16 projects typecheck; 71 of 71 on all 8 backends (#158 body) | — |
+| §7.1 example file names | DONE | #161 | `07-runner/controller.ts`, `10-options/cross-process-control.ts`; `RUN_ALONE` at `examples/bun-jobs/run-all.ts:59` | — |
+| §7.1 `helpers/remote-process.ts` → `other-process.ts`, with `RemoteProcess` / `startRemoteWorker` | NOT STARTED (the examples session's schedule, as the plan says) | — | `examples/bun-jobs-ui/06-browser/helpers/remote-process.ts` and `remote-worker.ts` still exist. 40 lines in 8 example files still use the examples' own *remote*-for-another-process names | The examples session's call |
+| Gate (§8) | DONE, as reported in the PR bodies | #157, #158, #160 | bun-jobs 5,121 pass / 0 fail with all five databases; bun-jobs-ui 1,566 pass, plus `--randomize` with two seeds; old names 0 against 342 in `packages/` + `playground/`; the consumer check was 96/96 but exited 1 because of a scanner bug, fixed by #160 | — |
+| §9 step 6: optional test-file renames (`runner-remote*.test.ts`, `runner-remote.type-test.ts`, `followups-remote-u4.test.ts`) | NOT STARTED (optional, uncoupled) | — | All four files are still in `packages/bun-jobs/__tests__/` | The bun-jobs session's call |
+| §11: one line in `CLAUDE.md` ("*Controller* = control plane; `Remote*` is reserved for remote execution") | NOT STARTED | — | No such line in `CLAUDE.md` or `docs/agentic-setup.md` | One line. Worth doing now that Phase 2 is shipping `Remote*` names |
+
+**Remaining effort.** The plan gives no day estimates. Measured by its own
+sizing, everything left is small. Its only figure is for the file-rename
+follow-up, "a five-minute review", and that has already merged. The
+`CLAUDE.md` line is one line. The test-file renames and the examples' helper
+names are optional, and each owner decides when.
+
+**What changed after the rename, and how it bears on this plan**
+
+- **The §10.1 grep no longer prints 0, and that is intended.** On `e7246b69`
+  pattern 1 prints 23 lines:
+  - 22 are Phase 1's new `WorkerTarget` (#164), which is the name D4 freed;
+  - 1 is `lib/remote/types.ts:325`, which names the Phase 2 class
+    `RemoteRunner` in a comment.
+
+  Pattern 2 still prints 0, and neither old file exists. To re-run §10.1
+  today, drop `\bWorkerTarget\b` from the pattern and exclude
+  `packages/bun-jobs/lib/remote/`.
+- **The §10.2 grep no longer prints 0.** It prints 616 lines. Most are the
+  new execution sense of *remote*:
+  - `lib/remote/**`;
+  - the `./remote` subpath and its `consumer-check.json` rows;
+  - `createRemoteExecutor` in the README;
+  - `RemoteMessageTooLargeError`.
+
+  That grep was a merge-time gate. As a check it is retired: once Phase 2
+  began, *remote* became a legitimate identifier again.
+- **A naming drift, against D3 and §5.** The management API's capability flag
+  `features.summonRemoteStatus` (#314: `api/contract/types.ts:4133`,
+  `api/routes/meta.ts:128,251`) means "summon status read from storage, for a
+  controller in another process". That is the non-local sense. So does the UI
+  testid `summon-remote` (`SummonPanel.tsx:181`, from #223), whose own copy
+  says "This queue's controller runs in another process". Both conflict with
+  §5's rule that *remote* in an identifier means "executes elsewhere". See
+  the open question below.
+- **The §9 artifacts are gone.** The features session's scratchpad
+  (`…/ae3600c2-…/scratchpad/`) no longer exists, so `rename-mapping.tsv`,
+  `rename-do-not-change.txt` and `apply.pl` cannot be re-run. The §2 tables
+  and #157's body are the surviving record. Instead, 17 of the do-not-change
+  literals were spot-checked on 2026-10-11, among them `r:${`, `wcfg:`,
+  `wctl:`, `wstop:`, `"__win:"`, `"jl1."`, `"rh1."`, both cursor kinds,
+  `"natural"`, `config:allowed`, `appliedSeq`, `stopPersistence` and both
+  error titles. All 17 have identical counts in `packages/bun-jobs/lib` on
+  `d54d1fe` and `a29b06ea`. (`config:allowed` and `config:executionMode` have
+  grown since, from new uses, not from renamed ones.)
+
+**Open questions**
+
+- **Closed by the code:**
+  - the §3.1 scope addition was settled as rename only, with no export (#157; still unexported);
+  - the description-assertion form (§11) is backticked (`api-runners.test.ts:981,984`);
+  - the `"PausedRemote"` per-badge edit is in (`screen.test.tsx:192`);
+  - the example file names were settled by #161.
+- **Open: `summonRemoteStatus` and `summon-remote`.** D3 names the
+  "registered in another process" sense *non-local* for identifiers, and §5
+  reserves *remote* for remote execution. By this plan's rules the flag would
+  be something like `summonNonLocalStatus` (or `summonStoredStatus`, after
+  what it reads), and the testid would be `summon-non-local`. Recommendation:
+  rename both while nothing is published (the flag is a wire field, so
+  changing it costs nothing now and a migration later), or record an explicit
+  exception in this plan. No decision is recorded yet.
+- **Open, and not urgent: export `TypedRunHistoryPage`?** This is the §3.1
+  scope addition. The bun-jobs session's 2026-09-25 decision stands (keep it
+  unexported). Making it public is the examples session's to raise.
+
+---
+
 ## 1. Decisions
 
 The packages are **not published**, so this is a clean rename. There are no
@@ -33,7 +153,7 @@ deprecated aliases, no compatibility re-exports and no deprecation cycle.
 | **D1** | Names for the control planes | **Set A, `*Controller`.** `WorkerController`, `WorkerControllerOptions`, `WorkerControllerManager`, `RunnerController`, `RunnerControllerOptions`. The accessor `.remote(x)` becomes `.controller(x)` on both managers. The logger names become `"worker-controller"` / `"runner-controller"`. `supportsRemoteWorkerControl` becomes `supportsWorkerControlRoutes`. The files become `lib/queue/WorkerController.ts` and `lib/runner/RunnerController.ts` |
 | **D2** | The option names | **Rename both**, which is option (b). This plan had recommended (a), keeping them; the user chose (b). `remoteControl` becomes **`control`** and `WorkerRemoteControlOptions` becomes **`WorkerControlOptions`**. `remoteConfig` becomes **`allowedOverrides`** and `RunnerRemoteConfigOptions` becomes **`RunnerAllowedOverrides`** |
 | **D3** | The "registered by another process" sense of *remote* | **non-local** for identifiers, which mirrors the DTO field `isLocal`. User-facing copy says "registered in another process" / "Other process" |
-| **D4** | `WorkerTarget` | Renamed to **`WorkerSelector`** in this rename (Phase 0), so that `WorkerTarget` is free for Phase 1's execution-target option (`target: "worker-thread" \| …`, `docs/plans/worker-runtimes.md:1123-1128`) |
+| **D4** | `WorkerTarget` | Renamed to **`WorkerSelector`** in this rename (Phase 0), so that `WorkerTarget` is free for Phase 1's execution-target option (`target: "worker-thread" \| …`, `docs/plans/worker-runtimes.md:1123-1128`). *As built: done in #157 (`queue/WorkerController.ts:41`), and Phase 1 (#164) took the freed name: `queue/workerTarget.ts:103`* |
 | **D5** | `workerRemoteControl`, the public `BunJobs` option (`BunJobs.ts:129`) | **`workerControl`**, approved by the user. The overlap with the API capability flag of the same name is accepted (below) |
 
 **Why `control`.** It matches what the option turns on, everywhere that
@@ -202,7 +322,7 @@ A name that still contains *remote* after this rename stays by decision:
 | details "was started without remote control" / "predates remote control"; "has no owner that supports remote configuration" | `api/routes/workers.ts:179-180`; `runner/RemoteRunner.ts:568` | wire, accurate |
 | capability prose: "remote control", "remote configuration", "remotely", "a remote controller", "remote override", "There is no remote kill" | ~100 lines in lib/app/README (Appendix B) | describes controlling from afar, which stays true |
 | README anchor `#changing-a-runners-configuration-remotely` | `packages/bun-jobs/README.md:106,2517,2637,2921,3915` | accurate. Renaming it breaks in-page links |
-| example files `07-runner/remote-control.ts`, `10-options/remote-control.ts` (in `RUN_ALONE`, `examples/bun-jobs/run-all.ts:59`) | examples | the examples session's call |
+| example files `07-runner/remote-control.ts`, `10-options/remote-control.ts` (in `RUN_ALONE`, `examples/bun-jobs/run-all.ts:59`) | examples | the examples session's call. *Superseded: #161 renamed them `07-runner/controller.ts` and `10-options/cross-process-control.ts` (§7.1)* |
 | data: runner ids `remote`, `remote-sync`, `remote-owned`; namespaces `remote-control`, `tour-remote`, `fu-remote`; the notifier example's queue `remote` | tests, examples | data, not names |
 | unrelated: `BunQueue#onRemoteEvent` (`queue/BunQueue.ts:492,2947`), "remote server", "remote document", `remoteAddress`, `--remote-debugging-port` | various | not this concept |
 
@@ -328,6 +448,11 @@ publish a hint event, and neither of them runs anything.
 and §5 there are the remote-execution feature the freed names go to. After
 this rename, *remote* in an identifier means **executes elsewhere**, and
 nothing else.
+
+*As built (2026-10-11):* true at the merge (`a29b06ea`, §10.2 prints 0).
+Since then two identifiers use *remote* in the non-local sense again: the API
+flag `features.summonRemoteStatus` (#314) and the UI testid `summon-remote`
+(#223). See the open question in [§0](#0-status-2026-10-11).
 
 ## 6. Persisted and wire strings: do not change
 
@@ -560,6 +685,11 @@ this window.** The examples session's call as owner:
 | `examples/bun-jobs/07-runner/remote-control.ts` | `07-runner/controller.ts` | The API is the name after the rename — `BunRunnerManager.controller(id)` — and it sits beside `manager.ts`, mirroring `BunRunnerManager` / `RunnerController` |
 | `examples/bun-jobs-ui/06-browser/helpers/remote-process.ts` | `other-process.ts` (later, owner's schedule, with `RemoteProcess` / `startRemoteWorker`) | It starts a worker in a second OS process on the same machine — the non-local sense, not remote execution |
 
+*As built:* rows 1 and 2 landed in #161 (2026-09-25), with the six README
+links, `RUN_ALONE` (`examples/bun-jobs/run-all.ts:59`) and the examples
+README rows. Row 3 has not been done: `06-browser/helpers/remote-process.ts`
+and `remote-worker.ts` are still there.
+
 The principle, recorded because it generalises: **name a file after its
 subject, not after the option it currently demonstrates** — the subject
 survives the next rename.
@@ -606,6 +736,10 @@ is green alone. Run the gate on PR 2's head. Then merge PR 2 into PR 1's
 branch and land PR 1 as **one merge commit**, so `develop` never carries a red
 commit.
 
+*As built:* PR 1 was #157 and PR 2 was #158. #158 was merged into #157's
+branch (`90bcdc81`), then #157 into `develop` as `a29b06ea`, both on
+2026-09-25.
+
 **Sign-offs**
 
 | Area | Sign-off |
@@ -616,7 +750,8 @@ commit.
 | `examples/**` (PR 2) | the examples session |
 | the §3.1 scope addition (export `TypedRunHistoryPage` from the root; absorb it into `RunHistoryPage` or not) | **Decided by the bun-jobs session, 2026-09-25: neither — rename only, keep it unexported.** Exporting or absorbing is an API decision, and a rename that also makes one is harder to review and to revert. It lives in `lib/runner/**`, so making it public is the examples session's call to raise afterwards |
 
-**In-flight work.**
+**In-flight work** (as of 2026-09-25, kept for the record; #154 merged first,
+at 13:35 UTC, before the rename window).
 
 - `gh pr list --state open` shows only **#154** (`feat/ui-jobs-cursor`).
   Among files that mention "remote", it touches only
@@ -640,6 +775,9 @@ commit.
 4. `bun run build:types` in `packages/bun-jobs`, then
    `bun scripts/consumer-check.ts packages/bun-jobs`. The baseline is 96/96.
    Its values now say `RunnerController`; add `WorkerController`.
+   *As built:* both are listed (`consumer-check.json:13-14`). On #157 the
+   check reported 96/96 cells OK but exited 1, because its leak scanner read
+   a prose comment as an import. #160 fixed the scanner.
 5. `bun test` in `packages/bun-jobs` with every database URL exported.
    `bun test` and `bun test --randomize` (two seeds) in `packages/bun-jobs-ui`.
 6. `bun run-all.ts` in `examples/bun-jobs`, `examples/bun-jobs-ui` and
@@ -651,7 +789,10 @@ commit.
 ## 9. Method
 
 Artifacts, in the features session's scratchpad
-(`/tmp/claude-1000/-home-kingsloob1-Desktop-projects-mine-bun-node/ae3600c2-7626-4de2-ab39-b5ca45258d5b/scratchpad/`):
+(`/tmp/claude-1000/-home-kingsloob1-Desktop-projects-mine-bun-node/ae3600c2-7626-4de2-ab39-b5ca45258d5b/scratchpad/`).
+*As of 2026-10-11 that directory no longer exists, so the three files below
+are lost. The §2 tables and #157's body are the surviving record of the
+mapping.*
 
 - **`rename-mapping.tsv`**: `old<TAB>new<TAB>kind<TAB>match`, with a header
   row, ordered longest-`old` first.
@@ -712,7 +853,8 @@ Steps:
 6. Optional, and uncoupled: rename the test files `runner-remote.test.ts`,
    `runner-remote.type-test.ts`, `runner-remote-crossprocess.test.ts` and
    `followups-remote-u4.test.ts`, and update `runner-config.test.ts:22`, which
-   names one of them.
+   names one of them. *Not done as of 2026-10-11*: all four files keep their
+   names.
 
 ## 10. Proving nothing was missed
 
@@ -736,6 +878,12 @@ test ! -e packages/bun-jobs/lib/queue/RemoteWorker.ts && test ! -e packages/bun-
 
 On `full2`, both print 0 lines. On the base they print 475 and 69 (§4).
 
+*As built:* at the merge commit `a29b06ea` both print **0**. On develop
+(`e7246b69`) the first prints 23 lines, both intended: 22 are Phase 1's new
+`WorkerTarget` (#164) and one is a comment naming Phase 2's `RemoteRunner`
+(`lib/remote/types.ts:325`). To re-run it, drop `\bWorkerTarget\b` from the
+pattern and exclude `packages/bun-jobs/lib/remote/`.
+
 ### 10.2 The final case-insensitive grep
 
 ```sh
@@ -748,6 +896,13 @@ git grep -n -I -i remote -- packages playground CLAUDE.md README.md \
 **It must print nothing.** On the simulated head, before the prose pass, it
 prints exactly the 35 lines of Appendix C, and those are the prose pass's
 to-do list.
+
+*As built:* at `a29b06ea` it prints **0**, so the prose pass was complete.
+On develop (`e7246b69`) it prints 616 lines. Nearly all of them are Phase 2's
+execution sense of *remote* (`lib/remote/**`, the `./remote` subpath,
+`createRemoteExecutor`). The rest are the non-local drift in §0
+(`summonRemoteStatus`, `summon-remote`). The check served as a merge gate and
+is retired now.
 
 **The set of lines it is allowed to leave behind:**
 
@@ -795,6 +950,10 @@ done < "$L"
 
 It must print nothing. On the simulated head it prints nothing.
 
+*As built:* the list file went with the scratchpad (§9). A spot check of 17
+of its literals on 2026-10-11 found the same counts on `d54d1fe` and
+`a29b06ea` (§0).
+
 ### 10.4 Test run on the simulated head
 
 Run on the simulated head, with no database URLs set, so the SQL, Redis and MongoDB suites skip visibly:
@@ -817,6 +976,12 @@ Run on the simulated head, with no database URLs set, so the SQL, Redis and Mong
   - With it applied, `__tests__/app/runners` is **233 pass, 0 fail**.
 - Not run here: the gate's database-backed suites, `--randomize`, and the
   examples sweep. Those belong to the real gate (§8).
+- *As built, the real gate* (from the PR bodies):
+  - #157: bun-jobs **5,121 pass, 0 fail** with all five database backends
+    live; bun-jobs-ui **1,566 pass, 0 fail**, also under `--randomize` with
+    two seeds; lint 0 errors.
+  - #158: typecheck **16 of 16**; `examples/bun-jobs` **71 of 71** on each
+    of the 8 backends; `examples/bun-jobs-ui` **17 of 17**.
 
 ## 11. Risks
 
@@ -868,7 +1033,9 @@ Run on the simulated head, with no database URLs set, so the SQL, Redis and Mong
   §10.2 on the final base.
 - **After merge**, add one line to `CLAUDE.md` under bun-jobs: "*Controller*
   = control plane (stores intent, runs nothing); `Remote*` is reserved for
-  remote execution".
+  remote execution". *Not done as of 2026-10-11*: no such line is in
+  `CLAUDE.md` or `docs/agentic-setup.md`. It matters more now that Phase 2
+  ships `Remote*` names and #314 used `summonRemoteStatus` (§0).
 
 ## 12. Considered and rejected
 
@@ -928,6 +1095,10 @@ Run on the simulated head, with no database URLs set, so the SQL, Redis and Mong
 ---
 
 ## Appendices
+
+All four appendices describe the base `d54d1fe` or the simulated head as
+they stood before the merge. They are kept as the record and are not
+updated.
 
 ### Appendix A: per-file counts on the base
 

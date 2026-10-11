@@ -33,7 +33,16 @@ now), §16 (effort) and Q-P10 (settled). **For 1.5a and 1.5b,
 `summon-compute.md` §4.0, §6.4 and §13 are now newer than this document**:
 they were reconciled against the code, and they slice the work into PRs.
 
+**Status updated 2026-10-11** against `origin/develop` `e7246b69`. The
+[Status](#status-2026-10-11) section below says what has been built and what
+is left. Notes marked **As built (2026-10-11)** in §6–§17 correct the
+statements the code has made wrong. The original text stays in place for the
+history. Where an as-built note and the design text disagree, the note is
+right.
+
 ### Contents
+
+- [Status (2026-10-11)](#status-2026-10-11)
 
 1. [Executive summary](#1-executive-summary)
 2. [What the repo already does for pluggability](#2-what-the-repo-already-does-for-pluggability)
@@ -74,6 +83,88 @@ is corrected here by a source read (§2.5).
 
 ---
 
+## Status (2026-10-11)
+
+Checked against `origin/develop` at `e7246b69`: merged PRs, the code, the
+tests and the examples. Paths are relative to `packages/bun-jobs/` unless
+they say otherwise. Nothing in this section relies on this plan's own earlier
+status claims.
+
+**In one paragraph.** The **summon half of the plugin system is built**.
+Everything in 1.5p merged on 2026-09-30, about 12.5 d of this plan's ~25 d
+addition (#230, #232, #240, #243, #245, #246, with hardening in #250 and
+#256). That covers the core, `ProviderError`, the conformance kit, the
+starter template, five documentation pages and the provider routes, and the
+UI and the examples followed it. A first-party provider the plan never named,
+`localCompute`, landed on that API (#268). The summon facet is now at `0.2`
+(#294). **The execute half has not started.** There is no execute facet, no
+`./provider/auth`, no `./providers/*`, no `defineRuntimeAdapter` and no
+execute kit. Phase 2's wire protocol is partly built beneath it: messages and
+signing (#261), text frames (#263) and the reference executor (#270). **The
+biggest remaining piece** is Phase 2 itself. That is ~68 d of the plan's
+transport work, and the execute facet is one PR of it (PR-2a6 in
+`worker-runtimes.md`, "Phase 2 as PRs"). Then come Phase 3's runtime-adapter
+kit and execute kits. On the summon side, the six first-party summoners
+(1.5c–1.5e, ~14.5 d) are still owed before the summon facet can reach 1.0.
+
+### Phase 1.5: the summon facet
+
+| Item | State | Evidence | What is left |
+|---|---|---|---|
+| 1.5a + 1.5b (`summon-compute.md` PR-1 to PR-7), including `defineSummoner` as an anonymous provider (§7.4) | DONE | #189, #178, #208, #195, #193, #218, #214 (+ #213, #217). `defineSummoner` builds `custom:<kind>` at `0.0.0` through the internal `defineProvider` (`summon/define.ts:92-160`) | Tracked in `summon-compute.md` |
+| PR-p1: core, brand, configure, version check, name map, contexts, redaction, first-party import test (§5, §6.1–§6.3, §9.3, §10.2, §13.3) | DONE | #230. `provider/define.ts:481` (`defineComputeProvider`), `:27`/`:35` (brands), `provider/configure.ts`, `provider/version.ts` (the check, and once-per-process `warn`s for experimental, newer minor, second version), `provider/registry.ts` (`name@version~<n>` ids, held weakly), `provider/context.ts`, `provider/redact.ts`; `__tests__/provider/first-party-imports.test.ts` | — |
+| PR-p2: `ProviderError` and its kinds in the summon gates (§6.5) | DONE | #232 (+ UI hints #233). `provider/errors.ts:74`, the six kinds as planned | Q-P6 (a `capacity` kind) still open |
+| PR-p3: the summon conformance kit, `./provider/testing` (§12.1, §12.2, §12.4) | DONE | #240. `runProviderConformance` (`provider/testing/conformance.ts:381`), `fakePlatform` (`fake.ts:323`), `assertConformance` (`report.ts:125`), `CONFORMANCE_WORKER`. There are 45 check ids in 18 groups, which covers every group in §12.2, plus `summon.argv.round-trip` | **In flight:** the uncommitted PR-B4 (`summon-multi-queue.md`) adds `summon.handoff.shared-unit` |
+| PR-p4: `templates/compute-provider/`, summon half (§11.3) | DONE | #243. `src/index.ts`, `config.ts`, `errors.ts`, `test/fake-platform.ts`, `conformance.test.ts`, `scripts/check-types.ts` | It still declares `summon: "0.1"` (`src/index.ts:141`); **in flight:** B4 moves it to `0.2`. The execute half (`runtime.ts`, `transport.ts`, `runtime.test.ts`) is Phase 3 |
+| PR-p5: `docs/providers/` (§15.1–§15.4, §15.6) | DONE | #245, #256. Five pages; `files` is `["docs", "dts", "lib"]`. `__tests__/provider/docs.test.ts` (every `ts` block is an excerpt or compiles; links resolve) and `reference.test.ts` (drift, both directions, with a negative control) | The execute chapters, `runtime-adapters.md`, and all of `docs/remote/` (Phases 2–3). **In flight:** B4 edits the author guide, the reference and the user guide |
+| PR-p6: provider routes (§14.1) | DONE. 1.5p took it in, although `summon-compute.md` Q-p4 had said "later" | #246, #250. `GET /providers`, `POST /providers/:id/validate`, `GET /providers/:id/schema` (`api/routes/providers.ts:883`, `:909`, `:932`). Actions `providers.read`, `providers.validate` (`api/contract/constants.ts:32-33`) | — |
+| UI for providers (§14.2, §14.3) | PARTIAL | #247 (+ examples #254, #257). The Summon panel names the provider and its capabilities and has Test connection (`bun-jobs-ui/app/screens/queues/panels/SummonPanel.tsx:478-552`). There is a Providers screen (`app/screens/providers/`), and the README rows are in place (`bun-jobs-ui/README.md:407`, `:444-447`) | No experimental badge, no registration-warning badge, no homepage link (none of the three appears anywhere under `app/`). The config schema is shown read-only rather than as a form, because no route sets a provider's config |
+| Example: a custom summon provider that passes the kit (§15.5) | DONE, under another name | #244, #248: `examples/bun-jobs/02-queues/custom-provider.ts` (Nimbus; `runProviderConformance` and `assertConformance` at `:846-901`). Also `11-management-api/provider-routes.ts` (#251), `bun-jobs-ui/06-browser/providers.ts` (#257) and playground #255 | Counts toward §10.4's "outside provider", since the examples session wrote it |
+| `localCompute`, a first-party provider that runs units as child processes on this host | DONE (not in this plan) | #268. `lib/providers/local.ts:528`, exported from `./provider` (not from a `./providers/local` key), under the first-party import rule. Examples #303, playground #301 | Not one of §10.4's six summoners |
+| Summon facet `0.2`: `SummonRequest.queues`, `.group`, `.demands`, and `SummonReleaseRequest.queues`, `.group` (all additive) | DONE (summon groups) | #294 (PR-B1). `provider/version.ts:22-31` | The template follows in B4 |
+| `./provider/auth`: SigV4, the credential chain, Google and Azure tokens (§6.4) | NOT STARTED | No `lib/provider/auth/`. `summon-compute.md` Q-p2 put it in 1.5c | With 1.5c; Q-P2 is decided there |
+| 1.5c (ECS, Lambda, Fly), 1.5d (Cloud Run jobs and pools, ACA), 1.5e (Render, SSH), each on a `fakePlatform()` fake with a kit run | NOT STARTED | No `lib/providers/{aws,fly,google,azure,render,ssh}.ts`, and no `./providers/*` key | ~6.5 d + ~4.5 d + ~3.5 d |
+| 1.5g: live verification | NOT STARTED | — | ~1.5 d, and it closes Q2 and Q15, which `core` 1.0 needs |
+| 1.5s: summon stability gate (§10.4) | NOT STARTED, blocked | `COMPUTE_PROVIDER_API.summon` is `"0.2"` | ~1 d, after the six summoners pass the kit |
+| `SummonPolicy.validateOnStart` (§7.3) | NOT STARTED | No hit in `lib/`. `summon-compute.md` Q-p8 said "later, with Q-p4", and Q-p4 has since been taken | Unblocked; no estimate |
+| An `isolation` summon capability (`worker-gateway-and-isolation.md` PR-i5) | NOT STARTED | Not in `SummonCapabilities` (`provider/define.ts:103-143`) | ~2 d, in the gateway plan |
+
+### Phases 2–4: the execute facet and the runtime-adapter kit
+
+| Item | State | Evidence | What is left |
+|---|---|---|---|
+| PR-2a1: protocol messages and signing (`./remote`, browser-safe) | DONE | #261. `remote/signing.ts:463` (`signEnvelope`), `remote/constants.ts`, `__tests__/remote/remote-bundle.test.ts` | — |
+| PR-2a2: text frames, per-frame MAC, SSE parser, test vectors | DONE | #263. `remote/protocol/{frame,sequence,sse}.ts`, `remote/mac.ts`, `remote-frame-vectors.test.ts` | — |
+| PR-2a3: the reference executor, unary (`createRemoteExecutor`) | DONE | #270. `remote/executor/executor.ts:1046` | It is a fetch handler. It does not yet have the `RemoteExecutor.acceptSession()` §8.4 asks for (PR-2a7) |
+| PR-2a4, PR-2a5: `RemoteTarget`, `RemoteWorker`, batching | NOT STARTED | No `RemoteTarget` or `remoteWorker` in `lib/` | ~4 d + ~3.75 d |
+| **PR-2a6: the execute facet, exchange shape (§8.2, §8.3)**, with `httpsExecute` and the first `./providers/*` key | NOT STARTED | `version.ts` has no `execute`, and a definition with one is a `ConfigError` (`summon-compute.md` Q-p1) | ~2.75 d, in `worker-runtimes.md`'s reconciled slicing (R1–R4, R7) |
+| PR-2a7: the session shape (`open`, `listen`, `DuplexSession`) and `acceptSession` | NOT STARTED | — | ~4 d |
+| PR-2a8 to PR-2a12 (`http-stream`, `./remote/serve`, the fakes as helpers, `RemoteRunner`, `PROTOCOL.md`, guides), 2b, 2c–2f | NOT STARTED | No `lib/remote/serve/`, and no `docs/remote/` | See the effort line below |
+| Phase 3: `defineRuntimeAdapter`, `RUNTIME_ADAPTER_API`, `runExecuteConformance`, `runRuntimeAdapterConformance`, `./remote/testing` and its fakes, `./adapters/*`, the template's execute half, Acme Functions and Acme Queue | NOT STARTED | None of these names is in `lib/` | ~22.5 d |
+| Phase 4: the execute stability gate | NOT STARTED | — | ~11 d (phase total) |
+| Execute and transport examples (§15.5), and the execute UI (§14.2) | NOT STARTED | No example imports `@kingsleyweb/bun-jobs/remote` | Examples ~6 d + ~1 d; UI ~2 d |
+
+**Remaining effort, by this plan's own estimates (§16).**
+- **Phase 1.5:** ~32.25 d of ~49.25 d is done (1.5a + 1.5b ~19.75 d, 1.5p ~12.5 d). About **17 d** is left: 1.5c ~6.5 d, 1.5d ~4.5 d, 1.5e ~3.5 d, 1.5g ~1.5 d, 1.5s ~1 d.
+- **Phase 2:** ~77.5 d here, reconciled to ~78.5 d by `worker-runtimes.md` ("Effort, reconciled": 2a ~39 d). PR-2a1 to PR-2a3 (~10.5 d) are done, so about **68 d** is left, of which ~4 d of 2d moves into the gateway plan's 2r.
+- **Phase 3:** ~22.5 d. **Phase 4:** ~11 d.
+- **Total left for the bun-jobs session: ~118.5 d.** Other owners: examples ~9 d (per-provider ~2 d, custom execute ~1 d, transports ~6 d) and UI ~2.5 d.
+
+### Open questions that still need a decision
+
+These are taken from §17.2, with this plan's recommendation for each.
+
+- **Q-P1:** keep the shared core if, by the execute gate, no provider implements both facets? It cannot be answered yet: no execute facet exists. The recommendation stands: keep it, because a facet-less core is still a thin object.
+- **Q-P2:** is `./provider/auth` public from day one? `summon-compute.md` Q-p2 deferred it to 1.5c. The recommendation: public, but `0.x`.
+- **Q-P3:** does anything need a provider as data? Still no. `localCompute` spawns workers, not summoners, and no spawned child summons or executes. The recommendation: explicit import only.
+- **Q-P5** (which schema libraries implement Standard JSON Schema), **Q-P7** (`bun create` from a subdirectory; the template's README still says to copy it) and **Q-P8** (npm provenance) are unchanged [U]s.
+- **Q-P6:** a `capacity` error kind? It was not added. The capacity-200 case returns `unavailable`, as the plan designed, and the kit checks it (`summon.errors.capacity-200`).
+- **Q-P9:** third-party drivers. Still out of scope.
+- **Q-P4** is settled in practice: `lib/providers/local*.ts` import `../provider/index` relatively, and the first-party test enforces that. Whether self-reference by name would work stays [U] and no longer matters.
+- **Q-P10** was closed by Phase 1.
+
+---
+
 ## 1. Executive summary
 
 ### The one-paragraph version
@@ -109,6 +200,17 @@ against a local fake of its platform with no cloud credentials. First-party
 providers pass the same kit. Each facet has its own `apiVersion`, starts at
 `0.x` (experimental), and becomes `1.0` only after several independent
 providers pass the kit.
+
+**As built (2026-10-11).** Only the core and the summon facet exist. The
+versions are `{ core: "0.1", summon: "0.2" }`, and a definition with an
+`execute` key is a `ConfigError` (`provider/version.ts:22-31`). None of the
+six first-party summoners and none of the runtime adapters is built. The one
+first-party provider is `localCompute` (#268), and the first-party import
+test holds it to the public API. Decisions 1–8, 10 and 11 hold as built for
+the summon facet. For decision 9, the facets started at `0.x` as planned,
+and neither has reached its gate. For decision 12, the API was built before
+the first-party summoners, as the plan recommended, and the summoners have not
+started. See [Status](#status-2026-10-11).
 
 ### The decisions it rests on
 
@@ -401,6 +503,15 @@ feeds it a source with a deep import (`../../summon/marker`) and expects a
 failure. This is the technique `api-contract.test.ts:99-127` already uses to
 hold `api/contract/` to its import graph [S].
 
+**As built (2026-10-11).** The test exists as designed
+(`__tests__/provider/first-party-imports.test.ts`, #230), with the table
+above in its header. Today it scans one provider, `lib/providers/local.ts`
+and its `local/` helpers (#268). Those import `../provider/index`,
+bun-common and `node:*`. `lib/remote/adapters/` does not exist yet. One
+consequence of the rule surfaced: `./provider` re-exports `localCompute`, so
+`lib/provider/index.ts` must request `../providers/local` last. It does, and
+a fresh-process test holds that order.
+
 **What it does not cover** [I]: a first-party provider could still depend on
 *behaviour* only bun-jobs knows about, such as an undocumented field on a
 request. The defence is the documentation drift test (§15.3): every member a
@@ -548,6 +659,23 @@ export function defineComputeProvider<TConfig, TInput = TConfig>(
 ): ComputeProvider<TInput, TConfig>;
 ```
 
+**As built (2026-10-11)**, in `provider/define.ts` (#230):
+
+- `COMPUTE_PROVIDER_API` is `{ core: "0.1", summon: "0.2" }`, with **no
+  `execute` member** (`provider/version.ts:22-31`). Summon `0.2` is additive
+  (#294, summon groups).
+- `ProviderApiVersions` has no `execute` field.
+- `ComputeProviderDefinition` has no `execute` member. A definition that has
+  one, or that declares `apiVersion.execute`, is a `ConfigError`
+  (`summon-compute.md` Q-p1). Phase 2's PR-2a6 adds the facet and lifts the
+  refusal.
+- `ComputeProvider` has a third type parameter, `THasSummon`. When it is
+  `true`, calling the provider returns a `ConfiguredProvider` whose `summon`
+  is required, so the result is usable as `SummonPolicy.summoner` with no
+  narrowing (`define.ts:308-330`).
+- The brands are enumerable `Symbol.for` keys (`summon-compute.md` Q-p9).
+- The rest of this block matches the code.
+
 **Why a factory and a configured instance, not one object.** The declared
 capabilities often depend on config. Cloud Run's dedupe token must fit with
 the job name inside 63 characters [V, google-azure §3.2], so its
@@ -598,6 +726,13 @@ export interface ProviderCallContext {
 `ctx.now()` carries the driver rule "Never read the clock" (`driver.ts:48-50`)
 [S] into plugins, which is what lets the kit run with a fake clock.
 
+**As built (2026-10-11).** These two contexts are in `provider/context.ts`, as
+designed. `ProviderCallContext.signal` is documented as the summon timeout
+(`summonTimeout`). The execute facet will need it reworded to "the call's
+timeout" (`worker-runtimes.md` R4). The kit routes a real controller's
+`ctx.fetch` through an internal symbol-keyed option, `PROVIDER_FETCH_PROBE`,
+which has no public name (`summon-compute.md` Q-p7).
+
 ### 6.3 Config validation
 
 - `provider(config)` runs the schema's `~standard.validate` at once. When it
@@ -632,6 +767,10 @@ a few hundred lines with no dependency, so loading all of them is cheap, and a
 provider author learns one import [I]. The price: they become API. Their
 signatures are frozen with the `core` facet at 1.0, and the two [U]s above
 must close first (§10.4).
+
+**As built (2026-10-11): not started.** There is no `lib/provider/auth/` and
+no `./provider/auth` key. 1.5p left it to 1.5c, which creates it with the
+SigV4 signer and decides Q-P2 (`summon-compute.md` Q-p2).
 
 ### 6.5 Errors
 
@@ -701,6 +840,13 @@ directions (§12.2).
 per process naming it: "provider X threw a non-`ProviderError`; map it". The
 kit fails such a throw (§12.2). Treating it as `transient` rather than
 `misconfigured` errs toward retrying, bounded by the circuit [I].
+
+**As built (2026-10-11).** Everything above is built for the summon
+controller: `provider/errors.ts:74`, with `warnUnmappedThrow` in
+`provider/version.ts` (#232). The "execute gateway" column waits for Phase 2.
+The two warnings skip `defineSummoner`'s anonymous providers, because that is
+the user's own code and it already logs every failure
+(`summon-compute.md` Q-p5).
 
 ---
 
@@ -809,6 +955,18 @@ export type SummonDedupe =
 | `maxLifetimeMs`, `enforcesLifetime` | `ConfigError` for a `maxLifetime` above the cap; the status route says whether the cap is enforced | §4.5's list of platform caps |
 | `maxCountPerCall` | clamps `count` | — |
 
+**As built (2026-10-11).** `SummonCapabilities` and `SummonDedupe` are in
+`provider/define.ts:68-143` exactly as above, with `passes: "argv" | "none"`.
+The controller reads them as the table says (`summon/controller.ts`):
+- `dedupeKeyFor(capabilities.dedupe)` at `:1236`;
+- the grace argument at `:749`, and the short-grace `warn` at `:1318-1331`;
+- the pool clamp at `:1350-1357`;
+- the lifetime `ConfigError` at `:1370-1375`;
+- `maxCountPerCall` at `:2491`.
+
+`worker-gateway-and-isolation.md` PR-i5 plans one more field, an `isolation`
+capability. It is not built.
+
 ### 7.2 Hooks
 
 ```ts
@@ -852,6 +1010,12 @@ export interface UnitStatus {
 `summon-compute.md` §4.10's, with one change: `signal` and `logger` move from
 the request into `ProviderCallContext`, where the execute facet has them too.
 
+**As built (2026-10-11).** The facet is built as above
+(`provider/define.ts:158-191`). Summon `0.2` (#294) added
+`SummonRequest.queues`, `.group` and `.demands`, and
+`SummonReleaseRequest.queues` and `.group`, all additive, for summon groups
+(`summon-multi-queue.md`). A `0.1` provider runs unchanged.
+
 ### 7.3 What the optional hooks buy
 
 - **`status` answers `summon-compute.md` §9.4's "why a lost attempt was
@@ -865,6 +1029,15 @@ the request into `ProviderCallContext`, where the execute facet has them too.
   Without `status`/`cancel`, behaviour is exactly `summon-compute.md`'s.
 - **`validate` backs a "Test connection" button** and an optional
   `validateOnStart` (§14).
+
+**As built (2026-10-11).**
+- When an attempt is lost, the controller calls `status()` once and puts its
+  explanation on the marker and the event. If units are still pending, it then
+  calls `cancel()` (`summon/controller.ts:3530-3618`).
+- "Test connection" is built (#246, #247).
+- `validateOnStart` is **not built**: there is no hit in `lib/`. It was
+  deferred "later, with Q-p4" (`summon-compute.md` Q-p8). Q-p4's routes have
+  since merged, so it is unblocked.
 
 ### 7.4 `defineSummoner({ invoke })` becomes a wrapper
 
@@ -891,6 +1064,11 @@ So there is one concept, a provider, and two ways to make one: a published,
 versioned, schema-validated plugin, or a local one-off with no ceremony. The
 kit accepts both, so a user can conformance-test a local `invoke` too [D].
 
+**As built (2026-10-11): done as designed.** `defineSummoner` is at
+`summon/define.ts:100`, and it builds `custom:<kind>` at `0.0.0` from the
+host's own versions (`:150-162`). `runProviderConformance` accepts a
+`Summoner` as well as a `ComputeProvider`.
+
 ---
 
 ## 8. The `execute` facet
@@ -904,6 +1082,28 @@ facet's interface lives: it gains a **session shape** beside the original
 **exchange shape** (`send(Request) → Response`), and it declares
 **transport capabilities** in place of the old `ExecuteCapabilities`. §1,
 §4.1, §10.4, §11.1, §12.3, §14 and §17 were updated to match.
+
+**As built (2026-10-11): none of §8 is built.** No `ExecuteFacet`,
+`TransportCapabilities`, `exchangeTransport`, `RemoteTarget`,
+`jobs.remoteWorker`, `httpsExecute` or other `*Execute`/`*Listen`, and no
+`defineRuntimeAdapter`, `RUNTIME_ADAPTER_API`, `acceptSession` or
+`./remote/serve` appears anywhere in `lib/`.
+
+What exists is the layer underneath. `./remote` carries the protocol's
+messages and HMAC signing (#261), its text frames, per-frame MAC and SSE
+parser (#263), and the reference executor `createRemoteExecutor()` as a
+fetch handler (#270, `remote/executor/executor.ts:1046`).
+
+`worker-runtimes.md` ("Phase 2 as PRs", sliced 2026-10-01) schedules the work
+and corrects this section against the code:
+- **PR-2a6** builds the exchange shape and `httpsExecute`. It adds
+  `COMPUTE_PROVIDER_API.execute`, an `execute` member on the definition and on
+  `ConfiguredProvider`, and a facet list on the DTO (R1–R4).
+- **PR-2a7** builds the session shape and `acceptSession`.
+- **`lambdaExecute` leaves 2a** for 1.5c or Phase 3, because no SigV4 signer
+  exists (R7).
+- `TransportCapabilities` keeps the name it has here; the gateway plan's
+  `RemoteTransportCapabilities` is dropped (R18).
 
 ### 8.1 Where it fits
 
@@ -1344,6 +1544,10 @@ on FaaS. For the session bindings the kit adds two things [D]:
 | B. Name lookup in a registry | `registerProvider(acme)` once; `summoner: { provider: "acme", config }` | Config can be data (JSON, env) | A global mutable registry; import-order bugs; types lost at the string |
 | C. Auto-discovery from `node_modules` | scan for `keywords: ["bun-jobs-provider"]` | Zero wiring | Any installed package can become code that holds cloud credentials; slow start; breaks under bundling and isolated linkers [I] |
 
+**As built (2026-10-11): A only.** No registry lookup and no discovery
+exist. `provider/registry.ts` holds every configured instance weakly, so
+that `GET /providers` can list it. A name is not resolved through it.
+
 ### 9.2 Recommendation: A, and nothing else [D]
 
 **A** is the default and the only mechanism in 1.5p. **C is rejected**, for
@@ -1371,6 +1575,11 @@ means the same package twice [I]. bun-jobs keeps a per-process map from
 Refusing a second version would break a monorepo in which two services
 legitimately pin different versions [I]. Terraform's answer to its own
 collision, a compound local name [W], is what `name@version` in the UI is.
+
+**As built (2026-10-11): done (#230).** The second-version `warn` is once per
+process, in `provider/version.ts`. The registry gives each configured
+instance the id `name@version~<n>` (`provider/registry.ts:67`), which the
+routes use (§14.1).
 
 ---
 
@@ -1435,6 +1644,19 @@ From 1.0 of a facet [D]:
 | summon | **all six first-party summoners** (ECS + Lambda, Fly, Cloud Run jobs and pools, ACA, Render, SSH) **and one provider written outside the bun-jobs session** pass the kit, covering all three styles (`launch`, `scale`: Cloud Run pools, `wake`: Fly) and all three `passes` values (`env`: ECS, `argv`: Render, `none`: Fly and ACA) | `1.0` |
 | execute | the Cloudflare, Lambda and generic HTTP runtime adapters, `httpsExecute` and `lambdaExecute`, **and one outside provider** pass both kits; since 2026-09-25 also the first-party session transports that have shipped, and **one session-shape transport written outside the bun-jobs session** (§16.3) | `1.0` |
 
+**As built (2026-10-11).** Neither gate has been reached.
+- **Summon:** `summon` is `0.2`, and none of the six first-party summoners
+  exists (1.5c–1.5e are not started). `localCompute` (#268) passes the kit
+  (`__tests__/provider/local-compute-conformance.test.ts`), but it is not one
+  of the six.
+- **The `passes` row is superseded.** `"env"` was withdrawn on 2026-09-26
+  (`summon-compute.md` §5.5; the type is `"argv" | "none"`), so "all three
+  `passes` values" now means both: `argv` (ECS, Render) and `none` (Fly, ACA).
+- **The outside provider:** the examples session's
+  `examples/bun-jobs/02-queues/custom-provider.ts` (#244) passes the kit, so
+  it already qualifies.
+- **Execute:** nothing in this row exists yet.
+
 "Written outside the bun-jobs session" means the examples session's custom
 provider (§15.5) at minimum, and preferably a real third party [D]. The point
 of that condition: an API proven only by its designers is proven against their
@@ -1467,6 +1689,25 @@ runtime package it expects, so the UI can show both [D].
 | `./remote/serve` | `lib/remote/serve/index.ts` | per-transport executor servers: `serveHttp`, `serveWebSocket`, `serveTcp`, `serveUdp`, `dialWebSocket`, `dialTcp` (§8.4) | no (Bun only) |
 | `./remote/testing` | `lib/remote/testing/index.ts` | `conformRemoteExecutor` (every binding), `runRuntimeAdapterConformance`, and the fakes `bufferingHttpProxy`, `idleCuttingProxy`, `tcpChunker`, `lossyUdpProxy`, `lossySession`, `spawnExecutor` | no |
 | `./adapters/cloudflare`, `/lambda`, `/azure`, `/http` | `lib/remote/adapters/<name>.ts` | first-party runtime adapters | **yes** |
+
+**As built (2026-10-11).** These rows exist:
+- `./provider`: #230. Besides the planned re-exports, it also exports
+  `localCompute` and its types, `QueueDemand`, `CHILD_BASE_ENV` and
+  `removeCgroupTree`.
+- `./provider/testing`: #240.
+- `./summon`: 1.5a.
+- `./remote`: #261, #263 and #270. Today it holds the protocol constants and
+  types, `signEnvelope`/`verifyEnvelope`, the nonce cache,
+  `createRemoteExecutor` and its store. There is no frame codec export (the
+  codecs are internal, per Q-2.3 in `worker-runtimes.md`), no
+  `defineRuntimeAdapter` and no `RUNTIME_ADAPTER_API`.
+
+These rows are **not built**: `./provider/auth` (1.5c, `summon-compute.md`
+Q-p2), every `./providers/*` key, `./remote/serve`, `./remote/testing` and
+`./adapters/*`. Each `./providers/*` key lands with its provider (Q-p3).
+`localCompute` went into `./provider` itself, so there is no
+`./providers/local`. The package also has two entries outside this plan:
+`./api/contract` and `./container-entry` (PR-i1, #287).
 
 **A change to `summon-compute.md` §8.4.** Its `./summon/{aws,google,…}`
 subpaths become `./providers/{aws,google,…}` [D]. A provider now may carry
@@ -1513,6 +1754,18 @@ declarations, so the kit returns reports and never imports `bun:test` (§12.1).
 { "spelling": "@kingsleyweb/bun-jobs/providers/tcp",    "values": ["tcpExecute", "tcpListen"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/udp",    "values": ["udpExecute"] }
 ```
+
+**As built (2026-10-11).** `consumer-check.json` has rows for `./provider`,
+`./provider/testing`, `./remote` (`"browser": true`) and `./summon`, plus
+their `./lib/…` spellings.
+- The `./provider` snippet declares `passes: "argv"`; the `"env"` above is
+  withdrawn. It also covers `localCompute`, `ProviderError` and the
+  `THasSummon` typing.
+- The `./provider/testing` values are `runProviderConformance`,
+  `assertConformance`, `fakePlatform` and `CONFORMANCE_WORKER`. There is no
+  `runExecuteConformance`.
+- The `/provider/auth`, `/remote/testing`, `/remote/serve` and `/providers/*`
+  rows wait for their entries.
 
 The snippet is the existing `snippet` mechanism of `consumer-check.json` [S],
 used to prove a plugin can be written against the packed tarball with no
@@ -1572,6 +1825,15 @@ of its plugins [W].
   `/remote` for `./runtime`). The template's own check (§11.3) holds it to
   that.
 
+**As built (2026-10-11)** in `templates/compute-provider/package.json`
+(#243). It is summon-only:
+- keywords `bun-jobs-provider` and `bun-jobs-provider-summon`;
+- `"bun-jobs": { "facets": ["summon"], … }`;
+- no `./runtime` export;
+- the peer `>=2.2.0 <2.3.0`, because bun-jobs is still `2.2.0`;
+- an `overrides` entry that points bun-jobs at the repo (`CLAUDE.md`, "The
+  compute-provider template").
+
 ### 11.3 The starter template
 
 `templates/compute-provider/` at the repo root: an unpublished directory with
@@ -1608,6 +1870,24 @@ Whether `bun create` can start a project from a directory in a monorepo is
 The template is part of the repo's gate: its tests run in the bun-jobs
 package's gate, so an API change that breaks the template fails the merge
 [D].
+
+**As built (2026-10-11): summon half done (#243).**
+- **The tree** has `src/index.ts`, `config.ts`, `errors.ts`,
+  `test/fake-platform.ts`, `conformance.test.ts`, `config.test.ts`,
+  `errors.test.ts`, `scripts/build.ts`, `scripts/check-types.ts` and
+  `tsconfig.build.json`.
+- **Not there yet:** `src/runtime.ts`, `src/transport.ts` and
+  `test/runtime.test.ts`, which are Phase 3.
+- **`src/index.ts`** declares `apiVersion: { core: "0.1", summon: "0.1" }`
+  (`:141`) and `passes: "argv"` (`:122`). The uncommitted PR-B4 moves it to
+  `0.2`.
+- **Superseded: "its tests run in the bun-jobs package's gate".** The
+  template has a gate of its own (`bun install && bun run test && bun
+  scripts/check-types.ts`, then `CI=1 bunx eslint .`). It is required for
+  any change to `lib/provider/**` or the template (`CLAUDE.md`), and
+  `scripts/typecheck.ts` lists it. The bun-jobs suite reaches the template
+  only through `docs.test.ts`, which holds the author guide's excerpts to
+  `src/index.ts`.
 
 ---
 
@@ -1652,6 +1932,12 @@ export function assertConformance(report: ConformanceReport): void;
 Framework-agnostic, because a plugin's author may use `bun test`, vitest or
 node:test. A one-liner in any of them: `test("conforms", async () =>
 assertConformance(await runProviderConformance(…)))` [D].
+
+**As built (2026-10-11).** `ConformanceCheck`, `ConformanceReport` and
+`assertConformance` are built as above (`provider/testing/report.ts`, #240),
+and the kit imports no test runner. Of the three runners, only
+`runProviderConformance` exists. `runExecuteConformance` and
+`runRuntimeAdapterConformance` are Phase 3.
 
 ### 12.2 The summon kit
 
@@ -1703,7 +1989,30 @@ cannot be written before both. Its fixture worker should not use a file
 target until #166 is merged, or a failed handoff check can leave an orphaned
 child on the author's machine.
 
+**As built (2026-10-11): the summon kit is done (#240).** The sequencing
+above was met: issue #166 closed on 2026-09-26, PR-3 (#208) and PR-4 (#195)
+merged, and then the kit. Three things differ from the sketch:
+- **The signature has two arguments:** `runProviderConformance(provider,
+  options)` (`conformance.ts:381`).
+- **`platform` may be `"none"`** for a self-hosted provider with no platform
+  API. `localCompute` is tested that way, with `CONFORMANCE_WORKER` as its
+  entry.
+- **The handoff fixtures are the kit's own** (`testing/handoff.ts`,
+  `worker.ts`, `spawn.ts`, `racer.ts`). They are not a move of
+  `__tests__/helpers/summon.ts`, whose helper is now called
+  `spawningSummoner`.
+
+The check ids are `summon.<group>.<check>`: 45 of them, in all of the
+groups above plus `summon.argv.round-trip`. **In flight:** the uncommitted
+PR-B4 (`summon-multi-queue.md`) adds `summon.handoff.shared-unit`.
+
 ### 12.3 The execute kits
+
+**As built (2026-10-11): not started.** None of the runners, fakes or
+binding checks below exists. `worker-runtimes.md` R15 brings forward 2a's
+own fakes (`bufferingHttpProxy`, `idleCuttingProxy`, `spawnExecutor`): they
+are built first as test helpers in PR-2a9, and then moved to
+`./remote/testing` in Phase 3.
 
 **Host side**: `runExecuteConformance({ provider, config, platform })` [D].
 The fake platform forwards to a real `createRemoteExecutor()` with an echo
@@ -1817,6 +2126,20 @@ export function fakePlatform(routes: Record<string, (request: Request, platform:
 fault queues, `Bun.serve` on port 0 per `CLAUDE.md`), so a fake for a new
 platform is its routes and error bodies only [D].
 
+**As built (2026-10-11)** (`provider/testing/fake.ts`, #240). The shape is
+the one sketched above, with three differences:
+- **`fakePlatform(routes, options?)` takes a second argument**,
+  `FakePlatformOptions`: `limits`, and `faults`, which are per-fault response
+  builders.
+- **`onStart` takes `((unit: FakeUnit) => void) | undefined`.**
+- **The route state has helpers**: `FakePlatformState` offers `start()` and
+  `recall()` (token memory).
+
+`FakeFault` has the eight values above. No first-party cloud fakes ship yet,
+because no first-party cloud provider exists. The template's
+`test/fake-platform.ts` and the examples' Nimbus fake are the worked examples
+so far.
+
 **First-party providers are tested with the same kit** [D].
 `summon-compute.md` §11.1's per-API stubs ("Adapter tests against `Bun.serve`
 stubs on port 0") become `FakePlatform`s built with `fakePlatform()`, and each
@@ -1887,6 +2210,15 @@ text-level, and its own JSDoc lists what it misses: "a secret in prose", and
 token shapes other than a JWT (`redact.ts:24-25`) [S]. Declared secrets are
 how a plugin closes that gap for its own values.
 
+**As built (2026-10-11).** Built in `provider/redact.ts` (#230, hardened to
+fail closed in #250). Exact values of 8 characters or more
+(`MIN_SECRET_LENGTH`) are redacted, along with their encoded forms, and then
+the runner's `createRedactor`. The facts filter drops more than §13.2 says:
+a key with a credential word in it, URL userinfo, `Bearer` and JWT values,
+and `word:value` / `word=value` pairs whose word is sensitive
+(`provider/define.ts:232-241`). A check's `detail` is redacted when it is
+served (#256). `docs/providers/security.md` documents all of this.
+
 ### 13.4 Guidance for users choosing a third-party plugin
 
 The user guide (§15.4) carries this list, plainly [D]:
@@ -1929,6 +2261,22 @@ The user guide (§15.4) carries this list, plainly [D]:
 fragment: decided 2026-09-30), the nth configured instance in this process; it
 is stable for a process's life and meaningless across processes [D].
 
+**As built (2026-10-11).** The summon rows are built.
+- **Routes** (#246, #250): `GET /providers`, `POST /providers/:id/validate`
+  and `GET /providers/:id/schema` (`api/routes/providers.ts:883`, `:909`,
+  `:932`), with actions `providers.read` and `providers.validate`
+  (`api/contract/constants.ts:32-33`). Both are granted only by name.
+- **`SummonStatusDto.summoner`** carries the provider (`SummonProviderDto`)
+  and its capabilities (`api/contract/types.ts:1138-1237`).
+- **The schema route** answers 404 `PROVIDER_SCHEMA_NOT_FOUND` when no
+  Standard JSON Schema converter is present, and strips defaults, examples
+  and secret enums.
+- **One correction to the table:** the host's `COMPUTE_PROVIDER_API` is
+  reported as `api` on `GET /providers` (`providers.ts:894-895`), not under
+  `/meta`. `/meta.features.providers` is a boolean that says whether the
+  routes are served (`api/routes/meta.ts:119`).
+- The execute rows (`WorkerDto.target.remote`, `probe()`) are not built.
+
 Everything in this table is secret-free by §13.2 and §13.3. The
 `providers.read` action is a read, but it discloses infrastructure (cluster
 names, regions), so it is not granted by `readOnly: true`'s default set and
@@ -1951,6 +2299,24 @@ handles [D].
   canary and the session counts (`remote-transports.md` §12).
 - **A "Providers" section** in the settings or meta screen, from `GET
   /providers`.
+
+**As built (2026-10-11).**
+- **Built (#247):** the Summon panel's provider card with Test connection
+  (`bun-jobs-ui/app/screens/queues/panels/SummonPanel.tsx:478-552`). It shows
+  the name, kind, style, boot budget, lifetime and facts.
+- **Built (#247):** a **Providers screen** of its own (`/providers`,
+  `app/screens/providers/`) rather than a section of another screen. It shows
+  readiness, the id, the package and version, the facts, Test connection, and
+  the config schema on request, read-only.
+- **Not built:** the experimental badge and the registration-warning badge
+  (no match in `app/`), and the homepage link.
+- **The config form is superseded** by the read-only schema view, because no
+  route sets a provider's config (`bun-jobs-ui/README.md:447`).
+- **Not built:** the remote worker's badge and the Target card's health,
+  which wait for Phase 2.
+- §14.3's README rows for the summon side are in
+  (`bun-jobs-ui/README.md:407`, `:444-447`), and the examples session gates
+  them (#254).
 
 ### 14.3 Owners
 
@@ -1991,6 +2357,15 @@ the same reason.
 | `docs/remote/transports/<binding>.md` | application developers | **One user guide per binding**: configuring it, its health and progress behaviour, its failure modes, platform notes, security (`remote-transports.md` §11.4). Snippets typechecked |
 | `docs/remote/executor-guide.md` | executor authors | **A complete worked executor per binding**, and a stdlib-only Python executor over `tcp+tls` run against the conformance suite when `python3` is present (`remote-transports.md` §11.3). The worked executors are the examples' executors |
 | `docs/remote/health.md` | operators | The health model and the Workers page's health states (`remote-transports.md` §5, §12) |
+
+**As built (2026-10-11).**
+- **Built (#245, #256):** `docs/providers/` with five pages: `README.md`,
+  `author-guide.md`, `reference.md`, `user-guide.md` and `security.md`. The
+  package README has a "Compute providers" section, and `files` includes
+  `docs`.
+- **Not built:** `docs/providers/runtime-adapters.md`, and every
+  `docs/remote/` page. They wait for Phases 2 and 3: `worker-runtimes.md`
+  PR-2a11 and PR-2a12 create `docs/remote/`.
 
 All of it is Markdown and so linted by the package's `bunx eslint .`
 (`CLAUDE.md`: "Lint the whole package"). Long table cells can hang Prettier
@@ -2067,6 +2442,16 @@ Step by step, each step a heading, each with the code of one worked example
 A fictional platform, not a real one, so the example cannot go stale when a
 real API changes, and so no reader mistakes it for a supported provider [I].
 
+**As built (2026-10-11).** The author guide covers the summon half in 13
+steps: what you build, the template, identity, config, capabilities,
+`summon()`, errors, the summon id, optional hooks, the fake, the kit,
+security, and publishing. Its Acme Compute example is the template's
+`src/index.ts`, and it passes the id by `argv`, not by env (the env passing
+the bullet above names was withdrawn on 2026-09-26). These are **not built**:
+steps 10 and 11 above (the execute transport and the runtime adapter), Acme
+Functions and Acme Queue. **In flight:** PR-B4 updates the guide for
+summon `0.2`.
+
 ### 15.3 The API reference, and how it is kept from drifting
 
 **Hand-written, with a drift test** [D]. Considered and rejected:
@@ -2097,6 +2482,14 @@ The drift test, `__tests__/provider/reference.test.ts` [D]:
 This is the pattern the repo already trusts for the UI's permission table,
 which `examples/bun-jobs-ui/04-screens/permissions.ts` parses and holds to the
 code (`CLAUDE.md`) [S via CLAUDE.md].
+
+**As built (2026-10-11): done for the summon entries (#245).** It is
+`__tests__/provider/reference.test.ts`, with its rules in `referenceCheck.ts`.
+It checks `./provider`, `./provider/testing` and `./summon` in both
+directions, with a negative control. The other entries the list above names
+(`./provider/auth`, `./remote`, `./remote/testing`, `./remote/serve` and
+`./providers/*`) are not in it yet. `./remote` exists (Phase 2a) but has no
+reference section.
 
 ### 15.4 The user guide
 
@@ -2152,6 +2545,18 @@ README is updated once they pass. The summon example depends on
 memory backend it must use the file driver or skip with a message; which is
 for the examples session to decide [I].
 
+**As built (2026-10-11).**
+- **The summon example was built under another name:**
+  `examples/bun-jobs/02-queues/custom-provider.ts` (#244, #248), the "Nimbus"
+  platform. It runs `runProviderConformance` and `assertConformance`
+  (`:846-901`), and on the memory backend it uses a temporary SQLite file.
+- **Also built:** `11-management-api/provider-routes.ts` (#251),
+  `02-queues/local-compute.ts` (#303) and
+  `bun-jobs-ui/06-browser/providers.ts` (#257).
+- **Not started:** `custom-execute-provider.ts`, `NN-transports/` and
+  `custom-session-transport.ts`. No example imports
+  `@kingsleyweb/bun-jobs/remote`.
+
 ### 15.6 How the docs stay true, in one list
 
 - code blocks in every guide are extracted and typechecked by a
@@ -2167,6 +2572,18 @@ for the examples session to decide [I].
   executors, so they cannot disagree;
 - `security.md` and the user guide's security section are reviewed at each
   facet gate (§10.4), recorded in the gate's checklist.
+
+**As built (2026-10-11).**
+- **Superseded: the first bullet's `docs.type-test.ts`.** It is
+  `__tests__/provider/docs.test.ts` (#245): every `ts` block in
+  `docs/providers/` must be a verbatim excerpt of the file it names, or a
+  snippet that compiles against the package. Every link must resolve. Each
+  rule has a broken-copy control.
+- **Built:** the reference drift test, the template (in its own gate, see
+  §11.3) and the examples in `run-all.ts`.
+- **Not built:** `PROTOCOL.md`'s vectors in `docs/` (the frame vectors exist
+  as a test, `remote-frame-vectors.test.ts`, #263), the Python executor and
+  the executor guide.
 
 ---
 
@@ -2215,6 +2632,17 @@ through `defineSummoner({ invoke })` and the depth endpoint.
 badge, Test connection; on top of ~3 d); the examples session +1 d (the
 custom summon provider example; on top of ~2 d).
 
+**As built (2026-10-11).**
+- **1.5a, 1.5b and all of 1.5p are merged.** For 1.5p that is PR-p1 to PR-p6,
+  #230 to #246, with #250 and #256. PR-p6, the provider routes, was taken
+  into 1.5p, although `summon-compute.md` Q-p4 had said "later".
+- **Other owners:** the provider card, Test connection, the Providers screen
+  (#247) and the custom summon provider example (#244) are done. The
+  experimental badge is not.
+- **Not started:** 1.5c, 1.5d, 1.5e, 1.5g and 1.5s.
+
+Remaining effort is in [Status](#status-2026-10-11).
+
 ### 16.3 Phases 2–4 (remote execution), revised
 
 | Phase | Addition | Effort added | Phase total |
@@ -2253,6 +2681,14 @@ examples session's `custom-session-transport.ts` qualifies at minimum [D].
 **Other owners, transports**: the examples session +6 d (one example and one
 failure demo per binding, §15.5); the UI session +2 d (binding, health state,
 canary, session counts on the Target card).
+
+**As built (2026-10-11).** `worker-runtimes.md` ("Phase 2 as PRs",
+2026-10-01) has sliced 2a and 2b into PR-2a1 to PR-2a12 and PR-2b1 to
+PR-2b3, and reconciled 2a to ~39 d. PR-2a1 (#261), PR-2a2 (#263) and PR-2a3
+(#270) are merged, about 10.5 d. The execute facet itself is PR-2a6
+(~2.75 d), and its session members are in PR-2a7. Everything else in this
+subsection is not started. About 4 d of 2d (the reversed WebSocket) moves
+into the gateway plan's 2r (PR-g1a, PR-g1b).
 
 ### 16.4 Totals
 
@@ -2315,39 +2751,63 @@ first-party rework onto fakes and the kit (1.5d, 1.5e; 1.5c nets to zero), and
   `remote-transports.md` §14; its open questions are §15 there.
 - **Scope growth delaying summoning.** 1.5p sits before 1.5c. If it slips, the
   first-party summoners slip. Mitigation: 1.5a + 1.5b remain the minimum
-  useful ship and do not depend on 1.5p.
+  useful ship and do not depend on 1.5p. *As of 2026-10-11: 1.5p landed on
+  2026-09-30, and 1.5c had still not started eleven days later. The work
+  since then went to summon groups, Phase 2a's protocol and isolation, so the
+  first-party summoners are what is waiting now.*
 
 ### 17.2 Open questions
 
+Status on 2026-10-11 follows each question. **Open** means it still needs a
+decision or a check.
+
 - **Q-P1** Keep the shared core (§4, option C) if, by the execute gate, no
   provider implements both facets? The fallback is two thin systems sharing
-  only `ProviderError` and the kit harness.
+  only `ProviderError` and the kit harness. *Open: it cannot be answered
+  until an execute facet exists (PR-2a6). The recommendation stands: keep C.*
 - **Q-P2** Is `./provider/auth` public from day one, or only after Q2 and Q15
   close? This plan makes it public but `0.x`; the alternative is to keep it
-  internal to first-party providers, which would break §5's rule.
+  internal to first-party providers, which would break §5's rule. *Open:
+  1.5p did not create the entry (`summon-compute.md` Q-p2), and 1.5c decides.
+  The recommendation stands: public, `0.x`.*
 - **Q-P3** Does anything need a provider as data (name lookup, §9.2)? If a
-  spawned runner ever summons or executes, the answer changes.
+  spawned runner ever summons or executes, the answer changes. *Open, and
+  still "no". `localCompute`'s units run `runSummoned`, not a controller, and
+  nothing spawned summons or executes. The recommendation stands: explicit
+  import only.*
 - **Q-P4** Self-reference: can a Bun workspace package import itself by name
   through its `exports`? If yes, first-party providers could import
   `@kingsleyweb/bun-jobs/provider` literally, which reads better than a
-  relative path to the entry (§5). [U]
+  relative path to the entry (§5). [U] *Settled in practice: the relative
+  import is the rule the first-party test enforces, and `localCompute` uses it
+  (`lib/providers/local.ts:11`). The [U] was never checked, and nothing
+  depends on it any more.*
 - **Q-P5** Which schema libraries implement Standard JSON Schema v1 today?
   It decides whether the UI's config form (§14.1) is common or rare. [U]
+  *Open as a [U], with lower stakes: the UI shows the schema read-only rather
+  than as a form (§14.2). The route serves it whenever a converter is present
+  and answers 404 otherwise (#246).*
 - **Q-P6** Should `ProviderErrorKind` have a `capacity` kind separate from
   `quota`? ECS's "no capacity right now" (a 200 with `failures`) and "your
   account's vCPU limit" (quota 6 on a new account [V, aws §1 item 4]) want
   different backoffs. This plan folds the first into the `unavailable`
   result; a platform whose capacity failure is an error status would need
-  the kind.
+  the kind. *Open. As built, there are six kinds and no `capacity`
+  (`provider/errors.ts:33-38`). The capacity-200 case returns `unavailable`,
+  and the kit checks it (`summon.errors.capacity-200`). The recommendation
+  stands: fold it into `unavailable` until 1.5c meets a platform whose
+  capacity failure is an error status.*
 - **Q-P7** Does `bun create` start a project from a monorepo subdirectory
-  (§11.3)? [U]
+  (§11.3)? [U] *Open. The template's README says "Copy this directory", as
+  planned.*
 - **Q-P8** Do npm provenance attestations mean anything useful for a user
-  choosing a plugin (§13.4)? [U]
+  choosing a plugin (§13.4)? [U] *Open. The guides do not mention
+  provenance, as planned until it is verified.*
 - **Q-P9** Should third-party **drivers** get the same treatment: a version
   number, a published `driverContract` in `./drivers/testing`, config-based
   construction for spawned children (§2.1)? It is the same problem, and the
   driver contract suite already exists. Out of scope here; worth its own
-  plan.
+  plan. *Open, out of scope. No plan has been written.*
 - **Q-P10** ~~The `WorkerTarget` name (`worker-runtimes.md` §4.2) is settled by
   the rename as `WorkerSelector` for the old type. Should the new target type
   be named for the provider era, e.g. `RemoteTargetOptions { provider, secret

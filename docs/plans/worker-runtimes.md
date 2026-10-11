@@ -53,7 +53,9 @@ choice and its reason.
 `feat/bun-jobs-worker-target`). §4.2–§4.5 were reconciled with the code: they
 describe what was built, every citation points into the implementation (or is
 pinned to `688d376` where it describes the code before), and the Phase 1
-section of §11 records the gate as measured.
+section of §11 records the gate as measured. **Merged 2026-09-25** as #164,
+with the examples (#167, #168), the UI (#169, #172) and the playground (#170)
+after it; see [Status (2026-10-11)](#status-2026-10-11).
 
 **Updated again 2026-09-25: multiple transports.** At the user's request,
 Phase 2 carries remote attempts over HTTP request/response, HTTP with a
@@ -71,7 +73,15 @@ bounded by `lockDuration`**, because the lease is renewed for the whole remote
 call; the draft's `ConfigError` for it is removed (§4.2.8,
 `remote-transports.md` Q-T12).
 
+**Updated 2026-10-11: status, against `develop` at `e7246b69`.** Every phase
+was checked against the merged PRs and the code rather than against this
+plan's own claims. [Status (2026-10-11)](#status-2026-10-11) has the table
+and the work left. Statements the code has made wrong are corrected where they
+stand, marked "2026-10-11", and superseded text is kept with its reason.
+
 ### Contents
+
+Start with [Status (2026-10-11)](#status-2026-10-11).
 
 1. [Executive summary](#1-executive-summary)
 2. [What exists today](#2-what-exists-today)
@@ -106,13 +116,142 @@ them.
 
 ---
 
+## Status (2026-10-11)
+
+Checked on 2026-10-11 against `origin/develop` at `e7246b69` (#369): the
+merged PRs, the code under `packages/`, `examples/` and `playground/`, and the
+tests. Paths are under `packages/bun-jobs/` unless they say otherwise.
+
+**In one paragraph.** Phases 0, 1 and 1r have merged. So have the parts of
+Phase 1.5 that need no cloud provider, tracked in
+[`summon-compute.md`](summon-compute.md) and
+[`summon-multi-queue.md`](summon-multi-queue.md). Phase 2 has started: its
+first three PRs merged, the protocol's messages and signing (PR-2a1, #261),
+the text frames (PR-2a2, #263) and the reference executor (PR-2a3, #270).
+The gateway side has not started. Nothing runs a claimed job on a remote yet:
+there is no `"endpoint"` target, no `RemoteWorker` and no `PROTOCOL.md`.
+Two pieces of the isolation track
+([`worker-gateway-and-isolation.md`](worker-gateway-and-isolation.md)) have
+also merged: hardening for `child-process` (PR-i0, #260) and the
+`"container"` target (PR-i1, #287), which made five target kinds. **The
+biggest remaining piece is Phase 2 from PR-2a4 on**: about 60 d of the 23
+sliced PRs, plus about 26 d for 2c–2f. Next come Phase 3's kits and adapters
+(~22.5 d) and Phase 1.5's cloud providers (~17 d).
+
+| Phase / PR | State | PRs, evidence | What is left |
+|---|---|---|---|
+| **0** Rename the control planes | **DONE** 2026-09-25 | #157 (library and plans), with #158 and #161 (examples). `WorkerController` at `queue/WorkerController.ts:203`, `WorkerControllerManager` at `:579`, `RunnerController` at `runner/RunnerController.ts:99`; `jobs.workers.controller()` (`api/routes/workers.ts:113`) | — |
+| **1** `target`, local only | **DONE** 2026-09-25 | #164 (library); examples #167 and #168 (`10-options/worker-isolation.ts` → `worker-targets.ts`); UI #169 (badge, Target card) and #172; playground #170 (`playground/targets.ts`). Later: #198 `worker.target` (`BunQueueWorker.ts:1552`); #176, #207 and #235, where closing a target ends its child processes and threads, and a forced close escalates a graceful one (`close(options?: { force })`, `queue/workerTarget.ts:296`) | The examples row's "`defineProcessors` / worker-file example in `07-runner/`" was not written. `git grep defineProcessors -- examples playground` finds nothing; the README (`README.md:3271`) and the tests (`__tests__/worker-target.test.ts`) cover it |
+| **1r** Runner spellings | **DONE** 2026-09-26 | #179 (library), #181 (UI), #182 (examples). `ExecutionMode` (`drivers/driver.ts:179`) and `EXECUTION_MODES` (`api/contract/constants.ts:657`) use the new spellings; `normalizeExecutionMode` is at `runner/config.ts:212`; `__tests__/runner-legacy-modes.test.ts` covers the old ones | The follow-up it named is still open: `RunnerController.info()` casts the stored `runMode` unchecked (`runner/RunnerController.ts:503`) |
+| **1.5** Summon-compute | **PARTIAL** | 1.5a, 1.5b, 1.5p and the UI and examples of 1.5f merged (#178 to #257). Added outside this plan: `localCompute` (#268) and summon groups and shared units (`summon-multi-queue.md`, through #366). The summon facet is at `0.2` (`provider/version.ts:22-31`). PR-B4 is in review and uncommitted | **1.5c–1.5e** (the AWS, Fly, Google, Azure, Render and SSH providers, ~14.5 d), **1.5g** (live verification, ~1.5 d) and **1.5s** (the stability gate, ~1 d) are not started: there is no `lib/provider/auth/` and no `./providers/*` key. `summon-compute.md` has the item-by-item audit |
+| PR-2a1 messages and signing | **DONE** 2026-10-01 | #261. `./remote` entry (browser-safe); `WORKER_PROTOCOL_VERSION` (`remote/constants.ts:20`); `signEnvelope`/`verifyEnvelope` (`remote/signing.ts`) | — (differences from §5.6 are listed under "Corrected" below) |
+| PR-2a2 text frames | **DONE** 2026-10-01 | #263. `remote/protocol/{frame,sequence,sse}.ts`; vectors from `scripts/generate-frame-vectors.ts`; internal, as Q-2.3 decided | `ack-ahead` needs a problem code once the session layer lands (PR-2a7/2b1; #263 says so) |
+| PR-2a3 reference executor | **DONE** 2026-10-06 | #270. `createRemoteExecutor` (`remote/executor/executor.ts:1046`), `createRemoteExecutorStore`, `REMOTE_CANARY_JOB`; a README section, "Remote executors" (`README.md:4245`); `__tests__/remote/` (17 files) | — |
+| PR-2a4 to PR-2a12 | **NOT STARTED** | No branch and no open PR. `RemoteEndpointTarget`, `RemoteWorker`, `remoteWorker` and `HandlerNotFoundError` as a class: 0 hits in `lib/`. `"endpoint"` is not in `WORKER_TARGET_KINDS` (`shared/workers.ts:221-227`). No `docs/remote/` | ~28.5 d of 2a's reconciled ~39 d |
+| PR-2b1 to PR-2b3 (WebSocket) | **NOT STARTED** | — | ~9.5 d |
+| 2r: PR-g1a to PR-g6 (the gateway) | **NOT STARTED** | No `./gateway` entry | ~20.5 d |
+| PR-i4, an executor's `target` | **NOT STARTED, now unblocked** | It depends on PR-i1 (#287) and PR-2a3 (#270), and both have merged | ~1.5 d |
+| 2c–2f (TCP, reverse and SSE session, UDP, HTTP/2) | **NOT STARTED** | — | ~26 d (2d less the ~4 d 2r took) |
+| Isolation track (GW Part 2), as it touches this plan | **PARTIAL** | PR-i0 #260 (env allowlist, `uid`/`gid`, `cgroup`, `maxBuffer`). PR-i1 #287: `ContainerTarget` (`queue/container/target.ts:44`), `"container"` in `WORKER_TARGET_KINDS`, `IsolationUnavailableError`, the `./container-entry` entry, and the UI's "Container" label (`bun-jobs-ui/app/screens/workers/target.ts:44`) | PR-i2, PR-i3's `network: { name }`, PR-i5 and PR-i7 belong to `worker-gateway-and-isolation.md`. There is no container-target example in `examples/` or `playground/` |
+| **3** Kits and the first adapters | **NOT STARTED** | No `./adapters/*`, `conformRemoteExecutor`, `runExecuteConformance` or `defineRuntimeAdapter`. The summon kit's `provider/testing/report.ts`, which R5 builds on, exists | ~22.5 d |
+| **4** Benchmarks, adapters, hardening | **NOT STARTED** | No `push-loopback` or `gateway-loopback` in `bench/` | ~11 d |
+| §3.8.3 (a) `pg_notify` | **CLOSED**, no action | — | — |
+| §3.8.3 (b) worker-thread console | **Covered** | `__tests__/runner-worker-exited.test.ts:64,95,329` asserts that a worker-thread run's console reaches `onConsole` (over a fake worker) | — |
+| §3.8.3 (c) `rss` and RTT on the beat | **DONE** 2026-09-23 | #109: `rssBytes` (`drivers/driver.ts:1609`) and `heartbeatRttMs` (`:1625`), both on the Workers page | — |
+| §3.8.3 (d) a 404 is not retryable | **NOT STARTED** | Part of PR-2a4's "401/404/405 rules" | with PR-2a4 |
+
+**Work left, in this plan's own estimates** (the bun-jobs session):
+
+- **Phase 1.5:** ~17 d (1.5c–e, 1.5g, 1.5s), plus ~2 d of examples.
+- **Phase 2's 23 sliced PRs:** ~60 d of their reconciled ~70.5 d. PR-2a1
+  (~4 d), PR-2a2 (~3.5 d) and PR-2a3 (~3 d) are done.
+- **2c–2f:** ~26 d.
+- **Phase 3:** ~22.5 d.
+- **Phase 4:** ~11 d.
+
+That is **~136.5 d** in all. §11's summary table says ~169.5 d, but it does
+not count 2r's ~22 d, which the 2026-10-01 slicing took over from the gateway
+plan. Other owners: ~6 d of examples and ~2 d of UI for Phase 2, ~1.5 d of UI
+for the gateway, ~1 d of examples for Phase 3, and ~2 d of examples for
+Phase 1.5.
+
+On the critical path (§11, "Order, parallelism and the critical path"), ~7 d
+of the ~43.75 d is done (PR-2a1 and PR-2a3). The next PR on it is
+**PR-2a4**: an `"endpoint"` target and `RemoteWorker`, the first remote
+execution a user can see.
+
+**Corrected in this update (2026-10-11).** Each is also marked where it
+stands:
+
+1. Phase 1 and Phase 1r were "awaiting merge" and "built on this branch".
+   Both merged (#164, #179), and §11's summary table now says so.
+2. Decision 4 said "the name is pending, N5". `WorkerTargetExecutor` was
+   approved on 2026-09-25 (§4.2.7).
+3. Decision 6 and §5.6 said the signature is over `t "." raw`. As built
+   (#261 and its review fix `a879d7b9`):
+   - the payload is `t "." d "." raw`, where `d` is `q` for a request and `r`
+     for a response;
+   - a bodyless `GET` signs `t ".q." id`;
+   - the nonce cache is keyed on the signed payload, not on `bun-jobs-id`,
+     which the MAC does not cover.
+4. §5.10's `cancel` took bare `ids`. #270 made every job reference carry its
+   queue (`RemoteJobRef.queue: RemoteQueueRef`), and `status` does the same.
+5. Other changes from PR-2a1 and PR-2a3's names rows:
+   - the problem codes are 17, not 13: PR-2a1 added `SIGNATURE_MISSING` and
+     `SIGNATURE_TIMESTAMP`, and PR-2a3 added `VALIDATION` and `INTERNAL`;
+   - the feature strings are 11, with `replay-protection` added;
+   - there are 23 `op`s;
+   - `HealthCheck` shipped as `RemoteHealthCheck`.
+6. §5 named the spec `packages/bun-jobs/PROTOCOL.md`. The slicing moved it to
+   `docs/remote/PROTOCOL.md` (PR-2a11), and it is not written.
+7. §2.9 said a whole worker loop in another process was "not built".
+   `runSummoned` (#195) and `localCompute` (#268) now do that.
+8. §4.2.2 and §4.2.4 described four target kinds. `"container"` makes five
+   (#287). `WorkerTargetExecutor.close` now takes `{ force }` (#176, #207).
+9. The worker's unrecoverable check moved again: it is now at
+   `BunQueueWorker.ts:3992-3993` (R9 said `:3700-3705`).
+10. Phase 3 said Phase 1.5 "will already have added the `./providers/*`
+    subpaths". None exists. `localCompute` is exported from `./provider`.
+11. Reconciliation rows R1, R8 and R20, and the gateway plan's order table,
+    were brought up to date.
+12. §3.8.3 (c) is recorded as done.
+
+**Open questions still needing the user.** Each one is in §10.11 or in
+"Open questions for the user, before code", with the plan's recommendation:
+
+- **Q2:** sync-only, or sync plus an async callback? The recommendation is
+  sync-only through Phase 3. Async is a separate project and is already
+  listed under "Explicitly out of scope".
+- **Q4:** where the runtime adapters live. The recommendation is
+  `./adapters/*` subpaths with no cloud SDK dependency.
+- **Q5:** is `workerd` in CI worth it? The recommendation is one smoke test,
+  skipped visibly when absent.
+- **Q6 (CPP Q-P1):** does a shared core earn its keep if no provider ships
+  both facets?
+- **Q7 (RT Q-T11):** does a lost remote attempt count as an attempt? The
+  recommendation is "counts", and PR-2a5 is sliced that way
+  (`RemoteAttemptLostError`, retryable and counted).
+- **Q-2.8:** `RemoteRunner`'s shape. A one-page spec opens PR-2a10 for
+  approval.
+- **Q-T12's `timeout` default:** the endpoint's reconciled `maxDurationMs`,
+  "for the implementer to confirm" in PR-2a4.
+- **The public names of each PR from PR-2a4 on.** Each is approved PR by PR,
+  as PR-2a1 to PR-2a3's were.
+
+Q3 (a spec document of its own) is settled by the slicing: `PROTOCOL.md` is
+PR-2a11. Q-2.1 to Q-2.13 were all decided on 2026-10-01.
+
+---
+
 ## 1. Executive summary
 
 ### The one-paragraph version
 
 Half of this is already built and is not called what the ask calls it.
 `isolation: "worker" | "spawn"` already runs a job's processor in a `Worker`
-or a child process through the runner's executors, and the control plane
+or a child process through the runner's executors (written 2026-09-22; since
+Phase 1, #164, the option is `target: "worker-thread" | "child-process"`, and
+since #287 also `{ kind: "container" }`), and the control plane
 (`WorkerController`, `lib/queue/WorkerController.ts`, since Phase 0) already
 controls workers in other processes. What does not exist is a *data*
 plane: any way for a job to reach code that does not hold the driver
@@ -127,9 +266,9 @@ that are mostly type declarations.
 | 1 | **Keep two axes apart: *where the attempt runs* and *who owns the claim*.** | They have different failure modes and different phases. Conflating them is how this design goes wrong. §3 |
 | 2 | **The remote never claims. bun-jobs claims and pushes.** | No edge runtime can reach a built-in driver, and no frozen FaaS can hold a lease. Verified: Cloudflare gives six simultaneous outbound connections per isolate and timers "only inside the Request Context". §3.5 |
 | 3 | **The gateway keeps the lease for the whole round trip, and this needs no new code.** | `#heartbeat()` already runs on an interval for every in-flight job. In push mode the job is in flight for the duration of the HTTP call, so the process holding the lease is by construction the one that is awake. §5.9 |
-| 4 | **The new target is a `WorkerTargetExecutor`: one `run(attempt)` returning a promise, cancelled through the attempt's signal.** It is not the runner's `Executor`, not the existing executors, and not the existing IPC protocol. *(Revised 2026-09-25 by the Phase 1 design check; the draft said "an `Executor`". The name is pending, N5.)* | `Executor.mode` is the closed, persisted `ExecutionMode` and `ExecutorStartOptions.file` is required, so a custom target cannot be one without fabricating a runner's context (§4.2.6). `ParentToChild`/`ChildToParent` is a stateful duplex channel with a `ready` handshake, and stretching it over HTTP would force every implementer to re-model framing a request/response transport already has. §2.4 |
+| 4 | **The new target is a `WorkerTargetExecutor`: one `run(attempt)` returning a promise, cancelled through the attempt's signal.** It is not the runner's `Executor`, not the existing executors, and not the existing IPC protocol. *(Revised 2026-09-25 by the Phase 1 design check; the draft said "an `Executor`". ~~The name is pending, N5.~~ Approved 2026-09-25 and shipped in #164: §4.2.7, N5.)* | `Executor.mode` is the closed, persisted `ExecutionMode` and `ExecutorStartOptions.file` is required, so a custom target cannot be one without fabricating a runner's context (§4.2.6). `ParentToChild`/`ChildToParent` is a stateful duplex channel with a `ready` handshake, and stretching it over HTTP would force every implementer to re-model framing a request/response transport already has. §2.4 |
 | 5 | **The contract is its own surface, not an extension of `createJobsApi`.** | Opposite direction, incompatible auth model (cookies+CSRF+48 admin actions vs a shared secret), and `lib/api/` cannot load in a V8 isolate. It *reuses* `api/schema`, `ProblemDto` and the OpenAPI emitter. §5.1 |
-| 6 | **Signing is Stripe/Inngest-shaped: HMAC-SHA256 over `t + "." + rawBody`, 300 s replay window, responses signed too.** | It is the scheme implementers already know, and response signing is what stops a DNS hijack marking jobs complete. §5.6 |
+| 6 | **Signing is Stripe/Inngest-shaped: HMAC-SHA256 over `t + "." + rawBody`, 300 s replay window, responses signed too.** *(As built, 2026-10-11: the payload also carries the direction, `t "." d "." raw`, so a signed response cannot be replayed as a request; #261, §5.6.)* | It is the scheme implementers already know, and response signing is what stops a DNS hijack marking jobs complete. §5.6 |
 | 7 | **Adapters ship as `./adapters/*` subpaths with zero cloud dependencies** — the platform types are declared structurally and checked against the real SDK types in a devDependency type-test. | `CLAUDE.md`'s dependency rule, satisfied by not needing an exception. Every new entry is `"browser": true` in `consumer-check.json`, and `checkPeerScopes` has nothing to check. §6.2-6.3 |
 | 8 | **Summon-compute is built as Phase 1.5, and real remote execution as Phase 2. Both are committed** (the user's decision, 2026-09-25). | Temporal shipped serverless workers on 2026-07-17 by making the *scheduler* able to invoke compute, while the worker contract stayed exactly what it was. The bun-jobs analogue: notice demand with no live worker, start compute that runs an ordinary `BunQueueWorker`, let it drain and exit. It works on every host in §3.5 that can hold its own lease. Phase 2 covers the hosts that cannot. §3.8.1, [`summon-compute.md`](summon-compute.md) |
 | 9 | **Phase 0 renames the control planes; Phase 1 is the `target` option, local only.** Each ships on its own. | The rename frees `RemoteWorker`/`RemoteRunner` for the Phase 2 feature ([`control-plane-rename.md`](control-plane-rename.md)). Phase 1 replaces `isolation` with `target` (unpublished, so no alias) and carries no protocol and no security surface. Runner spellings follow in Phase 1r. §11 |
@@ -191,7 +330,9 @@ timeout — but it is a place a *remote executor* can run with no transpilation
 at all, which makes it the cheapest adapter to prove the contract against.
 ## 2. What exists today
 
-A candid inventory. Line numbers are from `develop` at the time of writing.
+A candid inventory. Line numbers are from `develop` at the time of writing
+(2026-09-22, before Phases 0 and 1). This section is kept as the starting
+point; [Status (2026-10-11)](#status-2026-10-11) says what has changed since.
 
 ### 2.1 `BunQueueWorker` — the loop, and every place it is in-process
 
@@ -413,12 +554,12 @@ with `?wait=` acknowledgement polling.
 
 | Part of the ask | State |
 |---|---|
-| Run the *processor* off-thread / off-process | **Done** — `isolation: "worker" \| "spawn"` |
+| Run the *processor* off-thread / off-process | **Done** — `isolation: "worker" \| "spawn"` *(2026-10-11: `target` since #164, plus `"container"` since #287)* |
 | Run the *processor* from a file | **Done** — file processor + `defineProcessor` |
 | Control a worker from another process | **Done** — `WorkerController` (named `RemoteWorker` before Phase 0), `workerControl.ts`, API routes, UI |
-| Run the whole *worker loop* in a separate Bun process from a runner file | **Not built**, but trivially composable today (a `.ts` file that constructs a `BunQueueWorker`, run by `BunRunner`) — needs sugar, not machinery |
-| A documented wire contract a non-Bun system implements | **Nothing** |
-| Push a claimed job to an HTTP endpoint | **Nothing** |
+| Run the whole *worker loop* in a separate Bun process from a runner file | **Not built**, but trivially composable today (a `.ts` file that constructs a `BunQueueWorker`, run by `BunRunner`) — needs sugar, not machinery. *(2026-10-11: built in another shape. `runSummoned` (#195) runs a worker file as a summoned process, and `localCompute` (#268) starts one as a child process on this host)* |
+| A documented wire contract a non-Bun system implements | **Nothing** *(2026-10-11: the messages, signing and text frames, and a reference executor, exist in `./remote` (#261, #263, #270); `PROTOCOL.md` does not)* |
+| Push a claimed job to an HTTP endpoint | **Nothing** *(still nothing on 2026-10-11: that is PR-2a4)* |
 | Adapters for Cloudflare / Lambda / Cloud Run / Next.js | **Nothing** |
 | A driver reachable from an edge runtime | **Nothing** |
 
@@ -1131,6 +1272,8 @@ channel instead of a pipe, while `spawn` uses its pipes. That is the right
 design arrived at independently. **The note here is defensive: do not
 "simplify" `onConsole` into `onOutput` later.** A regression test that asserts
 a `worker`-mode run still reports console output would lock it in.
+*(2026-10-11: `__tests__/runner-worker-exited.test.ts:64,95,329` asserts that
+a `worker-thread` run's console reaches `onConsole`, over a fake worker.)*
 
 #### (c) Sidekiq's process registry validates the worker inventory
 
@@ -1147,6 +1290,10 @@ cheaply: **an RTT measurement on each beat** (Sidekiq pings and warns above
 and **`rss`**, which makes "which replica is about to OOM" answerable from the
 Workers page.
 
+**Done 2026-09-23** (#109): `WorkerInfo.rssBytes` (`drivers/driver.ts:1609`)
+and `heartbeatRttMs` (`:1625`), the previous report's driver round trip. The
+Workers page shows both: a Memory column and the Heartbeat cell's tooltip.
+
 #### (d) `404` should not be retryable
 
 Quirrel treats **HTTP 404 as `dontReschedule: true`**: a missing endpoint is
@@ -1157,7 +1304,8 @@ cannot express, and it costs one line.
 transport-level twin — a `404` from the endpoint itself means the route is
 gone, which no number of retries will fix. Fold it into §5.5's transport error
 handling: `404` and `405` are configuration errors, and should trip the
-circuit breaker and alert rather than burn a job's attempts.
+circuit breaker and alert rather than burn a job's attempts. *(2026-10-11:
+sliced into PR-2a4's "401/404/405 rules"; not built.)*
 
 ## 4. Execution-target API design
 
@@ -1431,6 +1579,20 @@ export interface WorkerTargetAttempt {
 }
 ```
 
+**Since Phase 1 (2026-10-11).** The block above is the code as #164 merged
+it, and its line numbers are as of that merge. Three things have changed
+since:
+
+- `WorkerTarget` gained a fourth member, `ContainerTarget` (`{ kind:
+  "container", image, processor, … }`, `queue/container/target.ts:44`). It
+  came from the isolation track's PR-i1 (#287), and the union is now
+  `queue/workerTarget.ts:103-107`.
+- `close` takes `WorkerTargetCloseOptions` (`{ force?: boolean }`,
+  `queue/workerTarget.ts:296`). With it a forced close can stop what a
+  graceful one is still waiting on (#176, #207).
+- The by-name unrecoverable check `run`'s JSDoc cites is now at
+  `BunQueueWorker.ts:3992-3993`.
+
 Every type these reference is a root export: `Job` (`lib/index.ts:515`),
 `JobRecord` (`:286`), `JobProcessor` (`:536`), `ProcessorContext` (`:549`),
 `Logger` (`:868`), `SpawnOptions` (`:756`) and `WorkerOptions` (`:762`). The
@@ -1634,6 +1796,13 @@ export const WORKER_TARGET_KINDS = [
 ] as const;
 ```
 
+**2026-10-11: five kinds.** PR-i1 (#287) added `"container"` between
+`"child-process"` and `"custom"` (`shared/workers.ts:221-227`;
+`api/contract/constants.ts:560`), and `WorkerTargetInfo` gained an optional
+`container` (`image`, `runtime?`), never the env. The UI labels it
+"Container" (`bun-jobs-ui/app/screens/workers/target.ts:44`). `"endpoint"`
+(§4.2.8) has not joined.
+
 Why these choices, including where they depart from the bun-jobs session's
 proposal:
 
@@ -1806,6 +1975,9 @@ Also new and unambiguous, so never a choice: `defineProcessors` (§4.4) and
 `WorkerTargetFactory`.
 
 #### 4.2.8 Phase 2, not shipped in Phase 1: `RemoteEndpointTarget`
+
+**Status 2026-10-11: not built.** It is PR-2a4 (§11, "Phase 2 as PRs"), which
+has not started.
 
 Kept here because the union above must leave room for it. It joins
 `WorkerTarget` as `{ kind: "endpoint", … }`, and `WORKER_TARGET_KINDS` gains
@@ -2242,6 +2414,28 @@ implement in Python with no access to this repo. Everything below is
 Working name for the spec document: `packages/bun-jobs/PROTOCOL.md`, emitted
 into the OpenAPI document the same way `api/spec/` already emits the
 management API's. It ships with a `LIMITATIONS.md` beside it (§3.8.1).
+*(Superseded 2026-10-01 by the Phase 2 slicing: the path is
+`docs/remote/PROTOCOL.md`, beside `LIMITATIONS.md`, in PR-2a11. Neither is
+written as of 2026-10-11.)*
+
+**What is built, 2026-10-11.** The executor's half of the HTTP binding:
+- the messages and their signing (PR-2a1, #261);
+- the text frames (PR-2a2, #263);
+- `createRemoteExecutor` (PR-2a3, #270).
+
+All three are in the browser-safe `./remote` entry (`lib/remote/`). The
+gateway's half (PR-2a4 onward) is not built. Where the code departs from
+this section, the code is what shipped:
+- the signature carries the direction (§5.6);
+- the nonce cache is keyed on the signed payload (§5.6);
+- job references in `cancel` and `status` carry their queue (§5.10);
+- `REMOTE_PROBLEM_CODES` has 17 codes, adding `SIGNATURE_MISSING`,
+  `SIGNATURE_TIMESTAMP`, `VALIDATION` (400, a malformed message) and
+  `INTERNAL` (500, which a gateway treats as a transport error);
+- `WORKER_PROTOCOL_FEATURES` has 11 strings, adding `replay-protection`;
+- `REMOTE_OPS` has 23 `op`s;
+- a `secret` is at least 32 bytes (the package README's "Remote executors"
+  section, `README.md:4245`).
 
 **This section and Hatchet's in-flight serverless SDK were designed
 independently and agree on every load-bearing decision** — HMAC-SHA256 over
@@ -2601,6 +2795,26 @@ signature = hex( HMAC-SHA256(key = secret, message = payload) )
 header    = "t=" || t || ",v1=" || signature
 ```
 
+**As built (PR-2a1, #261, and its review fix `a879d7b9`), which supersedes
+the payload above** (`remote/signing.ts:1-49`):
+
+```
+payload   = t "." d "." raw     d = "q" for a request, "r" for a response
+payload   = t "." "q" "." id    a bodyless request (GET, HEAD); id = bun-jobs-id
+```
+
+- **The direction is in the MAC.** One secret signs both ways. Without the
+  direction, a signed `invoke-result` captured on the wire and sent back
+  would verify as a request.
+- **A bodyless `GET` is signed** over its `bun-jobs-id`. That gives the
+  handshake replay protection (the user's decision). Such a payload binds no
+  method and no path, which is sound while the handshake is the only signed
+  `GET`.
+- **The verifier's order** is: the header parses, then the MAC (in constant
+  time, against every key), then the window, then the nonce. So
+  `SIGNATURE_TIMESTAMP` and `REPLAYED` are said only of an authentic
+  request.
+
 Three things this gets right and most home-grown schemes get wrong:
 
 - **The raw bytes, never the re-serialised object.** `JSON.stringify` of a
@@ -2645,7 +2859,10 @@ a typo. Codes: `SIGNATURE_MISSING`, `SIGNATURE_INVALID`,
 `SIGNATURE_TIMESTAMP`, `REPLAYED`.
 
 **Nonce cache (SHOULD).** Within the window, remember `bun-jobs-id` and reject
-a repeat with 401 `{ code: "REPLAYED" }`. Only meaningful where the remote has
+a repeat with 401 `{ code: "REPLAYED" }`. *(As built, #261: the cache is keyed
+on the **signed payload**, not on `bun-jobs-id`, which the MAC does not cover,
+so a rearranged header cannot slip past it. It is `createRemoteNonceCache`,
+over a pluggable `RemoteNonceStore`.)* Only meaningful where the remote has
 somewhere to remember — an isolate needs a KV or a Durable Object, which is
 why it is SHOULD and advertised as the `replay-protection` feature. **A
 bounded in-memory set is enough and costs nothing** (Hatchet's draft consumes
@@ -2876,7 +3093,11 @@ A remote saying "I can take 5" is `capacity: { inFlight: 20, max: 25 }`.
 
 ### 5.10 Cancellation, progress, logs, large payloads
 
-**Cancellation.** `POST { op: "cancel", ids: [...], reason }`. Best-effort by
+**Cancellation.** `POST { op: "cancel", ids: [...], reason }`. *(As built,
+#270: a cancel names each job by a `RemoteJobRef` that carries its queue,
+`queue: { ns, queue }` (`RemoteQueueRef`). Without the queue, two queues with
+the same job id and attempt were indistinguishable. `status` does the same,
+and a ref without its queue is a 400 `VALIDATION`.)* Best-effort by
 construction: the gateway aborts its fetch anyway, and the cancel is a
 courtesy so the remote can stop billing. A remote that implements it
 advertises `cancel`. The gateway does **not** wait for the cancel to be
@@ -3907,10 +4128,15 @@ demand actually is.**
    and "my code can only run on this platform" — and the user chose to serve
    both rather than pick one.
 2. **Sync-only, or sync + async callback?** This plan recommends sync-only for
-   phases 1–3 and treats async as a separate project (§10.4, §10.6).
-3. **Does the contract get a spec document of its own** (a versioned
+   phases 1–3 and treats async as a separate project (§10.4, §10.6). *(Open
+   on 2026-10-11. No sliced PR builds async, and §11 lists it as out of
+   scope.)*
+3. ~~**Does the contract get a spec document of its own** (a versioned
    `PROTOCOL.md` in the package, emitted into the OpenAPI document), or is the
-   README enough? A third-party implementer needs the former.
+   README enough? A third-party implementer needs the former.~~ **Settled by
+   the Phase 2 slicing (#259, 2026-10-01): yes.** `docs/remote/PROTOCOL.md`
+   and `LIMITATIONS.md` are PR-2a11, with the protocol's schemas emitted the
+   way `api/spec/` emits the management API's. Not written as of 2026-10-11.
 4. **Where do adapters live** — §6 recommends `./adapters/*` subpaths with no
    cloud SDK dependencies at all. The alternative (a second published package)
    is cleaner for dependency isolation and worse for discovery.
@@ -3926,7 +4152,9 @@ demand actually is.**
    decided (2026-09-25): all of 2a–2f is committed, in order (Q-T1), and a
    target `timeout` is not bounded by `lockDuration` (Q-T12). The open one
    that touches this plan most: whether a lost remote attempt counts as an
-   attempt or as a stall (Q-T11).
+   attempt or as a stall (Q-T11). *(2026-10-11: still open. The slicing wrote
+   PR-2a5 to the recommendation, "counts", as `RemoteAttemptLostError`,
+   retryable and counted, so it needs an answer before PR-2a5.)*
 
 ### 10.12 Multiple transports (added 2026-09-25)
 
@@ -3983,16 +4211,20 @@ real-network script.
 
 | Phase | What | Effort (bun-jobs session) | Other owners |
 |---|---|---|---|
-| **0** | Rename the control planes | ~1.5 d | examples PR; UI copy |
-| **1** | `target` option, local only, replacing `isolation` — **implemented, awaiting merge** | **~7 d** (was ~7.5 d, which included the UI badge) | examples ~1.5 d (stacked PR); UI ~2 d (badge, Target card, playground prose) |
-| **1r** | Runner spellings: `worker-thread`/`child-process` for runners, a reader that accepts the old stored values, the DTO change | ~3 d | examples ~1.5 d, UI ~1 d |
-| **1.5** | Summon-compute, including the provider plugin API (1.5p) and the summon stability gate (1.5s) | **~47 d** (was ~32.5 d; the minimum useful ship, 1.5a + 1.5b, is still ~17.5 d) | UI ~3.5 d, examples ~3 d |
-| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, the `execute` facet, and **the transports** (2a HTTP + streamed HTTP + health; 2b WebSocket; 2c TCP/TLS/Unix; 2d reversed + SSE session; 2e UDP; 2f HTTP/2) | **~77.5 d**, all committed (was ~22.5 d before the transports; 2a, the first milestone, is ~38 d) | examples ~6 d (one example and one failure demo per binding); UI ~2 d (binding, health) |
-| **3** | Conformance kits, the runtime-adapter kit, the first adapters built on it, and **per-binding conformance with its fakes** | **~22.5 d** (was ~17 d) | examples ~1 d |
-| **4** | Benchmarks (now per binding), remaining adapters, hardening, the real-network script, the execute stability gate | **~11 d** (was ~10 d) | — |
-| | **Total** | **~169.5 d** (was ~108 d before the transports; ~105.5 d before the Phase 1 design check; ~80.5 d in the draft) | **~22.5 d + the rename's PRs** (was ~14.5 d) |
+| **0** | Rename the control planes — **merged 2026-09-25** (#157; examples #158, #161) | ~1.5 d | examples PR; UI copy |
+| **1** | `target` option, local only, replacing `isolation` — ~~implemented, awaiting merge~~ **merged 2026-09-25** (#164; examples #167, #168; UI #169, #172; playground #170) | **~7 d** (was ~7.5 d, which included the UI badge) | examples ~1.5 d (stacked PR); UI ~2 d (badge, Target card, playground prose) |
+| **1r** | Runner spellings: `worker-thread`/`child-process` for runners, a reader that accepts the old stored values, the DTO change — **merged 2026-09-26** (#179; UI #181; examples #182) | **~3.75 d**, as revised in the Phase 1r section (was ~3 d) | examples ~1.5 d, UI ~0.75 d (was ~1 d) |
+| **1.5** | Summon-compute, including the provider plugin API (1.5p) and the summon stability gate (1.5s) — **partial**: 1.5a, 1.5b, 1.5p and 1.5f's provider-free half merged; 1.5c–e, 1.5g and 1.5s not started ([Status](#status-2026-10-11)) | **~47 d** (was ~32.5 d; the minimum useful ship, 1.5a + 1.5b, is still ~17.5 d); **~17 d left** | UI ~3.5 d, examples ~3 d (~2 d left) |
+| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, the `execute` facet, and **the transports** (2a HTTP + streamed HTTP + health; 2b WebSocket; 2c TCP/TLS/Unix; 2d reversed + SSE session; 2e UDP; 2f HTTP/2) — **started**: PR-2a1–2a3 merged (#261, #263, #270) | **~77.5 d**, all committed (was ~22.5 d before the transports; 2a, the first milestone, is ~38 d). Since 2026-10-01 also 2r, the gateway (~22 d): ~96.5 d in all, **~86 d left** | examples ~6 d (one example and one failure demo per binding); UI ~2 d (binding, health), plus ~1.5 d for the gateway |
+| **3** | Conformance kits, the runtime-adapter kit, the first adapters built on it, and **per-binding conformance with its fakes** — not started | **~22.5 d** (was ~17 d) | examples ~1 d |
+| **4** | Benchmarks (now per binding), remaining adapters, hardening, the real-network script, the execute stability gate — not started | **~11 d** (was ~10 d) | — |
+| | **Total** | **~169.5 d** (was ~108 d before the transports; ~105.5 d before the Phase 1 design check; ~80.5 d in the draft). Not counting 2r's ~22 d. **~136.5 d left on 2026-10-11** | **~22.5 d + the rename's PRs** (was ~14.5 d) |
 
 ### Phase 0 — rename the control planes
+
+**Status: merged 2026-09-25** as #157, which also carried the plan documents,
+with the examples' #158 and #161. The `WorkerTarget` collision below was
+settled as planned: the addressee type is now `WorkerSelector`.
 
 **Scope.** Everything in [`control-plane-rename.md`](control-plane-rename.md),
 under the user's decisions:
@@ -4023,10 +4255,20 @@ rename's mapping.
 
 ### Phase 1 — the `target` option, local only
 
-**Status: implemented, awaiting merge** (2026-09-25). PR 1, the library, is
+~~**Status: implemented, awaiting merge** (2026-09-25).~~ **Status: merged
+2026-09-25** (2026-10-11). PR 1 is #164. PR 2, the examples, is #167; the
+tour's rename to `10-options/worker-targets.ts`, which the Phase 1r section
+calls pending, is #168. PR 3, the UI's badge and Target card, is #169, and
+the UI examples #172. The playground rewrite is #170 (`playground/targets.ts`).
+What follows is kept as written before the merge. PR 1, the library, is
 built on `feat/bun-jobs-worker-target` (base `688d376`) and passes its own gate
 (the gate record below). It is not green alone, by design: it lands together
 with the stacked examples PR (Sequencing, step 3).
+
+**Left from Phase 1:** the examples row's "`defineProcessors` / worker-file
+example in `07-runner/`". `git grep defineProcessors -- examples playground`
+finds nothing on `e7246b69`, so only the README (`README.md:3271`) and the
+tests show it.
 
 **Revised 2026-09-25 by the Phase 1 design check** (against `688d376`), and
 reconciled with the implementation the same day. The design is §4.2–§4.5,
@@ -4218,6 +4460,8 @@ resolving inside the worktree and no `dts/` or `bun-jobs-ui/dist` present:
 Not yet run, because it needs PR 2's head: the typecheck with the examples
 green, `CI=1 bunx eslint .` in `examples/bun-jobs`, and the `run-all.ts`
 sweeps. The benchmarks were not run; peers schedule quiet windows for them.
+*(2026-10-11: PR 2 merged as #167, the same day as PR 1. The combined head's
+gate was not recorded in this plan and was not re-run for this update.)*
 
 **Nothing in it can break a user who upgrades everything at once**, because
 there are no published users. It is a breaking change for the user's own
@@ -4229,6 +4473,14 @@ untouched.
 **Not part of Phase 1** (U3). It gives runners the words workers already use,
 so the vocabulary table in §4.2.5 can be deleted. Decided by the user: runners
 move to `"worker-thread"` and `"child-process"`, so there is one vocabulary.
+
+**Status 2026-10-11: merged 2026-09-26**:
+- PR 1, the library, is #179;
+- PR 2, the examples, is #182;
+- PR 3, the UI and the playground, is #181.
+
+The one follow-up below is still open. What follows is kept as written
+before the merge.
 
 **Status: design checked 2026-09-25** against `origin/develop` at `0a8e580`
 (Phase 1 merged), on `feat/runner-execution-modes`. Every `file:line` below is
@@ -4264,7 +4516,7 @@ departs from the text above it.
   (`keepHistory`) or cleared. D1 and D2 rest on this.
 - The size table was an upper bound from a different pattern. The classified
   inventory below replaces it.
-- **Path change pending in the examples session:**
+- **Path change pending in the examples session** (done: #168, 2026-09-25):
   `examples/bun-jobs/10-options/worker-isolation.ts` is being renamed to
   `10-options/worker-targets.ts`, with the same content and the same 111
   checks. Line numbers below cite the file as it is on `0a8e580`. Read them
@@ -5043,8 +5295,9 @@ inside it):
 | The playground: 4 coupled lines, the D3 copy, the prose | UI | ~0.25 d |
 | **UI total** | | **~0.75 d** (was ~1 d) |
 
-§11's summary table still says "~3 d, examples ~1.5 d, UI ~1 d". It is left
-alone here because other branches edit it. Update it when this phase merges.
+~~§11's summary table still says "~3 d, examples ~1.5 d, UI ~1 d". It is left
+alone here because other branches edit it. Update it when this phase merges.~~
+Updated 2026-10-11, once the phase had merged.
 
 **Place.** After Phase 1, which has merged, and independent of 1.5 and 2. It
 runs whenever the examples and UI sessions have a window. The earliest useful
@@ -5151,7 +5404,8 @@ reconciliation:
   (`runMode: (state.runMode as SharedRunnerInfo["runMode"]) ?? local?.runMode`),
   one line below the `executionMode` cast 1r removed. A stored value that is
   not an overlap policy reaches the API as is. Not a spelling issue, so left
-  for its own change.
+  for its own change. *(Still open on 2026-10-11, at
+  `runner/RunnerController.ts:503`.)*
 
 ### Phase 1.5 — summon-compute (committed)
 
@@ -5174,6 +5428,20 @@ events and by a poll.
 - A one-shot `check()` serves scheduled checkers.
 
 The full plan is [`summon-compute.md`](summon-compute.md).
+
+**Status 2026-10-11** (that plan has the item-by-item audit):
+
+- **Merged:** 1.5a, 1.5b and 1.5p, and 1.5f's UI and examples (#178 to
+  #257).
+- **Merged, not in this table:**
+  - `localCompute`, a provider that starts units as child processes on this
+    host (#268). It is exported from `./provider`; there is no
+    `./providers/local` key.
+  - Summon groups and shared units ([`summon-multi-queue.md`](summon-multi-queue.md),
+    through #366). They moved the summon facet to `0.2`
+    (`provider/version.ts:22-31`).
+  - PR-B4 of that plan is in review and uncommitted.
+- **Not started:** 1.5c, 1.5d, 1.5e, 1.5g and 1.5s, about 17 d.
 
 | Sub-phase | What | Effort |
 |---|---|---|
@@ -5212,6 +5480,13 @@ isolate; Phase 2 exists for that.
 
 ### Phase 2 — real remote execution: the contract, the gateway, `RemoteWorker` and `RemoteRunner`
 
+**Status 2026-10-11: started.**
+- Merged: PR-2a1 (#261), PR-2a2 (#263) and PR-2a3 (#270), which are the
+  executor's half of 2a.
+- Not started: everything from PR-2a4 on, 2b, 2r and 2c–2f.
+
+"Phase 2 as PRs" below is the plan being followed.
+
 **Scope.** Everything the draft put in Phase 2:
 
 - `remote/protocol.ts` (the versioned wire spec);
@@ -5222,7 +5497,8 @@ isolate; Phase 2 exists for that.
 - `HandlerNotFoundError`, and the three new `WORKER_CONFIG_KEYS`. **The
   worker's unrecoverable check must learn the new name**: it matches
   `UnrecoverableJobError` by class *and by name*
-  (`BunQueueWorker.ts:3231-3237`, as of Phase 1), because an error rebuilt
+  (`BunQueueWorker.ts:3231-3237`, as of Phase 1; `:3992-3993` on
+  2026-10-11), because an error rebuilt
   from a wire format or a child process is no longer an instance of any
   class. A `HandlerNotFoundError` that extends `UnrecoverableJobError` is still
   caught by `instanceof` in-process, but once serialised its name is
@@ -5264,7 +5540,7 @@ The phase now also delivers the user-facing names that Phase 0 freed:
 | `RemoteRunner`: the `run` envelope in `PROTOCOL.md`, the runner-side executor, the reference handler's run path | 3 d |
 | Tier-1 test suite (§7.2) incl. adversarial cases, both kinds | 3.5 d |
 | `PROTOCOL.md` (RFC 2119, with literal request/response transcripts) + `LIMITATIONS.md` (typed "this transport cannot do that" errors, per Hatchet) + README + OpenAPI emission | 2.5 d |
-| **The `execute` facet, host side** (§4.6): types, `send()` inside `RemoteTarget` (core signs, facet sends, core verifies), `locate()`, limit reconciliation with the handshake, `ProviderError` into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if Q2 is closed (else Phase 3) | 2.5 d |
+| **The `execute` facet, host side** (§4.6): types, `send()` inside `RemoteTarget` (core signs, facet sends, core verifies), `locate()`, limit reconciliation with the handshake, `ProviderError` into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if Q2 is closed (else Phase 3) *(superseded 2026-10-01: `lambdaExecute` left 2a, R7 and Q-2.13)* | 2.5 d |
 | The author guide's execute-host chapter and its reference entries | 1 d |
 | **Total, before the transports** | **~22.5 d** |
 
@@ -5296,6 +5572,16 @@ best early evidence of which adapters Phase 3 should ship.
 
 ### Phase 2 as PRs: 2a, 2b and 2r
 
+**Status 2026-10-11.** The slicing is being followed.
+- Its open questions (Q-2.1 to Q-2.13) were all decided on 2026-10-01.
+- PR-2a1, PR-2a2 and PR-2a3 merged (#261, #263, #270), each with its names
+  approved by the user.
+- Nothing from PR-2a4 on has started: there is no branch and no open PR.
+- PR-i4 is unblocked, since PR-i1 (#287) and PR-2a3 have merged.
+
+Reconciliation rows R1, R8, R9 and R20, and the gateway plan's order table,
+are updated below. The other rows are as of `2973212`.
+
 **Sliced 2026-10-01, not yet approved.** Written against `develop` at
 `2973212`, after all of 1.5p merged (#243 the template, #245 the docs, #246 the
 provider routes, #250 the hardening). **No code was changed.** Every
@@ -5319,15 +5605,15 @@ Where a plan and the code disagree, the code wins.
 
 | # | The plans say | The code says | What changes |
 |---|---|---|---|
-| R1 | The execute facet joins the provider API in Phase 2 while `core` is `0.x` (CPP §10.1) | `COMPUTE_PROVIDER_API` is `{ core: "0.1", summon: "0.1" }` (`lib/provider/version.ts:22-27`). A definition with `execute`, or an `apiVersion.execute`, is a `ConfigError` (`version.ts:77-82`; `define.ts:207-208`, `:392`), as 1.5p's Q-p1 decided. `ProviderApiVersions` has no `execute` (`define.ts:40-45`) | PR-2a6 adds `execute: "0.1"`, lifts the refusal and adds the field. The refusal's tests become version-check tests |
+| R1 | The execute facet joins the provider API in Phase 2 while `core` is `0.x` (CPP §10.1) | `COMPUTE_PROVIDER_API` is `{ core: "0.1", summon: "0.1" }` (`lib/provider/version.ts:22-27`). *(2026-10-11: `summon` is `"0.2"` since summon multi-queue PR-B1, #294 (`version.ts:22-31`). There is still no `execute`, and `FACETS` is `["summon"]` (`:34`).)* A definition with `execute`, or an `apiVersion.execute`, is a `ConfigError` (`version.ts:77-82`; `define.ts:207-208`, `:392`), as 1.5p's Q-p1 decided. `ProviderApiVersions` has no `execute` (`define.ts:40-45`) | PR-2a6 adds `execute: "0.1"`, lifts the refusal and adds the field. The refusal's tests become version-check tests |
 | R2 | The DTO gains `apiVersion.execute`, optional, and the UI is told first (SC §13.10, "The DTO") | `SummonProviderDto.apiVersion` is `{ core; summon? }` (`api/contract/types.ts:1107-1112`) and is reused as `ProviderDto.provider` (`:1363-1373`). Nothing on `ProviderDto` says which facets a provider has | PR-2a6 adds `execute?`, held by the drift assertions in `__tests__/api/api-contract.type-test.ts`. An execute-only provider would look like a broken summoner on the Providers screen, so `ProviderDto` gains a facet list (Q-2.6) |
 | R3 | The provider routes are later (SC Q-p4) | **Merged** as PR-p6: `GET /providers`, `/validate`, `/schema` (`api/routes/providers.ts`), actions `providers.read` and `providers.validate` (`api/contract/constants.ts:32-33`). `JOBS_API_ACTIONS` has 51 entries, where §5.1 says 48. The registry lists every configured provider (`provider/registry.ts`), but readiness is read through `facetReadiness(facet: SummonFacet)` (`provider/configure.ts:595-623`) | An execute-only provider appears in `GET /providers` from PR-2a6; its readiness is generalised there. No new route or action. §5.1's reasoning stands; only its count moved |
 | R4 | `ConfiguredProvider` carries facets generically (CPP §6.1, §8.2) | The types are summon-shaped: `ComputeProvider<TInput, TConfig, THasSummon>` (`define.ts:308-330`), `ConfiguredProvider.summon?` alone (`:263-305`), and `ProviderCallContext.signal` is documented as `summonTimeout` (`provider/context.ts:11-13`) | PR-2a6 adds the execute member and a type parameter for it (Q-2.7), and rewords `signal` to "the call's timeout" |
 | R5 | `runExecuteConformance` returns the summon kit's `ConformanceReport` (§7.1, CPP §12.3) | The kit exists: `runProviderConformance`, `assertConformance`, `ConformanceReport`, `ConformanceCheck` and `fakePlatform(routes, options)` (`provider/testing/index.ts`; `fake.ts:323-326`) | Nothing in 2a, 2b or 2r: Phase 3 builds the execute kits on `report.ts`. 2a's own fault fakes start as test helpers (R15) |
 | R6 | `files` gains `"docs"` (RT §11.1, CPP §15.1) | Done by PR-p5: `files` is `["docs", "dts", "lib"]` (`package.json:108-112`), and `docs/providers/` ships five pages | `docs/remote/` lands beside it with no packaging change |
 | R7 | `lambdaExecute` lands in 2a "if Q2 is closed" (Phase 2 table) | No `lib/provider/auth/` and no `lib/providers/`: 1.5c is not built, so no SigV4 signer exists | `lambdaExecute` leaves 2a (−0.5 d), for 1.5c or Phase 3. `httpsExecute` creates the first `./providers/*` key in PR-2a6, landing with its file (SC §13.10 P9) |
-| R8 | `"endpoint"` joins `WORKER_TARGET_KINDS` (§4.2.8), and so does `"container"` (GW I1) | Four kinds (`shared/workers.ts:220-225`). PR-i0 is being built in another worktree; PR-i1 adds `"container"` | Two tracks edit one constant and its DTO prose (`api/contract/types.ts:2280-2310`). Whichever lands second rebases. Not a dependency |
-| R9 | The unrecoverable check matches by class and name at `BunQueueWorker.ts:3231-3237` (Phase 2 scope) | It is now `:3700-3705`, unchanged in substance | PR-2a4 adds `HandlerNotFoundError` there (by name, or by `code`), with a test that crosses a boundary |
+| R8 | `"endpoint"` joins `WORKER_TARGET_KINDS` (§4.2.8), and so does `"container"` (GW I1) | Four kinds (`shared/workers.ts:220-225`). PR-i0 is being built in another worktree; PR-i1 adds `"container"`. *(2026-10-11: PR-i0 merged as #260 and PR-i1 as #287. There are now five kinds, `"container"` before `"custom"` (`shared/workers.ts:221-227`), so PR-2a4 is the one that rebases)* | Two tracks edit one constant and its DTO prose (`api/contract/types.ts:2280-2310`). Whichever lands second rebases. Not a dependency |
+| R9 | The unrecoverable check matches by class and name at `BunQueueWorker.ts:3231-3237` (Phase 2 scope) | It is now `:3700-3705`, unchanged in substance *(`:3992-3993` on 2026-10-11)* | PR-2a4 adds `HandlerNotFoundError` there (by name, or by `code`), with a test that crosses a boundary |
 | R10 | Lease renewal at `:2228-2232`, `#heartbeat()` at `:3429-3458`, the job timeout at `:2269-2274` (RT, Q-T12) | Now `:2694-2696`, `:3923-3951` and `:2735-2740`. A lost lock still aborts the attempt's signal (`:3941-3947`) | Line numbers only. Q-T12's reasoning holds |
 | R11 | `fence = "${lockToken}:${claimedAt}"` (§5.8) | `JobRecord` has no `claimedAt`. The claim time is `processedOn` ("when the current or last attempt started", `drivers/driver.ts:1172-1173`), set at claim (`drivers/memory-driver.ts:966`); `lockToken` is per claim (`driver.ts:1194-1198`) | `fence = "${lockToken}:${processedOn}"`, read from `WorkerTargetAttempt.record` (`queue/workerTarget.ts:268-290`). No driver change |
 | R12 | A reversed worker "claims only up to its executors' credit" (RT §7.6, GW §4.2) | The `concurrency` setter clamps to at least 1 (`BunQueueWorker.ts:1221-1232`), so a worker with no executor connected still claims one job. The gateway prototype claimed at full concurrency and parked attempts until credit arrived, holding their leases (`evidence/worker-gateway-and-isolation/gateway-bench/bench.ts:98-111`) | An internal claim gate: target-supplied capacity, `0` allowed, waking the loop when it rises. It is a claim-loop change, so the bench guard runs. It lands in PR-g1a, where it is first needed; a forward target's `maxInFlight` stays a semaphore inside the target (§8.2) |
@@ -5338,7 +5624,7 @@ Where a plan and the code disagree, the code wins.
 | R17 | `httpVersion?: "1.1" \| "2"` on the target (RT §8.2); `dialHttp({ protocol: "http2" })` (GW §4.11) | — | One spelling (Q-2.9). The target field lands with 2f, where HTTP/2 does; 2a ships without it |
 | R18 | Names drift between the plans | GW §12 writes `RemoteTransportCapabilities.binding`; CPP §8.2 defines `TransportCapabilities`. RT §9's `dialWebSocket` takes the shared secret; GW §4.11's takes a `credential` | `TransportCapabilities`, where the interface lives. A dialler takes `secret` until PR-g3 and then `secret` or `credential`, exactly one |
 | R19 | GW's PR-g4 depends on PR-g1 only (GW §10.2) | Its route is `<basePath>/poll` on the gateway's router (GW §4.7), which PR-g2 creates. PR-g2's `requireIsolation` needs PR-i5's capability (GW §10.1) | PR-g4 also depends on PR-g2. `requireIsolation` lands in whichever of PR-g2 and PR-i5 merges second |
-| R20 | GW §2's citations | `createJobsApi` is at `api/createJobsApi.ts:206` (cited `:100-141`), `DEFAULT_BOOT_BUDGET` at `summon/define.ts:23` (`:20`), the environment leak at `runner/executors/spawn.ts:107` and `worker.ts:84` (`:106-107`, `:71-73`; PR-i0 removes it). `BunJobsApiModule`'s hooks are at `bun-nest/lib/jobs/BunJobsApiModule.ts:165` and `:171` | Line numbers only |
+| R20 | GW §2's citations | `createJobsApi` is at `api/createJobsApi.ts:206` (cited `:100-141`), `DEFAULT_BOOT_BUDGET` at `summon/define.ts:23` (`:20`), the environment leak at `runner/executors/spawn.ts:107` and `worker.ts:84` (`:106-107`, `:71-73`; PR-i0 removes it; *removed by #260 for the child process, whose env is now an allowlist passed explicitly*). `BunJobsApiModule`'s hooks are at `bun-nest/lib/jobs/BunJobsApiModule.ts:165` and `:171` | Line numbers only |
 | R21 | Each sub-phase re-measures its spikes "on the shipped release" (RT §2.1, §14) | This machine still runs `1.4.3-canary.1+5f554969b`, the build RT measured | The re-measure rows stay (PR-2a9, PR-2b3). This section's four spikes ran on the same build |
 | R22 | Per-frame MAC: "~10–12 µs per frame, affordable" (RT T3, Appendix A) | **Measured** [M]: a whole text frame, built and then parsed and verified, costs 27–30 µs with `crypto.subtle` and 4.8–7.6 µs with `node:crypto` (150 B–1.2 KiB). With 64 signs in flight the wall time per sign falls to 2.5 µs, but the CPU cost stays ~10 µs: Bun runs WebCrypto on a thread pool (CPU/wall 4.2) | The core gets an internal MAC seam in PR-2a2 (+0.25 d): `crypto.subtle` by default, as an isolate needs, and `node:crypto` injected on the Bun-only host side. The test vectors prove both give the same bytes |
 | R23 | §8.2's three `WORKER_CONFIG_KEYS` (`endpointMaxInFlight`, `endpointBatch`, `endpointTimeout`) | Nine keys (`shared/workers.ts:44-54`); the UI renders the list. No line item costs them | PR-2a5 (+0.25 d) |
@@ -5349,10 +5635,10 @@ Where a plan and the code disagree, the code wins.
 | Order | Phase | At `2973212`, and what changed |
 |---|---|---|
 | 1 | 1.5p | **Merged.** PR-p6, the provider routes, was taken into 1.5p |
-| 2 | Part 2: PR-i0, PR-i1–i3, PR-i7 | PR-i0 is in progress in another worktree; the rest unchanged |
+| 2 | Part 2: PR-i0, PR-i1–i3, PR-i7 | PR-i0 is in progress in another worktree; the rest unchanged. *(2026-10-11: PR-i0 merged as #260 and PR-i1 as #287; i2, i3's remainder and i7 not started)* |
 | 3 | PR-i5 | It needs only 1.5p's capabilities, which are merged. First-party providers declare their isolation as 1.5c lands them |
-| 4 | 1.5c–1.5g, 1.5s | 1.5f's provider screens and their examples merged (#247, #254, #257). 1.5c–1.5e are not started. A local compute provider is being built in another worktree, outside these plans |
-| 5 | 2a (PR-2a1–2a12), 2b (PR-2b1–2b3) | Sliced below. PR-i4 lands after PR-2a3 and PR-i1 |
+| 4 | 1.5c–1.5g, 1.5s | 1.5f's provider screens and their examples merged (#247, #254, #257). 1.5c–1.5e are not started. A local compute provider is being built in another worktree, outside these plans. *(2026-10-11: `localCompute` merged as #268; 1.5c–1.5e, 1.5g and 1.5s still not started)* |
+| 5 | 2a (PR-2a1–2a12), 2b (PR-2b1–2b3) | Sliced below. PR-i4 lands after PR-2a3 and PR-i1. *(2026-10-11: PR-2a1–2a3 merged; both of PR-i4's dependencies have merged)* |
 | 6 | 2r (PR-g1a, g1b, g2–g6) | PR-g1 split in two (Q-2.11). 2r's PRs may start as their own dependencies merge (Q-2.1) |
 | 7 | 2c, 2d (less ~4 d), 2e, 2f | Unchanged. `httpVersion` lands with 2f (R17) |
 | 8 | Phase 3 | Gains `lambdaExecute` if 1.5c has not brought it (R7), and the move of 2a's fakes (R15) |
@@ -5403,6 +5689,18 @@ import or read.
 | **PR-g6** gateway docs and bench | The `PROTOCOL.md` appendix for `http-poll` and credentials; the `ws-reverse` and `http-poll` user guides; a gateway guide; the `gateway-loopback` bench scenario and its baseline | PR-g5, PR-g4 | cb reviews the bench | ~2 d | docs | 66 told (the change report for 2r) |
 | **PR-i4** an executor's `target` | `createRemoteExecutor({ target })`, so handlers run in PR-i1's `container` target | PR-i1, PR-2a3 | **cb reviews** (`workerTarget.ts`) | ~1.5 d | `./remote` option | 66: the hostile-job demo through an executor |
 | | **23 PRs** | | | **~70.5 d** | | |
+
+**Where the 23 stand, 2026-10-11.**
+
+| PR | State |
+|---|---|
+| PR-2a1 | **merged** 2026-10-01, #261 |
+| PR-2a2 | **merged** 2026-10-01, #263 |
+| PR-2a3 | **merged** 2026-10-06, #270 |
+| PR-i4 | not started; both of its dependencies have merged |
+| The other 19 | not started |
+
+About 60 d of the ~70.5 d is left.
 
 Each PR passes the full gate alone and leaves the package coherent if the next
 never lands. After PR-2a4 a worker runs its jobs on a remote over unary HTTP;
@@ -5479,9 +5777,9 @@ playground benchmarks scripts`, 2026-10-01, at `2973212`): every name is
 | PR | Names | Note |
 |---|---|---|
 | PR-2a1 | entries `./remote`, `./lib/remote`; `WORKER_PROTOCOL_VERSION`; `signEnvelope`, `verifyEnvelope`; types `HandshakeEnvelope`, `InvokeEnvelope`, `InvokeResultEnvelope`, `CancelEnvelope`, `CancelResultEnvelope`, `PingEnvelope`, `PongEnvelope`, `HealthEnvelope`, `HealthResultEnvelope`, `StatusEnvelope`, `StatusResultEnvelope` | the last four are new here: §5.3 adds the two ops without naming envelopes |
-| PR-2a1 | **wire strings**: headers `bun-jobs-protocol`, `bun-jobs-signature`, `bun-jobs-id`; the twenty `op`s of RT §4.1; feature strings `session`, `health`, `cancel`, `attempt-status`, `stream-resume`, `resume`, `canary`, `idempotency`, `fencing`, `progress-stream`; problem codes `UNSUPPORTED_OP`, `UNSUPPORTED_PROTOCOL`, `SIGNATURE_INVALID`, `REPLAYED`, `STALE_FENCE`, `BUSY`, `DRAINING`, `DUPLICATE_RUNNING`, `TOO_LARGE`, `SEQUENCE_GAP`, `FRAME_TOO_LARGE`, `ATTEMPT_UNKNOWN`, `COMPLETE` | once executors exist, a wire string is as hard to change as a stored one, unpublished packages or not. `udp-aead` and `SESSION_ELSEWHERE` wait for 2e and 2d |
+| PR-2a1 | **wire strings** *(as built, #261 and #270: 23 `op`s; 11 feature strings, adding `replay-protection`; 17 problem codes, adding `SIGNATURE_MISSING`, `SIGNATURE_TIMESTAMP`, and with PR-2a3 `VALIDATION` and `INTERNAL`)*: headers `bun-jobs-protocol`, `bun-jobs-signature`, `bun-jobs-id`; the twenty `op`s of RT §4.1; feature strings `session`, `health`, `cancel`, `attempt-status`, `stream-resume`, `resume`, `canary`, `idempotency`, `fencing`, `progress-stream`; problem codes `UNSUPPORTED_OP`, `UNSUPPORTED_PROTOCOL`, `SIGNATURE_INVALID`, `REPLAYED`, `STALE_FENCE`, `BUSY`, `DRAINING`, `DUPLICATE_RUNNING`, `TOO_LARGE`, `SEQUENCE_GAP`, `FRAME_TOO_LARGE`, `ATTEMPT_UNKNOWN`, `COMPLETE` | once executors exist, a wire string is as hard to change as a stored one, unpublished packages or not. `udp-aead` and `SESSION_ELSEWHERE` wait for 2e and 2d |
 | PR-2a2 | the frame magic `BJ1` and the MAC labels; no TypeScript name | Q-2.3 keeps the codec internal |
-| PR-2a3 | `createRemoteExecutor`, `RemoteExecutor`, `RemoteExecutorOptions` (`handlers`, `secret`, `name`, `maxBatch`, `maxDurationMs`, `maxBodyBytes`, `idempotencyTtl`, `store`, `onLog`, `health`, `maxConcurrency`), `RemoteJobHandler`, `RemoteJob`, `RemoteContext`, `RemoteExecutorStore`, `HealthCheck`; the job name `bun-jobs:canary`; routes `/healthz`, `/readyz` | `maxBodyBytes` is used by §6.4's Lambda snippet but missing from §6.1's option list |
+| PR-2a3 | `createRemoteExecutor`, `RemoteExecutor`, `RemoteExecutorOptions` (`handlers`, `secret`, `name`, `maxBatch`, `maxDurationMs`, `maxBodyBytes`, `idempotencyTtl`, `store`, `onLog`, `health`, `maxConcurrency`), `RemoteJobHandler`, `RemoteJob`, `RemoteContext`, `RemoteExecutorStore`, `HealthCheck`; the job name `bun-jobs:canary`; routes `/healthz`, `/readyz` | `maxBodyBytes` is used by §6.4's Lambda snippet but missing from §6.1's option list. *As built (#270): `HealthCheck` is `RemoteHealthCheck`. Also shipped: `createRemoteExecutorStore`, `RemoteExecutorStoreOptions`, `RemoteExecutorRecord`, `RemoteExecutorHealthOptions`, `REMOTE_CANARY_JOB`, `RemoteQueueRef`. #261 shipped `createRemoteNonceCache` and `RemoteNonceStore`* |
 | PR-2a4 | `RemoteEndpointTarget` (`kind: "endpoint"`, `url`, `secret`, `timeout`, `maxInFlight`, `names`, `introspectTtl`, `headers`, `transportRetry` with `attempts`, `maxDelay`); `"endpoint"` in `WORKER_TARGET_KINDS`; `WorkerTargetInfo.endpoint`, `.remote` (`binding`, `name`, `protocol`, `runtime`, `names`, `lastSeenAt`, `failures`) and their DTO twins; `exposeEndpoints`; `HandlerNotFoundError`; `RemoteMessageTooLargeError`; `RemoteWorker`, `RemoteWorkerOptions`, `BunJobs.remoteWorker`; binding id `http` | `RemoteTarget` stays internal (Q-2.5). `RemoteMessageTooLargeError` is RT's `PayloadTooLargeError` renamed (Q-2.4) |
 | PR-2a5 | `batch`, `batchWindow`; `WORKER_CONFIG_KEYS` `endpointMaxInFlight`, `endpointBatch`, `endpointTimeout`; `RemoteAttemptLostError`; `acceptTimeoutMs` | the error is RT T8's |
 | PR-2a6 | `COMPUTE_PROVIDER_API.execute`, `ProviderApiVersions.execute`, the definition's and `ConfiguredProvider`'s `execute`; `ExecuteFacet`, `TransportCapabilities` (and its seventeen fields, CPP §8.2), `ExecuteEndpoint`, `ExecuteCallContext`, `PlatformProbe`, `exchangeTransport`; entry `./providers/https`, `httpsExecute`; `RemoteWorkerOptions.provider`; DTO `apiVersion.execute`, `ProviderDto.facets` | `facets` is new here (Q-2.6); the type parameter is Q-2.7 |
@@ -5630,7 +5928,10 @@ further kits a third party runs on its execute provider (§4.6).
 | **Total** | **~22.5 d** (was ~17 d) |
 
 Phase 1.5 will already have added the host-side `./providers/*` subpaths by
-then (they were `./summon/*` in an earlier draft). The two families stay
+then (they were `./summon/*` in an earlier draft). *(2026-10-11: not so far.
+No `./providers/*` key exists. The one first-party provider, `localCompute`
+(#268), is exported from `./provider`. The first key will be 1.5c's, or
+PR-2a6's `./providers/https` (R7).)* The two families stay
 separate: `./providers/*` run in the bun-jobs process and may carry both a
 `summon` and an `execute` facet; `./adapters/*` are browser-safe runtime
 adapters that run on the platform. The examples session writes a custom
@@ -5673,7 +5974,8 @@ if two people are available.** Phases 0 and 1 are small and unblock
 everything else. Phase 1r (runner spellings) depends only on Phase 1 and fits
 any window the examples and UI sessions have. Until it lands, §4.2.5's
 vocabulary table is the documented bridge. (Phase 1r's library half is built:
-§4.2.5 now records the table's removal.)
+§4.2.5 now records the table's removal. *2026-10-11: all of Phase 1r merged
+on 2026-09-26, #179, #181, #182.*)
 
 Phase 1.5's minimum useful ship (1.5a + 1.5b, ~17.5 d) serves the commonest
 request, "I do not want a worker running 24/7", on every host that can reach
