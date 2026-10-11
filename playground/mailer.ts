@@ -10,6 +10,11 @@ import { BunJobs } from "@kingsleyweb/bun-jobs";
  * deployments of one system look: same queues, different processes. Both of
  * its workers consume queues the main service also produces to, so pausing
  * one from the UI visibly slows that queue down without stopping it.
+ *
+ * With `PLAYGROUND_SHARED_UNIT=mailer` it also hosts the uploads group's
+ * shared summon unit (`summoning.ts`): its `summon` option is that one
+ * entry, so the controller polls and summons from here, and the management
+ * API, on the main context, reads the unit from storage (`local: false`).
  */
 
 /** A started second service, and how to stop it. */
@@ -25,9 +30,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Starts the `mailer` service: a bulk email worker and a thumbnail worker. */
+/**
+ * Starts the `mailer` service: a bulk email worker and a thumbnail worker,
+ * and, when `options.summon` is given, the summon controllers it names.
+ */
 export async function startMailer(
-  options: Pick<BunJobsOptions, "namespace" | "driver" | "logger">,
+  options: Pick<BunJobsOptions, "namespace" | "driver" | "logger" | "summon">,
 ): Promise<MailerService> {
   const jobs = new BunJobs({
     ...options,

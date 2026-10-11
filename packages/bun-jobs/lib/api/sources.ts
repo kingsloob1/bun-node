@@ -1,7 +1,11 @@
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { SummonController } from "../summon/controller";
-import type { LocalGroupView, StoredSummonStatus } from "../summon/status";
+import type {
+  LocalGroupView,
+  StoredSharedUnit,
+  StoredSummonStatus,
+} from "../summon/status";
 import type { SummonStatus } from "../summon/types";
 import type { ResolvedJobsApiConfig } from "./config";
 import { RunnerController } from "../runner/RunnerController";
@@ -12,7 +16,12 @@ import {
   LIST_SUMMON_CONTROLLERS,
   SUMMON_GROUP_VIEW,
 } from "../summon/controller";
-import { readStoredSummonStatus } from "../summon/status";
+import { coverageWarner } from "../summon/coverage";
+import {
+  readStoredQueueSummon,
+  readStoredSharedUnits,
+  readStoredSummonStatus,
+} from "../summon/status";
 import { ApiError } from "./errors";
 
 /**
@@ -228,7 +237,7 @@ type QueueSourceConfig = Pick<
   ResolvedJobsApiConfig,
   "jobs" | "queues" | "limits"
 > &
-  Partial<Pick<ResolvedJobsApiConfig, "driver" | "namespace">>;
+  Partial<Pick<ResolvedJobsApiConfig, "driver" | "namespace" | "logger">>;
 
 /** The queues a configuration can reach. */
 export class QueueSource {
@@ -455,8 +464,11 @@ export class QueueSource {
 
   /**
    * A queue's summon status from storage alone, or `undefined` when it has
-   * none (or the API has no driver that keeps queue state). No membership
-   * check: the caller has one.
+   * none (or the API has no driver that keeps queue state): its own marker,
+   * unless a shared unit in another process naming the queue claimed at or
+   * after it (`readStoredQueueSummon`) — then the unit's status, with each
+   * attempt's coverage. A driver that cannot list queue state reads the
+   * queue's own marker alone. No membership check: the caller has one.
    */
   async storedSummonStatus(
     name: string,
@@ -469,7 +481,56 @@ export class QueueSource {
     ) {
       return undefined;
     }
+    const logger = this.#config.logger;
+    return typeof driver.listQueueState === "function"
+      ? await readStoredQueueSummon(
+          driver,
+          namespace,
+          name,
+          Date.now(),
+          logger === undefined
+            ? undefined
+            : coverageWarner(logger, { queue: name }),
+        )
+      : await readStoredSummonStatus(driver, namespace, name, Date.now());
+  }
+
+  /**
+   * A queue's own summon marker from storage alone, never a shared unit's:
+   * what `GET /summon` reads for each queue, beside
+   * {@link storedSharedUnits} once for all of them. `undefined` as
+   * {@link storedSummonStatus} has it.
+   */
+  async storedMarkerStatus(
+    name: string,
+  ): Promise<StoredSummonStatus | undefined> {
+    const { driver, namespace } = this.#config;
+    if (
+      driver === undefined ||
+      namespace === undefined ||
+      typeof driver.getQueueState !== "function"
+    ) {
+      return undefined;
+    }
     return await readStoredSummonStatus(driver, namespace, name, Date.now());
+  }
+
+  /**
+   * Every shared unit with state in the namespace, read from storage alone
+   * (no coverage): one listing of the group entries and one read of each.
+   * Empty when the driver cannot list queue state.
+   */
+  async storedSharedUnits(): Promise<StoredSharedUnit[]> {
+    const { driver, namespace } = this.#config;
+    if (
+      driver === undefined ||
+      namespace === undefined ||
+      typeof driver.getQueueState !== "function" ||
+      typeof driver.listQueueState !== "function"
+    ) {
+      return [];
+    }
+    return await readStoredSharedUnits(driver, namespace, Date.now());
   }
 
   /**

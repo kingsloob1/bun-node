@@ -44,7 +44,7 @@
     ],
     "apiVersion": {
       "core": "0.1",
-      "summon": "0.1"
+      "summon": "0.2"
     }
   }
 }

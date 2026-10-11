@@ -535,7 +535,58 @@ export type SharedSummonMarker = SummonMarker &
   Pick<SummonGroupEntry, "queues" | "circuits"> & {
     /** The marker's budget, with the group's reset count. */
     budget: SummonMarker["budget"] & Pick<SummonGroupEntry["budget"], "clears">;
+    /**
+     * The queues the unit serves, in its policy's order, as of its last
+     * claim (Q1): written by every claim, so a process with no controller
+     * can name the unit's queues — the shares cannot, since they empty at
+     * UTC midnight and, beside per-queue controllers of the group, hold
+     * theirs too. Internal and optional, with `v` unchanged: absent on an
+     * entry no claim of this version has written, and kept as found by
+     * every other writer of the entry.
+     */
+    members?: string[];
   };
+
+/**
+ * The most queues a stored `members` may name: 512. No claim can persist
+ * more, since a unit's queues travel in its argv, capped at 8 KiB
+ * (`SUMMON_ARGV_MAX_BYTES`), and each costs at least 26 bytes there
+ * (`--bun-jobs-summon-queue=`, one character and a separator): 315 at most.
+ * Anything longer was not written by a claim, and is read as absent.
+ */
+export const MAX_SHARED_MEMBERS = 512;
+
+/** Whether `value` is a queue name a controller could have been built on. */
+function isQueueName(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    assertSegment(value, "queue");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A stored `members` as this build writes it: a non-empty list of at most
+ * {@link MAX_SHARED_MEMBERS} distinct, valid queue names. `undefined` for
+ * anything else, which a reader then treats as absent (and falls back on
+ * the shares, as for an entry written before `members`).
+ */
+export function sharedMembers(value: unknown): string[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_SHARED_MEMBERS ||
+    !value.every(isQueueName) ||
+    new Set(value).size !== value.length
+  ) {
+    return undefined;
+  }
+  return [...(value as string[])];
+}
 
 /** A shared unit's marker as read, with the version to write it back at. */
 export interface SharedMarkerRead extends MarkerRead {
@@ -595,6 +646,14 @@ export function readSharedMarker(
     !(typeof clears === "number" && Number.isSafeInteger(clears) && clears > 0)
   ) {
     delete marker.budget.clears;
+  }
+  // Rewritten by the unit's next claim; malformed is absent, never a
+  // reason to call the entry unreadable.
+  const members = sharedMembers(marker.members);
+  if (members === undefined) {
+    delete marker.members;
+  } else {
+    marker.members = members;
   }
   roll(marker as unknown as SummonGroupEntry, now);
   return read;

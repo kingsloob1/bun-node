@@ -1556,8 +1556,10 @@ describe("shared unit: triggers and events (§4.6)", () => {
         circuit: { failures: 100 },
       }),
     );
-    // Two attempts, two `failed` events.
+    // Two attempts, two `failed` events. The second waits out the 1 ms
+    // backoff the first failure set: a check inside it is `skipped`.
     expect(await controller.check()).toMatchObject({ outcome: "failed" });
+    await Bun.sleep(10);
     expect(await controller.check()).toMatchObject({ outcome: "failed" });
     await controller.close();
     expect(events).toHaveLength(2);

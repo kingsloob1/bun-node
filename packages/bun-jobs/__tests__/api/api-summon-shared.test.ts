@@ -28,7 +28,12 @@ import {
 } from "../../lib/index";
 import { setReservedState } from "../../lib/queue/windows";
 import { queueEvent } from "../../lib/shared/events";
-import { summonGroupRef, summonGroupStateName } from "../../lib/summon/group";
+import {
+  chargeGroup,
+  resolveSummonGroup,
+  summonGroupRef,
+  summonGroupStateName,
+} from "../../lib/summon/group";
 import { freshMarker, SUMMON_MARKER } from "../../lib/summon/marker";
 import { makeTmpDir, testNamespace, waitFor } from "../helpers";
 import { harness, openHarnesses } from "./fixtures";
@@ -677,5 +682,218 @@ describe("the API over a shared unit, per member (Q4, Q5)", () => {
 
   it("sends the whole event to a connection that may see every queue", async () => {
     expect(await socketPayload(() => true)).toEqual(PARTIAL_EVENT);
+  });
+});
+
+/** Writes `last` on the unit's state as it is, with any field: the partial a B4 controller leaves. */
+async function setLastOutcome(
+  jobs: BunJobs,
+  last: Record<string, unknown>,
+): Promise<void> {
+  const ref = summonGroupRef(jobs.namespace);
+  const name = summonGroupStateName("media");
+  const stored = await jobs.driver.getQueueState!(ref, name);
+  expect(stored).not.toBeNull();
+  expect(
+    await setReservedState(
+      jobs.driver,
+      ref,
+      name,
+      { ...(stored!.value as Record<string, unknown>), last },
+      stored!.version,
+    ),
+  ).not.toBeNull();
+}
+
+describe("coverage, missing and unit over the API (B4)", () => {
+  /** A unit with one attempt in flight and a partial outcome stored. */
+  async function partialUnit(): Promise<BunJobs> {
+    const jobs = context();
+    await jobs.queue("thumbs").add("a", {});
+    expect(await jobs.summonController("thumbs").check()).toMatchObject({
+      action: "summoned",
+    });
+    await setLastOutcome(jobs, {
+      id: "sm_partial",
+      outcome: "registered",
+      at: Date.now(),
+      detail: "partial:renders,previews",
+      missing: ["renders", "previews"],
+    });
+    return jobs;
+  }
+
+  it("serves each pending attempt's coverage and the last outcome's missing", async () => {
+    const jobs = await partialUnit();
+    const h = harness({ jobs });
+    for (const queue of MEDIA) {
+      const response = await h.call("GET", `/queues/${queue}/summon`);
+      expect(response.status).toBe(200);
+      expect(response.body.pending).toHaveLength(1);
+      expect(response.body.pending[0].coverage).toEqual({
+        renders: "pending",
+        thumbs: "pending",
+        previews: "pending",
+      });
+      expect(response.body.last).toMatchObject({
+        detail: "partial:renders,previews",
+        missing: ["renders", "previews"],
+      });
+    }
+    const list = await h.call("GET", "/summon");
+    const unit = (list.body.controllers as Record<string, any>[]).find(
+      (item) => item.group === "media",
+    )!;
+    expect(unit.last.missing).toEqual(["renders", "previews"]);
+    // A controller of one queue has neither.
+    await jobs.queue("emails").add("a", {});
+    await jobs.summonController("emails").check();
+    const emails = await h.call("GET", "/queues/emails/summon");
+    expect(emails.body.pending).toHaveLength(1);
+    expect(Object.hasOwn(emails.body.pending[0], "coverage")).toBe(false);
+  });
+
+  it("names no queue the caller may not read in coverage, missing or the detail", async () => {
+    const jobs = await partialUnit();
+    const h = harness({ jobs, authorize: denying(["renders"]).authorize });
+    const response = await h.call("GET", "/queues/thumbs/summon");
+    expect(response.body.pending[0].coverage).toEqual({
+      thumbs: "pending",
+      previews: "pending",
+    });
+    expect(response.body.last).toMatchObject({
+      detail: "partial:previews",
+      missing: ["previews"],
+    });
+    expect(response.text).not.toContain("renders");
+    const list = await h.call("GET", "/summon");
+    const unit = (list.body.controllers as Record<string, any>[]).find(
+      (item) => item.group === "media",
+    )!;
+    expect(unit.last).toMatchObject({
+      detail: "partial:previews",
+      missing: ["previews"],
+    });
+    // The reset's answer too.
+    const reset = await h.call("POST", "/queues/thumbs/summon/reset", {});
+    expect(reset.status).toBe(200);
+    expect(reset.text).not.toContain("renders");
+    // Every missing queue unreadable: no missing at all, a bare detail.
+    const none = harness({
+      jobs,
+      authorize: denying(["renders", "previews"]).authorize,
+    });
+    await setLastOutcome(jobs, {
+      id: "sm_partial",
+      outcome: "registered",
+      at: Date.now(),
+      detail: "partial:renders,previews",
+      missing: ["renders", "previews"],
+    });
+    const bare = await none.call("GET", "/queues/thumbs/summon");
+    expect(bare.body.last.detail).toBe("partial");
+    expect(Object.hasOwn(bare.body.last, "missing")).toBe(false);
+  });
+
+  it("says unit: shared on the shared unit's group, and nothing on a per-queue group", async () => {
+    const jobs = context();
+    await jobs.queue("thumbs").add("a", {});
+    await jobs.summonController("thumbs").check();
+    // A group of per-queue controllers, charged once.
+    expect(
+      (
+        await chargeGroup(
+          jobs.driver,
+          jobs.namespace,
+          resolveSummonGroup({ name: "mail" })!,
+          { queue: "emails" },
+        )
+      ).outcome,
+    ).toBe("charged");
+    const h = harness({ jobs });
+    const media = await h.call("GET", "/summon/groups/media");
+    expect(media.body.unit).toBe("shared");
+    const mail = await h.call("GET", "/summon/groups/mail");
+    expect(mail.status).toBe(200);
+    expect(Object.hasOwn(mail.body, "unit")).toBe(false);
+    const list = await h.call("GET", "/summon/groups");
+    expect(
+      (list.body.groups as Record<string, unknown>[]).map((group) => [
+        group.name,
+        group.unit ?? null,
+      ]),
+    ).toEqual([
+      ["mail", null],
+      ["media", "shared"],
+    ]);
+    // And on the unit's own status.
+    const status = await h.call("GET", "/queues/renders/summon");
+    expect(status.body.group.unit).toBe("shared");
+  });
+});
+
+describe("coverage is best effort, and the list never reads it (review round)", () => {
+  /** Counts claim reads on `jobs`' driver, failing them while `failing()` says so. */
+  function claimReads(
+    jobs: BunJobs,
+    failing: () => boolean,
+  ): { count: () => number; restore: () => void } {
+    const driver = jobs.driver as unknown as {
+      getQueueState: (ref: unknown, name: string) => Promise<unknown>;
+    };
+    const original = driver.getQueueState.bind(driver);
+    let reads = 0;
+    driver.getQueueState = async (ref, name) => {
+      if (name.includes("summon-claim")) {
+        reads++;
+        if (failing()) {
+          throw new Error("claim read failed");
+        }
+      }
+      return await original(ref, name);
+    };
+    cleanups.push(async () => {
+      driver.getQueueState = original;
+    });
+    return {
+      count: () => reads,
+      restore: () => {
+        driver.getQueueState = original;
+      },
+    };
+  }
+
+  it("answers status(), the route and the list without coverage when a claim read fails", async () => {
+    const jobs = context();
+    await jobs.queue("thumbs").add("a", {});
+    await jobs.summonController("thumbs").check();
+    const reads = claimReads(jobs, () => true);
+    const status = await jobs.summonController("thumbs").status();
+    expect(status.pending).toHaveLength(1);
+    expect(Object.hasOwn(status.pending[0]!, "coverage")).toBe(false);
+    expect(reads.count()).toBeGreaterThan(0);
+    const h = harness({ jobs });
+    const one = await h.call("GET", "/queues/thumbs/summon");
+    expect(one.status).toBe(200);
+    expect(Object.hasOwn(one.body.pending[0], "coverage")).toBe(false);
+    expect((await h.call("GET", "/summon")).status).toBe(200);
+    // Once the reads work again, coverage is back.
+    reads.restore();
+    expect(
+      (await jobs.summonController("thumbs").status()).pending[0]!.coverage,
+    ).toBeDefined();
+  });
+
+  it("reads no claim for GET /summon", async () => {
+    const jobs = context();
+    await jobs.queue("thumbs").add("a", {});
+    await jobs.summonController("thumbs").check();
+    const reads = claimReads(jobs, () => false);
+    const h = harness({ jobs });
+    expect((await h.call("GET", "/summon")).status).toBe(200);
+    expect(reads.count()).toBe(0);
+    // The route does read them, for its coverage.
+    await h.call("GET", "/queues/thumbs/summon");
+    expect(reads.count()).toBeGreaterThan(0);
   });
 });

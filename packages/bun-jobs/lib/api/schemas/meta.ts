@@ -236,7 +236,7 @@ export const MetaSchema = s.named(
         }),
         summonRemoteStatus: s.boolean({
           description:
-            "Summon status may be read from storage: `GET /queues/{queue}/summon` answers `local: false` for a queue whose controller runs in another process (instead of 409), `GET /summon` lists such queues with `local: false`, and the summon group routes (`GET /summon/groups`, `GET /summon/groups/{group}`) are served. Needs the driver's queue-state reads (`getQueueState`, `listQueueState`); `false` in `runner` mode. Like every flag it ignores permissions.",
+            "Summon status may be read from storage: `GET /queues/{queue}/summon` answers `local: false` for a queue whose controller runs in another process (instead of 409), `GET /summon` lists such queues with `local: false` — a shared unit (`group.unit: \"shared\"`) in another process included, answered on any of its queues and listed once, read from its group's state — and the summon group routes (`GET /summon/groups`, `GET /summon/groups/{group}`) are served. Needs the driver's queue-state reads (`getQueueState`, `listQueueState`); `false` in `runner` mode. Like every flag it ignores permissions.",
         }),
         summonResetBudget: s.boolean({
           description:

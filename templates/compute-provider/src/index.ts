@@ -138,7 +138,7 @@ export const acme = defineComputeProvider<ValidAcmeConfig, AcmeConfig>({
   displayName: "Acme Compute",
   // What this code was written against: literal, never the host's constant,
   // or the registration check could never catch a mismatch.
-  apiVersion: { core: "0.1", summon: "0.1" },
+  apiVersion: { core: "0.1", summon: "0.2" },
   config: acmeConfigSchema,
   secrets: ["apiToken"],
   describe: (config) => ({ region: config.region, pool: config.pool }),

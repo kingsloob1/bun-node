@@ -641,6 +641,12 @@ export const SummonGroupStatusSchema = s.named(
   s.object(
     {
       name: s.string({ description: "The group's name." }),
+      unit: s.optional(
+        s.enum(["shared"], {
+          description:
+            "`shared` when the group is one shared unit (`group.unit: \"shared\"`): one controller summons for all of its queues, and the unit's attempts, failures and circuit are kept in the group's state, so `GET /queues/{queue}/summon` on any of its queues answers them. From a controller in the group, its policy says so; read from storage, the group's state does, once the unit has claimed. Absent for a group of per-queue controllers.",
+        }),
+      ),
       budget: SummonBudgetSchema,
       queues: s.record(
         s.object({
@@ -693,6 +699,12 @@ const SummonLastSchema = s.object({
   detail: s.optional(
     s.string({ description: "A short, secret-free explanation." }),
   ),
+  missing: s.optional(
+    s.array(s.string(), {
+      description:
+        "For a shared unit's partial registration (`outcome: registered`, detail `partial:<queues>`): the queues its attempt registered no worker on, in the policy's order, the same ones the detail names. Stored with the outcome, so a status read from storage (`local: false`) has it too. Absent otherwise, and on an outcome an older bun-jobs wrote, whose detail still names them. Only the queues the caller may read; `detail` then names the same ones.",
+    }),
+  ),
 });
 
 /** A queue's summon status. Mirrors `SummonStatusDto`. */
@@ -707,7 +719,7 @@ export const SummonStatusSchema = s.named(
       queues: s.optional(
         s.array(s.string(), {
           description:
-            "For a shared unit (`group.unit: \"shared\"`): the queues it serves that the caller may read (`queues.read`, asked as this route asks it), in the policy's order, always including the one asked about. The status is the unit's, the same whichever of its queues was asked about, and `queue` is the first of these; a `partial:` detail on `last` names only these queues too (bare `partial` when it names none of them). Absent for a controller of one queue.",
+            "For a shared unit (`group.unit: \"shared\"`): the queues it serves that the caller may read (`queues.read`, asked as this route asks it) and this API can reach (its `queues` option: reachability, not access control), in the policy's order, always including the one asked about. The status is the unit's, the same whichever of its queues was asked about, and `queue` is the first of these; a `partial:` detail on `last` names only these queues too (bare `partial` when it names none of them). Read from storage (`local: false`), of the queues its last claim persisted. Absent for a controller of one queue.",
         }),
       ),
       overlaps: s.optional(
@@ -718,7 +730,7 @@ export const SummonStatusSchema = s.named(
       ),
       local: s.boolean({
         description:
-          "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. Advertised by `/meta.features.summonRemoteStatus`.",
+          "Whether the controller runs in the API's process. `false`: read from the queue's summon state in storage, for a queue whose controller runs elsewhere — no `summoner`, the budget's limits the ones its last claim persisted (`off` when its budget was off, absent when none was persisted; for a shared unit, the group's own limits, since a stricter `budget` in its policy is known only to its controller), and \"summon now\" and reset still 409 `SUMMON_NOT_CONFIGURED`. A queue a shared unit in another process serves is answered with the unit's status, read from its group's state, when the unit claimed at or after the queue's own summon state did. Advertised by `/meta.features.summonRemoteStatus`.",
       }),
       inert: s.boolean({
         description:
@@ -768,6 +780,18 @@ export const SummonStatusSchema = s.named(
               description:
                 "The platform's identifiers for what it started. Omitted unless `serialize.exposeSummonHandles` is on (default off): a task ARN carries the AWS account id.",
             }),
+          ),
+          coverage: s.optional(
+            s.record(
+              s.enum(["registered", "pending", "missing"], {
+                description:
+                  "This attempt's state on one queue. Show a state you do not know as text.",
+              }),
+              {
+                description:
+                  "For a shared unit (`group.unit: \"shared\"`): how far this attempt has got on each queue the unit serves, by queue. `registered` once a worker of the unit holds the attempt's claim on that queue and is live there, or has left with a clean exit mark; `missing` once the attempt's `until` has passed with no worker registered there and none still starting, by the server's clock plus the 5 s allowance the controller grants every comparison between processes; `pending` before that. Worked out from the queues' claims and live worker records each time the status is read: never stored, and absent for a controller of one queue and when those reads fail (the status is then answered without it). An attempt with a `missing` queue settles at the controller's next check as `registered` with `partial:<queues>` (see `last.missing`), or as `lost` when every queue is missing. Only the queues the caller may read (`queues.read`).",
+              },
+            ),
           ),
         }),
         { description: "Attempts in flight, oldest first." },

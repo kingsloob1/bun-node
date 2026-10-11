@@ -692,7 +692,8 @@ by a canary whatever its length, and the canary is looked for.
 The report lists the groups in a fixed order: identity, config,
 capabilities, routing, purity, dedupe, concurrency, errors, timeouts, scale,
 status, lifetime, describe, validate, secrets, the argument round trip, the
-handoff to a real worker process, and two controllers in two processes
+handoff to a real worker process (with, last in the group, the shared
+handoff: one unit for two queues), and two controllers in two processes
 racing for one backlog. They do not run in that order.
 
 **The argument round trip** (`summon.argv.round-trip`) sends a request for a
@@ -708,6 +709,22 @@ a release that throws fails the check. It is skipped under `passes: "none"`,
 and when a scale or wake platform answers `already-running` and starts no
 unit; a launch platform answering that fails it, since a launch starts a
 unit per attempt.
+
+**The shared handoff** (`summon.handoff.shared-unit`, a `should`) runs the
+handoff once more for a summon group's shared unit: it seeds the queues
+`work` and `work.b`, builds a `SummonController` over both with
+`group: { name: "conformance", unit: "shared" }`, and needs the one unit it
+summons through the provider to register on both queues (one `registered`
+event, not a partial one), drain both and exit 0; on a scale platform the
+controller's release must then name both queues. The unit runs
+[`CONFORMANCE_WORKER`](#conformance_worker), which builds a worker for each
+queue its arguments name. It is skipped, with the reason, under
+`passes: "none"` and for a provider that negotiated summon `0.1` (a
+controller refuses a shared unit for either), and when
+`summon.handoff.released` did not pass, since it builds on the one-queue
+handoff. Any other failure is a warning (`ok` stays true), whose detail
+names the stage (`summon`, `registration`, `drain`, `release`) and, for a
+unit that served some of its queues only, which ones it missed.
 
 **Some `must` checks skip, and a skip leaves `ok` true.** A report can be
 `ok` with these not run, so read its skips:
@@ -907,6 +924,24 @@ be configured to start, e.g.
 It reads its summon arguments from `argv` and its test settings from the
 environment the kit passes as the policy's `env`; with none (the kit's
 direct calls), it runs on the memory driver and exits once idle.
+
+It runs one worker per queue its arguments name, as a shared unit's entry
+must, so the shared handoff needs nothing more from a self-hosted provider
+than passing `request.argv` whole:
+
+```ts
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+
+const summon = summonedFromArgs();
+const jobs = new BunJobs({ namespace: summon?.namespace ?? "app" });
+const workers = (summon?.queues ?? ["work"]).map((name) =>
+  jobs.worker(name, async () => {}, { summon }),
+);
+// One worker alone, as the one-queue recipe; a shared unit's together.
+await (workers.length === 1
+  ? runSummoned(workers[0]!, { idleFor: 1_000 })
+  : runSummoned(workers, { idleFor: 1_000 }));
+```
 
 ## `@kingsleyweb/bun-jobs/summon`
 
@@ -1274,6 +1309,13 @@ What `status()` answers, and the status route serves.
 A summon group's shared state, as `status().group` reads it.
 
 - `name`: the group's name.
+- `unit`: optional. `"shared"` when the group is one shared unit
+  (`group.unit: "shared"`): one controller summons for all of its queues,
+  and the unit's attempts, failures and circuit are kept in the group's
+  state, so `GET /queues/{queue}/summon` on any of its queues answers them.
+  From a controller in the group, its policy says so; read from storage, the
+  group's state does, once the unit has claimed. Absent for a group of
+  per-queue controllers.
 - `budget`: `{ hour, perHour?, day, perDay?, off?, hourResetsAt,
   dayResetsAt }`: attempts counted against the group this UTC hour and day
   across its queues, this controller's limits for the group (absent, with
@@ -1325,6 +1367,20 @@ One attempt in flight.
 - `count`: how many workers it asked for.
 - `kind`: the summoner's kind.
 - `handles`: optional. The platform's identifiers, once known.
+- `coverage`: optional. For a shared unit (`group.unit: "shared"`): how far
+  the attempt has got on each queue the unit serves, by queue:
+  `"registered"` once a worker of the unit holds the attempt's claim on that
+  queue and is live there, or has left with a clean exit mark; `"missing"`
+  once the attempt's `until` has passed with no worker registered there and
+  none still starting, by the reading process's clock plus the 5 s
+  allowance the controller grants every comparison between processes;
+  `"pending"` before that. Worked out from the queues' claims and live
+  worker records each time the status is read: never stored, and absent for
+  a controller of one queue, and when those reads fail (the status is then
+  answered without it, never with an error). An attempt with a `"missing"`
+  queue settles at the controller's next check as `registered` with
+  `partial:<queues>` (see `SummonLastOutcome.missing`), or as `lost` when
+  every queue is missing.
 
 ### `WatchedSummon`
 
@@ -1347,6 +1403,12 @@ The most recent outcome on the shared state.
 - `outcome`: what happened.
 - `at`: when.
 - `detail`: optional. The attempt's detail, served to API clients.
+- `missing`: optional. For a shared unit's partial registration (`outcome`
+  `"registered"`, detail `partial:<queues>`): the queues its attempt
+  registered no worker on, in the policy's order, the same ones the detail
+  names. Stored with the outcome, so a status read from storage
+  (`local: false`) has it too. Absent otherwise, and on an outcome an older
+  bun-jobs wrote, whose detail still names them.
 
 ### `SUMMON_ARGS`
 

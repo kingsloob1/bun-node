@@ -55,25 +55,27 @@ which versions it supports:
   },
   "bun-jobs": {
     "facets": ["summon"],
-    "apiVersion": { "core": "0.1", "summon": "0.1" }
+    "apiVersion": { "core": "0.1", "summon": "0.2" }
   }
 }
 ```
 
 The plugin API is **experimental** while its versions are `0.x`: any `0.x`
 minor may change it, so a provider's peer range is one bun-jobs minor wide.
-This bun-jobs speaks `core` `0.1` and `summon` `0.1`, and has no execute
-facet.
+This bun-jobs speaks `core` `0.1` and `summon` `0.2`, and has no execute
+facet. A provider declaring summon `0.1` still works for a queue of its own;
+a [shared unit](../../README.md#one-unit-for-several-queues-groupunit-shared)
+needs `0.2`, since it passes the unit's queues in the arguments.
 
 What you see when they do not match:
 
 - **A different major** is a `ConfigError` when the provider is defined
   (usually as its module is imported), saying which side to upgrade: `Provider … was written for summon
-  1.0, and this bun-jobs speaks summon 0.1: upgrade bun-jobs`.
+  1.0, and this bun-jobs speaks summon 0.2: upgrade bun-jobs`.
 - **A newer minor** is one `warn` per process, when a controller is first
   handed the provider: members added since are ignored.
 - **The experimental API** is one `warn` per process, per provider version:
-  `the provider API is experimental (core 0.1, summon 0.1); any 0.x minor may
+  `the provider API is experimental (core 0.1, summon 0.2); any 0.x minor may
   change it`.
 - **Two versions of one provider** in one process (two packages depending on
   different copies) is one `warn`. Both work, each shown as `name@version`.

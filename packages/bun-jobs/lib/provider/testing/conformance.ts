@@ -37,7 +37,10 @@ import {
   argvChecks,
   assertSharedDriver,
   casChecks,
+  HANDOFF_IDS,
   handoffChecks,
+  SHARED_HANDOFF_ID,
+  sharedHandoffCheck,
   verdictProbe,
 } from "./handoff";
 import { buildReport } from "./report";
@@ -101,6 +104,10 @@ const CHECKS: readonly (readonly [string, ConformanceCheck["level"]])[] = [
   ["summon.handoff.released", "must"],
   ["summon.handoff.drained", "must"],
   ["summon.handoff.scale-down", "must"],
+  // A shared unit (summon 0.2): one unit for two queues. A `should`, so a
+  // provider that conformed before still does; skipped where a controller
+  // refuses a shared unit.
+  ["summon.handoff.shared-unit", "should"],
   ["summon.cas.one-call", "must"],
 ];
 
@@ -349,7 +356,9 @@ export interface ConformanceOptions<TInput = unknown> {
  * identity, config, capabilities, routing, purity, dedupe, concurrency,
  * errors, timeouts, scale, status, lifetime, describe, validate, secrets,
  * the argument round trip (a repeated argument reaches the unit whole and
- * in order), the handoff to a real worker, and the compare-and-set race.
+ * in order), the handoff to a real worker, the shared handoff (one unit
+ * for two queues, `summon.handoff.shared-unit`, a `should`), and the
+ * compare-and-set race.
  *
  * The provider is an unconfigured `ComputeProvider` (configured here with
  * `config`, and again with every declared secret replaced by a canary) or a
@@ -718,8 +727,16 @@ export async function runProviderConformance<TInput, TConfig>(
         roundTrip.detail = `${roundTrip.detail ?? "failed"} (a should for a provider declaring summon ${String(identity.apiVersion?.summon)}; a must from summon ${ROUND_TRIP_MUST_FROM}, and a shared unit needs it)`;
       }
     }
-    if (wanted("handoff")) {
+    // The one-queue handoff only when one of its own checks is wanted: the
+    // shared check is in the group too, and needs none of it run for it.
+    if (HANDOFF_IDS.some((id) => run.wanted(id))) {
       await handoffChecks(run);
+    }
+    if (run.wanted(SHARED_HANDOFF_ID)) {
+      await sharedHandoffCheck(
+        run,
+        checks.get("summon.handoff.released")!.status,
+      );
     }
     if (wanted("cas")) {
       await casChecks(run);
