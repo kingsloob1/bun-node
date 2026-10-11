@@ -7,7 +7,7 @@
  * isolate, which is what an executor on Cloudflare or Deno Deploy has. The
  * Bun-only host side injects `node:crypto` instead (`host/mac.ts`), which
  * the Phase 2 slicing spike measured at ~5 µs against ~28 µs per frame
- * (`docs/plans/evidence/phase2-slicing/`). Both produce the same bytes; the
+ * (`docs/plans/worker-runtimes/evidence/phase2-slicing/`). Both produce the same bytes; the
  * tests pin that against fixed vectors.
  *
  * Internal: not exported from `./remote`. Browser-safe: no imports.

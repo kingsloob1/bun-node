@@ -1,5 +1,5 @@
 /**
- * The executor's in-memory store (`worker-runtimes.md` §5.8): idempotency
+ * The executor's in-memory store (`worker-runtimes/README.md` §5.8): idempotency
  * records and fences, bounded, expiring.
  *
  * Browser-safe: imports only the package's error types.

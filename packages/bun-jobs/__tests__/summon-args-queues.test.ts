@@ -30,7 +30,7 @@ import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 
 /**
- * Summon multi-queue, PR-B1 (`docs/plans/summon-multi-queue.md` §4.7, §4.8,
+ * Summon multi-queue, PR-B1 (`docs/plans/worker-runtimes/summon-compute/summon-multi-queue.md` §4.7, §4.8,
  * §6): the arguments repeat `--bun-jobs-summon-queue=` once per queue and add
  * `--bun-jobs-summon-group=`; `summonedFromArgs()` collects them; a worker
  * writes the group on its record; a request carries `queues`; and a

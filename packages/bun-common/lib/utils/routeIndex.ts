@@ -3,7 +3,7 @@
  * stops filling it while its hit ratio is low. It keeps exactly the policy it
  * replaced, so it never changes what matches — only what a hit costs. The
  * route lookup on a miss is `routeTree.ts`. See
- * `docs/plans/bun-native-routes.md` §4.6 for the measurements behind it.
+ * `docs/plans/bun-native-routes/README.md` §4.6 for the measurements behind it.
  */
 
 /** Lookups per admission window (see {@link FifoCache}). */

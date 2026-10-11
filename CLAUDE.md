@@ -461,6 +461,11 @@ working agreement between them — who owns what, change reports, the commit,
 PR and merge rules, worktrees, the heavy-run wrapper and subagents. Read it
 before your first edit.
 
+Plans live in [`docs/plans/`](docs/plans/README.md), one folder per main plan
+(`docs/plans/<plan>/README.md`, with its sub-plans and `evidence/` inside it);
+a new plan starts in that shape and a follow-up goes in the folder of the plan
+it extends. The index there states the rule.
+
 ## Bun bugs
 
 Bun behaviour that bun-node works around is documented in
