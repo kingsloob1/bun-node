@@ -125,7 +125,7 @@ export const DRIVER_FEATURES = {
   summonList: [],
   // Status read from storage: the marker and group entries are queue state,
   // and the group list pages through it.
-  summonRemoteStatus: ["getQueueState", "listQueueState"],
+  summonStoredStatus: ["getQueueState", "listQueueState"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -247,8 +247,8 @@ export const FEATURE_ROUTES = {
   // every flag this one ignores permissions.
   summonList: ["listSummonControllers"],
   // The status and list routes, which answer from storage, and the two
-  // group reads; each group read `requires` `DRIVER_FEATURES.summonRemoteStatus`.
-  summonRemoteStatus: [
+  // group reads; each group read `requires` `DRIVER_FEATURES.summonStoredStatus`.
+  summonStoredStatus: [
     "getQueueSummon",
     "listSummonControllers",
     "listSummonGroups",

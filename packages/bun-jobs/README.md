@@ -3696,7 +3696,7 @@ untargeted question otherwise, so a per-queue allow-list reads and resets a
 group whose members it covers.
 
 **Status without a local controller** (`local: false`, advertised by
-`/meta.features.summonRemoteStatus`). Every claim persists its controller's
+`/meta.features.summonStoredStatus`). Every claim persists its controller's
 summoner `kind`, budget limits (or that the budget was off) and group on the
 queue's summon state, so any API process on the namespace can show a queue
 whose controller runs elsewhere: the state as it is, with no `summoner`, the
@@ -5888,7 +5888,7 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-`providers`, `summonResetBudget`, `summonList`, `summonRemoteStatus`, and `analytics` beside `features` for what the analytics routes
+`providers`, `summonResetBudget`, `summonList`, `summonStoredStatus`, and `analytics` beside `features` for what the analytics routes
 can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
@@ -6945,7 +6945,7 @@ cannot" from "you may not":
 | `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
 | `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
-| `summonRemoteStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
+| `summonStoredStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under

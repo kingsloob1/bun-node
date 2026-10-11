@@ -386,7 +386,7 @@ describe("the Summoning screen", () => {
     const { screen } = await openScreen({
       "GET /meta": {
         body: metaFixture({
-          features: { ...metaFixture().features, summonRemoteStatus: true },
+          features: { ...metaFixture().features, summonStoredStatus: true },
         }),
       },
       "GET /summon": list([]),

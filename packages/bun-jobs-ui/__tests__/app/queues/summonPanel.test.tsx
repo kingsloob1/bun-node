@@ -293,7 +293,7 @@ describe("the Summon panel", () => {
     expect(within(panel).getByTestId("summon-inert").textContent).toBe(
       UNREADABLE_TEXT,
     );
-    expect(within(panel).getByTestId("summon-remote").textContent).toContain(
+    expect(within(panel).getByTestId("summon-stored").textContent).toContain(
       "another process",
     );
     expect(within(panel).getByTestId("summon-last").textContent).toBe(
@@ -597,7 +597,7 @@ describe("Summon now and Reset", () => {
     const panel = await expectNoActions(
       granted(statusFixture({ local: false })),
     );
-    expect(within(panel).getByTestId("summon-remote").textContent).toContain(
+    expect(within(panel).getByTestId("summon-stored").textContent).toContain(
       "another process",
     );
   });

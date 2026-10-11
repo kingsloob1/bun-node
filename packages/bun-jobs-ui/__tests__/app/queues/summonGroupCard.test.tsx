@@ -80,11 +80,11 @@ function statusFixture(
   };
 }
 
-/** Meta with `summonRemoteStatus` set to `value`. */
+/** Meta with `summonStoredStatus` set to `value`. */
 function remote(value: boolean): MockReply {
   return {
     body: metaFixture({
-      features: { ...metaFixture().features, summonRemoteStatus: value },
+      features: { ...metaFixture().features, summonStoredStatus: value },
     }),
   };
 }

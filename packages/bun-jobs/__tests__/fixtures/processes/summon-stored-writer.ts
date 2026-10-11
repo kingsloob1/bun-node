@@ -11,7 +11,7 @@ import {
 
 /**
  * Writes summon state from a process of its own, for
- * `api-summon-remote.test.ts`: the API under test has no controller for
+ * `api-summon-stored.test.ts`: the API under test has no controller for
  * these queues and must read it all from storage.
  *
  * In namespace `SUMMON_TEST_NAMESPACE`, group `media` (a budget of 7 an

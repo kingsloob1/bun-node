@@ -159,7 +159,7 @@ function isGroup(value: unknown): boolean {
  * `GET /summon/groups` (action `queues.list`): every summon group with shared
  * state in the namespace, read from storage, each redacted to the member
  * queues the caller may read (`queues.read`) — so a group's `queues` is never
- * its whole membership. Served where `features.summonRemoteStatus` is on.
+ * its whole membership. Served where `features.summonStoredStatus` is on.
  */
 export async function listSummonGroups(
   api: ApiClient,
