@@ -1194,7 +1194,9 @@ its first pass, so the cadence an operator asked for is the cadence the queue
 gets, whichever worker started first.
 
 The holder renews the lease on every pass. Parked or closed, it gives the lease
-up there and then; if its process dies, the lease lapses after two of **its**
+up there and then, once a pass already running has ended (a forced `close()`
+waits a second at most for it, and a pass takes nothing once its worker is
+closing or parked); if its process dies, the lease lapses after two of **its**
 `stalledInterval`s and the next worker's pass takes it over, so sweeping
 resumes within three of them (90 s at the defaults, 300 ms behind a worker set
 to 100 ms).
