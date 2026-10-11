@@ -18,7 +18,80 @@ unless it says otherwise. The evidence is in
 [`evidence/worker-gateway-and-isolation/`](evidence/worker-gateway-and-isolation/README.md),
 and every measurement there can be re-run with one command.
 
+**Updated 2026-10-11** against `develop` at `e7246b69`: the
+[status](#status-2026-10-11) below, and notes marked **Status 2026-10-11** in
+the sections the code has since changed. The design text is otherwise kept as
+written on 2026-09-29, so its `file:line` citations still refer to `8d3df4d`;
+[`worker-runtimes.md` R20](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r)
+lists where some of them have since moved.
+
+## Status (2026-10-11)
+
+**Part 2 has started; Part 1 has not.** Two of Part 2's seven PRs have merged:
+the `child-process` hardening (PR-i0, #260) and the `container` target itself
+(PR-i1, #287). PR-i1 also took in most of PR-i3. **Nothing of Part 1, the
+gateway, is built**: no `./gateway` entry, and none of `createWorkerGateway`,
+`ws-reverse`, `http-poll`, `dialWebSocket`, `dialHttp`, `runSummonedExecutor`
+or `requireIsolation` appears anywhere under `packages/`. The gateway
+(sub-phase 2r) waits on Phase 2's 2a and 2b. Of those, 2a1–2a3 have merged
+(#261, #263, #270): the protocol messages and signing, the text frames and
+the unary reference executor. 2a4 onward has not started.
+
+**Part 2, isolation** (§10.1)
+
+| PR | State | PRs | What exists | What is left |
+|---|---|---|---|---|
+| PR-i0 `child-process` hardening | **Done** | #260 (2026-10-01) | Env allowlist by default (`CHILD_BASE_ENV`, `lib/shared/childEnv.ts`), plus `passEnv`, literal `env` and `env: "inherit"`, built from the *live* `process.env` (`runner/executors/spawn.ts:101`). Also `uid`/`gid`, a per-child cgroup v2 group with `memory`/`pids`/`cpus`, `maxBuffer` with `OutputLimitError`, and `--no-env-file` (`runner/executors/spawnHardening.ts`). The README has "Hardening a child process" (`packages/bun-jobs/README.md:2939`), and says `worker-thread` is not a boundary (`:2865`). `localCompute` (#268) reuses the allowlist and the cgroup | — |
+| PR-i1 `container` target | **Done** | #287 (2026-10-09) | `"container"` in `WORKER_TARGET_KINDS` (`shared/workers.ts:221-227`); `ContainerTarget` (`queue/container/target.ts`), exported from the root and `./queue`; the CLI engine, the start-up probe and `IsolationUnavailableError` (`shared/errors.ts:410`) with `context.step` set to `engine`, `runtime`, `image` or `probe`; the stdio channel (`runner/bootstrap/container-frames.ts`); the `./container-entry` package entry; fixed hardening and refusals; the orphan sweep by labels. The Workers screen shows "Container" with the image and runtime (`bun-jobs-ui/app/screens/workers/target.ts`). Tests: four container suites with a fake engine, plus a real-Docker suite (`container-docker.test.ts`, 18 tests) that skips visibly without Docker | — |
+| PR-i2 the pool | **Not started** | — | Each attempt starts a fresh container **on demand**. There is no `spares` and no `reuse` option (no hits in `lib/`), so every attempt pays the cold start (§7.3: ~277 ms) | Everything in the row: spares (the default, per I2), `reuse: "worker"`, recycling, and pool state on the heartbeat record |
+| PR-i3 policy details | **Partial** | #287 | Shipped in PR-i1: mount validation (stricter than §5.8), the `runtime` check against the engine, `security { seccomp, apparmor }`, and the snap NNP message | `network: { name }` (only `"none"` is taken: `target.ts:104`, `:770-778`). The hostile-job conformance test: the real-Docker suite checks the basics (`fixtures/container/hardening.ts` says the full check "is the plan's PR-i3"). The `fill-tmp`, `limits`, `sockconnect` and `envdump` fixtures are in the tree but no test uses them |
+| PR-i4 an executor's `target` | **Not started**, unblocked | — | Its two dependencies, PR-i1 and PR-2a3, have both merged. `RemoteExecutorOptions` has no `target` (`remote/executor/types.ts:225-301`) | All of it |
+| PR-i5 platform isolation capability | **Not started** | — | No `isolation` capability, and no `requireIsolation`, under `lib/provider` or `lib/summon`. The only first-party provider is `localCompute` (#268), which this plan predates | All of it. No 1.5c–1.5e cloud provider exists yet to declare its isolation |
+| PR-i7 docs | **Partial** | #260, #287 | The README's container section (`README.md:3074`) has the threat table, "What it does not promise", the fixed flags and refusals, fail-fast and snap Docker. For the platform table it links to §5.6 here | Pool tuning and its numbers (after PR-i2), the hardening guide as a page of its own if still wanted, and the platform table in the package docs rather than in a plan |
+| *PR-i6* `sandbox` target (optional) | **Not started**; deferred per Q9 ("later, if asked") | — | — | ~4 d if asked |
+
+**Part 1, the gateway, sub-phase 2r** (§10.2, as re-sliced in
+[`worker-runtimes.md` §11](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r))
+
+| PR | State | Waits on |
+|---|---|---|
+| PR-g1a reverse listener and claim gate | Not started | PR-2b2 |
+| PR-g1b dialling executor | Not started | PR-g1a |
+| PR-g2 `createWorkerGateway`, `BunJobsGatewayModule` | Not started | PR-g1b |
+| PR-g3 scoped keys, `mint`, `rekey`, `revoke`, bootstrap codes | Not started | PR-g2 |
+| PR-g4 `http-poll`, `dialHttp` | Not started | PR-g2, PR-2b1 |
+| PR-g5 summoned executors | Not started | PR-g3, PR-g1b |
+| PR-g6 docs and `gateway-loopback` bench | Not started | PR-g5, PR-g4 |
+| PR-g7 adoption (`handOverJobLock`) | Deferred (Q5) | — |
+
+The Phase 2 prerequisites belong to WR and RT. Of 2a, three PRs have merged:
+PR-2a1 (#261), PR-2a2 (#263) and PR-2a3 (#270). Not started: PR-2a4
+(`"endpoint"` and `RemoteWorker`) through PR-2a12, and all of 2b.
+
+**Other owners** (§10.2):
+
+- **Examples:** none yet. No example or playground file uses a `container`
+  target. A worker's PR-i0 options appear only through `localCompute`
+  (`examples/bun-jobs/02-queues/local-compute.ts`).
+- **UI:** the `container` badge is done (#287). Executor sessions on the
+  Workers page wait for 2r.
+
+**Remaining effort**, in the plan's own figures:
+
+- **Part 2:** about **8 d**, plus 4 d if PR-i6 is wanted. That is PR-i2
+  (~3 d), the rest of PR-i3 (at most its ~1.5 d, most of which shipped in
+  PR-i1), PR-i5 (~2 d) and the rest of PR-i7 (at most ~1.5 d). PR-i4
+  (~1.5 d) is counted in 2r. Done: PR-i0 and PR-i1, ~6.5 d of the ~14.5 d.
+- **Part 1:** all of 2r, **~22 d** (WR §11). Before PR-g1a can start, Phase
+  2's remaining prerequisites must land: PR-2a4–2a8 and PR-2b1–2b2, ~29 d of
+  work, ~19.75 d on the critical path (2a4 → 2a5 → 2a7 → 2b1 → 2b2).
+- **Other owners:** examples ~3 d, UI ~1.5 d less the badge.
+- **The biggest remaining piece** is the gateway: ~22 d of its own, behind
+  ~20 d of Phase 2 critical path.
+
 ## Contents
+
+- [Status (2026-10-11)](#status-2026-10-11)
 
 1. [Executive summary](#1-executive-summary)
 2. [What exists today](#2-what-exists-today)
@@ -100,9 +173,9 @@ provider API covers the platforms where no container can run inside.
 | G7 | **Summon can start an executor.** Its slot is released by the executor's authenticated `hello`, and the gateway writes the claim-exit mark for it. | An executor has no driver to write either. §4.9 |
 | G8 | **A lost link fails the attempt after `resumeWindowMs`, as Phase 2 already says** (`RemoteAttemptLostError`, RT T8). Host-to-host *adoption* of in-flight attempts is designed but deferred (Q5). | Adoption needs a new driver method to hand a lock over atomically; without one, two hosts could settle the same attempt. §4.6 |
 | I1 | **Isolation is a worker target, `"container"`, not a transport feature.** | A target already owns "where the processor call runs" (`queue/workerTarget.ts`) [S]. It then works for a local worker and inside a remote executor alike. §5.3 |
-| I2 | **By default each attempt gets a fresh, pre-warmed, single-use container.** | The cold start is paid off the critical path, and nothing a job writes survives into the next job. The numbers are in §7.3. |
+| I2 | **By default each attempt gets a fresh, pre-warmed, single-use container.** | The cold start is paid off the critical path, and nothing a job writes survives into the next job. The numbers are in §7.3. **Status 2026-10-11:** single-use is built (#287), but not pre-warmed. Each attempt starts its container on demand until PR-i2 adds the spares. |
 | I3 | **Hardened by default, with refusals.** `--network none`, read-only root, all capabilities dropped, a non-root user, pids, memory and CPU limits, and an env allowlist. `privileged`, a Docker socket mount and host namespaces are refused. | Each flag was checked against a hostile job (§7.4). |
-| I4 | **The job's data crosses the container boundary on stdio**, as framed JSON. The container never gets the network, the gateway key, or the parent's environment. | Today's `child-process` and `worker-thread` targets pass the whole `process.env` to the job (`runner/executors/spawn.ts:106-107`, `runner/executors/worker.ts:71-73`) [S]. §5.7 |
+| I4 | **The job's data crosses the container boundary on stdio**, as framed JSON. The container never gets the network, the gateway key, or the parent's environment. | Today's `child-process` and `worker-thread` targets pass the whole `process.env` to the job (`runner/executors/spawn.ts:106-107`, `runner/executors/worker.ts:71-73`) [S]. §5.7. **Status 2026-10-11:** built (#287), with the channel cut into frames (§5.7). PR-i0 (#260) has since replaced `child-process`'s `...process.env` with an allowlist. `worker-thread` still passes the whole environment (`worker.ts:84`), as documented: a thread is not a boundary |
 | I5 | **Where Docker cannot run, the option fails fast with a clear error.** A provider can instead declare the isolation its platform gives (a microVM per task, say), and a policy can require it. | The user asked that it never silently degrade. §5.6 |
 | I6 | **Containers share the host kernel, and the docs say so first.** gVisor or Kata is a `runtime` choice, verified at start. | A kernel exploit escapes any runc container [I]; neither runtime is installed here, so their claims are [U] (§7.5). |
 
@@ -121,6 +194,12 @@ provider API covers the platforms where no container can run inside.
 container target right after 1.5p, then Phase 2 with 2r after 2b.** Part 2
 protects every worker, local or remote, and waits on nothing. Part 1 cannot
 come before 2a without forking the wire protocol (Q3).
+
+**Status 2026-10-11:** the order held. PR-i0 merged on 2026-10-01, the day
+after 1.5p, and PR-i1 on 2026-10-09. Of Part 2's ~14.5 d, ~6.5 d is done
+(PR-i0 and PR-i1, plus most of PR-i3). Part 1 has not started, because 2a is
+three PRs in and 2b has not begun. The [status](#status-2026-10-11) has the
+detail.
 
 ---
 
@@ -205,6 +284,21 @@ Three facts from the same reading decide the design:
 | `createRemoteExecutor`, `dialWebSocket`, `/healthz`, `/readyz` | RT §9, WR §6.1 | The remote side, unchanged in shape |
 | `jobs.remoteWorker(queue, { listen })` | RT §8.2–§8.3 | The standalone form. The mountable gateway is new (§4.3) |
 
+**Status 2026-10-11.** Three rows of this table now exist in code:
+
+- **The messages and their signing**, PR-2a1 (#261): 20 session messages
+  and 11 HTTP envelopes, `signEnvelope`/`verifyEnvelope`, and the nonce
+  cache.
+- **The per-frame MAC'd `BJ1` text frames and their replay window**,
+  PR-2a2 (#263).
+- **`createRemoteExecutor` with `/healthz` and `/readyz`**, PR-2a3 (#270).
+  It is a unary-`http` fetch handler, `(Request) => Promise<Response>`
+  (`remote/executor/types.ts:312`), and it takes a shared `secret`.
+
+#270 also changed the wire: `cancel` and `status` now name the queue
+(`RemoteQueueRef`). The session shape (PR-2a7), the reliability layer
+(PR-2b1), `ws-reverse`, `dialWebSocket` and `jobs.remoteWorker` are not built.
+
 ### 2.4 The seams in the code
 
 - **A custom target** (`WorkerTargetFactory`, `queue/workerTarget.ts:161`)
@@ -214,7 +308,8 @@ Three facts from the same reading decide the design:
   executor, and it ran on the real claim, lease and settle paths unchanged.
 - **The target kinds** are `["in-process", "worker-thread", "child-process",
   "custom"]` (`shared/workers.ts:220-225`) [S]. `"container"` would be the
-  fifth (I1).
+  fifth (I1). **Status 2026-10-11:** it is, since #287
+  (`shared/workers.ts:221-227`).
 - **A child-process target talks over Bun's IPC channel**
   (`Bun.spawn(..., { serialization: "json", ipc })`,
   `runner/executors/spawn.ts:98-122`) [S]. That channel is an inherited file
@@ -228,9 +323,19 @@ Three facts from the same reading decide the design:
 - **Today's isolation targets do not isolate secrets.** Both pass
   `...process.env` to the job (`spawn.ts:106-107`, `worker.ts:71-73`) [S].
   A job in a child process can read the worker's database URL.
+  **Superseded for `child-process` by PR-i0 (#260).** The child now gets an
+  allowlist (`CHILD_BASE_ENV`, then `passEnv`, then literal `env`), built
+  from the live environment and always passed (`spawn.ts:101`). It also
+  starts with `--no-env-file`, because a measured leak showed a Bun child
+  re-loading `.env`. `env: "inherit"` restores the old behaviour.
+  `worker-thread` still spreads `process.env` (`worker.ts:84`), and the
+  README says a thread is not a boundary.
 - **Nothing sets resource limits.** `resourceLimits` appears nowhere in
   `lib/`, and `WorkerThreadTarget` takes only `closeTimeout` and `{ env,
-  argv, smol, name }` (`workerTarget.ts:110-124`) [S].
+  argv, smol, name }` (`workerTarget.ts:110-124`) [S]. **Superseded for
+  `child-process` by PR-i0 (#260):** a per-child cgroup v2 group with
+  `memory`, `pids` and `cpus` limits, `uid`/`gid`, and a `maxBuffer` byte
+  cap that fails a run with `OutputLimitError`. `worker-thread` is unchanged.
 
 ---
 
@@ -316,6 +421,11 @@ not yet give the user:
 | **Scoped** credentials | one shared secret per remote worker (WR §5.6) | derived executor keys and bootstrap codes (§4.8) |
 | **Summoned executors** | summon starts a `BunQueueWorker` with a driver | `runSummonedExecutor` (§4.9) |
 | Which drivers can serve which hosts | not stated | §4.5 |
+
+**Status 2026-10-11:** the user accepted 2r (Q2) on 2026-09-29, and
+[WR §11](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r) sliced it into
+PRs on 2026-10-01 (#259). None of this table's "This plan" column is built
+yet.
 
 ---
 
@@ -404,7 +514,8 @@ gateway.attach(server);                      // the WebSocket upgrade on the sam
 
 - **A router plus a socket, like `createJobsApi`.** `createJobsApi` already
   returns a router and a socket that attaches to the app's server or binds
-  its own port (`api/createJobsApi.ts:100-141`) [S]. The gateway follows the
+  its own port (`api/createJobsApi.ts:100-141` at `8d3df4d`; `:210` at
+  `e7246b69`) [S]. The gateway follows the
   same shape, so `gateway.info` reports its path and port the same way.
 - **In bun-nest**, `BunJobsGatewayModule.forRoot({ gateway })` in the
   existing `./jobs` entry mounts the router in `onModuleInit` and attaches
@@ -682,6 +793,15 @@ await runSummonedExecutor(createRemoteExecutor({ handlers, maxConcurrency: 8 }))
 // reads --bun-jobs-summon-id=, --bun-jobs-summon-gateway=, --bun-jobs-summon-bootstrap=
 ```
 
+**Status 2026-10-11.** Neither `runSummonedExecutor` nor `./remote/serve`
+exists. `createRemoteExecutor` does exist (#270), but today it requires
+`secret` (`remote/executor/types.ts:237`). Its session members (`acceptSession`
+and others) come with PR-2a7, and `credential` comes with PR-g3 (WR R18). So
+this snippet describes the end state after PR-g5. Summon itself has since
+grown summon groups and shared units (`summon-multi-queue.md`), so one unit
+can now serve several queues. PR-g5's summon arguments will have to
+reconcile with the multi-queue arguments (#294) [I].
+
 | Summon step | With a worker (today) | With an executor [D] |
 |---|---|---|
 | Identity | `--bun-jobs-summon-*` arguments (`summon/args.ts:21-35`) [S] | the same, plus `gateway` (URLs) and `bootstrap` (the code) |
@@ -747,6 +867,12 @@ dialWebSocket(executor, { url: "wss://jobs.example.com/jobs-gateway", credential
 dialHttp(executor, { url: "https://jobs.example.com/jobs-gateway", credential, protocol: "http2" });
 ```
 
+**Status 2026-10-11:** `dialWebSocket`, `dialHttp` and `gateway.mint` are not
+built, and the executor above would need `secret` today (§4.9's note).
+**Superseded spelling:** WR §11's Q-2.9, accepted 2026-10-01, names the HTTP
+version option `httpVersion: "1.1" | "2" | "3"` on `dialHttp`, mapped to
+`fetch`'s `protocol`. It replaces `protocol: "http2"` above.
+
 A long-running executor is a deliberate deployment, so its credential comes
 from the environment or a secret store. The environment-leak finding
 (SC §5.5) applies to what its *handlers* spawn, which is exactly what Part 2's
@@ -800,6 +926,19 @@ reach.
 **What no mechanism here stops**: a job can return a wrong result for its
 own attempt, and it can read its own input. Those are the job's to begin
 with.
+
+**Status 2026-10-11.** The "Today" column describes 2026-09-29. For
+`child-process`, PR-i0 (#260) has since changed four rows:
+
+- **T1:** the environment is now an allowlist.
+- **T2:** the job can run under another `uid`/`gid`.
+- **T7 and T8:** a delegated cgroup now caps memory and pids per child.
+
+`in-process` and `worker-thread` are unchanged. The `container` column is
+built by #287. Its real-Docker suite checks T1, T3 (no network), the
+read-only root, the non-root user and the dropped capabilities, plus
+cancellation and the orphan sweep. The full hostile-job conformance (T6–T9
+limits, T13 socket refusal live) is still PR-i3's.
 
 ### 5.2 Where the boundary sits
 
@@ -866,6 +1005,29 @@ await worker.run();
 - **Also inside an executor** (Part 1): `createRemoteExecutor({ target })`
   takes the same target, so a remote runs each handler in a container
   (PR-i4, after 2a).
+
+**Status 2026-10-11: built by PR-i1 (#287), except the pool.** Where the
+code differs from the bullets above:
+
+- **The heartbeat record** carries the `image` as configured, not a resolved
+  digest, plus the `runtime` and never the env (`api/serialize.ts:1299-1302`).
+- **The command** is `bun -e <bootstrap> <prefix> <processor>`. The
+  bootstrap imports `@kingsleyweb/bun-jobs/container-entry` from the
+  processor's directory, and the entry runs the processor in a `Worker`. Its
+  main thread watches stdin and `SIGTERM`, so a processor that blocks its own
+  thread still stops, and `process.exit(n)` ends the attempt with `n`
+  (`runner/bootstrap/container-entry.ts`).
+- **There is no pool.** Each attempt starts its own container on demand, and
+  there is no `spares` or `reuse` option. That is PR-i2.
+- **Stopping.** A graceful stop sends `close` on the channel, and kills after
+  `closeTimeout`. The runner inside exits itself 500 ms before. A forced stop
+  kills at once. A stopped container ends as 143 (`docker stop`) or 137, never
+  with the CLI's own code.
+- **`--init` is fixed**, so PID 1 reaps orphaned processes.
+- **The orphan labels** also carry `bun-jobs.namespace` and
+  `bun-jobs.queue`, so a sweep stays inside the queue whose workers it listed
+  (`CONTAINER_LABELS`, `queue/container/target.ts`).
+- **PR-i4 is unblocked** (PR-i1 and PR-2a3 have merged) but not started.
 
 ### 5.4 The mechanisms, compared
 
@@ -977,6 +1139,14 @@ sessions, GKE Agent Sandbox, all new in 2026 [V platform]) is Phase 2's
 `execute` facet with an adapter per platform, and belongs in Phase 3 or 4's
 adapter list, not here (Q10).
 
+**Status 2026-10-11.** The fail-fast check is built as written (#287).
+`IsolationUnavailableError` carries `context.step` (`engine`, `runtime`,
+`image` or `probe`) and `context.stderr`. The probe resolves the entry and
+finds the processor without importing it. A `close()` during the probe cuts it
+short. Not built: `requireIsolation` on the gateway (PR-g2) and on the policy,
+and the `isolation` summon capability (PR-i5). The package README links to
+this section for the platform table, so its heading stays as it is.
+
 ### 5.7 The data path across the container boundary
 
 **The channel is the container's stdin and stdout, as framed JSON lines**
@@ -1004,6 +1174,24 @@ bind-mounted into the container would work, but snap Docker cannot read
 - **Measured**: a warm container adds ~40–60 µs per round trip over a plain
   child process on this channel, and pipelined jobs reach ~355,000/s either
   way [M isolation §3]. The channel is not the cost; the container start is.
+
+**Status 2026-10-11: built by PR-i1 (#287), with two corrections.**
+
+- **Framing, superseded.** Whole JSON lines from the container proved
+  unsafe. One `write(2)` to a pipe is kept whole only up to `PIPE_BUF`
+  (4096 bytes), so the processor's own output cut a 2 MiB result in 3 runs
+  of 3. The container now writes each message as frames of at most 4096
+  bytes (`FRAME_BYTES`), each on a line of its own:
+  `\n<prefix> <id> <index> <count> <base64 part>\n`
+  (`runner/bootstrap/container-frames.ts`). The worker's messages into the
+  container stay JSON lines on stdin. The decoder grows a message's buffer as
+  its parts arrive, so a forged first frame costs only what it carries. Round
+  4 of #287's review measured the earlier claim-sized allocation stalling the
+  worker's loop for 14–17 s.
+- **The oversize error, superseded.** A message over 16 MiB
+  (`CONTAINER_MAX_MESSAGE_BYTES`) fails the attempt for good with an
+  `UnrecoverableJobError`, not `PayloadTooLargeError`. WR §11 found that
+  name taken by bun-common's class of the same name.
 
 ### 5.8 The options, with safe defaults and refusals
 
@@ -1069,6 +1257,24 @@ stops passing `...process.env` (`spawn.ts:106-107`) by default, and
 optional `uid`/`gid`, `cgroup` and per-attempt `maxBuffer`, all native
 `Bun.spawn` options [M isolation §6]. The packages are unpublished, so the
 default can change without a deprecation (Q7).
+
+**Status 2026-10-11: both are built.** PR-i0 shipped in #260 and PR-i1 in
+#287. `ContainerTarget` as shipped (`queue/container/target.ts:44-167`,
+README `:3074`) differs from the interface above:
+
+| Field or rule | Above | As built |
+|---|---|---|
+| `reuse`, `spares` | options | **absent**: one fresh container per attempt, started on demand (PR-i2) |
+| `network` | `"none" \| { name }` | `"none"` only; anything else is a `ConfigError` (`target.ts:104`, `:770-778`). `{ name }` is PR-i3's |
+| `security.noNewPrivileges` | an option | **not an option**: `no-new-privileges` is always set. On snap Docker the way out is `apparmor: "snap.docker.dockerd"`, and the probe's error says so |
+| `limits` | defaults only | the same defaults, with floors: memory at least `6m`, pids at least 16, a tmpfs above 0. `"0"` (no limit) is refused |
+| `user` | `uid:gid`, `0` refused without `allowRoot` | numeric `uid:gid` only. A user name, or a uid without a gid, is refused. gid 0 is refused without `allowRoot` too |
+| Fixed flags | `--read-only`, `--cap-drop=ALL`, `--ipc none` | those, plus `no-new-privileges`, `--init`, a `noexec,nosuid,nodev` tmpfs, and `--pull=never` on every attempt |
+| Refused mounts | the socket, `/`, `/proc`, `/sys`, `/dev`, `/etc`, `/var/run` | those, plus `/run`. Also refused: an engine's data directories, the per-user socket locations (Docker Desktop, Colima, Lima, Rancher, OrbStack, rootless Podman), any directory holding one, compared after resolving symlinks, and **any socket inside a mount**, found by a bounded walk at `run()` |
+
+PR-i0's names, which §12 did not list, were approved with #260: `passEnv`,
+`env: "inherit"`, `uid`, `gid`, `cgroup`, `maxBuffer`, `OutputLimitError` and
+`CHILD_BASE_ENV`.
 
 ---
 
@@ -1216,6 +1422,21 @@ Postgres and MongoDB test containers**, which is the case for
 | **Executors can forge outcomes for their queues** | inherent | scoped keys, short expiry, revocation, a queue per trust domain |
 | **The loopback numbers flatter a real link** | certain | RT's Phase 4 real-network run; `http-poll` batching keeps RTT per batch |
 
+**Status 2026-10-11:**
+
+- **The first row is now certain.** Q2 was approved on 2026-09-29.
+- **The rows on Docker and the container target** now have built
+  mitigations (#287):
+  - the start-up probe with the exact argv;
+  - the snap NNP message;
+  - the README's statements on the shared kernel and the `docker` group.
+
+  Still left: the single-use throughput cap, which PR-i2's spares address,
+  and the hostile-job conformance test (PR-i3).
+- **Two new hazards** were found in #287's reviews and fixed there:
+  - forged channel frames stalling the worker's loop;
+  - a socket reachable through a mount.
+
 ---
 
 ## 9. Open questions for the user
@@ -1227,49 +1448,75 @@ accepted, Q2 (the new sub-phase 2r) and Q7 (an allowlist for the job
 environment by default) included. Q1 stays open, and the design does not
 depend on it. The names in §12 still need approval, PR by PR.
 
+**Status 2026-10-11**, per question below: **settled by code** (built as
+decided, with the PR), **decided, not built** (the decision stands and the
+code has not reached it), or **open**. Only Q1 is still open.
+
 1. **What is "up" in the protocol list?** Candidates are UDP, gRPC, or a
    typo for "etc.". **Recommended:** nothing to decide now. UDP is RT 2e,
    gRPC is a plugin on the session shape (RT T10), and the gateway is
    pluggable, so any of them lands without a core change. Tell us which one
    was meant, and we will say where it sits.
+   **Status 2026-10-11: open.** Nothing built depends on it.
 2. **Pull `ws-reverse` forward, into a new sub-phase 2r right after 2b,**
    ahead of 2c (TCP)? This changes the order decided on 2026-09-25 (RT
    Q-T1). **Recommended: yes.** It is the user's pattern and needs only 2a
    and 2b. 2c, the rest of 2d, 2e and 2f keep their order after it.
+   **Status 2026-10-11: decided, not built.** WR §11 sliced 2r (#259). Its
+   Q-2.1, also accepted, lets each 2r PR merge as soon as its own
+   dependencies have.
 3. **Ship an interim gateway before 2a**, on a protocol of its own? **No.**
    It would fork the wire protocol that Phase 2 versions, and 2a's core is
    most of the gateway's cost anyway.
+   **Status 2026-10-11: held.** No interim gateway exists, and 2a is being
+   built on the one protocol (#261, #263, #270).
 4. **Add the `http-poll` binding?** **Yes.** It is the only reversed path
    through HTTP-only egress, and it carries HTTP/2 and HTTP/3 with a
    `fetch` option.
+   **Status 2026-10-11: decided, not built** (PR-g4). The version option is
+   spelled `httpVersion` (WR Q-2.9).
 5. **Build attempt adoption** (`handOverJobLock` on five drivers, ~4 d)?
    **Not now.** Graceful drains already lose nothing. Revisit if host crashes
    re-running long remote jobs prove costly. Phase 4 is the natural place.
+   **Status 2026-10-11: deferred, as decided.** No `handOverJobLock` exists.
 6. **Summoned executors: default `start: "worker"`**, with `"executor"`
    opt-in? **Yes.** Today's behaviour stays the default.
+   **Status 2026-10-11: decided, not built** (PR-g5).
 7. **Stop `child-process` and `worker-thread` targets passing the whole
    `process.env`** by default, in favour of an allowlist? **Yes**, for
    `child-process`, with `env: "inherit"` available. The packages are
    unpublished. For `worker-thread` the docs say plainly that it is not a
    boundary: a thread shares the process.
+   **Status 2026-10-11: settled by code**, in PR-i0 (#260). The allowlist is
+   the default (`runner/executors/spawn.ts:101`), with `env: "inherit"`. The
+   README says a thread is not a boundary (`packages/bun-jobs/README.md:2865`).
 8. **An `unsafe` escape hatch** for privileged or extra Docker flags? **No**
    in v1. Every request can be read then as a missing typed option.
+   **Status 2026-10-11: settled by code**, in PR-i1 (#287). The argv is built
+   from typed options only, and every refusal is a `ConfigError` with no
+   escape hatch (`queue/container/target.ts`).
 9. **Build the Docker-free `sandbox` target** (bubblewrap plus a delegated
    cgroup, ~4 d)? **Later, if asked.** It works unprivileged and starts in
    ~10 ms, but it has no seccomp filter by default, cannot make its tmpfs
    `noexec`, and needs unprivileged user namespaces, which several platforms
    block [M/U]. Docker's defaults are stronger.
+   **Status 2026-10-11: deferred, as decided.** Not started.
 10. **Per-job platform sandboxes** (Lambda MicroVMs, Cloud Run sandboxes,
     ACA dynamic sessions, GKE Agent Sandbox) as `execute` providers?
     **Yes, but in Phase 3/4's adapter list**, not this plan. They are
     Phase 2's push shape with a platform adapter each.
+    **Status 2026-10-11: deferred to Phase 3/4, as decided.**
 11. **Default of `reuse` for the `container` target**: `"never"`
     (single-use, ~27 jobs/s per host here) or `"worker"` (warm, thousands
     per second, no job-to-job isolation)? **`"never"`.** The user's emphasis
     is protection. The option is one line, and the docs give both numbers.
+    **Status 2026-10-11: settled by code**, in PR-i1 (#287). Single-use is the
+    only mode built. `reuse: "worker"` and the spares come with PR-i2.
 12. **Where the gateway lives**: a new entry `./gateway`, or inside `./remote`?
     **`./gateway`.** It is host-side and not browser-safe, whereas
     `./remote` is the executor's browser-safe entry (WR §6.2).
+    **Status 2026-10-11: decided, not built** (PR-g2). `./remote` exists and
+    is browser-safe (#261).
 
 ---
 
@@ -1282,14 +1529,19 @@ passes the full gate alone and leaves the package coherent.
 
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
-| **PR-i0** `child-process` hardening | `env` policy (allowlist by default, Q7); `uid`/`gid`; `cgroup`; per-attempt `maxBuffer`; docs: `worker-thread` is not a boundary | Phase 1 | ~1.5 d |
-| **PR-i1** the `container` target | `WORKER_TARGET_KINDS` + `"container"`; the CLI engine; the stdio channel and `container-entry`; hardened fixed flags and refusals; the start-up probe and `IsolationUnavailableError`; orphan sweep; tests with a fake engine, plus a real-Docker suite that skips visibly | Phase 1 | ~5 d |
-| **PR-i2** the pool | single-use spares (default), `reuse: "worker"`, recycling, pool state on the heartbeat record | PR-i1 | ~3 d |
-| **PR-i3** policy details | `network: { name }`, mounts validation, `runtime` check, `security` options, the snap NNP message; hostile-job conformance test (the evidence's `hostile.ts`, as a test that skips without Docker) | PR-i1 | ~1.5 d |
-| **PR-i5** platform isolation capability | `isolation` in summon capabilities, `requireIsolation` on the policy, first-party providers declare theirs | 1.5p | ~2 d |
-| **PR-i7** docs | threat model, hardening guide, platform table, "what this does not promise" | PR-i2 | ~1.5 d |
-| *PR-i6* `sandbox` target | bubblewrap + delegated cgroup (only if Q9 says so) | PR-i1 | *~4 d* |
+| **PR-i0** `child-process` hardening — **done, #260** | `env` policy (allowlist by default, Q7); `uid`/`gid`; `cgroup`; per-attempt `maxBuffer`; docs: `worker-thread` is not a boundary | Phase 1 | ~1.5 d |
+| **PR-i1** the `container` target — **done, #287** | `WORKER_TARGET_KINDS` + `"container"`; the CLI engine; the stdio channel and `container-entry`; hardened fixed flags and refusals; the start-up probe and `IsolationUnavailableError`; orphan sweep; tests with a fake engine, plus a real-Docker suite that skips visibly | Phase 1 | ~5 d |
+| **PR-i2** the pool — **not started** | single-use spares (default), `reuse: "worker"`, recycling, pool state on the heartbeat record | PR-i1 | ~3 d |
+| **PR-i3** policy details — **partial**: all but `network: { name }` and the hostile-job test shipped in #287 | `network: { name }`, mounts validation, `runtime` check, `security` options, the snap NNP message; hostile-job conformance test (the evidence's `hostile.ts`, as a test that skips without Docker) | PR-i1 | ~1.5 d |
+| **PR-i5** platform isolation capability — **not started** | `isolation` in summon capabilities, `requireIsolation` on the policy, first-party providers declare theirs | 1.5p | ~2 d |
+| **PR-i7** docs — **partial**: the README's sections, #260 and #287 | threat model, hardening guide, platform table, "what this does not promise" | PR-i2 | ~1.5 d |
+| *PR-i6* `sandbox` target — *not started (Q9)* | bubblewrap + delegated cgroup (only if Q9 says so) | PR-i1 | *~4 d* |
 | | **Total** | | **~14.5 d** (+ ~4 d for PR-i6) |
+
+**Status 2026-10-11:** ~6.5 d of the ~14.5 d is done. That is PR-i0 and
+PR-i1, and PR-i1 carried most of PR-i3. Left: PR-i2, the rest of PR-i3,
+PR-i5 and the rest of PR-i7, about 8 d. The [status](#status-2026-10-11) has
+the detail.
 
 ### 10.2 Part 1: the gateway, sub-phase 2r (after 2b)
 
@@ -1309,17 +1561,25 @@ is second. The table below is the design as written on 2026-09-29.
 | **PR-g4** `http-poll` | the binding on both sides; h2 and h3 as `fetch` options; tests with a buffering-proxy fake | PR-g1 | ~3.5 d |
 | **PR-g5** summoned executors | `gateway` and `bootstrap` summon arguments, `runSummonedExecutor`, `start: "executor"`, release on `hello`, gateway-written claim and exit marks, gateway-driven idle close | PR-g3, 1.5p | ~4 d |
 | **PR-g6** docs and bench | `PROTOCOL.md` appendix for `http-poll` and credentials; a `gateway-loopback` bench scenario with a baseline; examples handed to the examples session | PR-g5 | ~2 d |
-| **PR-i4** executor `target` | `createRemoteExecutor({ target })`, so handlers run in the `container` target | PR-i1, 2a | ~1.5 d |
+| **PR-i4** executor `target` — **not started**; its dependencies have merged | `createRemoteExecutor({ target })`, so handlers run in the `container` target | PR-i1, 2a | ~1.5 d |
 | | **Total** | | **~22 d**, of which ~4 d moves out of 2d: **~18 d net** |
 
 Deferred: **PR-g7** adoption, `handOverJobLock` on five drivers and the
 two-host test, ~4 d (Q5).
+
+**Status 2026-10-11:** no 2r PR has started. PR-g1a waits on PR-2b2. Of 2a,
+PR-2a1–2a3 have merged (#261, #263, #270), and PR-2a4 is next. PR-i4 could
+start now.
 
 **Other owners.** The examples session: a gateway example per binding, a
 summoned-executor example, a hostile-job demo against the `container`
 target (~3 d). The UI session: executor sessions and their isolation on the
 Workers page, and the `container` target badge (~1.5 d). Both are told
 before the PRs that change what they read.
+
+**Status 2026-10-11:** the UI's `container` badge shipped with #287, and its
+Workers screen shows the image and runtime. No example yet uses a `container`
+target, the hostile-job demo included, and the playground has none either.
 
 ---
 
@@ -1348,32 +1608,48 @@ bun-jobs session's total rises from ~169.5 d (WR §11) to **~202 d**. The
 first protection reaches users right after 1.5p, **without waiting on any
 part of Phase 2**.
 
+**Status 2026-10-11, row by row:**
+
+| Order | State |
+|---|---|
+| 1 | 1.5p merged (2026-09-30) |
+| 2 | PR-i0 merged (#260, 2026-10-01), and PR-i1 (#287, 2026-10-09), which carried most of PR-i3. PR-i2, the rest of PR-i3 and PR-i7 are left. 1.5c–1.5e have not started |
+| 3 | PR-i5 not started. 1.5c has not started, so no first-party cloud provider exists to declare its isolation. The one provider today is `localCompute` (#268), which this plan predates |
+| 4 | 1.5f done. 1.5g and 1.5s have not started (SC) |
+| 5 | 2a: PR-2a1–2a3 merged (#261, #263, #270), PR-2a4–2a12 not started. 2b not started. PR-i4 is unblocked |
+| 6 | 2r not started. Re-sliced as PR-g1a, g1b, g2–g6 (WR §11) |
+| 7–9 | not started |
+
+The ~202 d total stands as an estimate; nothing here has re-measured it.
+
 ---
 
 ## 12. Names needing approval
 
-Every new public name, for the user's approval. Nothing here is built.
+Every new public name, for the user's approval. Nothing here was built on
+2026-09-29. **Status 2026-10-11:** the last column says which names have
+shipped. Names are approved PR by PR, and WR §11 lists the 2r names per PR.
 
-| Name | Kind | Where | Why this name |
-|---|---|---|---|
-| `createWorkerGateway` | function | `./gateway` (new entry) | mirrors `createJobsApi`; "gateway" is Phase 2's word for the host side |
-| `WorkerGateway`, `WorkerGatewayOptions` | types | `./gateway` | its return value and options |
-| `gateway.mint`, `gateway.revoke`, `gateway.attach` | methods | `WorkerGateway` | `attach` as the API socket's `attach` |
-| `BunJobsGatewayModule` | Nest module | bun-nest `./jobs` | as `BunJobsApiModule` |
-| `http-poll` | binding id | `PROTOCOL.md`, `RemoteTransportCapabilities.binding` | RT's naming style (`ws-reverse`) |
-| `dialHttp` | function | `./remote/serve` | beside RT's `dialWebSocket` and `dialTcp` |
-| `poll`, `rekey`, `rekeyed` | message types | `PROTOCOL.md` | added to RT's twenty |
-| `runSummonedExecutor` | function | `./remote/serve` | beside `runSummoned` |
-| `--bun-jobs-summon-gateway`, `--bun-jobs-summon-bootstrap` | summon arguments (`SUMMON_ARGS.gateway`, `.bootstrap`) | `summon/args.ts` | the existing prefix |
-| `start: "worker" \| "executor"` | policy field | `SummonPolicy` | what the summoned compute starts |
-| `requireIsolation` | option | `SummonPolicy`, gateway queue options | one name in both places |
-| `isolation` | capability | summon capabilities (1.5p) | beside `dedupe`, `passes` |
-| `"container"` | target kind | `WORKER_TARGET_KINDS`, `WorkerTargetKind` | what it is |
-| `ContainerTarget` | type | root and `./queue` | as `ChildProcessTarget` |
-| `IsolationUnavailableError` | error class (a `ConfigError`) | root | says what failed |
-| `@kingsleyweb/bun-jobs/container-entry` | package entry | `exports` | the runner inside the image |
-| `handOverJobLock` | optional driver method | `QueueDriver` | **only if Q5 is yes** |
-| `abandonAfterMs`, `orphanTimeoutMs`, `pollHoldMs`, `rekeyLeadMs` | options | executor and gateway | timing names in RT's style |
+| Name | Kind | Where | Why this name | State (2026-10-11) |
+|---|---|---|---|---|
+| `createWorkerGateway` | function | `./gateway` (new entry) | mirrors `createJobsApi`; "gateway" is Phase 2's word for the host side | not built (PR-g2) |
+| `WorkerGateway`, `WorkerGatewayOptions` | types | `./gateway` | its return value and options | not built (PR-g2) |
+| `gateway.mint`, `gateway.revoke`, `gateway.attach` | methods | `WorkerGateway` | `attach` as the API socket's `attach` | not built (PR-g2, PR-g3) |
+| `BunJobsGatewayModule` | Nest module | bun-nest `./jobs` | as `BunJobsApiModule` | not built (PR-g2) |
+| `http-poll` | binding id | `PROTOCOL.md`, `RemoteTransportCapabilities.binding` | RT's naming style (`ws-reverse`) | not built (PR-g4). **Superseded:** the interface is `TransportCapabilities` (WR R18) |
+| `dialHttp` | function | `./remote/serve` | beside RT's `dialWebSocket` and `dialTcp` | not built (PR-g4). The version option is `httpVersion` (WR Q-2.9) |
+| `poll`, `rekey`, `rekeyed` | message types | `PROTOCOL.md` | added to RT's twenty | not built (PR-g3, PR-g4) |
+| `runSummonedExecutor` | function | `./remote/serve` | beside `runSummoned` | not built (PR-g5) |
+| `--bun-jobs-summon-gateway`, `--bun-jobs-summon-bootstrap` | summon arguments (`SUMMON_ARGS.gateway`, `.bootstrap`) | `summon/args.ts` | the existing prefix | not built (PR-g5) |
+| `start: "worker" \| "executor"` | policy field | `SummonPolicy` | what the summoned compute starts | not built (PR-g5) |
+| `requireIsolation` | option | `SummonPolicy`, gateway queue options | one name in both places | not built (PR-g2 or PR-i5, whichever is second: WR R19) |
+| `isolation` | capability | summon capabilities (1.5p) | beside `dedupe`, `passes` | not built (PR-i5) |
+| `"container"` | target kind | `WORKER_TARGET_KINDS`, `WorkerTargetKind` | what it is | **shipped**, #287 |
+| `ContainerTarget` | type | root and `./queue` | as `ChildProcessTarget` | **shipped**, #287 (root and `./queue`) |
+| `IsolationUnavailableError` | error class (a `ConfigError`) | root | says what failed | **shipped**, #287 |
+| `@kingsleyweb/bun-jobs/container-entry` | package entry | `exports` | the runner inside the image | **shipped**, #287 (`package.json` `exports`) |
+| `handOverJobLock` | optional driver method | `QueueDriver` | **only if Q5 is yes** | not built (deferred, Q5) |
+| `abandonAfterMs`, `orphanTimeoutMs`, `pollHoldMs`, `rekeyLeadMs` | options | executor and gateway | timing names in RT's style | not built (PR-g1b, PR-g5, PR-g4, PR-g3) |
 
 ---
 

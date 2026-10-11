@@ -15,7 +15,12 @@ properly documented."*
 
 Written 2026-09-25 on `docs/phase2-transports`, stacked on the Phase 1 branch
 (`e11cc8c`). **No code was changed.** Every repository line number below was
-read at `e11cc8c`.
+read at `e11cc8c`, except where a dated status note says otherwise.
+
+**Status updated 2026-10-11** against `develop` at `e7246b69`: see
+[Status (2026-10-11)](#status-2026-10-11). Where the code or a later
+decision has made a statement here wrong, the statement is kept and a
+**Status note (2026-10-11)** beside it says what holds now.
 
 It extends two plans and does not repeat them:
 
@@ -33,7 +38,148 @@ It extends two plans and does not repeat them:
 Where this document and those two disagree about transports, this one is
 newer.
 
+> **Status note (2026-10-11).** Three later documents now override parts of
+> this one, and win where they disagree: the gateway plan
+> [`worker-gateway-and-isolation.md`](worker-gateway-and-isolation.md)
+> (decided 2026-09-29: sub-phase **2r** and the `http-poll` binding), the
+> PR slicing in [`worker-runtimes.md` §11, "Phase 2 as
+> PRs"](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r) (its R1–R24
+> reconciliation, and Q-2.1 to Q-2.13, all accepted 2026-10-01), and the
+> merged code under `packages/bun-jobs/lib/remote/`.
+
+### Status (2026-10-11)
+
+Read on `develop` at `e7246b69` (2026-10-11), from merged PRs, the code
+and its tests. Nothing below trusts this plan's own claims.
+
+**Summary.** Phase 2 has started and is about **13% done by the plan's own
+estimates** (~10.5 d of ~79 d of transport-plan work). Three of 2a's twelve
+PRs have merged, all on the *executor* side and the protocol core:
+
+- the messages and HTTP signing: PR-2a1, #261, 2026-10-01;
+- the text frames, frame MAC, replay window and SSE parser: PR-2a2, #263,
+  2026-10-01;
+- the reference executor `createRemoteExecutor()` over unary HTTP, with the
+  canary, `health`, `status`, `/healthz` and `/readyz`: PR-2a3, #270,
+  2026-10-06.
+
+**Nothing on the gateway side exists yet.** There is no `RemoteWorker`, no
+`RemoteTarget`, no `"endpoint"` target kind, no execute facet and no
+`./remote/serve`. So bun-jobs cannot yet send a job to a remote executor
+over any binding. No binding beyond the executor half of `http` is built,
+and there are no `docs/remote/` pages, no transport examples and no
+Workers-page health.
+
+**The biggest remaining piece** is the rest of 2a: PR-2a4 to PR-2a12, about
+28.5 d. It contains the first user-visible result: PR-2a4, a worker running
+its jobs on a remote over unary HTTP. After it, the sessions and
+reliability layer of 2b (~9.5 d) carry everything else.
+
+**In flight:** nothing. No open PR or branch touches Phase 2 on 2026-10-11.
+The only open PR, #372, is unrelated.
+
+#### By sub-phase
+
+The order is the one in force since 2026-09-29: **2a, 2b, 2r, 2c, the rest
+of 2d, 2e, 2f** (gateway plan Q2, amending Q-T1 below). Efforts are the
+reconciled ones of `worker-runtimes.md` §11.
+
+| Sub-phase | State | PRs | What is left | Effort left / planned |
+|---|---|---|---|---|
+| **2a**: protocol, health, execute facet, `http`, `http-stream` | **PARTIAL**: 3 of 12 PRs | #261 (PR-2a1), #263 (PR-2a2), #270 (PR-2a3) | PR-2a4 `RemoteTarget` and `RemoteWorker`; 2a5 batching and the attempt state machine; 2a6 the execute facet and `httpsExecute`; 2a7 health and the session shape; 2a8 `http-stream` and `serveHttp`; 2a9 fakes and re-measure; 2a10 `RemoteRunner`; 2a11 `PROTOCOL.md`; 2a12 guides | ~28.5 d / ~39 d |
+| **2b**: the reliability layer, `ws` | NOT STARTED | — | PR-2b1, 2b2, 2b3 | ~9.5 d / ~9.5 d |
+| **2r**: the gateway (`worker-gateway-and-isolation.md`) | NOT STARTED | — | Carries this plan's `ws-reverse` and its claim gate: PR-g1a (~2.5 d) and PR-g1b (~2 d), moved out of 2d. Its other PRs (g2–g6) belong to the gateway plan | ~4.5 d of this plan's work, within 2r's ~22 d |
+| **2c**: `tcp`, TLS, Unix, the binary codec, sealing, the Python executor | NOT STARTED | — | All of §7.7, §4.3.2, §4.4.3 | ~10 d / ~10 d |
+| **2d** (what remains): reverse TCP, SSE session mode | NOT STARTED | — | §7.6's reverse TCP; §7.4 (c) | ~4.5 d / ~4.5 d (was ~8.5 d) |
+| **2e**: `udp` | NOT STARTED | — | All of §7.8 and §4.5.3 | ~10 d / ~10 d |
+| **2f**: HTTP/2 flag, informative `.proto` | NOT STARTED | — | §7.9, appendices F and G | ~1.5 d / ~1.5 d |
+| **Phase 3**, this plan's part (§13.2) | NOT STARTED | — | The per-binding conformance, the shipped fakes, the session-shape kit checks, "Writing a transport" | ~5.5 d |
+| **Phase 4**, this plan's part (§13.2) | NOT STARTED | — | Per-binding bench scenarios, the tier-3 real-network script (Appendix B) | ~4 d |
+| Examples session (§11.6) | NOT STARTED | — | Nine examples and the failure demos; nothing under `examples/bun-jobs/` uses `./remote` | ~6 d |
+| UI session (§12) | NOT STARTED | — | Binding badge, health state, canary result, session counts, health filter. Q-2.12: built once, after PR-2a7 | ~2 d |
+
+**Remaining effort:** about **68.5 d** of Phase 2 transport work
+(2a ~28.5, 2b ~9.5, `ws-reverse` in 2r ~4.5, 2c ~10, 2d ~4.5, 2e ~10, 2f
+~1.5). On top of that: ~5.5 d in Phase 3, ~4 d in Phase 4 and ~8 d for the
+examples and UI sessions. The gateway's own work in 2r (~17.5 d) is costed
+in the gateway plan.
+
+#### 2a and 2b, PR by PR
+
+The PRs are those sliced in `worker-runtimes.md` §11.
+
+| PR | State | Evidence | Left |
+|---|---|---|---|
+| PR-2a1 messages and signing | **DONE**, #261 | `lib/remote/constants.ts` (`REMOTE_OPS`, `WORKER_PROTOCOL_FEATURES`, `REMOTE_PROBLEM_CODES`); `lib/remote/schemas.ts` (11 HTTP envelopes, 20 session messages); `signEnvelope`/`verifyEnvelope` (`lib/remote/signing.ts:463`, `:480`); `createRemoteNonceCache` (`lib/remote/nonce.ts:50`); the MAC seam, Q-2.10 (`lib/remote/mac.ts`, `lib/remote/host/mac.ts`); entries `./remote` and `./lib/remote` (`package.json`, `consumer-check.json:240`, `:366`); `__tests__/remote/remote-signing.test.ts`, `remote-schemas.test.ts`, `remote-bundle.test.ts` | — |
+| PR-2a2 text frames | **DONE**, #263 | `encodeTextFrame`/`decodeTextFrame` and `frameMacInput` (`lib/remote/protocol/frame.ts:231`, `:452`, `:196`); `admitHello` (`:555`); `TextFrameWindow` (`lib/remote/protocol/sequence.ts:69`); `SseParser`, `readSse` (`lib/remote/protocol/sse.ts:71`, `:226`); vectors from `packages/bun-jobs/scripts/generate-frame-vectors.ts` into `__tests__/remote/fixtures/text-frame-vectors.json`, checked by `remote-frame-vectors.test.ts`; the `EventSource` ban (`remote-eventsource-ban.test.ts`). Internal, per Q-2.3 | The vectors wait for `PROTOCOL.md`'s appendix V (PR-2a11) |
+| PR-2a3 reference executor, unary | **DONE**, #270 | `createRemoteExecutor` (`lib/remote/executor/executor.ts:1046`); `createRemoteExecutorStore` (`executor/store.ts:73`); `REMOTE_CANARY_JOB` (`executor/canary.ts:17`); `RemoteMessageTooLargeError` (`lib/shared/errors.ts:520`); package README "Remote executors" (`packages/bun-jobs/README.md:4245`); `__tests__/remote/remote-executor*.test.ts` (five files) | `RemoteExecutor` is the fetch handler only: `acceptSession`, `readiness` and `drain` are PR-2a7's (§9) |
+| PR-2a4 `RemoteTarget`, `RemoteWorker` | NOT STARTED | `WORKER_TARGET_KINDS` has no `"endpoint"` (`lib/shared/workers.ts:221-227`); no `RemoteWorker`, `jobs.remoteWorker` or `HandlerNotFoundError` class (0 hits); the unrecoverable check (`BunQueueWorker.ts:3992-3993`) does not know it yet | ~4 d |
+| PR-2a5 batching, attempt state machine | NOT STARTED | No `RemoteAttemptLostError` (0 hits) | ~3.75 d |
+| PR-2a6 execute facet, exchange shape | NOT STARTED | `COMPUTE_PROVIDER_API` is `{ core: "0.1", summon: "0.2" }` and an `execute` facet is still a `ConfigError` (`lib/provider/version.ts:81-83`); no `httpsExecute`, `ExecuteFacet`, `TransportCapabilities` (0 hits) | ~2.75 d |
+| PR-2a7 health and the session shape | NOT STARTED | No `RemoteHeartbeatOptions`, `RemoteHealthOptions`, `DuplexSession`, `acceptSession` (0 hits) | ~4 d |
+| PR-2a8 `http-stream`, `serveHttp` | NOT STARTED | No `./remote/serve` entry, no `serveHttp` (0 hits) | ~3.25 d |
+| PR-2a9 fakes, frozen executor, re-measure | NOT STARTED | No `bufferingHttpProxy`, `idleCuttingProxy`, `spawnExecutor` (0 hits). Bun 1.4.3 was released 2026-10-10 and the spikes have not been re-run on it | ~2.25 d |
+| PR-2a10 `RemoteRunner` | NOT STARTED | `InvokeEnvelope.kind` is `"job"` only (`lib/remote/types.ts:327`). The Q-2.8 spec is unwritten | ~3 d |
+| PR-2a11 `PROTOCOL.md`, `LIMITATIONS.md` | NOT STARTED | `packages/bun-jobs/docs/` holds only `providers/` | ~3 d |
+| PR-2a12 guides | NOT STARTED | No `docs/remote/` | ~2.5 d |
+| PR-2b1 reliability layer | NOT STARTED | — | ~4 d |
+| PR-2b2 WebSocket forward | NOT STARTED | No `wsExecute`, `serveWebSocket` (0 hits) | ~4 d |
+| PR-2b3 WebSocket docs, re-measure | NOT STARTED | — | ~1.5 d |
+
+#### By section of this plan
+
+| § | Deliverable | State |
+|---|---|---|
+| §4.1–§4.2 | The twenty messages and their bodies | **DONE as schemas** (#261), with changes noted in §4 and §4.2: three exchange-only `op`s; `queue` on job references (#270) |
+| §4.3.1, §4.4.1, §4.4.2 (text) | Text frame, frame MAC, handshake MAC, replay rules | **DONE** (#263) |
+| §4.3.2, §4.4.3, §4.4.2 (binary, UDP) | Binary frame, sealing, `pn` window | NOT STARTED (2c, 2e) |
+| §4.4.5 | X25519 forward-secret mode | NOT STARTED; Phase 4; Q-T3 open |
+| §4.5 | Reliability layer | NOT STARTED (PR-2b1; §4.5.3 in 2e) |
+| §4.6 | Session state machine | NOT STARTED (PR-2a7, PR-2b1) |
+| §4.7 | Attempt state machine | **Executor side DONE for unary** (#270: run, retain, join, `status`). Gateway side NOT STARTED (PR-2a5). The `rejected` arc is superseded (Q-2.2, see §4.7) |
+| §4.8 | Backpressure | Executor's `BUSY` at `maxBatch`/`maxConcurrency` **DONE** (#270); the gateway's NOT STARTED |
+| §4.9 | Idempotency, fencing, re-attachment | Executor's store, `STALE_FENCE` and `DUPLICATE_RUNNING` **DONE** (#270); gateway re-attachment NOT STARTED |
+| §4.10 | Problem codes; WebSocket close codes | Codes **DONE** (17, #261 and #270); close codes NOT STARTED (PR-2b2) |
+| §4.11 | Cancellation | The executor's `cancel` POST **DONE** (#270); the gateway NOT STARTED |
+| §5.1–§5.3 | Liveness, readiness, canary | **Executor half DONE** (#270): `ping`/`pong`, `health`, the built-in canary (steps ≤ 10, `stepMs` ≤ 1,000). Gateway half (timers, `proving`) NOT STARTED (PR-2a7) |
+| §5.4 | Breaker inputs, the four health states | NOT STARTED (PR-2a7) |
+| §5.5 | `/healthz`, `/readyz` | **DONE for the HTTP executor** (#270); the TCP and UDP health servers come with 2c and 2e |
+| §5.7 | Buffering probe | NOT STARTED (PR-2a8). The probe rule was measured by the slicing spike (`evidence/phase2-slicing/`) |
+| §7.2 `http` | Unary binding | Executor **DONE** (#270); gateway NOT STARTED (PR-2a4) |
+| §7.3 `http-stream` | Streamed binding | NOT STARTED (PR-2a8) |
+| §7.4 `sse` | (a) parser, (b) `Last-Event-ID`, (c) session mode | (a) **DONE** (#263); (b) NOT STARTED (PR-2a8); (c) NOT STARTED (2d) |
+| §7.5 `ws` | Forward WebSocket | NOT STARTED (PR-2b2) |
+| §7.6 `ws-reverse`, reverse TCP | Reversed bindings | NOT STARTED. `ws-reverse` **moved to 2r** (PR-g1a, PR-g1b); reverse TCP stays in 2d |
+| §7.7 `tcp` / §7.8 `udp` / §7.9 HTTP/2 | Bindings | NOT STARTED (2c / 2e / 2f) |
+| §7.10 gRPC, §7.12 brokers | Plugins | Nothing first-party to build, as designed. The `.proto` is 2f; the broker guide is Phase 3 |
+| §7.11 HTTP/3, QUIC | Deferred | **DEFERRED** as designed. HTTP/3 also arrives as an experimental `fetch` option of the gateway's `http-poll` (gateway plan Q4) and of `httpVersion` (Q-2.9) |
+| — `http-poll` | A reversed binding over plain HTTP | **Added after this plan** by the gateway plan (Q4, 2026-09-29), in 2r (PR-g4). NOT STARTED |
+| §8 | Configuration (`RemoteEndpointTransportOptions`, schemes) | NOT STARTED (PR-2a4, 2a7, 2a8, g1a, 2f) |
+| §9 | `createRemoteExecutor`, `./remote/serve` | Fetch handler **DONE** (#270); session members and every `serve*`/`dial*` NOT STARTED |
+| §10 | Conformance | Tier-1 tests for what exists **DONE** (17 test files in `__tests__/remote/`); `conformRemoteExecutor`, the fakes, `runExecuteConformance` NOT STARTED |
+| §11 | Documentation | The package README's "Remote executors" section **DONE** (#270); every file of §11.1 NOT STARTED; the text-frame vectors exist (#263) |
+| §11.6 | Examples | NOT STARTED |
+| §12 | Observability, Workers page | NOT STARTED (PR-2a4, PR-2a7; UI after PR-2a7, Q-2.12) |
+| §2.1, §14 | Re-measure on a shipped Bun | NOT STARTED. Bun 1.4.3 is released (2026-10-10); this machine now runs `1.4.4-canary.1` |
+| Appendix B | Real-network measurements | NOT STARTED (Phase 4 tier 3) |
+
+#### Decisions taken after this plan was written
+
+| Date | Decision | Where | Effect here |
+|---|---|---|---|
+| 2026-09-29 | Sub-phase **2r** right after 2b, carrying `ws-reverse`, the claim gate and the mountable gateway | gateway plan Q2 | Amends T15 and Q-T1's order; §7.6 moves |
+| 2026-09-29 | A new reversed binding, **`http-poll`**, with HTTP/2 and HTTP/3 as `fetch` options | gateway plan Q4 | §1.4 gains a row; §7.11 gains a path for HTTP/3 |
+| 2026-10-01 | Q-2.2: a `rejected` invoke is **retried inside the claim**; no driver method returns a claimed job uncounted | WR §11 | §4.7, §4.8 |
+| 2026-10-01 | Q-2.3: the text-frame codec stays **internal** | WR §11 | Built so (#263) |
+| 2026-10-01 | Q-2.4: `PayloadTooLargeError` is renamed **`RemoteMessageTooLargeError`** | WR §11 | §3.3, §7.5, §10.1; built (#270) |
+| 2026-10-01 | Q-2.9: `httpVersion: "1.1" \| "2" \| "3"` | WR §11 | §8.2 |
+| 2026-10-01 | Q-2.10: the MAC seam, `node:crypto` on the host and WebCrypto in the core | WR §11 | Built (#261); T3, §14 |
+| 2026-10-01 | Q-2.13: `lambdaExecute` leaves 2a | WR §11 | 2a is ~39 d, not ~38 d |
+| 2026-10-06 | `cancel` and `status` name the queue (`queue: { ns, queue }`) | #270, the user's choice | §4.2 |
+
 ### Contents
+
+- [Status (2026-10-11)](#status-2026-10-11): what is built, what is left
 
 1. [Executive summary](#1-executive-summary)
 2. [What the evidence forces](#2-what-the-evidence-forces)
@@ -77,6 +223,12 @@ is listed in [Appendix B](#appendix-b-what-still-needs-a-real-network). The
 spikes must be re-run on the release Phase 2 ships against, and that re-run
 is a gate item of every sub-phase in §13.
 
+> **Status note (2026-10-11).** Bun v1.4.3 was released on 2026-10-10, and
+> this machine now runs `1.4.4-canary.1+71d0d4399`. No spike of this plan has
+> been re-run on either. The slicing spikes of 2026-10-01
+> (`evidence/phase2-slicing/`) ran on the same `1.4.3-canary.1` build. The
+> re-measure is PR-2a9's and PR-2b3's.
+
 This plan's history has three withdrawn claims, each an inference presented as
 a finding (`worker-runtimes.md` appendix). The evidence files keep [I] and [U]
 visibly apart from [M] and [V]; so does this one.
@@ -119,7 +271,7 @@ Response`), and the first-party transports are written on that public API.
 |---|---|---|
 | T1 | **Separate the message protocol from the transport.** One protocol, versioned by `WORKER_PROTOCOL_VERSION`; bindings are appendices of `PROTOCOL.md`. | WR §5's envelopes already say what to carry; only the framing differs per transport. `worker-runtimes.md` §5.2 already said a later WebSocket would be "a re-framing of the same envelopes" [V-prior]. Inngest Connect puts the same JSON body inside its socket envelope [V-prior prior-art-survey §Inngest]. |
 | T2 | **The reliability layer lives in the core, not in the UDP binding.** Resumption on WebSocket and TCP needs sequence numbers, acknowledgements and an outbox anyway; UDP only adds retransmission timers, a window and fragmentation on top of the same machinery. | One implementation serves reconnection on every session transport and reliability on UDP and on at-most-once brokers. It also keeps the UDP binding thin enough to be written on the public API (§3.2), which the no-privileged-internals rule requires. |
-| T3 | **Every frame is authenticated individually,** bound to `(session, direction, sequence)`. On a transport the core must treat as not confidential, frames are AEAD-sealed. | A session transport has no request boundary for WR §5.6's whole-body signature. Per-frame authentication also fixes a weakness WR §5.10 documented: progress frames on a stream were applied before the stream's signature could be verified. Cost: ~10–12 µs per frame with `crypto.subtle` [M A]. |
+| T3 | **Every frame is authenticated individually,** bound to `(session, direction, sequence)`. On a transport the core must treat as not confidential, frames are AEAD-sealed. | A session transport has no request boundary for WR §5.6's whole-body signature. Per-frame authentication also fixes a weakness WR §5.10 documented: progress frames on a stream were applied before the stream's signature could be verified. Cost: ~10–12 µs per frame with `crypto.subtle` [M A]. **Status note (2026-10-11):** that figure is one HMAC. A whole text frame, built and then parsed and verified, costs 27–30 µs with `crypto.subtle` and 4.8–7.6 µs with `node:crypto` [M, WR §11 R22]. So the core has a MAC seam: WebCrypto by default, with `node:crypto` injected on the Bun host (Q-2.10; built in #261, `lib/remote/mac.ts`, `lib/remote/host/mac.ts`). The per-frame MAC bound to `sid`, `dir`, `seq` and `ack` is built as designed (#263). |
 | T4 | **The `execute` facet has two shapes**: exchange (`send(Request) → Response`, unchanged) and session (`open()`/`listen()` → a duplex session of frames). | HTTP is request/response; forcing it into a pipe helps nobody. Existing exchange providers (`httpsExecute`, `lambdaExecute`, Acme Functions) keep working. |
 | T5 | **Health is three checks on every binding**: liveness, readiness, and a functional canary through the real handler path. Plus a plain HTTP `/healthz`/`/readyz` on every executor for the platform. | A ping proves the socket, not the handler. Platforms cannot health-check a WebSocket (ALB [V aws-alb-hc]) or UDP (NLB checks UDP targets over TCP/HTTP [V aws-nlb-hc]; AKS has no UDP probes [V az-aks-lb]), and some check only at deploy (Railway [V railway-hc]). The protocol heartbeat is the one signal that works everywhere [V platform §4.3]. |
 | T6 | **Every deadline is an application timer.** No liveness or heartbeat deadline uses `idleTimeout`, `socket.timeout()` or `fetch`'s `timeout`. | Bun's built-in network timers fire in 4-second ticks, and `fetch`'s never before ~8 s [M bun cross-cutting 1]; `AbortSignal.timeout()` is exact [M bun §1.6, M A]. |
@@ -127,11 +279,11 @@ Response`), and the first-party transports are written on that public API.
 | T8 | **Heartbeat loss with a live gateway fails the attempt fast**, as `RemoteAttemptLostError`: retryable, and it counts as an attempt, as a crashed child process does today. | The gateway holds the lease the whole time (`BunQueueWorker.ts:2228-2232`, `:3429-3458`) [S], so it can decide without waiting for the lease to lapse and the stalled sweep to run. The next attempt carries a larger fence (WR §5.8), so a partitioned executor that is still running cannot settle. |
 | T9 | **HTTP/2 is an experimental flag on the HTTP bindings, first-party.** | Same binding, different `fetch` option; multiplexing measured [M bun §6.2]; experimental in Bun [V bun §6.1]. |
 | T10 | **gRPC is a third-party plugin.** bun-jobs publishes an informative `.proto` of the message protocol. | No Bun API; `Bun.serve` cannot send trailers [M bun §6.4]; an interoperable codec means hand-written protobuf or an npm library the dependency policy forbids in a published package. A plugin package may depend on `@grpc/grpc-js`. §7.10 |
-| T11 | **HTTP/3 and raw QUIC are deferred**, with the session API shaped so a plugin can add them without an API change. | Bun: "Don't ship `http3: true` to production yet" [V bun §6.10]; the h3 client cannot pin a per-executor CA [M bun §6.9]; `node:quic` is "Early development" [V bun §6.12]. §7.11 |
+| T11 | **HTTP/3 and raw QUIC are deferred**, with the session API shaped so a plugin can add them without an API change. | Bun: "Don't ship `http3: true` to production yet" [V bun §6.10]; the h3 client cannot pin a per-executor CA [M bun §6.9]; `node:quic` is "Early development" [V bun §6.12]. §7.11. **Status note (2026-10-11):** still deferred as a binding. HTTP/3 also appears now as an experimental `fetch` option: of the gateway's `http-poll` (gateway plan Q4) and of `httpVersion: "3"` (Q-2.9). Neither is built |
 | T12 | **TCP and UDP are specified in full, and first-party**, with their honest value recorded: polyglot executors and private networks, not reach. | The user asked for them. The research recommended against them because they reach no platform WebSocket cannot [V platform §1.2]; §1.3 answers that. |
 | T13 | **UDP frames are always AEAD-sealed; there is no plaintext UDP mode.** | There is no DTLS in Bun: `Bun.udpSocket({ tls })` is silently ignored [M bun §5.7]. AES-256-GCM costs the same as HMAC per 1,200-byte frame (11.8 µs against 11.5 µs) [M A], so integrity-only would save nothing. |
 | T14 | **Brokered transports (NATS, MQTT, AMQP, Kafka) are plugins** on the session shape, with `direction: "brokered"`. | Every one needs an npm client. The core's reliability layer covers an at-most-once broker. §7.12 |
-| T15 | **Phase 2 is split into sub-phases 2a–2f, all committed, built in order 2a, 2b, 2c, 2d, 2e, 2f** (the user's decision, 2026-09-25, Q-T1). 2a (HTTP unary and streamed, the health model, the session-capable facet) is the first milestone. | 2a alone reaches every platform with an inbound HTTP path [V platform §1.1], so it is the natural first release; each later sub-phase adds a binding on the layers before it. §13 |
+| T15 | **Phase 2 is split into sub-phases 2a–2f, all committed, built in order 2a, 2b, 2c, 2d, 2e, 2f** (the user's decision, 2026-09-25, Q-T1). 2a (HTTP unary and streamed, the health model, the session-capable facet) is the first milestone. | 2a alone reaches every platform with an inbound HTTP path [V platform §1.1], so it is the natural first release; each later sub-phase adds a binding on the layers before it. §13. **Status note (2026-10-11):** the order was amended on 2026-09-29 (gateway plan Q2) to **2a, 2b, 2r, 2c, the rest of 2d, 2e, 2f**, with 2r taking `ws-reverse` out of 2d. Three of 2a's twelve PRs have merged |
 
 ### 1.3 What the research recommended, and why this plan specifies TCP and UDP anyway
 
@@ -184,6 +336,14 @@ Where each is hostable is in §7.7 and §7.8, taken from the matrix.
 | gRPC | plugin | no; informative `.proto` in 2f docs | — | partial |
 | HTTP/3, QUIC | — | deferred | — | NLB QUIC listeners; CF edge |
 | NATS, MQTT, AMQP, Kafka | plugin | no; mapping guide in Phase 3 | — | wherever the broker is |
+| HTTP long-poll, reversed (added later) | `http-poll` | yes | 2r | wherever the executor has outbound HTTP |
+
+> **Status note (2026-10-11).** Two rows have changed since this table was
+> written. `ws-reverse` lands in **2r** (gateway plan Q2, 2026-09-29), as
+> PR-g1a and PR-g1b; reverse TCP stays in 2d. `http-poll` is the gateway
+> plan's addition (its Q4), specified in `worker-gateway-and-isolation.md`
+> §4.7, not here. **No binding is built yet.** Only the executor half of
+> `http` exists (#270).
 
 ---
 
@@ -195,7 +355,7 @@ Where each is hostable is in §7.7 and §7.8, taken from the matrix.
 |---|---|---|
 | `idleTimeout`, `socket.timeout(n)` and `fetch`'s `timeout` fire in 4-second ticks; `fetch`'s never before ~8 s | [M bun cross-cutting 1] | T6: every protocol deadline is an app timer or `AbortSignal.timeout()`. Built-in timers are set to their maximum or `0` and act only as backstops. |
 | `AbortSignal.timeout(200)` fired at 201 ms; 250 → 250 ms; 1000 → 1001 ms | [M bun §1.6, M A] | The timer the design relies on is accurate at the granularity it needs. |
-| `EventSource` is `undefined` at runtime although bun-types declares it | [M bun §2.1] | The SSE parser, reconnect and `Last-Event-ID` are ours (§7.4). A lint rule or a test forbids `EventSource` in `lib/`, because it typechecks and then throws. |
+| `EventSource` is `undefined` at runtime although bun-types declares it | [M bun §2.1] | The SSE parser, reconnect and `Last-Event-ID` are ours (§7.4). A lint rule or a test forbids `EventSource` in `lib/`, because it typechecks and then throws. **Built (#263):** the parser (`lib/remote/protocol/sse.ts`) and an AST test with a negative control (`__tests__/remote/remote-eventsource-ban.test.ts`) |
 | `Bun.serve` holds the header block until the first body chunk; `fetch()` does not resolve until then | [M bun §1.4] | Every streaming executor writes its first frame (`accepted`, or an SSE comment) immediately (§7.3). |
 | A quiet stream is cut by `idleTimeout` unless `server.timeout(req, 0)` | [M bun §1.7, §2.6] | Executor servers call `server.timeout(req, 0)` on every streamed response; liveness is the heartbeat. |
 | `maxRequestBodySize` (default 128 MiB) caps the *total* of a streamed upload, and errors rather than truncates | [M bun §1.10] | No binding streams frames in a request body indefinitely; the SSE session mode sends gateway frames as separate POSTs (§7.4). |
@@ -205,7 +365,7 @@ Where each is hostable is in §7.7 and §7.8, taken from the matrix.
 | UDP has no flow control (a same-process burst lost 99.5% in the receive buffer); `Bun.udpSocket` has no receive-buffer option; ICMP errors reach `error()` as `undefined`; no DNS in `send()`; no DTLS | [M bun §5.2, §5.4, §5.6, §5.7] | The core's send window (§4.5.3), a lookup before connect, an `error` handler that never dereferences its argument, AEAD in the core (§7.8). |
 | HTTP/2 server and client work, experimental; default `fetch` does not use h2 | [M bun §6.1–§6.3] | HTTP/2 is an explicit, experimental flag (§7.9). |
 | h3 `fetch` refuses a per-request `tls.ca` or `serverName` | [M bun §6.9] | HTTP/3 is deferred (§7.11). |
-| HMAC-SHA256 via `crypto.subtle`: 10.3 µs (64 B), 11.5 µs (1,200 B), 23.4 µs (16 KiB) per sign, sequential; `node:crypto` `createHmac` 1.7 µs at 1,200 B; HKDF → AES-256-GCM round-trips, 16-byte overhead, rejects a flipped byte, 11.8 µs per 1,200 B; X25519 and Ed25519 work | [M A] | Per-frame authentication is affordable (T3); AEAD for UDP costs nothing extra (T13); forward-secret sessions are possible later (§4.4.5). |
+| HMAC-SHA256 via `crypto.subtle`: 10.3 µs (64 B), 11.5 µs (1,200 B), 23.4 µs (16 KiB) per sign, sequential; `node:crypto` `createHmac` 1.7 µs at 1,200 B; HKDF → AES-256-GCM round-trips, 16-byte overhead, rejects a flipped byte, 11.8 µs per 1,200 B; X25519 and Ed25519 work | [M A] | Per-frame authentication is affordable (T3); AEAD for UDP costs nothing extra (T13); forward-secret sessions are possible later (§4.4.5). **Status note (2026-10-11):** per whole frame, 27–30 µs with `crypto.subtle` against 4.8–7.6 µs with `node:crypto` [M, WR §11 R22]; hence the MAC seam (Q-2.10, #261) |
 
 ### 2.2 Platform traps, and the rule each forces
 
@@ -231,6 +391,17 @@ Where each is hostable is in §7.7 and §7.8, taken from the matrix.
 | The management API's WebSocket session: three-valued `send()` handled (bytes, `-1` queued, `0` dropped), `maxBufferedBytes`, a heartbeat on a timer, `pong`, `resume` with gap reporting | `lib/api/ws/session.ts:53-60`, `:338-343`, `:514`, `:1443`; `lib/api/ws/protocol.ts:104`, `:157` [S] | The model for the WS binding's backpressure and resume handling. **Not the same socket** (`worker-runtimes.md` §5.1) |
 | The runner's IPC opens with `{ t: "ready", pid, protocol }` | `lib/runner/protocol.ts:186` [S] | Precedent for a versioned session handshake |
 | `stringifyBounded(value, maxBytes)` | `lib/shared/json.ts:49` [S] | Bounding every message before it is framed |
+
+> **Status note (2026-10-11).** The facts in this table still hold; the line
+> numbers have moved. On `develop` at `e7246b69` (`BunQueueWorker.ts`
+> unless named): the per-attempt lease timer is at `:2855-2857`;
+> `#heartbeat()` at `:4212`; the `heartbeatInterval` default at
+> `:1195-1197`; `DEFAULT_LOCK_DURATION` at `shared/constants.ts:135`; the
+> unrecoverable check at `:3992-3993`; the job timeout's `withTimeout` at
+> `:2897`; `WorkerTargetExecutor.run` at `queue/workerTarget.ts:255-271`;
+> the runner's `ready` message at `runner/protocol.ts:204`. The management
+> API's WebSocket session has grown to 1,683 lines, so its cited lines are
+> stale; the behaviour cited is still there (`api/ws/session.ts`).
 
 ---
 
@@ -260,6 +431,14 @@ Where each is hostable is in §7.7 and §7.8, taken from the matrix.
 - **The protocol core** is `lib/remote/protocol/` [D], browser-safe like
   `lib/api/contract/` (`worker-runtimes.md` §6.3), so an executor on workerd
   runs the same code. It owns everything that makes the conversation correct.
+  **As built (2026-10-11):** the core spans `lib/remote/`. Its parts are the
+  wire constants, schemas, HTTP signing, nonce cache and MAC seam
+  (`constants.ts`, `schemas.ts`, `signing.ts`, `nonce.ts`, `mac.ts`); the
+  text frames, replay window and SSE parser (`protocol/frame.ts`,
+  `protocol/sequence.ts`, `protocol/sse.ts`); and the executor
+  (`executor/`). The bundle tests hold every file reachable from `./remote`
+  to the browser. The one Bun-only file, `host/mac.ts`, sits outside that
+  graph.
 - **A binding** is the specification of how the core's frames ride one
   transport: an appendix of `PROTOCOL.md` (§11.5).
 - **A transport** is the code implementing a binding on one side. Host side,
@@ -300,7 +479,7 @@ is known by name [D]. The TypeScript is in `compute-provider-plugins.md`
 | `ordered` | boolean | `false`: the core reorders by sequence number before delivering |
 | `reliable` | boolean | `false`: the core retransmits, windows and acknowledges (§4.5.3) |
 | `maxFrameBytes` | bytes | Above it the core fragments (binary encoding only) |
-| `maxMessageBytes` | bytes | Above it a message is refused before sending: `PayloadTooLargeError`, non-retryable |
+| `maxMessageBytes` | bytes | Above it a message is refused before sending: `PayloadTooLargeError`, non-retryable. **Renamed `RemoteMessageTooLargeError`** (Q-2.4: bun-common already exports an HTTP 413 `PayloadTooLargeError`); the class exists since #270 (`lib/shared/errors.ts:520`) |
 | `encoding` | `"text"` \| `"binary"` | Picks the frame codec (§4.3) |
 | `confidential` | boolean | `false`: the core seals every frame with AEAD (§4.4.3). `true` only when the transport provides TLS to the executor, or the peer is loopback or a Unix socket |
 | `flowControl` | boolean | `false`: the core enforces its send window |
@@ -334,6 +513,18 @@ per-feature strings remain the way capabilities are negotiated; this plan adds
 `session`, `health`, `attempt-status`, `stream-resume`, `resume`, `canary` and
 `udp-aead` to that map.
 
+> **Status note (2026-10-11).** Built in #261, with additions
+> (`lib/remote/constants.ts`). `WORKER_PROTOCOL_FEATURES` has eleven strings:
+> `cancel`, `idempotency`, `fencing`, `progress-stream`,
+> `replay-protection`, `session`, `health`, `canary`, `attempt-status`,
+> `stream-resume`, `resume`. `replay-protection` is new; `udp-aead` waits
+> for 2e. The reference executor advertises `cancel`, `health`, `canary` and
+> `replay-protection`. It also advertises `idempotency`, `fencing` and
+> `attempt-status` when it has a store (`executor/executor.ts:367-375`).
+> `REMOTE_PROBLEM_CODES` has seventeen codes: §4.10's, plus
+> `SIGNATURE_MISSING`, `SIGNATURE_TIMESTAMP`, `VALIDATION` (400) and
+> `INTERNAL` (500), and `SESSION_ELSEWHERE` waits for 2d.
+
 ### 4.1 The messages
 
 `dir`: `g→e` gateway to executor, `e→g` the reverse. **Class**: `R` is
@@ -366,6 +557,12 @@ acknowledgements).
 | `ack` | either | 0 | A bare acknowledgement when nothing else is going the other way within `ackDelayMs` | MUST (session shape) |
 | `close` | either | R | Ending the session, with a code; `drain: true` means "no new invokes, in-flight attempts continue" | MUST |
 | `problem` | either | R | A non-fatal protocol error as a `ProblemDto` (`UNSUPPORTED_OP`, a malformed message) | MUST |
+
+> **Status note (2026-10-11).** `REMOTE_OPS` (#261) lists these twenty and
+> three more that exist only on the exchange shape: `handshake` (the `GET`
+> answer), `invoke-result` and `cancel-result`. The twenty session messages
+> are schemas (`lib/remote/schemas.ts:353` on), internal until the session
+> layer (PR-2a7) uses them.
 
 The exchange shape (`http`, `http-stream`) uses a subset: `invoke`,
 `cancel`, `health` and `status` are POSTs as WR §5.3 has them, and the answers
@@ -430,6 +627,17 @@ so the gateway can refuse a stale one.
 {"op":"close","code":"DRAINING","drain":true,"retryAfterMs":0,"at":…}
 {"op":"problem","problem":{"type":"urn:bun-jobs:error:UNSUPPORTED_OP","title":"…","status":400,"code":"UNSUPPORTED_OP"},"fatal":false,"at":…}
 ```
+
+> **Status note (2026-10-11).** Two shapes changed in the code. **`cancel`,
+> `status` and `status-result` name the queue**: every job reference is
+> `{ queue: { ns, queue }, job, attempt }` (`RemoteJobRef`,
+> `RemoteAttemptStatus`, `RemoteCancelledJob`, `lib/remote/types.ts:86-92`,
+> `:225-256`). Without it, two queues holding the same job id and attempt
+> were indistinguishable. That was the user's choice in #270, and
+> `heartbeat.running` gains the same field in PR-2a7. **The `invoke`
+> envelope also carries `worker: { id, key }`**, beside its flat
+> `namespace` and `queue` (`types.ts:316-341`). Its `kind` is `"job"` only
+> until `RemoteRunner` (PR-2a10).
 
 `error` is bun-common's `SerializedError`, and `result`/`fail` bodies are
 exactly WR §5.5's outcome objects plus `op`, `attempt` and `fence`. The unary
@@ -715,6 +923,17 @@ Enabled when the transport declares `reliable: false`, `ordered: false` or
                                                            attemptsMade unchanged)
 ```
 
+> **Status note (2026-10-11): the `rejected` arc is superseded.** No driver
+> method returns a claimed job without counting the attempt: the claim
+> increments `attemptsMade`, and `failJob` either retries or kills (WR §11
+> R14). Q-2.2 (accepted 2026-10-01) decided that a `rejected` invoke is
+> **retried inside the claim**, like a transport retry. It backs off by
+> `retryAfterMs`, then tries another session, and the lease is renewed
+> meanwhile. A rejection that outlives the attempt's time fails like any
+> attempt. This keeps §4.13's promise of no new driver methods. The gateway
+> side is unbuilt (PR-2a5). The executor's `rejected` outcome exists
+> (#270).
+
 **Why a lost attempt counts as an attempt** [D, T8]. The executor accepted
 it and may have done part of the work: that is what a crashed child process
 is today, and a crashed child process's attempt counts. It is retryable, so a
@@ -748,6 +967,10 @@ Sessions add two more [D]:
 `rejected` with `BUSY` or `DRAINING`, and a `send()` that rejected before the
 executor could have seen the invoke, release the job without moving
 `attemptsMade`, exactly as WR §5.5's `rejected` row.
+
+> **Status note (2026-10-11): superseded by Q-2.2** (see §4.7). Such an
+> invoke is retried inside the claim rather than released. The attempt has
+> already been counted at the claim, and the retry never counts it twice.
 
 ### 4.9 Idempotency, fencing, and lost responses
 
@@ -838,7 +1061,7 @@ additions [D]:
 | WR §5.3 Endpoints | Unchanged for the exchange shape, plus two SHOULD operations, `health` and `status`. Session transports use the messages of §4.1. |
 | WR §5.4 Handshake | Unchanged for HTTP (`GET`). On a session transport the same document arrives in `welcome`. New feature strings (§4 above). |
 | WR §5.5 Invoke | Unchanged body; adds `kind`. Per-job `accepted`/`rejected` on streaming bindings; outcomes become `result`/`fail` messages whose bodies are WR §5.5's outcome objects. |
-| WR §5.6 Signing | Unchanged for the exchange shape's request and unary response. **Adds the per-frame MAC** (§4.4.1) and **sealing** (§4.4.3). The `https`-only rule extends to `wss`; `tcp://` and `udp://` are allowed because their frames are sealed. |
+| WR §5.6 Signing | **As built (#261):** the payload carries a direction label, `t "." d "." raw` with `d` = `q` (request) or `r` (response); a bodyless `GET` signs `t ".q." id`; the nonce cache is keyed on the signed payload, not the unsigned `bun-jobs-id` header (`lib/remote/signing.ts:1-50`). Otherwise unchanged for the exchange shape's request and unary response. **Adds the per-frame MAC** (§4.4.1) and **sealing** (§4.4.3). The `https`-only rule extends to `wss`; `tcp://` and `udp://` are allowed because their frames are sealed. |
 | WR §5.7 State machine | Refined by §4.6 and §4.7 here; the job's own states are unchanged: **push mode still adds no job states and no driver methods**. |
 | WR §5.8 Idempotency and fencing | Unchanged; adds re-attachment before retry (§4.9) and outcome retention. |
 | WR §5.9 Leases | Unchanged: option A. Remote heartbeats are liveness evidence, never lease renewal (§5.6). |
@@ -915,6 +1138,16 @@ what the gateway will use next.
 An executor that does not advertise `canary` is proved by `health` alone, and
 the Workers page says "not functionally probed".
 
+> **Status note (2026-10-11).** The executor's half is built (#270,
+> `lib/remote/executor/canary.ts`). It reserves `bun-jobs:canary`
+> (`REMOTE_CANARY_JOB`), and `createRemoteExecutor` refuses a handler under
+> that name. It emits `steps` progress values `stepMs` apart (defaults 3 and
+> 100 ms, capped at 10 and 1,000 ms), writes one log line, runs the author's
+> checks (each bounded at 5 s) and answers `{ nonce, checks }`. On unary
+> `http` the progress and the log arrive in the outcome. The gateway's half
+> is PR-2a7: running it at open, on the interval and as the half-open probe,
+> and checking the result.
+
 ### 5.4 Thresholds, the breaker, and what the Workers page shows
 
 The circuit breaker of §5.7 and §10.2 of `worker-runtimes.md` gains health
@@ -961,6 +1194,12 @@ So **every executor serves plain HTTP/1.1 on a port the platform can probe**
 | `GET /healthz` | `200` with `{"ok":true}`, or `503` | The process is up and its event loop answers | none, and it discloses nothing |
 | `GET /readyz` | `200` or `503` with `{"ready":false,"reason":"draining"}` | Accepting work: not draining, capacity above zero, the author's readiness checks pass; for a **reversed** executor, *connected to at least one gateway*, which is Inngest Connect's rule for its `readinessProbe` [V inngest-connect] | none |
 
+**As built (2026-10-11, #270):** `GET …/healthz` answers `200 {"ok":true}`.
+`GET …/readyz` answers `200 {"ready":true}`, or `503` with reason `busy`
+when every slot is taken, or `checks-failed` when an author check fails
+(`lib/remote/executor/executor.ts:670-679`). The `draining` reason waits
+for `drain()` (PR-2a7).
+
 For `http`/`http-stream` executors these are two more routes on the same
 server (an executor mounted at a path serves them under that path too). For
 `ws` executors they are routes on the same `Bun.serve` that upgrades the
@@ -987,6 +1226,9 @@ for the Workers page, never to route.
   lost with it in flight, enters the lost path (§4.7).
 - A handler may call `ctx.heartbeat()` to send a heartbeat now (coalesced to
   at most one per 250 ms), as a sign of life before a long blocking step.
+  **As built (#270):** `RemoteContext.heartbeat()` exists. On unary `http`
+  it resolves at once, because there is no channel to send on
+  (`lib/remote/executor/types.ts:89-94`).
 - The gateway's own lease renewal is untouched: `#heartbeat()` keeps calling
   `extendJobLock` on its timer, and a lost lock aborts the attempt and sends
   `cancel` (`BunQueueWorker.ts:3429-3458`) [S]. The worker still holds the
@@ -1082,7 +1324,7 @@ it must handle.**
 |---|---|
 | Establishment | The gateway POSTs to the endpoint URL; `GET` is the WR §5.4 handshake. Exchange shape, forward |
 | Framing | One request body, one response body: WR §5.3's envelopes, unchanged |
-| Signing | WR §5.6 unchanged: HMAC over `t "." rawBody`, both directions |
+| Signing | WR §5.6 unchanged: HMAC over `t "." rawBody`, both directions. **As built (#261):** `t "." d "." rawBody`, with `d` = `q` for a request and `r` for a response, so a captured response cannot be replayed as a request; a bodyless `GET` signs `t ".q." id` (`lib/remote/signing.ts:1-50`) |
 | Ordering, reliability | One exchange; a lost response is re-attached by re-POSTing the same invoke (§4.9) |
 | Max message | The handshake's `maxBodyBytes` (default 1 MiB), reconciled with the facet's `maxMessageBytes` |
 | Keepalive, idle | None within an exchange. Keep-alive connections between exchanges [M bun §1.8]. The executor sets `idleTimeout: 255`, or `server.timeout(req, 0)`, because a long job is a silent request [M bun §1.7] |
@@ -1092,6 +1334,7 @@ it must handle.**
 | Health | Canary as a POST; `/healthz` and `/readyz` on the same server |
 | Hostable | Wherever there is inbound HTTP [V platform §1.1] |
 | Bun | `fetch`'s `timeout` is an idle timer with an ~8 s floor, so the invoke's deadline is `AbortSignal.timeout(deadline)` [M bun §1.11, §1.6]. `fetch` queues above 256 in flight (`BUN_CONFIG_MAX_HTTP_REQUESTS`) [V bun §1.12], so `maxInFlight` above 256 needs that raised, and the docs say so |
+| Status (2026-10-11) | **Executor side DONE** (#270): `createRemoteExecutor` answers the `GET` handshake, `POST` `invoke`, `cancel`, `ping`, `health` and `status`, with `/healthz` and `/readyz`. A job's failure is a `fail` outcome inside a 200, never an HTTP error. The defaults are `maxBatch` 1, `maxDurationMs` 300,000, `maxBodyBytes` 1 MiB, `maxConcurrency` 64 and `idempotencyTtl` 600,000 (README "Remote executors", `packages/bun-jobs/README.md:4245`). **Gateway side NOT STARTED** (PR-2a4, PR-2a5) |
 
 ### 7.3 HTTP with a streamed response (`http-stream`)
 
@@ -1124,6 +1367,16 @@ SSE is two things in this design, and they land at different times [D].
 `data`, `event`, `id`, `retry` and events split across writes [M bun §2.4].
 It is ~40 lines, lives in `lib/remote/protocol/sse.ts` [D], and never touches
 the global `EventSource`, which typechecks and throws.
+
+> **Status note (2026-10-11): the parser is built** (#263), as `SseParser`
+> and `readSse` in `lib/remote/protocol/sse.ts`. The file is 251 lines with
+> its documentation, because it follows the WHATWG rules in full: a leading
+> BOM, CR, LF and CRLF line ends (split across chunks too), comments
+> returned, no dispatch without data, digits-only `retry`, and
+> `maxEventLength`. An AST test bans `EventSource` in `lib/`. The SSE plan
+> in `bun-native-routes.md` may later move the parser to
+> `@kingsleyweb/bun-common/sse` (its PR-sse5, not started). The stream
+> framing (a) and re-attachment (b) on the gateway are PR-2a8.
 
 **(b) Re-attachment with `Last-Event-ID` (2a, feature `stream-resume`).** When
 a stream drops mid-attempt, the gateway sends `GET <url>?attempt=<job>:<attempt>`,
@@ -1158,7 +1411,7 @@ plain HTTP/1.1 where WebSocket is not available or is stripped, with
 | Framing | One WebSocket **text** message per text frame. Binary messages are refused with `4400` |
 | Signing | Per-frame MAC (§4.4.1) |
 | Ordering, reliability | Ordered and reliable per connection; across reconnects, the reliability layer's resume (§4.5.2) |
-| Max message | `welcome.maxMessageBytes`, at or below the executor's `maxPayloadLength`. The sender refuses an oversize message itself (`PayloadTooLargeError`), because Bun closes an oversize frame with `1006`, not `1009` [M bun §3.5] |
+| Max message | `welcome.maxMessageBytes`, at or below the executor's `maxPayloadLength`. The sender refuses an oversize message itself (`PayloadTooLargeError`, renamed `RemoteMessageTooLargeError` by Q-2.4), because Bun closes an oversize frame with `1006`, not `1009` [M bun §3.5] |
 | Keepalive, idle | Application `ping`/`heartbeat` every 10 s. Bun's `sendPings` stays on as a backstop only: a paused client is closed by the server but **still shows the socket as open** [M bun §3.11], so the gateway (the client here) runs its own liveness timer |
 | Backpressure, executor (server) side | Every `send()` result is checked: bytes sent, `-1` queued, **`0` dropped** [M bun §3.6]. `0` is treated as a dead session (close `4429`, resume), never ignored. `backpressureLimit` is set, `closeOnBackpressureLimit` is `false`, and the executor stops producing frames while `getBufferedAmount()` is above `maxBufferedBytes`, resuming on `drain`, as the management API's session does (`api/ws/session.ts:53-60`, `:1443`) [S] |
 | Backpressure, gateway (client) side | The client's `bufferedAmount` is unbounded [M bun §3.8], so the transport refuses `send()` above its high-water mark and polls `bufferedAmount` to learn when it has drained. There is no client send status (`send()` returns `undefined` [M bun §3.4]) |
@@ -1190,6 +1443,17 @@ ingress off, an ECS task with no load balancer, anything behind NAT
 | TLS | The gateway needs a certificate the executors trust. A private CA pinned in the executor's config is the expected case |
 | Health | `/readyz` on the executor is `200` only while connected to at least one gateway [V inngest-connect]; the gateway runs the canary on each new executor session |
 | Where it breaks | (1) **Not on FaaS**: a reversed socket needs a process that stays alive between jobs; Inngest states the same limit for Connect [V inngest-connect]. Durable Objects can hold an outbound WebSocket but it "do[es] not hibernate" and pins the object for up to 15 minutes [V cf-do-ws]. (2) **The worker becomes a server**: a listener, TLS, auth, and a public or peered address, which WR §5.2 chose HTTP push to avoid [V-prior]. (3) **A relay is infrastructure**: when the *gateway* cannot have an inbound address either, something both sides dial must exist. bun-jobs ships none; a broker plugin (§7.12) is that relay. (4) **No scale from zero**: nothing can start a stopped executor through its own socket; pair it with summon-compute (Phase 1.5) [I]. (5) **Egress idle clocks**, above |
+
+> **Status note (2026-10-11).** `ws-reverse` **moved to sub-phase 2r**
+> (gateway plan Q2, 2026-09-29), as PR-g1a (the listener, the executor
+> registry, `4403`, the claim gate) and PR-g1b (`dialWebSocket`). The
+> mountable `createWorkerGateway` (PR-g2) is built on them. **"A gateway
+> claims only as much as its connected executors advertise" needs a
+> claim-loop change.** The `concurrency` setter clamps to at least 1, so a
+> worker with no executor connected would still claim one job (WR §11 R12).
+> PR-g1a adds an internal claim gate: capacity supplied by the target, with
+> `0` allowed. Its executor key becomes a derived, scoped key from PR-g3.
+> Not started.
 
 **Reverse TCP** is the same arrangement over §7.7's framing
 (`listen: "tcp+tls://0.0.0.0:7443"`), for executors that allow outbound TCP
@@ -1488,6 +1752,9 @@ export interface RemoteEndpointTransportOptions {
    */
   httpVersion?: "1.1" | "2";
 }
+// Status note (2026-10-11): Q-2.9 settled one spelling for the target and
+// the gateway's `dialHttp`: `httpVersion: "1.1" | "2" | "3"`, mapped to
+// `fetch`'s `protocol`, with "2" and "3" experimental. It lands with 2f.
 
 /** TLS settings for reaching an executor. */
 export interface RemoteTlsOptions {
@@ -1550,6 +1817,13 @@ export interface RemoteHealthOptions {
   probePlatform?: boolean;
 }
 ```
+
+> **Status note (2026-10-11).** None of §8 is built. The fields land in
+> this order: `url`, `secret` and the base target in PR-2a4; `heartbeat`,
+> `health` and `sessions` in PR-2a7; `tls` and `binding` in PR-2a8;
+> `listen` in PR-g1a; `httpVersion` in 2f. `RemoteHeartbeatOptions` also
+> carries `acceptTimeoutMs`, from PR-2a5. The target's `timeout` default
+> follows Q-T12's proposal, which PR-2a4 confirms.
 
 `WORKER_CONFIG_KEYS` gains **no** transport keys. §8.2 of
 `worker-runtimes.md` refused `endpointUrl` as a remote-code-execution control
@@ -1625,10 +1899,27 @@ Promise<HealthCheck[]> }` (the author's readiness and canary checks),
 `resultRetentionMs`, `resumeBufferBytes`, `maxConcurrency` (the capacity it
 advertises) and `heartbeatMs` (the most frequent heartbeat it will send).
 
+> **Status note (2026-10-11): as built (#270).** `RemoteExecutor` is today
+> only the fetch handler, `(request: Request) => Promise<Response>`
+> (`lib/remote/executor/types.ts:312`). PR-2a7 adds `acceptSession`,
+> `readiness` and `drain`. The options are `handlers` (a `"*"` key catches
+> every name), `secret` (one key of at least 32 bytes, or a rotation list),
+> `name`, `maxBatch`, `maxDurationMs`, `maxBodyBytes`, `maxConcurrency`,
+> `idempotencyTtl`, `store` (`createRemoteExecutorStore`), `nonces`, `onLog`
+> and `health`. The check takes no argument and returns
+> `RemoteHealthCheck[]`, not `HealthCheck[]`. `resultRetentionMs` does not
+> exist yet: `idempotencyTtl` (10 min) is how long outcomes are retained.
+> `resumeBufferBytes` and `heartbeatMs` come with PR-2b1 and PR-2a7. On
+> unary `http`, `job.updateProgress()` and `job.log()` reach the gateway in
+> the outcome, not as frames.
+
 **The servers**, a new entry `./remote/serve` [D]. It uses Bun APIs, so it is
 **not** browser-safe and not for workerd; FaaS executors keep using the fetch
 handler and `defineRuntimeAdapter`. Each server handles the Bun behaviour of §2.1
-so the author does not have to:
+so the author does not have to. **Status note (2026-10-11): none is built.**
+No `./remote/serve` entry exists yet. `serveHttp` is PR-2a8,
+`serveWebSocket` PR-2b2 and `dialWebSocket` PR-g1b. `serveTcp` is 2c,
+`dialTcp` 2d and `serveUdp` 2e.
 
 | Function | Binding | What it takes care of |
 |---|---|---|
@@ -1701,7 +1992,7 @@ plugin) and runs one suite over it.
 | lost response | the channel is cut after `accepted`: the gateway re-attaches (`status`, `Last-Event-ID`, or re-POST) and settles once |
 | reconnection | the connection is cut mid-attempt: the session resumes with no duplicate and no gap; with the outbox forced to overflow, `resumed: false` and `status` recover |
 | fencing | a stale `fence` is refused `STALE_FENCE` (SHOULD) |
-| limits | an oversize message is refused by the sender with `PayloadTooLargeError`, not by a platform close |
+| limits | an oversize message is refused by the sender with `PayloadTooLargeError` (renamed `RemoteMessageTooLargeError`, Q-2.4), not by a platform close |
 | platform probe | `/healthz` answers `200`; `/readyz` is `503` while draining |
 
 ### 10.2 Binding-specific checks
@@ -1717,6 +2008,13 @@ plugin) and runs one suite over it.
 
 ### 10.3 Where it lives
 
+- **Status note (2026-10-11).** Nothing of §10 is built beyond tier-1
+  tests for the executor and the protocol core: 17 files in
+  `packages/bun-jobs/__tests__/remote/`, with known-answer vectors and
+  mutation checks (#261, #263, #270). Per WR §11 R15, 2a's own fakes
+  (`bufferingHttpProxy`, `idleCuttingProxy`, `spawnExecutor`) are built
+  first as test helpers under `__tests__/helpers/` in PR-2a9. Phase 3 moves
+  them into `./remote/testing`.
 - `./remote/testing`: the generalised `conformRemoteExecutor`, and the fakes
   above, **shipped**, because a third party writing a transport or a polyglot
   executor needs the lossy UDP proxy as much as we do. Each fake is a small
@@ -1761,6 +2059,16 @@ All under `packages/bun-jobs/docs/`, shipped in the package (`files` gains
 | `docs/remote/health.md` | operators | The health model, the states on the Workers page, and platform health-check recipes |
 | `docs/remote/LIMITATIONS.md` | everyone | `worker-runtimes.md` §5's typed "this transport cannot do that" list, now per binding |
 | `docs/remote/polyglot/python-tcp/executor.py` | implementers | A stdlib-only Python executor over `tcp+tls` (§11.3) |
+
+> **Status note (2026-10-11).** No file in this table exists yet.
+> `packages/bun-jobs/docs/` holds only `providers/`, and `files` already
+> ships `docs` (WR §11 R6). What exists is the package README's "Remote
+> executors: `createRemoteExecutor`" section (`packages/bun-jobs/README.md:4245`,
+> #270). It covers the options, mounting the executor where the body is
+> untouched, and what the store remembers. The first pages are PR-2a11
+> (`PROTOCOL.md`, `LIMITATIONS.md`) and PR-2a12 (`README.md`,
+> `transports.md`, the `http` and `http-stream` guides, `health.md`, the
+> executor guide's first three sections).
 
 ### 11.2 The transport selection guide
 
@@ -1880,6 +2188,14 @@ checklist of §7.1:
 The vectors are generated by a script and checked by a test, so the document
 cannot drift from the code [D].
 
+> **Status note (2026-10-11).** The text-frame vectors are built (#263).
+> `packages/bun-jobs/scripts/generate-frame-vectors.ts` writes
+> `__tests__/remote/fixtures/text-frame-vectors.json` and exits 1 with
+> `--check` when they are stale. `remote-frame-vectors.test.ts` checks them,
+> and they were cross-checked with `openssl`. The HTTP signature has its
+> own known-answer vectors (#261). Appendix V itself waits for PR-2a11. The
+> binary-frame, HKDF and AES-GCM vectors wait for 2c.
+
 ### 11.6 Runnable examples, for the examples session
 
 A new directory, `examples/bun-jobs/NN-transports/`, each example against a
@@ -1914,6 +2230,10 @@ name; generating one would need `openssl`, which Bun cannot replace [I].
 Per the examples protocol, the bun-jobs session sends a change report at each
 sub-phase that lands a binding, and the examples session writes and runs that
 binding's examples before the README links them.
+
+> **Status note (2026-10-11).** None of these examples exists, and nothing
+> under `examples/` imports `@kingsleyweb/bun-jobs/remote`. The first,
+> `http.ts`, needs PR-2a4's gateway, and the failure demos need PR-2a9.
 
 ### 11.7 How the documentation stays true
 
@@ -1956,6 +2276,12 @@ examples session is told before merge (`CLAUDE.md`).
 `WORKER_EVENT_TYPES` gains nothing: a health change is a `state` event with a
 reason, as `worker-runtimes.md` §8.4 decided.
 
+> **Status note (2026-10-11).** Not started. `WorkerTargetInfo`
+> (`lib/shared/workers.ts:241`) has no `endpoint` or `remote` yet. The base
+> block lands in PR-2a4 (WR §11 R24), and `health` and `sessions` in
+> PR-2a7. The UI builds the Target card's remote half once, after PR-2a7
+> (Q-2.12).
+
 ---
 
 ## 13. Phases and effort
@@ -1979,6 +2305,15 @@ by role.
 Q-T1), and are built **in order: 2a, 2b, 2c, 2d, 2e, 2f**. 2b's reliability
 layer is what 2c–2e build on; 2f depends only on 2a but is scheduled last.
 
+> **Status note (2026-10-11): the order is amended.** On 2026-09-29 the
+> user accepted the gateway plan's Q2. The order is now **2a, 2b, 2r, 2c,
+> the rest of 2d, 2e, 2f**. 2r takes `ws-reverse` and its claim gate out of
+> 2d, about 4 d, and adds the gateway, scoped keys, `http-poll` and summoned
+> executors. Q-2.1 (accepted 2026-10-01) also lets 2r's PRs merge once their
+> own dependencies have, ahead of 2a's documentation PRs. Progress: PR-2a1,
+> 2a2 and 2a3 have merged (#261, #263, #270), and nothing else
+> ([Status](#status-2026-10-11)).
+
 **2a is the first milestone** (~38 d). It already reaches every platform with
 an inbound HTTP path, with health, live progress and heartbeats wherever the
 path streams, and an honest `degraded` where it does not, so it is a release
@@ -1989,6 +2324,10 @@ three, reconciled with the code at `2973212` and with the gateway's 2r, in
 [`worker-runtimes.md` §11, "Phase 2 as PRs"](worker-runtimes.md#phase-2-as-prs-2a-2b-and-2r).
 2a becomes ~39 d there (`lambdaExecute` leaves it; the MAC seam, the execute
 facet's DTO and the record's `remote` block are costed).
+**Status note (2026-10-11):** "not yet approved" is out of date. The
+slicing's open questions, Q-2.1 to Q-2.13, were all accepted on
+2026-10-01. Each PR's public names are still approved PR by PR, and those
+of PR-2a1 to PR-2a3 were approved and merged.
 
 **The execute stability gate** (`compute-provider-plugins.md` §10.4) covers
 more than it did: the facet is proven transport-agnostic only when at least
@@ -2020,6 +2359,13 @@ the bun-jobs session writes it; the examples session's
 | Phase 4 | ~10 d | **~11 d** |
 | All phases, bun-jobs session (`worker-runtimes.md` §11) | ~108 d | **~169.5 d** |
 | Other owners | ~14.5 d | **~22.5 d** |
+
+> **Status note (2026-10-11).** Reconciled, this plan's Phase 2 work is
+> ~79 d: 2a ~39, 2b ~9.5, `ws-reverse` in 2r ~4.5, 2c ~10, 2d ~4.5, 2e
+> ~10, 2f ~1.5. About ~10.5 d of it is done (PR-2a1 ~4, 2a2 ~3.5, 2a3 ~3)
+> and **~68.5 d is left**. Phase 3's and Phase 4's additions here (~5.5 d
+> and ~4 d) and the other owners' ~8 d are not started. The gateway's own
+> ~17.5 d in 2r is costed in `worker-gateway-and-isolation.md`.
 
 The ~61.5 d added is the user's request in full. About 9.5 d of it is the
 bun-jobs session's documentation (the examples session's ~6 d is on top), and
@@ -2058,7 +2404,12 @@ is narrow (§1.3).
   [M A]. Heartbeats and batched acknowledgements make it negligible, but a
   handler that reports progress in a tight loop would not be:
   `job.updateProgress()` on an executor is coalesced to one frame per 100 ms
-  per attempt [D].
+  per attempt [D]. **Status note (2026-10-11):** a whole frame measured
+  27–30 µs with `crypto.subtle` and 4.8–7.6 µs with `node:crypto` [M, WR
+  §11 R22]. The MAC seam (Q-2.10, built in #261) puts `node:crypto` on the
+  Bun host. #263 noted a further ~6 µs per call available in the WebCrypto
+  key cache. `lib/remote/mac.ts` is unchanged since #261, so that saving
+  is presumably not taken; this was not measured.
 - **Reverse mode makes the worker a server**, with a listener, a certificate
   and an address, which WR §5.2 chose HTTP push to avoid. The user guide says so
   before its first example.
@@ -2080,6 +2431,18 @@ is narrow (§1.3).
   2b–2f be scheduled on demand?~~ **Decided 2026-09-25 by the user: all of
   2a–2f is committed (~77.5 d), built in order 2a, 2b, 2c, 2d, 2e, 2f.**
   §13.1, T15 and `worker-runtimes.md` §11 carry the schedule.
+  **Status note (2026-10-11):** the order was amended on 2026-09-29 (gateway
+  plan Q2) to 2a, 2b, 2r, 2c, the rest of 2d, 2e, 2f.
+> **Status note (2026-10-11).** Q-T2 to Q-T11 are all still open: no merged
+> code settles any of them. Each needs the user only when its sub-phase
+> starts. Q-T6, Q-T7 and Q-T11 come first, with PR-2a5 and PR-2a7. Q-T10
+> comes with PR-2a6 and PR-2a8, and Q-T8 with 2c. Q-T9 comes with the rest
+> of 2d, Q-T2 and Q-T3 with 2e, and Q-T4 with 2f. Q-T5 is separate: the
+> gateway plan's `http-poll` and broker plugins do not answer it. Only Q-T3
+> (before UDP leaves `experimental`) and Q-T11 ("counts") carry a
+> recommendation. Q-T2 leans toward no, since an integrity-only mode would
+> save nothing measurable. The rest have none.
+
 - **Q-T2** UDP is always sealed (T13). Should an integrity-only mode exist
   for private networks where encryption is not wanted? It would save nothing
   measurable [M A].
@@ -2126,6 +2489,12 @@ is narrow (§1.3).
   proposed: no one figure suits both a 30 s Lambda and a 60 min Cloud Run
   request, while `maxDurationMs` is the platform's own. The reasoning is in
   WR §4.2.8.
+  **Status note (2026-10-11):** the rule's removal stands. The default is
+  still unconfirmed. PR-2a4 (`RemoteEndpointTarget.timeout`, "with Q-T12's
+  default", WR §11) is where the implementer confirms it, and it has not
+  started. The cited lines have moved: the lease timer is at
+  `BunQueueWorker.ts:2855-2857`, `#heartbeat()` at `:4212`, and the job
+  timeout's `withTimeout` at `:2897`.
 
 ---
 
@@ -2169,6 +2538,13 @@ const aes = await crypto.subtle.deriveKey(
 **What this does not show.** The `crypto.subtle` figures are sequential and
 include promise overhead; concurrent throughput was not measured. The
 `node:crypto` figure is synchronous and not usable in a browser-safe core.
+
+> **Status note (2026-10-11).** The slicing spike of 2026-10-01 measured
+> what this one did not: a whole frame (27–30 µs `crypto.subtle`, 4.8–7.6
+> µs `node:crypto`) and concurrency (2.5 µs wall per sign with 64 in
+> flight, but still ~10 µs of CPU: WebCrypto runs on a thread pool).
+> [`evidence/phase2-slicing/`](evidence/phase2-slicing/README.md) has the
+> details. Both crypto paths are built, behind the MAC seam (#261).
 
 ---
 
