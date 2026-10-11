@@ -47,7 +47,8 @@ What is left:
 - one line in `CLAUDE.md` (§11), never added;
 - the optional test-file renames (§9, step 6);
 - the examples' own non-local helper names, which are on the examples session's schedule;
-- one new naming drift that needs a decision: `summonRemoteStatus` (below).
+- one new naming drift, decided and fixed on 2026-10-11: the summon status
+  flag and testid, now `summonStoredStatus` and `summon-stored` (below).
 
 | Deliverable | State | PRs | Evidence on develop | Left |
 |---|---|---|---|---|
@@ -103,14 +104,15 @@ names are optional, and each owner decides when.
 
   That grep was a merge-time gate. As a check it is retired: once Phase 2
   began, *remote* became a legitimate identifier again.
-- **A naming drift, against D3 and §5.** The management API's capability flag
-  `features.summonRemoteStatus` (#314: `api/contract/types.ts:4133`,
-  `api/routes/meta.ts:128,251`) means "summon status read from storage, for a
-  controller in another process". That is the non-local sense. So does the UI
-  testid `summon-remote` (`SummonPanel.tsx:181`, from #223), whose own copy
-  says "This queue's controller runs in another process". Both conflict with
-  §5's rule that *remote* in an identifier means "executes elsewhere". See
-  the open question below.
+- **A naming drift, against D3 and §5, now fixed.** The management API's
+  capability flag `features.summonStoredStatus` (#314 named it with *Remote*;
+  `api/contract/types.ts`, `api/routes/meta.ts`) means "summon status read
+  from storage, for a controller in another process". That is the non-local
+  sense. So does the UI testid `summon-stored` (`SummonPanel.tsx`, from #223,
+  also named with *remote* until then), whose own copy says "This queue's
+  controller runs in another process". Both conflicted with §5's rule that
+  *remote* in an identifier means "executes elsewhere", and both were renamed
+  on 2026-10-11 (the decision below).
 - **The §9 artifacts are gone.** The features session's scratchpad
   (`…/ae3600c2-…/scratchpad/`) no longer exists, so `rename-mapping.tsv`,
   `rename-do-not-change.txt` and `apply.pl` cannot be re-run. The §2 tables
@@ -129,14 +131,13 @@ names are optional, and each owner decides when.
   - the description-assertion form (§11) is backticked (`api-runners.test.ts:981,984`);
   - the `"PausedRemote"` per-badge edit is in (`screen.test.tsx:192`);
   - the example file names were settled by #161.
-- **Open: `summonRemoteStatus` and `summon-remote`.** D3 names the
-  "registered in another process" sense *non-local* for identifiers, and §5
-  reserves *remote* for remote execution. By this plan's rules the flag would
-  be something like `summonNonLocalStatus` (or `summonStoredStatus`, after
-  what it reads), and the testid would be `summon-non-local`. Recommendation:
-  rename both while nothing is published (the flag is a wire field, so
-  changing it costs nothing now and a migration later), or record an explicit
-  exception in this plan. No decision is recorded yet.
+- **Decided 2026-10-11 (the user): `summonStoredStatus` and `summon-stored`.**
+  D3 names the "registered in another process" sense *non-local* for
+  identifiers, and §5 reserves *remote* for remote execution, so the flag
+  and the testid #314 and #223 named with *remote* were renamed after what
+  they read: `features.summonStoredStatus` and `summon-stored`. Nothing is
+  published, so there is no alias; the flag is computed per request and
+  never stored.
 - **Open, and not urgent: export `TypedRunHistoryPage`?** This is the §3.1
   scope addition. The bun-jobs session's 2026-09-25 decision stands (keep it
   unexported). Making it public is the examples session's to raise.
@@ -450,9 +451,9 @@ this rename, *remote* in an identifier means **executes elsewhere**, and
 nothing else.
 
 *As built (2026-10-11):* true at the merge (`a29b06ea`, §10.2 prints 0).
-Since then two identifiers use *remote* in the non-local sense again: the API
-flag `features.summonRemoteStatus` (#314) and the UI testid `summon-remote`
-(#223). See the open question in [§0](#0-status-2026-10-11).
+Since then two identifiers used *remote* in the non-local sense again: the API
+flag #314 added and a UI testid from #223. Both were renamed on 2026-10-11, to
+`features.summonStoredStatus` and `summon-stored` ([§0](#0-status-2026-10-11)).
 
 ## 6. Persisted and wire strings: do not change
 
@@ -900,8 +901,8 @@ to-do list.
 *As built:* at `a29b06ea` it prints **0**, so the prose pass was complete.
 On develop (`e7246b69`) it prints 616 lines. Nearly all of them are Phase 2's
 execution sense of *remote* (`lib/remote/**`, the `./remote` subpath,
-`createRemoteExecutor`). The rest are the non-local drift in §0
-(`summonRemoteStatus`, `summon-remote`). The check served as a merge gate and
+`createRemoteExecutor`). The rest were the non-local drift in §0
+(now `summonStoredStatus`, `summon-stored`). The check served as a merge gate and
 is retired now.
 
 **The set of lines it is allowed to leave behind:**
@@ -1035,7 +1036,8 @@ Run on the simulated head, with no database URLs set, so the SQL, Redis and Mong
   = control plane (stores intent, runs nothing); `Remote*` is reserved for
   remote execution". *Not done as of 2026-10-11*: no such line is in
   `CLAUDE.md` or `docs/agentic-setup.md`. It matters more now that Phase 2
-  ships `Remote*` names and #314 used `summonRemoteStatus` (§0).
+  ships `Remote*` names and #314 named a non-local flag with *Remote*
+  (§0; renamed `summonStoredStatus`).
 
 ## 12. Considered and rejected
 

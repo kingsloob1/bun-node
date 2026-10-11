@@ -283,7 +283,7 @@ const providerRoutes = (api: {
  * state (`queues.list` and `queues.read`, reads), and a group's reset
  * (`queues.summon`, a mutation). In the jobs half, backed by the driver's
  * queue-state reads, which every built-in backend has
- * (`features.summonRemoteStatus`): the two reads are in every count below
+ * (`features.summonStoredStatus`): the two reads are in every count below
  * but runner mode's, and the opt-in reset in those that name every action.
  */
 const SUMMON_GROUP_ROUTES = [
@@ -483,8 +483,8 @@ checkEqual(
   83 + addedByState,
 );
 checkEqual(
-  "the three summon group routes are among them, the reset a mutation, and /meta's features.summonRemoteStatus says they are served",
-  [summonGroupRoutes(both.api), bothFeatures.summonRemoteStatus],
+  "the three summon group routes are among them, the reset a mutation, and /meta's features.summonStoredStatus says they are served",
+  [summonGroupRoutes(both.api), bothFeatures.summonStoredStatus],
   [["getSummonGroup", "listSummonGroups", "resetSummonGroup (mutation)"], true],
 );
 checkEqual(
@@ -585,12 +585,12 @@ checkEqual(
   [3, 0, true, false],
 );
 checkEqual(
-  "so do the summon group routes: they read the backend's queue state, and /meta's features.summonRemoteStatus follows",
+  "so do the summon group routes: they read the backend's queue state, and /meta's features.summonStoredStatus follows",
   [
     summonGroupRoutes(jobsOnly.api).length,
     summonGroupRoutes(runnerOnly.api).length,
-    (await jobsOnly.call("GET", "/meta")).body.features.summonRemoteStatus,
-    (await runnerOnly.call("GET", "/meta")).body.features.summonRemoteStatus,
+    (await jobsOnly.call("GET", "/meta")).body.features.summonStoredStatus,
+    (await runnerOnly.call("GET", "/meta")).body.features.summonStoredStatus,
   ],
   [3, 0, true, false],
 );

@@ -187,9 +187,9 @@ re-pinned to `a3c66d0d`. The remaining effort is **~27.25 d**.
   - `cloudRunWorkerPool`'s required `maxInstances` and the exit reason
     `"lookup-members"`, built in 1.5d.
 - **A rename (the user's decision, under the control-plane naming rule):**
-  the API flag `features.summonRemoteStatus` becomes `summonStoredStatus`,
-  and the UI test id `summon-remote` becomes `summon-stored`. It lands as its
-  own PR after B4 (Status, below).
+  the API flag for summon status read from storage is now
+  `features.summonStoredStatus`, and the UI test id `summon-stored`. It
+  landed as its own PR after B4 (Status, below).
 
 **Updated 2026-10-11 (review, round 2).** 4c checked the revision against
 `develop` `a3c66d0d`: H1, M1 and M2 are fixed and H2 mostly; three MEDs and
@@ -252,12 +252,10 @@ on every member), **merged as `352ad028`** with its examples (#367).
 shared unit, the kit's two-queue handoff, the template at `0.2`, the
 playground). Then UI-B and EX-B.
 
-**Decided 2026-10-11 (the user, control-plane naming rule):** the API flag
-`features.summonRemoteStatus`, which advertises summon status read from
-storage (`local: false`, #314), is renamed `features.summonStoredStatus`, and
-the UI test id `summon-remote` becomes `summon-stored`. It lands as its own PR
-after B4. Plans that cite the old name (MQ §5.2, §12) are read with the new
-one.
+**Decided 2026-10-11 (the user, control-plane naming rule), and done:** the
+API flag that advertises summon status read from storage (`local: false`,
+#314) is renamed `features.summonStoredStatus`, and the UI test id
+`summon-stored`, in their own PR after B4. The plans cite the new names.
 
 **Remaining effort, re-estimated for shared units on every provider** (the
 user's answers to Q43–Q46; §7.8.9 has the reasons):
@@ -4997,8 +4995,8 @@ run-all.ts` in `examples/bun-jobs-ui`.
     (2026-10-11):* multi-queue PR-A3 (#314) persisted the limits on the marker
     and made `GET /queues/:queue/summon` and `GET /summon` answer from storage
     with `local: false` (`api/contract/types.ts:1269-1290`; MQ §5.1),
-    advertised by `features.summonRemoteStatus` (to be renamed
-    `summonStoredStatus` in its own PR after B4; Status); #366 and
+    advertised by `features.summonStoredStatus` (renamed in its own PR
+    after B4; Status); #366 and
     B4 extend that to shared units. "Summon now" and reset still answer 409
     without a local controller. A queue with a controller is
     reachable (with `queues: "all"`) before its first job; an unknown one is

@@ -178,7 +178,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
         <p
           className="notice"
           role="note"
-          data-testid="summon-remote"
+          data-testid="summon-stored"
         >
           This queue's controller runs in another process: its state is read
           from the store, and it can be summoned or reset only from there.

@@ -1170,8 +1170,8 @@ function mount(
 const bare = context({ namespace: fleetNamespace, driver: config, logger });
 const remote = mount(bare);
 checkEqual(
-  "/meta.features.summonRemoteStatus is true",
-  (await remote.call<MetaDto>("GET", "/meta")).body.features.summonRemoteStatus,
+  "/meta.features.summonStoredStatus is true",
+  (await remote.call<MetaDto>("GET", "/meta")).body.features.summonStoredStatus,
   true,
 );
 const listed = await remote.call<SummonGroupListDto>("GET", "/summon/groups");

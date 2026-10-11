@@ -1687,7 +1687,7 @@ export type MetaFeatureKeysOk = Expect<
     | "providers"
     | "summonResetBudget"
     | "summonList"
-    | "summonRemoteStatus"
+    | "summonStoredStatus"
   >
 >;
 export type MetaFeatureValuesOk = Expect<

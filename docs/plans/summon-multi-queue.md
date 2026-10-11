@@ -918,9 +918,9 @@ shipped first, in #289 and its UI #297, rather than as a groups list:
 
 **PR-A3 still owes the group routes.** Its local commit `77ca70d` has
 `GET /summon/groups`, `GET /summon/groups/:group` and
-`POST /summon/groups/:group/reset`, and `features.summonRemoteStatus` (to be
-renamed `summonStoredStatus`, with the UI test id `summon-remote` →
-`summon-stored`: the user's decision of 2026-10-11, its own PR after B4). It
+`POST /summon/groups/:group/reset`, and `features.summonStoredStatus` (with
+the UI test id `summon-stored`, both renamed by the user's decision of
+2026-10-11, in their own PR after B4). It
 also extends `GET /summon` to queues with no local controller (a `local`
 flag), on #289's earlier `GET /summon`; the rebase must redo that on the
 shipped one. Two choices there differ from the table above (the user's,
@@ -1314,8 +1314,8 @@ and B2's in local commits (Status, at the top); the rest is not built.*
 group budget's `off`, `queues[q].lastAt` (A1); `openedBy`,
 `circuit.failures` and `resetAfter` (A2); `SummonGroupListDto`,
 `SummonGroupResetBody`, `SummonGroupStatusDto.circuits`,
-`features.summonRemoteStatus` (renamed `summonStoredStatus` after B4, by the
-user's decision of 2026-10-11), `SummonListItemDto.circuitOpenUntil`, and
+`features.summonStoredStatus` (so named after B4, by the user's decision of
+2026-10-11), `SummonListItemDto.circuitOpenUntil`, and
 `kind`, `limits` and `group` on `SummonMarker` (A3).
 
 ---

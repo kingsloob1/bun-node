@@ -1335,7 +1335,7 @@ export interface SummonStatusDto {
    * answer 409 `SUMMON_NOT_CONFIGURED`. A queue a shared unit in another
    * process serves is answered with the unit's status, read from its
    * group's state, when the unit claimed at or after the queue's own summon
-   * state did. Advertised by `/meta.features.summonRemoteStatus`.
+   * state did. Advertised by `/meta.features.summonStoredStatus`.
    */
   local: boolean;
   /**
@@ -4174,7 +4174,7 @@ export interface MetaDto {
      * reads (`getQueueState`, `listQueueState`); `false` in `runner` mode.
      * Like every flag it ignores permissions.
      */
-    summonRemoteStatus: boolean;
+    summonStoredStatus: boolean;
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";

@@ -50,7 +50,7 @@ const WRITER = join(
   "..",
   "fixtures",
   "processes",
-  "summon-remote-writer.ts",
+  "summon-stored-writer.ts",
 );
 const BACKENDS = await crossProcessBackends({ cleanups });
 
@@ -65,7 +65,7 @@ for (const backend of BACKENDS) {
     `summon status from storage: ${backend.name}`,
     () => {
       it("answers a queue, the list and the group written by another process (test 6)", async () => {
-        const namespace = testNamespace(`summon-remote-${backend.name}`);
+        const namespace = testNamespace(`summon-stored-${backend.name}`);
         const run = await runBun<{ done?: boolean; actions?: string[] }>(
           WRITER,
           {
@@ -189,8 +189,8 @@ for (const backend of BACKENDS) {
 describe("in one process, on the file backend", () => {
   /** Two contexts on one root: one runs the controllers, the API's runs `local`. */
   async function setup(api: Partial<JobsApiConfig> = {}) {
-    const dir = await makeTmpDir("bun-jobs-api-summon-remote");
-    const namespace = testNamespace("api-summon-remote");
+    const dir = await makeTmpDir("bun-jobs-api-summon-stored");
+    const namespace = testNamespace("api-summon-stored");
     const writerDriver = createDriver({
       type: "file",
       root: join(dir.path, "d"),
@@ -419,14 +419,14 @@ describe("in one process, on the file backend", () => {
     expect(h.mismatches()).toEqual([]);
   });
 
-  it("advertises status from storage in /meta.features.summonRemoteStatus", async () => {
+  it("advertises status from storage in /meta.features.summonStoredStatus", async () => {
     const { h, jobs } = await setup();
     expect(
-      (await h.call("GET", "/meta")).body.features.summonRemoteStatus,
+      (await h.call("GET", "/meta")).body.features.summonStoredStatus,
     ).toBe(true);
     const runner = harness({ jobs, mode: "runner" });
     expect(
-      (await runner.call("GET", "/meta")).body.features.summonRemoteStatus,
+      (await runner.call("GET", "/meta")).body.features.summonStoredStatus,
     ).toBe(false);
   });
 });
