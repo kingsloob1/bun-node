@@ -4,6 +4,11 @@ import type {
 } from "../../../app/api/types";
 import type { SummonMode } from "../../../app/screens/workers/summon";
 import { describe, expect, it } from "bun:test";
+import { INVALID_TEXT } from "../../../app/format";
+import {
+  summonUnitHint,
+  summonUnitLabel,
+} from "../../../app/screens/workers/summon";
 import { expectAbsent } from "../assert";
 import { page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
@@ -73,6 +78,17 @@ function badgeOf(root: HTMLElement, id: string): HTMLElement | null {
     "worker-summon-badge",
   );
 }
+
+/** The unit badge of a row, or `null` when it shows none. */
+function unitOf(root: HTMLElement, id: string): HTMLElement | null {
+  return within(within(root).getByTestId(`worker-row-${id}`)).queryByTestId(
+    "worker-summon-unit",
+  );
+}
+
+/** What the unit badge's tooltip says for the group `media`. */
+const MEDIA_UNIT_HINT =
+  "This worker runs in the shared unit summoned for the summon group media: one process serving its member queues.";
 
 /** The header cells of a table, as text. */
 function headers(root: HTMLElement): (string | null)[] {
@@ -159,6 +175,31 @@ describe("the summon badge in a worker table", () => {
     );
   });
 
+  it("names the summon group whose shared unit a worker runs in, right after the summon badge, and nothing without one", async () => {
+    const list = await openList([
+      workerFixture({
+        id: "w-unit",
+        summon: summon({ kind: "ecs", group: "media" }),
+      }),
+      workerFixture({ id: "w-single", summon: summon({ kind: "ecs" }) }),
+    ]);
+    await within(list).findByTestId("worker-row-w-unit");
+    expect(badgeOf(list, "w-unit")!.textContent).toBe("Summoned by ecs");
+    const unit = unitOf(list, "w-unit")!;
+    expect(unit.textContent).toBe("Unit of media");
+    expect(unit.title).toBe(MEDIA_UNIT_HINT);
+    // Right after the summon badge, and last in the State cell.
+    const badges = [...unit.closest("td")!.querySelectorAll(".badge")];
+    expect(badges.at(-1)).toBe(unit);
+    expect(badges.at(-2)).toBe(badgeOf(list, "w-unit")!);
+    // A worker summoned for one queue names no group, so it has no unit badge.
+    expect(badgeOf(list, "w-single")!.textContent).toBe("Summoned by ecs");
+    expectAbsent(unitOf(list, "w-single"));
+    expect(
+      within(list).getByTestId("worker-row-w-single").textContent,
+    ).not.toContain("Unit of");
+  });
+
   it("appears in a worker page's Instances table too", async () => {
     await openWorkerPage([
       workerFixture({ id: "api.emails.a1", summon: summon({ kind: "ecs" }) }),
@@ -167,6 +208,33 @@ describe("the summon badge in a worker table", () => {
     expect(badgeOf(instances, "api.emails.a1")!.textContent).toBe(
       "Summoned by ecs",
     );
+  });
+
+  it("names the unit's summon group in a worker page's Instances table too", async () => {
+    await openWorkerPage([
+      workerFixture({
+        id: "api.emails.a1",
+        summon: summon({ kind: "ecs", group: "media" }),
+      }),
+    ]);
+    const instances = page().getByTestId("worker-instances");
+    expect(unitOf(instances, "api.emails.a1")!.textContent).toBe(
+      "Unit of media",
+    );
+  });
+});
+
+describe("the summon unit's label and hint", () => {
+  it("names the group, in the badge and in its tooltip", () => {
+    expect(summonUnitLabel("media")).toBe("Unit of media");
+    expect(summonUnitHint("media")).toBe(MEDIA_UNIT_HINT);
+  });
+
+  it("passes the group through displayText, as the kind does", () => {
+    // The listing is not shape-checked: a group that is not text still reads.
+    const odd = { name: "media" } as unknown as string;
+    expect(summonUnitLabel(odd)).toBe(`Unit of ${INVALID_TEXT}`);
+    expect(summonUnitHint(odd)).toContain(`the summon group ${INVALID_TEXT}:`);
   });
 });
 
@@ -287,6 +355,38 @@ describe("the worker page's Summoned card", () => {
     const row = within(card).getByTestId("worker-summon-row-api.emails.a1");
     expect(row.children[2]!.textContent).toBe("Run until stopped");
     expect((row.children[2] as HTMLElement).title).toContain("actually runs");
+  });
+
+  it("shows the summon group whose unit each instance runs in, and a dash for one without", async () => {
+    const card = (await openWorkerPage([
+      workerFixture({
+        id: "api.emails.a1",
+        summon: summon({ id: "sum-1", kind: "ecs", group: "media" }),
+      }),
+      workerFixture({
+        id: "api.emails.b2",
+        summon: summon({ id: "sum-2", kind: "ecs" }),
+      }),
+    ]))!;
+    expect(headers(card)).toEqual([
+      "Instance",
+      "Summon",
+      "Summoner",
+      "Unit of",
+    ]);
+    const a1 = within(card).getByTestId("worker-summon-row-api.emails.a1");
+    expect(a1.children[3]!.textContent).toBe("media");
+    expect((a1.children[3] as HTMLElement).title).toBe(MEDIA_UNIT_HINT);
+    const b2 = within(card).getByTestId("worker-summon-row-api.emails.b2");
+    expect(b2.children[3]!.textContent).toBe("—");
+  });
+
+  it("has no Unit of column when no instance names a summon group", async () => {
+    const card = (await openWorkerPage([
+      workerFixture({ id: "api.emails.a1", summon: summon({ kind: "ecs" }) }),
+    ]))!;
+    expect(headers(card)).toEqual(["Instance", "Summon", "Summoner"]);
+    expect(card.textContent).not.toContain("Unit of");
   });
 
   it("shows a mode this build does not know as its raw string", async () => {

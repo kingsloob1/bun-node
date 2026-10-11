@@ -71,6 +71,23 @@ export function summonBadgeLabel(summon: WorkerSummonProvenanceDto): string {
 }
 
 /**
+ * What a worker table's unit badge reads for a worker in a summon group's
+ * shared unit (`summon.group`): "Unit of media". Shown only when the record
+ * names a group; a unit summoned for one queue has none.
+ */
+export function summonUnitLabel(group: string): string {
+  return `Unit of ${displayText(group)}`;
+}
+
+/**
+ * The unit badge's tooltip: that the worker runs in the one process summoned
+ * for the whole group, serving each of its member queues.
+ */
+export function summonUnitHint(group: string): string {
+  return `This worker runs in the shared unit summoned for the summon group ${displayText(group)}: one process serving its member queues.`;
+}
+
+/**
  * The summon badge's tooltip: the attempt, and whatever the summoner
  * requested, each named as a request. A deadline is given as an absolute
  * instant, since a tooltip does not tick.
