@@ -81,6 +81,7 @@ import {
   readFile,
   rename,
   rm,
+  rmdir,
   stat,
   unlink,
   utimes,
@@ -239,10 +240,14 @@ const LOCK_WAIT_MS = 15_000;
 const LOCK_RETRY_MS = 5;
 
 /**
- * How long a transition keeps retrying a marker somebody else has moved.
+ * How long a transition keeps retrying a marker somebody else has moved, with
+ * nothing happening to it.
  *
  * Twice `LOCK_STALE_MS`, because the marker may be held by a process that
- * died holding it, and a hold is only healed once it is older than that.
+ * died holding it, and a hold is only healed once it is older than that. A
+ * marker held by a live process on this host is not healed for up to
+ * `LOCK_ABANDONED_MS`, so a waiter that sees one starts this patience again,
+ * up to `LOCK_WAIT_MS` in all (see {@link HoldPatience}).
  */
 const HOLD_PATIENCE_MS = LOCK_STALE_MS * 2;
 
@@ -443,6 +448,62 @@ function processAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * Whether the holder of a write lock or a hold, already untouched for longer
+ * than `LOCK_STALE_MS`, has given it up — the one rule both go by.
+ *
+ * `pidHere` is the holder's process id when it is known to be on this host,
+ * and `null` when it is on another host or did not say: then the age is all
+ * there is to go by, and it is gone. On this host it is gone once its process
+ * is, or once it has been untouched for `idleMs` past `LOCK_ABANDONED_MS` —
+ * a live process paused that long, or a dead one whose id was reused.
+ */
+function holderGone(pidHere: number | null, idleMs: number): boolean {
+  return (
+    pidHere === null || !processAlive(pidHere) || idleMs > LOCK_ABANDONED_MS
+  );
+}
+
+/**
+ * This process's id as a hold names it: base 36, at most five characters for
+ * the largest id Linux hands out (2^22), so a hold's name stays within
+ * `NAME_OVERHEAD` (see `#hold`).
+ */
+const HOLD_PID = process.pid.toString(36);
+
+/** `holdHost()`'s answer, worked out once. */
+let thisHoldHost: string | undefined;
+
+/**
+ * The directory under a queue's `held/` that this host's holds go in:
+ * {@link lockHost} hashed into a name a directory can have, behind an `h` so
+ * it never reads as a hold of the earlier, flat layout (those start with a
+ * digit). A hold's own name has no room for the host: it is budgeted to the
+ * byte by `NAME_OVERHEAD`.
+ */
+function holdHost(): string {
+  thisHoldHost ??= `h${Bun.hash(lockHost()).toString(36)}`;
+  return thisHoldHost;
+}
+
+/**
+ * How long a transition waits for a marker somebody else holds: until
+ * `deadline`, which each sign that the holder is alive and merely paused
+ * moves on by `HOLD_PATIENCE_MS`, but never past `giveUp`.
+ */
+interface HoldPatience {
+  /** When to give up, unless the holder is seen alive before then. */
+  deadline: number;
+  /** When to give up whatever is seen: `LOCK_WAIT_MS` from the start. */
+  giveUp: number;
+}
+
+/** A {@link HoldPatience} starting now. */
+function holdPatience(): HoldPatience {
+  const now = Date.now();
+  return { deadline: now + HOLD_PATIENCE_MS, giveUp: now + LOCK_WAIT_MS };
 }
 
 /** Whether `held` is a live lock under `token` at `now`. */
@@ -1580,7 +1641,7 @@ export class FileDriver implements JobsDriver {
     lockMs: number,
     now: number,
   ): Promise<boolean> {
-    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    const patience = holdPatience();
 
     for (;;) {
       const record = await this.#readJob(this.#jobPath(q, id));
@@ -1596,7 +1657,7 @@ export class FileDriver implements JobsDriver {
         return true;
       }
 
-      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+      if (!(await this.#retryLostRename(q, id, token, marker, patience))) {
         return false;
       }
     }
@@ -1610,7 +1671,7 @@ export class FileDriver implements JobsDriver {
     retention: Retention,
     now: number,
   ): Promise<boolean> {
-    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    const patience = holdPatience();
 
     for (;;) {
       const record = await this.#readJob(this.#jobPath(q, id));
@@ -1630,7 +1691,7 @@ export class FileDriver implements JobsDriver {
             id,
             token,
             this.#markerFor(record),
-            deadline,
+            patience,
           ))
         ) {
           return false;
@@ -1662,7 +1723,7 @@ export class FileDriver implements JobsDriver {
         return true;
       }
 
-      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+      if (!(await this.#retryLostRename(q, id, token, marker, patience))) {
         return false;
       }
     }
@@ -1723,7 +1784,7 @@ export class FileDriver implements JobsDriver {
     now: number,
     keepStacktraces: number,
   ): Promise<boolean> {
-    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    const patience = holdPatience();
 
     for (;;) {
       const record = await this.#readJob(this.#jobPath(q, id));
@@ -1766,7 +1827,7 @@ export class FileDriver implements JobsDriver {
         return true;
       }
 
-      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+      if (!(await this.#retryLostRename(q, id, token, marker, patience))) {
         return false;
       }
     }
@@ -1917,9 +1978,11 @@ export class FileDriver implements JobsDriver {
 
       const fresh = await this.#readJob(path);
       if (fresh?.state === "active" && this.#markerFor(fresh) === marker) {
-        const newest = await this.#healHolds(q, "active", marker);
-        if (newest > seen) {
-          seen = newest;
+        const { newest, kept } = await this.#healHolds(q, "active", marker);
+        // A newer hold is somebody else's change starting; one a live holder
+        // here keeps past the stale time is a paused one, which will let go.
+        if (newest > seen || kept) {
+          seen = Math.max(seen, newest);
           progressed();
         }
         await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
@@ -2021,7 +2084,7 @@ export class FileDriver implements JobsDriver {
    *   by another change at listing time (in `held/`) are walked too, so a job
    *   an operator happens to be patching is not skipped.
    *
-   * Cost: one directory listing per state per call (plus one of `held/`), one
+   * Cost: one directory listing per state per call (plus `held/`'s), one
    * record read per job examined, and for each job written, one record write
    * and two renames. Per job that is the `updateJob` path, 0.7–5 ms measured;
    * the concurrency is what brings a call of 1,000 down to a fraction of a
@@ -2114,9 +2177,8 @@ export class FileDriver implements JobsDriver {
       await this.#list(join(this.#queueDir(q), "index", state)),
     );
 
-    for (const name of await this.#list(this.#heldDir(q))) {
-      const hold = parseHold(name);
-      if (hold?.state === state) {
+    for (const hold of (await this.#listHolds(q)).holds) {
+      if (hold.state === state) {
         markers.add(hold.marker);
       }
     }
@@ -2730,7 +2792,7 @@ export class FileDriver implements JobsDriver {
 
   /**
    * Marker names only, never a record: `readdir` of `index/active`, then of
-   * `index/delayed`, `index/failed` and the held-marker directory, then of
+   * `index/delayed`, `index/failed` and the held-marker directories, then of
    * `index/waiting` — separate reads, so taken in `DEMAND_READ_ORDER`
    * (`readApis.ts`), a source before its destination. Retained history (`index/completed`,
    * `index/dead`) is never listed.
@@ -2786,9 +2848,8 @@ export class FileDriver implements JobsDriver {
           markers.push(...(await this.#list(join(index, state))));
         }
 
-        for (const name of await this.#list(this.#heldDir(q))) {
-          const hold = parseHold(name);
-          if (hold && SCHEDULED_STATES.includes(hold.state as JobState)) {
+        for (const hold of (await this.#listHolds(q)).holds) {
+          if (SCHEDULED_STATES.includes(hold.state as JobState)) {
             markers.push(hold.marker);
           }
         }
@@ -4973,9 +5034,15 @@ export class FileDriver implements JobsDriver {
           fresh.state === record.state &&
           this.#markerFor(fresh) === marker
         ) {
-          const newest = await this.#healHolds(q, record.state, marker);
-          if (newest > seen) {
-            seen = newest;
+          const { newest, kept } = await this.#healHolds(
+            q,
+            record.state,
+            marker,
+          );
+          // A newer hold is somebody else's change starting; one a live holder
+          // here keeps past the stale time is a paused one, which will let go.
+          if (newest > seen || kept) {
+            seen = Math.max(seen, newest);
             progressed();
           }
           await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
@@ -5015,19 +5082,23 @@ export class FileDriver implements JobsDriver {
    * Takes a marker out of the index, and answers with where it now is — or
    * `null` when somebody else got to it first.
    *
-   * The hold's name starts with when it was taken, which is how `#healHolds`
-   * tells a hold whose process died from one still in use. A marker's own
-   * modification time would not do: `rename` keeps it, and it dates from when
-   * the job was added.
+   * The hold is `held/<host>/<stamp>-<pid>.<state>.<marker>`: this host's
+   * directory ({@link holdHost}), when it was taken and by which process (in
+   * base 36), which is how `#healHolds` tells a hold whose process died from
+   * one still in use — paused, perhaps, but about to write. A marker's own
+   * modification time would not do for the start: `rename` keeps it, and it
+   * dates from when the job was added. The pid costs at most six bytes of the
+   * name, which `NAME_OVERHEAD` has room for; the host would not fit, so it
+   * names the directory instead.
    */
   async #hold(
     q: QueueRef,
     state: JobState,
     marker: string,
   ): Promise<string | null> {
-    const dir = this.#heldDir(q);
+    const dir = join(this.#heldDir(q), holdHost());
     const from = join(this.#queueDir(q), "index", state, marker);
-    const path = join(dir, `${Date.now()}.${state}.${marker}`);
+    const path = join(dir, `${Date.now()}-${HOLD_PID}.${state}.${marker}`);
 
     try {
       await rename(from, path);
@@ -5070,9 +5141,10 @@ export class FileDriver implements JobsDriver {
   /**
    * Returns a held marker to the index for `after`, the record just written.
    *
-   * The hold can be gone: a holder slow enough to look dead has had it filed
-   * by `#healHolds`, which placed it by whichever record it read — `before` or
-   * `after`. If it was `before`, move it on from there.
+   * The hold can be gone: a holder taken for gone — on this host, paused past
+   * `LOCK_ABANDONED_MS`; on another, slower than `LOCK_STALE_MS` — has had it
+   * filed by `#healHolds`, which placed it by whichever record it read —
+   * `before` or `after`. If it was `before`, move it on from there.
    */
   async #release(
     q: QueueRef,
@@ -5092,47 +5164,118 @@ export class FileDriver implements JobsDriver {
   }
 
   /**
-   * Files every hold older than `LOCK_STALE_MS` by its job's record, and
-   * answers with the start of the newest live hold of `marker` in `state` —
-   * `0` when there is none, or none was asked about. A waiter reads progress
-   * off it from the same listing the healing needs.
+   * Files every hold whose holder is gone by its job's record, and answers
+   * with what it saw of the holds of `marker` in `state` (nothing, when none
+   * was asked about). A waiter reads progress off it from the same listing the
+   * healing needs.
+   *
+   * A hold is its holder's while it is younger than `LOCK_STALE_MS`, and after
+   * that until {@link holderGone} says otherwise, as a write lock is: on this
+   * host, until its process has gone or it has been held for
+   * `LOCK_ABANDONED_MS`; on another host, or in the earlier layout that does
+   * not say whose it is, no longer. Every hold older than a second used to be
+   * filed, and on one host that took the job from under a holder that was
+   * paused — `SIGSTOP`, a GC pause, a CPU-bound handler — and would write the
+   * record it had read once it resumed, over whatever had happened since: a
+   * removed job came back, a patch was lost, a claimed job was written back
+   * as waiting.
    */
   async #healHolds(
     q: QueueRef,
     state?: JobState,
     marker?: string,
-  ): Promise<number> {
-    const dir = this.#heldDir(q);
+  ): Promise<HoldsSeen> {
     const now = Date.now();
-    let newest = 0;
+    const here = holdHost();
+    const seen: HoldsSeen = { newest: 0, kept: false };
+    const { holds, emptyHosts } = await this.#listHolds(q);
 
-    for (const name of await this.#list(dir)) {
-      const hold = parseHold(name);
-      if (!hold) {
-        continue;
-      }
+    for (const hold of holds) {
+      const age = now - hold.stamp;
+      const asked = hold.state === state && hold.marker === marker;
 
-      if (now - hold.stamp <= LOCK_STALE_MS) {
-        if (hold.state === state && hold.marker === marker) {
-          newest = Math.max(newest, hold.stamp);
+      if (age <= LOCK_STALE_MS) {
+        if (asked) {
+          seen.newest = Math.max(seen.newest, hold.stamp);
         }
         continue;
       }
 
-      const path = join(dir, name);
+      if (!holderGone(hold.host === here ? hold.pid : null, age)) {
+        seen.kept ||= asked;
+        continue;
+      }
+
       const record = await this.#readJob(
         this.#jobPath(q, markerId(hold.marker)),
       );
 
       if (!record) {
-        await rm(path, { force: true });
+        await rm(hold.path, { force: true });
         continue;
       }
 
-      await this.#place(q, path, record);
+      await this.#place(q, hold.path, record);
     }
 
-    return newest;
+    // Another host's directory, empty and untouched for a while: a host that
+    // has stopped holding here, or a container long gone (each has a pid
+    // namespace, and so a directory, of its own). Without this, every one that
+    // ever ran would be listed on every pass. Removing one that is about to be
+    // used is safe: `rmdir` fails on a directory with a hold in it, and a hold
+    // that finds its directory gone makes it again.
+    for (const host of emptyHosts) {
+      if (host !== here) {
+        const dir = join(this.#heldDir(q), host);
+        if (now - (await this.#mtime(dir)) > LOCK_ABANDONED_MS) {
+          await rmdir(dir).catch(() => undefined);
+        }
+      }
+    }
+
+    return seen;
+  }
+
+  /**
+   * Every hold in `q`'s `held/`: those in each host's directory, and any left
+   * flat from the earlier layout, which name no holder. Also the hosts whose
+   * directories are empty, for `#healHolds` to tidy.
+   *
+   * One listing of `held/` and one per host directory in it — on one host,
+   * two.
+   */
+  async #listHolds(
+    q: QueueRef,
+  ): Promise<{ holds: HeldMarker[]; emptyHosts: string[] }> {
+    const dir = this.#heldDir(q);
+    const holds: HeldMarker[] = [];
+    const emptyHosts: string[] = [];
+
+    for (const entry of await this.#list(dir)) {
+      const flat = parseHold(entry);
+      if (flat) {
+        holds.push({ ...flat, path: join(dir, entry), host: null });
+        continue;
+      }
+
+      if (!entry.startsWith("h")) {
+        continue;
+      }
+
+      const names = await this.#list(join(dir, entry));
+      if (names.length === 0) {
+        emptyHosts.push(entry);
+      }
+
+      for (const name of names) {
+        const hold = parseHold(name);
+        if (hold) {
+          holds.push({ ...hold, path: join(dir, entry, name), host: entry });
+        }
+      }
+    }
+
+    return { holds, emptyHosts };
   }
 
   /**
@@ -5144,15 +5287,19 @@ export class FileDriver implements JobsDriver {
    * millisecond. So look at the record: if the lock is still this token's, the
    * job is still ours, and the marker is either somewhere new (retry at once)
    * or on its way back (wait a beat). Only the failure path pays for this.
+   *
+   * A marker a live process on this host keeps held is on its way back too,
+   * however long it is paused, so `patience` runs on while it is (up to its
+   * `giveUp`): reporting the lock lost would leave the job to run again.
    */
   async #retryLostRename(
     q: QueueRef,
     id: string,
     token: string,
     marker: string,
-    deadline: number,
+    patience: HoldPatience,
   ): Promise<boolean> {
-    if (Date.now() >= deadline) {
+    if (Date.now() >= patience.deadline) {
       return false;
     }
 
@@ -5162,7 +5309,12 @@ export class FileDriver implements JobsDriver {
     }
 
     if (this.#markerFor(fresh) === marker) {
-      await this.#healHolds(q);
+      if ((await this.#healHolds(q, "active", marker)).kept) {
+        patience.deadline = Math.min(
+          patience.giveUp,
+          Date.now() + HOLD_PATIENCE_MS,
+        );
+      }
       await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
     }
 
@@ -6048,14 +6200,15 @@ export class FileDriver implements JobsDriver {
    * `LOCK_STALE_MS`, has been given up: its text names no owner (an earlier
    * version's, or one crashed between create and write), or one on another
    * host, which the age is all there is to go by for; or a process on this
-   * host that is gone, or has not touched it for `LOCK_ABANDONED_MS`.
+   * host that is gone, or has not touched it for `LOCK_ABANDONED_MS`
+   * ({@link holderGone}, which holds go by too).
    */
   #abandonedLock(text: string, touched: number): boolean {
     const owner = parseLockOwner(text);
-    if (owner === null || owner.host !== lockHost()) {
-      return true;
-    }
-    return !processAlive(owner.pid) || Date.now() - touched > LOCK_ABANDONED_MS;
+    return holderGone(
+      owner !== null && owner.host === lockHost() ? owner.pid : null,
+      Date.now() - touched,
+    );
   }
 }
 
@@ -6067,6 +6220,31 @@ interface LogCount {
   size: number;
   /** Newline-terminated lines the file held. */
   count: number;
+}
+
+/** A hold found in a queue's `held/` (see `#listHolds`). */
+interface HeldMarker extends HoldName {
+  /** Where the hold is. */
+  path: string;
+  /**
+   * The `held/` directory of the holder's host ({@link holdHost}), or `null`
+   * for a hold of the earlier, flat layout, which does not say.
+   */
+  host: string | null;
+}
+
+/** What `#healHolds` saw of the holds of the marker a waiter asked about. */
+interface HoldsSeen {
+  /**
+   * When the newest hold of it younger than `LOCK_STALE_MS` was taken, or `0`
+   * for none: a newer one than last time is somebody else's change starting.
+   */
+  newest: number;
+  /**
+   * Whether it is held past `LOCK_STALE_MS` by a live process on this host,
+   * which is paused and keeps it: a reason to wait on, not to give up.
+   */
+  kept: boolean;
 }
 
 /** A job whose marker the caller has taken out of the index. */
@@ -6211,22 +6389,49 @@ function seekMarkerIndex(
   return low;
 }
 
-/** Splits a hold's name into when it was taken, the state it was taken from and the marker it holds. */
-function parseHold(
-  name: string,
-): { stamp: number; state: string; marker: string } | null {
-  // `<stamp>.<state>.<marker>`: none of the three contains a dot (an encoded
-  // id never does), but reading only the first two keeps that from mattering.
+/** What a hold's name says (see `parseHold`). */
+interface HoldName {
+  /** When it was taken, in epoch milliseconds. */
+  stamp: number;
+  /**
+   * The holder's process id, or `null` for a hold of the earlier layout,
+   * whose name does not say.
+   */
+  pid: number | null;
+  /** The state whose index the marker was taken from. */
+  state: string;
+  /** The marker's name in that index. */
+  marker: string;
+}
+
+/**
+ * Splits a hold's name into when it was taken, by which process, the state it
+ * was taken from and the marker it holds; `null` when it is not a hold's.
+ */
+function parseHold(name: string): HoldName | null {
+  // `<stamp>-<pid>.<state>.<marker>`, the pid in base 36, or `<stamp>.<state>.
+  // <marker>` from before holds named their holder. None of the parts contains
+  // a dot (an encoded id never does), but reading only the first two keeps
+  // that from mattering.
   const first = name.indexOf(".");
   const second = name.indexOf(".", first + 1);
-  const stamp = Number(name.slice(0, first));
+  const dash = name.lastIndexOf("-", first);
+  const named = dash > 0;
+  const stamp = Number(name.slice(0, named ? dash : first));
+  const pid = named ? Number.parseInt(name.slice(dash + 1, first), 36) : null;
 
-  if (first <= 0 || second <= first || !Number.isFinite(stamp)) {
+  if (
+    first <= 0 ||
+    second <= first ||
+    !Number.isFinite(stamp) ||
+    (pid !== null && !(pid > 0))
+  ) {
     return null;
   }
 
   return {
     stamp,
+    pid,
     state: name.slice(first + 1, second),
     marker: name.slice(second + 1),
   };

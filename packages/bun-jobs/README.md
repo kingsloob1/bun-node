@@ -7444,13 +7444,25 @@ adds them.
 The file driver's `multiHost` is `false` on purpose: its guarantees rest on
 POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
 
-**On one host, a write lock is held until its holder exits.** A holder that
-is paused — stopped, frozen, or blocked by a long synchronous handler or a slow
-disk — keeps its lock while its process is alive; only a holder that died
-loses it, at once. Across hosts sharing a directory, a lock is broken after a
-second without its heartbeat, so their clocks must agree to well under a
-second and the filesystem must keep `O_EXCL`, `rename` and modification times
-current.
+**On one host, a write lock is held while its holder is alive.** A holder
+that is paused — stopped, frozen, or blocked by a long synchronous handler or a
+slow disk — keeps its lock for up to ten seconds while its process is alive; a
+holder that died loses it after a second. Its heartbeat stops while it is
+paused, so one paused for longer than ten seconds is taken for one whose
+process id was reused, and loses the lock. Across hosts sharing a directory, a
+lock is broken after a second without its heartbeat, so their clocks must
+agree to well under a second and the filesystem must keep `O_EXCL`, `rename`
+and modification times current.
+
+**The same goes for a job a change is holding.** A patch, a removal, a log
+append, a promotion or a deleting completion takes the job's marker out of the
+index while it reads and rewrites the record. On one host, a holder that is
+paused keeps the job for up to ten seconds while its process is alive: claims
+pass it over, and a completion or another change of it waits (for up to
+fifteen seconds); a holder that died gives the job back after a second. A
+holder paused for longer than ten seconds is taken for one whose process id
+was reused, and loses the job. Across hosts, a hold is given back after a
+second, whoever holds it.
 
 **The file driver survives a process crash, not a power cut.** It never calls
 `fsync`. Every record is written to a temporary file and renamed into place,

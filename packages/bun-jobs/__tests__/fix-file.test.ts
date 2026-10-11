@@ -289,7 +289,12 @@ describe("file driver: removeOnComplete: true", () => {
     for (const state of ["active", "completed"]) {
       expect(await markers(queueDir, state)).toEqual([]);
     }
-    expect(await readdir(join(queueDir, "held")).catch(() => [])).toEqual([]);
+    // Holds sit in a directory per host, which stays once they are gone.
+    const holds = await readdir(join(queueDir, "held"), {
+      recursive: true,
+      withFileTypes: true,
+    }).catch(() => []);
+    expect(holds.filter((entry) => entry.isFile())).toEqual([]);
     expect(await readdir(join(queueDir, "logs")).catch(() => [])).toEqual([]);
 
     const buckets = await driver.getThroughput(q, {
