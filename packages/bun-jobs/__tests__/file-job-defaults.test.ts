@@ -38,6 +38,18 @@ async function setup(name: string): Promise<{
   return { driver, root: tmp.path, q: { ns: testNamespace(), queue: "jdef" } };
 }
 
+/**
+ * The holds in a queue's `held/`, at any depth: each host's holds sit in a
+ * directory of its own, which stays once its holds are gone.
+ */
+async function holdsIn(heldDir: string): Promise<string[]> {
+  const entries = await readdir(heldDir, {
+    recursive: true,
+    withFileTypes: true,
+  }).catch(() => []);
+  return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+}
+
 /** Stored options with a mask: `explicit` 0 unless given. */
 function opts(overrides: Partial<StoredJobOptions> = {}): StoredJobOptions {
   return { ...jobOptions(), explicit: 0, ...overrides };
@@ -171,7 +183,7 @@ describe("file driver: rewritePendingOptions", () => {
     const result = await walking;
     expect(result).toMatchObject({ examined: 2, rewritten: 2, moved: 0 });
     expect((await driver.getJob(q, "busy"))?.maxAttempts).toBe(4);
-    expect(await readdir(heldDir)).toEqual([]);
+    expect(await holdsIn(heldDir)).toEqual([]);
   });
 
   it("counts a job that left the walked state before its write as moved, and leaves it alone", async () => {
@@ -411,9 +423,7 @@ describe("file driver: rewritePendingOptions", () => {
       expect(job.priority).toBe(job.opts.priority);
     }
 
-    const held = await readdir(
-      join(root, q.ns, "queues", q.queue, "held"),
-    ).catch(() => []);
+    const held = await holdsIn(join(root, q.ns, "queues", q.queue, "held"));
     expect(held).toEqual([]);
 
     const waiting = await readdir(indexDir(root, q, "waiting")).catch(() => []);
