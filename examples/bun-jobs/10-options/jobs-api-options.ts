@@ -1773,9 +1773,16 @@ step(
 const samplesContext = context("worker-samples");
 const sampling = mount({ actions: [...JOBS_API_ACTIONS] }, samplesContext);
 const sampleQueue = samplesContext.queue("mail");
+
+// A live record lapses three report intervals after its last write, and the
+// checks below read it several times over. At 150 ms that was 450 ms, which a
+// loaded machine outlasted between two reads, and both live workers vanished
+// from the later routes. A second keeps the wait for the round trip short
+// while no plausible stall outlives the record.
+const SAMPLE_REPORT_INTERVAL = 1_000;
 const sampleWorker = samplesContext.worker("mail", async () => "ok", {
   id: "mail.sampled",
-  reportInterval: 150,
+  reportInterval: SAMPLE_REPORT_INTERVAL,
   pollInterval: 25,
 });
 const samplingRun = sampleWorker.run();
@@ -1785,7 +1792,7 @@ const samplingRun = sampleWorker.run();
 const optedOutWorker = samplesContext.worker("mail", async () => "ok", {
   id: "mail.no-sweeps",
   maintenance: false,
-  reportInterval: 150,
+  reportInterval: SAMPLE_REPORT_INTERVAL,
   pollInterval: 25,
 });
 const optedOutRun = optedOutWorker.run();
