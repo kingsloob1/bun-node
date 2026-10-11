@@ -122,6 +122,44 @@ interface ControllerRowProps {
   item: SummonListItemDto;
 }
 
+/** Props of {@link SharedUnitLine}. */
+interface SharedUnitLineProps {
+  /** The row's queue (`item.queue`), naming the line's test id. */
+  queue: string;
+  /** The summon group the unit is the unit of (`item.group`). */
+  group: string;
+  /** The unit's queues the caller may read (`item.queues`), the row's own first. */
+  queues: readonly string[];
+}
+
+/**
+ * Under a shared unit's queue: the group it is the unit of, and each of its
+ * queues the caller may read, linked to its Summon tab. The row's own queue
+ * is listed too, so the line reads as the whole visible unit; queues hidden
+ * from the caller are not counted.
+ */
+function SharedUnitLine({ queue, group, queues }: SharedUnitLineProps) {
+  return (
+    <span
+      className="muted summoning-unit"
+      data-testid={`summoning-unit-${queue}`}
+    >
+      Shared unit of {displayText(group)}:{" "}
+      {queues.map((member, index) => (
+        <span key={member}>
+          {index > 0 && ", "}
+          <Link
+            to={summonTabPath(member)}
+            title={`The Summon tab of ${member}`}
+          >
+            {displayText(member)}
+          </Link>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** One controller. */
 function ControllerRow({ item }: ControllerRowProps) {
   const now = useNow();
@@ -142,6 +180,13 @@ function ControllerRow({ item }: ControllerRowProps) {
         >
           {item.queue}
         </Link>
+        {item.group !== undefined && (
+          <SharedUnitLine
+            queue={item.queue}
+            group={item.group}
+            queues={item.queues ?? [item.queue]}
+          />
+        )}
       </th>
       <td>
         {item.kind === "" ? (
