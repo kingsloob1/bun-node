@@ -808,8 +808,9 @@ export interface ProcessorContext {
   /** 1-based attempt number. */
   attempt: number;
   /**
-   * Extends the job's lock now, rather than waiting for the next heartbeat.
-   * For a step that will take longer than `lockDuration` on its own.
+   * Extends the job's lock now, by the worker's `lockDuration`, rather than
+   * waiting for the next heartbeat. For a step that will take longer than
+   * `lockDuration` on its own.
    */
   heartbeat: () => Promise<void>;
   /**
@@ -1021,7 +1022,13 @@ export interface BunQueueWorkerOptions {
   stopPersistenceOverridable?: boolean;
   /** How many jobs to process at once. Defaults to `1`. */
   concurrency?: number;
-  /** How long a claim's lock lives. Defaults to 30000. */
+  /**
+   * How long a claim's lock lives, in milliseconds. Defaults to 30000. The
+   * worker's heartbeat renews for this long, and so do `ctx.heartbeat()` and a
+   * bare `job.extendLock()` / `job.touch()` (an explicit `ms` wins) — so it is
+   * also how soon the stalled sweep can recover a job whose processor stopped
+   * renewing.
+   */
   lockDuration?: number;
   /** How often to renew it. Defaults to a third of `lockDuration`. */
   heartbeatInterval?: number;

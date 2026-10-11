@@ -23,9 +23,9 @@ export interface ReportData {
   /**
    * Whether to call `job.touch()` and `job.extendLock()` before the
    * heartbeats, as `worker-targets.ts` step 1 checks they answer. Defaults to
-   * `true`. Each holds the lock for `extendLock()`'s default of 30s, which
-   * would see a short job out with no heartbeat at all, so step 4 turns them
-   * off.
+   * `true`. Each renews the lock for the claiming worker's `lockDuration`,
+   * as a heartbeat does, so step 4 turns them off: there only the heartbeats
+   * keep the lock alive, which is what it shows.
    */
   touchLock?: boolean;
   /**

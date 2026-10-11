@@ -2784,9 +2784,12 @@ export class BunQueueWorker<
 
     // The progress hook is how `updateProgress` reaches an emitter: `Job` has
     // none of its own, and the worker is the only thing that sees the call.
-    // `onFail` is what makes this view the job's owner.
+    // `onFail` is what makes this view the job's owner. `lockDuration` is read
+    // per call, so a bare `extendLock()` / `touch()` renews for what this
+    // worker's heartbeat does now, even after a configuration change.
     const job = new Job<TData, TResult>(this.driver, this.ref, record, true, {
       writes,
+      lockDuration: () => this.#options.lockDuration,
       onProgress: (progress) => {
         this.safeEmitScoped("progress", record.name, job, progress);
         void this.#publish("progress", { id: record.id, progress });
