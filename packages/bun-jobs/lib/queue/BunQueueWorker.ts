@@ -1057,11 +1057,22 @@ export class BunQueueWorker<
   /** The timer writing the heartbeat record, while the worker runs. */
   #reportTimer: ReturnType<typeof setInterval> | undefined;
   /**
-   * The heartbeat write in flight, so writes never overlap and `close()` can
-   * wait for one before removing the record — otherwise a write landing after
-   * the removal would list a closed worker until its record lapsed.
+   * The latest heartbeat write — queued behind the one in flight, or in
+   * flight itself — so writes never overlap and `close()` can wait for every
+   * one before removing the record: otherwise a write landing after the
+   * removal would list a closed worker until its record lapsed.
    */
   #reporting: Promise<void> | undefined;
+  /**
+   * The heartbeat write waiting for the one in flight, until it starts.
+   * Every report asked for meanwhile — a tick, a pause, a stop — joins it
+   * rather than queueing one more, which loses nothing: it reads the
+   * worker's state when it starts, so it carries every change made before
+   * then. So at most one write runs and one waits, however long the driver
+   * takes; a chain of one per tick grew without bound while writes outlasted
+   * the interval, and a caller awaiting a report waited for all of it.
+   */
+  #reportQueued: Promise<void> | undefined;
   /**
    * Whether a heartbeat write was ever attempted. Closing removes the record
    * only then: a worker that never ran, or never got as far as connecting,
@@ -4938,7 +4949,11 @@ export class BunQueueWorker<
    * and the next interval writes again.
    *
    * Writes are chained rather than overlapping, and nothing is written once
-   * the worker has begun closing.
+   * the worker has begun closing. The chain is at most two long: a call made
+   * while one write is in flight queues one more behind it, and every call
+   * made before that one starts joins it ({@link BunQueueWorker.#reportQueued})
+   * — so a caller awaiting a report waits for at most the write in flight and
+   * its own, never a backlog of ticks a slow driver let pile up.
    */
   async #report(): Promise<void> {
     if (
@@ -4951,9 +4966,24 @@ export class BunQueueWorker<
     }
 
     this.#reported = true;
+
+    if (this.#reportQueued !== undefined) {
+      await this.#reportQueued;
+      return;
+    }
+
     const previous = this.#reporting;
+    // Behind another write, this one waits as the queued one. While it waits
+    // every call joins it, so when it starts the queued one is still itself.
+    const queued = previous !== undefined;
     const write = (async () => {
       await previous;
+
+      // Started: a report asked for from here on may carry state this one
+      // has already read, so it queues behind this one instead of joining it.
+      if (queued) {
+        this.#reportQueued = undefined;
+      }
 
       if (this.#closing) {
         return;
@@ -4973,6 +5003,14 @@ export class BunQueueWorker<
         this.#summon !== undefined &&
         this.#summonClaim !== "lost" &&
         (await this.#claimSummon(Date.now()));
+
+      // Asked again after those round trips: a close that began during them
+      // removes the record next, so writing it now would only hold the close
+      // up by one more round trip. The claim above still counts — it is what
+      // the close's exit mark goes by.
+      if (this.#closing) {
+        return;
+      }
 
       // Read after those round trips, not before: the record is stamped when
       // it is written. Stamped before them, it landed short of its lifetime
@@ -5050,6 +5088,9 @@ export class BunQueueWorker<
     })();
 
     this.#reporting = write;
+    if (queued) {
+      this.#reportQueued = write;
+    }
     await write;
 
     if (this.#reporting === write) {
