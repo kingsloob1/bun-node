@@ -72,6 +72,7 @@ import type { PendingThroughput, ThroughputWriteResult } from "./readApis";
 import type { RunHistoryPage, RunHistoryQuery } from "./runHistory";
 import type { StoredRunLogLine } from "./runLogs";
 import { Buffer } from "node:buffer";
+import { readlinkSync } from "node:fs";
 import {
   link,
   mkdir,
@@ -85,6 +86,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
@@ -196,13 +198,39 @@ import {
  */
 
 /**
- * How long a write lock is respected before it is treated as abandoned.
+ * How long a write lock's file may go untouched before a waiter asks whether
+ * its holder is gone.
  *
- * The critical section is one small read and one small write, so a lock held
- * for longer than this belongs to a process that is gone. Keeping it short
- * matters: a crash must not stall every other process for the whole window.
+ * The critical section is one small read and one small write, and a holder
+ * whose event loop runs refreshes the file every `LOCK_HEARTBEAT_MS`, so a
+ * file older than this belongs to a holder that is gone or not running.
+ * Which of the two is decided by {@link LockOwner}: on this host, by whether
+ * its process is alive; a holder elsewhere (or a lock that does not say) is
+ * taken as gone, which is right only while the hosts' clocks agree to well
+ * under this. Keeping it short matters: a crash must not stall every other
+ * process for long.
  */
 const LOCK_STALE_MS = 1_000;
+
+/**
+ * How often a holder refreshes its lock file's modification time while it
+ * holds it, so a slow critical section with a live event loop never looks
+ * stale. A quarter of `LOCK_STALE_MS`, so three refreshes can be late first.
+ */
+const LOCK_HEARTBEAT_MS = LOCK_STALE_MS / 4;
+
+/**
+ * How long a lock held by a live process on this host may go untouched before
+ * it is broken anyway.
+ *
+ * A live holder that is not refreshing its lock is paused — `SIGSTOP`, a GC
+ * pause, a CPU-bound handler on its event loop, a frozen container — and will
+ * carry on writing once it resumes, so breaking its lock lets two writers in.
+ * This only bounds the one case a live process id cannot answer: a holder
+ * that died and whose process id was reused. Under `LOCK_WAIT_MS`, so a
+ * waiter facing that still gets through.
+ */
+const LOCK_ABANDONED_MS = 10_000;
 
 /** How long to keep trying for a lock that is merely contended. */
 const LOCK_WAIT_MS = 15_000;
@@ -358,6 +386,63 @@ const ACQUIRE_LOCK_GATE = Symbol.for("bun-jobs: FileDriver acquireLock gate");
 function acquireLockGate(driver: object): (() => Promise<void>) | undefined {
   const gate: unknown = Reflect.get(driver, ACQUIRE_LOCK_GATE);
   return typeof gate === "function" ? (gate as () => Promise<void>) : undefined;
+}
+
+/**
+ * What a write lock file (`state.lock`, a queue state entry's `.lock`,
+ * `lock.mutex`, `runlogs.lock`) holds: who took it. An earlier version wrote
+ * a bare timestamp, which parses as no owner.
+ */
+interface LockOwner {
+  /** Fresh for each acquisition; the release removes the file only under it. */
+  token: string;
+  /** The holder's process id, meaningful only where `host` is this one's. */
+  pid: number;
+  /** The holder's host and process id namespace (see {@link lockHost}). */
+  host: string;
+}
+
+/** `lockHost()`'s answer, worked out once. */
+let thisLockHost: string | undefined;
+
+/**
+ * Where a process id means the same process: the host name, plus the process
+ * id namespace on Linux, so two containers sharing a volume and a host name
+ * are still told apart. Elsewhere the host name alone.
+ */
+function lockHost(): string {
+  if (thisLockHost === undefined) {
+    let namespace = "";
+    try {
+      namespace = readlinkSync("/proc/self/ns/pid");
+    } catch {
+      // No procfs (macOS, a sandbox): the host name is all there is.
+    }
+    thisLockHost = `${hostname()}/${namespace}`;
+  }
+  return thisLockHost;
+}
+
+/** The owner a lock file's text names, or `null` when it names none. */
+function parseLockOwner(text: string): LockOwner | null {
+  const owner = safeJsonParse<Partial<LockOwner> | null>(text, null);
+  return owner !== null &&
+    typeof owner === "object" &&
+    typeof owner.token === "string" &&
+    typeof owner.pid === "number" &&
+    typeof owner.host === "string"
+    ? (owner as LockOwner)
+    : null;
+}
+
+/** Whether a process with this id exists on this host (`EPERM`: it does). */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /** Whether `held` is a live lock under `token` at `now`. */
@@ -5862,28 +5947,52 @@ export class FileDriver implements JobsDriver {
     }
   }
 
-  /** Takes an exclusive lock file, breaking one left behind by a crash. */
+  /**
+   * Takes an exclusive lock file, breaking one left behind by a crash.
+   *
+   * The file names its holder (a {@link LockOwner}), and while it is held its
+   * modification time is refreshed every `LOCK_HEARTBEAT_MS`. A waiter breaks
+   * it only once it is older than `LOCK_STALE_MS` and its holder is gone
+   * (`#abandonedLock`), and the release removes it only while it still names
+   * this acquisition. Both used to go by the file's age alone, and on one host
+   * that let a holder paused for a second — `SIGSTOP`, a GC pause, a CPU-bound
+   * handler on its event loop — lose its lock while it was still about to
+   * write: two compare-and-sets won, and the paused holder's release then
+   * deleted its successor's lock, passing the double hold on.
+   */
   async #lockFile(path: string): Promise<() => Promise<void>> {
     const deadline = Date.now() + LOCK_WAIT_MS;
+    const owner = JSON.stringify({
+      token: newId(),
+      pid: process.pid,
+      host: lockHost(),
+    } satisfies LockOwner);
 
     while (Date.now() < deadline) {
-      if (await this.#createExclusive(path, String(Date.now()))) {
-        return async () => {
-          await rm(path, { force: true });
-        };
+      if (await this.#createExclusive(path, owner)) {
+        return this.#holdLock(path, owner);
       }
 
       const held = await this.#mtime(path);
       if (held > 0 && Date.now() - held > LOCK_STALE_MS) {
+        const judged = await this.#readText(path);
+        if (!this.#abandonedLock(judged, held)) {
+          // Alive and on this host, merely paused: it will write once it
+          // resumes, so it keeps its lock.
+          await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+          continue;
+        }
+
         // Whoever held this is gone; break it and race for it again.
         //
         // By renaming it aside, not deleting it. Two processes can both judge
-        // the same lock stale, and with `rm` the slower one deletes the lock the
-        // faster one has just created in its place — both then hold it, which
-        // for `setQueueState` means two compare-and-sets winning. Only one
-        // rename of a given file succeeds, and the file it moved is checked:
-        // still stale, it is dropped; fresh, it was somebody's live lock, and
-        // goes back unless the path has been taken again meanwhile.
+        // the same lock abandoned, and with `rm` the slower one deletes the
+        // lock the faster one has just created in its place — both then hold
+        // it, which for `setQueueState` means two compare-and-sets winning.
+        // Only one rename of a given file succeeds, and the file it moved is
+        // checked: still the one judged, and still stale, it is dropped;
+        // anything else was somebody's live lock, and goes back unless the
+        // path has been taken again meanwhile.
         const aside = `${path}.${newId()}.stale`;
         try {
           await rename(path, aside);
@@ -5891,7 +6000,10 @@ export class FileDriver implements JobsDriver {
           continue;
         }
 
-        if (Date.now() - (await this.#mtime(aside)) <= LOCK_STALE_MS) {
+        if (
+          (await this.#readText(aside)) !== judged ||
+          Date.now() - (await this.#mtime(aside)) <= LOCK_STALE_MS
+        ) {
           await link(aside, path).catch(() => undefined);
         }
         await rm(aside, { force: true });
@@ -5907,6 +6019,43 @@ export class FileDriver implements JobsDriver {
       new Error(`Timed out waiting for ${path}`),
       { path },
     );
+  }
+
+  /**
+   * Holds the lock file at `path`, created with `owner`'s text: refreshes its
+   * modification time every `LOCK_HEARTBEAT_MS` until released, and answers
+   * the release, which stops that and removes the file only if it still holds
+   * `owner` — a lock broken and taken since is its new owner's to remove.
+   */
+  #holdLock(path: string, owner: string): () => Promise<void> {
+    const heartbeat = setInterval(() => {
+      const now = Date.now() / 1000;
+      // Best effort: a refresh that loses to the release finds no file.
+      utimes(path, now, now).catch(() => undefined);
+    }, LOCK_HEARTBEAT_MS);
+    heartbeat.unref();
+
+    return async () => {
+      clearInterval(heartbeat);
+      if ((await this.#readText(path)) === owner) {
+        await rm(path, { force: true });
+      }
+    };
+  }
+
+  /**
+   * Whether a lock file last touched at `touched`, and already older than
+   * `LOCK_STALE_MS`, has been given up: its text names no owner (an earlier
+   * version's, or one crashed between create and write), or one on another
+   * host, which the age is all there is to go by for; or a process on this
+   * host that is gone, or has not touched it for `LOCK_ABANDONED_MS`.
+   */
+  #abandonedLock(text: string, touched: number): boolean {
+    const owner = parseLockOwner(text);
+    if (owner === null || owner.host !== lockHost()) {
+      return true;
+    }
+    return !processAlive(owner.pid) || Date.now() - touched > LOCK_ABANDONED_MS;
   }
 }
 
