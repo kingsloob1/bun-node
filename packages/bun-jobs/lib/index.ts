@@ -847,6 +847,7 @@ export {
   DriverError,
   InvalidHandlerError,
   IsolationUnavailableError,
+  JobsClosedError,
   JobsError,
   JobTimeoutError,
   LockLostError,

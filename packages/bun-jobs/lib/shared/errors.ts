@@ -362,6 +362,29 @@ export class WorkerClosedError extends JobsError {
   }
 }
 
+/**
+ * A `BunJobs` context was asked to build something after its `close()` had
+ * reached that kind of thing: a queue, worker, runner, notifier or summon
+ * controller it would never close.
+ */
+export class JobsClosedError extends JobsError {
+  /** The context's namespace, and the method that was refused. */
+  declare readonly context: { namespace: string; method: string };
+
+  constructor(
+    /** The context's namespace. */
+    namespace: string,
+    /** The method that was refused, as `"queue()"`. */
+    method: string,
+  ) {
+    super(
+      `Jobs context "${namespace}" is closed: ${method} builds nothing after close()`,
+      "JOBS_CLOSED",
+      { namespace, method },
+    );
+  }
+}
+
 /** A value could not cross a boundary as JSON. */
 export class SerializationError extends JobsError {
   /** What could not be serialised, e.g. `"job.data"`. */

@@ -1411,7 +1411,7 @@ The context has these members:
 | `listQueues()` / `listRunners()` | Queue names and runner ids the backend knows about in this namespace. |
 | `listWorkers()` | The workers consuming any queue in this namespace, from any process. See [Reading a queue](#reading-a-queue-search-totals-workers-and-throughput). |
 | `purge()` | Deletes everything in this namespace, and nothing outside it. |
-| `close({ timeout? })` | Stops runners and workers, closes queues, then the driver if the context built it. |
+| `close({ timeout? })` | Closes summon controllers, then notifiers, then stops runners and workers, closes queues, then the driver if the context built it. Builds nothing it would not close: each kind is refused with `JobsClosedError` from the moment `close()` reaches it — `summonController()` from the call on, `queue()` only once the workers are done, so a job still running as they close can add jobs. After it resolves, `queue()`, `worker()`, `runner()`, `notifier()`, `start()`, `summonController()` and the verbs that reach a queue all throw it. |
 
 `jobsFromContext(ctx)` builds a `BunJobs` inside a runner's handler, on the
 runner's namespace and backend. It works in every execution mode:
@@ -3561,8 +3561,9 @@ The watch list is bounded at `maxPending × ⌈bootBudget / cooldown⌉` attempt
 (at least 8, at most 256, and 256 with no cooldown); past it the oldest are
 dropped with a warning naming them, never refusing a summon.
 
-`jobs.summonController("emails")` returns the controller, and one can
-be built directly: `new SummonController({ driver, namespace, queue,
+`jobs.summonController("emails")` returns the controller (from the moment
+`jobs.close()` is called, it throws `JobsClosedError` rather than build one
+nothing would close), and one can be built directly: `new SummonController({ driver, namespace, queue,
 summoner })`. `controller.check()` runs one check now — with every trigger
 off, that is the one-shot form for a cron or a scheduled function.
 
@@ -6477,6 +6478,7 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `CONFIG_NOT_ALLOWED` | 409 | | `SUMMON_MARKER_CONTENDED` | 409 |
 | `RUNNER_NOT_CONFIGURABLE` | 409 | | `PROVIDER_NOT_FOUND` | 404 |
 | `INTERNAL` | 500 | | `PROVIDER_SCHEMA_NOT_FOUND` | 404 |
+| `JOBS_CLOSED` | 503 | | | |
 
 ### Live events
 
@@ -8031,6 +8033,7 @@ so a caller can add to them but never overwrite them.
 | `RunnerNotFoundError` | `RUNNER_NOT_FOUND` | `BunRunnerManager.controller(id)`, or a `RunnerController` call, names a runner that is neither registered in this process nor known to the backend (`context.id`, `context.namespace`). |
 | `QueueClosedError` | `QUEUE_CLOSED` | A queue was used after `close()`. |
 | `WorkerClosedError` | `WORKER_CLOSED` | A worker was used after `close()`. |
+| `JobsClosedError` | `JOBS_CLOSED` | A `BunJobs` was asked to build a queue, worker, runner, notifier or summon controller after its `close()` had reached that kind (`namespace`, `method`). See the `close()` row of [the BunJobs methods](#bunjobs-options). The management API answers 503 `JOBS_CLOSED`. |
 | `QueueFullError` | `QUEUE_FULL` | A bounded queue of triggers or jobs is full (`what`, `max`). |
 | `JobDefaultsChangedError` | `DEFAULTS_CHANGED` | `queue.applyJobDefaults()` was asked to apply a `seq` that is no longer the stored one (`queue`, `expectedSeq`, `seq`). Nothing was written. |
 | `SerializationError` | `SERIALIZATION` | A value (job data, a result) is not JSON-serialisable. |
