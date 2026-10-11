@@ -676,6 +676,23 @@ export interface PendingSummon {
   kind: string;
   /** Platform identifiers the summoner returned, once known. */
   handles?: string[];
+  /**
+   * For a shared unit (`group.unit: "shared"`): how far this attempt has got
+   * on each queue the unit serves, by queue. `"registered"` once a worker of
+   * the unit holds the attempt's claim on that queue and is live there, or
+   * has left with a clean exit mark. `"missing"` once the attempt's `until`
+   * has passed with no worker registered there and none still starting, by
+   * the clock of the process reading the status plus the 5 s allowance the
+   * controller grants every comparison between processes. `"pending"` before
+   * that. Worked out from the queues' claims and live worker records each
+   * time the status is read: never stored, and absent for a controller of
+   * one queue and when those reads fail (the status is then answered
+   * without it, never with an error). An attempt with a `"missing"` queue settles at the
+   * controller's next check as `registered` with `partial:<queues>` (see
+   * {@link SummonLastOutcome.missing}), or as `lost` when every queue is
+   * missing.
+   */
+  coverage?: Readonly<Record<string, "registered" | "pending" | "missing">>;
 }
 
 /**
@@ -725,6 +742,15 @@ export interface SummonLastOutcome {
    * secrets and the usual credential shapes are redacted.
    */
   detail?: string;
+  /**
+   * For a shared unit's partial registration (`outcome: "registered"`,
+   * detail `partial:<queues>`): the queues its attempt registered no worker
+   * on, in the policy's order, the same ones the detail names. Stored with
+   * the outcome, so a status read from storage (`local: false`) has it too.
+   * Absent otherwise, and on an outcome an older bun-jobs wrote, whose
+   * detail still names them.
+   */
+  missing?: string[];
 }
 
 /** What `__win:summon` holds: the summon state of one queue, shared by every controller. */
@@ -833,7 +859,8 @@ export interface SummonStatus {
   /**
    * For a shared unit (`group.unit: "shared"`): every queue it serves, in
    * the policy's order — the status is the unit's, the same whichever of
-   * them was asked about. Absent for a controller of one queue.
+   * them was asked about. Read from storage (`local: false`), the queues its
+   * last claim persisted. Absent for a controller of one queue.
    */
   queues?: readonly string[];
   /**
@@ -925,6 +952,9 @@ export interface SummonStatus {
    * and the limits are the ones it is held to: per period the stricter of
    * the policy's `budget` and `group.budget` (`off` only when both are off).
    * `group.budget` shows the group's own limits beside the same counts.
+   * Read from storage (`local: false`), a shared unit's limits are the
+   * group's own (`group.budget`): a stricter `budget` in the unit's policy is
+   * known only to its controller.
    */
   budget?: {
     /** Attempts this UTC hour. */
@@ -966,6 +996,16 @@ export interface SummonStatus {
 export interface SummonGroupStatus {
   /** The group's name. */
   name: string;
+  /**
+   * `"shared"` when the group is one shared unit (`group.unit: "shared"`):
+   * one controller summons for all of its queues, and the unit's attempts,
+   * failures and circuit are kept in the group's state, so
+   * `GET /queues/{queue}/summon` on any of its queues answers them. From a
+   * controller in the group, its policy says so; read from storage, the
+   * group's state does, once the unit has claimed. Absent for a group of
+   * per-queue controllers.
+   */
+  unit?: "shared";
   /**
    * Attempts counted against the group, this UTC hour and today, across
    * every queue in it, with this controller's limits for the group and when

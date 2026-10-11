@@ -54,6 +54,9 @@ const MUST_PASS = [
   "summon.handoff.started",
   "summon.handoff.released",
   "summon.handoff.drained",
+  // One unit for two queues: the provider passes both queue arguments, and
+  // the fixture worker runs a worker for each (test 9).
+  "summon.handoff.shared-unit",
   "summon.cas.one-call",
 ];
 
@@ -242,6 +245,7 @@ describe("the kit's self-hosted mode (negative controls)", () => {
     const report = await run();
     expect(failed(report)).toEqual([]);
     expect(statusOf(report, "summon.handoff.drained")).toBe("pass");
+    expect(statusOf(report, "summon.handoff.shared-unit")).toBe("pass");
     expect(statusOf(report, "summon.routing.through-ctx-fetch")).toBe("skip");
     expect(statusOf(report, "summon.lifetime.enforced")).toBe("skip");
     expect(
@@ -265,6 +269,14 @@ describe("the kit's self-hosted mode (negative controls)", () => {
       report.checks.find((check) => check.id === "summon.handoff.released")
         ?.detail,
     ).toContain("request.argv");
+    // Built on the one-queue handoff, the shared one is skipped, not failed.
+    expect(
+      report.checks.find((check) => check.id === "summon.handoff.shared-unit"),
+    ).toMatchObject({
+      status: "skip",
+      detail:
+        "summon.handoff.released did not pass (fail), and the shared handoff builds on it",
+    });
   });
 
   it("fails rejects-on-abort for one that starts despite an aborted signal", async () => {

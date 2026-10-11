@@ -75,7 +75,7 @@ export const acme = defineComputeProvider<ValidAcmeConfig, AcmeConfig>({
   displayName: "Acme Compute",
   // What this code was written against: literal, never the host's constant,
   // or the registration check could never catch a mismatch.
-  apiVersion: { core: "0.1", summon: "0.1" },
+  apiVersion: { core: "0.1", summon: "0.2" },
   config: acmeConfigSchema,
   secrets: ["apiToken"],
   describe: (config) => ({ region: config.region, pool: config.pool }),
@@ -118,7 +118,7 @@ compatibility before installing:
   ],
   "apiVersion": {
     "core": "0.1",
-    "summon": "0.1"
+    "summon": "0.2"
   }
 }
 ```
@@ -545,7 +545,11 @@ sharing one unit) gets `--bun-jobs-summon-queue=` once per queue, plus
 flag, drops one or reorders them breaks it while every one-queue summon
 still works. The kit's `summon.argv.round-trip` check sends three queues and
 expects every argument of `request.argv` to arrive, in order: a `must` for a
-provider declaring summon `0.2`, a `should` for one declaring `0.1`. The
+provider declaring summon `0.2`, a `should` for one declaring `0.1`. Then
+`summon.handoff.shared-unit` (a `should`) summons one real unit for two
+queues through your provider and expects it to register on both, drain both
+and exit 0: skipped below summon `0.2` and under `passes: "none"`, where a
+controller refuses a shared unit. The
 worker reads them with `summonedFromArgs()`, and its heartbeat record carries
 the id back, which is how the controller knows **this** attempt registered:
 

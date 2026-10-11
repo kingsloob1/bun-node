@@ -105,6 +105,7 @@ reference.
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [Summoning a worker](#summoning-a-worker)
   - [One policy for several queues](#one-policy-for-several-queues)
+  - [One unit for several queues: `group.unit: "shared"`](#one-unit-for-several-queues-groupunit-shared)
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
   - [Testing a provider: `./provider/testing`](#testing-a-provider-providertesting)
@@ -3661,8 +3662,8 @@ is read from storage instead (`local: false`):
 
 | Method | Path | Action | Answers |
 |---|---|---|---|
-| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out, and answered by its own `GET /queues/:queue/summon` as `inert` with `inertReason: "unreadable-marker"`). A [shared unit](#one-unit-for-several-queues-groupunit-shared) is one item, listed when the caller may read any of its queues: `queues` names those it may read (of those the API can reach), `queue` is the first of them and `group` its summon group. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — for a queue a local shared unit serves, the unit's status with `queues` (only those the caller may read; `queue` the first of them) (and `overlaps`, the other groups' units seen on its queues at the last check); and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
+| GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out, and answered by its own `GET /queues/:queue/summon` as `inert` with `inertReason: "unreadable-marker"`). A [shared unit](#one-unit-for-several-queues-groupunit-shared) is one item, listed when the caller may read any of its queues: `queues` names those it may read (of those the API can reach), `queue` is the first of them and `group` its summon group; one whose controller runs in another process is read from its group's state (`local: false`, the queues its last claim persisted, less any whose own summon state claimed later), for one listing of the group entries and one read of each. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — for a queue a shared unit serves, the unit's status with `queues` (only those the caller may read; `queue` the first of them), each pending attempt's per-queue `coverage` and a partial outcome's `last.missing`, both naming only those queues — from storage (`local: false`) when the unit runs in another process and claimed at or after the queue's own state (and `overlaps`, the other groups' units seen on its queues at the last check); and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
 | GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here. Each group redacted to the members the caller may read (below), and left out when it may read none |
 | GET | `/summon/groups/:group` | `queues.read`, per member | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller, and — answered alike — for one none of whose members the caller may read |
 | POST | `/summon/groups/:group/reset` | `queues.summon`, on every member | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. 403 unless `authorize` allows `queues.summon` on every member. Needs a controller in the group in the API's process |
@@ -3948,6 +3949,48 @@ queues, and every unit it summons runs a worker for each of them (built with
 the queues costs one attempt, one platform task and one database pool
 instead of one per queue.
 
+#### When it is worth it
+
+What a unit costs, by term, for N queues each bursting at once:
+
+| Term | One unit per queue | One shared unit |
+|---|---|---|
+| Boot, connect and register | N processes: 0.58–0.85 s for N = 8 (measured) | 0.21–0.44 s for N = 8 (measured) |
+| Memory | about 67 MB per unit: about 530 MB for N = 8 | about 70 MB, flat in N |
+| Database pools | N | 1 |
+| Platform cold starts | N, in parallel | 1 |
+| Minimum bill | N × (1 min on Fargate, Cloud Run jobs) | 1 × |
+| Idle tail (`idleFor`) | N × | 1 × |
+| Attempts against the budget and quota | N per burst | 1 |
+| Isolation between queues | yes | none: one image, one process, one OOM |
+| Scaling | each queue alone | units = the most-starved queue's need |
+
+The boot and memory figures were measured on the development host
+(`unit-boot.ts` in the summon-multi-queue plan); the rest follow from the
+design.
+
+**A worked estimate.** Eight queues each get a burst of twenty one-second
+jobs in the same minute, on Fargate at 1 vCPU / 2 GB (about $0.00082 a
+minute, with a one-minute minimum). One unit per queue: 8 billed minutes
+(about $0.0066), 8 attempts against the budget, 8 tasks against the
+account's quota, 8 pools on the database. One shared unit: 1 billed minute
+(about $0.0008), 1 attempt, 1 task, 1 pool. The money is pennies either way;
+**the counts are what matter**: a budget of 30 an hour lasts one 8-queue
+burst every 16 minutes per queue, against one every 2 minutes shared, and
+quotas and `max_connections` are reached 8 times sooner.
+
+**Who gains:** many light queues whose bursts are correlated (one upload fans
+out to ingest, captions and a search index); platforms with a minimum bill or
+a slow cold start; wake-style pools with a small `poolSize`; a database near
+its connection limit. **Who does not:** heavy, independent queues, which want
+to scale apart; queues with different images, resources or secrets; untrusted
+job code, where one queue's crash must not take the others down; queues that
+already have an always-on worker each. Start with
+[one budget for the group](#one-budget-for-several-queues-group), and make it
+one unit when your queues have the fan-out shape.
+
+#### Configuring it
+
 ```ts
 export const jobs = new BunJobs({
   namespace: "shop",
@@ -3967,11 +4010,14 @@ jobs.summonController("thumbs") === jobs.summonController("renders"); // true
 ```
 
 Or by hand, `new SummonController({ driver, namespace, queues, group: { name,
-unit: "shared" }, summoner, … })`.
+unit: "shared" }, summoner, … })`. The unit's entry script builds one worker
+per queue in `summonedFromArgs().queues` and runs them together with
+[`runSummoned(workers)`](#summoned-workers-several-queues).
 
 - **Demand is combined by the most-starved queue**, never summed: if renders
   needs 3 units and thumbs 1, three units serve both. Each queue's capacity
-  is counted apart, from its own `jobsPerWorker` and `maxWorkers`.
+  is counted apart, from its own `jobsPerWorker` and `maxWorkers`. A
+  scale-style unit is set back to zero only once every queue is idle.
 - **Its state is the group's entry**: attempts in flight, failures, backoff,
   circuit and budget. The policy's `budget` and `group.budget` both apply;
   per period the stricter wins. `group.circuit` changes nothing (the unit's
@@ -3997,28 +4043,113 @@ unit: "shared" }, summoner, … })`.
   attempt**, since one unit serves them all.
 - **A provider must pass its arguments whole**: a shared unit refuses a
   provider that negotiated summon `0.1`, and one whose `passes` is `"none"`
-  (it could not tell the unit which queues it serves).
+  (it could not tell the unit which queues it serves). The conformance kit's
+  `summon.handoff.shared-unit` check proves a provider can run one.
+
+#### Registration on each queue: coverage and partial units
+
+A unit's worker for each queue claims the attempt on that queue before its
+first heartbeat, so the controller sees the attempt arrive queue by queue,
+and settles it once every queue has registered — or once the attempt's
+`until` (its claim time plus `bootBudget`) has passed.
+
+- **`status().pending[i].coverage`** says, for each queue of the unit, where
+  that attempt stands: `"registered"` once a worker of the unit holds the
+  attempt's claim there and is live, or has left with a clean exit mark;
+  `"missing"` once `until` plus 5 s has passed with nothing registered there
+  and nothing still starting; `"pending"` before that. It is worked out from
+  the queues' claims and live worker records **each time the status is
+  read**, and never stored. The 5 s is the allowance the controller grants
+  every comparison between two processes' clocks, and coverage is read on
+  the reader's clock: under 5 s of skew it never says `"missing"` for a
+  queue the controller still counts as on its way; a larger skew only moves
+  that display earlier or later, and the controller's own decision, on its
+  own clock, is what lands in `last`. A controller of one queue has no
+  coverage.
 - **A unit that registers on some of its queues only** — an entry script
-  that forgot a queue — is `registered` with the detail
-  `partial:<queues>` and `missing: [<queues>]` on its event, logged at
-  `error`, and counted as one failure, so it opens the circuit rather than
-  summoning forever. `onSummonFailed` is not called for it.
+  that forgot a queue — settles as `registered` with the detail
+  `partial:<queues>`, and **`last.missing`** (stored with the outcome) and
+  the event's `missing` list the same queues. It is logged at `error` and
+  counted as one failure, so it opens the circuit rather than summoning
+  forever; `onSummonFailed` is not called for it. A unit that registers on
+  none of its queues is `lost`, as for one queue.
+
+#### Reading it from any process
+
+`GET /queues/<any of its queues>/summon` answers the unit's status even from
+a management API whose process runs no controller for it, read from the
+group's state (`local: false`):
+
+- **Its queues** are the ones its last claim persisted (every claim writes
+  them on the group's entry, in the policy's order), less any that answers
+  for itself (below) or that another unit answers for; `GET /summon` lists
+  the unit with the same queues. Its coverage is worked out from the claims
+  and worker records as above.
+- **Its budget limits are the group's own** (`group.budget`): a stricter
+  `budget` in the unit's policy is known only to its controller.
+- **A queue's own summon state against the unit's**: the unit answers when
+  its last claim is at or after the queue's own (or the queue has none, or
+  only state that cannot be read); otherwise the queue's own state does. A
+  queue switched back from a shared unit to a controller of its own is
+  answered by its own state once that claims, and the other way round. A
+  queue's state written by a newer bun-jobs, which this build cannot date,
+  answers for itself. One queue in two units is answered by the one that
+  claimed last (by group name on a tie).
+- **Cost**: one listing of the namespace's group entries and one read of
+  each, one read of each other member's own state, plus, while attempts are
+  in flight, one claim read per attempt per queue and one listing of worker
+  records per queue. `GET /summon` lists a remote unit once, with no
+  coverage (list items have no attempts), and reads none of it for a local
+  unit either.
+- **Coverage is best effort**: if those reads fail, the status is answered
+  without `coverage` (and a warning is logged, at most once a minute), never
+  with an error.
+
+`group.unit` is `"shared"` on the group's status wherever it is answered —
+from a controller in the group, by its policy; from storage, while the
+group's state shows a current unit. Its last claim stamps each of its
+queues' shares, so a per-queue controller charging one of them after it
+takes that queue out of the unit (the queue has a controller of its own
+again, whose state answers for it), and the unit stays for the rest: one
+replica still per-queue during a rolling deploy hides only its own queue.
+Once every queue has gone back, there is no unit. (Shares empty at UTC
+midnight; until per-queue controllers charge again that day, a group
+switched back keeps the `unit` label, while each queue's own newer state
+still answers for it.)
+
+#### Through the management API
+
+- **`GET /summon` lists the unit once**, with `queues` and `group`, when the
+  caller may read any of its queues (local or not).
+- **Confidentiality is `authorize`'s**: the API shows a caller nothing
+  about a queue it may not read (`queues.read`; on the socket,
+  `events.subscribe` on the channel for that queue). `queues`, `queue` (the
+  first left), each attempt's `coverage`, `last.missing`, a socket event's
+  `queues` and `missing`, a `partial:` detail (bare `partial` when it names
+  none of them) and the group's shares all leave such queues out, and a
+  unit none of whose queues the caller may read is not listed. The group
+  routes ask about its persisted queues as well as its shares, so a group
+  stays visible to its members' readers after its shares empty at UTC
+  midnight.
+- **The configured `queues` option is reachability, not access control.**
+  It limits the unit's own fields — `queues`, `queue`, `coverage`,
+  `last.missing`, the `partial:` detail and which queues list the unit — to
+  the queues the API can reach, so `GET /summon` and
+  `GET /queues/<member>/summon` agree. The group's shares and socket events
+  are governed by `queues.read` alone: to hide a queue, refuse it in
+  `authorize`.
+- **"Summon now" and a reset on one of its queues act for all of them**, so
+  they need `queues.summon` on every one: any refusal is 401/403 before
+  anything runs, naming no queue, as `POST /summon/groups/:group/reset`
+  answers.
+
+#### Events, overlaps and resets
+
 - **Its status, events and failures name the queues**: `status().queues`,
   `SummonEventPayload.queues` and `SummonFailure.queues` (absent for one
   queue), `queue` being the first. Each event is published once on every
   queue's channel; the copies share one `eventId` (which every summon event
-  now carries), so a client following several queues dedupes them by it.
-  `GET /summon` lists the unit once, with `queues` and `group`;
-  `GET /queues/<any of them>/summon` answers the unit's status.
-- **The management API shows a caller only the unit's queues it may
-  read** (`queues.read`; on the socket, `events.subscribe` on the
-  channel for that queue): `queues`, `queue` (the first of those),
-  a socket event's `missing`, a `partial:` detail (bare `partial` when it
-  names none of them) and the group's shares all leave the others out, and
-  a unit none of whose queues the caller may read is not listed. **"Summon
-  now" and a reset on one of its queues act for all of them**, so they
-  need `queues.summon` on every one: any refusal is 401/403 before anything
-  runs, naming no queue, as `POST /summon/groups/:group/reset` answers.
+  carries), so a client following several queues dedupes them by it.
 - **Overlaps.** One queue should have one summoning controller. A controller
   that finds live workers on its queues summoned by another group's shared
   unit warns once per queue and group, and lists the groups in
@@ -4031,17 +4162,30 @@ unit: "shared" }, summoner, … })`.
   `reset({ budget: true })` also the group's counts. `POST
   /summon/groups/:group/reset` does the same to the unit's entry.
 
-**Upgrading.** During a rolling deploy, a unit started from an entry script
-that predates the group's queues registers on some of them only, so each of
-its attempts is `partial` until every image is updated. Switching a group
-from per-queue controllers to a shared unit keeps the group's budget counts
-and circuits (it is the same entry), and leaves the old per-queue markers in
-place, unused; their units in flight drain and exit on idle. A shared unit of
-one queue names its group in its summons from this version on: during a
-rolling upgrade, old and new controllers send different `argv` for its
-attempts (without and with `--bun-jobs-summon-group=`), and its workers
-summoned by an older version carry no group, so a new controller warns about
-them once per queue until they exit.
+#### Upgrading
+
+- During a rolling deploy, a unit started from an entry script that
+  predates the group's queues registers on some of them only, so each of its
+  attempts is `partial` until every image is updated.
+- Switching a group from per-queue controllers to a shared unit keeps the
+  group's budget counts and circuits (it is the same entry), and leaves the
+  old per-queue markers in place, unused; their units in flight drain and
+  exit on idle.
+- A group entry an earlier build's unit wrote has no persisted queues: a
+  process with no controller reads them from the day's shares until the
+  unit's next claim writes them. Before its first claim a shared unit is not
+  readable from storage at all (409, as for a queue before its first claim).
+- An outcome an earlier build stored has no `last.missing`; its
+  `partial:<queues>` detail still names them.
+- A management API on an earlier build, reading this build's state, answers
+  a member with 409 (or the queue's own stale state), and shows no coverage
+  and no `group.unit`. Every new field is optional.
+- A shared unit of one queue names its group in its summons from this
+  version on. During a rolling upgrade, old and new controllers send
+  different `argv` for its attempts (without and with
+  `--bun-jobs-summon-group=`), and its workers summoned by an older version
+  carry no group, so a new controller warns about them once per queue until
+  they exit.
 
 **Naming.** `SummonGroupOptions` is the policy's `group` field — what
 controllers share, one budget, a circuit or one unit. `SummonGroup` is an
@@ -6811,7 +6955,7 @@ cannot" from "you may not":
 | `providers` | `/providers`, `/providers/:id/validate`, `/providers/:id/schema` | nothing: they read the process's configured providers, so only `mode: "runner"` turns it off |
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
 | `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
-| `summonRemoteStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon`, and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
+| `summonRemoteStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under

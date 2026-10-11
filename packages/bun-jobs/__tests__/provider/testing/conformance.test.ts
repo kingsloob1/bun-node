@@ -3,7 +3,10 @@ import type {
   ConformanceReport,
   FakePlatform,
 } from "../../../lib/provider/testing/index";
-import type { SummonRequest } from "../../../lib/summon/index";
+import type {
+  SummonReleaseRequest,
+  SummonRequest,
+} from "../../../lib/summon/index";
 import type { AcmeDefect, AcmeOptions } from "./acme";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +26,10 @@ import {
   runProviderConformance,
 } from "../../../lib/provider/testing/index";
 import { buildReport } from "../../../lib/provider/testing/report";
+import {
+  summonGroupRef,
+  summonGroupStateName,
+} from "../../../lib/summon/group";
 import { SUMMON_MARKER } from "../../../lib/summon/marker";
 import { crossProcessBackends } from "../../helpers/backends";
 import { acmeConfig, acmeFake, acmeProvider, acmeSummoner } from "./acme";
@@ -75,7 +82,15 @@ function failedGroups(report: ConformanceReport): string[] {
   return [...new Set(failed(report).map((id) => id.split(".")[1]!))];
 }
 
-/** Runs the kit on an Acme provider over a fresh fake. */
+/** The shared handoff's check id. */
+const SHARED = "summon.handoff.shared-unit";
+
+/**
+ * Runs the kit on an Acme provider over a fresh fake. The shared handoff is
+ * skipped unless `extra.shared` asks for it: it starts one more unit
+ * process, and this file runs the kit some thirty times; its own cases
+ * below run it.
+ */
 async function acme(
   options: Parameters<typeof acmeProvider>[0] = {},
   extra: {
@@ -83,9 +98,12 @@ async function acme(
     skip?: { id: string; reason: string }[];
     /** The handoff's backend. */
     driver?: DriverConfig;
+    /** Run the shared handoff (`summon.handoff.shared-unit`). Defaults to `false`. */
+    shared?: boolean;
   } = {},
 ): Promise<ConformanceReport> {
   const platform = await fake();
+  const { shared = false, skip = [], ...rest } = extra;
   return await runProviderConformance(acmeProvider(options), {
     config: acmeConfig(platform),
     invalidConfigs: [
@@ -96,7 +114,10 @@ async function acme(
       { config: { region: "eu" }, path: "url" },
     ],
     platform,
-    ...extra,
+    skip: shared
+      ? skip
+      : [...skip, { id: SHARED, reason: "run by its own cases" }],
+    ...rest,
   });
 }
 
@@ -474,7 +495,9 @@ describe("a provider broken in one way fails exactly that group", () => {
   });
 
   it("capabilities: the groups a controller would refuse are skipped, not failed", async () => {
-    const report = await acme({ defect: "capabilities" });
+    // The shared handoff too: run, so it is skipped for this reason.
+    const report = await acme({ defect: "capabilities" }, { shared: true });
+    expect(report.checks.map((check) => check.id)).toContain(SHARED);
     for (const check of report.checks.filter((one) =>
       /^summon\.(?:handoff|cas|scale)\./.test(one.id),
     )) {
@@ -530,6 +553,162 @@ describe("the round trip's level follows the declared summon API", () => {
       level: "should",
       status: "pass",
     });
+  });
+});
+
+/**
+ * The shared handoff (`summon.handoff.shared-unit`, a `should`): one unit
+ * summoned for two queues registers on both, drains both and exits 0; on a
+ * scale platform the release names both. Skipped where a controller refuses
+ * a shared unit, and a failure warns without failing the report.
+ */
+describe("the shared handoff: one unit for two queues", () => {
+  const notUnderTest = {
+    skip: [{ id: "summon.cas.one-call", reason: "not under test" }],
+    shared: true,
+  };
+  const sharedCheck = (report: ConformanceReport) =>
+    report.checks.find((check) => check.id === SHARED)!;
+
+  it("is a should, reported after the handoff group's own checks", async () => {
+    const report = await acme({ summonApi: "0.1" }, notUnderTest);
+    const ids = report.checks.map((check) => check.id);
+    expect(ids.indexOf(SHARED)).toBe(
+      ids.indexOf("summon.handoff.scale-down") + 1,
+    );
+    expect(sharedCheck(report).level).toBe("should");
+  });
+
+  it("launch: passes, summoned for both queues in the group, and leaves nothing behind", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-kit-shared-"));
+    cleanups.push(async () => await rm(dir, { recursive: true, force: true }));
+    const config: DriverConfig = { type: "file", root: join(dir, "driver") };
+    const requests: SummonRequest[] = [];
+    const report = await acme(
+      {
+        onCall: (call) => {
+          if (call.kind === "summon") {
+            requests.push(call.request);
+          }
+        },
+      },
+      { ...notUnderTest, driver: config },
+    );
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(sharedCheck(report)).toMatchObject({
+      level: "should",
+      status: "pass",
+      detail:
+        "one unit served work and work.b: it registered on both, drained 3 jobs on each and exited 0",
+    });
+    const shared = requests.filter((request) => request.queues?.length === 2);
+    expect(shared).toHaveLength(1);
+    expect(shared[0]).toMatchObject({
+      queue: "work",
+      queues: ["work", "work.b"],
+      group: "conformance",
+    });
+    const internals = fakeInternals(platforms.at(-1)!);
+    // The round trip's unit, the handoff's and the shared handoff's.
+    expect(internals.handedOff).toHaveLength(3);
+    expect(await leftovers(config, internals.namespaces)).toEqual([]);
+  });
+
+  it("scale: passes, and the release names both queues and the group", async () => {
+    const releases: SummonReleaseRequest[] = [];
+    const report = await acme(
+      {
+        style: "scale",
+        onCall: (call) => {
+          if (call.kind === "release") {
+            releases.push(call.request);
+          }
+        },
+      },
+      notUnderTest,
+    );
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(sharedCheck(report)).toMatchObject({
+      status: "pass",
+      detail:
+        "one unit served work and work.b: it registered on both, drained 3 jobs on each and exited 0; the release named both queues",
+    });
+    expect(releases).toContainEqual(
+      expect.objectContaining({
+        queues: ["work", "work.b"],
+        group: "conformance",
+        target: 0,
+      }),
+    );
+  });
+
+  it("summon 0.1: skipped, since a controller refuses a shared unit", async () => {
+    const report = await acme({ summonApi: "0.1" }, notUnderTest);
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(sharedCheck(report)).toMatchObject({
+      status: "skip",
+      detail:
+        "the provider negotiated summon 0.1: a controller refuses a shared unit below summon 0.2",
+    });
+  });
+
+  it("passes none: skipped, since a shared unit's workers read their queues from the arguments", async () => {
+    const report = await acme({ passes: "none" }, notUnderTest);
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(sharedCheck(report)).toMatchObject({
+      status: "skip",
+      detail:
+        "passes is none: a shared unit's workers read their queues from the unit's arguments, so a controller refuses one",
+    });
+  });
+
+  it("skipped when summon.handoff.released did not pass", async () => {
+    const report = await acme({ defect: "handoff" }, notUnderTest);
+    expect(sharedCheck(report)).toMatchObject({
+      status: "skip",
+      detail:
+        "summon.handoff.released did not pass (fail), and the shared handoff builds on it",
+    });
+  });
+
+  it("skipped, with the caller's reason, when the run's skip names it", async () => {
+    const report = await acme(
+      {},
+      {
+        skip: [
+          { id: "summon.cas.one-call", reason: "not under test" },
+          { id: SHARED, reason: "the caller's reason" },
+        ],
+        shared: true,
+      },
+    );
+    expect(sharedCheck(report)).toMatchObject({
+      status: "skip",
+      detail: "skipped: the caller's reason",
+    });
+  });
+
+  it("a provider that drops a queue argument warns, blaming the arguments rather than the kit's own worker, and the report still passes", async () => {
+    const report = await acme({ defect: "two-queue-first" }, notUnderTest);
+    expect(failed(report), report.toMarkdown()).toEqual([]);
+    expect(sharedCheck(report)).toMatchObject({
+      level: "should",
+      status: "warn",
+    });
+    expect(sharedCheck(report).detail).toBe(
+      "registration: the unit registered a worker on work only, none on work.b: the kit's worker builds one for each --bun-jobs-summon-queue= argument it receives, so the provider did not pass request.argv to the unit whole (keep every argument, in order)",
+    );
+    expect(report.ok).toBe(true);
+    expect(() => assertConformance(report)).not.toThrow();
+  });
+
+  it("a provider keying arguments by flag fails the round trip, and the shared handoff warns", async () => {
+    const report = await acme({ defect: "argv" }, notUnderTest);
+    expect(failed(report), report.toMarkdown()).toEqual([
+      "summon.argv.round-trip",
+    ]);
+    expect(sharedCheck(report).status).toBe("warn");
+    expect(sharedCheck(report).detail).toContain("none on work");
   });
 });
 
@@ -692,7 +871,8 @@ describe("the report", () => {
 /**
  * What a kit run left on a backend, by the exact namespaces it recorded
  * (never a prefix: other runs share the backend): each namespace's queues,
- * runners, summon marker and worker records.
+ * runners, the summon marker and worker records of `work` and of the
+ * shared handoff's `work.b`, and the shared handoff's group entry.
  */
 async function leftovers(
   config: DriverConfig,
@@ -703,19 +883,30 @@ async function leftovers(
   try {
     const found: string[] = [];
     for (const ns of namespaces) {
-      const ref = { ns, queue: "work" };
       const queues = await driver.listQueues(ns);
       const runners = await driver.listRunners(ns);
-      const marker = await driver.getQueueState?.(ref, SUMMON_MARKER);
-      const workers = (await driver.listWorkers?.(ref, Date.now())) ?? [];
+      let markers = 0;
+      let workers = 0;
+      for (const queue of ["work", "work.b"]) {
+        const ref = { ns, queue };
+        if ((await driver.getQueueState?.(ref, SUMMON_MARKER)) != null) {
+          markers++;
+        }
+        workers += ((await driver.listWorkers?.(ref, Date.now())) ?? []).length;
+      }
+      const group = await driver.getQueueState?.(
+        summonGroupRef(ns),
+        summonGroupStateName("conformance"),
+      );
       if (
         queues.length > 0 ||
         runners.length > 0 ||
-        marker != null ||
-        workers.length > 0
+        markers > 0 ||
+        group != null ||
+        workers > 0
       ) {
         found.push(
-          `${ns}: ${queues.length} queue(s), ${runners.length} runner(s), marker ${marker == null ? "none" : "left"}, ${workers.length} worker record(s)`,
+          `${ns}: ${queues.length} queue(s), ${runners.length} runner(s), ${markers} marker(s), group entry ${group == null ? "none" : "left"}, ${workers} worker record(s)`,
         );
       }
     }

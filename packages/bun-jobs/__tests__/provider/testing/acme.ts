@@ -93,7 +93,8 @@ export type AcmeDefect =
   | "argv-drop-grace" // drops --bun-jobs-summon-grace-ms, every other argument intact
   | "argv-sorted" // passes every argument, sorted: the queues keep their order
   | "release-shared" // release() throws for a unit serving several queues
-  | "already-running"; // answers already-running to a unit serving several queues, starting nothing
+  | "already-running" // answers already-running to a unit serving several queues, starting nothing
+  | "two-queue-first"; // for a unit serving exactly two queues, passes only the first queue argument
 
 /** How to build an Acme provider. */
 export interface AcmeOptions {
@@ -353,7 +354,14 @@ export function acmeProvider(
                       )
                     : defect === "argv-sorted"
                       ? [...request.argv].sort()
-                      : [...request.argv];
+                      : defect === "two-queue-first" &&
+                          request.queues?.length === 2
+                        ? request.argv.filter(
+                            (arg) =>
+                              arg !==
+                              `--bun-jobs-summon-queue=${request.queues![1]}`,
+                          )
+                        : [...request.argv];
           const token =
             defect === "dedupe"
               ? `acme-${request.dedupeKey}`

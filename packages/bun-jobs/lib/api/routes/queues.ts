@@ -7,7 +7,7 @@ import type {
 import type { BunQueue } from "../../queue/BunQueue";
 import type { JobDefaultsUpdate } from "../../queue/jobDefaults";
 import type { JobDefaultsInfo } from "../../queue/types";
-import type { LocalGroupView } from "../../summon/status";
+import type { LocalGroupView, StoredSharedUnit } from "../../summon/status";
 import type { SummonGroupStatus, SummonStatus } from "../../summon/types";
 import type { AuthDecision } from "../auth";
 import type { JobsApiAuthorizeContext, ResolvedJobsApiConfig } from "../config";
@@ -35,11 +35,18 @@ import {
 } from "../../drivers/index";
 import { jobDefaultIssue } from "../../queue/jobDefaults";
 import { normalizeLimits } from "../../queue/limits";
-import { demandQueueOf } from "../../summon/controller";
+import {
+  demandQueueOf,
+  SUMMON_GROUP_VIEW,
+  SUMMON_STATUS_WITHOUT_COVERAGE,
+} from "../../summon/controller";
 import { resetGroup } from "../../summon/group";
 import {
+  answeredMembers,
   listSummonGroupNames,
   readStoredGroupStatus,
+  sharedUnitFor,
+  storedGroupMembersOf,
 } from "../../summon/status";
 import { decide, denialError } from "../auth";
 import {
@@ -643,7 +650,10 @@ function localGroupView(
   services: RouteServices,
   name: string,
 ): { local?: LocalGroupView } {
-  const [first] = services.queues.summonGroupControllers(name);
+  const controllers = services.queues.summonGroupControllers(name);
+  // The group's shared unit, when one runs here, speaks for the group.
+  const first =
+    controllers.find(({ view }) => view.unit === "shared") ?? controllers[0];
   return first === undefined ? {} : { local: first.view };
 }
 
@@ -752,9 +762,11 @@ function summonReadAsker(
 }
 
 /**
- * The queues a summon group's status names — its queue shares and the queue
- * of every circuit's `openedBy` — plus, with `local`, the queues of the
- * controllers in the group running in the API's process. In code-point order.
+ * The queues a summon group's status names — its queue shares, the queue of
+ * every circuit's `openedBy` and, for a shared unit's group read from
+ * storage, the queues its last claim persisted — plus, with `local`, the
+ * queues of the controllers in the group running in the API's process. In
+ * code-point order.
  */
 function groupMembers(
   services: RouteServices,
@@ -762,7 +774,10 @@ function groupMembers(
   group: SummonGroupStatus | undefined,
   options: { local: boolean },
 ): string[] {
-  const members = new Set<string>(Object.keys(group?.queues ?? {}));
+  const members = new Set<string>([
+    ...Object.keys(group?.queues ?? {}),
+    ...(group === undefined ? [] : storedGroupMembersOf(group)),
+  ]);
   for (const circuit of [
     group?.circuit,
     ...Object.values(group?.circuits ?? {}),
@@ -883,9 +898,11 @@ async function visibleGroups(
 /**
  * A summon status as the caller of a route on `own` may read it (Q4): a
  * shared unit's other queues are asked about (`queues.read`, as
- * `GET /queues/:queue/summon` asks it), and its `queues`, `queue` and a
- * `partial:` detail keep only those it may read ({@link redactUnitStatus});
- * the group's status is redacted to the same set ({@link redactGroup}).
+ * `GET /queues/:queue/summon` asks it), and its `queues`, `queue`,
+ * coverage, `missing` and a `partial:` detail keep only those it may read
+ * that the API can also reach ({@link redactUnitStatus}) — the configured
+ * list is reachability, kept so the route agrees with `GET /summon`; the
+ * group's status is redacted by `queues.read` alone ({@link redactGroup}).
  * `own` is the queue the route authorized, always readable — never the
  * unit's first queue, which the caller may not be allowed to read.
  */
@@ -896,11 +913,14 @@ async function withVisibleUnit(
   own: string,
 ): Promise<SummonStatus> {
   const ask = summonReadAsker(services, req);
+  // A shared unit's other queues this API can reach, as `GET /summon` shows
+  // them: the only ones its `queues`, coverage and `missing` may name.
+  const reachable = new Set(
+    services.queues.summonReachable(status.queues ?? []),
+  );
   const others = [
     ...new Set([
-      // A shared unit's other queues this API can reach, as `GET /summon`
-      // shows them.
-      ...services.queues.summonReachable(status.queues ?? []),
+      ...reachable,
       ...(status.group === undefined
         ? []
         : groupMembers(services, status.group.name, status.group, {
@@ -913,7 +933,14 @@ async function withVisibleUnit(
     own,
     ...others.filter((_, index) => allowed[index]),
   ]);
-  const unit = redactUnitStatus(status, readable);
+  // The group's shares are asked about as the group routes ask, but name
+  // a queue in the unit's own fields only when this API can reach it.
+  const unit = redactUnitStatus(
+    status,
+    new Set(
+      [...readable].filter((queue) => queue === own || reachable.has(queue)),
+    ),
+  );
   return unit.group === undefined
     ? unit
     : { ...unit, group: redactGroup(unit.group, readable) };
@@ -1227,7 +1254,7 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary:
         "Every summoning queue the API can read, with its budget usage and circuit",
-      description: `One item per summoning queue the API can reach, by queue name. A queue whose summon controller runs in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — is \`local: true\`, with its summoner's kind, readiness and whether it is inert. A queue whose controller runs in another process is read from its summon state in storage, as \`local: false\`, with the kind its last claim persisted and no readiness. Each carries the last outcome, when an open circuit closes, and the budget usage with its limits (absent, with \`off: true\`, while the budget is off; read from storage, the limits the last claim persisted) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A shared unit (\`group.unit: "shared"\`) is one controller for several queues, listed once, and only when the caller may read at least one of its queues: \`queues\` names those it may read (of those this API can reach), \`queue\` is the first of them, \`group\` is its summon group, and a \`partial:\` detail names only those queues. An empty list, never 409, when none summons. State a newer bun-jobs wrote is listed \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is left out; state written before claims persisted their limits shows its counts with \`limitsUnknown: true\`. Reads the summon state of every reachable queue without a local controller (one queue-state read each: about 20–35 ms per 1,000 queues on SQLite, 75 ms on Postgres); spends nothing. Remote items are advertised by \`/meta.features.summonRemoteStatus\`.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each queue is then listed only when \`authorize\` allows \`queues.read\` on it, asked as \`GET /queues/{queue}/summon\` asks it (one call per summoning queue — every queue of a shared unit — whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
+      description: `One item per summoning queue the API can reach, by queue name. A queue whose summon controller runs in the API's process — from \`BunJobsOptions.summon\` or \`jobs.summonController()\` on the \`jobs\` the API was given — is \`local: true\`, with its summoner's kind, readiness and whether it is inert. A queue whose controller runs in another process is read from its summon state in storage, as \`local: false\`, with the kind its last claim persisted and no readiness. Each carries the last outcome, when an open circuit closes, and the budget usage with its limits (absent, with \`off: true\`, while the budget is off; read from storage, the limits the last claim persisted) and when each UTC window resets, as \`GET /queues/{queue}/summon\` has them. A shared unit (\`group.unit: "shared"\`) is one controller for several queues, listed once, and only when the caller may read at least one of its queues: \`queues\` names those it may read (of those this API can reach), \`queue\` is the first of them, \`group\` is its summon group, and a \`partial:\` detail names only those queues. A shared unit whose controller runs in another process is read from its group's state: one \`local: false\` item for the queues it answers for (those its last claim persisted, less any whose own summon state claimed later — a queue switched back to a controller of its own is listed by itself — or that another unit answers for; \`GET /queues/{queue}/summon\` names the same \`queues\`), at the cost of one listing of the group entries and one read of each. An empty list, never 409, when none summons. State a newer bun-jobs wrote is listed \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is left out; state written before claims persisted their limits shows its counts with \`limitsUnknown: true\`. Reads the summon state of every reachable queue without a local controller (one queue-state read each: about 20–35 ms per 1,000 queues on SQLite, 75 ms on Postgres); spends nothing. Remote items are advertised by \`/meta.features.summonRemoteStatus\`.\n\nGated by \`queues.list\`, like \`GET /queues\` and \`GET /demand\`. Each queue is then listed only when \`authorize\` allows \`queues.read\` on it, asked as \`GET /queues/{queue}/summon\` asks it (one call per summoning queue — every queue of a shared unit — whatever \`listQueues\` says), so the list never shows what that route would refuse.`,
       tags: ["Queues"],
       responses: { 200: SummonListSchema },
       handler: async ({ req, services }) => {
@@ -1243,10 +1270,22 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         const others = (await services.queues.names()).filter(
           (name) => !local.has(name),
         );
-        const stored = await mapBounded(
-          others,
-          async (name) => await services.queues.storedSummonStatus(name),
+        // Shared units in other processes, read from their groups' state —
+        // but never a group whose shared unit runs here, listed above.
+        const localUnits = new Set(
+          controllers.flatMap((controller) => {
+            const view = controller[SUMMON_GROUP_VIEW]();
+            return view?.view.unit === "shared" ? [view.name] : [];
+          }),
         );
+        const [stored, units] = await Promise.all([
+          mapBounded(
+            others,
+            async (name) => await services.queues.storedMarkerStatus(name),
+          ),
+          services.queues.storedSharedUnits(),
+        ]);
+        const remoteUnits = units.filter((unit) => !localUnits.has(unit.group));
         /** One item to list: the queues it is about, and how to read it. */
         interface Item {
           members: readonly string[];
@@ -1255,15 +1294,46 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         const items: Item[] = controllers.map((controller) => ({
           // A shared unit's every reachable queue; one queue otherwise.
           members: services.queues.summonMembers(controller),
-          read: async () => ({ status: await controller.status() }),
+          // No coverage: list items carry no attempts.
+          read: async () => ({
+            status: await controller[SUMMON_STATUS_WITHOUT_COVERAGE](),
+          }),
         }));
+        // Each reachable queue a remote unit answers for — unless its own
+        // state is newer (a queue switched back to a controller of its own).
+        // The rule `GET /queues/<member>/summon` names a unit's queues by
+        // (`answeredMembers`), so the two agree.
+        const ownOf = new Map(
+          others.map((name, index) => [name, stored[index]]),
+        );
+        const answered = new Map<StoredSharedUnit, string[]>();
         others.forEach((name, index) => {
           const found = stored[index];
+          const unit = sharedUnitFor(remoteUnits, name);
+          if (
+            unit !== undefined &&
+            answeredMembers(unit, remoteUnits, ownOf).includes(name)
+          ) {
+            const members = answered.get(unit) ?? [];
+            members.push(name);
+            answered.set(unit, members);
+            return;
+          }
           // Unreadable state has nothing to show: left out, never zeros.
           if (found !== undefined && found.unreadable !== true) {
             items.push({ members: [name], read: async () => found });
           }
         });
+        for (const [unit, reachable] of answered) {
+          items.push({
+            // In the unit's order.
+            members: unit.members.filter((queue) => reachable.includes(queue)),
+            read: async () => ({
+              status: unit.status,
+              ...(unit.kind === undefined ? {} : { kind: unit.kind }),
+            }),
+          });
+        }
         // `queues.read` once per queue, across every item (Q4): an item is
         // listed when the caller may read any of its queues, and shows only
         // those.
@@ -1309,7 +1379,7 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary:
         "A queue's summon status: attempts in flight, failures, circuit, budget",
-      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one (redacted to the members the caller may read, as \`GET /summon/groups/{group}\` redacts it), and the summoner — its provider, declared capabilities and secret-free facts. For a queue a shared unit in the API's process serves (\`group.unit: "shared"\`), the unit's status: \`authorize\` is asked \`queues.read\` about each of its other queues, and \`queues\` names only those the caller may read with the one asked about (\`queue\` the first of them), a \`partial:\` detail only those, and the group's state is redacted to the same queues. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). Summon state a newer bun-jobs wrote is \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is \`inert\` with \`inertReason: "unreadable-marker"\`, nothing pending, no failures and no \`budget\` (\`GET /summon\` leaves it out). 409 \`SUMMON_NOT_CONFIGURED\` only for a queue with neither a controller here nor summon state. Advertised by \`/meta.features.summonRemoteStatus\`.`,
+      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one (redacted to the members the caller may read, as \`GET /summon/groups/{group}\` redacts it), and the summoner — its provider, declared capabilities and secret-free facts. For a queue a shared unit serves (\`group.unit: "shared"\`), the unit's status: \`authorize\` is asked \`queues.read\` about each of its other queues, and \`queues\` names only those the caller may read and the API can reach (its \`queues\` option), with the one asked about (\`queue\` the first of them); each pending attempt's \`coverage\` (per queue: \`registered\`, \`pending\`, or \`missing\` once its \`until\` plus 5 s has passed with nothing registered or starting there, by the server's clock; worked out from the queues' claims and worker records at each read, never stored), the last outcome's \`missing\` and a \`partial:\` detail name only those, and the group's state is redacted to the same queues. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). A queue a shared unit in another process serves is answered with the unit's status, read from its group's state (its \`queues\` the ones its last claim persisted, its budget limits the group's own), when the unit claimed at or after the queue's own summon state did; that costs one listing of the group entries and one read of each, plus the coverage's claim and worker-record reads. Summon state a newer bun-jobs wrote is \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is \`inert\` with \`inertReason: "unreadable-marker"\`, nothing pending, no failures and no \`budget\` (\`GET /summon\` leaves it out). 409 \`SUMMON_NOT_CONFIGURED\` only for a queue with neither a controller here nor summon state. Advertised by \`/meta.features.summonRemoteStatus\`.`,
       tags: ["Queues"],
       params: QueueParams,
       responses: { 200: SummonStatusSchema },

@@ -1242,6 +1242,24 @@ export interface PendingSummonDto {
    * `serialize.exposeSummonHandles` (default `false`).
    */
   handles?: string[];
+  /**
+   * For a shared unit (`group.unit: "shared"`): how far this attempt has got
+   * on each queue the unit serves, by queue. `"registered"` once a worker of
+   * the unit holds the attempt's claim on that queue and is live there, or
+   * has left with a clean exit mark. `"missing"` once the attempt's `until`
+   * has passed with no worker registered there and none still starting, by
+   * the server's clock plus the 5 s allowance the controller grants every
+   * comparison between processes. `"pending"` before that. Worked out from
+   * the queues' claims and live worker records each time the status is
+   * read: never stored, and absent for a controller of one queue and when
+   * those reads fail (the status is then answered without it). An
+   * attempt with a `"missing"` queue settles at the controller's next check
+   * as `registered` with `partial:<queues>` (see
+   * {@link SummonLastOutcomeDto.missing}), or as `lost` when every queue is
+   * missing. Only the queues the caller may read (`queues.read`). Show a
+   * state you do not know as text.
+   */
+  coverage?: Record<string, "registered" | "pending" | "missing">;
 }
 
 /** The most recent outcome on a queue's summon state. Mirrors `SummonLastOutcome`. */
@@ -1254,6 +1272,16 @@ export interface SummonLastOutcomeDto {
   at: number;
   /** A short, secret-free explanation: an error name, a platform reason. */
   detail?: string;
+  /**
+   * For a shared unit's partial registration (`outcome: "registered"`,
+   * detail `partial:<queues>`): the queues its attempt registered no worker
+   * on, in the policy's order, the same ones the detail names. Stored with
+   * the outcome, so a status read from storage (`local: false`) has it too.
+   * Absent otherwise, and on an outcome an older bun-jobs wrote, whose
+   * detail still names them. Only the queues the caller may read; `detail`
+   * then names the same ones.
+   */
+  missing?: string[];
 }
 
 /**
@@ -1277,12 +1305,14 @@ export interface SummonStatusDto {
   queue: string;
   /**
    * For a shared unit (`group.unit: "shared"`): the queues it serves that
-   * the caller may read (`queues.read`, asked as this route asks it), in the
-   * policy's order — always including the one asked about. The status is
+   * the caller may read (`queues.read`, asked as this route asks it) and this
+   * API can reach (its `queues` option: reachability, not access control),
+   * in the policy's order — always including the one asked about. The status is
    * the unit's, the same whichever of its queues was asked about; a
    * `partial:` detail on `last` names only these queues too (bare
-   * `partial` when it names none of them). Absent for a controller of one
-   * queue.
+   * `partial` when it names none of them). Read from storage
+   * (`local: false`), of the queues its last claim persisted. Absent for a
+   * controller of one queue.
    */
   queues?: string[];
   /**
@@ -1302,8 +1332,10 @@ export interface SummonStatusDto {
    * controller runs elsewhere — there is then no `summoner`, the budget's
    * limits are the ones its last claim persisted (`off` when its budget was
    * off, absent when none was persisted), and "summon now" and reset still
-   * answer 409 `SUMMON_NOT_CONFIGURED`. Advertised by
-   * `/meta.features.summonRemoteStatus`.
+   * answer 409 `SUMMON_NOT_CONFIGURED`. A queue a shared unit in another
+   * process serves is answered with the unit's status, read from its
+   * group's state, when the unit claimed at or after the queue's own summon
+   * state did. Advertised by `/meta.features.summonRemoteStatus`.
    */
   local: boolean;
   /**
@@ -1385,7 +1417,9 @@ export interface SummonStatusDto {
    * Attempts used against the budget, this UTC hour and today, with the
    * limits and when each window resets. With the budget off
    * (`budget: false` in the policy) the counts are still there, the limits
-   * are absent and `off` is `true`.
+   * are absent and `off` is `true`. For a shared unit read from storage
+   * (`local: false`), the group's own limits (`group.budget`): a stricter
+   * `budget` in the unit's policy is known only to its controller.
    */
   budget?: SummonBudgetDto;
   /** The most recent outcome. */
@@ -1407,6 +1441,16 @@ export interface SummonStatusDto {
 export interface SummonGroupStatusDto {
   /** The group's name. */
   name: string;
+  /**
+   * `"shared"` when the group is one shared unit (`group.unit: "shared"`):
+   * one controller summons for all of its queues, and the unit's attempts,
+   * failures and circuit are kept in the group's state, so
+   * `GET /queues/{queue}/summon` on any of its queues answers them. From a
+   * controller in the group, its policy says so; read from storage, the
+   * group's state does, once the unit has claimed. Absent for a group of
+   * per-queue controllers.
+   */
+  unit?: "shared";
   /**
    * The group's budget usage, the limits and the window reset times. With
    * the group's budget off (`group.budget: false`) the limits are absent and

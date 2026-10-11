@@ -9,6 +9,7 @@
  * PLAYGROUND_DRIVER=sqlite bun playground/index.ts   # survives a restart
  * PLAYGROUND_DRIVER=memory bun playground/index.ts   # no disk, no summoning
  * PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts   # seed only, then quiet
+ * PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts  # uploads unit's controller on the mailer
  * cd playground && bun run dev                    # restart on file changes
  * ```
  *
@@ -78,10 +79,13 @@ const jobs = new BunJobs({
 
 const simulation = await startSimulation(jobs, { intervalMs });
 // A second service on the same backend, so the Workers page has two to group.
+// With `PLAYGROUND_SHARED_UNIT=mailer` it also hosts the uploads shared
+// unit's controller, which the API on this context then reads from storage.
 const mailer = await startMailer({
   namespace: "playground",
   driver,
   logger: noopLogger,
+  summon: summoning.mailerSummon,
 });
 const { stop: stopRunners } = await startRunners(jobs);
 
@@ -142,6 +146,7 @@ bun-node playground (${playgroundBackend()} driver)
   API docs      ${origin}${ui.basePath}/docs
   Providers     ${origin}${ui.basePath}/providers
   Summoning     ${origin}${ui.basePath}/queues/renders, …/obinna-queue, …/ledger${isCrossProcess() ? "" : "   (off: the memory driver cannot summon)"}
+  Shared unit   ${origin}${ui.basePath}/queues/ingest (uploads: ingest, captions, search-index; controller on the ${summoning.sharedUnitHost === "mailer" ? "mailer context, so this API shows it read-only" : "main context"})
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
 

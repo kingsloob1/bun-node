@@ -39,7 +39,7 @@ each measurement there can be re-run with one command.
 
 ### Status (2026-10-11)
 
-Checked against GitHub on 2026-10-11, against `develop` at `5106f61`.
+Checked against GitHub on 2026-10-11, against `develop` at `352ad028`.
 
 | PR | Scope | State | Left |
 |---|---|---|---|
@@ -52,8 +52,8 @@ Checked against GitHub on 2026-10-11, against `develop` at `5106f61`.
 | PR-B2 | `runSummoned(workers[])` | merged #313 (`47171f0`) | — |
 | PR-B3a | shared-unit controller, built by hand (C1–C7) | merged #326 (`ae492e0`) | — |
 | EX-B (controller side) | `02-queues/summon-shared-unit.ts` | merged #354 (`b1ba799`) | its three BunJobs-refusal checks flip with PR-B3b |
-| PR-B3b | `BunJobs` wiring (C8), reset and status (C9), Q5–Q11, `eventId` and `missing` on summon events, the group reset's fix for a shared unit's entry | this PR, `feat/summon-shared-unit-b3b` | review, gates, examples fix in the same window |
-| PR-B4 | per-queue coverage, remote group views, kit handoff, full docs | not started | needs PR-B3b |
+| PR-B3b | `BunJobs` wiring (C8), reset and status (C9), Q5–Q11, `eventId` and `missing` on summon events, the group reset's fix for a shared unit's entry | merged #366 (`352ad028`), with examples #367 | — |
+| PR-B4 | per-queue coverage, `last.missing`, `group.unit`, remote (`local: false`) views of a shared unit, the kit's `summon.handoff.shared-unit`, the template at summon 0.2, full docs, the playground's `uploads` unit | this PR, `feat/summon-shared-unit-b4` | review, gates, CHANGE REPORTs to the examples and UI agents |
 | UI-B, EX-B (rest) | coverage, "unit of", dedupe by `eventId`, playground | not started | after PR-B4 |
 
 *The notes below are from 2026-10-08, kept for the record; the table above
@@ -926,6 +926,26 @@ flag), on #289's earlier `GET /summon`; the rebase must redo that on the
 shipped one. Two choices there differ from the table above (the user's,
 2026-10-07): the groups list asks `queues.list`, and the group reset clears
 every kind's circuit, not one kind's.
+
+*Correction (B4, 2026-10-11).* What PR-B3b and PR-B4 built for a shared
+unit, against the table above:
+
+- **Listed by any member.** `GET /summon` lists a unit once when the caller
+  may read any of its queues (and the API can reach it), not only its
+  first; an API configured with a queue list keeps a unit any of whose
+  queues is in it.
+- **Redacted per member (Q4).** `queues`, `queue` (the first readable),
+  each attempt's `coverage`, `last.missing`, a `partial:` detail, the
+  group's shares and a socket event's `queues` and `missing` name only the
+  queues the caller may read, and of those only the ones the API can reach.
+- **Mutations on every member (Q5).** "Summon now" and a reset on a member
+  need `queues.summon` on every queue of the unit, as the group reset does.
+- **Remote members (B4).** A shared unit's claim persists its queues
+  (`members`, internal) on the group's entry, so an API with no controller
+  answers any member from storage (`local: false`), with coverage, and lists
+  the unit once; a queue's own marker answers instead when its last claim is
+  newer. The group routes ask about the persisted queues as well as the
+  shares. `group.unit: "shared"` marks the unit's group.
 
 ### 5.3 The UI [D]
 

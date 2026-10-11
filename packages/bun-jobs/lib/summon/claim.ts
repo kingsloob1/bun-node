@@ -1,4 +1,4 @@
-import type { JobsDriver, QueueRef } from "../drivers/index";
+import type { JobsDriver, QueueRef, WorkerInfo } from "../drivers/index";
 import type { SummonedExit } from "./worker";
 import { listWorkerRecords } from "../drivers/index";
 import { RESERVED_STATE_PREFIX, setReservedState } from "../queue/windows";
@@ -45,6 +45,25 @@ export const SUMMON_CLAIM_PREFIX = `${RESERVED_STATE_PREFIX}summon-claim:`;
  * a day, which is how long ECS remembers a token.
  */
 export const SUMMON_CLAIM_RETENTION_MS = 86_400_000;
+
+/**
+ * The clock allowance, in ms, granted to every comparison between two
+ * processes' times: a holder's grace, an attempt's `until`, a worker's start
+ * against an attempt's claim (with `passes: "none"`). Shared by the
+ * controller and a shared unit's per-queue coverage, so both judge "on its
+ * way" by one rule.
+ */
+export const START_TIME_SLACK = 5_000;
+
+/** How many live records carry an attempt's id: its workers still running. */
+export function liveWithId(
+  /** The live worker records of one queue. */
+  workers: readonly WorkerInfo[],
+  /** The attempt id. */
+  id: string,
+): number {
+  return workers.filter((worker) => worker.summon?.id === id).length;
+}
 
 /** How many compare-and-set rounds a claim tries before giving up (and running unsummoned). */
 const CLAIM_ATTEMPTS = 8;

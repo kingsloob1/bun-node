@@ -70,8 +70,10 @@ export function redactSummonPayload<T extends Record<string, unknown>>(
 
 /**
  * A summon status with nothing about a queue outside `readable`: for a
- * shared unit, `queues` filtered (order kept), `queue` the first left, and
- * the last outcome's `partial:` detail rebuilt; for any controller,
+ * shared unit, `queues` filtered (order kept), `queue` the first left, each
+ * pending attempt's `coverage` keeping only readable queues, and the last
+ * outcome's `missing` filtered (dropped when none is left) and its
+ * `partial:` detail rebuilt; for any controller,
  * `overlaps` keeps only the groups seen on readable queues. The caller must
  * keep at least one of its queues readable. A status naming no `queues`
  * keeps them as they are.
@@ -115,25 +117,58 @@ function withReadableOverlaps(
   return kept.size === 0 ? rest : { ...rest, overlaps: [...kept].sort() };
 }
 
-/** {@link redactUnitStatus}'s `queues`, `queue` and detail, for a status that has `queues`. */
+/**
+ * {@link redactUnitStatus}'s `queues`, `queue`, coverage, `missing` and
+ * detail, for a status that has `queues`.
+ */
 function redactQueues(
   status: SummonStatus & { queues: readonly string[] },
   readable: ReadonlySet<string>,
 ): SummonStatus {
   const queues = status.queues.filter((queue) => readable.has(queue));
   const has = (queue: string): boolean => readable.has(queue);
-  const detail = redactPartialDetail(status.last?.detail, has);
   return {
     ...status,
     queue: queues[0] ?? status.queue,
     queues,
+    pending: status.pending.map((attempt) => {
+      if (attempt.coverage === undefined) {
+        return attempt;
+      }
+      // Null-prototype, own keys only: `__proto__` is a valid queue name.
+      const coverage = Object.create(null) as Record<
+        string,
+        "registered" | "pending" | "missing"
+      >;
+      for (const [queue, state] of Object.entries(attempt.coverage)) {
+        if (has(queue)) {
+          Object.defineProperty(coverage, queue, {
+            value: state,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        }
+      }
+      return { ...attempt, coverage };
+    }),
     ...(status.last === undefined
       ? {}
-      : {
-          last: {
-            ...status.last,
-            ...(detail === undefined ? {} : { detail }),
-          },
-        }),
+      : { last: redactLast(status.last, has) }),
+  };
+}
+
+/** A last outcome with its `missing` filtered (dropped when empty) and its `partial:` detail rebuilt. */
+function redactLast(
+  last: NonNullable<SummonStatus["last"]>,
+  readable: (queue: string) => boolean,
+): NonNullable<SummonStatus["last"]> {
+  const { missing: all, ...rest } = last;
+  const detail = redactPartialDetail(last.detail, readable);
+  const missing = all?.filter(readable);
+  return {
+    ...rest,
+    ...(detail === undefined ? {} : { detail }),
+    ...(missing === undefined || missing.length === 0 ? {} : { missing }),
   };
 }
