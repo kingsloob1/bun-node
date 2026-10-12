@@ -3,7 +3,10 @@ import { describe, expect, it } from "bun:test";
 import {
   circuitKindLabel,
   groupCircuits,
+  groupIsShared,
   groupShares,
+  groupSharesText,
+  groupUnitLabel,
 } from "../../../app/screens/queues/panels/summonGroupText";
 import { expectNone, expectUndefined } from "../assert";
 
@@ -102,5 +105,33 @@ describe("a group's shared circuits", () => {
     expect(circuitKindLabel(undefined)).toBe("this summoner");
     expect(circuitKindLabel("")).toBe("this summoner");
     expect(circuitKindLabel("ecs")).toBe("ecs");
+  });
+});
+
+describe("a group's unit", () => {
+  it("is shared only where the group says so", () => {
+    expect(groupIsShared(group({ unit: "shared" }))).toBe(true);
+    expect(groupIsShared(group())).toBe(false);
+    expect(groupUnitLabel(group({ unit: "shared" }))).toBe("Shared");
+    // A group without `unit` (negative control): per-queue controllers.
+    expect(groupUnitLabel(group())).toBe("Per queue");
+  });
+
+  it("words a shared unit's shares as attempts serving each queue, with a note", () => {
+    expect(groupSharesText(group({ unit: "shared" }))).toEqual({
+      heading: "Attempts serving each queue today",
+      note: "One attempt serves every queue of the unit, so each counts it: these do not add up to the group's budget.",
+      empty: "No attempts served the unit's queues today.",
+      tableLabel: "Attempts serving each queue of the group gpu today",
+    });
+  });
+
+  it("words a per-queue group's shares as they were (negative control)", () => {
+    expect(groupSharesText(group())).toEqual({
+      heading: "Charged today",
+      note: undefined,
+      empty: "No attempts charged to the group today.",
+      tableLabel: "Attempts charged to the group gpu today",
+    });
   });
 });

@@ -226,6 +226,89 @@ describe("the Summoning screen's summon groups", () => {
     expect(row.hasAttribute("aria-current")).toBe(false);
   });
 
+  it("names each group's unit, and says how a shared unit's counts per queue read", async () => {
+    const { screen } = await openScreen({
+      "GET /summon/groups": groups([gpu({ unit: "shared" }), cpu()]),
+    });
+    const section = await within(screen).findByTestId("summon-groups");
+    const row = await within(section).findByTestId("summon-group-row-gpu");
+    const headers = within(section)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent);
+    expect(headers).toEqual([
+      "Group",
+      "Unit",
+      "Budget left",
+      "Shared circuit",
+      "Today, per queue",
+    ]);
+    const today = within(section).getByRole("columnheader", {
+      name: "Today, per queue",
+    });
+    expect(today.title).toBe(
+      "For a per-queue group, each count is the attempts that queue charged to the group today. For a shared unit, each attempt is counted on every queue it served, so the counts do not add up to the group's.",
+    );
+    const unit = within(row).getByTestId("summon-groups-unit-gpu");
+    expect(unit.textContent).toBe("Shared");
+    expect(unit.title).toBe(
+      "One summoned process serves every queue of this group.",
+    );
+    // The cell after the group's name.
+    expect(row.querySelectorAll("td")[0]?.contains(unit)).toBe(true);
+    const note = within(row).getByTestId("summon-groups-note-gpu");
+    expect(note.textContent).toBe("each attempt serves every queue");
+    expect(note.className).toContain("muted");
+    expect(row.querySelectorAll("td")[3]?.contains(note)).toBe(true);
+    // The counts are the server's, as before.
+    expect(
+      [
+        ...row.querySelectorAll<HTMLElement>(
+          '[data-testid^="summon-groups-share-gpu-"]',
+        ),
+      ].map((member) => member.textContent),
+    ).toEqual(["reports 7", "emails 3"]);
+
+    // A group without `unit` (negative control): per queue, no note.
+    const other = within(section).getByTestId("summon-group-row-cpu");
+    const perQueue = within(other).getByTestId("summon-groups-unit-cpu");
+    expect(perQueue.textContent).toBe("Per queue");
+    expect(perQueue.hasAttribute("title")).toBe(false);
+    expectAbsent(within(other).queryByTestId("summon-groups-note-cpu"));
+    expect(other.textContent).not.toContain("each attempt serves every queue");
+  });
+
+  it("adds no shared-unit note to a row with no shares today", async () => {
+    const { screen } = await openScreen({
+      "GET /summon/groups": groups([gpu({ unit: "shared", queues: {} })]),
+    });
+    const section = await within(screen).findByTestId("summon-groups");
+    const row = await within(section).findByTestId("summon-group-row-gpu");
+    expect(within(row).getByTestId("summon-groups-unit-gpu").textContent).toBe(
+      "Shared",
+    );
+    expect(row.textContent).toContain("None today");
+    expectAbsent(within(row).queryByTestId("summon-groups-note-gpu"));
+  });
+
+  it("reads a per-queue group's row as before, under the renamed header (negative control)", async () => {
+    const { screen } = await openScreen();
+    const section = await within(screen).findByTestId("summon-groups");
+    const row = await within(section).findByTestId("summon-group-row-gpu");
+    expect(within(row).getByTestId("summon-groups-unit-gpu").textContent).toBe(
+      "Per queue",
+    );
+    expectAbsent(within(row).queryByTestId("summon-groups-note-gpu"));
+    expect(row.querySelectorAll("td")[0]?.textContent).toBe("Per queue");
+    expect(section.textContent).not.toContain("Charged today");
+    expect(
+      [
+        ...row.querySelectorAll<HTMLElement>(
+          '[data-testid^="summon-groups-share-gpu-"]',
+        ),
+      ].map((member) => member.textContent),
+    ).toEqual(["reports 7", "emails 3"]);
+  });
+
   it("marks the ?group= row and scrolls it into view once", async () => {
     const scrolled: Element[] = [];
     await withScrollIntoView(

@@ -1,6 +1,8 @@
 import type {
+  PendingSummonDto,
   SummonCheckDto,
   SummonEventDto,
+  SummonLastOutcomeDto,
   SummonOutcomeKind,
   SummonReason,
   SummonSkipReason,
@@ -212,15 +214,170 @@ export function summonEventSummary(event: SummonEventDto): string {
   const missing = nameList(event.missing);
   const unit = queues.length > 0 ? `, for ${queues.join(", ")}` : "";
   const absent = missing.length > 0 ? `; missing ${missing.join(", ")}` : "";
-  const partial =
-    missing.length > 0 &&
-    typeof event.detail === "string" &&
-    (event.detail === "partial" || event.detail.startsWith("partial:"));
-  const detail =
-    event.detail === undefined || partial
-      ? ""
-      : `: ${displayText(event.detail)}`;
-  return `${outcome}${workers}${kind}${reason}${unit}${absent}${detail}`;
+  const detail = shownDetail(event.detail, missing);
+  return `${outcome}${workers}${kind}${reason}${unit}${absent}${
+    detail === undefined ? "" : `: ${detail}`
+  }`;
+}
+
+/** Whether a detail is a shared unit's `partial:<queues>` (or bare `partial`). */
+function isPartialDetail(detail: unknown): boolean {
+  return (
+    typeof detail === "string" &&
+    (detail === "partial" || detail.startsWith("partial:"))
+  );
+}
+
+/**
+ * The detail worth printing beside an outcome, made safe as text: none for a
+ * `partial:<queues>` detail when `missing` names those queues already (it is
+ * kept on the wire for readers that parse it), and none without a detail.
+ */
+function shownDetail(
+  detail: unknown,
+  missing: readonly string[],
+): string | undefined {
+  if (detail === undefined || (missing.length > 0 && isPartialDetail(detail))) {
+    return undefined;
+  }
+  return displayText(detail);
+}
+
+/**
+ * The queues a summon status's last outcome registered no worker on: a
+ * shared unit's partial attempt (`last.missing`), each made safe as text.
+ * Empty for any other outcome, and for one an older bun-jobs wrote, whose
+ * `partial:<queues>` detail is then shown as it is.
+ */
+export function summonLastMissing(
+  last: Pick<SummonLastOutcomeDto, "missing">,
+): string[] {
+  return nameList(last.missing);
+}
+
+/**
+ * The detail the "Last outcome" row prints after the outcome: the same rule
+ * as {@link summonEventSummary}, so a partial attempt's `partial:<queues>` is
+ * left out where `missing` says it in words. `undefined` when there is none
+ * to print.
+ */
+export function summonLastDetail(
+  last: Pick<SummonLastOutcomeDto, "detail" | "missing">,
+): string | undefined {
+  return shownDetail(last.detail, summonLastMissing(last));
+}
+
+/** A partial attempt in words: "Partial: no worker registered on previews, thumbs". */
+export function summonPartialText(missing: readonly string[]): string {
+  return `Partial: no worker registered on ${missing.join(", ")}`;
+}
+
+/** What a partial attempt means for the controller, under the "Last outcome" row. */
+export const SUMMON_PARTIAL_HINT =
+  "A shared unit that registers on only some of its queues counts as a failed attempt, so the controller backs off rather than summoning again and again.";
+
+/** A shared unit's progress on one of its queues (`PendingSummonDto.coverage`). */
+type CoverageState = NonNullable<PendingSummonDto["coverage"]>[string];
+
+/** One queue of an attempt's coverage, as the "On their way" table's badge shows it. */
+export interface CoverageBadge {
+  /** The queue. */
+  queue: string;
+  /** The badge's text: "✓ renders", "renders pending" or "✗ renders missing". */
+  label: string;
+  /** Its colour: success, neutral or danger. */
+  tone: BadgeTone;
+  /** Its tooltip: why a missing queue is missing; `undefined` otherwise. */
+  title: string | undefined;
+  /** Whether it is the queue whose Summon tab this is, marked "(this queue)". */
+  current: boolean;
+}
+
+/** The tooltip of a queue an attempt's unit registered no worker on in time. */
+export const COVERAGE_MISSING_HINT =
+  "No worker registered on this queue before the attempt's boot budget ran out.";
+
+/** The "On their way" table's Coverage header. */
+export const COVERAGE_HEADER = "Coverage";
+
+/** What a Coverage cell shows for an attempt with no coverage: one queue's, or a failed read. */
+export const COVERAGE_NONE = "—";
+
+/** Each coverage state's badge, by state, for a queue `queue`. */
+const COVERAGE: Readonly<
+  Record<
+    CoverageState,
+    (queue: string) => Pick<CoverageBadge, "label" | "tone" | "title">
+  >
+> = {
+  registered: (queue) => ({
+    label: `✓ ${queue}`,
+    tone: "success",
+    title: undefined,
+  }),
+  pending: (queue) => ({
+    label: `${queue} pending`,
+    tone: "neutral",
+    title: undefined,
+  }),
+  missing: (queue) => ({
+    label: `✗ ${queue} missing`,
+    tone: "danger",
+    title: COVERAGE_MISSING_HINT,
+  }),
+};
+
+/**
+ * An attempt's coverage as the "On their way" table's badges: its queues in
+ * the order the status lists the unit's (`status.queues`), then any others
+ * by name, the queue whose tab this is marked. A state this build does not
+ * know reads "<queue> <state>" in the neutral tone, as the contract asks.
+ *
+ * `undefined` where the attempt has no coverage: one queue's controller, or
+ * a status whose reads of it failed. The cell then shows
+ * {@link COVERAGE_NONE}; so does an empty one.
+ */
+export function attemptCoverage(
+  coverage: PendingSummonDto["coverage"],
+  order: readonly string[] | undefined,
+  queue: string,
+): CoverageBadge[] | undefined {
+  if (
+    typeof coverage !== "object" ||
+    coverage === null ||
+    Array.isArray(coverage)
+  ) {
+    return undefined;
+  }
+  const listed = order ?? [];
+  const rank = (name: string) => {
+    const index = listed.indexOf(name);
+    return index === -1 ? listed.length : index;
+  };
+  return Object.keys(coverage)
+    .sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))
+    .map((name) => {
+      // A key is always a string; its state arrives unchecked.
+      const state: unknown = coverage[name];
+      const badge = known(COVERAGE, state)
+        ? COVERAGE[state](name)
+        : {
+            label: `${name} ${displayText(state)}`,
+            tone: "neutral" as const,
+            title: undefined,
+          };
+      return { queue: name, ...badge, current: name === queue };
+    });
+}
+
+/**
+ * Whether the "On their way" table has a Coverage column: where at least one
+ * attempt carries coverage, which only a shared unit's do.
+ */
+export function showCoverage(
+  pending: readonly Pick<PendingSummonDto, "coverage">[],
+): boolean {
+  return pending.some((attempt) => attempt.coverage !== undefined);
 }
 
 /** Whether a queue event's payload is a summon event's. */

@@ -185,6 +185,80 @@ describe("the Summon tab's group card", () => {
     expectAbsent(card.querySelector("table"));
   });
 
+  it("marks a shared unit, and words its shares as attempts serving each queue, not adding up to the budget", async () => {
+    const panel = await openPanel(
+      statusFixture({ group: groupFixture({ unit: "shared" }) }),
+    );
+    const card = within(panel).getByTestId("summon-group");
+    const badge = within(card).getByTestId("summon-group-unit");
+    expect(badge.textContent).toBe("Shared unit");
+    expect(badge.className).toContain("badge-neutral");
+    expect(badge.title).toBe(
+      "One summoned process serves every queue of this group.",
+    );
+    // After the group's name, in the heading.
+    const heading = within(card).getByRole("heading", { level: 3 });
+    expect(heading.textContent).toBe("Summon group gpu pool Shared unit");
+    expect(
+      within(card)
+        .getByTestId("summon-group-name")
+        .compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(within(card).getByRole("heading", { level: 4 }).textContent).toBe(
+      "Attempts serving each queue today",
+    );
+    const note = within(card).getByTestId("summon-group-shares-note");
+    expect(note.textContent).toBe(
+      "One attempt serves every queue of the unit, so each counts it: these do not add up to the group's budget.",
+    );
+    expect(note.className).toContain("muted");
+    expect(card.textContent).not.toContain("Charged today");
+    // The shares themselves are as the server counts them.
+    expect(shareRows(card).map((row) => row.dataset.testid)).toEqual([
+      "summon-group-share-reports",
+      "summon-group-share-alerts",
+      "summon-group-share-emails",
+    ]);
+    expect(
+      within(card).getByRole("table", {
+        name: "Attempts serving each queue of the group gpu pool today",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("says when no attempt served a shared unit's queues today", async () => {
+    const panel = await openPanel(
+      statusFixture({ group: groupFixture({ unit: "shared", queues: {} }) }),
+    );
+    const card = within(panel).getByTestId("summon-group");
+    expect(
+      within(card).getByTestId("summon-group-shares-empty").textContent,
+    ).toBe("No attempts served the unit's queues today.");
+    expectAbsent(card.querySelector("table"));
+    // With no shares, "these do not add up" says nothing: no note.
+    expectAbsent(within(card).queryByTestId("summon-group-shares-note"));
+  });
+
+  it("keeps a per-queue group's card as it was: no unit mark, no note, Charged today (negative control)", async () => {
+    const panel = await openPanel(statusFixture());
+    const card = within(panel).getByTestId("summon-group");
+    expectAbsent(within(card).queryByTestId("summon-group-unit"));
+    expectAbsent(within(card).queryByTestId("summon-group-shares-note"));
+    expect(card.textContent).not.toContain("Shared unit");
+    expect(within(card).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Summon group gpu pool",
+    );
+    expect(within(card).getByRole("heading", { level: 4 }).textContent).toBe(
+      "Charged today",
+    );
+    expect(card.textContent).not.toContain("serving each queue");
+    expect(
+      within(card).getByRole("table", {
+        name: "Attempts charged to the group gpu pool today",
+      }),
+    ).toBeTruthy();
+  });
+
   it("shows the group's one circuit, closed, by the summoner's kind with its failures", async () => {
     const panel = await openPanel(
       statusFixture({ group: groupFixture({ circuit: { failures: 2 } }) }),
