@@ -41,10 +41,11 @@ export const SUMMON_ARGS = {
    */
   queue: "--bun-jobs-summon-queue",
   /**
-   * The summon group the unit was started for, written only when it serves
-   * more than one queue. Comes back as `summon.group`, and is written on the
-   * worker's record. A key segment, like a queue name (letters, digits, `_`,
-   * `.` and `-`): anything else is refused.
+   * The summon group the unit was started for, written for a shared unit
+   * (of one queue too) and never by a per-queue controller. Comes back as
+   * `summon.group`, and is written on the worker's record. A key segment,
+   * like a queue name (letters, digits, `_`, `.` and `-`): anything else is
+   * refused.
    */
   group: "--bun-jobs-summon-group",
   /** The longest the worker may live, as a duration in ms (never a timestamp). */

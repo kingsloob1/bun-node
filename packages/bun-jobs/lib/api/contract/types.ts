@@ -1322,7 +1322,7 @@ export interface SummonStatusDto {
    * controllers can start a unit for each in a cold start. Only the groups
    * seen on queues the caller may read (`queues.read`). Sorted; absent
    * when there are none, before the first check, and read from storage
-   * (`local: false`). A unit summoned for one queue writes no group on its
+   * (`local: false`). A per-queue controller's unit writes no group on its
    * records, so it is never listed.
    */
   overlaps?: string[];

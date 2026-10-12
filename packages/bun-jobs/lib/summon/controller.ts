@@ -675,9 +675,11 @@ function argvBytes(argv: readonly string[]): number {
  * trigger — so every request for one attempt id is byte-identical.
  *
  * One `--bun-jobs-summon-queue=` per queue, in the given order, so one queue
- * gives exactly the arguments it always has; `--bun-jobs-summon-group=` only
- * when there are several queues and a group. Internal; exported for its
- * test and the conformance kit.
+ * gives exactly the arguments it always has; `--bun-jobs-summon-group=`
+ * whenever a group is given, which the controller does for a shared unit
+ * only — of one queue too, whose state lives in the group's entry and whose
+ * release names the group. Internal; exported for its test and the
+ * conformance kit.
  *
  * @throws {ConfigError} when `queues` is empty, names a queue twice or does
  *   not start with `queue`, or when the arguments come to more than
@@ -703,7 +705,10 @@ export function wireRequest(
      * `[queue]`.
      */
     queues?: readonly string[];
-    /** The summon group, written only with more than one queue. */
+    /**
+     * The summon group: a shared unit's, whatever its queue count. Written
+     * whenever given; a per-queue controller passes none.
+     */
     group?: string;
     /** The summoner's kind. */
     kind: string;
@@ -731,12 +736,11 @@ export function wireRequest(
       queues: [...queues],
     });
   }
-  // One queue writes no group: its arguments stay byte-identical to a
-  // summon from before groups existed.
-  const group =
-    queues.length > 1 && context.group !== undefined
-      ? context.group
-      : undefined;
+  // A per-queue controller passes no group, so its arguments stay
+  // byte-identical to a summon from before groups existed. A shared unit
+  // names its group even for one queue: its marker is the group's entry, and
+  // its release names the group.
+  const group = context.group;
   // A launch or wake unit ends when its process exits, so it exits on idle; a
   // scale unit would only be restarted by its platform, so it runs until
   // stopped (and the controller scales it to zero).
@@ -1294,8 +1298,9 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
   }
 
   /**
-   * The queues and group a request names: a shared unit's, or nothing extra
-   * for one queue (whose request names `[queue]` and no group).
+   * The queues and group a request names: a shared unit's (its group even
+   * for one queue), or nothing extra for a per-queue controller (whose
+   * request names `[queue]` and no group).
    */
   #wireQueues(): { queues?: readonly string[]; group?: string } {
     return this.#shared
@@ -1953,11 +1958,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
    * this shared unit's own group is another shared unit's — for a
    * controller that is not a shared unit, any group on a record is — and is
    * listed in `status().overlaps` and warned about once per (queue, group).
-   * On a shared unit of several queues, a summoned record with no group
-   * (a per-queue controller's unit, or one from a build older than the
-   * group) is warned about once per queue (Q9), and not listed: it names no
-   * group. A shared unit of one queue cannot tell such a record from its
-   * own — a one-queue summon writes no group — so it never warns of one.
+   * On a shared unit, of one queue too, a summoned record with no group (a
+   * per-queue controller's unit, or one from a build older than the group,
+   * or than one-queue summons naming it) is warned about once per queue
+   * (Q9), and not listed: it names no group.
    */
   #noteOverlaps(readings: readonly QueueReading[]): void {
     const own = this.#shared ? this.#group!.name : undefined;
@@ -1970,14 +1974,10 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         }
         const group = summon.group;
         if (group === undefined) {
-          if (
-            this.#shared &&
-            this.queues.length > 1 &&
-            !this.#warnedGroupless.has(reading.queue)
-          ) {
+          if (this.#shared && !this.#warnedGroupless.has(reading.queue)) {
             this.#warnedGroupless.add(reading.queue);
             this.#logger.warn(
-              `queue "${reading.queue}" has a summoned worker naming no summon group while group "${own}"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one this group summoned while it served a single queue (a one-queue summon names no group). Keep one summoning controller per queue`,
+              `queue "${reading.queue}" has a summoned worker naming no summon group while group "${own}"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one an older bun-jobs summoned while this group served a single queue. Keep one summoning controller per queue`,
               { queue: reading.queue, worker: worker.id, id: summon.id },
             );
           }

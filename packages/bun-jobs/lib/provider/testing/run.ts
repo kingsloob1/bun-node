@@ -137,7 +137,7 @@ export interface KitRun {
      * alone.
      */
     queues?: readonly string[];
-    /** The summon group, written to `argv` with more than one queue. */
+    /** The summon group, as a shared unit's request names it: written to `argv` whenever given. */
     group?: string;
     /** The request's `env` (the policy's static environment). Defaults to `{}`. */
     env?: Readonly<Record<string, string>>;

@@ -725,7 +725,7 @@ export const SummonStatusSchema = s.named(
       overlaps: s.optional(
         s.array(s.string(), {
           description:
-            "Summon groups whose shared units also summon for this controller's queues, as of its last check: the group named on live summoned worker records of its queues, other than its own. One queue with two summoning controllers can start a unit for each in a cold start. Only the groups seen on queues the caller may read (`queues.read`). Sorted; absent when there are none, before the first check, and read from storage (`local: false`). A unit summoned for one queue writes no group on its records, so it is never listed.",
+            "Summon groups whose shared units also summon for this controller's queues, as of its last check: the group named on live summoned worker records of its queues, other than its own. One queue with two summoning controllers can start a unit for each in a cold start. Only the groups seen on queues the caller may read (`queues.read`). Sorted; absent when there are none, before the first check, and read from storage (`local: false`). A per-queue controller's unit writes no group on its records, so it is never listed.",
         }),
       ),
       local: s.boolean({

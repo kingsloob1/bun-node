@@ -94,9 +94,10 @@ export interface SummonRequest {
    */
   queues?: readonly string[];
   /**
-   * The summon group the unit is started for, when it serves more than one
-   * queue (summon API `0.2`). Reaches the worker as `--bun-jobs-summon-group=`
-   * in `argv`; absent for one queue. As pure as `id`.
+   * The summon group the unit is started for: a shared unit's
+   * (`group.unit: "shared"`), whatever its queue count (summon API `0.2`).
+   * Reaches the worker as `--bun-jobs-summon-group=` in `argv`; absent for a
+   * per-queue controller, grouped or not. As pure as `id`.
    */
   group?: string;
   /**
@@ -171,9 +172,9 @@ export interface SummonReleaseRequest {
    */
   queues?: readonly string[];
   /**
-   * The summon group of the unit, when it serves more than one queue
-   * (summon API `0.2`): the `group` its `SummonRequest` carried. With
-   * `queues`, what identifies a shared unit. Absent for one queue.
+   * The summon group of a shared unit, whatever its queue count (summon
+   * API `0.2`): the `group` its `SummonRequest` carried. With `queues`, what
+   * identifies a shared unit. Absent for a per-queue controller.
    */
   group?: string;
   /** The count to set. `0` scales to zero. */
@@ -868,7 +869,7 @@ export interface SummonStatus {
    * records on its queues, other than its own group's. One queue with two
    * summoning controllers can start a unit for each of them in a cold start;
    * keep one summoning controller per queue. Sorted; absent when there are
-   * none, and before the first check. A unit summoned for one queue writes
+   * none, and before the first check. A per-queue controller's unit writes
    * no group on its records, so it is never listed here.
    */
   overlaps?: readonly string[];

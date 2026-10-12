@@ -264,7 +264,8 @@ call is identical.
   one queue. Read it as `request.queues ?? [request.queue]`. A provider needs
   none of it: the queues reach the unit in `argv`.
 - `group`: optional (summon `0.2`). The summon group the unit is started
-  for, set only when it serves more than one queue.
+  for: set for a shared unit, of one queue too, and never for a per-queue
+  controller.
 - `id`: the attempt's id. Never repeated, even after the queue's state is
   purged. Reaches the worker in `argv` and comes back on its record, which is
   how the attempt is released.
@@ -323,8 +324,9 @@ group of the `SummonRequest` that summoned the unit.
 - `queues`: optional in the type, always set by the controller (summon
   `0.2`). Every queue the unit serves: `[queue]` for one queue. Read it as
   `request.queues ?? [request.queue]`.
-- `group`: optional (summon `0.2`). The unit's summon group, set only when
-  it serves more than one queue.
+- `group`: optional (summon `0.2`). The unit's summon group: set for a
+  shared unit, of one queue too, exactly when its `SummonRequest` carried
+  one.
 - `target`: the count to set; `0` scales to zero.
 
 ### `SummonReason`
@@ -1416,8 +1418,8 @@ The argument names a summon passes and `summonedFromArgs` reads, each
 written `--bun-jobs-summon-<key>=<value>`: `id`, `kind`, `mode`,
 `namespace`, `group`, `queue`, `maxLifetimeMs`, `graceMs`. `queue` is
 repeated once per queue for a unit serving several, in the policy's order,
-and `group` is written only then: a one-queue summon's arguments are what
-they always were. Given more than once, `queue` collects every value (the
+and `group` is written for a shared unit (of one queue too, matching its
+release): a per-queue controller's arguments are what they always were. Given more than once, `queue` collects every value (the
 first is `queue`) and every other flag takes its last value: see
 [`SummonedArgs`](#summonedargs). Arguments, never environment variables: an
 environment leaks to every descendant process.

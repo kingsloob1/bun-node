@@ -49,8 +49,9 @@
  * - **The request names the whole unit**: `queues`, `group` and `demands`
  *   (each queue's reading), with `demand` the most-starved queue's. Its
  *   `argv` repeats `--bun-jobs-summon-queue=` once per queue and adds
- *   `--bun-jobs-summon-group=`. A one-queue request is unchanged
- *   (`summoned-unit.ts` shows it).
+ *   `--bun-jobs-summon-group=`, a shared unit of one queue included. A
+ *   per-queue controller's request, in a group or not, names no group
+ *   (`summoned-unit.ts` shows one).
  * - **A unit missing a queue's worker is `registered` with detail
  *   `partial:<queues>`** and those queues in the event's `missing`: one
  *   failure, one `error` log naming the queues, and no `onSummonFailed`. The
@@ -1505,7 +1506,7 @@ show("the request", {
   count: soloRequest?.count,
 });
 checkEqual(
-  "the controller, its status and the request each name the one queue in queues; the status names the group, and the request, like any one-queue request, none",
+  "the controller, its status and the request each name the one queue in queues, and the status and the request name the group: a shared unit's request names it, one queue or several",
   [
     soloUnit.queue,
     soloUnit.queues,
@@ -1522,8 +1523,15 @@ checkEqual(
     SHARED.name,
     "started",
     ["renders"],
-    undefined,
+    SHARED.name,
   ],
+);
+checkEqual(
+  "and its argv carries the group beside its one queue (in any order)",
+  (soloRequest?.argv ?? [])
+    .filter((arg) => /^--bun-jobs-summon-(?:queue|group)=/.test(arg))
+    .sort(),
+  [`--bun-jobs-summon-group=${SHARED.name}`, "--bun-jobs-summon-queue=renders"],
 );
 
 /* ------------------------------------------------------------------ */
@@ -1727,7 +1735,7 @@ checkEqual(
         "thumbs",
       ],
       [
-        `queue "previews" has a summoned worker naming no summon group while group "media"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one this group summoned while it served a single queue (a one-queue summon names no group). Keep one summoning controller per queue`,
+        `queue "previews" has a summoned worker naming no summon group while group "media"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one an older bun-jobs summoned while this group served a single queue. Keep one summoning controller per queue`,
         "previews",
       ],
     ],

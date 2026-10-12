@@ -1702,4 +1702,80 @@ describe("shared unit: scale-down (B8)", () => {
     expect((await controller.check()).action).toBe("released");
     expect(releases).toHaveLength(1);
   });
+
+  /**
+   * Summons, then empties `renders` and checks until the controller has
+   * released: at most two checks, since the idle stretch may start on the
+   * first idle one.
+   */
+  async function summonThenRelease(
+    controller: SummonController,
+    renders: BunQueue,
+  ): Promise<void> {
+    const job = await renders.add("a", {});
+    expect((await controller.check()).action).toBe("summoned");
+    await renders.remove(job.id);
+    if ((await controller.check()).action !== "released") {
+      expect((await controller.check()).action).toBe("released");
+    }
+  }
+
+  it("names a one-queue unit's group on its summon as on its release", async () => {
+    const { driver, namespace } = await freshDriver();
+    const renders = new BunQueue("renders", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    perTest.unshift(async () => await renders.close());
+    const { summoner, calls, releases } = scaler();
+    const { controller } = build(
+      sharedOptions(driver, namespace, {
+        summoner,
+        queues: ["renders"],
+        scaleDown: { after: 0 },
+      }),
+    );
+    await summonThenRelease(controller, renders);
+    expect(calls).toHaveLength(1);
+    expect(releases).toHaveLength(1);
+    // A group-keyed provider sees one unit: the same queues and group on
+    // both calls.
+    expect({ queues: calls[0]!.queues, group: calls[0]!.group }).toEqual({
+      queues: releases[0]!.queues,
+      group: releases[0]!.group,
+    });
+    expect(releases[0]!.group).toBe("media");
+    // The worker reads it from argv, so it can find the unit's state in the
+    // group's entry rather than the queue's `__win:summon`.
+    expect(calls[0]!.argv).toContain("--bun-jobs-summon-group=media");
+  });
+
+  it("names no group on a per-queue controller's summon or release, even in a group", async () => {
+    const { driver, namespace } = await freshDriver();
+    const renders = new BunQueue("renders", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    perTest.unshift(async () => await renders.close());
+    const { summoner, calls, releases } = scaler();
+    const { controller } = build({
+      ...QUIET,
+      driver,
+      namespace,
+      queue: "renders",
+      summoner,
+      group: { name: "media" },
+      scaleDown: { after: 0 },
+    });
+    await summonThenRelease(controller, renders);
+    expect(calls).toHaveLength(1);
+    expect(releases).toHaveLength(1);
+    expect("group" in calls[0]!).toBe(false);
+    expect("group" in releases[0]!).toBe(false);
+    expect(calls[0]!.argv.some((arg) => arg.includes("summon-group"))).toBe(
+      false,
+    );
+  });
 });

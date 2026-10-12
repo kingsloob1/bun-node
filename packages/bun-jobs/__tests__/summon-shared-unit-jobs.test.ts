@@ -172,10 +172,10 @@ describe("BunJobs builds a shared unit from the summon option", () => {
     expect(status.group?.name).toBe("media");
     await seed(driver, namespace, "renders");
     expect(await unit.check()).toMatchObject({ action: "summoned" });
-    // One queue writes no group in its arguments.
-    expect(calls[0]!.argv.some((arg) => arg.includes("summon-group"))).toBe(
-      false,
-    );
+    // A shared unit names its group even for one queue: its state is the
+    // group's entry, and its release names the group too.
+    expect(calls[0]!.argv).toContain("--bun-jobs-summon-group=media");
+    expect(calls[0]!.group).toBe("media");
     expect((await unit.status()).group?.budget.hour).toBe(1);
   });
 
@@ -675,13 +675,28 @@ describe("overlaps: who else summons for these queues (§4.9, Q9)", () => {
     expect(groupless[0]!.fields).toMatchObject({ queue: "thumbs" });
   });
 
-  it("cannot see a worker with no group from a shared unit of one queue (Q5)", async () => {
+  it("warns of a worker with no group from a shared unit of one queue too (Q9)", async () => {
     const { driver, namespace } = await freshDriver();
+    // Its own unit's worker names the group (a one-queue summon passes it),
+    // so only the group-less one is someone else's.
+    await summonedWorker(driver, namespace, "renders", {
+      id: "sm_mine",
+      group: "media",
+    });
     await summonedWorker(driver, namespace, "renders", { id: "sm_perqueue" });
     const { controller, warnings } = unitOver(driver, namespace, ["renders"]);
     await controller.check();
+    await controller.check();
     expect((await controller.status()).overlaps).toBeUndefined();
-    expect(warnings()).toEqual([]);
+    // Once per queue, with the exact text the examples assert.
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]!.message).toBe(
+      `queue "renders" has a summoned worker naming no summon group while group "media"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one an older bun-jobs summoned while this group served a single queue. Keep one summoning controller per queue`,
+    );
+    expect(warnings()[0]!.fields).toMatchObject({
+      queue: "renders",
+      id: "sm_perqueue",
+    });
   });
 
   it("lists a shared unit's group on a per-queue controller's queue", async () => {
