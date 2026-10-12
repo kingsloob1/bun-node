@@ -1628,6 +1628,39 @@ const GATES = [
     when: ({ summon }) => (summon?.overlaps?.length ?? 0) > 0,
   },
   {
+    // `SummonPanel.tsx`: the Coverage column of the table of attempts on
+    // their way, where `showCoverage` finds any attempt carrying `coverage`
+    // (an empty `{}` counts, its cell "—"). The table itself shows only for a
+    // status whose state was read (`summonStateKnown`: not an
+    // `unreadable-marker`) with an attempt on its way. The API sends coverage
+    // for a shared unit's attempts, already narrowed to the queues the caller
+    // may read, and leaves it out when it could not read the claims.
+    name: "summon: attempt coverage",
+    row: "Summon panel attempt coverage",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) =>
+      summon !== undefined &&
+      summon !== null &&
+      summon.inertReason !== "unreadable-marker" &&
+      summon.pending.length > 0 &&
+      summon.pending.some((attempt) => attempt.coverage !== undefined),
+  },
+  {
+    // `SummonState` in `SummonPanel.tsx`: the "Partial" line in the Last
+    // outcome row, wherever `summonLastMissing` names a queue: a `last` with
+    // a non-empty `missing` array. That row shows whatever the state, so an
+    // unreadable marker does not hide it.
+    name: "summon: partial outcome",
+    row: "Summon panel partial outcome",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    when: ({ summon }) => {
+      const missing: unknown = summon?.last?.missing;
+      return Array.isArray(missing) && missing.length > 0;
+    },
+  },
+  {
     name: "panel=throughput",
     row: "Throughput panel",
     map: "queue",
@@ -4282,6 +4315,8 @@ checkEqual(
     "summon: group card": false,
     "summon: shared unit": false,
     "summon: overlaps warning": false,
+    "summon: attempt coverage": false,
+    "summon: partial outcome": false,
     // A Summoning row needs a controller `GET /summon` lists, and this host
     // runs none: asked on the summon host, with its list.
     "summoning: row": false,
@@ -7785,6 +7820,100 @@ checkEqual(
     })["summon: overlaps warning"],
   ],
   [true, true, false, false],
+);
+
+// The attempt coverage column and the partial outcome line. After Summon
+// now… on the unit, its attempt is on its way, and the API works out its
+// coverage on each queue from the claims and the workers registered there:
+// none here, so every queue reads pending. A partial outcome needs a unit
+// that registered on some of its queues only, which
+// `examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts` produces with
+// a real process; here it is shown on a status given one.
+const coveredStatus = (
+  await unitOpen.call<SummonStatusDto>("GET", "/queues/renders/summon")
+).body;
+show(
+  "GET /unit-api/queues/renders/summon after Summon now…, pending",
+  coveredStatus.pending.map(({ id, coverage }) => ({ id, coverage })),
+);
+checkEqual(
+  "after Summon now… on the unit: one attempt on its way, its coverage every queue pending, so renders shows the Coverage column; the status read before it, with no attempt, shows none",
+  [
+    coveredStatus.pending.length,
+    coveredStatus.pending[0]?.coverage === undefined
+      ? undefined
+      : { ...coveredStatus.pending[0].coverage },
+    unitOpen.gatesOf("renders", { summon: coveredStatus })[
+      "summon: attempt coverage"
+    ],
+    unitOpen.gatesOf("renders")["summon: attempt coverage"],
+  ],
+  [
+    1,
+    { renders: "pending", thumbs: "pending", previews: "pending" },
+    true,
+    false,
+  ],
+);
+const mailNow = (
+  await summonHostAll.call<SummonStatusDto>("GET", "/queues/mail/summon")
+).body;
+/** `coveredStatus` with its attempt's coverage replaced by `coverage`. */
+const withCoverage = (
+  coverage: SummonStatusDto["pending"][number]["coverage"],
+) => ({
+  ...coveredStatus,
+  pending: coveredStatus.pending.map((attempt) => ({ ...attempt, coverage })),
+});
+checkEqual(
+  "no column for a single queue's attempt (mail's, which the API sends no coverage for), for an attempt without coverage, or under an unreadable marker whatever the data; an empty coverage still shows it",
+  [
+    mailNow.pending.length > 0,
+    mailNow.pending.some((attempt) => attempt.coverage !== undefined),
+    summonHostAll.gatesOf("mail", { summon: mailNow })[
+      "summon: attempt coverage"
+    ],
+    unitOpen.gatesOf("renders", { summon: withCoverage(undefined) })[
+      "summon: attempt coverage"
+    ],
+    unitOpen.gatesOf("renders", {
+      summon: { ...coveredStatus, inertReason: "unreadable-marker" },
+    })["summon: attempt coverage"],
+    unitOpen.gatesOf("renders", { summon: withCoverage({}) })[
+      "summon: attempt coverage"
+    ],
+  ],
+  [true, false, false, false, false, true],
+);
+/** `rendersStatus`'s last outcome, as a partial attempt's, missing `missing`. */
+const partialLast = (missing: unknown) => ({
+  ...rendersStatus,
+  last: {
+    id: "sm_partial",
+    outcome: "registered" as const,
+    at: Date.now(),
+    detail: "partial:thumbs",
+    missing: missing as string[],
+  },
+});
+checkEqual(
+  "the partial outcome line on a last outcome missing thumbs, unreadable marker or not; not for missing: [], a last without missing, or a status with no last (the real ones here)",
+  [
+    unitOpen.gatesOf("renders", { summon: partialLast(["thumbs"]) })[
+      "summon: partial outcome"
+    ],
+    unitOpen.gatesOf("renders", {
+      summon: { ...partialLast(["thumbs"]), inertReason: "unreadable-marker" },
+    })["summon: partial outcome"],
+    unitOpen.gatesOf("renders", { summon: partialLast([]) })[
+      "summon: partial outcome"
+    ],
+    unitOpen.gatesOf("renders", { summon: partialLast(undefined) })[
+      "summon: partial outcome"
+    ],
+    ...MEDIA.map((queue) => unitOpen.gatesOf(queue)["summon: partial outcome"]),
+  ],
+  [true, true, false, false, false, false, false],
 );
 
 // The groups section: on the Summoning screen, with the untargeted
