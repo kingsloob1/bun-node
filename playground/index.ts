@@ -132,8 +132,10 @@ api.websocket?.attach(app);
 
 const server = await app.listen(port, "127.0.0.1");
 const origin = `http://localhost:${server.port}`;
-// The bursts of jobs for the summoned queues.
-await summoning.start(jobs);
+// The bursts of jobs for the summoned queues; and the control page's view of
+// every queue's summon status, `GET /summon` read over loopback, so after
+// `listen` (the URL needs the port). A GET needs no CSRF header.
+await summoning.start(jobs, { summonList: `${origin}${api.basePath}/summon` });
 
 console.log(`
 bun-node playground (${playgroundBackend()} driver)
