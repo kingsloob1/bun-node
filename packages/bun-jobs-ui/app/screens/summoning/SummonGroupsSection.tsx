@@ -3,6 +3,7 @@ import type { SummonGroupStatusDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { listSummonGroups, summonKeys } from "../../api/summon";
+import { Badge } from "../../components/Badge";
 import { cx } from "../../components/classNames";
 import { ErrorView } from "../../components/ErrorView";
 import { Spinner } from "../../components/Spinner";
@@ -13,7 +14,16 @@ import { Link } from "../../router";
 import { useSearchParams } from "../../routing";
 import { SummonBudget } from "../queues/panels/SummonBudget";
 import { CircuitState } from "../queues/panels/SummonGroupCard";
-import { groupCircuits, groupShares } from "../queues/panels/summonGroupText";
+import {
+  groupCircuits,
+  groupIsShared,
+  GROUPS_TODAY_HEADER,
+  GROUPS_TODAY_TITLE,
+  groupShares,
+  groupUnitLabel,
+  SHARED_UNIT_ROW_NOTE,
+  SHARED_UNIT_TITLE,
+} from "../queues/panels/summonGroupText";
 import { summonTabPath } from "./paths";
 
 /** Props of {@link SummonGroupsSection}. */
@@ -24,9 +34,12 @@ export interface SummonGroupsSectionProps {
 
 /**
  * The Summoning screen's summon groups (`GET /summon/groups`): one row per
- * group with shared state in the namespace — its budget, its shared circuit
- * per provider kind, and the member queues that charged it today, each
- * linked to its Summon tab.
+ * group with shared state in the namespace — whether it is one shared unit
+ * or per-queue controllers, its budget, its shared circuit per provider
+ * kind, and the member queues that charged it today, each linked to its
+ * Summon tab. A shared unit's counts are the attempts that served each
+ * queue, each attempt counted on every queue it served, so they do not add
+ * up to the group's; the column's title says so.
  *
  * The screen renders it only where the API reads summon state from storage
  * (`features.summonStoredStatus`) and the caller may list queues
@@ -100,9 +113,15 @@ export function SummonGroupsSection({
           <thead>
             <tr>
               <th scope="col">Group</th>
+              <th scope="col">Unit</th>
               <th scope="col">Budget left</th>
               <th scope="col">Shared circuit</th>
-              <th scope="col">Charged today</th>
+              <th
+                scope="col"
+                title={GROUPS_TODAY_TITLE}
+              >
+                {GROUPS_TODAY_HEADER}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -136,6 +155,7 @@ function GroupRow({ group, current, rowRef }: GroupRowProps) {
   const shares = groupShares(group);
   // No answering controller here, so `circuit` alone has no kind to name.
   const circuits = groupCircuits(group, undefined);
+  const shared = groupIsShared(group);
   return (
     <tr
       ref={rowRef}
@@ -145,6 +165,21 @@ function GroupRow({ group, current, rowRef }: GroupRowProps) {
       className={cx(current && "is-current")}
     >
       <th scope="row">{group.name}</th>
+      <td>
+        {shared ? (
+          <Badge
+            tone="neutral"
+            title={SHARED_UNIT_TITLE}
+            testId={`summon-groups-unit-${group.name}`}
+          >
+            {groupUnitLabel(group)}
+          </Badge>
+        ) : (
+          <span data-testid={`summon-groups-unit-${group.name}`}>
+            {groupUnitLabel(group)}
+          </span>
+        )}
+      </td>
       <td>
         <SummonBudget
           budget={group.budget}
@@ -195,6 +230,14 @@ function GroupRow({ group, current, rowRef }: GroupRowProps) {
               </li>
             ))}
           </ul>
+        )}
+        {shared && shares.length > 0 && (
+          <span
+            className="muted summon-group-note"
+            data-testid={`summon-groups-note-${group.name}`}
+          >
+            {SHARED_UNIT_ROW_NOTE}
+          </span>
         )}
       </td>
     </tr>

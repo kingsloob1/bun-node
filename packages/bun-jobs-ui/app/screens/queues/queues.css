@@ -391,3 +391,26 @@ tr[aria-selected="true"] {
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
+
+/* A shared unit's attempt on its way: one badge per queue it serves. */
+.summon-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A partial last outcome: the queues the unit registered no worker on. */
+.summon-last-missing {
+  display: block;
+  color: var(--danger-text);
+}
+
+/* Why a shared unit's per-queue counts do not add up to the group's. */
+.summon-group-note {
+  display: block;
+  margin: 0;
+  font-size: var(--text-sm);
+}
