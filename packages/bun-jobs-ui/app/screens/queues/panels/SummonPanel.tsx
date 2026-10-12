@@ -38,11 +38,19 @@ import { budgetUsedText } from "./budgetText";
 import { SummonBudget } from "./SummonBudget";
 import { SummonGroupCard } from "./SummonGroupCard";
 import {
+  attemptCoverage,
+  COVERAGE_HEADER,
+  COVERAGE_NONE,
   SHARED_UNIT_FORBIDDEN,
+  showCoverage,
+  SUMMON_PARTIAL_HINT,
   summonActionsOffered,
   summonCheckSummary,
   summonInert,
+  summonLastDetail,
+  summonLastMissing,
   summonOutcome,
+  summonPartialText,
   summonStateKnown,
   summonStyle,
 } from "./summonText";
@@ -210,6 +218,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
       {summonStateKnown(data) && data.pending.length > 0 && (
         <PendingTable
           queue={queue}
+          queues={data.queues}
           pending={data.pending}
         />
       )}
@@ -323,11 +332,17 @@ interface SummonStateProps {
  * What holds the next attempt back, and the last thing that happened. For
  * summon state the server could not read ({@link summonStateKnown}), only
  * the last outcome: the rest would be placeholders. For a shared unit, first
- * the queues it serves.
+ * the queues it serves, and a last attempt that registered on only some of
+ * them says which it missed ({@link summonLastMissing}) in place of its raw
+ * `partial:<queues>` detail.
  */
 function SummonState({ status, queue }: SummonStateProps) {
   const last =
     status.last === undefined ? undefined : summonOutcome(status.last.outcome);
+  const missing =
+    status.last === undefined ? [] : summonLastMissing(status.last);
+  const detail =
+    status.last === undefined ? undefined : summonLastDetail(status.last);
   const known = summonStateKnown(status);
   return (
     <KeyValue
@@ -358,14 +373,23 @@ function SummonState({ status, queue }: SummonStateProps) {
                   {last.label}
                 </Badge>{" "}
                 <RelativeTime value={status.last.at} />
-                {status.last.detail !== undefined && (
-                  <span className="muted">
-                    {" "}
-                    — {displayText(status.last.detail)}
+                {detail !== undefined && (
+                  <span className="muted"> — {detail}</span>
+                )}
+                {missing.length > 0 && (
+                  <span
+                    className="summon-last-missing"
+                    data-testid="summon-last-missing"
+                  >
+                    {summonPartialText(missing)}
                   </span>
                 )}
               </span>
             ),
+          hint:
+            status.last !== undefined && missing.length > 0
+              ? SUMMON_PARTIAL_HINT
+              : undefined,
         },
         known && {
           key: "pending",
@@ -584,19 +608,27 @@ function useProviderPreflight(providerId: string | undefined): boolean {
   );
 }
 
-/** The attempts on their way. */
+/**
+ * The attempts on their way. A shared unit's carry their coverage, how far
+ * each has got on each of the unit's queues: a Coverage column, where at
+ * least one attempt has it.
+ */
 function PendingTable({
   queue,
+  queues,
   pending,
 }: {
-  /** The queue, for the table's name. */
+  /** The queue, for the table's name; marked in a Coverage cell. */
   queue: string;
+  /** A shared unit's queues (`status.queues`), the order a Coverage cell lists them in; `undefined` for one queue. */
+  queues: readonly string[] | undefined;
   /** The attempts, oldest first. */
   pending: SummonStatusDto["pending"];
 }) {
   // Only when the API sent some (`serialize.exposeSummonHandles`): nothing
   // marks handles withheld.
   const showHandles = pending.some((attempt) => attempt.handles !== undefined);
+  const coverage = showCoverage(pending);
   return (
     <Table label={`Summon attempts on their way for ${queue}`}>
       <thead>
@@ -611,6 +643,7 @@ function PendingTable({
             Workers
           </th>
           <th scope="col">Summoner</th>
+          {coverage && <th scope="col">{COVERAGE_HEADER}</th>}
           {showHandles && <th scope="col">Handles</th>}
         </tr>
       </thead>
@@ -631,6 +664,14 @@ function PendingTable({
             </td>
             <td className="num">{formatNumber(attempt.count)}</td>
             <td>{displayText(attempt.kind)}</td>
+            {coverage && (
+              <td>
+                <CoverageCell
+                  attempt={attempt.id}
+                  badges={attemptCoverage(attempt.coverage, queues, queue)}
+                />
+              </td>
+            )}
             {showHandles && (
               <td>
                 {attempt.handles?.map((handle) => (
@@ -647,5 +688,40 @@ function PendingTable({
         ))}
       </tbody>
     </Table>
+  );
+}
+
+/** Props of {@link CoverageCell}. */
+interface CoverageCellProps {
+  /** The attempt's id, naming each badge's `data-testid`. */
+  attempt: string;
+  /** Its coverage's badges ({@link attemptCoverage}); `undefined` for an attempt without. */
+  badges: ReturnType<typeof attemptCoverage>;
+}
+
+/**
+ * One attempt's coverage: a badge per queue — "✓ renders" registered,
+ * "renders pending", "✗ renders missing" — this tab's queue marked; "—" for
+ * an attempt without (one queue's, or a status whose reads of it failed).
+ */
+function CoverageCell({ attempt, badges }: CoverageCellProps) {
+  if (badges === undefined || badges.length === 0) {
+    return <span className="muted">{COVERAGE_NONE}</span>;
+  }
+  return (
+    <ul className="summon-coverage">
+      {badges.map((badge) => (
+        <li key={badge.queue}>
+          <Badge
+            tone={badge.tone}
+            title={badge.title}
+            testId={`summon-coverage-${attempt}-${badge.queue}`}
+          >
+            {badge.label}
+          </Badge>
+          {badge.current && <span className="muted"> (this queue)</span>}
+        </li>
+      ))}
+    </ul>
   );
 }

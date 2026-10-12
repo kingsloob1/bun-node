@@ -15,7 +15,10 @@ import { SummonBudget } from "./SummonBudget";
 import {
   circuitKindLabel,
   groupCircuits,
+  groupIsShared,
   groupShares,
+  groupSharesText,
+  SHARED_UNIT_TITLE,
 } from "./summonGroupText";
 
 /** Props of {@link SummonGroupCard}. */
@@ -38,6 +41,11 @@ export interface SummonGroupCardProps {
  * screen lists groups), the group's budget, the shared circuit per provider
  * kind, and today's attempts charged to the group by each member queue.
  *
+ * A shared unit (`unit: "shared"`) is marked "Shared unit", and its shares
+ * are the attempts that served each queue: one attempt serves every queue of
+ * the unit and is counted on each, so they do not add up to the group's
+ * budget, and the card says so ({@link groupSharesText}).
+ *
  * The group arrives redacted to the member queues the caller may read, so
  * the share table is what those queues charged today, never a count of the
  * group's members.
@@ -45,6 +53,7 @@ export interface SummonGroupCardProps {
 export function SummonGroupCard({ group, queue, kind }: SummonGroupCardProps) {
   const shares = groupShares(group);
   const circuits = groupCircuits(group, kind);
+  const sharesText = groupSharesText(group);
   return (
     <section
       className="summon-group"
@@ -53,6 +62,18 @@ export function SummonGroupCard({ group, queue, kind }: SummonGroupCardProps) {
     >
       <h3 className="summon-heading">
         Summon group <GroupName name={group.name} />
+        {groupIsShared(group) && (
+          <>
+            {" "}
+            <Badge
+              tone="neutral"
+              title={SHARED_UNIT_TITLE}
+              testId="summon-group-unit"
+            >
+              Shared unit
+            </Badge>
+          </>
+        )}
       </h3>
       <KeyValue
         items={[
@@ -74,17 +95,26 @@ export function SummonGroupCard({ group, queue, kind }: SummonGroupCardProps) {
           })),
         ]}
       />
-      <h4 className="summon-subheading">Charged today</h4>
+      <h4 className="summon-subheading">{sharesText.heading}</h4>
+      {/* Only beside shares: "these do not add up" says nothing about none. */}
+      {sharesText.note !== undefined && shares.length > 0 && (
+        <p
+          className="muted summon-group-note"
+          data-testid="summon-group-shares-note"
+        >
+          {sharesText.note}
+        </p>
+      )}
       {shares.length === 0 ? (
         <p
           className="muted"
           data-testid="summon-group-shares-empty"
         >
-          No attempts charged to the group today.
+          {sharesText.empty}
         </p>
       ) : (
         <SharesTable
-          group={group.name}
+          label={sharesText.tableLabel}
           queue={queue}
           shares={shares}
         />
@@ -125,18 +155,21 @@ function GroupName({
 
 /** Props of {@link SharesTable}. */
 interface SharesTableProps {
-  /** The group's name, for the table's name. */
-  group: string;
+  /** The table's accessible name ({@link groupSharesText}). */
+  label: string;
   /** The queue whose Summon tab this is: its row is marked. */
   queue: string;
   /** The shares, in order. */
   shares: GroupShare[];
 }
 
-/** Today's attempts charged to the group, per member queue the caller may read. */
-function SharesTable({ group, queue, shares }: SharesTableProps) {
+/**
+ * Today's attempts charged to the group (for a shared unit, serving each
+ * queue), per member queue the caller may read.
+ */
+function SharesTable({ label, queue, shares }: SharesTableProps) {
   return (
-    <Table label={`Attempts charged to the group ${group} today`}>
+    <Table label={label}>
       <thead>
         <tr>
           <th scope="col">Queue</th>

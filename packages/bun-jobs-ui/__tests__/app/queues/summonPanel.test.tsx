@@ -7,15 +7,22 @@ import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { SUMMON_OUTCOMES } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import {
+  attemptCoverage,
+  COVERAGE_MISSING_HINT,
   SHARED_UNIT_FORBIDDEN,
+  showCoverage,
+  SUMMON_PARTIAL_HINT,
   summonActionsOffered,
   summonCheckSummary,
   summonEventSummary,
   summonInert,
+  summonLastDetail,
+  summonLastMissing,
   summonOutcome,
+  summonPartialText,
   summonStateKnown,
 } from "../../../app/screens/queues/panels/summonText";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
@@ -924,6 +931,157 @@ describe("a shared summon unit", () => {
     );
     expectAbsent(within(panel).queryByTestId("summon-unit"));
   });
+
+  /** The `data-testid`s of the coverage badges in an attempt's row, in order. */
+  function coverageIds(row: HTMLElement): string[] {
+    return [
+      ...row.querySelectorAll<HTMLElement>('[data-testid^="summon-coverage-"]'),
+    ].map((badge) => badge.dataset.testid ?? "");
+  }
+
+  it("shows each attempt's coverage of the unit's queues, in the unit's order then by name, this queue marked", async () => {
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus({
+          pending: [
+            {
+              id: "s-1",
+              at: NOW - 20_000,
+              until: NOW + 160_000,
+              count: 1,
+              kind: "ecs",
+              coverage: {
+                zeta: "pending",
+                previews: "missing",
+                archive: "registered",
+                thumbs: "registered",
+                emails: "pending",
+              },
+            },
+            {
+              id: "s-2",
+              at: NOW - 10_000,
+              until: NOW + 170_000,
+              count: 1,
+              kind: "ecs",
+            },
+          ],
+        }),
+      ),
+    );
+    const table = within(panel).getByRole("table", {
+      name: "Summon attempts on their way for emails",
+    });
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual([
+      "Attempt",
+      "Started",
+      "Lost unless a worker registers",
+      "Workers",
+      "Summoner",
+      "Coverage",
+    ]);
+    const row = within(panel).getByTestId("summon-pending-s-1");
+    expect(coverageIds(row)).toEqual([
+      "summon-coverage-s-1-emails",
+      "summon-coverage-s-1-thumbs",
+      "summon-coverage-s-1-previews",
+      "summon-coverage-s-1-archive",
+      "summon-coverage-s-1-zeta",
+    ]);
+    const mine = within(row).getByTestId("summon-coverage-s-1-emails");
+    expect(mine.textContent).toBe("emails pending");
+    expect(mine.className).toContain("badge-neutral");
+    expect(mine.parentElement?.textContent).toBe("emails pending (this queue)");
+    const registered = within(row).getByTestId("summon-coverage-s-1-thumbs");
+    expect(registered.textContent).toBe("✓ thumbs");
+    expect(registered.className).toContain("badge-success");
+    expect(registered.parentElement?.textContent).toBe("✓ thumbs");
+    expect(registered.hasAttribute("title")).toBe(false);
+    const missing = within(row).getByTestId("summon-coverage-s-1-previews");
+    expect(missing.textContent).toBe("✗ previews missing");
+    expect(missing.className).toContain("badge-danger");
+    expect(missing.title).toBe(COVERAGE_MISSING_HINT);
+    expect(COVERAGE_MISSING_HINT).toBe(
+      "No worker registered on this queue before the attempt's boot budget ran out.",
+    );
+    // An attempt without coverage, beside one with (negative control): "—".
+    const bare = within(panel).getByTestId("summon-pending-s-2");
+    expectNone(coverageIds(bare));
+    expect(bare.querySelectorAll("td")[4]?.textContent).toBe("—");
+  });
+
+  it("has no Coverage column where no attempt carries coverage (negative control)", async () => {
+    // A shared unit whose coverage reads failed: its attempt has none.
+    const { panel } = await openUnit(
+      unitHandlers({ emails: true, thumbs: true, previews: true }),
+    );
+    const row = within(panel).getByTestId("summon-pending-s-1");
+    expectAbsent(
+      within(panel).queryByRole("columnheader", { name: "Coverage" }),
+    );
+    expectNone(coverageIds(row));
+    expect(row.querySelectorAll("td")).toHaveLength(4);
+  });
+
+  it("says which queues a partial last attempt missed, in place of its raw detail", async () => {
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus({
+          last: {
+            id: "s-1",
+            outcome: "registered",
+            at: NOW - 5_000,
+            detail: "partial:thumbs,previews",
+            missing: ["thumbs", "previews"],
+          },
+        }),
+      ),
+    );
+    const last = within(panel).getByTestId("summon-last");
+    const line = within(last).getByTestId("summon-last-missing");
+    expect(line.textContent).toBe(
+      "Partial: no worker registered on thumbs, previews",
+    );
+    expect(line.className).toContain("summon-last-missing");
+    // After the outcome badge and its time.
+    const time = last.querySelector("time");
+    expect(
+      time !== null &&
+        (time.compareDocumentPosition(line) &
+          Node.DOCUMENT_POSITION_FOLLOWING) !==
+          0,
+    ).toBe(true);
+    expect(last.textContent).toContain("Registered");
+    expect(last.textContent).not.toContain("partial:");
+    expect(panel.textContent).toContain(SUMMON_PARTIAL_HINT);
+  });
+
+  it("shows no partial line, and the detail as before, without missing (negative control)", async () => {
+    // An outcome an older bun-jobs wrote: the detail alone names the queues.
+    const { panel } = await openUnit(
+      unitHandlers(
+        { emails: true, thumbs: true, previews: true },
+        unitStatus({
+          last: {
+            id: "s-1",
+            outcome: "registered",
+            at: NOW - 5_000,
+            detail: "partial:previews",
+          },
+        }),
+      ),
+    );
+    const last = within(panel).getByTestId("summon-last");
+    expectAbsent(within(last).queryByTestId("summon-last-missing"));
+    expect(last.textContent).toEndWith(" — partial:previews");
+    expect(panel.textContent).not.toContain(SUMMON_PARTIAL_HINT);
+  });
 });
 
 describe("a shared unit's summon text", () => {
@@ -961,6 +1119,88 @@ describe("a shared unit's summon text", () => {
         detail: "quota",
       }),
     ).toBe("Failed (ecs), for renders: quota");
+  });
+
+  it("lists an attempt's coverage in the unit's order, then by name, a state it does not know as text", () => {
+    const badges = attemptCoverage(
+      {
+        b: "registered",
+        thumbs: "missing",
+        a: "hibernating" as "pending",
+        emails: "pending",
+      },
+      ["emails", "thumbs", "previews"],
+      "thumbs",
+    );
+    expect(badges).toEqual([
+      {
+        queue: "emails",
+        label: "emails pending",
+        tone: "neutral",
+        title: undefined,
+        current: false,
+      },
+      {
+        queue: "thumbs",
+        label: "✗ thumbs missing",
+        tone: "danger",
+        title: COVERAGE_MISSING_HINT,
+        current: true,
+      },
+      {
+        queue: "a",
+        label: "a hibernating",
+        tone: "neutral",
+        title: undefined,
+        current: false,
+      },
+      {
+        queue: "b",
+        label: "✓ b",
+        tone: "success",
+        title: undefined,
+        current: false,
+      },
+    ]);
+    // Without the unit's order, by name alone.
+    expect(
+      attemptCoverage({ b: "pending", a: "pending" }, undefined, "x")?.map(
+        (badge) => badge.queue,
+      ),
+    ).toEqual(["a", "b"]);
+    // No coverage (one queue's attempt, a failed read), or not an object.
+    expectUndefined(attemptCoverage(undefined, ["emails"], "emails"));
+    expectUndefined(
+      attemptCoverage(
+        ["emails"] as unknown as Record<string, "pending">,
+        undefined,
+        "emails",
+      ),
+    );
+    expect(showCoverage([{}, { coverage: {} }])).toBe(true);
+    expect(showCoverage([{}, {}])).toBe(false);
+  });
+
+  it("names a partial attempt's missing queues, and leaves out the partial detail only then", () => {
+    expect(summonPartialText(["thumbs", "previews"])).toBe(
+      "Partial: no worker registered on thumbs, previews",
+    );
+    const partial = { detail: "partial:previews", missing: ["previews"] };
+    expect(summonLastMissing(partial)).toEqual(["previews"]);
+    expectUndefined(summonLastDetail(partial));
+    // Without missing, the detail is all there is.
+    expect(summonLastDetail({ detail: "partial:previews" })).toBe(
+      "partial:previews",
+    );
+    expectNone(summonLastMissing({}));
+    expectNone(
+      summonLastMissing({ missing: "previews" as unknown as string[] }),
+    );
+    // Another detail stays beside missing.
+    expect(summonLastDetail({ detail: "quota", missing: ["previews"] })).toBe(
+      "quota",
+    );
+    expectUndefined(summonLastDetail({}));
   });
 
   it("names the queue whose demand a check read", () => {
