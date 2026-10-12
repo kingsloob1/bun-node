@@ -543,8 +543,11 @@ for (const backend of BACKENDS) {
       it("negative control: the same marked claim, hidden from the controller, is lost at until and counted", async () => {
         const { driver, ref, queue, controller, events } = await setup();
         const { calls, summoner } = recorder();
+        // A boot budget no setup could outlast, so the check below is inside
+        // `until` however slow the store is; `until` is then moved into the
+        // past rather than waited for (see `ageMarker`).
         const summon = controller(
-          { summoner, bootBudget: 300, backoff: { initial: 5_000 } },
+          { summoner, bootBudget: 20_000, backoff: { initial: 5_000 } },
           hideClaims(driver),
         );
         await queue.add("a", {});
@@ -560,20 +563,24 @@ for (const backend of BACKENDS) {
         expect(await readClaim(driver, ref, id)).toBeDefined();
 
         expect(await summon.check()).toMatchObject({ reason: "pending" });
-        await Bun.sleep(350);
+        expect(outcomes(events)).toEqual(["started"]);
+        await ageMarker(driver, ref);
+        const lostAfter = Date.now();
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
         const status = await summon.status();
         expect(status.failures).toBe(1);
-        expect(status.backoffUntil).toBeGreaterThan(Date.now() + 4_000);
+        expect(status.backoffUntil).toBeGreaterThanOrEqual(lostAfter + 5_000);
       });
 
       it("with no claim entry at all, behaves as before: lost at until, no detail, counted", async () => {
         const { driver, ref, queue, controller, events } = await setup();
         const { calls, summoner } = recorder();
+        // As in the negative control above: checked inside `until`, then
+        // `until` moved into the past.
         const summon = controller({
           summoner,
-          bootBudget: 300,
+          bootBudget: 20_000,
           backoff: { initial: 5_000 },
         });
         await queue.add("a", {});
@@ -582,7 +589,8 @@ for (const backend of BACKENDS) {
         expect(await readClaim(driver, ref, id)).toBeUndefined();
 
         expect(await summon.check()).toMatchObject({ reason: "pending" });
-        await Bun.sleep(350);
+        expect(outcomes(events)).toEqual(["started"]);
+        await ageMarker(driver, ref);
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
         expect(events[1]!.detail).toBeUndefined();
