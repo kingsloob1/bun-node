@@ -1,5 +1,12 @@
 import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
-import type { Summoner } from "@kingsleyweb/bun-jobs";
+import type {
+  BunJobs,
+  SummonController,
+  Summoner,
+  SummonFailure,
+  SummonListDto,
+  SummonListItemDto,
+} from "@kingsleyweb/bun-jobs";
 import type {
   ProviderCallContext,
   SummonFacet,
@@ -8,6 +15,7 @@ import type {
   UnitStatus,
 } from "@kingsleyweb/bun-jobs/provider";
 import { noopLogger } from "@kingsleyweb/bun-common";
+import { ConfigError } from "@kingsleyweb/bun-jobs";
 
 /**
  * The playground's view of the units the library's `localCompute()` starts,
@@ -38,6 +46,13 @@ import { noopLogger } from "@kingsleyweb/bun-common";
  * The queues of the vault provider (`provider.ts`) also take the **provider
  * faults** — answers a remote platform gives and a local one never does —
  * which that provider raises itself before it reaches `localCompute()`.
+ *
+ * Once {@link UnitBoard.attach} has handed it the context and the API's
+ * `GET /summon` URL, the page also shows every summoning queue's status (that
+ * route, fetched over loopback), the last failures the policies'
+ * `onSummonFailed` hooks reported ({@link UnitBoard.alert}), and a button
+ * that clears one queue's budget usage through the library's
+ * `summonController(queue).reset({ budget: true })`.
  */
 
 /** Faults injected into a unit, through its environment (`LOCAL_COMPUTE_FAULT`). */
@@ -148,6 +163,41 @@ export interface UnitView extends UnitStatus {
  */
 const KEEP = 200;
 
+/** How many `onSummonFailed` reports the page keeps: the newest. */
+const KEEP_ALERTS = 30;
+
+/** `GET /summon` as the page shows it: the list, or why it could not be read. */
+export type SummonListView = SummonListDto | { error: string };
+
+/** The queue the page's budget-reset button clears. */
+const RESET_EXAMPLE_QUEUE = "transcodes";
+
+/** An epoch-ms instant as ISO text, or `""` when absent. */
+function iso(at: number | undefined): string {
+  return at === undefined ? "" : new Date(at).toISOString();
+}
+
+/** A budget's usage for a table cell: `hour/perHour, day/perDay`, or `off` with the counts. */
+function budgetText(
+  budget:
+    | {
+        hour: number;
+        perHour?: number;
+        day: number;
+        perDay?: number;
+        off?: true;
+      }
+    | undefined,
+): string {
+  if (budget === undefined) {
+    return "";
+  }
+  if (budget.off === true) {
+    return `off (hour ${budget.hour}, day ${budget.day})`;
+  }
+  return `${budget.hour}/${budget.perHour ?? "?"} hour, ${budget.day}/${budget.perDay ?? "?"} day`;
+}
+
 /** A call context for the board's own facet calls (status, cancel), bounded by `ms`. */
 function callContext(ms: number): ProviderCallContext {
   return {
@@ -181,6 +231,14 @@ export class UnitBoard {
   readonly #queues = new Map<string, readonly Fault[]>();
   /** Set by {@link stop}: from then on no start goes through. */
   #stopping = false;
+  /** The last {@link KEEP_ALERTS} failures the `onSummonFailed` hooks reported, oldest first. */
+  readonly #alerts: SummonFailure[] = [];
+  /** The context whose summon controllers the budget reset reaches; set by {@link attach}. */
+  #jobs: BunJobs | undefined;
+  /** The management API's `GET /summon` URL, read over loopback; set by {@link attach}. */
+  #summonList: string | undefined;
+  /** Every queue the `summon` option names: the ones a reset may ask about. */
+  #summoned: readonly string[] = [];
 
   constructor(
     /**
@@ -452,9 +510,140 @@ export class UnitBoard {
     return stopped;
   }
 
+  /**
+   * Hands the board the context and the API's `GET /summon` URL, for the
+   * page's summon status table and its budget reset. Called once the server
+   * listens (the URL needs its port), on every driver: on the memory one the
+   * list is simply empty.
+   */
+  attach(
+    /** The context whose summon controllers a reset reaches. */
+    jobs: BunJobs,
+    /** The management API's `GET /summon`, e.g. `http://localhost:4000/jobs-api/summon`. */
+    summonList: string,
+    /** Every queue the `summon` option names: those a reset is asked about. */
+    summoned: readonly string[],
+  ): void {
+    this.#jobs = jobs;
+    this.#summonList = summonList;
+    this.#summoned = [...summoned];
+  }
+
+  /**
+   * An `onSummonFailed` hook: keeps the failure, the newest
+   * {@link KEEP_ALERTS} of them, for the page. Synchronous and cheap, as a
+   * hook should be (the controller never awaits it anyway).
+   */
+  alert(failure: SummonFailure): void {
+    this.#alerts.push(failure);
+    if (this.#alerts.length > KEEP_ALERTS) {
+      this.#alerts.splice(0, this.#alerts.length - KEEP_ALERTS);
+    }
+  }
+
+  /** The kept `onSummonFailed` reports, newest first. */
+  alerts(): SummonFailure[] {
+    return [...this.#alerts].reverse();
+  }
+
+  /**
+   * `GET /summon` from the management API, over loopback, as any client would
+   * read it; or the fetch's error, which the page shows instead of the table.
+   */
+  async summonStatus(): Promise<SummonListView> {
+    if (this.#summonList === undefined) {
+      return { error: "not attached yet: the playground is still starting" };
+    }
+    try {
+      const response = await fetch(this.#summonList, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        return {
+          error: `GET ${this.#summonList} answered ${response.status}: ${await response.text()}`,
+        };
+      }
+      return (await response.json()) as SummonListDto;
+    } catch (error) {
+      return {
+        error: `GET ${this.#summonList} failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /**
+   * `queue`'s summon controller when it runs in this context, else
+   * `undefined`: `summonController(queue)` without a policy answers an
+   * existing one and throws a `ConfigError` for a queue with none here (one
+   * hosted by the mailer context, or any queue on the memory driver).
+   */
+  #localController(queue: string): SummonController | undefined {
+    if (this.#jobs === undefined) {
+      return undefined;
+    }
+    try {
+      return this.#jobs.summonController(queue);
+    } catch (error) {
+      if (error instanceof ConfigError) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /** The summoned queues whose controller runs in this context: the ones a reset accepts. */
+  localQueues(): string[] {
+    return this.#summoned.filter(
+      (queue) => this.#localController(queue) !== undefined,
+    );
+  }
+
+  /**
+   * Clears `queue`'s budget usage (`reset({ budget: true })`, which also
+   * closes its circuit and clears its failures and backoff), or says why not
+   * (the 400's text): only a queue with a controller in this context.
+   */
+  async resetBudget(queue: string): Promise<string | undefined> {
+    const controller = this.#localController(queue);
+    if (controller === undefined) {
+      const local = this.localQueues();
+      return local.length === 0
+        ? `${queue === "" ? "a queue" : queue} has no summon controller in this process, and no queue here has one`
+        : `queue must be one with a summon controller in this process: ${local.join(", ")}`;
+    }
+    await controller.reset({ budget: true });
+    return undefined;
+  }
+
+  /** The summon status section: the table, or the fetch's error. */
+  #summonSection(list: SummonListView): string {
+    if ("error" in list) {
+      return `<p><strong>Could not read it:</strong> ${escapeHtml(list.error)}</p>`;
+    }
+    const row = (item: SummonListItemDto): string =>
+      `<tr><td>${escapeHtml((item.queues ?? [item.queue]).join(", "))}</td><td>${escapeHtml(item.group ?? "")}</td><td>${item.local}</td><td>${escapeHtml(item.kind)}</td><td>${item.readiness ?? ""}</td><td>${item.inert === true ? `yes${item.inertReason === undefined ? "" : ` (${item.inertReason})`}` : ""}</td><td>${escapeHtml(item.last === undefined ? "" : `${item.last.outcome}${item.last.detail === undefined ? "" : `: ${item.last.detail}`}`)}</td><td>${escapeHtml(budgetText(item.budget))}</td><td>${iso(item.circuitOpenUntil)}</td></tr>`;
+    return `<table><tr><th>Queues</th><th>Group</th><th>Local</th><th>Kind</th><th>Readiness</th><th>Inert</th><th>Last outcome</th><th>Budget</th><th>Circuit open until</th></tr>
+${list.controllers.map(row).join("\n")}
+</table>`;
+  }
+
+  /** The `onSummonFailed` section's table. */
+  #alertsSection(): string {
+    const alerts = this.alerts();
+    if (alerts.length === 0) {
+      return "<p>None yet.</p>";
+    }
+    const row = (failure: SummonFailure): string =>
+      `<tr><td>${iso(failure.at)}</td><td>${escapeHtml((failure.queues ?? [failure.queue]).join(", "))}</td><td>${failure.outcome}</td><td>${escapeHtml(failure.kind)}</td><td>${escapeHtml(failure.detail ?? "")}</td><td>${iso(failure.until)}</td><td>${escapeHtml(failure.budget === undefined ? "" : `${budgetText(failure.budget)}${failure.group === undefined ? "" : ` (group ${failure.group})`}`)}</td></tr>`;
+    return `<table><tr><th>At</th><th>Queues</th><th>Outcome</th><th>Kind</th><th>Detail</th><th>Until</th><th>Budget</th></tr>
+${alerts.map(row).join("\n")}
+</table>`;
+  }
+
   /** The control page. */
   async #page(): Promise<string> {
     const units = await this.snapshot();
+    const summon = await this.summonStatus();
     const queues = [...this.#queues];
     const pending = this.pending();
     const form = (queue: string, kind: string, text: string): string =>
@@ -501,6 +690,16 @@ provider's own <code>status()</code>. The Summon panels are on each queue's page
 <code>unavailable</code> leaves it queued). Also: <code>curl -X POST '${this.basePath}/faults?kind=crash&amp;queue=renders'</code>.</p>
 ${sections}
 <form method="post" action="${this.basePath}/faults/clear"><button>clear</button> <span>forget every queued fault</span></form>
+<h2>Summon status (<code>GET /jobs-api/summon</code>)</h2>
+<p>Every summoning queue the management API can read, in one call, read here over loopback as
+any client would. A shared unit is one row for its queues; one hosted by another process reads
+<code>local: false</code>, from storage.</p>
+${this.#summonSection(summon)}
+<form method="post" action="${this.basePath}/summon/reset-budget?queue=${RESET_EXAMPLE_QUEUE}"><button>Clear ${RESET_EXAMPLE_QUEUE}' budget</button> <span><code>jobs.summonController("${RESET_EXAMPLE_QUEUE}").reset({ budget: true })</code>: its hour and day counts go to 0 (and its failures, backoff and circuit clear). Any queue whose controller runs in this process: <code>curl -X POST '${this.basePath}/summon/reset-budget?queue=renders'</code></span></form>
+<h2>Summon alerts (<code>onSummonFailed</code>)</h2>
+<p>The last ${KEEP_ALERTS} failures the policies' <code>onSummonFailed</code> hook reported, newest first:
+<code>failed</code>, <code>lost</code>, <code>unavailable</code>, <code>budget-exhausted</code> and <code>circuit-open</code>.</p>
+${this.#alertsSection()}
 <h2>Units (${running} running)</h2>
 <table><tr><th>Queues</th><th>Pool</th><th>Handle</th><th>State</th><th>Exit</th><th>Fault</th><th>Detail</th><th>Started</th></tr>
 ${rows}
@@ -515,9 +714,13 @@ ${rows}
    * | Route | What |
    * |---|---|
    * | `GET /playground/compute` | the page |
-   * | `GET /playground/compute/state` | `{ faults, units }` as JSON |
+   * | `GET /playground/compute/state` | `{ faults, units, alerts, summon }` as JSON (`summon`: `GET /jobs-api/summon`'s body, or `{ error }`) |
    * | `POST /playground/compute/faults?kind=&queue=` | queues a fault for that queue's next start |
    * | `POST /playground/compute/faults/clear` | forgets every queued fault |
+   * | `POST /playground/compute/summon/reset-budget?queue=` | `reset({ budget: true })` on that queue's controller in this process; 400 naming those queues otherwise |
+   *
+   * Like the fault routes, the reset takes no CSRF token: the playground
+   * listens on 127.0.0.1 only and must never be exposed (`index.ts`).
    */
   mount(app: BunHttpAdapter): void {
     const base = this.basePath;
@@ -527,7 +730,12 @@ ${rows}
       res.type("html").send(await this.#page());
     });
     app.get(`${base}/state`, async (_req, res) => {
-      res.json({ faults: this.pending(), units: await this.snapshot() });
+      res.json({
+        faults: this.pending(),
+        units: await this.snapshot(),
+        alerts: this.alerts(),
+        summon: await this.summonStatus(),
+      });
     });
     app.post(`${base}/faults`, (req, res) => {
       const { kind = "", queue = "" } = req.query as {
@@ -552,6 +760,19 @@ ${rows}
         return;
       }
       res.json({ queued: {} });
+    });
+    app.post(`${base}/summon/reset-budget`, async (req, res) => {
+      const { queue = "" } = req.query as { queue?: string };
+      const problem = await this.resetBudget(String(queue));
+      if (problem !== undefined) {
+        res.status(400).json({ error: problem });
+        return;
+      }
+      if (wantsHtml(req.get("accept"))) {
+        res.redirect(base, 303);
+        return;
+      }
+      res.json({ reset: String(queue), budget: true });
     });
   }
 }

@@ -2,6 +2,7 @@ import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
 import type {
   BunJobs,
   DriverConfig,
+  SummonFailure,
   SummonGroup,
   SummonOption,
 } from "@kingsleyweb/bun-jobs";
@@ -42,7 +43,10 @@ import {
  *
  * `compute/units.ts` wraps each `localCompute()` instance's facet to record
  * its units and inject faults per queue (`/playground/compute`), and stops
- * every unit, awaiting its exit, when the playground stops.
+ * every unit, awaiting its exit, when the playground stops. Every policy
+ * reports its failures to that page through one `onSummonFailed` hook, and
+ * the page lists every queue's status (`GET /jobs-api/summon`) and clears
+ * `transcodes`' budget with `reset({ budget: true })`.
  */
 
 /** Options for {@link createSummoning}. */
@@ -54,6 +58,17 @@ export interface SummoningOptions {
    * is summoned.
    */
   driver: DriverConfig | undefined;
+}
+
+/** Options for {@link Summoning.start}. */
+export interface StartOptions {
+  /**
+   * The management API's `GET /summon` URL, e.g.
+   * `http://localhost:4000/jobs-api/summon`: the control page reads every
+   * queue's summon status from it over loopback. Known only once the server
+   * listens.
+   */
+  summonList: string;
 }
 
 /** The summoning world. */
@@ -87,8 +102,12 @@ export interface Summoning {
    * nothing references could drop out of the Providers screen.
    */
   providers: readonly object[];
-  /** Starts the bursts, on the context built with {@link summon}. */
-  start: (jobs: BunJobs) => Promise<void>;
+  /**
+   * Starts the bursts, on the context built with {@link summon}, and hands
+   * the control page that context and the API's `GET /summon` URL (on every
+   * driver: on the memory one, the page's summon table is just empty).
+   */
+  start: (jobs: BunJobs, options: StartOptions) => Promise<void>;
   /**
    * Stops the bursts, then every unit still running, and resolves once each
    * has exited; then removes the run's cgroup, if it made one. Resolves with
@@ -125,6 +144,25 @@ const FAULT_CYCLE: readonly (CycleFault | undefined)[] = [
   undefined,
   // The shared unit's first queue: its starts take the unit's faults.
   { queue: "ingest", kind: "forget-queue" },
+];
+
+/**
+ * Every queue the `summon` option names, on whichever context: the queues the
+ * control page's budget reset is asked about (it accepts those whose
+ * controller runs on the main context).
+ */
+const SUMMONED_QUEUES: readonly string[] = [
+  "renders",
+  "transcodes",
+  "thumbnails",
+  "marathon",
+  "brittle",
+  "obinna-queue",
+  "ledger",
+  "secure-exports",
+  "ingest",
+  "captions",
+  "search-index",
 ];
 
 /** What a job is about. */
@@ -369,6 +407,14 @@ export async function createSummoning(
     ...ALL_PROVIDER_FAULTS,
   ]);
 
+  /**
+   * The `onSummonFailed` hook every policy sets: the control page keeps the
+   * last 30 failures (`failed`, `lost`, `unavailable`, `budget-exhausted`,
+   * `circuit-open`) in its "Summon alerts" table. The controller calls it on a
+   * later turn and never awaits it; a real host would page someone here.
+   */
+  const alert = (failure: SummonFailure): void => board.alert(failure);
+
   /** Static, the same for every attempt: how a unit reaches the backend. */
   const env: Record<string, string> =
     options.driver === undefined
@@ -400,6 +446,9 @@ export async function createSummoning(
     // maximum over them.
     overrides: { ingest: { jobsPerWorker: 4, maxWorkers: 2 } },
     env,
+    // On the mailer context too, with `PLAYGROUND_SHARED_UNIT=mailer`: it
+    // runs in this process, so its failures reach the same page.
+    onSummonFailed: alert,
   } satisfies SummonGroup;
 
   /**
@@ -446,6 +495,7 @@ export async function createSummoning(
             group: { name: "media", budget: { perHour: 600, perDay: 5_000 } },
             maxLifetime: 600_000,
             env,
+            onSummonFailed: alert,
             // One level deep: an object here is merged field by field into
             // the group's; anything else replaces the group's value.
             overrides: {
@@ -466,10 +516,16 @@ export async function createSummoning(
               // the group's (which keeps the driver). Two lost attempts open
               // the circuit (`failures` merged; `resetAfter` kept at 60 s),
               // and an attempt is lost after 8 s rather than 15.
+              // `budget: false` is not an object, so it replaces the group's
+              // 240/2 000: brittle's own budget is off (its attempts are
+              // still counted, and `GET …/summon` says `off: true`). The
+              // group's budget still binds: every attempt is charged to
+              // `media`'s 600 an hour and 5 000 a day.
               brittle: {
                 env: { LOCAL_COMPUTE_FAULT: "crash" },
                 circuit: { failures: 2 },
                 bootBudget: 8_000,
+                budget: false,
               },
             },
           } satisfies SummonGroup,
@@ -485,6 +541,7 @@ export async function createSummoning(
               // Within the instance's own 5-minute cap.
               maxLifetime: 120_000,
               env,
+              onSummonFailed: alert,
             },
             ledger: {
               summoner: replicas,
@@ -496,6 +553,7 @@ export async function createSummoning(
               // Released 20 s after the queue went idle.
               scaleDown: { after: 20_000 },
               env,
+              onSummonFailed: alert,
             },
             "secure-exports": {
               summoner: vaults[0]!,
@@ -504,6 +562,7 @@ export async function createSummoning(
               backoff: { initial: 5_000, max: 30_000 },
               circuit: { failures: 3, resetAfter: 60_000 },
               env,
+              onSummonFailed: alert,
             },
           },
           ...(sharedUnitHost === "main" ? [uploadsGroup] : []),
@@ -532,7 +591,10 @@ export async function createSummoning(
     providers: [media, obinna, ledger, unbuilt, uploads, ...vaults, replicas],
     basePath: board.basePath,
     mount: (app) => board.mount(app),
-    start: async (jobs) => {
+    start: async (jobs, { summonList }) => {
+      // Before the memory driver's early return: its summon table is empty,
+      // and says so, rather than "not attached".
+      board.attach(jobs, summonList, SUMMONED_QUEUES);
       if (summon === undefined) {
         return;
       }

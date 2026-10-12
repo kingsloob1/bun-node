@@ -43,7 +43,7 @@ can reach it, so never expose it.
 |---|---|
 | `/jobs` | the UI (Overview, Queues, Workers, Providers, Runners, Events, API docs) |
 | `/jobs-api` | the management API, with its live-events socket on the same port |
-| `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit (see "Summoning" below) |
+| `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit; every queue's summon status (`GET /jobs-api/summon`), the `onSummonFailed` alerts, and a budget reset (see "Summoning" below) |
 | `/` | redirects to `/jobs` |
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,
@@ -203,13 +203,17 @@ export const summon = [
     queues: ["renders", "transcodes", "thumbnails", "marathon", "brittle"],
     summoner: media,
     maxWorkers: 2,
-    overrides: { transcodes: { maxWorkers: 1, budget: { perHour: 30 } } },
+    onSummonFailed: alert,   // every policy reports to /playground/compute
+    overrides: {
+      transcodes: { maxWorkers: 1, budget: { perHour: 30 } },
+      brittle: { budget: false },   // its own budget off; the group's still binds
+    },
   },
   // A record of policies by queue, beside it.
   {
-    "obinna-queue": { summoner: obinna },
-    "ledger": { summoner: replicas, scaleDown: { after: 20_000 } },
-    "secure-exports": { summoner: vault },
+    "obinna-queue": { summoner: obinna, onSummonFailed: alert },
+    "ledger": { summoner: replicas, scaleDown: { after: 20_000 }, onSummonFailed: alert },
+    "secure-exports": { summoner: vault, onSummonFailed: alert },
   },
   // A shared unit: one controller and one unit for three queues.
   {
@@ -218,6 +222,7 @@ export const summon = [
     group: { name: "uploads", unit: "shared", budget: { perHour: 120, perDay: 1_000 } },
     maxWorkers: 2,
     overrides: { ingest: { jobsPerWorker: 4, maxWorkers: 2 } },
+    onSummonFailed: alert,
   },
 ];
 ```
@@ -263,7 +268,7 @@ else (the bursts, the units, the faults) is unchanged.
 | `compute/worker.ts` | the entry the `media` and `ledger` instances run: **one file serving every queue of the group**, choosing its processor by `summonedFromArgs().queue` |
 | `compute/obinna-queue-worker.ts` | the entry the `obinna` instance runs: `obinna-queue`, whose jobs "ping obinna" |
 | `compute/shared-unit.ts` | the entry the `uploads` instance runs: **one unit for three queues**, a worker per queue in `summonedFromArgs().queues`, all handed to `runSummoned(workers)`; a 3 s pause before the workers exist, so the attempt's per-queue coverage can be read while it is pending |
-| `compute/units.ts` | the playground's wrapper around each instance's summon facet (a spread of a configured provider keeps its brand and its Providers id): it records the units, injects a fault into one queue's next start, and on shutdown stops every unit and awaits its exit. It also serves `/playground/compute` |
+| `compute/units.ts` | the playground's wrapper around each instance's summon facet (a spread of a configured provider keeps its brand and its Providers id): it records the units, injects a fault into one queue's next start, and on shutdown stops every unit and awaits its exit. It also serves `/playground/compute`, which also shows `GET /jobs-api/summon` (read over loopback) as a table, keeps the last 30 failures the policies' `onSummonFailed` hook reported, and clears a queue's budget usage with `jobs.summonController(queue).reset({ budget: true })` |
 | `compute/provider.ts` | "Vault Compute", a third-party provider made with `defineComputeProvider` whose units are started by the `media` `localCompute()` underneath. It shows what `localCompute()` cannot: a declared secret, an asynchronous config (and so Pending and Failed readiness), and the `throttled`/`quota`/`auth`/`transient` answers of a remote platform |
 | `compute/cgroup.ts` | the run's cgroup when `PLAYGROUND_CGROUP` asks for one |
 | `compute/leftovers.ts` | records every unit this run starts, and at startup stops the units a killed run (or a `--watch` reload) left running |
@@ -282,7 +287,7 @@ else (the bursts, the units, the faults) is unchanged.
 
 | Use case | Where | What to watch in the UI | How to trigger it |
 |---|---|---|---|
-| A **group** with **overrides**, merged one level deep | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | each queue's Summon panel of its own, all naming the one summoner (Provider: Local processes, `@kingsleyweb/bun-jobs:local 0.1.0`), each with its own failures, backoff, circuit and budget. On screen, the budget line shows the merge: `transcodes` reads "… of 30 this hour, … of 2,000 today" — its override's `perHour` beside the group's `perDay` — where the others read "of 240 this hour". The rest of each policy (triggers, `env`, circuit thresholds, `maxWorkers`) is not on screen yet: read it in `summoning.ts`, and see it act in the rows below | always on: a burst every minute (`PLAYGROUND_SUMMON_EVERY_MS`) |
+| A **group** with **overrides**, merged one level deep | `renders`, `transcodes`, `thumbnails`, `marathon`, `brittle` | each queue's Summon panel of its own, all naming the one summoner (Provider: Local processes, `@kingsleyweb/bun-jobs:local 0.1.0`), each with its own failures, backoff, circuit and budget. On screen, the budget line shows the merge: `transcodes` reads "… of 30 this hour, … of 2,000 today" — its override's `perHour` beside the group's `perDay` — where the others read "of 240 this hour", except `brittle`, whose override turns its own budget off (below). The rest of each policy (triggers, `env`, circuit thresholds, `maxWorkers`) is not on screen yet: read it in `summoning.ts`, and see it act in the rows below | always on: a burst every minute (`PLAYGROUND_SUMMON_EVERY_MS`) |
 | **One budget for the group** (`group: { name: "media" }`) | the five queues of the media group | each queue's own budget as before, and the group's usage, limits, reset times and each queue's share as `group` on `GET /queues/renders/summon`; from API docs → HTTP, `GET /summon/groups/media` reads the same from storage, so any process on the namespace answers it, and `POST /summon/groups/media/reset` with `{ "budget": true }` clears the group's counts (a queue's own reset leaves them alone) | always on |
 | **Groups and records mixed** in `summon: [...]` | `obinna-queue`, `ledger`, `secure-exports` | Summon panels like the group's, each naming its own summoner: Local processes (`obinna-queue`), `local-replicas` (`ledger`), Vault Compute (`secure-exports`) | always on |
 | **One entry file serving a group's queues** | `compute/worker.ts` | Workers → `compute`: `compute.renders.render`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`… one per queue, all the same file | always on |
@@ -296,6 +301,10 @@ else (the bursts, the units, the faults) is unchanged.
 | A crash before registering | every queue | pending, then `lost` after the boot budget, its detail the unit's last stderr line: `renders worker: cannot load the GPU driver (libvk.so.1)`. The panel's "Boot budget" is the provider's (15 s on `media`); `brittle`'s policy shortens its own to 8 s (`summoning.ts`) | `?kind=crash&queue=renders` |
 | A unit dying mid-queue | any queue | registered, then `lost`, detail `SIGKILL` (the unit's own status from `localCompute()`); the queue is finished by the next worker | `?kind=die&queue=transcodes` |
 | **`circuit`** opened by a fault queue | `brittle` (every unit crashes) | failures counting up, then "Circuit open until" a minute away (two lost attempts open it: `circuit.failures: 2` in `summoning.ts`), one trial when it passes, open again. Reset closes it now | always on: two seeded jobs no unit ever runs |
+| **`onSummonFailed`** alerts | every summoned queue: one hook, `alert`, on the media group, each record policy and the uploads group (`summoning.ts`) | `/playground/compute` → "Summon alerts (`onSummonFailed`)", the last 30, newest first: `brittle`'s `lost` (the unit's stderr line) and then `circuit-open` with its "until"; a `renders` crash `lost`; a `secure-exports` `unavailable` with detail `RateLimited` (the `throttled` fault; a max-units refusal reads `max-units: N of N running` instead). With `PLAYGROUND_SHARED_UNIT=mailer` the uploads unit's controller is on the mailer context, in the same process, so its failures arrive too. Also as `alerts` on `/playground/compute/state` | always on |
+| **`budget: false`** | `brittle`'s override | its Summon panel's Budget row reads "off", with this hour's and today's counts still rising, and `GET /jobs-api/queues/brittle/summon` answers `budget.off: true` with no `perHour`. Only brittle's own budget is off: the media group's 600 an hour still binds, and every brittle attempt is charged to it | always on |
+| **`reset({ budget: true })`** | `transcodes` | `/playground/compute` → "Clear transcodes' budget" calls `jobs.summonController("transcodes").reset({ budget: true })`: hour and day go to 0 on the panel and in the "Summon status" table. The panel's Reset with "Also clear budget usage" is the same reset over HTTP. Only a queue whose controller runs in this process is accepted; any other is a 400 naming those that are | the button, or `curl -X POST 'localhost:4000/playground/compute/summon/reset-budget?queue=transcodes'` |
+| **`GET /summon`**: every queue in one call | `/playground/compute` → "Summon status (`GET /jobs-api/summon`)" | nine rows for eleven queues: the five media queues, the three records, and the uploads unit as **one** row naming its three queues and its group. Each row: local, kind, readiness, inert, last outcome and detail, budget (or "off"), circuit open until. With `PLAYGROUND_SHARED_UNIT=mailer` the uploads row is `local: false`, read from storage. Fetched over loopback as any client would; a failed fetch shows its error in place of the table | always on |
 | `triggers`: `onAdd` vs `poll` | `thumbnails` (`onAdd: false, events: false`) vs `renders`, in `summoning.ts` | not as settings (not on screen yet), but in when each attempt starts: on `/playground/compute`, a burst's `renders` units start as it lands (the add's check), while `thumbnails`, added 5 s into each burst, start only at the controller's next poll, up to 10 s later | always on |
 | **`scaleDown`** (scale-style summoner) | `ledger`: `defineSummoner({ style: "scale" })` over `~3` (on Providers as `custom:local-replicas@0.0.0~1`) | units run `until-stopped`: they stay on the Workers page after `ledger` drains; 20 s later the controller releases them — a `summon` event with outcome `released` on the Events console (`queue/ledger`) — and they exit 0 (`/playground/compute`: `exited 0`) | every other burst adds 4–8 ledger jobs |
 | `shutdown` signal and grace | `media` SIGTERM / 3 s, `obinna` SIGINT / 5 s (`summoning.ts`; not on screen yet) | `runSummoned` handles either signal and exits 0 (`exited 0` on `/playground/compute`); with `ignore-stop`, the grace running out: `failed 137` | Ctrl+C, or `ignore-stop` |
@@ -398,20 +407,12 @@ that detail, until a registration or a Reset clears it.
 
 **Not on develop yet** — hooks for what lands next, to be filled in then:
 
-- TODO(#289): `GET /summon`, every queue's summon status in one call, for a
-  table of all eight queues on `/playground/compute`; and `onSummonFailed`,
-  `budget: false` and `reset({ budget })` on the policies above (e.g. a
-  `brittle` override with `budget: false`, and a reset of `transcodes`'
-  budget from the control page).
 - TODO(policy visible): the user has decided each queue's policy will be
   shown — triggers, `env` names, circuit thresholds, `maxWorkers`,
   `jobsPerWorker`, `maxPending`, `cooldown`, `bootBudget`, the provider's
   shutdown signal and grace — through an API addition and the Summon panel.
   Then the use-case table above says where each one is on screen, instead of
   pointing at `summoning.ts`.
-- TODO(Part A): group budgets and circuits, and status from storage: one
-  budget and circuit for the whole media group, where today each of its five
-  queues has its own.
 
 ## Things to try
 
@@ -446,6 +447,8 @@ that detail, until a registration or a Reset clears it.
 - Open `ingest` as a burst lands: a pending attempt whose coverage reads `pending` for all three queues for about 3 s, then `registered`; open `captions` and `search-index` and see the same unit. Then queue `forget-queue` for `ingest` on `/playground/compute`: the next attempt is `registered` with `partial:search-index`, and one failure.
 - Start with `PLAYGROUND_SHARED_UNIT=mailer` and open `ingest`: the same unit, read-only (`local: false`), its controller on the mailer context.
 - Watch `brittle`'s panel for two minutes: two lost attempts, the circuit open, a trial a minute later, open again.
+- Open `/playground/compute` after two minutes: "Summon alerts" has `brittle`'s `lost` and then its `circuit-open`, and "Summon status" has nine rows, `brittle`'s budget reading "off" while its counts rise.
+- Note `transcodes`' budget in "Summon status", press "Clear transcodes' budget", and watch hour and day read 0 there and on its Summon panel.
 - Open Workers after a burst that added `ledger` jobs: its `compute.ledger.post` workers (two when the burst brought 5 or more jobs, at `jobsPerWorker: 4`) stay after `ledger` drains, then 20 s later are released and go (Events console, `queue/ledger`: a `summon` event, `released`).
 - Open a completed `renders` job and a completed `obinna-queue` job: `env.hostSecret: "kept out"` beside `hostEnv: "inherited"`.
 - `tail -f playground/.data/units-*.log`: every media unit's output, as `output: { file }` appends it.
