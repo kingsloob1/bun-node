@@ -69,6 +69,10 @@ const RUN_ALONE = [
  * failure.
  */
 const SLOW_FIRST = [
+  // About 21 s on every backend, most of it waiting: thumbs reads missing
+  // only once the attempt's 5 s boot budget and 5 s more have passed, and
+  // three attempts settle lost after their boot budgets.
+  "02-queues/summon-shared-unit-coverage.ts",
   // The longest of the pooled examples, longest first, as measured on memory
   // (25.6 s, 20 s, 14.5 s, 13.8 s, 13.7 s, 4.3 s). Starting one of them last
   // would leave the pool waiting on it alone. `02-queues/isolated-processors.ts`
