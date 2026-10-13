@@ -1,4 +1,9 @@
-import type { SummonStatusDto } from "../../../api/types";
+import type {
+  SummonCapabilitiesDto,
+  SummonPolicyDto,
+  SummonStatusDto,
+} from "../../../api/types";
+import type { SummonPolicyPart, SummonPolicyRow } from "./summonPolicyText";
 import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { demandKeys } from "../../../api/demand";
@@ -38,6 +43,15 @@ import { budgetUsedText } from "./budgetText";
 import { SummonBudget } from "./SummonBudget";
 import { SummonGroupCard } from "./SummonGroupCard";
 import {
+  SUMMON_POLICY_DEFAULT_HINT,
+  SUMMON_POLICY_ELSEWHERE,
+  SUMMON_POLICY_OVERRIDE_HINT,
+  summonBudgetDefaulted,
+  summonPolicyPerQueue,
+  summonPolicyRows,
+  summonPolicyVisibility,
+} from "./summonPolicyText";
+import {
   attemptCoverage,
   COVERAGE_HEADER,
   COVERAGE_NONE,
@@ -76,6 +90,10 @@ export interface SummonPanelProps {
  * were seen on them, and offers the actions only where the caller may
  * summon every one of them ({@link useUnitCanSummon}).
  *
+ * Where the API sends it (`features.summonPolicy`), the controller's policy
+ * follows the summoner ({@link SummonPolicy}); a status read from another
+ * process's controller has none, and says so in a line.
+ *
  * `local` is always `true` today. A `false` answer — a controller in another
  * process, read from the store — is shown read-only: no actions, since both
  * need a controller in the API's own process.
@@ -90,6 +108,8 @@ export function SummonPanel({ queue }: SummonPanelProps) {
   const [clearBudget, setClearBudget] = useState(false);
   // The API takes `{ budget: true }` (and serves `GET /summon`) only where it says so.
   const canClearBudget = useFeature("summonResetBudget") === true;
+  // The status carries the controller's policy only where the API says so.
+  const policyFeature = useFeature("summonPolicy") === true;
   const status = useQuery({
     queryKey: summonKeys.status(queue),
     queryFn: ({ signal }) => getSummonStatus(api, queue, signal),
@@ -162,6 +182,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     );
   }
   const data = status.data;
+  const policyView = summonPolicyVisibility(policyFeature, data);
   const actionable = summonActionsOffered(
     data,
     // A single queue's own map decides, as it always has; a shared unit's,
@@ -206,6 +227,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
       <SummonState
         status={data}
         queue={queue}
+        policy={policyView === "shown" ? data.policy : undefined}
       />
       {data.group !== undefined && (
         <SummonGroupCard
@@ -215,6 +237,21 @@ export function SummonPanel({ queue }: SummonPanelProps) {
         />
       )}
       {data.summoner && <Summoner summoner={data.summoner} />}
+      {policyView === "shown" && data.policy !== undefined && (
+        <SummonPolicy
+          policy={data.policy}
+          capabilities={data.summoner?.capabilities}
+          queue={queue}
+        />
+      )}
+      {policyView === "elsewhere" && (
+        <p
+          className="muted"
+          data-testid="summon-policy-elsewhere"
+        >
+          {SUMMON_POLICY_ELSEWHERE}
+        </p>
+      )}
       {summonStateKnown(data) && data.pending.length > 0 && (
         <PendingTable
           queue={queue}
@@ -326,6 +363,11 @@ interface SummonStateProps {
   status: SummonStatusDto;
   /** The queue whose Summon tab this is: marked among a shared unit's queues. */
   queue: string;
+  /**
+   * The controller's policy where the panel shows it, so the Budget row can
+   * say when the budget is the default; `undefined` otherwise.
+   */
+  policy: SummonPolicyDto | undefined;
 }
 
 /**
@@ -336,7 +378,7 @@ interface SummonStateProps {
  * them says which it missed ({@link summonLastMissing}) in place of its raw
  * `partial:<queues>` detail.
  */
-function SummonState({ status, queue }: SummonStateProps) {
+function SummonState({ status, queue, policy }: SummonStateProps) {
   const last =
     status.last === undefined ? undefined : summonOutcome(status.last.outcome);
   const missing =
@@ -437,15 +479,24 @@ function SummonState({ status, queue }: SummonStateProps) {
             key: "budget",
             label: "Budget",
             value: (
-              <SummonBudget
-                budget={status.budget}
-                testId="summon-budget"
-                // Its own budget off, the group's applies to it, unless the
-                // group's is off too: then no limit applies at all.
-                group={
-                  status.group !== undefined && status.group.budget.off !== true
-                }
-              />
+              <>
+                <SummonBudget
+                  budget={status.budget}
+                  testId="summon-budget"
+                  // Its own budget off, the group's applies to it, unless the
+                  // group's is off too: then no limit applies at all.
+                  group={
+                    status.group !== undefined &&
+                    status.group.budget.off !== true
+                  }
+                />
+                {summonBudgetDefaulted(policy) && (
+                  <>
+                    {" "}
+                    <DefaultTag />
+                  </>
+                )}
+              </>
             ),
             // The row shows what is left; the counts used stay in view here.
             hint: budgetUsedText(status.budget),
@@ -550,9 +601,10 @@ function Summoner({
                 },
                 {
                   key: "boot",
-                  label: "Boot budget",
+                  // The provider's default: the policy's own is in the Policy block.
+                  label: "Provider default boot budget",
                   value: formatMs(capabilities.bootBudgetMs),
-                  hint: "How long an attempt counts as a worker on its way before it is lost.",
+                  hint: "How long an attempt counts as a worker on its way before it is lost, unless the policy sets its own.",
                 },
                 {
                   key: "lifetime",
@@ -579,6 +631,191 @@ function Summoner({
           />
         )}
     </div>
+  );
+}
+
+/** Props of {@link SummonPolicy}. */
+interface SummonPolicyProps {
+  /** The status's policy. */
+  policy: SummonPolicyDto;
+  /** The summoner's capabilities, once it is ready: the platform's shutdown, lifetime cap and style. */
+  capabilities: SummonCapabilitiesDto | undefined;
+  /** The queue, for the per-queue table's name. */
+  queue: string;
+}
+
+/**
+ * The policy the queue's controller runs with (`status.policy`), every value
+ * in words and marked "default" where the policy did not set it
+ * ({@link summonPolicyRows}); a shared unit's per-queue capacities as a
+ * table after Workers, each value the unit's overrides set marked
+ * "override". The platform's shutdown is the summoner's, not the policy's.
+ */
+function SummonPolicy({ policy, capabilities, queue }: SummonPolicyProps) {
+  const rows = summonPolicyRows(policy, capabilities);
+  const perQueue = summonPolicyPerQueue(policy);
+  const items = rows.flatMap((row) => [
+    {
+      key: row.id,
+      label: row.label,
+      value: <PolicyValue row={row} />,
+      hint: row.hint,
+    },
+    ...(row.id === "workers" && perQueue !== undefined
+      ? [
+          {
+            key: "per-queue",
+            label: "Per queue",
+            value: (
+              <PerQueueTable
+                queue={queue}
+                rows={perQueue}
+              />
+            ),
+            hint: "Each of the unit's queues' own capacity: what its demand alone may ask for.",
+          },
+        ]
+      : []),
+  ]);
+  return (
+    <div
+      className="summon-policy"
+      data-testid="summon-policy"
+    >
+      <h3 className="summon-heading">Policy</h3>
+      <KeyValue items={items} />
+    </div>
+  );
+}
+
+/** A policy row's value: its pieces, each muted or tagged as the row says. */
+function PolicyValue({
+  row,
+}: {
+  /** The row. */
+  row: SummonPolicyRow;
+}) {
+  return (
+    <span data-testid={`summon-policy-${row.id}`}>
+      {row.parts.map((part, index) => (
+        <span
+          // The pieces are fixed for a row: their position is their identity.
+          // eslint-disable-next-line react/no-array-index-key
+          key={index}
+        >
+          {part.joiner}
+          <PolicyPart part={part} />
+          {part.tag && (
+            <>
+              {" "}
+              <DefaultTag />
+            </>
+          )}
+        </span>
+      ))}
+      {row.tag && (
+        <>
+          {" "}
+          <DefaultTag />
+        </>
+      )}
+    </span>
+  );
+}
+
+/** One piece of a policy value: its names as code chips, or its text. */
+function PolicyPart({
+  part,
+}: {
+  /** The piece. */
+  part: SummonPolicyPart;
+}) {
+  if (part.names !== undefined && part.names.length > 0) {
+    return (
+      <span className="summon-policy-names">
+        {part.names.map((name) => (
+          <code key={name}>{name}</code>
+        ))}
+      </span>
+    );
+  }
+  return <span className={part.muted ? "muted" : undefined}>{part.text}</span>;
+}
+
+/** The muted "default" tag of a value the policy did not set. */
+function DefaultTag() {
+  return (
+    <span
+      className="summon-policy-tag muted"
+      title={SUMMON_POLICY_DEFAULT_HINT}
+      data-testid="summon-policy-default"
+    >
+      default
+    </span>
+  );
+}
+
+/** A shared unit's per-queue capacities, each override marked. */
+function PerQueueTable({
+  queue,
+  rows,
+}: {
+  /** The queue whose tab this is, for the table's name. */
+  queue: string;
+  /** The rows ({@link summonPolicyPerQueue}). */
+  rows: NonNullable<ReturnType<typeof summonPolicyPerQueue>>;
+}) {
+  return (
+    <div data-testid="summon-policy-per-queue">
+      <Table label={`Per-queue capacity of the unit serving ${queue}`}>
+        <thead>
+          <tr>
+            <th scope="col">Queue</th>
+            <th scope="col">Jobs per worker</th>
+            <th
+              scope="col"
+              className="num"
+            >
+              Max workers
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.queue}
+              data-testid={`summon-policy-per-queue-${row.queue}`}
+            >
+              <th scope="row">{row.queue}</th>
+              <td>
+                {row.jobsPerWorker}
+                {row.jobsPerWorkerOverride && <OverrideTag />}
+              </td>
+              <td className="num">
+                {row.maxWorkers}
+                {row.maxWorkersOverride && <OverrideTag />}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+}
+
+/** The "override" tag of a per-queue value the unit's overrides set. */
+function OverrideTag() {
+  return (
+    <>
+      {" "}
+      <Badge
+        tone="accent"
+        title={SUMMON_POLICY_OVERRIDE_HINT}
+        testId="summon-policy-override"
+      >
+        override
+      </Badge>
+    </>
   );
 }
 

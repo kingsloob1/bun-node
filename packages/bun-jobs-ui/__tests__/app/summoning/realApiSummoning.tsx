@@ -149,3 +149,55 @@ export async function mountSummoning(
     unmount: () => rendered.unmount(),
   };
 }
+
+/** What the Summon panel's Policy block shows of one row. */
+export interface PolicyRowView {
+  /** The row's value, tags included. */
+  text: string;
+  /** How many "default" tags it carries. */
+  defaults: number;
+}
+
+/** What the Summon panel's Policy block shows. */
+export interface PolicyView {
+  /** The block's whole text. */
+  text: string;
+  /** Each row's value by its id (`summon-policy-<id>`). */
+  rows: Record<string, PolicyRowView>;
+}
+
+/** The ids of the Policy block's rows, from their values' `data-testid`s. */
+const POLICY_ROW = /^summon-policy-(?!default$|override$|per-queue)(.+)$/;
+
+/**
+ * Renders `queue`'s Summon tab over `fetch`, waits for its Policy block and
+ * reads it, then unmounts.
+ */
+export async function readSummonPolicy(
+  fetch: FetchLike,
+  csrfHeader: string,
+  queue: string,
+): Promise<PolicyView> {
+  visit(`/jobs/queues/${encodeURIComponent(queue)}?panel=summon`);
+  const rendered = renderApp({ fetch, config: { csrfHeader } });
+  try {
+    const block = await page().findByTestId(
+      "summon-policy",
+      {},
+      { timeout: 10_000 },
+    );
+    const rows: Record<string, PolicyRowView> = {};
+    for (const element of block.querySelectorAll("[data-testid]")) {
+      const id = POLICY_ROW.exec(
+        element.getAttribute("data-testid") ?? "",
+      )?.[1];
+      if (id !== undefined && element instanceof HTMLElement) {
+        const tags = within(element).queryAllByTestId("summon-policy-default");
+        rows[id] = { text: element.textContent ?? "", defaults: tags.length };
+      }
+    }
+    return { text: block.textContent ?? "", rows };
+  } finally {
+    rendered.unmount();
+  }
+}

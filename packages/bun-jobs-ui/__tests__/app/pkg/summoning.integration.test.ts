@@ -55,8 +55,22 @@ interface RowView {
   href: string | null;
 }
 
+/** What the Summon panel's Policy block shows (`../summoning/realApiSummoning`). */
+interface PolicyView {
+  /** The block's whole text. */
+  text: string;
+  /** Each row's value and its "default" tags, by row id. */
+  rows: Record<string, { text: string; defaults: number }>;
+}
+
 /** What this file uses of `../summoning/realApiSummoning`. */
 interface SummoningModule {
+  /** Renders `queue`'s Summon tab over `fetch` and reads its Policy block. */
+  readSummonPolicy: (
+    fetch: FetchLike,
+    csrfHeader: string,
+    queue: string,
+  ) => Promise<PolicyView>;
   /** Renders `/summon` over `fetch` and returns a driver. */
   mountSummoning: (
     fetch: FetchLike,
@@ -96,7 +110,12 @@ const QUEUES = {
   listed: "renders",
   /** The reset case's. */
   reset: "exports",
+  /** The policy case's: its policy sets more than the others'. */
+  policy: "policies",
 } as const;
+
+/** An env value the policy case's policy holds: it must never reach the page. */
+const ENV_SECRET = "s3cr3t-policy-value";
 
 let dir: string;
 let jobs: BunJobs;
@@ -185,6 +204,9 @@ beforeAll(async () => {
           }),
           triggers: { onAdd: false, events: false, poll: false },
           cooldown: 0,
+          ...(queue === QUEUES.policy
+            ? { maxWorkers: 3, env: { POLICY_TOKEN: ENV_SECRET } }
+            : {}),
         },
       ]),
     ),
@@ -307,4 +329,53 @@ describe("the Summoning screen against a real summon controller", () => {
     expect(row.day).toMatch(/^300 of 300 left today/);
     screen.unmount();
   }, 60_000);
+});
+
+describe("the Summon panel's Policy block against a real summon controller", () => {
+  it("shows the local controller's policy, what it set untagged and the rest default", async () => {
+    const queue = QUEUES.policy;
+    // The API says it sends the policy, and does, for this local controller.
+    const meta = await fetchApi(`${BASE}/meta`, { method: "GET" });
+    expect(
+      ((await meta.json()) as { features: Record<string, unknown> }).features
+        .summonPolicy,
+    ).toBe(true);
+    const status = await fetchApi(`${BASE}/queues/${queue}/summon`, {
+      method: "GET",
+    });
+    const body = (await status.json()) as {
+      local: boolean;
+      policy?: { explicit: string[] };
+    };
+    expect(body.local).toBe(true);
+    expect(body.policy?.explicit).toContain("maxWorkers");
+    expect(body.policy?.explicit).not.toContain("jobsPerWorker");
+
+    const view = await (await ui()).readSummonPolicy(fetchApi, CSRF, queue);
+    // Every trigger and the cooldown were set: no tag.
+    expect(view.rows.triggers).toEqual({
+      text: "On add off · Events off · Poll off",
+      defaults: 0,
+    });
+    expect(view.rows.cooldown).toEqual({ text: "0ms", defaults: 0 });
+    // maxWorkers set; jobsPerWorker and maxPending (following it) defaults.
+    expect(view.rows.workers).toEqual({
+      text: "at most 3 · one regardless of depth default · at most 3 starting default",
+      defaults: 2,
+    });
+    // A row the policy left alone: one tag.
+    expect(view.rows.backoff?.defaults).toBe(1);
+    // The env's name, never its value.
+    expect(view.rows.env).toEqual({ text: "POLICY_TOKEN", defaults: 0 });
+    expect(view.text).not.toContain(ENV_SECRET);
+    // The platform's shutdown, from the summoner's declared capabilities.
+    // defineSummoner's default, never tagged: the policy cannot set it.
+    expect(view.rows.shutdown).toEqual({
+      text: "SIGTERM, 10s grace",
+      defaults: 0,
+    });
+    // Ready, so the boot budget is the summoner's default, as a number.
+    expect(view.rows["boot-budget"]?.defaults).toBe(1);
+    expect(view.rows["boot-budget"]?.text).not.toContain("provider default");
+  }, 30_000);
 });
