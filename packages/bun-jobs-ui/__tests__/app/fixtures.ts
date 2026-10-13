@@ -101,6 +101,9 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       summonResetBudget: true,
       summonList: true,
       summonStoredStatus: false,
+      // The summon status's `policy` (bun-jobs' contract); off here until
+      // the Summon panel reads it.
+      summonPolicy: false,
       throughput: true,
     },
     // A backend recording everything, with the shipped defaults: per-second

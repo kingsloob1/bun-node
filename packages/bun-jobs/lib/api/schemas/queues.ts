@@ -11,6 +11,7 @@ import {
   MAX_NAME_LENGTH,
   MIN_ANALYTICS_SPAN_MS,
   SUMMON_OUTCOMES,
+  SUMMON_POLICY_KEYS,
   SUMMON_SKIP_REASONS,
 } from "../contract/constants";
 import { s } from "../schema/builder";
@@ -707,6 +708,165 @@ const SummonLastSchema = s.object({
   ),
 });
 
+/** A duration of the summon policy, in ms, with `description`. */
+function PolicyMs(description: string) {
+  return s.integer({ minimum: 0, description: `${description}, in ms.` });
+}
+
+/** One trigger of a summon policy. Mirrors `SummonTriggerDto`. */
+const SummonTriggerSchema = s.object(
+  {
+    kind: s.enum(["onAdd", "events", "poll"], {
+      description:
+        "Which trigger: `onAdd` (a job added through a queue the controller is attached to), `events` (an event another process published through the driver) or `poll`. Show a kind you do not know as text.",
+    }),
+    on: s.boolean({ description: "Whether it is on." }),
+    debounce: s.optional(
+      PolicyMs(
+        "`onAdd` and `events`: how long add and event triggers are coalesced (`triggers.debounce`)",
+      ),
+    ),
+    every: s.optional(
+      PolicyMs("`poll`, while on: how often the controller checks"),
+    ),
+  },
+  { description: "One trigger of a summon policy." },
+);
+
+/** The summon policy a local controller runs with. Mirrors `SummonPolicyDto`. */
+export const SummonPolicySchema = s.named(
+  // Not "SummonPolicy": that is the name of the policy's input type.
+  "SummonPolicyStatus",
+  s.object(
+    {
+      triggers: s.array(SummonTriggerSchema, {
+        description:
+          "What makes the controller check: one item per trigger kind, on or off, in `onAdd`, `events`, `poll` order.",
+      }),
+      bootBudget: s.optional(
+        PolicyMs(
+          "How long an attempt counts as a worker on its way: the policy's `bootBudget`, else the summoner's `capabilities.bootBudgetMs`. Absent while the summoner is not ready and the policy set none (the default is not known yet)",
+        ),
+      ),
+      maxWorkers: s.integer({
+        minimum: 1,
+        description:
+          "The most summoned workers at once. Once the summoner is ready, the value after a wake pool's clamp to its `poolSize`; while it is not (`readiness` `pending` or `failed`), the configured value, before that clamp, since the pool's size is not known yet.",
+      }),
+      jobsPerWorker: s.nullable(
+        s.number({
+          minimum: 0,
+          description:
+            "Outstanding jobs one worker should take before another is wanted; `null` for one worker regardless of depth (the default).",
+        }),
+      ),
+      maxPending: s.integer({
+        minimum: 1,
+        description:
+          "The most unregistered attempts at once (defaults to `maxWorkers`, so a default follows `maxWorkers`: after a wake pool's clamp once the summoner is ready, before it while it is not).",
+      }),
+      cooldown: PolicyMs("The least time between two attempts"),
+      backoff: s.object(
+        {
+          initial: PolicyMs("The first wait"),
+          max: PolicyMs("The longest wait"),
+        },
+        {
+          description:
+            "The wait after a failed or lost attempt: `initial`, doubling per consecutive failure, up to `max`.",
+        },
+      ),
+      circuit: s.object(
+        {
+          failures: s.integer({
+            minimum: 1,
+            description: "Consecutive failed or lost attempts that open it.",
+          }),
+          resetAfter: PolicyMs(
+            "How long it stays open before one trial attempt",
+          ),
+          group: s.optional(
+            s.object(
+              {
+                failures: s.integer({
+                  minimum: 1,
+                  description:
+                    "Consecutive failures across the group, of one provider kind, that open it.",
+                }),
+                resetAfter: PolicyMs("How long it stays open"),
+              },
+              {
+                description:
+                  "The summon group's shared circuit thresholds, when `group.circuit` is on for a per-queue controller (each defaulting to the policy's own). Absent otherwise, and for a shared unit, whose circuit is its group's own.",
+              },
+            ),
+          ),
+        },
+        {
+          description:
+            "Consecutive failed or lost attempts that open the circuit, and how long it stays open before a trial.",
+        },
+      ),
+      maxLifetime: PolicyMs(
+        "The longest a summoned worker may live (passed as `--bun-jobs-summon-max-lifetime-ms`); the platform's own cap is `summoner.capabilities.maxLifetimeMs`",
+      ),
+      servedBy: s.enum(["any-worker", "summoned-only"], {
+        description: "Which live workers count as serving the queue.",
+      }),
+      scaleDown: s.object(
+        { after: PolicyMs("How long the queue must be idle first") },
+        { description: "Scale style only: when the count goes back to zero." },
+      ),
+      summonTimeout: PolicyMs("How long one summoner call may take"),
+      env: s.array(s.string(), {
+        description:
+          "The names of the policy's static `env`, sorted. Never their values.",
+      }),
+      fromSummoned: s.boolean({
+        description:
+          "Whether the controller may run in a summoned process or runner child.",
+      }),
+      onSummonFailed: s.boolean({
+        description: "Whether an `onSummonFailed` hook is set.",
+      }),
+      perQueue: s.optional(
+        s.record(
+          s.object({
+            jobsPerWorker: s.nullable(
+              s.number({
+                minimum: 0,
+                description:
+                  "Outstanding jobs one unit's worker for this queue should take; `null` for one regardless of depth.",
+              }),
+            ),
+            maxWorkers: s.integer({
+              minimum: 1,
+              description:
+                "The most units this queue's demand alone may ask for: at most `maxWorkers`, so clamped as it is.",
+            }),
+            explicit: s.array(s.enum(["jobsPerWorker", "maxWorkers"]), {
+              description:
+                "What the unit's `overrides` entry for this queue set, in this order.",
+            }),
+          }),
+          {
+            description:
+              "A shared unit only (`group.unit: \"shared\"`): each of its queues' capacity, by queue, in the unit's order — only the queues the caller may read (`queues.read`) and this API can reach, as `queues` has them. Absent for a controller of one queue. Its keys are in the unit's order, except that queue names that look like integers (`\"2\"`) come first, in ascending order, as JavaScript orders an object's keys.",
+          },
+        ),
+      ),
+      explicit: s.array(s.enum(SUMMON_POLICY_KEYS), {
+        description:
+          "The keys the policy set (any value but `undefined`), in `SUMMON_POLICY_KEYS` order; every other value is a default. A per-queue group member's override is merged into its policy, so its keys count as set too. On a shared unit, whose circuit is its group entry's own, `group.circuit.*` is never listed (it changes nothing there, and `circuit.group` is absent).",
+      }),
+    },
+    {
+      description:
+        "The policy a queue's summon controller runs with, as it resolved it: every value in effect, defaults filled in, durations in ms. Never an `env` value, a summoner, or the provider's config. Field names are the policy's option names, so a path in `explicit` is the field's path here, except `group.circuit.*` (shown as `circuit.group`) and the budget (shown by the status's `budget` and `group.budget`). The platform's shutdown signal and grace are not a policy value: read them from `summoner.capabilities.shutdown`.",
+    },
+  ),
+);
+
 /** A queue's summon status. Mirrors `SummonStatusDto`. */
 export const SummonStatusSchema = s.named(
   "SummonStatus",
@@ -812,10 +972,14 @@ export const SummonStatusSchema = s.named(
       budget: s.optional(SummonBudgetSchema),
       last: s.optional(SummonLastSchema),
       group: s.optional(SummonGroupStatusSchema),
+      policy: s.optional(
+        // The named schema, described where it is used: only local.
+        SummonPolicySchema,
+      ),
     },
     {
       description:
-        "A queue's summon status: its shared summon state (read from the backend, so the same from every process) plus the local controller's policy.",
+        "A queue's summon status: its shared summon state (read from the backend, so the same from every process) plus the local controller's policy (`policy`: only when `local` is `true`, since only the process running the controller knows it; advertised by `/meta.features.summonPolicy`).",
     },
   ),
 );

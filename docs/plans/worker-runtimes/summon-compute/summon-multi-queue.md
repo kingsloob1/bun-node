@@ -37,24 +37,27 @@ each measurement there can be re-run with one command.
   composes with all four (§3.8). *This is #289. The flag shipped as
   `off?: true`, with `perHour` and `perDay` absent while it is set.*
 
-### Status (2026-10-11)
+### Status (2026-10-12)
 
-Checked against GitHub on 2026-10-11, against `develop` at `352ad028`.
+Checked against GitHub on 2026-10-12, against `develop` at `357ce684`.
 
 | PR | Scope | State | Left |
 |---|---|---|---|
 | expansion form | one policy, several queues | merged #283; docs fix #295; examples #296 | — |
-| hooks PR | `onSummonFailed`, `budget: false`, `GET /summon` | merged #289 (`4d3364e`), with UI #297 and examples #290, #305 in it | playground follow-up |
+| hooks PR | `onSummonFailed`, `budget: false`, `GET /summon` | merged #289 (`4d3364e`), with UI #297 and examples #290, #305 in it; playground follow-up merged #387 (`1a11b58`) | — |
 | PR-A1..A3 | group budget, shared circuit, status without a controller, group routes | merged #314 (`5345411`); review follow-ups #339 (`476efd5`) | — |
 | UI-A | Group card, groups view (§5.3) | merged #342 (`858afb1`) | — |
 | EX-A | group budget example | merged #327 (`212f9e0`) | — |
 | PR-B1 | arguments and request | merged #294 (`2aa5ed0`) | — |
 | PR-B2 | `runSummoned(workers[])` | merged #313 (`47171f0`) | — |
 | PR-B3a | shared-unit controller, built by hand (C1–C7) | merged #326 (`ae492e0`) | — |
-| EX-B (controller side) | `02-queues/summon-shared-unit.ts` | merged #354 (`b1ba799`) | its three BunJobs-refusal checks flip with PR-B3b |
+| EX-B (controller side) | `02-queues/summon-shared-unit.ts` | merged #354 (`b1ba7997`); its three BunJobs-refusal checks flipped with PR-B3b | — |
 | PR-B3b | `BunJobs` wiring (C8), reset and status (C9), Q5–Q11, `eventId` and `missing` on summon events, the group reset's fix for a shared unit's entry | merged #366 (`352ad028`), with examples #367 | — |
-| PR-B4 | per-queue coverage, `last.missing`, `group.unit`, remote (`local: false`) views of a shared unit, the kit's `summon.handoff.shared-unit`, the template at summon 0.2, full docs, the playground's `uploads` unit | this PR, `feat/summon-shared-unit-b4` | review, gates, CHANGE REPORTs to the examples and UI agents |
-| UI-B, EX-B (rest) | coverage, "unit of", dedupe by `eventId`, playground | not started | after PR-B4 |
+| PR-B4 | per-queue coverage, `last.missing`, `group.unit`, remote (`local: false`) views of a shared unit, the kit's `summon.handoff.shared-unit`, the template at summon 0.2, full docs, the playground's `uploads` unit | merged #379 (`966dd066`) | — |
+| PR-B4 fix (4c) | a one-queue shared unit names its group when it summons | merged #378 (`de072091`), with examples #380 (`f9528120`) | — |
+| UI-B | coverage, "unit of", dedupe by `eventId` | merged #359 (`5309aa76`, the group's "unit of"), #369 (`e7246b69`, shared unit), #383 (`357ce684`, coverage, partial attempts, shares) | — |
+| EX-B (rest) | the shared unit through `BunJobs`, its coverage read from any process | merged #367 (`bf4a35a3`) and #386 (`ef56201b`) | — |
+| Policy visible | the summon policy shown through the API and the Summon panel: `SummonStatus.policy` (local only, with an `explicit` key list), advertised by `features.summonPolicy` | bun-jobs half merged #388 | the UI's Policy block, the examples, and the playground README |
 
 *The notes below are from 2026-10-08, kept for the record; the table above
 supersedes them.*
@@ -83,9 +86,18 @@ has test 6, a fixture, a type test, the README and the provider reference.
 **B1 went first, by the user's intent.** It needs nothing of A1, so it was
 built on `develop` and opened before Part A (§11.2). PR-B3 still needs both.
 
-**Also owed:** a playground follow-up for #289 (summon alerts, a budget-off
-switch), then Part A's and B's playground parts as they land; and, after
-#289 and Part A, the summon policy shown in the UI (the user's decision).
+**Also owed:** one item remains. (#289's playground follow-up, the
+`onSummonFailed` alerts, a `budget: false` override on `brittle`, a
+`transcodes` budget reset and a `GET /summon` table on
+`/playground/compute`, merged as #387.)
+
+1. The summon policy shown through the API and the Summon panel (the user's
+   decision): a local-only `SummonStatus.policy` with an `explicit` key
+   list, advertised by `features.summonPolicy`. Shutdown signal and grace
+   come from the summoner's capabilities. About 2 days of bun-jobs work, 1.5
+   of UI and 0.5 of examples.
+
+Parts A and B are otherwise complete.
 
 ### Contents
 

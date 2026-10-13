@@ -3663,7 +3663,7 @@ is read from storage instead (`local: false`):
 | Method | Path | Action | Answers |
 |---|---|---|---|
 | GET | `/summon` | `queues.list` | `SummonListDto`: every summoning queue, by queue — with a controller in the API's process (`local: true`, with the summoner's `readiness`) or summon state in storage (`local: false`) — its namespace, the summoner's `kind`, whether it is `inert`, the last outcome, the open circuit's end and the budget usage (no `budget` for state a newer bun-jobs wrote, which is `inert` with `inertReason: "newer-marker"`; state that cannot be read at all is left out, and answered by its own `GET /queues/:queue/summon` as `inert` with `inertReason: "unreadable-marker"`). A [shared unit](#one-unit-for-several-queues-groupunit-shared) is one item, listed when the caller may read any of its queues: `queues` names those it may read (of those the API can reach), `queue` is the first of them and `group` its summon group; one whose controller runs in another process is read from its group's state (`local: false`, the queues its last claim persisted, less any whose own summon state claimed later), for one listing of the group entries and one read of each. Each queue only where `authorize` allows `queues.read` on it, asked as `GET /queues/:queue/summon` asks it. An empty list, never 409, when none summons. It reads the summon state of every reachable queue without a local controller, one queue-state read each: about 20–35 ms per 1,000 queues on SQLite and 75 ms on Postgres |
-| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — for a queue a shared unit serves, the unit's status with `queues` (only those the caller may read; `queue` the first of them), each pending attempt's per-queue `coverage` and a partial outcome's `last.missing`, both naming only those queues — from storage (`local: false`) when the unit runs in another process and claimed at or after the queue's own state (and `overlaps`, the other groups' units seen on its queues at the last check); and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
+| GET | `/queues/:queue/summon` | `queues.read` | `SummonStatusDto`: attempts in flight, failures, backoff, circuit, budget, the last outcome, the summon group's state (`group`) when it is in one — redacted to the members the caller may read, as below — for a queue a shared unit serves, the unit's status with `queues` (only those the caller may read; `queue` the first of them), each pending attempt's per-queue `coverage` and a partial outcome's `last.missing`, both naming only those queues — from storage (`local: false`) when the unit runs in another process and claimed at or after the queue's own state (and `overlaps`, the other groups' units seen on its queues at the last check); and, from a local controller, the summoner's provider, `providerId` (for the [provider routes](#compute-provider-routes)), `readiness`, capabilities (once ready) and facts, and `policy`: the [policy it runs with](#summon-policy), defaults filled in, with `explicit` naming what the policy set (`jobsPerWorker` `null` for unlimited, `env` by name only, a shared unit's `perQueue` redacted like `queues`; advertised by `/meta.features.summonPolicy`). A status read from storage (`local: false`) has no `policy`: only the process running the controller knows it. Read from storage, summon state a newer bun-jobs wrote is `inert` with `inertReason: "newer-marker"` and no `budget`, and state that cannot be read at all is `inert` with `inertReason: "unreadable-marker"`, nothing pending, no failures and no `budget`, never a healthy idle queue |
 | GET | `/summon/groups` | `queues.list` | `SummonGroupListDto`: every [summon group](#one-budget-for-several-queues-group) with shared state, by name — its budget usage and limits, each queue's share, and every provider kind's shared circuit (`circuits`) — read from storage, whether or not a controller in it runs here. Each group redacted to the members the caller may read (below), and left out when it may read none |
 | GET | `/summon/groups/:group` | `queues.read`, per member | `SummonGroupStatusDto`: one group, as above. 409 `SUMMON_NOT_CONFIGURED` for a group with neither state nor a local controller, and — answered alike — for one none of whose members the caller may read |
 | POST | `/summon/groups/:group/reset` | `queues.summon`, on every member | `{ "circuit"?: true, "budget"?: true }` (`SummonGroupResetBody`): closes the group's shared circuit (every kind) and clears its budget usage, then the `SummonGroupStatusDto` after it. 403 unless `authorize` allows `queues.summon` on every member. Needs a controller in the group in the API's process |
@@ -4138,6 +4138,10 @@ still answers for it.)
   `GET /queues/<member>/summon` agree. The group's shares and socket events
   are governed by `queues.read` alone: to hide a queue, refuse it in
   `authorize`.
+- **`policy.perQueue` is redacted like `queues`.** A local unit's status
+  carries its policy, whose `perQueue` names each of its queues' capacity:
+  it keeps only the queues `queues` keeps — those the caller may read and
+  the API can reach. No other policy field names a queue.
 - **"Summon now" and a reset on one of its queues act for all of them**, so
   they need `queues.summon` on every one: any refusal is 401/403 before
   anything runs, naming no queue, as `POST /summon/groups/:group/reset`
@@ -4241,6 +4245,57 @@ counts a larger limit left: with 40 attempts this hour, the default 30 holds
 everything back until the hour turns. `budget: false` lifts the limit, and
 `reset({ budget: true })` (or the reset route with `{ "budget": true }`)
 clears the counts.
+
+**Seeing the policy: `status().policy`.** A controller reports the policy it
+runs with, as it resolved it — every value in effect, defaults filled in —
+so a panel never has to restate the defaults above:
+
+```ts
+const { policy } = await jobs.summonController("renders").status();
+policy?.cooldown;   // 10_000: the default, in ms
+policy?.explicit;   // ["maxWorkers", "env"]: what the policy set
+policy?.env;        // ["REGION", "TOKEN"]: names only, never a value
+```
+
+- **Default or set.** `explicit` lists the options the policy set (any value
+  but `undefined`), as paths (`backoff.initial`), in `SUMMON_POLICY_KEYS`
+  order; every other value is a default. A derived value is not set:
+  `maxWorkers: 3` alone shows `maxPending: 3` with only `maxWorkers` in
+  `explicit`. A queue of an [array entry](#one-policy-for-several-queues)
+  gets its `overrides` entry merged into its policy, so those keys count as
+  set too (no separate "override" mark).
+  `budget` is listed when the policy gave one at all, `false` included; the
+  limits themselves stay in `status().budget` and `group.budget`. A shared
+  unit never lists `group.circuit.*`: its circuit is its group entry's own,
+  so that setting changes nothing there.
+- **Field names are the options'.** Durations are in ms; `triggers` is one
+  item per kind (`onAdd`, `events`, `poll`, each `on` or not, with
+  `debounce` or `every`); `circuit.group` is the group's shared-circuit
+  thresholds when `group.circuit` is on for a per-queue controller;
+  `onSummonFailed` is whether a hook is set. `jobsPerWorker` is `Infinity`
+  for one worker regardless of depth (`null` on the management API).
+- **`bootBudget` is absent until it is known**: while a provider's config
+  is still validating and the policy set none, rather than the placeholder
+  the controller runs on meanwhile; once ready, the summoner's
+  `capabilities.bootBudgetMs`.
+- **`maxWorkers` follows the provider's readiness too.** Once the summoner
+  is ready it is the value after a wake pool's clamp to its `poolSize`;
+  while it is not, the configured value, before that clamp (the pool's
+  size is not known yet). A defaulted `maxPending` follows it. So
+  `maxWorkers: 5` on a wake pool of 2 reads 5 while the provider's config
+  validates and 2 once it is ready.
+- **A shared unit** adds `perQueue`: each queue's `jobsPerWorker` and
+  `maxWorkers`, with an `explicit` naming what its `overrides` entry set.
+  Its keys are in the unit's order, except that queue names that look like
+  integers come first, in ascending order, as JavaScript orders an
+  object's keys.
+- **The platform's shutdown is not a policy value.** The stop signal and
+  grace are what the summoner declares, `summoner.capabilities.shutdown`
+  (and what a summoned worker is told as `--bun-jobs-summon-grace-ms`); the
+  policy cannot set them.
+- **Local only.** Only the process running the controller knows its policy:
+  it is never persisted, so a status read from storage (`local: false`) has
+  no `policy`.
 
 `defineSummoner` also takes `style` (`"launch"`, `"scale"` with a `release`,
 or `"wake"`), `passes` (`"argv"`, or `"none"` when the platform's command line
@@ -5898,7 +5953,7 @@ never a 405.
 `/meta` reports what the backend supports and this API serves
 (`features.logs`, `update`, `limits`, `flows`, `addFlow`, `search`, `workers`,
 `workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
-`providers`, `summonResetBudget`, `summonList`, `summonStoredStatus`, and `analytics` beside `features` for what the analytics routes
+`providers`, `summonResetBudget`, `summonList`, `summonStoredStatus`, `summonPolicy`, and `analytics` beside `features` for what the analytics routes
 can serve), so
 a UI can explain a missing button rather than hide it silently. A feature
 whose routes the mode prunes reads `false`; see
@@ -6956,6 +7011,7 @@ cannot" from "you may not":
 | `summonResetBudget` | `POST /queues/:queue/summon/reset` accepting `{ "budget": true }` | nothing, so only `mode: "runner"` turns it off |
 | `summonList` | `GET /summon` | nothing, so only `mode: "runner"` turns it off |
 | `summonStoredStatus` | summon status read from storage: `local: false` on `GET /queues/:queue/summon` and `GET /summon` (a shared unit in another process included), and `GET /summon/groups`, `GET /summon/groups/:group` | queue state (`getQueueState`, `listQueueState`); every built-in driver |
+| `summonPolicy` | `policy` on `GET /queues/:queue/summon` (and the reset's answer) for a controller in the API's process; never on `local: false` | nothing: it is the controller's own, so only `mode: "runner"` turns it off |
 
 `jobAttribution` has no route of its own, like `search`: it is a field on
 every job and two filters on the job list, so it reads `false` under

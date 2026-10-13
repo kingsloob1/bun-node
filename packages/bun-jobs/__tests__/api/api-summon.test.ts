@@ -202,6 +202,35 @@ describe("GET /queues/{queue}/summon", () => {
         hourResetsAt: expect.any(Number),
         dayResetsAt: expect.any(Number),
       },
+      // The policy it runs with, defaults filled in (`api-summon-policy`
+      // covers it in depth).
+      policy: {
+        triggers: [
+          { kind: "onAdd", on: false, debounce: 250 },
+          { kind: "events", on: false, debounce: 250 },
+          { kind: "poll", on: false },
+        ],
+        bootBudget: 180_000,
+        maxWorkers: 1,
+        jobsPerWorker: null,
+        maxPending: 1,
+        cooldown: 60_000,
+        backoff: { initial: 30_000, max: 900_000 },
+        circuit: { failures: 5, resetAfter: 900_000 },
+        maxLifetime: 3_600_000,
+        servedBy: "any-worker",
+        scaleDown: { after: 300_000 },
+        summonTimeout: 30_000,
+        env: [],
+        fromSummoned: false,
+        onSummonFailed: false,
+        explicit: [
+          "triggers.onAdd",
+          "triggers.events",
+          "triggers.poll",
+          "cooldown",
+        ],
+      },
     });
     // Negative control: the controller itself reports them, so it is the
     // serializer that dropped them.

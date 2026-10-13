@@ -233,6 +233,11 @@ the provider is configured.
 - `poolSize`: optional. For `"wake"`: how many units the pool has.
   `maxWorkers` above it is clamped, with a `warn`.
 
+A queue's summon status shows `shutdown` and `bootBudgetMs` as the
+platform's (`summoner.capabilities`), beside the policy it resolved
+(`status().policy`): the policy has no shutdown of its own, and its
+`bootBudget` is `bootBudgetMs` unless the policy set one.
+
 ### `SummonDedupe`
 
 How a platform dedupes a retried call, by `kind`:
@@ -1305,6 +1310,63 @@ What `status()` answers, and the status route serves.
 - `last`: optional. The [`SummonLastOutcome`](#summonlastoutcome).
 - `group`: optional. A [`SummonGroupStatus`](#summongroupstatus), when the
   controller is in a summon group.
+- `policy`: optional; always present from `status()`. The
+  [`SummonPolicyStatus`](#summonpolicystatus) the controller runs with.
+  Absent on a status read from storage (`local: false`): the policy is never
+  persisted.
+
+### `SummonPolicyStatus`
+
+The policy a controller runs with, as it resolved it: `status().policy`.
+Every value in effect, defaults filled in; durations in ms. Field names are
+the policy's option names, so a path in `explicit` is the field's path here,
+except `group.circuit.*` (shown as `circuit.group`) and the budget (shown by
+`SummonStatus.budget` and `group.budget`). Never an `env` value, a summoner,
+or the provider's config; the platform's shutdown is
+`summoner.capabilities.shutdown`, not a policy value.
+
+- `triggers`: one [`SummonTriggerStatus`](#summontriggerstatus) per kind,
+  in `onAdd`, `events`, `poll` order.
+- `bootBudget`: optional. The policy's `bootBudget`, else the summoner's
+  `capabilities.bootBudgetMs`; absent while the summoner is not ready and
+  the policy set none.
+- `maxWorkers`: the most summoned workers at once: after a wake pool's
+  clamp once the summoner is ready, the configured value before it while it
+  is not.
+- `jobsPerWorker`: outstanding jobs per worker; `Infinity` for one worker
+  regardless of depth (`null` on the management API).
+- `maxPending`: the most unregistered attempts at once (a default follows
+  `maxWorkers`).
+- `cooldown`: the least time between two attempts.
+- `backoff`: `{ initial, max }`.
+- `circuit`: `{ failures, resetAfter, group? }`: `group` is the summon
+  group's shared-circuit thresholds, for a per-queue controller with
+  `group.circuit` on.
+- `maxLifetime`: the longest a summoned worker may live.
+- `servedBy`: `"any-worker"` or `"summoned-only"`.
+- `scaleDown`: `{ after }`.
+- `summonTimeout`: how long one summoner call may take.
+- `env`: the names of the policy's `env`, sorted; never their values.
+- `fromSummoned`: whether the controller may run in a summoned process.
+- `onSummonFailed`: whether a hook is set.
+- `perQueue`: optional. A shared unit's `{ [queue]: { jobsPerWorker,
+  maxWorkers, explicit } }`, in the unit's order (queue names that look
+  like integers first, as JavaScript orders an object's keys); `explicit`
+  names what its `overrides` entry set.
+- `explicit`: the keys the policy set (any value but `undefined`), in
+  `SUMMON_POLICY_KEYS` order; every other value is a default. A shared unit
+  never lists `group.circuit.*`, which changes nothing there.
+
+### `SummonTriggerStatus`
+
+One trigger of `SummonPolicyStatus.triggers`. Show a `kind` you do not know
+as text.
+
+- `kind`: `"onAdd"`, `"events"` or `"poll"`.
+- `on`: whether it is on.
+- `debounce`: optional. `onAdd` and `events`: how long add and event
+  triggers are coalesced.
+- `every`: optional. `poll`, while on: how often the controller checks.
 
 ### `SummonGroupStatus`
 

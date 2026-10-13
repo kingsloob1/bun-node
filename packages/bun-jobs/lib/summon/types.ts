@@ -1,3 +1,4 @@
+import type { SummonPolicyKey } from "../api/contract/constants";
 import type { JobsDriver, QueueDemand } from "../drivers/index";
 import type { ProviderCallContext } from "../provider/context";
 import type {
@@ -987,6 +988,160 @@ export interface SummonStatus {
   last?: SummonLastOutcome;
   /** The summon group the queue's controller is in (`SummonPolicy.group`), if any. */
   group?: SummonGroupStatus;
+  /**
+   * The policy the controller runs with, as it resolved it: every value in
+   * effect, defaults filled in, and `explicit` naming the ones the policy
+   * set. Always present from `controller.status()`; absent on a status read
+   * from storage (`local: false`): only the process running the controller
+   * knows its policy, which is never persisted.
+   */
+  policy?: SummonPolicyStatus;
+}
+
+/**
+ * The policy a queue's controller runs with, as it resolved it: every value
+ * in effect, defaults filled in. Only from a controller in this process
+ * (`local: true`); a status read from storage has none. Durations in ms.
+ * Never an `env` value, a summoner, or the provider's config.
+ *
+ * Field names are the policy's option names, so a path in `explicit`
+ * (`backoff.initial`) is the field's path here, except `group.circuit.*`
+ * (shown as `circuit.group`) and the budget (shown by `SummonStatus.budget`
+ * and `group.budget`, not repeated here). The platform's shutdown signal and
+ * grace are not a policy value: they are `summoner.capabilities.shutdown`.
+ */
+export interface SummonPolicyStatus {
+  /**
+   * What makes the controller check: one item per trigger kind, on or off,
+   * in `onAdd`, `events`, `poll` order.
+   */
+  triggers: readonly SummonTriggerStatus[];
+  /**
+   * How long an attempt counts as a worker on its way, in ms: the policy's
+   * `bootBudget`, else the summoner's `capabilities.bootBudgetMs`. Absent
+   * while the summoner is not ready and the policy set none (the default is
+   * not known yet).
+   */
+  bootBudget?: number;
+  /**
+   * The most summoned workers at once. Once the summoner is ready, the value
+   * after a wake pool's clamp to its `poolSize`; while it is not (`readiness`
+   * `pending` or `failed`), the configured value, before that clamp, since
+   * the pool's size is not known yet.
+   */
+  maxWorkers: number;
+  /**
+   * Outstanding jobs one worker should take before another is wanted;
+   * `Infinity` for one worker regardless of depth (the default).
+   */
+  jobsPerWorker: number;
+  /**
+   * The most unregistered attempts at once (defaults to `maxWorkers`, so a
+   * default follows `maxWorkers`: after a wake pool's clamp once the summoner
+   * is ready, before it while it is not).
+   */
+  maxPending: number;
+  /** The least time between two attempts, in ms. */
+  cooldown: number;
+  /**
+   * The wait after a failed or lost attempt, in ms: `initial`, doubling per
+   * consecutive failure, up to `max`.
+   */
+  backoff: {
+    /** The first wait, in ms. */
+    initial: number;
+    /** The longest wait, in ms. */
+    max: number;
+  };
+  /**
+   * Consecutive failed or lost attempts that open the circuit, and how long
+   * it stays open (ms) before a trial.
+   */
+  circuit: {
+    /** Consecutive failed or lost attempts that open it. */
+    failures: number;
+    /** How long it stays open, in ms, before one trial attempt. */
+    resetAfter: number;
+    /**
+     * The summon group's shared circuit thresholds, when `group.circuit` is
+     * on for a per-queue controller (each defaulting to the policy's own
+     * above). Absent otherwise, and for a shared unit, whose circuit is its
+     * group entry's own.
+     */
+    group?: {
+      /** Consecutive failures across the group, of one provider kind, that open it. */
+      failures: number;
+      /** How long it stays open, in ms. */
+      resetAfter: number;
+    };
+  };
+  /**
+   * The longest a summoned worker may live, in ms (passed as
+   * `--bun-jobs-summon-max-lifetime-ms`). The platform's own cap is
+   * `summoner.capabilities.maxLifetimeMs`.
+   */
+  maxLifetime: number;
+  /** Which live workers count as serving the queue. */
+  servedBy: "any-worker" | "summoned-only";
+  /** Scale style only: when the count goes back to zero. */
+  scaleDown: {
+    /** How long the queue must be idle first, in ms. */
+    after: number;
+  };
+  /** How long one summoner call may take, in ms. */
+  summonTimeout: number;
+  /** The names of the policy's static `env`, sorted. Never their values. */
+  env: readonly string[];
+  /** Whether the controller may run in a summoned process or runner child. */
+  fromSummoned: boolean;
+  /** Whether an `onSummonFailed` hook is set. */
+  onSummonFailed: boolean;
+  /**
+   * A shared unit only (`group.unit: "shared"`): each of its queues'
+   * capacity, by queue, in the unit's order. Absent for a controller of one
+   * queue.
+   * Its keys are in the unit's order, except that queue names that look like
+   * integers (`"2"`) come first, in ascending order, as JavaScript orders an
+   * object's keys.
+   */
+  perQueue?: Readonly<
+    Record<
+      string,
+      {
+        /** Outstanding jobs one unit's worker for this queue should take; `Infinity` for one regardless of depth. */
+        jobsPerWorker: number;
+        /** The most units this queue's demand alone may ask for: at most `maxWorkers`, so clamped as it is. */
+        maxWorkers: number;
+        /** What the unit's `overrides` entry for this queue set (any value but `undefined`), in this order. */
+        explicit: readonly ("jobsPerWorker" | "maxWorkers")[];
+      }
+    >
+  >;
+  /**
+   * The keys the policy set (any value but `undefined`), in
+   * `SUMMON_POLICY_KEYS` order; every other value is a default. A per-queue
+   * group member's override (`SummonGroup.overrides`) is merged into its
+   * policy, so its keys count as set too.
+   * On a shared unit, whose circuit is its group entry's own,
+   * `group.circuit.*` is never listed (it changes nothing there, and
+   * `circuit.group` is absent).
+   */
+  explicit: readonly SummonPolicyKey[];
+}
+
+/** One trigger of a summon policy. Show a `kind` you do not know as text. */
+export interface SummonTriggerStatus {
+  /** Which trigger: a local add, a cross-process event, or the poll. */
+  kind: "onAdd" | "events" | "poll";
+  /** Whether it is on. */
+  on: boolean;
+  /**
+   * `onAdd` and `events`: add and event triggers are coalesced for this many
+   * ms (`triggers.debounce`).
+   */
+  debounce?: number;
+  /** `poll`, while on: checks every this many ms. */
+  every?: number;
 }
 
 /**

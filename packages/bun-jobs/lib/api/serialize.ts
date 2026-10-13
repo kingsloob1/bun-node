@@ -26,6 +26,7 @@ import type {
   SummonCapabilities,
   SummonCheckResult,
   SummonGroupStatus,
+  SummonPolicyStatus,
   SummonStatus,
 } from "../summon/types";
 import type { ResolvedJobsApiSerializers } from "./config";
@@ -37,6 +38,7 @@ import type {
   SummonCheckDto,
   SummonGroupStatusDto,
   SummonListItemDto,
+  SummonPolicyDto,
   SummonProviderDto,
   SummonStatusDto,
 } from "./contract/types";
@@ -1124,6 +1126,74 @@ export function toSummonStatusDto(
     ...(status.group === undefined
       ? {}
       : { group: toSummonGroupStatusDto(status.group) }),
+    ...(status.policy === undefined
+      ? {}
+      : { policy: toSummonPolicyDto(status.policy) }),
+  };
+}
+
+/** A `jobsPerWorker` as the wire has it: `null` for unlimited (`Infinity`), which JSON cannot carry. */
+function wireJobsPerWorker(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Shapes a local controller's policy, field by field: `jobsPerWorker` (and
+ * each `perQueue` entry's) `null` for `Infinity`, `env` names only (the
+ * status never carries a value), and a shared unit's `perQueue` keyed as
+ * the status had it — already redacted to the queues the caller may read.
+ */
+export function toSummonPolicyDto(policy: SummonPolicyStatus): SummonPolicyDto {
+  return {
+    triggers: policy.triggers.map((trigger) => ({
+      kind: trigger.kind,
+      on: trigger.on,
+      ...(trigger.debounce === undefined ? {} : { debounce: trigger.debounce }),
+      ...(trigger.every === undefined ? {} : { every: trigger.every }),
+    })),
+    ...(policy.bootBudget === undefined
+      ? {}
+      : { bootBudget: policy.bootBudget }),
+    maxWorkers: policy.maxWorkers,
+    jobsPerWorker: wireJobsPerWorker(policy.jobsPerWorker),
+    maxPending: policy.maxPending,
+    cooldown: policy.cooldown,
+    backoff: { initial: policy.backoff.initial, max: policy.backoff.max },
+    circuit: {
+      failures: policy.circuit.failures,
+      resetAfter: policy.circuit.resetAfter,
+      ...(policy.circuit.group === undefined
+        ? {}
+        : {
+            group: {
+              failures: policy.circuit.group.failures,
+              resetAfter: policy.circuit.group.resetAfter,
+            },
+          }),
+    },
+    maxLifetime: policy.maxLifetime,
+    servedBy: policy.servedBy,
+    scaleDown: { after: policy.scaleDown.after },
+    summonTimeout: policy.summonTimeout,
+    env: [...policy.env],
+    fromSummoned: policy.fromSummoned,
+    onSummonFailed: policy.onSummonFailed,
+    ...(policy.perQueue === undefined
+      ? {}
+      : {
+          // `Object.fromEntries` defines own keys: `__proto__` is a valid queue.
+          perQueue: Object.fromEntries(
+            Object.entries(policy.perQueue).map(([queue, capacity]) => [
+              queue,
+              {
+                jobsPerWorker: wireJobsPerWorker(capacity.jobsPerWorker),
+                maxWorkers: capacity.maxWorkers,
+                explicit: [...capacity.explicit],
+              },
+            ]),
+          ),
+        }),
+    explicit: [...policy.explicit],
   };
 }
 

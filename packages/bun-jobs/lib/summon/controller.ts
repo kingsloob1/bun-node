@@ -1,3 +1,4 @@
+import type { SummonPolicyKey } from "../api/contract/constants";
 import type {
   JobsDriver,
   QueueDemand,
@@ -33,6 +34,7 @@ import type {
   SummonGroupStatus,
   SummonMarker,
   SummonOutcomeKind,
+  SummonPolicyStatus,
   SummonReason,
   SummonRequest,
   SummonResult,
@@ -43,6 +45,7 @@ import type {
 } from "./types";
 import { Buffer } from "node:buffer";
 import process from "node:process";
+import { SUMMON_POLICY_KEYS } from "../api/contract/constants";
 import {
   DEFAULT_DEMAND_CAP,
   listWorkerRecords,
@@ -252,9 +255,10 @@ export const LIST_SUMMON_CONTROLLERS: unique symbol = Symbol(
 
 /**
  * Internal: `status()` without a shared unit's per-queue `coverage`, which
- * costs a claim read per attempt per queue: what the management API's
- * `GET /summon` reads, whose items carry no attempts. Exported from this
- * module alone, like {@link SUMMON_GROUP_VIEW}.
+ * costs a claim read per attempt per queue, and without `policy`: what the
+ * management API's `GET /summon` reads, whose items carry neither attempts
+ * nor the policy. Exported from this module alone, like
+ * {@link SUMMON_GROUP_VIEW}.
  */
 export const SUMMON_STATUS_WITHOUT_COVERAGE: unique symbol = Symbol(
   "bun-jobs: summon status without coverage",
@@ -573,6 +577,34 @@ const OVERRIDE_KEYS: ReadonlySet<string> = new Set([
   "jobsPerWorker",
   "maxWorkers",
 ]);
+
+/**
+ * The value `options` gives at a dotted policy path (`backoff.initial`), or
+ * `undefined` when it gives none: a step through anything but an object
+ * (`budget: false`, `group.circuit: true`) gives none.
+ */
+function policyValueAt(options: object, path: string): unknown {
+  let value: unknown = options;
+  for (const segment of path.split(".")) {
+    if (typeof value !== "object" || value === null) {
+      return undefined;
+    }
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return value;
+}
+
+/**
+ * The policy keys `options` set — any value but `undefined` — in
+ * `SUMMON_POLICY_KEYS` order: `status().policy.explicit`.
+ */
+function explicitPolicyKeys(
+  options: SummonControllerOptions,
+): SummonPolicyKey[] {
+  return SUMMON_POLICY_KEYS.filter(
+    (key) => policyValueAt(options, key) !== undefined,
+  );
+}
 
 /**
  * A circuit this check opened: the attempt whose failure opened it, and that
@@ -4308,13 +4340,16 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     return await this.#status(true);
   }
 
-  /** Internal ({@link SUMMON_STATUS_WITHOUT_COVERAGE}): `status()` with no coverage reads. */
+  /** Internal ({@link SUMMON_STATUS_WITHOUT_COVERAGE}): `status()` with no coverage reads and no `policy`. */
   async [SUMMON_STATUS_WITHOUT_COVERAGE](): Promise<SummonStatus> {
     return await this.#status(false);
   }
 
-  /** `status()`, with a shared unit's coverage only when `coverage` asks for it. */
-  async #status(coverage: boolean): Promise<SummonStatus> {
+  /**
+   * `status()`. `full`: with a shared unit's coverage and the `policy`; the
+   * list's reads (`GET /summon`) carry neither, so they skip both.
+   */
+  async #status(full: boolean): Promise<SummonStatus> {
     await this.#connect();
     // A late provider ready by now is adopted here too, so its summoner shows
     // before any check. Its errors are kept for the next check to throw.
@@ -4349,6 +4384,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         : 0,
     );
     const overlaps = [...new Set([...this.#overlaps.values()].flat())].sort();
+    const summoner = this.#summonerStatus();
     const status: SummonStatus = {
       queue: this.queue,
       ...this.#unitQueues(),
@@ -4358,11 +4394,11 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(this.#inertReason === undefined
         ? {}
         : { inertReason: this.#inertReason }),
-      summoner: this.#summonerStatus(),
+      summoner,
       // A shared unit's attempts in flight carry each queue's coverage:
       // copies, worked out from the claims and records now, never stored.
       pending:
-        coverage && this.#shared && marker.pending.length > 0
+        full && this.#shared && marker.pending.length > 0
           ? await withCoverage(
               this.#driver,
               this.namespace,
@@ -4390,11 +4426,100 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       ...(this.#group === undefined
         ? {}
         : { group: await this.#groupStatus(this.#group, now) }),
+      ...(full ? { policy: this.#policyStatus(summoner.readiness) } : {}),
     };
     if (overlaps.length > 0) {
       STATUS_OVERLAPS.set(status, this.#overlaps);
     }
     return status;
+  }
+
+  /**
+   * The policy as `status().policy` shows it: every resolved value, the
+   * keys the options set, and a shared unit's per-queue capacities. Built
+   * afresh on every call, so a caller mutating it changes nothing here.
+   * A defaulted `bootBudget` is left out until the summoner is ready: until
+   * then it is the provisional capabilities' placeholder, not the
+   * provider's default.
+   */
+  #policyStatus(
+    /** The summoner's readiness, as the same status reports it. */
+    readiness: "ready" | "pending" | "failed",
+  ): SummonPolicyStatus {
+    const policy = this.#policy;
+    const options = this.#options;
+    const group = this.#group;
+    const overrides: Readonly<Record<string, object | undefined>> =
+      options.overrides ?? {};
+    return {
+      triggers: [
+        { kind: "onAdd", on: policy.onAdd, debounce: policy.debounce },
+        { kind: "events", on: policy.events, debounce: policy.debounce },
+        policy.poll === false
+          ? { kind: "poll", on: false }
+          : { kind: "poll", on: true, every: policy.poll },
+      ],
+      ...(readiness !== "ready" && options.bootBudget === undefined
+        ? {}
+        : { bootBudget: policy.bootBudget }),
+      maxWorkers: policy.maxWorkers,
+      jobsPerWorker: policy.jobsPerWorker,
+      maxPending: policy.maxPending,
+      cooldown: policy.cooldown,
+      backoff: { initial: policy.backoff.initial, max: policy.backoff.max },
+      circuit: {
+        failures: policy.circuit.failures,
+        resetAfter: policy.circuit.resetAfter,
+        // The group's shared circuit, as `#noteGroupCircuit` counts it: a
+        // per-queue controller's only (a shared unit's is its entry's own).
+        ...(group === undefined || group.circuit === false || this.#shared
+          ? {}
+          : {
+              group: {
+                failures: group.circuit.failures ?? policy.circuit.failures,
+                resetAfter:
+                  group.circuit.resetAfter ?? policy.circuit.resetAfter,
+              },
+            }),
+      },
+      maxLifetime: policy.maxLifetime,
+      servedBy: policy.servedBy,
+      scaleDown: { after: policy.scaleDownAfter },
+      summonTimeout: policy.summonTimeout,
+      env: Object.keys(policy.env).sort(),
+      fromSummoned: options.fromSummoned === true,
+      onSummonFailed: policy.onSummonFailed !== undefined,
+      ...(this.#shared
+        ? {
+            // `Object.fromEntries` defines own keys: `__proto__` is a valid queue.
+            perQueue: Object.fromEntries(
+              [...policy.perQueue].map(([queue, capacity]) => {
+                const override = Object.hasOwn(overrides, queue)
+                  ? overrides[queue]
+                  : undefined;
+                return [
+                  queue,
+                  {
+                    jobsPerWorker: capacity.jobsPerWorker,
+                    maxWorkers: capacity.maxWorkers,
+                    explicit: (["jobsPerWorker", "maxWorkers"] as const).filter(
+                      (key) =>
+                        override !== undefined &&
+                        policyValueAt(override, key) !== undefined,
+                    ),
+                  },
+                ];
+              }),
+            ),
+          }
+        : {}),
+      // A shared unit's circuit is its group entry's own: `group.circuit`
+      // changes nothing there (and `circuit.group` is absent), so its keys
+      // are not shown as set.
+      explicit: explicitPolicyKeys(options).filter(
+        (key) => !(this.#shared && key.startsWith("group.circuit.")),
+      ),
+    };
   }
 
   /** Internal ({@link SUMMON_GROUP_VIEW}): the controller's group and its view of it. */
