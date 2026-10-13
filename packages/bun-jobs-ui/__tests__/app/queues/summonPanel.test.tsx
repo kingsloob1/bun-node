@@ -31,6 +31,7 @@ import {
   notifications,
   renderQueue,
 } from "./fixtures";
+import { policyFixture } from "./summonPolicyFixture";
 
 setupDom();
 
@@ -1223,5 +1224,284 @@ describe("a shared unit's summon text", () => {
       "Nothing to summon: demand on thumbs is 0",
     );
     expect(summonCheckSummary({ action: "none" })).toBe("Nothing to summon");
+  });
+});
+
+describe("the Policy block", () => {
+  /** `/meta` with `features.summonPolicy` as given. */
+  function meta(summonPolicy: boolean): MockReply {
+    return {
+      body: metaFixture({
+        features: { ...metaFixture().features, summonPolicy },
+      }),
+    };
+  }
+
+  /** Handlers for a status with `policy`, the feature on unless `feature` says otherwise. */
+  function withPolicy(
+    status: Partial<SummonStatusDto> = {},
+    feature = true,
+  ): Record<string, MockReply> {
+    return granted(statusFixture({ policy: policyFixture(), ...status }), {
+      "GET /meta": meta(feature),
+    });
+  }
+
+  /** The Policy block's row `id` (its value), once the block is there. */
+  async function policyRow(panel: HTMLElement, id: string) {
+    const block = await within(panel).findByTestId("summon-policy");
+    return within(block).getByTestId(`summon-policy-${id}`);
+  }
+
+  /** The "default" tags inside `element`. */
+  function defaults(element: HTMLElement): number {
+    return within(element).queryAllByTestId("summon-policy-default").length;
+  }
+
+  it("follows the Summoner, tagging each default and no value the policy set", async () => {
+    const { panel } = await openPanel(
+      withPolicy({
+        policy: policyFixture({ explicit: ["cooldown", "backoff.initial"] }),
+      }),
+    );
+    const block = await within(panel).findByTestId("summon-policy");
+    expect(within(block).getByRole("heading").textContent).toBe("Policy");
+    // After the Summoner, in document order.
+    const order = [
+      ...panel.querySelectorAll(
+        '[data-testid="summon-summoner"], [data-testid="summon-policy"]',
+      ),
+    ].map((element) => element.getAttribute("data-testid"));
+    expect(order).toEqual(["summon-summoner", "summon-policy"]);
+    // Set by the policy: no tag.
+    const cooldown = await policyRow(panel, "cooldown");
+    expect(cooldown.textContent).toBe("15s");
+    expect(defaults(cooldown)).toBe(0);
+    // Set in part: the default piece alone is tagged.
+    const backoff = await policyRow(panel, "backoff");
+    expect(backoff.textContent).toBe("5s, doubling to 30s default");
+    expect(defaults(backoff)).toBe(1);
+    // Untouched: one tag for the row.
+    const triggers = await policyRow(panel, "triggers");
+    expect(triggers.textContent).toBe(
+      "On add · Events (coalesced 250ms) · Poll every 10s default",
+    );
+    expect(defaults(triggers)).toBe(1);
+    const circuit = await policyRow(panel, "circuit");
+    expect(circuit.textContent).toBe("opens after 3 failures, for 1m default");
+  });
+
+  it("reads a null jobsPerWorker as one worker regardless of depth", async () => {
+    const { panel } = await openPanel(
+      withPolicy({ policy: policyFixture({ jobsPerWorker: null }) }),
+    );
+    expect((await policyRow(panel, "workers")).textContent).toBe(
+      "at most 4 · one regardless of depth · at most 3 starting default",
+    );
+  });
+
+  it("shows a trigger kind this build does not know as raw text", async () => {
+    const webhook = { kind: "webhook", on: true, every: 5_000 } as never;
+    const { panel } = await openPanel(
+      withPolicy({
+        policy: policyFixture({
+          triggers: [{ kind: "poll", on: false }, webhook],
+        }),
+      }),
+    );
+    const triggers = await policyRow(panel, "triggers");
+    expect(triggers.textContent).toBe(
+      "Poll off default · webhook (on: true, every: 5000)",
+    );
+    expect(within(triggers).getByText("Poll off").className).toBe("muted");
+  });
+
+  it("is not shown with the feature off, policy or not (negative control)", async () => {
+    const { panel } = await openPanel(withPolicy({}, false));
+    await within(panel).findByTestId("summon-summoner");
+    expectAbsent(within(panel).queryByTestId("summon-policy"), "the block");
+    expectAbsent(
+      within(panel).queryByTestId("summon-policy-elsewhere"),
+      "the line",
+    );
+    // Nor is the Budget row tagged.
+    expectNone(
+      within(panel).queryAllByTestId("summon-policy-default"),
+      "default tags",
+    );
+  });
+
+  it("says in one line that a stored status's policy is known only where its controller runs", async () => {
+    const { panel } = await openPanel(
+      withPolicy({ local: false, summoner: undefined, policy: undefined }),
+    );
+    const line = await within(panel).findByTestId("summon-policy-elsewhere");
+    expect(line.textContent).toBe(
+      "Its policy is known only where its controller runs.",
+    );
+    expect(line.className).toBe("muted");
+    expectAbsent(within(panel).queryByTestId("summon-policy"), "the block");
+  });
+
+  it("shows a shared unit's per-queue capacities with their overrides, and none for one queue", async () => {
+    const { panel } = await openPanel(
+      withPolicy({
+        queues: ["emails", "thumbs"],
+        policy: policyFixture({
+          perQueue: {
+            emails: { jobsPerWorker: 2, maxWorkers: 4, explicit: [] },
+            thumbs: {
+              jobsPerWorker: null,
+              maxWorkers: 1,
+              explicit: ["jobsPerWorker", "maxWorkers"],
+            },
+          },
+        }),
+      }),
+    );
+    const block = await within(panel).findByTestId("summon-policy");
+    const table = within(block).getByTestId("summon-policy-per-queue");
+    const emails = within(table).getByTestId("summon-policy-per-queue-emails");
+    expect(emails.textContent).toBe("emails2 jobs per worker4");
+    expectNone(
+      within(emails).queryAllByTestId("summon-policy-override"),
+      "emails' overrides",
+    );
+    const thumbs = within(table).getByTestId("summon-policy-per-queue-thumbs");
+    expect(thumbs.textContent).toBe(
+      "thumbsone regardless of depth override1 override",
+    );
+    expect(
+      within(thumbs).getAllByTestId("summon-policy-override"),
+    ).toHaveLength(2);
+    // After Workers.
+    const labels = [...block.querySelectorAll("dt")].map(
+      (dt) => dt.textContent,
+    );
+    expect(labels.indexOf("Per queue")).toBe(labels.indexOf("Workers") + 1);
+  });
+
+  it("has no per-queue table for one queue's controller (negative control)", async () => {
+    const { panel } = await openPanel(withPolicy());
+    const block = await within(panel).findByTestId("summon-policy");
+    expectAbsent(
+      within(block).queryByTestId("summon-policy-per-queue"),
+      "the per-queue table",
+    );
+  });
+
+  it('takes the shutdown from the summoner\'s capabilities, "none" included, and has none before them', async () => {
+    const first = await openPanel(withPolicy());
+    expect((await policyRow(first.panel, "shutdown")).textContent).toBe(
+      "SIGTERM, 10s grace",
+    );
+    first.unmount();
+
+    const ready = statusFixture().summoner!;
+    const none = await openPanel(
+      withPolicy({
+        summoner: {
+          ...ready,
+          capabilities: {
+            ...ready.capabilities!,
+            shutdown: { signal: "none", graceMs: 0 },
+          },
+        },
+      }),
+    );
+    const shutdown = await policyRow(none.panel, "shutdown");
+    expect(shutdown.textContent).toBe("no stop signal (in-invocation)");
+    // Not a policy value: never tagged.
+    expect(defaults(shutdown)).toBe(0);
+    none.unmount();
+
+    const pending = await openPanel(
+      withPolicy({
+        summoner: { ...ready, readiness: "pending", capabilities: undefined },
+      }),
+    );
+    const block = await within(pending.panel).findByTestId("summon-policy");
+    expectAbsent(
+      within(block).queryByTestId("summon-policy-shutdown"),
+      "the Shutdown row",
+    );
+  });
+
+  it("shows no group thresholds on a shared unit, and shows them for a per-queue member of a shared circuit", async () => {
+    const unit = await openPanel(
+      withPolicy({
+        queues: ["emails", "thumbs"],
+        policy: policyFixture({
+          perQueue: {
+            emails: { jobsPerWorker: 2, maxWorkers: 4, explicit: [] },
+            thumbs: { jobsPerWorker: 2, maxWorkers: 4, explicit: [] },
+          },
+        }),
+      }),
+    );
+    const block = await within(unit.panel).findByTestId("summon-policy");
+    expectAbsent(
+      within(block).queryByTestId("summon-policy-group-circuit"),
+      "the group's thresholds",
+    );
+    unit.unmount();
+
+    // Control: a per-queue member with circuit.group shows them.
+    const member = await openPanel(
+      withPolicy({
+        policy: policyFixture({
+          circuit: {
+            failures: 3,
+            resetAfter: 60_000,
+            group: { failures: 2, resetAfter: 300_000 },
+          },
+        }),
+      }),
+    );
+    expect((await policyRow(member.panel, "group-circuit")).textContent).toBe(
+      "opens after 2 failures across the group, for 5m default",
+    );
+  });
+
+  it("reads an absent boot budget as the provider's default, never a number", async () => {
+    const { bootBudget: _absent, ...policy } = policyFixture();
+    const ready = statusFixture().summoner!;
+    const { panel } = await openPanel(
+      withPolicy({
+        policy,
+        summoner: { ...ready, readiness: "pending", capabilities: undefined },
+      }),
+    );
+    const boot = await policyRow(panel, "boot-budget");
+    expect(boot.textContent).toBe("(provider default)");
+  });
+
+  it("relabels the summoner's boot budget as the provider's default", async () => {
+    const { panel } = await openPanel(withPolicy());
+    const summoner = within(panel).getByTestId("summon-summoner");
+    const labels = [...summoner.querySelectorAll("dt")].map(
+      (dt) => dt.textContent,
+    );
+    expect(labels).toContain("Provider default boot budget");
+    expect(labels).not.toContain("Boot budget");
+    // The policy's own, in the Policy block.
+    expect((await policyRow(panel, "boot-budget")).textContent).toBe(
+      "2m default",
+    );
+  });
+
+  it("tags the Budget row default where the policy gave no budget, and not where it gave one", async () => {
+    const first = await openPanel(withPolicy());
+    await within(first.panel).findByTestId("summon-policy");
+    const budget = within(first.panel).getByTestId("summon-budget");
+    expect(defaults(budget.closest("dd") as HTMLElement)).toBe(1);
+    first.unmount();
+
+    const set = await openPanel(
+      withPolicy({ policy: policyFixture({ explicit: ["budget"] }) }),
+    );
+    await within(set.panel).findByTestId("summon-policy");
+    const own = within(set.panel).getByTestId("summon-budget");
+    expect(defaults(own.closest("dd") as HTMLElement)).toBe(0);
   });
 });
