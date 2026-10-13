@@ -38,6 +38,11 @@
  *   registered attempt never gets one.)
  * - **`maxWorkers` × `jobsPerWorker` decide the count**: enough workers for
  *   the backlog at `jobsPerWorker` each, never more than `maxWorkers`.
+ * - **`status().policy` is what the controller runs with**: every value in
+ *   effect, defaults filled in (`jobsPerWorker` `Infinity` when unlimited),
+ *   and `explicit`, the keys the policy set. A key given as `undefined` is
+ *   not set, and neither is a value derived from another: `maxPending`
+ *   follows `maxWorkers` without being listed.
  * - **A controller in a summoned process is inert**, so a config module the
  *   worker shares cannot make it summon more workers.
  */
@@ -210,6 +215,14 @@ const jobs = new BunJobs({
       triggers: ONE_SHOT,
       maxWorkers: 5,
       jobsPerWorker: 10,
+    },
+    // Only read back, for its policy: a `cooldown` given as `undefined`, and
+    // no `maxPending`, which then follows `maxWorkers`.
+    tuned: {
+      summoner: recording,
+      triggers: ONE_SHOT,
+      maxWorkers: 3,
+      cooldown: undefined,
     },
   },
 });
@@ -699,6 +712,58 @@ checkEqual(
   "32 jobs ask for 4 workers; 100 ask for 10 and get the cap, 5",
   [recorded.get("backlog")?.[0]?.count, recorded.get("flood")?.[0]?.count],
   [4, 5],
+);
+
+/* ------------------------------------------------------------------ */
+step("What a controller runs with: status().policy");
+
+// Every value in effect, the defaults filled in, and `explicit`: the keys
+// the policy set, as paths, in `SUMMON_POLICY_KEYS` order. Durations in ms.
+const reportsPolicy = (await jobs.summonController("reports").status()).policy;
+const backlogPolicy = (await jobs.summonController("backlog").status()).policy;
+const tunedPolicy = (await jobs.summonController("tuned").status()).policy;
+show("reports' policy", reportsPolicy);
+show("explicit", {
+  reports: reportsPolicy?.explicit,
+  backlog: backlogPolicy?.explicit,
+  tuned: tunedPolicy?.explicit,
+});
+checkEqual(
+  "an unlimited jobsPerWorker — reports set none — reads Infinity: one worker however deep the queue",
+  [reportsPolicy?.jobsPerWorker, backlogPolicy?.jobsPerWorker],
+  [Infinity, 10],
+);
+checkEqual(
+  "explicit names what each policy set: reports its three triggers; backlog maxWorkers and jobsPerWorker too",
+  [reportsPolicy?.explicit, backlogPolicy?.explicit],
+  [
+    ["triggers.onAdd", "triggers.events", "triggers.poll"],
+    [
+      "triggers.onAdd",
+      "triggers.events",
+      "triggers.poll",
+      "maxWorkers",
+      "jobsPerWorker",
+    ],
+  ],
+);
+checkEqual(
+  "a derived maxPending is not set: backlog's and tuned's follow their maxWorkers, 5 and 3, and neither explicit names it",
+  [
+    backlogPolicy?.maxPending,
+    tunedPolicy?.maxPending,
+    backlogPolicy?.explicit.includes("maxPending"),
+    tunedPolicy?.explicit.includes("maxPending"),
+  ],
+  [5, 3, false, false],
+);
+checkEqual(
+  "a key given as undefined is not set: tuned's cooldown: undefined runs the default 10 s, and explicit leaves it out",
+  [tunedPolicy?.cooldown, tunedPolicy?.explicit],
+  [
+    10_000,
+    ["triggers.onAdd", "triggers.events", "triggers.poll", "maxWorkers"],
+  ],
 );
 
 /* ------------------------------------------------------------------ */

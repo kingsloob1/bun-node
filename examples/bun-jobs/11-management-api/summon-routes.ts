@@ -22,7 +22,8 @@
  * every call — so no worker is ever started. The one child process,
  * [`helpers/summoned-api.ts`](./helpers/summoned-api.ts), stands in for a
  * summoned worker that shares the API's config, to show its controller
- * listed as inert, beside the queues whose controllers run here. Summoning
+ * listed as inert, beside the queues whose controllers run here, and that a
+ * status it reads from storage has no `policy`, where its own does. Summoning
  * needs a backend another process can reach, so on the memory driver this
  * runs on a temporary SQLite file. The budget counts per UTC hour, so before
  * its first attempt the tour makes sure at least 30 s of the hour are left.
@@ -52,6 +53,14 @@
  *   about. Every row says whether it is `inert`: an inert controller with
  *   `inert: true` and its `inertReason`; a queue whose controller runs in
  *   another process with `local: false`, `inert: false` and no `readiness`.
+ * - **The policy is shown; its env values are not.** A queue's status from a
+ *   controller in the API's process (`local: true`), and a reset's answer,
+ *   carry `policy`: every value in effect, defaults filled in, `explicit`
+ *   naming what the policy set, `jobsPerWorker` `null` for unlimited, and the
+ *   static `env` by name alone, sorted — never a value, though the summoner
+ *   is handed them. A status read from storage (`local: false`) has none,
+ *   and neither has any `GET /summon` item. `/meta.features.summonPolicy`
+ *   says the route serves it.
  * - **Platform handles stay home by default.** A pending attempt's `handles`
  *   in the status, and the `queue.summon` event's, go out only with
  *   `serialize.exposeSummonHandles` (a task ARN carries an AWS account id).
@@ -90,6 +99,16 @@ title("The management API: summoning over HTTP");
 
 /** Every trigger off: only the API's "summon now" runs a check. */
 const ONE_SHOT = { onAdd: false, events: false, poll: false } as const;
+
+/**
+ * `reports`' static `env`, added to every request its summoner is handed.
+ * Written `REGION` first, so the names' sorted order differs from it; the
+ * token's value looks like a credential, and must reach no response body.
+ */
+const REPORTS_ENV = {
+  REGION: "eu-west-1",
+  PLATFORM_TOKEN: "sk-policy-env-7Hq2Zr",
+} as const;
 
 /* ------------------------------------------------------------------ */
 step("Four summoned queues, and one without a controller");
@@ -133,7 +152,7 @@ const jobs = new BunJobs({
   driver: config,
   logger,
   summon: {
-    reports: { summoner: recording, triggers: ONE_SHOT },
+    reports: { summoner: recording, triggers: ONE_SHOT, env: REPORTS_ENV },
     // Two queues for the socket step, one per serializer setting.
     alerts: { summoner: recording, triggers: ONE_SHOT },
     exports: { summoner: recording, triggers: ONE_SHOT },
@@ -348,6 +367,56 @@ checkEqual(
   ],
 );
 
+// `policy` is what the controller runs with: every value in effect, the
+// defaults filled in, and `explicit` naming the keys its policy set (in
+// `SUMMON_POLICY_KEYS` order), shown in full above. Only the process running
+// the controller knows it, so only a `local: true` status carries it.
+// Durations are in ms.
+const policy = status.policy;
+checkEqual(
+  "policy, from the local controller: explicit names what reports' policy set — its three triggers and env — and every other value is a default (cooldown 10 s, one worker)",
+  [
+    policy?.explicit,
+    policy?.triggers,
+    policy?.cooldown,
+    policy?.maxWorkers,
+    policy?.maxPending,
+  ],
+  [
+    ["triggers.onAdd", "triggers.events", "triggers.poll", "env"],
+    [
+      { kind: "onAdd", on: false, debounce: 250 },
+      { kind: "events", on: false, debounce: 250 },
+      { kind: "poll", on: false },
+    ],
+    10_000,
+    1,
+    1,
+  ],
+);
+checkEqual(
+  "jobsPerWorker, unlimited by default (Infinity in status()), is null on the wire: JSON has no Infinity",
+  [Object.hasOwn(policy ?? {}, "jobsPerWorker"), policy?.jobsPerWorker],
+  [true, null],
+);
+checkEqual(
+  "env: the names alone, sorted (PLATFORM_TOKEN before REGION, though written after it)",
+  policy?.env,
+  ["PLATFORM_TOKEN", "REGION"],
+);
+checkEqual(
+  "and neither value appears anywhere in the response body",
+  Object.values(REPORTS_ENV).filter((value) =>
+    JSON.stringify(before.body).includes(value),
+  ),
+  [],
+);
+checkEqual(
+  "/meta.features.summonPolicy is true: the status route carries policy",
+  ((await panel.call("GET", "/meta")).body as MetaDto).features.summonPolicy,
+  true,
+);
+
 /**
  * How much of the current UTC hour steps 3 to 8 need left. They spend the
  * budget and then read its hourly count back — the list in step 7, the resets
@@ -384,6 +453,11 @@ checkEqual(
     request.id,
   ]),
   [["reports", "manual", 1, now.id]],
+);
+checkEqual(
+  "the request carries the policy's env, values and all: only the status leaves them out",
+  [recorded[0]?.env?.REGION, recorded[0]?.env?.PLATFORM_TOKEN],
+  [REPORTS_ENV.REGION, REPORTS_ENV.PLATFORM_TOKEN],
 );
 
 const again: SummonCheckDto = (
@@ -473,6 +547,26 @@ checkEqual(
     cleared.last?.outcome,
   ],
   [200, 0, null, null, "failed"],
+);
+checkEqual(
+  "and the answer carries the policy too: flaky's own backoff and circuit, set by its policy",
+  [
+    cleared.policy?.backoff,
+    cleared.policy?.circuit,
+    cleared.policy?.explicit.filter(
+      (key) => key.startsWith("backoff.") || key.startsWith("circuit."),
+    ),
+  ],
+  [
+    { initial: 1, max: 1 },
+    { failures: 2, resetAfter: 60_000 },
+    [
+      "backoff.initial",
+      "backoff.max",
+      "circuit.failures",
+      "circuit.resetAfter",
+    ],
+  ],
 );
 checkEqual(
   "only the cooldown is left: force: false keeps it, the default skips it and tries again",
@@ -716,6 +810,22 @@ checkEqual(
     ),
   ),
 );
+checkEqual(
+  "no item carries policy, which each queue's own GET /queues/:queue/summon does",
+  [
+    list.controllers
+      .filter((item) => "policy" in item)
+      .map((item) => item.queue),
+    await Promise.all(
+      list.controllers.map(
+        async (item) =>
+          "policy" in
+          (await panel.call("GET", `/queues/${item.queue}/summon`)).body,
+      ),
+    ),
+  ],
+  [[], [true, true, true, true]],
+);
 
 // `queues.list` gates the route; each row is then shown only where
 // `authorize` allows `queues.read` on its queue — asked exactly as
@@ -875,6 +985,7 @@ const inWorker = JSON.parse(childOut.trim().split("\n").at(-1) ?? "{}") as {
   inert: boolean;
   check: { action: string; reason?: string };
   called: boolean;
+  reads: Record<string, { status: number; local: boolean; policy: boolean }>;
 };
 show("GET /summon in the summoned process", inWorker.controllers);
 checkEqual(
@@ -920,6 +1031,17 @@ checkEqual(
           },
     ),
   ],
+);
+// The policy is never persisted, so a status read from storage cannot carry
+// one: only the process running the controller knows it.
+show("GET /queues/:queue/summon in the summoned process", inWorker.reads);
+checkEqual(
+  "there, GET /queues/alerts/summon is read from storage: local: false, and no policy; its own inert controller's reports carries one",
+  inWorker.reads,
+  {
+    alerts: { status: 200, local: false, policy: false },
+    reports: { status: 200, local: true, policy: true },
+  },
 );
 
 /* ------------------------------------------------------------------ */

@@ -32,7 +32,9 @@
  *   override both hold a plain object (`triggers`, `backoff`, `circuit`,
  *   `budget`, `scaleDown`, `env`), the override's fields go over the group's
  *   and the rest are kept. Anything else — the summoner, a function, a
- *   number — replaces the group's value whole.
+ *   number — replaces the group's value whole. Either way the override's
+ *   keys count as set in the queue's `status().policy.explicit`, like the
+ *   group's own: there is no separate "override" mark.
  * - **A bad option is refused whole**, as a `ConfigError` saying where, at
  *   construction: a queue named twice anywhere in the option, an empty group,
  *   an override for a queue outside its group, an invalid queue name, an
@@ -321,6 +323,53 @@ checkEqual(
   [
     { REGION: "eu", TIER: "small" },
     { REGION: "eu", TIER: "large" },
+  ],
+);
+
+// The override is merged into the queue's policy before its controller is
+// built, so `status().policy.explicit` counts its keys as set, like the
+// group's own: there is no separate "override" mark.
+const thumbsPolicy = (await merged.summonController("thumbs").status()).policy;
+const videosPolicy = (await merged.summonController("videos").status()).policy;
+show("status().policy.explicit", {
+  thumbs: thumbsPolicy?.explicit,
+  videos: videosPolicy?.explicit,
+});
+/** A policy's add-trigger debounce, in ms. */
+const debounceOf = (policy: SummonStatus["policy"]): number | undefined =>
+  policy?.triggers.find((trigger) => trigger.kind === "onAdd")?.debounce;
+checkEqual(
+  "status().policy.explicit: thumbs, with no override, names the group's keys alone",
+  thumbsPolicy?.explicit,
+  [
+    "triggers.onAdd",
+    "triggers.events",
+    "triggers.poll",
+    "jobsPerWorker",
+    "cooldown",
+    "backoff.initial",
+    "backoff.max",
+    "circuit.failures",
+    "circuit.resetAfter",
+    "budget",
+    "budget.perHour",
+    "budget.perDay",
+    "env",
+  ],
+);
+checkEqual(
+  "videos' merged override counts as set: triggers.debounce and maxWorkers join the group's keys, at 0 and 3 (thumbs: the defaults, 250 and 1)",
+  [
+    videosPolicy?.explicit.filter(
+      (key) => !(thumbsPolicy?.explicit ?? []).includes(key),
+    ),
+    [debounceOf(videosPolicy), videosPolicy?.maxWorkers],
+    [debounceOf(thumbsPolicy), thumbsPolicy?.maxWorkers],
+  ],
+  [
+    ["triggers.debounce", "maxWorkers"],
+    [0, 3],
+    [250, 1],
   ],
 );
 

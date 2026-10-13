@@ -46,6 +46,12 @@
  *   worker to every queue, so the count asked for is the largest of the
  *   queues' own wants. Each queue's `jobsPerWorker` and `maxWorkers` may
  *   differ, through `overrides`, which takes those two keys only.
+ *   `status().policy.perQueue` shows each queue's, its `explicit` naming
+ *   what the queue's override set.
+ * - **`group.circuit` changes nothing on a shared unit**, whose circuit is
+ *   its group entry's own: its `status().policy` never lists
+ *   `group.circuit.*` in `explicit` and has no `circuit.group`, where a
+ *   per-queue controller given the same option shows both.
  * - **The request names the whole unit**: `queues`, `group` and `demands`
  *   (each queue's reading), with `demand` the most-starved queue's. Its
  *   `argv` repeats `--bun-jobs-summon-queue=` once per queue and adds
@@ -84,8 +90,9 @@
  *   Wherever the API answers the unit's status — `GET /summon`, a member's
  *   `GET /queues/:queue/summon`, a reset — `queues` keeps the members the
  *   caller may read (`queues.read`), `queue` is the first of them, whichever
- *   member was asked about, and a `partial:` detail names only those (bare
- *   `partial` when none is left). On the socket, the members a subscriber
+ *   member was asked about, a `partial:` detail names only those (bare
+ *   `partial` when none is left), and so does the policy's `perQueue`: the
+ *   others appear nowhere in the body. On the socket, the members a subscriber
  *   may follow (`events.subscribe`, asked with the channel and the member).
  * - **"Summon now" and a reset need `queues.summon` on every member.** The
  *   route's queue is asked first, then each other member in code-point
@@ -761,6 +768,79 @@ checkEqual(
   "the expansion form, for contrast: one call per queue, the sum in all",
   perQueueSummoner.calls.map((call) => [call.queue, call.count]),
   MEDIA.map((queue) => [queue, WANTS[queue]]),
+);
+
+// The unit's `status().policy.perQueue` shows each queue's capacity, its
+// `explicit` naming what the queue's `overrides` entry set: previews has
+// none, so its values are the unit's own.
+const demandPolicy = (await demandController.status()).policy;
+show("status().policy.perQueue", demandPolicy?.perQueue);
+checkEqual(
+  "status().policy.perQueue names each member in the unit's order, explicit holding the keys its overrides entry set",
+  [Object.keys(demandPolicy?.perQueue ?? {}), demandPolicy?.perQueue],
+  [
+    [...MEDIA],
+    {
+      renders: {
+        jobsPerWorker: 10,
+        maxWorkers: MAX_WORKERS,
+        explicit: ["jobsPerWorker"],
+      },
+      thumbs: {
+        jobsPerWorker: 2,
+        maxWorkers: 2,
+        explicit: ["jobsPerWorker", "maxWorkers"],
+      },
+      previews: {
+        jobsPerWorker: Infinity,
+        maxWorkers: MAX_WORKERS,
+        explicit: [],
+      },
+    },
+  ],
+);
+
+// `group.circuit` shares a circuit among a group's per-queue controllers. A
+// shared unit's circuit is always its group entry's own, so there the option
+// changes nothing, and its policy says so: no `group.circuit.*` in
+// `explicit`, no `circuit.group`. A per-queue controller given the same
+// option, for contrast, shows both.
+/** A group circuit with thresholds of its own. */
+const GROUP_CIRCUIT = { failures: 2, resetAfter: 60_000 } as const;
+const groupCircuitJobs = context("summon-shared-group-circuit");
+const circuitUnitPolicy = (
+  await controller({
+    namespace: groupCircuitJobs.namespace,
+    queues: [...MEDIA],
+    group: { ...SHARED, circuit: GROUP_CIRCUIT },
+    ...ONE_SHOT,
+    summoner: recording("example-record").summoner,
+  }).status()
+).policy;
+const circuitMemberPolicy = (
+  await controller({
+    namespace: groupCircuitJobs.namespace,
+    queue: "audio",
+    group: { name: "sound", circuit: GROUP_CIRCUIT },
+    ...ONE_SHOT,
+    summoner: recording("example-record").summoner,
+  }).status()
+).policy;
+checkEqual(
+  "group.circuit on a shared unit: no group.circuit.* in explicit and no circuit.group — where a per-queue controller with the same option shows both",
+  [
+    circuitUnitPolicy?.explicit.filter((key) => key.startsWith("group.")),
+    circuitUnitPolicy?.circuit === undefined ||
+      "group" in circuitUnitPolicy.circuit,
+    circuitMemberPolicy?.explicit.filter((key) => key.startsWith("group.")),
+    circuitMemberPolicy?.circuit.group,
+  ],
+  [
+    [],
+    false,
+    ["group.circuit.failures", "group.circuit.resetAfter"],
+    GROUP_CIRCUIT,
+  ],
 );
 
 /* ------------------------------------------------------------------ */
@@ -1982,6 +2062,20 @@ checkEqual(
     [["renders", ["renders", "previews"]]],
     ["renders", ["renders", "previews"]],
   ],
+);
+// The unit's policy names its queues too, in `perQueue`, which keeps only
+// those the caller may read. Read in the process, the unit's own status has
+// all three; over the API, thumbs is in neither body, the list's or the
+// status's.
+checkEqual(
+  "policy.perQueue names renders and previews alone (the controller's own status: all three), and thumbs appears nowhere in either response body",
+  [
+    Object.keys((await narrowUnit.status()).policy?.perQueue ?? {}),
+    Object.keys(viaPreviews.policy?.perQueue ?? {}),
+    JSON.stringify(narrowList).includes("thumbs"),
+    JSON.stringify(viaPreviews).includes("thumbs"),
+  ],
+  [[...MEDIA], ["renders", "previews"], false, false],
 );
 // The partial: detail names the queues with no worker that the caller may
 // read: thumbs was the only one, so the caller reads a bare "partial".
