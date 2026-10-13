@@ -232,7 +232,7 @@ and no `./providers/*` or `./provider/auth` key in `package.json`.
 | **1.5p** provider plugin API (PR-p1 to PR-p6) | **done**, summon facet at `0.2` | PR-p1 #230; PR-p2 #232 (UI hints #233); PR-p3 #240; PR-p4 #243; PR-p5 #245, hardened by #250, #256; PR-p6 provider routes #246 (UI #247). Examples #244, #248, #251, #254, #257; playground #255 | PR-B4 (multi-queue; built, uncommitted, under review): the kit's `summon.handoff.shared-unit` check (a should), the template at summon `0.2`, the provider docs | `SummonPolicy.validateOnStart` (Q-p8; 0 hits in `packages/`); the UI's provider "experimental" badge (no hit for "experimental" in `bun-jobs-ui/app`) |
 | *`localCompute`* (not in this plan's list) | **done** | #268; examples #303; playground #301 | B4 runs the shared-unit check on it | the parent-death check for orphaned units (#268's own follow-up) |
 | **1.5c** AWS (ECS, Lambda) and Fly | not started | — | — | §13's 1.5c, plus §7.8 for shared units (Q43, Q44 and Q45 decided: Lambda's payload, `./providers/<name>`, Fly's `create` mode); Q48 approved: `runSummoned`'s `summon` option and the facet's `preflight`, built here |
-| **1.5d** Google and Azure | not started | — | — | §13's 1.5d, plus §7.8 (Q45 and Q47 decided: ACA's template copy, the worker pool's lookup, revised after 4c's review; exact names with 1.5d's; Q48 approved: `maxInstances` and `"lookup-members"`, built here; Q49: the `at-capacity` name) |
+| **1.5d** Google and Azure | not started | — | — | §13's 1.5d, plus §7.8 (Q45 and Q47 decided: ACA's template copy, the worker pool's lookup, revised after 4c's review; exact names with 1.5d's; Q48 approved: `maxInstances` and `"lookup-members"`, built here; Q49: the `at-capacity` name; the `id: ""` CHANGE REPORTs before merge: "Owed with 1.5d" under §13's 1.5d) |
 | **1.5e** Render and SSH | not started | — | — | §13's 1.5e, plus §7.8 |
 | **1.5f** UI and examples | **done** for everything that needs no cloud provider | UI #184, #200, #223, #247, #297, #342, #359; examples above, plus the custom provider that passes the kit (#244) | UI-B and EX-B for shared units (MQ §11.2) | one example per first-party provider, blocked on 1.5c–1.5e |
 | **1.5g** live verification | not started | — | — | the tier-3 script (§11.1); §7.8 adds a shared-unit run per platform |
@@ -5124,6 +5124,35 @@ It comes **before 1.5c**, so every first-party summoner is built on it.
 | *Decided (M-a, round 2):* the core `at-capacity` answer: the result status, outcome and skip reason in the contract, `#record`'s uncharged branch with the conditional group refund, the clamp and clearing, the status field, the gate, the event, the version kit check, the UI touch list (§7.8.3; names Q49) | 2 d |
 | *Decided (Q45):* ACA's template copy, its fake and kit run | 0.5 d |
 | **Total** | **~13.75 d** (was ~4.5 d; 4c estimated ~9.75 d before round 2) |
+
+**Owed with 1.5d** (carried over from the summon multi-queue plan, which is
+complete; added 2026-10-13). Both are part of 1.5d's work, not extra effort:
+
+1. **Q49: the `at-capacity` names, approved with 1.5d's other names.**
+   The concept is decided (M-a): a provider at its own ceiling is charged
+   no budget count or group share, counts no failure and sets off no
+   throttling warning. Only the names are open, and §12's Q49 recommends
+   them: the `SummonResult` status `"at-capacity"`, the same value on
+   `SummonOutcomeKind` and `SummonSkipReason` (and so in `SUMMON_OUTCOMES`
+   and `SUMMON_SKIP_REASONS`), and `SummonStatus.capacityUntil` with its
+   DTO and schema field. Ask the user before the core `at-capacity` row
+   above is built, together with the worker pool's lookup names (Q47).
+2. **CHANGE REPORTs for the `id: ""` release failure, before 1.5d merges**
+   (§7.8.3, "What 1.5d must also update"). In 1.5d's design, a worker pool
+   release that fails emits a summon failure with an empty `id`, which on
+   `develop` today means only `budget-exhausted` or `released`:
+   - to the **UI agent**: the Summon panel's "Failed" hint
+     (`app/screens/queues/panels/summonText.ts`, ~`:62`: "The summoner's
+     call failed…") describes a call and must cover a release too;
+   - to the **examples agent**:
+     `examples/bun-jobs/02-queues/summon-group-budget.ts` (~`:395`)
+     keeps "the attempt events" by `event.id !== ""`, so a failed release
+     would be left out of them;
+   - and in both, what else changes on the wire: the group circuit's
+     `openedBy.id` can be `""`, and the WS schema text
+     (`lib/api/ws/events.ts`, ~`:161`: "Empty for an outcome no attempt
+     owns (`budget-exhausted`, `released`)") gains the failed release,
+     with the old and new wording.
 
 ### 1.5e — Render and SSH, on the provider API
 
