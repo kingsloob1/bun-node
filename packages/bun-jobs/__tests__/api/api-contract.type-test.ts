@@ -92,6 +92,7 @@ import type {
   SummonGroupListSchema,
   SummonListSchema,
   SummonNowBodySchema,
+  SummonPolicySchema,
   SummonStatusSchema,
   ThroughputBucketSchema,
   ThroughputSchema,
@@ -561,8 +562,80 @@ type Plain<T> = T extends readonly (infer U)[]
 export type SummonProviderOk = Expect<
   DeepEqual<Contract.SummonProviderDto, Plain<Root.ProviderIdentity>>
 >;
+// `policy` aside: its `jobsPerWorker` is `null` on the wire where the runtime
+// has `Infinity` (JSON has none), so it is compared below.
 export type SummonStatusRuntimeOk = Expect<
-  DeepEqual<Contract.SummonStatusDto, Plain<Root.SummonStatus>>
+  DeepEqual<
+    Omit<Contract.SummonStatusDto, "policy">,
+    Plain<Omit<Root.SummonStatus, "policy">>
+  >
+>;
+export type SummonStatusPolicyFieldOk = Expect<
+  Equal<
+    Contract.SummonStatusDto["policy"],
+    Contract.SummonPolicyDto | undefined
+  >
+>;
+export type SummonStatusPolicyRuntimeFieldOk = Expect<
+  Equal<Root.SummonStatus["policy"], Root.SummonPolicyStatus | undefined>
+>;
+/** `T`'s `jobsPerWorker` as the wire has it: `null` for `Infinity`. */
+type WireCapacity<T extends { jobsPerWorker: number }> = Omit<
+  T,
+  "jobsPerWorker"
+> & { jobsPerWorker: number | null };
+/** The runtime's policy as the DTO must mirror it. */
+type WirePolicy = Omit<
+  WireCapacity<Plain<Root.SummonPolicyStatus>>,
+  "perQueue"
+> & {
+  perQueue?: Record<
+    string,
+    WireCapacity<
+      Plain<NonNullable<Root.SummonPolicyStatus["perQueue"]>[string]>
+    >
+  >;
+};
+// The policy is the runtime's field for field, made plain, with
+// `jobsPerWorker` (and each `perQueue` entry's) `number | null`; the schema
+// is the DTO's; the triggers and keys are the contract's own.
+export type SummonPolicyRuntimeOk = Expect<
+  DeepEqual<Contract.SummonPolicyDto, WirePolicy>
+>;
+export type SummonPolicySchemaOk = Expect<
+  DeepEqual<Contract.SummonPolicyDto, Infer<typeof SummonPolicySchema>>
+>;
+export type SummonTriggerOk = Expect<
+  DeepEqual<Contract.SummonTriggerDto, Plain<Root.SummonTriggerStatus>>
+>;
+export type SummonPolicyExplicitOk = Expect<
+  Equal<Contract.SummonPolicyDto["explicit"], Contract.SummonPolicyKey[]>
+>;
+export type SummonPolicyKeyOk = Expect<
+  Equal<Contract.SummonPolicyKey, (typeof Contract.SUMMON_POLICY_KEYS)[number]>
+>;
+export type RootSummonPolicyKeysOk = Expect<
+  Equal<typeof Root.SUMMON_POLICY_KEYS, typeof Contract.SUMMON_POLICY_KEYS>
+>;
+export type RootSummonPolicyDtoOk = Expect<
+  Equal<Root.SummonPolicyDto, Contract.SummonPolicyDto>
+>;
+export type RootSummonTriggerDtoOk = Expect<
+  Equal<Root.SummonTriggerDto, Contract.SummonTriggerDto>
+>;
+// Negative controls: the wire's `jobsPerWorker` is not the runtime's
+// `number` (an `Infinity` would serialize as `null` unannounced), and a
+// policy that lost `explicit` is not the schema's.
+export type SummonPolicyInfinityNegative = Expect<
+  // @ts-expect-error -- the DTO's `jobsPerWorker` admits `null`, the runtime's does not
+  DeepEqual<Contract.SummonPolicyDto, Plain<Root.SummonPolicyStatus>>
+>;
+export type SummonPolicyExplicitNegative = Expect<
+  // @ts-expect-error -- `explicit` is required by the schema
+  DeepEqual<
+    Omit<Contract.SummonPolicyDto, "explicit">,
+    Infer<typeof SummonPolicySchema>
+  >
 >;
 export type SummonCheckActionsOk = Expect<
   Equal<Contract.SummonCheckDto["action"], Root.SummonCheckResult["action"]>
@@ -1688,6 +1761,7 @@ export type MetaFeatureKeysOk = Expect<
     | "summonResetBudget"
     | "summonList"
     | "summonStoredStatus"
+    | "summonPolicy"
   >
 >;
 export type MetaFeatureValuesOk = Expect<

@@ -73,7 +73,8 @@ export function redactSummonPayload<T extends Record<string, unknown>>(
  * shared unit, `queues` filtered (order kept), `queue` the first left, each
  * pending attempt's `coverage` keeping only readable queues, and the last
  * outcome's `missing` filtered (dropped when none is left) and its
- * `partial:` detail rebuilt; for any controller,
+ * `partial:` detail rebuilt, and the policy's `perQueue` keeping only
+ * readable queues; for any controller,
  * `overlaps` keeps only the groups seen on readable queues. The caller must
  * keep at least one of its queues readable. A status naming no `queues`
  * keeps them as they are.
@@ -118,8 +119,8 @@ function withReadableOverlaps(
 }
 
 /**
- * {@link redactUnitStatus}'s `queues`, `queue`, coverage, `missing` and
- * detail, for a status that has `queues`.
+ * {@link redactUnitStatus}'s `queues`, `queue`, coverage, `missing`, detail
+ * and `policy.perQueue`, for a status that has `queues`.
  */
 function redactQueues(
   status: SummonStatus & { queues: readonly string[] },
@@ -155,6 +156,29 @@ function redactQueues(
     ...(status.last === undefined
       ? {}
       : { last: redactLast(status.last, has) }),
+    ...(status.policy === undefined
+      ? {}
+      : { policy: redactPolicy(status.policy, has) }),
+  };
+}
+
+/**
+ * A policy whose `perQueue` keeps only readable queues, in order (an empty
+ * record when none is left); the rest of a policy names no queue.
+ */
+function redactPolicy(
+  policy: NonNullable<SummonStatus["policy"]>,
+  readable: (queue: string) => boolean,
+): NonNullable<SummonStatus["policy"]> {
+  if (policy.perQueue === undefined) {
+    return policy;
+  }
+  return {
+    ...policy,
+    // `Object.fromEntries` defines own keys: `__proto__` is a valid queue.
+    perQueue: Object.fromEntries(
+      Object.entries(policy.perQueue).filter(([queue]) => readable(queue)),
+    ),
   };
 }
 

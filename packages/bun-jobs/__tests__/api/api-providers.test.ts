@@ -1822,14 +1822,27 @@ describe("a summon status's providerId and readiness", () => {
   it("leaves a controller with real state untouched: failures, last, backoff, budget", async () => {
     const { id, before, rest, summoner, verdict } =
       await validateAgainstFailedController();
+    // A copy first: Bun's `toMatchObject` overwrites a received value an
+    // asymmetric matcher matched (oven-sh/bun#3521), which would turn
+    // `before.backoffUntil` into the matcher and let any value equal it.
+    const baseline = structuredClone(before);
     // The baseline is real state, not an empty marker.
     expect(before).toMatchObject({
       failures: 1,
       last: { outcome: "failed", detail: "CONFIG" },
       backoffUntil: expect.any(Number),
     });
+    expect(typeof baseline.backoffUntil).toBe("number");
     expect(verdict).toEqual({ id, ok: true, checks: [] });
-    expect(rest).toEqual(before);
+    // The policy is the one thing that may change: its defaulted
+    // `bootBudget` is unknown until the config is, and then the provider's.
+    const { policy: policyBefore, ...stateBefore } = baseline;
+    const { policy: policyAfter, ...stateAfter } = rest;
+    expect(stateAfter).toEqual(stateBefore);
+    expect(policyBefore.bootBudget).toBeUndefined();
+    const { bootBudget, ...policyRest } = policyAfter;
+    expect(bootBudget).toBe(summoner.capabilities.bootBudgetMs);
+    expect(policyRest).toEqual(policyBefore);
     // The config is known now, so the controller adopts it on its next look.
     expect(summoner.readiness).toBe("ready");
   });

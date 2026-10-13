@@ -126,6 +126,9 @@ export const DRIVER_FEATURES = {
   // Status read from storage: the marker and group entries are queue state,
   // and the group list pages through it.
   summonStoredStatus: ["getQueueState", "listQueueState"],
+  // The local controller's policy on the status: no driver method — it is
+  // the controller's own, in memory — so only the mode turns it off.
+  summonPolicy: [],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**
@@ -254,6 +257,9 @@ export const FEATURE_ROUTES = {
     "listSummonGroups",
     "getSummonGroup",
   ],
+  // `policy` rides the status route (and the reset's answer, which needs no
+  // flag of its own: it answers the same status).
+  summonPolicy: ["getQueueSummon"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
 
 /**

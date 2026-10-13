@@ -420,6 +420,53 @@ export const JOB_DEFAULT_KEYS = [
 /** One job option a queue's stored defaults may replace. */
 export type JobDefaultKey = (typeof JOB_DEFAULT_KEYS)[number];
 
+/* ------------------------------------------------------------------ *
+ * Summon policy
+ * ------------------------------------------------------------------ */
+
+/**
+ * Every `SummonPolicy` option a summon status's `policy.explicit` may name,
+ * as its path in the policy, in the order a panel should show them. A key in
+ * `explicit` is one the policy set (any value but `undefined`); every other
+ * value `policy` shows is a default.
+ *
+ * Paths match `policy`'s fields (`cooldown`, `backoff.initial`, …), with
+ * three exceptions: `group.circuit.*` is shown as `policy.circuit.group.*`;
+ * `budget`, `budget.perHour` and `budget.perDay` are shown by the status's
+ * own `budget` and `group.budget` (`budget` is listed when the policy gave
+ * one at all, `false` included); and `env` is shown by name only.
+ */
+export const SUMMON_POLICY_KEYS = [
+  "triggers.onAdd",
+  "triggers.events",
+  "triggers.poll",
+  "triggers.debounce",
+  "bootBudget",
+  "maxWorkers",
+  "jobsPerWorker",
+  "maxPending",
+  "cooldown",
+  "backoff.initial",
+  "backoff.max",
+  "circuit.failures",
+  "circuit.resetAfter",
+  "group.circuit.failures",
+  "group.circuit.resetAfter",
+  "budget",
+  "budget.perHour",
+  "budget.perDay",
+  "maxLifetime",
+  "servedBy",
+  "scaleDown.after",
+  "summonTimeout",
+  "env",
+  "fromSummoned",
+  "onSummonFailed",
+] as const;
+
+/** One `SummonPolicy` option, as its path in the policy: an item of {@link SUMMON_POLICY_KEYS}. */
+export type SummonPolicyKey = (typeof SUMMON_POLICY_KEYS)[number];
+
 /**
  * The backoff strategies a stored default may name. The code may use any
  * strategy (built-in or registered on the worker); a remote edit is limited to

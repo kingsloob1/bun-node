@@ -15,8 +15,14 @@ import type {
   BunQueueWorkerOptions,
   JobsApiConfig,
   SUMMON_ARGS,
+  SUMMON_POLICY_KEYS,
   SummonedArgs,
   SummonedExit,
+  SummonPolicy,
+  SummonPolicyKey,
+  SummonPolicyStatus,
+  SummonStatus,
+  SummonTriggerStatus,
   WorkerInfo,
   WorkerSummonInfo,
   WorkerSummonProvenance,
@@ -176,3 +182,65 @@ assertTrue<
 >();
 // @ts-expect-error -- a set holds workers, nothing else.
 export const notWorkers = runSummoned([renders, "thumbs"]);
+
+/* --- status().policy ("policy visible", 2026-10-12) ------------------------ */
+
+// Local only, so optional on the status; the explicit list is the
+// contract's keys, read-only, and so is everything else that is a list.
+assertTrue<Equals<SummonStatus["policy"], SummonPolicyStatus | undefined>>();
+assertTrue<
+  Equals<SummonPolicyStatus["explicit"], readonly SummonPolicyKey[]>
+>();
+assertTrue<Equals<SummonPolicyKey, (typeof SUMMON_POLICY_KEYS)[number]>>();
+assertTrue<
+  Equals<SummonPolicyStatus["triggers"], readonly SummonTriggerStatus[]>
+>();
+assertTrue<Equals<SummonTriggerStatus["kind"], "onAdd" | "events" | "poll">>();
+// In the runtime, `jobsPerWorker` is the policy's number, `Infinity`
+// included; only the wire makes it `null`.
+assertTrue<Equals<SummonPolicyStatus["jobsPerWorker"], number>>();
+// Never present until known: absent, not a placeholder.
+assertTrue<Equals<SummonPolicyStatus["bootBudget"], number | undefined>>();
+// `servedBy` is the policy option's own vocabulary.
+assertTrue<
+  Equals<SummonPolicyStatus["servedBy"], NonNullable<SummonPolicy["servedBy"]>>
+>();
+// env is names, never a record of values.
+assertTrue<Equals<SummonPolicyStatus["env"], readonly string[]>>();
+/**
+ * Every dotted path into a policy option: `cooldown`, `backoff.initial`,
+ * `group.circuit.failures`, … A function is a leaf; a union's object
+ * members are walked and its other members (`false`, `true`) are not.
+ */
+type PolicyPaths<T, Prefix extends string = ""> = {
+  [K in keyof T & string]-?:
+    | `${Prefix}${K}`
+    | (NonNullable<T[K]> extends infer V
+        ? V extends (...args: never[]) => unknown
+          ? never
+          : V extends object
+            ? PolicyPaths<V, `${Prefix}${K}.`>
+            : never
+        : never);
+}[keyof T & string];
+/** The paths a status may name: a policy's, the summoner aside (never shown). */
+type ShownPolicyPath = PolicyPaths<Omit<SummonPolicy, "summoner">>;
+// Every key in `SUMMON_POLICY_KEYS` is a real path into `SummonPolicy`, dotted
+// or not, so a renamed option cannot leave a key naming nothing.
+assertTrue<[SummonPolicyKey] extends [ShownPolicyPath] ? true : false>();
+assertTrue<
+  Equals<
+    Extract<ShownPolicyPath, "group.circuit.resetAfter" | "budget.perDay">,
+    "group.circuit.resetAfter" | "budget.perDay"
+  >
+>();
+// Negative controls: a path that is not the policy's is refused, and so is a
+// step into a non-object member of a union (`budget: false`).
+// @ts-expect-error -- `triggers` has no `cron`
+export const notAPath: ShownPolicyPath = "triggers.cron";
+// @ts-expect-error -- `fromSummoned` is a boolean, with nothing under it
+export const intoABoolean: ShownPolicyPath = "fromSummoned.value";
+export function editsExplicit(status: SummonStatus): void {
+  // @ts-expect-error -- the explicit list is read-only, as the status's other lists are
+  status.policy!.explicit.push("cooldown");
+}
