@@ -37,9 +37,9 @@ each measurement there can be re-run with one command.
   composes with all four (§3.8). *This is #289. The flag shipped as
   `off?: true`, with `perHour` and `perDay` absent while it is set.*
 
-### Status (2026-10-12)
+### Status (2026-10-13)
 
-Checked against GitHub on 2026-10-12, against `develop` at `357ce684`.
+Checked against GitHub on 2026-10-13, against `develop` at `d3de952d`.
 
 | PR | Scope | State | Left |
 |---|---|---|---|
@@ -57,7 +57,7 @@ Checked against GitHub on 2026-10-12, against `develop` at `357ce684`.
 | PR-B4 fix (4c) | a one-queue shared unit names its group when it summons | merged #378 (`de072091`), with examples #380 (`f9528120`) | — |
 | UI-B | coverage, "unit of", dedupe by `eventId` | merged #359 (`5309aa76`, the group's "unit of"), #369 (`e7246b69`, shared unit), #383 (`357ce684`, coverage, partial attempts, shares) | — |
 | EX-B (rest) | the shared unit through `BunJobs`, its coverage read from any process | merged #367 (`bf4a35a3`) and #386 (`ef56201b`) | — |
-| Policy visible | the summon policy shown through the API and the Summon panel: `SummonStatus.policy` (local only, with an `explicit` key list), advertised by `features.summonPolicy` | bun-jobs half merged #388 | the UI's Policy block, the examples, and the playground README |
+| Policy visible | the summon policy shown through the API and the Summon panel: `SummonStatus.policy` (local only, with an `explicit` key list), advertised by `features.summonPolicy` | bun-jobs #388, examples #389, UI #390, playground README #392 | — |
 
 *The notes below are from 2026-10-08, kept for the record; the table above
 supersedes them.*
@@ -86,18 +86,15 @@ has test 6, a fixture, a type test, the README and the provider reference.
 **B1 went first, by the user's intent.** It needs nothing of A1, so it was
 built on `develop` and opened before Part A (§11.2). PR-B3 still needs both.
 
-**Also owed:** one item remains. (#289's playground follow-up, the
-`onSummonFailed` alerts, a `budget: false` override on `brittle`, a
-`transcodes` budget reset and a `GET /summon` table on
-`/playground/compute`, merged as #387.)
-
-1. The summon policy shown through the API and the Summon panel (the user's
-   decision): a local-only `SummonStatus.policy` with an `explicit` key
-   list, advertised by `features.summonPolicy`. Shutdown signal and grace
-   come from the summoner's capabilities. About 2 days of bun-jobs work, 1.5
-   of UI and 0.5 of examples.
-
-Parts A and B are otherwise complete.
+**Complete.** The two items owed after Parts A and B have landed: #289's
+playground follow-up (the `onSummonFailed` alerts, a `budget: false`
+override on `brittle`, a `transcodes` budget reset and a `GET /summon`
+table on `/playground/compute`) as #387, and the summon policy shown
+through the API and the Summon panel (the user's decision: a local-only
+`SummonStatus.policy` with an `explicit` key list, advertised by
+`features.summonPolicy`; shutdown signal and grace from the summoner's
+capabilities) as #388 (bun-jobs), #389 (examples), #390 (UI) and #392
+(playground README).
 
 ### Contents
 
