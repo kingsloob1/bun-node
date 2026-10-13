@@ -1661,6 +1661,30 @@ const GATES = [
     },
   },
   {
+    // `summonPolicyVisibility` in `summonPolicyText.ts`, "shown": the Policy
+    // section, with `features.summonPolicy` on, for a status from a controller
+    // in the API's process (`local` true) that carries `policy`. A local
+    // status without one (an API older than its controller) shows nothing.
+    name: "summon: policy",
+    row: "Summon panel policy",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    features: ["summonPolicy"],
+    when: ({ summon }) => summon?.local === true && summon.policy !== undefined,
+  },
+  {
+    // The same, "elsewhere": with the flag on, a status read from storage
+    // (`local` false) shows one muted line, that the policy is known only
+    // where the controller runs. Neither is hidden by an unreadable marker.
+    name: "summon: policy elsewhere",
+    row: "Summon panel policy",
+    map: "queue",
+    needsOf: ["panel=summon"],
+    features: ["summonPolicy"],
+    when: ({ summon }) =>
+      summon !== undefined && summon !== null && summon.local === false,
+  },
+  {
     name: "panel=throughput",
     row: "Throughput panel",
     map: "queue",
@@ -4317,6 +4341,8 @@ checkEqual(
     "summon: overlaps warning": false,
     "summon: attempt coverage": false,
     "summon: partial outcome": false,
+    "summon: policy": false,
+    "summon: policy elsewhere": false,
     // A Summoning row needs a controller `GET /summon` lists, and this host
     // runs none: asked on the summon host, with its list.
     "summoning: row": false,
@@ -8164,6 +8190,74 @@ checkEqual(
     newsletterRequests().length,
   ],
   ["409 SUMMON_NOT_CONFIGURED", "409 SUMMON_NOT_CONFIGURED", 1],
+);
+
+// The Policy section: the policy the controller in the API's process runs
+// with, from mail's real status; newsletter's, read from storage, has none,
+// and shows the one line instead.
+const mailWithPolicy = summonHostAll.statuses.mail!;
+/** `gatesOf`'s two policy gates, as [section, line]. */
+const policyGates = (set: Gates) => [
+  set["summon: policy"],
+  set["summon: policy elsewhere"],
+];
+checkEqual(
+  "the summon host's /meta has features.summonPolicy, and mail's status, local, carries its policy: the Policy section, not the line",
+  [
+    summonHostAll.meta.features.summonPolicy,
+    mailWithPolicy.local,
+    mailWithPolicy.policy !== undefined,
+    policyGates(summonHostAll.gatesOf("mail")),
+  ],
+  [true, true, true, [true, false]],
+);
+const newsletterPolicyGates = summonGrantNewsletter.gatesOf(undefined, {
+  queue: newsletterMap,
+  summon: newsletter,
+});
+checkEqual(
+  "newsletter's status, read from storage (local: false), carries no policy: the muted line instead of the section",
+  [Object.hasOwn(newsletter, "policy"), policyGates(newsletterPolicyGates)],
+  [false, [false, true]],
+);
+/** The summon host's /meta with `summonPolicy` set to `on`, or left out (`undefined`). */
+function metaWithPolicyFlag(on: boolean | undefined): MetaDto {
+  const { summonPolicy: _summonPolicy, ...older } = summonHostAll.meta.features;
+  return {
+    ...summonHostAll.meta,
+    features: on === undefined ? older : { ...older, summonPolicy: on },
+  } as MetaDto;
+}
+checkEqual(
+  "with the flag false (runner mode) or absent (an older API), neither shows, local or not; with it on, a local status without policy shows nothing either",
+  [
+    summonRunner.meta.features.summonPolicy,
+    ...[false, undefined].flatMap((on) => [
+      policyGates(
+        summonHostAll.gatesOf("mail", { meta: metaWithPolicyFlag(on) }),
+      ),
+      policyGates(
+        summonGrantNewsletter.gatesOf(undefined, {
+          queue: newsletterMap,
+          summon: newsletter,
+          meta: metaWithPolicyFlag(on),
+        }),
+      ),
+    ]),
+    policyGates(
+      summonHostAll.gatesOf("mail", {
+        summon: { ...mailWithPolicy, policy: undefined },
+      }),
+    ),
+  ],
+  [
+    false,
+    [false, false],
+    [false, false],
+    [false, false],
+    [false, false],
+    [false, false],
+  ],
 );
 await summonGrantNewsletter.api.close();
 await summonElsewhere.close();

@@ -985,12 +985,12 @@ try {
     readCard(SUMMONER, "summon-readiness", "view.testable"),
   );
   checkEqual(
-    "summon-readiness Ready with its meaning, the provider named, the real boot budget, and Test connection offered",
+    "summon-readiness Ready with its meaning, the provider named, the real boot budget as the provider default boot budget, and Test connection offered",
     [
       reports?.readiness,
       reports?.hint,
       reports?.rows.Provider,
-      reports?.rows["Boot budget"],
+      reports?.rows["Provider default boot budget"],
       reports?.testable,
     ],
     [
@@ -1116,7 +1116,7 @@ try {
     readCard(SUMMONER, "summon-readiness"),
   );
   checkEqual(
-    "summon-readiness Pending with its meaning; no Style or Boot budget (the capabilities are unknown), no facts",
+    "summon-readiness Pending with its meaning; no Style or Provider default boot budget (the capabilities are unknown), no facts",
     [
       exportsPending?.readiness,
       exportsPending?.hint,
@@ -1150,7 +1150,7 @@ try {
     [
       exportsReady?.readiness,
       exportsReady?.rows.Style,
-      exportsReady?.rows["Boot budget"],
+      exportsReady?.rows["Provider default boot budget"],
       exportsReady?.rows.region,
       await view.evaluate<boolean>("window.__sameDocument === true"),
     ],
