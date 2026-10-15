@@ -1,0 +1,10 @@
+{
+  // Not in scripts/typecheck.ts's PROJECTS: this folder is evidence, and its
+  // probes carry deliberate @ts-expect-error controls. Check it with a bare
+  // `bun --check` from this directory (see README.md).
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": ["./*.ts"]
+}
