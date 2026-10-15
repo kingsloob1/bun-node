@@ -1,0 +1,107 @@
+{
+  "probe": "03-exceptions",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "cases": {
+    "invalidJson": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"JSON Parse error: Expected '}'\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "overLimit": {
+      "status": 413,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":413,\"message\":\"Request body exceeds the maximum allowed size of 1024 bytes (received 4008 bytes)\"}"
+    },
+    "badEncoding": {
+      "status": 415,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":415,\"message\":\"unsupported content encoding \\\"br-nope\\\"\"}"
+    },
+    "badPercentParam": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"Failed to decode param '%FF'\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "errorCode": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"with code\",\"statusCode\":400}"
+    },
+    "errorCodePlain": {
+      "status": 409,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":409,\"message\":\"plain\"}"
+    },
+    "routeStatusError": {
+      "status": 418,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":418,\"message\":\"teapot from route\"}"
+    },
+    "mw_plainError": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_errorWithStatusCode": {
+      "status": 418,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":418,\"message\":\"teapot\"}"
+    },
+    "mw_httpErrorsShape": {
+      "status": 422,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":422,\"message\":\"unprocessable\"}"
+    },
+    "mw_plainObject": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_syntaxError": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"bad syntax\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "mw_uriError": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"URI malformed\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "mw_string": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    }
+  }
+}

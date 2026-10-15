@@ -1,0 +1,135 @@
+{
+  "probe": "03-exceptions",
+  "kind": "express",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "cases": {
+    "invalidJson": {
+      "status": 400,
+      "headers": {
+        "content-length": "83",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"JSON Parse error: Expected '}'\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "overLimit": {
+      "status": 413,
+      "headers": {
+        "content-length": "55",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":413,\"message\":\"request entity too large\"}"
+    },
+    "badEncoding": {
+      "status": 415,
+      "headers": {
+        "content-length": "71",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":415,\"message\":\"unsupported content encoding \\\"br-nope\\\"\"}"
+    },
+    "badPercentParam": {
+      "status": 400,
+      "headers": {
+        "content-length": "81",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Failed to decode param '%FF'\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "errorCode": {
+      "status": 400,
+      "headers": {
+        "content-length": "83",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"with code\",\"error\":\"Bad Request\",\"statusCode\":400,\"errorCode\":\"E_CODE\"}"
+    },
+    "errorCodePlain": {
+      "status": 409,
+      "headers": {
+        "content-length": "58",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":409,\"message\":\"plain\",\"errorCode\":\"E_PLAIN\"}"
+    },
+    "routeStatusError": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_plainError": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_errorWithStatusCode": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_httpErrorsShape": {
+      "status": 422,
+      "headers": {
+        "content-length": "44",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":422,\"message\":\"unprocessable\"}"
+    },
+    "mw_plainObject": {
+      "status": 409,
+      "headers": {
+        "content-length": "39",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":409,\"message\":\"conflict\"}"
+    },
+    "mw_syntaxError": {
+      "status": 400,
+      "headers": {
+        "content-length": "63",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"bad syntax\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "mw_uriError": {
+      "status": 400,
+      "headers": {
+        "content-length": "66",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"URI malformed\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "mw_string": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "probe": "06-shutdown",
+  "kind": "bun",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "drainDefault": {
+    "inflight": {
+      "error": "TypeError: ECONNRESET: The socket connection was closed unexpectedly. For more information"
+    },
+    "requestDuringShutdownHooks": {
+      "status": 200,
+      "connection": null,
+      "body": "fast"
+    },
+    "closeMs": 303
+  },
+  "drainReturn503": {
+    "inflight": {
+      "error": "TypeError: ECONNRESET: The socket connection was closed unexpectedly. For more information"
+    },
+    "requestDuringShutdownHooks": {
+      "status": 200,
+      "connection": null,
+      "body": "fast"
+    },
+    "closeMs": 301
+  },
+  "closeWithOpenSseDefault": {
+    "closeResolved": true,
+    "closeMs": 301
+  },
+  "closeWithOpenSseForce": {
+    "closeResolved": true,
+    "closeMs": 302
+  },
+  "listeningStateAfterClose": {
+    "listeningBefore": true,
+    "listeningAfter": false,
+    "getUrlAfterClose": {
+      "rejected": "app.listen() needs to be called before calling app.getUrl()"
+    }
+  },
+  "concurrentClose": {
+    "beforeShutdownHooks": 1,
+    "shutdownHooks": 1,
+    "adapterCloses": 1
+  },
+  "listenInvalidPort": {
+    "listen": {
+      "timeout": 1500
+    },
+    "unhandledRejection": "RangeError: listen(): port must be an integer from 0 to 65535, got 70000"
+  },
+  "listenBusyPort": {
+    "listen": "rejected: Error: Failed to start server. Is port 43069 in use?"
+  },
+  "listenSocketPath": {
+    "listen": {
+      "timeout": 1500
+    },
+    "url": null,
+    "body": null,
+    "unhandledRejection": "RangeError: listen(): port must be an integer from 0 to 65535, got /tmp/nest12-sock-sh6lN2/app.sock"
+  }
+}

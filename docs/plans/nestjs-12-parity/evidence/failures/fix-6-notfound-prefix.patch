@@ -1,0 +1,207 @@
+--- repo12+fix-1-3/packages/bun-nest/lib/BunHttpAdapter.ts	2026-10-15 11:27:07.565467327 +0100
++++ repo12f/packages/bun-nest/lib/BunHttpAdapter.ts	2026-10-15 11:25:32.783157525 +0100
+@@ -53,6 +53,7 @@
+   createServeStaticHandler,
+   defineHidden,
+   each,
++  encodeUrl,
+   FETCH_STUB_SERVER,
+   finalErrorResponse,
+   get,
+@@ -130,6 +131,53 @@
+ >;
+ 
+ /**
++ * Whether the installed `@nestjs/core` is 12 or later, detected by
++ * `AbstractHttpAdapter.prototype.mapException`, which 12.0.0 added (nestjs/nest
++ * #15075) — no `package.json` read, which an ESM-only package may not export.
++ * From 12, `@nestjs/platform-express` scopes the not-found handler to the
++ * global prefix (nestjs/nest #16372), so this adapter does too; on 11 it is
++ * global, as Express 11's is.
++ */
++const NEST_12 =
++  typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
++    .mapException === "function";
++
++/** A route Nest excluded from the global prefix: the `RouteInfo` it passes. */
++interface ExcludedRoute {
++  /** The path the route is served at, without the prefix (`health`). */
++  path: string;
++  /** Its method; the not-found handler is mounted for every method regardless. */
++  method?: RequestMethod;
++}
++
++/** One not-found handler and the global prefix it is scoped to. */
++interface NotFoundEntry {
++  /** Nest's not-found proxy (throws `NotFoundException`, answered by the filters). */
++  handler: RouterMiddlewareHandler;
++  /**
++   * The normalised global prefix (`/api`) it answers under, or `undefined`
++   * for an unprefixed application, whose handler answers everything outside
++   * every registered prefix.
++   */
++  prefix: string | undefined;
++}
++
++/** `/api/`, `api` → `/api`; `""`/`/`/absent → `undefined`. */
++function normalizePrefix(prefix: string | undefined): string | undefined {
++  if (!prefix) {
++    return undefined;
++  }
++  const withSlash = prefix.startsWith("/") ? prefix : `/${prefix}`;
++  const trimmed = withSlash.replace(/\/+$/, "");
++  return trimmed || undefined;
++}
++
++/** Whether `path` is `prefix` or below it, on whole segments (`/api` not `/apiary`). */
++function isUnderPrefix(path: string, prefix: string): boolean {
++  return path === prefix || path.startsWith(`${prefix}/`);
++}
++
++/**
+  * `error` with the request riding on it, for `handleRequestError`, which
+  * needs it to run the error handlers; a thrown primitive is wrapped to carry
+  * it. A pipeline parked past the request timeout is passed on as is: it is
+@@ -181,7 +229,8 @@
+       >
+     | undefined = undefined;
+ 
+-  private _notFoundHandlers: RouterMiddlewareHandler[] = [];
++  /** Nest's not-found handlers, each with its prefix (see {@link setNotFoundHandler}). */
++  private _notFoundHandlers: NotFoundEntry[] = [];
+   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
+   /**
+    * Body parsers already registered, keyed by path prefix and parser kind
+@@ -522,17 +571,51 @@
+           statusText: "Not Found",
+         });
+       }
+-      return this.#runNotFoundHandlers(req, res).then(() =>
++      const handlers = this.#notFoundHandlersFor(req.path);
++      if (!handlers.length) {
++        // Outside every prefix (Nest 12): no Nest handler answers, so
++        // Express's finalhandler does — its HTML `Cannot GET /path`.
++        const pathname = req.originalUrl.split(/[?#]/)[0] ?? req.path;
++        return finalErrorResponse(
++          { status: 404 },
++          {
++            method: req.method,
++            message: `Cannot ${req.method} ${encodeUrl(pathname)}`,
++          },
++        );
++      }
++      return this.#runNotFoundHandlers(req, res, handlers).then(() =>
+         this.#produceResponse(res, nativeRequest, server),
+       );
+     }
+     return this.#produceResponse(res, nativeRequest, server);
+   }
+ 
++  /**
++   * The not-found handlers that answer `path`: one scoped to a prefix when
++   * `path` is at or under it; an unscoped one unless `path` is under some
++   * application's prefix (as `@nestjs/platform-express` 12 skips them).
++   */
++  #notFoundHandlersFor(path: string): RouterMiddlewareHandler[] {
++    const entries = this._notFoundHandlers;
++    const underSomePrefix = entries.some(
++      (entry) =>
++        entry.prefix !== undefined && isUnderPrefix(path, entry.prefix),
++    );
++    return entries
++      .filter((entry) =>
++        entry.prefix === undefined
++          ? !underSomePrefix
++          : isUnderPrefix(path, entry.prefix),
++      )
++      .map((entry) => entry.handler);
++  }
++
+   /** Runs the not-found handlers, as when no route answered the request. */
+   async #runNotFoundHandlers(
+     req: BunRequest,
+     res: BunResponse<customWebsocketDataType>,
++    handlers: RouterMiddlewareHandler[],
+   ): Promise<void> {
+     let continueProcessingHandlers = true;
+     const next: NextFunction = (err) => {
+@@ -541,7 +624,7 @@
+       }
+     };
+ 
+-    for await (const handler of this._notFoundHandlers) {
++    for await (const handler of handlers) {
+       if (!continueProcessingHandlers) {
+         break;
+       }
+@@ -1318,11 +1401,34 @@
+     this._errorHandlers.push(handler);
+   }
+ 
++  /**
++   * Registers Nest's not-found handler.
++   *
++   * On Nest 11 it answers every request no route handled, whatever `prefix`
++   * says, as `@nestjs/platform-express` 11 does. From Nest 12 it is scoped as
++   * platform-express 12 scopes it (nestjs/nest #16372, #17648, #17923): with
++   * a global `prefix`, only requests at or under it, plus every method on the
++   * paths of `excludedRoutes` (so `POST /health` beside `GET /health` is
++   * Nest's 404); anything else gets `finalhandler`'s HTML `Cannot GET /x`.
++   * Without a prefix it answers everything outside other applications'
++   * prefixes (several applications on one adapter).
++   */
+   public setNotFoundHandler(
+     handler: RouterMiddlewareHandler,
+-    _prefix?: string,
++    prefix?: string,
++    /** Routes excluded from `prefix` (Nest ≥ 12.1.3 passes them). */
++    excludedRoutes?: ExcludedRoute[],
+   ) {
+-    this._notFoundHandlers.push(handler);
++    const scoped = NEST_12 ? normalizePrefix(prefix) : undefined;
++    this._notFoundHandlers.push({ handler, prefix: scoped });
++    if (scoped) {
++      // As Express 12: mounted on each excluded path, for every method,
++      // after the application's routes — so it answers only a miss there.
++      for (const route of excludedRoutes ?? []) {
++        const path = route.path.startsWith("/") ? route.path : `/${route.path}`;
++        this.instance.all(path, handler);
++      }
++    }
+   }
+ 
+   /**
+--- repo12/packages/bun-common/lib/BunHttpAdapter.ts	2026-10-15 11:03:44.475764006 +0100
++++ agent-failures/repo12f/packages/bun-common/lib/BunHttpAdapter.ts	2026-10-15 11:20:42.443367800 +0100
+@@ -138,6 +138,12 @@
+   /** The request's path; only passed through to `log`. */
+   path?: string;
+   /**
++   * The page's text in place of the status message: `finalhandler` writes
++   * `Cannot <METHOD> <path>` for a request nothing routed (no error at all),
++   * which is what this is for. HTML-escaped. Default: the status message.
++   */
++  message?: string;
++  /**
+    * Called once, before the response is built, to report the error. It is
+    * always called when given — gating it (the adapters skip it under
+    * `NODE_ENV=test`) is the caller's choice. Absent: nothing is logged.
+@@ -157,7 +163,8 @@
+  * - status from `err.status` or `err.statusCode` when it is 4xx/5xx, else
+  *   `500` (see {@link errorStatusCode});
+  * - an HTML page whose text is the status message (`"Payload Too Large"`),
+- *   never the error's message or stack, so nothing leaks in any environment;
++ *   never the error's message or stack, so nothing leaks in any environment
++ *   (`options.message` replaces it, for finalhandler's `Cannot GET /path`);
+  * - `Content-Security-Policy: default-src 'none'` and
+  *   `X-Content-Type-Options: nosniff`, plus any `err.headers`;
+  * - no body when `options.method` is `HEAD`.
+@@ -190,7 +197,7 @@
+   }
+ 
+   const message = STATUS_CODES[status] ?? String(status);
+-  const body = `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>${escapeHtml(message)}</pre>\n</body>\n</html>\n`;
++  const body = `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>${escapeHtml(options.message ?? message)}</pre>\n</body>\n</html>\n`;
+ 
+   headers.set("Content-Security-Policy", "default-src 'none'");
+   headers.set("X-Content-Type-Options", "nosniff");

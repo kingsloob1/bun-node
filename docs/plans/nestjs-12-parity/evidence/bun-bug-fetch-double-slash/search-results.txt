@@ -1,0 +1,85 @@
+### fetch double slash path
+### fetch leading double slash
+### fetch strips slash
+### double slash request path fetch
+### fetch // pathname
+41363	open	Support mixed static/dynamic route segments like `/@:username`
+44176	open	Bun.serve routes: matching uses the raw request-target but req.url is dot-segment-normalised (`..` reaches a :param route; `#` lands in params)
+35283	open	Bun.serve does not drain-or-close a keep-alive connection when the handler responds before reading the full request body
+44982	open	[Regression][Linux] Native HttpCloak/Koffi calls followed by GC hang Bun 1.4.3; 1.4.2 completes
+17132	open	Bun.serve：The ideal writing style | 理想中的Bun服务器
+39784	open	"is not in the catalog" after bumping a catalog entry to a version published the same day
+19615	open	TRACE body not sent
+8993	open	Bun.build does not seem to include all imports
+11868	open	Kill a process launched by Bun shell
+43212	closed	bun install with the isolated linker exits 1 when an optional dependency's tarball cannot be downloaded
+### fetch removes leading slash
+### fetch duplicate slashes url
+### double slash
+28771	open	Issues with global bin paths on Windows
+26770	open	`fetch("file://relative/path")` incorrectly resolves relative paths as directories on macOS
+13042	closed	Support named pipes on Windows
+8188	closed	Setup.sh - `src/deps/libmimalloc.a`: No such file or directory
+### double slashes
+28771	open	Issues with global bin paths on Windows
+13042	closed	Support named pipes on Windows
+### request-target fetch
+44176	open	Bun.serve routes: matching uses the raw request-target but req.url is dot-segment-normalised (`..` reaches a :param route; `#` lands in params)
+### fetch normalizes path
+### fetch url path slash
+### multiple slashes
+17363	open	handle `trailing slashes` on static routes
+### fetch pathname slash
+### undici double slash
+### "//" fetch
+44282	open	node-fetch: fetch() rejects with native errors, not node-fetch AbortError / FetchError
+41860	open	Fetch and Response.clone() type errors
+5650	open	Support fetch integrity
+42608	open	fetch: make the fixed 64-slot idle connection pool configurable
+42497	open	fetch and Request silently turn an unrecognised HTTP method into GET
+42499	open	Request and Response constructors skip several validations the Fetch spec requires
+44916	open	MSW 3 native fetch mocks are bypassed on Bun 1.4.3 (socket-based FetchInterceptor)
+43682	open	All fetches fail with ECONNRESET on macOS when Tailscale MagicDNS is enabled (Intel only); curl works
+4463	open	Bun.serve() function to fetch TLS certs
+45138	open	fetch: POST on a reused keep-alive socket fails with ECONNRESET when the server closes idle connections after 5s (Turso)
+39902	open	fetch() does not respect dns.setDefaultResultOrder("ipv4first"), with no way to prefer IPv4
+44177	open	Bun.serve routes: building the table is quadratic and lookup is linear in the number of sibling routes
+6353	open	Add support for `bun fetch`
+6021	open	Support arbitrary method in `fetch`
+5686	open	[Node.js] - HTTP Request Agent is invalid! - Via `node-fetch`
+### path starting with //
+17332	open	Bun crashes when creating duplicate directory in path starting with ../
+21346	open	Bun fails to re-import file:// modules when changing search params
+28931	open	The `canary` release fails checksum validation
+30839	closed	Resolver: imports resolution for scoped packages ignores exports on Windows due to path separator corruption
+28792	closed	List of breaking changes for 1.4
+26871	closed	Bun.build external wildcard support or accept a filter function.
+7877	closed	HuggingFace failure
+### protocol-relative path fetch
+### fetch collapses
+31317	open	node:http and Bun.serve response multi-value headers are collapsed into a single line
+### leading slashes
+38	closed	Add support for importing URLs in JavaScript
+### fetch sends wrong path
+### http client path normalization
+63
+28771	open	Issues with global bin paths on Windows
+44512	open	fix(resolve): match Node 24 package configuration validation
+26770	open	`fetch("file://relative/path")` incorrectly resolves relative paths as directories on macOS
+38812	open	url: emit a single slash in href_without_auth() for root-path registry URLs
+36183	open	node:os: floor fractional cgroup CPU quota in availableParallelism()
+44059	open	feat(compile): --include embeds extra files as lazily loaded modules (#11732)
+34896	open	fetch: data: URL Content-Type and fragment per the Fetch standard
+38056	open	Bun.pathToFileURL: resolve the path with path.resolve() semantics
+29133	open	test: add regression test for os.availableParallelism() cpuset clamping (#29129)
+38298	open	Recursive mkdir: never give mkdir(2) a name with a trailing separator (Bun.write, fs.mkdir, mkdir -p follow a dangling symlink on macOS)
+25325	open	Allow defining a custom web inspector domain
+23274	open	fix(completions): correct parsing and quoting of complex package.json scripts, filenames and user input
+42685	open	resolver: strip the trailing separator inside bust_dir_cache
+33496	open	s3: send object keys as given, separators included
+37120	closed	bake: don't match framework routes with missing or empty URL segments
+38707	closed	pack: skip bins reached through symlinks; publish: do not read the readme through a symlink
+38222	open	node:fs: recursive mkdir creates the parents of a//b style paths under the name a, not a/
+28773	closed	Fix global bin path warnings: double backslashes on Windows and trailing slash PATH detection
+37919	closed	test(install): serve URL tarball dependencies locally in bun-install.test.ts
+38698	closed	Fix package-lock.json migration for scope registries configured without a trailing slash

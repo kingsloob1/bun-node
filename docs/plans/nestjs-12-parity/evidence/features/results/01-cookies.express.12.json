@@ -1,0 +1,106 @@
+{
+  "probe": "01-cookies",
+  "kind": "express",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "nestSecret": {
+    "read": {
+      "status": 200,
+      "headers": {
+        "content-length": "214",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"all\":{\"a\":\"b\",\"s\":\"s:v.yNalNnUpuSdqwisFAt0MIp2EkL97Hh+/yovwQQlst5c\",\"bad\":\"s:v.badsig\",\"j\":\"j:{\\\"x\\\":1}\",\"enc\":\"€\",\"dup\":\"1\",\"q\":\"quoted\",\"constructor\":\"c\"},\"a\":\"b\",\"j\":\"j:{\\\"x\\\":1}\",\"toStringType\":\"undefined\"}"
+    },
+    "readSigned": {
+      "status": 200,
+      "headers": {
+        "content-length": "43",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"all\":{\"s\":\"v\"},\"s\":\"v\",\"bad\":\"undefined\"}"
+    },
+    "set": {
+      "status": 200,
+      "headers": {
+        "content-length": "2",
+        "content-type": "text/html; charset=utf-8",
+        "x-powered-by": "Express",
+        "set-cookie": [
+          "plain=v%201; Path=/; HttpOnly",
+          "signed=s%3Av2.g3ju77VHs7VfTvWSwv%2B5a31iudplSEWYMaZqNyoJZ8o; Path=/",
+          "gone=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+        ]
+      },
+      "body": "ok"
+    }
+  },
+  "noSecret": {
+    "read": {
+      "status": 200,
+      "headers": {
+        "content-length": "214",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"all\":{\"a\":\"b\",\"s\":\"s:v.yNalNnUpuSdqwisFAt0MIp2EkL97Hh+/yovwQQlst5c\",\"bad\":\"s:v.badsig\",\"j\":\"j:{\\\"x\\\":1}\",\"enc\":\"€\",\"dup\":\"1\",\"q\":\"quoted\",\"constructor\":\"c\"},\"a\":\"b\",\"j\":\"j:{\\\"x\\\":1}\",\"toStringType\":\"undefined\"}"
+    },
+    "readSigned": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "set": {
+      "status": 200,
+      "headers": {
+        "content-length": "144",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express",
+        "set-cookie": [
+          "plain=v%201; Path=/; HttpOnly"
+        ]
+      },
+      "body": "{\"setSignedThrew\":\"Error: Cannot sign cookie \\\"signed\\\": no cookie secret is configured. Pass \\\"cookies: { secret }\\\" to NestFactory.create().\"}"
+    }
+  },
+  "middlewareSecretOnly": {
+    "read": {
+      "status": 200,
+      "headers": {
+        "content-length": "129",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"all\":{\"a\":\"b\",\"j\":{\"x\":1},\"enc\":\"€\",\"dup\":\"1\",\"q\":\"quoted\",\"constructor\":\"c\"},\"a\":\"b\",\"j\":{\"x\":1},\"toStringType\":\"undefined\"}"
+    },
+    "readSigned": {
+      "status": 200,
+      "headers": {
+        "content-length": "43",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"all\":{\"s\":\"v\"},\"s\":\"v\",\"bad\":\"undefined\"}"
+    },
+    "set": {
+      "status": 200,
+      "headers": {
+        "content-length": "144",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express",
+        "set-cookie": [
+          "plain=v%201; Path=/; HttpOnly"
+        ]
+      },
+      "body": "{\"setSignedThrew\":\"Error: Cannot sign cookie \\\"signed\\\": no cookie secret is configured. Pass \\\"cookies: { secret }\\\" to NestFactory.create().\"}"
+    }
+  },
+  "bunParseCookiesOff": "bun only"
+}

@@ -1,0 +1,107 @@
+{
+  "probe": "03-exceptions",
+  "kind": "bun",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "cases": {
+    "invalidJson": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":400,\"message\":\"JSON Parse error: Expected '}'\"}"
+    },
+    "overLimit": {
+      "status": 413,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":413,\"message\":\"Request body exceeds the maximum allowed size of 1024 bytes (received 4008 bytes)\"}"
+    },
+    "badEncoding": {
+      "status": 415,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":415,\"message\":\"unsupported content encoding \\\"br-nope\\\"\"}"
+    },
+    "badPercentParam": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "errorCode": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"with code\",\"error\":\"Bad Request\",\"statusCode\":400,\"errorCode\":\"E_CODE\"}"
+    },
+    "errorCodePlain": {
+      "status": 409,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":409,\"message\":\"plain\",\"errorCode\":\"E_PLAIN\"}"
+    },
+    "routeStatusError": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_plainError": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_errorWithStatusCode": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_httpErrorsShape": {
+      "status": 422,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":422,\"message\":\"unprocessable\"}"
+    },
+    "mw_plainObject": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_syntaxError": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_uriError": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "mw_string": {
+      "status": 500,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    }
+  }
+}

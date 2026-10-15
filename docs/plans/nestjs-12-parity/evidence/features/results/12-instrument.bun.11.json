@@ -1,0 +1,30 @@
+{
+  "probe": "12-instrument",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "all": {
+    "res": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"id\":\"7\",\"svc\":\"hi\"}"
+    },
+    "decoratedIncludes": {
+      "Svc": true,
+      "C": true,
+      "plainMiddleware": false
+    },
+    "decoratedMiddlewareCalls": 0,
+    "routeTriggered": [
+      {
+        "method": 0,
+        "path": "/i/:id"
+      }
+    ],
+    "requestHookCalls": 0,
+    "responseHookStatuses": []
+  }
+}

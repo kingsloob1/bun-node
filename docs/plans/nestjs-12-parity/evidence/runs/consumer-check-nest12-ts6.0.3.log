@@ -1,0 +1,18 @@
+
+@kingsleyweb/bun-nest — TypeScript 6.0.3   (cell = status(total diagnostics); slc = skipLibCheck)
+
+spelling                                       bundler/slc         bundler/strict      bun-init/slc        bun-init/strict     node16/slc          node16/strict       bun runtime
+@kingsleyweb/bun-nest                          OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/jobs                     OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/jobs                 OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/jobs/tokens          OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/BunHttpAdapter       OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/BunWebSocketAdapter  OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/interceptors         OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/decorators           OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/index                OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/index.ts             OK                  OK                  OK                  OK                  OK                  OK                  ok
+@kingsleyweb/bun-nest/lib/interceptors.js      OK                  OK                  OK                  OK                  OK                  OK                  ok
+checked with optional peer(s) @kingsleyweb/bun-jobs: @kingsleyweb/bun-nest/jobs
+checked with optional peer(s) @kingsleyweb/bun-jobs: @kingsleyweb/bun-nest/lib/jobs
+every other spelling: checked with no optional peer installed

@@ -1,0 +1,24 @@
+34 |   }
+35 |   @Get("error-early")
+36 |   errorEarly() {
+37 |     const s = new Readable({
+38 |       read() {
+39 |         this.destroy(new Error("source failed"));
+                              ^
+error: source failed
+      at read (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/spikes-features/05-streamable.ts:39:26)
+      at internal:streams/readable:351:17
+      at createAsyncIterator (internal:streams/readable:684:56)
+      at next (unknown:1:1)
+43 |   }
+44 |   @Get("error-custom")
+45 |   errorCustom() {
+46 |     const s = new Readable({
+47 |       read() {
+48 |         this.destroy(new Error("source failed"));
+                              ^
+error: source failed
+      at read (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/spikes-features/05-streamable.ts:48:26)
+      at internal:streams/readable:351:17
+      at createAsyncIterator (internal:streams/readable:684:56)
+      at next (unknown:1:1)

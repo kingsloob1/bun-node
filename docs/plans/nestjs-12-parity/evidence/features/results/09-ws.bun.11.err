@@ -1,0 +1,9 @@
+ 8 |         var onUnhandledError = config_1.config.onUnhandledError;
+ 9 |         if (onUnhandledError) {
+10 |             onUnhandledError(err);
+11 |         }
+12 |         else {
+13 |             throw err;
+                       ^
+error: denied on connect
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/rxjs/dist/cjs/internal/util/reportUnhandledError.js:13:19)

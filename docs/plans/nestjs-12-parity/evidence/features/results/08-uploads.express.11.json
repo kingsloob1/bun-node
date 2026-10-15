@@ -1,0 +1,109 @@
+{
+  "probe": "08-uploads",
+  "kind": "express",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "all": {
+    "multerStyleOptionsThrow": "no throw",
+    "single": {
+      "status": 201,
+      "headers": {
+        "content-length": "215",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"file\":{\"fieldname\":\"file\",\"originalname\":\"h.txt\",\"mimetype\":\"text/plain\",\"size\":5,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalname\",\"size\"]},\"body\":{\"title\":\"t\"}}"
+    },
+    "unexpectedField": {
+      "status": 400,
+      "headers": {
+        "content-length": "82",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Unexpected file field - other\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "tooLarge": {
+      "status": 413,
+      "headers": {
+        "content-length": "73",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"File too large\",\"error\":\"Payload Too Large\",\"statusCode\":413}"
+    },
+    "mergedLimitsTwoFiles": {
+      "status": 201,
+      "headers": {
+        "content-length": "11",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"count\":2}"
+    },
+    "nestingTooDeep": {
+      "status": 400,
+      "headers": {
+        "content-length": "90",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Field name nesting too deep - a[b][c]\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "arrayIndexTooLarge": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+    },
+    "nestingOk": {
+      "status": 201,
+      "headers": {
+        "content-length": "32",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"a\":{\"b\":\"1\"},\"arr\":[null,\"x\"]}"
+    },
+    "nestedDefault": {
+      "status": 201,
+      "headers": {
+        "content-length": "50",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"a\":{\"b\":{\"c\":\"1\"}},\"list\":[\"x\",\"y\"],\"plain\":\"p\"}"
+    },
+    "pngMislabelled": {
+      "status": 201,
+      "headers": {
+        "content-length": "200",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"fieldname\":\"file\",\"originalname\":\"x.bin\",\"mimetype\":\"application/octet-stream\",\"size\":70,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalname\",\"size\"]}"
+    },
+    "pngWrong": {
+      "status": 400,
+      "headers": {
+        "content-length": "131",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Validation failed (current file type is image/png, expected type is image/png)\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "svgPlusMeta": {
+      "status": 400,
+      "headers": {
+        "content-length": "139",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Validation failed (current file type is image/svg+xml, expected type is image/svg+xml)\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    }
+  }
+}

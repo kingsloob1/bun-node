@@ -1,0 +1,56 @@
+{
+  "probe": "09-ws",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "websockets": "11.1.27",
+  "platformWs": "absent",
+  "bun": "1.4.4",
+  "echoAndErrors": {
+    "opened": true,
+    "received": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"echo\",{\"a\":1}]}",
+      "{\"type\":2,\"namespace\":\"/main\",\"data\":[\"exception\",{\"status\":\"error\",\"message\":\"nope\",\"cause\":{\"pattern\":\"fail\",\"data\":{\"x\":1}}}]}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"valid\",{\"body\":{\"n\":\"5\"},\"nType\":\"string\"}]}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"valid\",{\"body\":{\"n\":\"x\"},\"nType\":\"string\"}]}"
+    ]
+  },
+  "disconnectReason": {
+    "disconnects": [
+      {
+        "argCount": 1,
+        "reasonType": "undefined",
+        "reasonIsClient": false
+      }
+    ]
+  },
+  "serverSideClose": {
+    "clientSaw": {
+      "code": 4002,
+      "reason": "server says bye"
+    },
+    "disconnects": [
+      {
+        "argCount": 1,
+        "reasonType": "undefined",
+        "reasonIsClient": false
+      }
+    ]
+  },
+  "requestScoped": {
+    "a": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"requestIsClient\":false}]}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"requestIsClient\":false}]}"
+    ],
+    "b": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"requestIsClient\":false}]}"
+    ],
+    "scopedInstancesCreated": 0
+  },
+  "hookError": {
+    "opened": true,
+    "received": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"echo\",\"still alive?\"]}"
+    ],
+    "closed": null
+  }
+}

@@ -1,0 +1,502 @@
+  ok    01-quick-start/index.ts                                0.3s
+  ok    02-http-adapter/adapter-options.ts                     0.3s
+  ok    02-http-adapter/middleware-and-versioning.ts           0.3s
+  ok    02-http-adapter/per-route-parsing.ts                   0.3s
+  FAIL  02-http-adapter/undecodable-bodies.ts                  0.3s
+        
+        === Undecodable bodies in a Nest app ===
+        
+        --- By default: refused before the guard, with Nest's 400
+          ✗ allowed or not, the bad JSON is Nest's 400 and the guard never runs
+              {
+                expected: [ "Nest's 400", "Nest's 400", {
+                    guard: 0,
+                    handler: 0,
+                  } ],
+                actual: [
+                  [ 400, {
+                      statusCode: 400,
+                      message: "JSON Parse error: Expected '}'",
+                    } ], [ 400, {
+                      statusCode: 400,
+                      message: "JSON Parse error: Expected '}'",
+                    } ], {
+                    guard: 0,
+                    handler: 0,
+                  }
+                ],
+              }
+        
+        --- router: { acceptUndecodableBody: true }: the guard first, then the controller
+          ✓ allowed: the controller reads req.bodyDecodingError through @Req() and answers its own 400, served and through fetch()
+          ✓ denied: the guard's 403; over the three requests the guard ran 3 times, the controller only for the 2 allowed
+          ✓ a body that decodes is unaffected
+        
+        --- A bun-common router mounted with the option: only its routes opt in
+          ✗ the mounted router authorizes, then answers its own 400; the controller beside it is refused with Nest's 400
+              {
+                expected: [
+                  [ 400, {
+                      code: "INVALID_JSON",
+                      status: 400,
+                    } ], [ 403, {
+                      code: "FORBIDDEN",
+                    } ], 2, "Nest's 400", {
+                    guard: 4,
+                    handler: 3,
+                  }
+                ],
+                actual: [
+                  [ 400, {
+                      code: "INVALID_JSON",
+                      status: 400,
+                    } ], [ 403, {
+                      code: "FORBIDDEN",
+                    } ], 2, [ 400, {
+                      statusCode: 400,
+                      message: "JSON Parse error: Expected '}'",
+                    } ], {
+                    guard: 4,
+                    handler: 3,
+                  }
+                ],
+              }
+        
+        --- A body over its cap: 413 before the guard, whatever the setting
+          ✓ opted in, a 64-byte body over a 16-byte cap: 413, the guard never ran
+        
+        4 checks passed, 2 FAILED:
+          - allowed or not, the bad JSON is Nest's 400 and the guard never runs
+          - the mounted router authorizes, then answers its own 400; the controller beside it is refused with Nest's 400
+  ok    02-http-adapter/pipeline.ts                            0.5s
+  ok    02-http-adapter/views.ts                               0.3s
+  FAIL  02-http-adapter/express-parity.ts                      1.3s
+        
+        === Express parity from a Nest app ===
+        
+        --- @Get() answers HEAD, without the body
+          [   83ms] served HEAD /page: {
+          status: 200,
+          page: "1",
+          length: "13",
+          body: "",
+        }
+          ✓ served: the GET's status and headers, no body
+          ✓ adapter.fetch(): the same, without a socket
+          ✓ the handler ran for each
+          ✓ GET /page still has its body
+          ✓ HEAD /form (a @Post() only) is a 404
+        
+        --- Middleware calling next() later
+          ✓ served GET /late waits for both callbacks
+          ✓ …in this order
+          ✓ adapter.fetch('/late') too
+          [  408ms] GET /stuck answered after 301ms: 500 Internal Server Error
+          ✓ a middleware that never calls next() is a 500
+          ✓ …once the 300ms request timeout ran out
+          ✓ an async controller method that never settles is a 500
+          ✓ …once the 300ms request timeout ran out
+        
+        --- server.routes: a native route, ahead of Nest
+          ✓ GET /health is Bun's constant
+          ✓ …with an ETag
+          ✓ POST /health gets it too
+          ✓ If-None-Match with the ETag is a 304
+          ✓ no middleware, guard or handler ran
+          ✓ adapter.fetch('/health') has no socket, so Nest answers
+        
+        --- Async middleware and controllers, an early stream, rawBody
+          ✓ async middleware then an async controller, served and through fetch()
+          ✓ @Sse(): the first event arrives before the last is emitted (~300ms), both ways
+          ✓ rawBody: true — a GET has no rawBody (the body parser passed it on)
+          ✓ …a POST has its exact bytes
+          ✓ rawBody: true — a JSON POST with a Content-Length still has req.rawBody
+          ✓ without rawBody: no req.rawBody, and the controller still gets the parsed body
+        
+        --- @Redirect() and res.redirect(): Express's body, chosen by Accept
+          [  954ms] Accept: text/plain: {
+          status: 302,
+          location: "/target",
+          vary: "Accept",
+          type: "text/plain; charset=utf-8",
+          length: "29",
+          body: "Found. Redirecting to /target",
+        }
+          ✓ Accept: text/plain — a plain-text body
+          ✓ Accept: text/html — the same in a <p>
+          ✓ Accept: application/json — no body, and a Content-Length of 0
+          ✓ Location is percent-encoded; the HTML body escapes the `&`
+          ✓ res.redirect(301, url) and res.redirect(url, 301) answer alike
+        
+        --- Host routing, the static prefix, clearCookie, invalid JSON
+          ✓ @Controller({ host }) matches the Host with and without a port, and nothing else
+          ✓ GET /static — the bare prefix — is a 301 to /static/
+          ✓ …which serves the index
+          [  959ms] clearCookie('session', { maxAge: 60000 }): session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax
+          ✓ clearCookie() expires the cookie at the epoch, and drops the maxAge given
+          [  960ms] POST /json with invalid JSON: {
+          status: 400,
+          body: {
+            statusCode: 400,
+            message: "JSON Parse error: Unexpected EOF",
+          },
+        }
+          ✗ invalid JSON is Nest's 400: message, error and statusCode
+              {
+                expected: {
+                  status: 400,
+                  keys: [ "error", "message", "statusCode" ],
+                  error: "Bad Request",
+                  statusCode: 400,
+                  message: "string",
+                },
+                actual: {
+                  status: 400,
+                  keys: [ "message", "statusCode" ],
+                  error: undefined,
+                  statusCode: 400,
+                  message: "string",
+                },
+              }
+        
+        --- Differs from Express, on purpose (README: Known differences)
+          ✓ no ETag by default (Express: a weak one) — README, Known differences: "ETags are off unless the adapter's `etag` option turns them on"
+          ✓ a returned string is text/plain (Express: text/html) — README, Known differences: "A string, number or boolean response body defaults to `text/plain` (Express: `text/html`)"
+          ✓ req.query nests a[b]=1 (Express 5's simple parser: { 'a[b]': '1' }) — README, Known differences: "`req.query` nests (`a[b]=1` → `{ a: { b: "1" } }`)"
+          ✓ a .tsx view with no engine is refused, not require('tsx')'d (Express loads the module named after the extension) — README, Known differences: "A view with a script extension (`.tsx`, `.jsx`, `.ts`, `.js`, …) and no engine registered for it throws `No view engine registered for ".tsx"…`"
+        
+        37 checks passed, 1 FAILED:
+          - invalid JSON is Nest's 400: message, error and statusCode
+  ok    03-file-uploads/interceptors.ts                        0.3s
+  ok    04-websockets/adapter-options.ts                       0.5s
+  ok    04-websockets/custom-adapter.ts                        0.3s
+  ok    04-websockets/gateway-basics.ts                        0.4s
+  ok    05-jobs-api/module.ts                                  0.4s
+  ok    06-jobs-ui/mount.ts                                    0.4s
+  ok    10-options/interceptor-options.ts                      0.3s
+  ok    10-options/http-adapter-options.ts                     0.5s
+  FAIL  10-options/jobs-api-module-options.ts                  0.7s
+        
+        === Option tour: BunJobsApiModule ===
+        
+        --- forRoot: mounting, the tokens, and @InjectJobsApi()
+          ✓ the router is mounted under basePath
+          ✓ …and answers as the management API
+          ✓ the OpenAPI document is served under it too
+          ✓ BUN_JOBS_API provides the built JobsApi
+          ✓ @InjectJobsApi() resolves the very same instance
+          ✓ BUN_JOBS_API_OPTIONS provides what it was configured with
+          ✓ a path the API does not route still reaches the host's 404
+        
+        --- authorize and readOnly reach the API through the module
+          ✓ authorize denies an action it refuses
+          ✓ …with the API's problem code
+          ✓ readOnly prunes a mutating route entirely, so it 404s
+          ✓ an allowed read still answers
+        
+        --- a malformed body: the API answers it, a controller still gets Nest's 400
+          ✓ an allowed caller gets the API's 400 INVALID_JSON, after authorize
+          ✓ a denied caller gets 403 FORBIDDEN, not the body error
+          ✗ a controller beside it still gets Nest's 400, its handler never run
+              {
+                expected: [ 400, "application/json", "Bad Request", false ],
+                actual: [ 400, "application/json", undefined, false ],
+              }
+        
+        --- forRootAsync: imports, inject and useFactory
+          ✓ the factory's basePath is where the API is mounted
+          ✓ the injected provider really decided the request
+          ✓ …and nothing is mounted at the default of another app
+        
+        --- attachWebSocket: false leaves the HTTP API and no socket
+          ✓ the HTTP API is mounted as usual
+          ✓ but nothing upgrades on the socket's path
+        
+        --- websocket: { port } serves the socket on a server of its own
+          ✓ the socket reports its own bound port
+          ✓ …which is not the HTTP one
+          ✓ it greets a client on that port
+          ✓ offering ["other", "bun-jobs.v1"] negotiates bun-jobs.v1
+          ✓ and the HTTP server does not upgrade that path at all
+        
+        --- websocket: false removes the socket and the AsyncAPI document
+          ✓ there is no socket
+          ✓ nor an AsyncAPI document
+          ✓ the HTTP API is unaffected
+        
+        --- sharing the server with a catch-all gateway
+          ✓ the socket answers beside a catch-all gateway
+          ✓ one session is counted
+          ✓ every connection the API upgraded carries the bunJobsApi marker
+          ✓ the API never answers a connection it did not mark
+          ✓ …and it moves no session counter
+          ✓ closing one leaves our bookkeeping alone
+          ✓ our session is still live
+          ✓ a catch-all gateway does see the API's connections (filter on the marker)
+          ✓ two sessions fill a cap of two
+          ✓ a third is refused
+          ✓ a released slot is reusable
+          ✓ offering ["other", "bun-jobs.v1"] through Nest negotiates bun-jobs.v1
+        
+        --- registration order: a catch-all gateway bound first is refused
+          ✓ attach() after a route already covering the path — ConfigError (CONFIG)
+        
+        --- attaching before useWebSocketAdapter() swaps the adapter
+          ✓ the router's BunWebSocket really was replaced
+          ✓ open still reaches the session after the swap
+          ✓ message too
+          ✓ shutdown tells a live client 1001 'going away'
+          ✓ and its session is gone
+        
+        44 checks passed, 1 FAILED:
+          - a controller beside it still gets Nest's 400, its handler never run
+  FAIL  10-options/websocket-adapter-options.ts                1.1s
+        
+        === Option tour: BunWebSocketAdapter ===
+        
+        --- MessageEventTypes: the socket.io packet ordinals
+          ✓ CONNECT, DISCONNECT, EVENT, ACK, ERROR, BINARY_EVENT, BINARY_ACK
+        
+        --- The adapter BunHttpAdapter builds
+          ✓ is a BunNestWebsocketAdapter
+          ✓ which is a BunWebSocketAdapter
+          ✓ router is the HTTP adapter's router
+          ✓ is the router's active WebSocket
+          ✓ getServer() before listen
+          ✓ wsHandler defaults
+          ✓ wsHandler has every lifecycle callback
+        
+        --- BunHttpAdapter's `websocket` option
+          ✓ wsOptions reach wsHandler
+          ✓ httpAdapter: rides another HTTP adapter's router
+          ✓ httpAdapter: … and its server
+          ✓ getServer: supplies the server to ride on
+          ✓ newInstance + listen: a dedicated server on listen.port
+        
+        --- Constructor shapes
+          ✓ { httpAdapter, localOptions }: wsOptions layered on
+          ✓ … router from httpAdapter
+          ✓ constructing one over a router makes it the router's active WebSocket
+          ✓ the webSocketAdapter setter makes its adapter active again
+          ✓ any { instance, getBunServer } is an httpAdapter
+          ✓ newInstance: listen.port 0 binds a free port, reported by getServer()
+          ✓ … and close() releases it
+          ✓ options naming no server throw (there is no default port) — Error
+          ✓ newInstance + router: listening at construction
+          ✓ … on that router
+          ✓ … with its wsOptions
+          ✓ … serving the router's HTTP routes on its port
+          ✓ … 404 for anything else
+          ✓ create(port) returns its own server
+          ✓ … and its WebSocket
+          ✓ newInstance + httpAdapter: router falls back to httpAdapter.instance
+          ✓ … but listens on listen.port
+          ✓ newInstance: false rides on getServer()
+        
+        --- create() and bindClientConnect()
+          ✓ create(0) before the HTTP server listens returns undefined
+          ✓ create(0) after listen returns the HTTP server
+          ✓ each binding hears only its namespace
+          ✓ the callback receives the live server (given or not)
+          ✓ a path with no namespace is refused
+        
+        --- bindMessageHandlers(): EVENT (2)
+          ✓ a WsResponse comes back as an EVENT
+          ✓ the reply echoes the packet's namespace field
+          ✓ a handler resolving undefined sends nothing
+          ✓ every Observable emission is sent
+          ✓ with an id, the ack callback sends an ACK of that id
+          ✓ without an id, no ack callback is passed
+          ✓ an id on an event whose handler does not ack produces no ACK
+          ✓ isAckHandledManually false: a returned value is the ACK
+          ✓ isAckHandledManually true: only the handler's ack, never its return value
+          ✓ an ack sends once, however often it is called
+          ✓ a returned value without an id sends nothing
+          ✓ frames run only the sending client's handlers
+          ✓ a JSON packet in a binary frame is read like text
+        
+        --- bindMessageHandlers(): ACK (3), BINARY_ACK (6), BINARY_EVENT (5)
+          ✓ an ACK from the client is echoed back
+          ✓ a BINARY_ACK is echoed back
+          ✓ BINARY_EVENT: base64 arrives as a Buffer
+          ✓ BINARY_EVENT: every byte survives
+          ✓ BINARY_EVENT: every argument `binary` marks is decoded, and only those
+          ✓ BINARY_EVENT with no arguments: nothing decoded, an undefined payload
+          ✓ an ack carrying bytes is a BINARY_ACK (6), the bytes as base64
+          ✓ an ack without bytes is an ACK (3), even for a BINARY_EVENT
+          ✓ a WsResponse whose data is bytes comes back as a BINARY_EVENT
+        
+        --- bindMessageHandlers(): CONNECT (0), DISCONNECT (1), ERROR (4)
+          ✓ CONNECT calls the `connect` handler
+          ✓ DISCONNECT calls the `disconnect` handler and leaves the socket open
+          ✓ ERROR calls the `error` handler with its text
+        
+        --- bindMessageHandlers(): frames it cannot parse or route, handler errors
+          ✓ a malformed frame gets an ERROR packet
+          ✓ … the `error` handler gets the parse Error
+          ✓ … and the `events` catch-all gets the raw frame
+          ✓ an unknown type goes to the catch-all
+          ✓ an EVENT whose data is not an array goes to the catch-all
+          ✓ a handler that throws sends an ERROR with its message
+          ✓ a handler that rejects sends an ERROR with its message
+        
+        --- bindMessageHandlers() with a transform
+          ✓ the reply still arrives
+          ✓ the transform wrapped the handler's result
+        
+        --- bindClientDisconnect()
+          ✓ reports the code and reason
+          ✓ … for its own client only
+          ✓ the message listener detaches
+          ✓ both disconnect listeners detach
+        
+        --- wsOptions.maxPayloadLength is enforced
+          ✓ a frame over maxPayloadLength closes the connection
+        
+        --- close() and dispose()
+          ✓ close(shared server) closes the adapter's connections with 1001
+          ✓ … but leaves the HTTP server serving
+          ✓ … and detaches the gateways bound to it
+          ✓ dispose() is a no-op
+          ✓ close(undefined) stops a newInstance adapter's own server
+        
+        --- NestJS: gateways on the adapter
+          ✓ afterInit on the shared server gets undefined (not listening yet)
+          ✓ @WebSocketServer() on the shared server is undefined
+          ✓ @WebSocketServer() on a gateway port is its own server
+          ✓ afterInit on a gateway port gets that server
+          ✓ middleware can refuse an upgrade
+          ✓ handleConnection(client, server) gets the live server
+          ✓ onUpgrade gets the request and response
+          ✓ @ConnectedSocket client.data
+          ✓ @MessageBody('key') picks one property
+          ✓ @Ack() answers with an ACK
+          ✓ @Ack() plus a return value: only the handler's ACK is sent
+          ✓ @Ack() plus an Observable: one ACK, the WsResponse emission still sent
+          ✓ no @Ack(): the return value is the ACK
+          ✓ no @Ack(), an Observable: its first emission is the ACK
+          ✓ no @Ack() and no id: nothing is sent
+          ✓ client.emit(event, ...args) sends an EVENT
+          ✗ a thrown WsException reaches the client as an `exception` event
+              {
+                expected: [
+                  {
+                    type: 2,
+                    namespace: "/",
+                    data: [ "exception", {
+                        status: "error",
+                        message: "unheard",
+                        cause: {
+                          pattern: "fizzle",
+                          data: null,
+                        },
+                      } ],
+                  }
+                ],
+                actual: [],
+              }
+          ✓ an exception filter replaces it — here one writing an ERROR packet
+          ✓ a namespaced gateway answers on its path
+          ✓ another namespace's events do not reach it
+          ✓ its events do not reach the default namespace
+          ✓ a path no gateway serves is refused
+          ✓ a default-namespace gateway listed after a namespaced one serves '/'
+          ✓ @WebSocketGateway({ path }) answers on that path
+          ✓ … and only there: '/' does not reach it
+          ✓ … nor does it reach the default path's gateways
+          ✓ a gateway port accepts connections
+          ✓ a port is a boundary: the HTTP server's '/' gateways do not answer on a gateway port
+          ✓ … nor do their connection hooks run for its clients
+          ✓ … and a gateway port's gateway does not answer on the HTTP server
+          ✓ handleDisconnect(client) gets the connected client
+          ✓ app.close() calls close(server) for the gateway port's server
+          ✓ … and dispose()
+          ✓ the gateway port is released
+        
+        113 checks passed, 1 FAILED:
+          - a thrown WsException reaches the client as an `exception` event
+  FAIL  04-websockets/message-formats.ts                       5.5s
+        
+        === Message formats ===
+        
+        --- EVENT (2): call a handler, get its WsResponse back
+          [   79ms] →: {"type":2,"namespace":"/","data":["echo","hello"]}
+          [   90ms] ←: {"type":2,"namespace":"/","data":["echo","hello"]}
+        
+        --- EVENT with an id: @Ack() answers with ACK (3) of that id
+          [   90ms] →: {"type":2,"namespace":"/","data":["remember","milk"],"id":7}
+          [  100ms] ←: {"type":3,"id":7,"namespace":"/","data":["remembered","milk"]}
+        
+        --- The namespace field is echoed, not routed
+          [  100ms] →: {"type":2,"namespace":"/elsewhere","data":["echo","still here"]}
+          [  110ms] ←: {"type":2,"namespace":"/elsewhere","data":["echo","still here"]}
+        
+        --- ACK (3) and BINARY_ACK (6) from a client are echoed back unchanged
+          [  110ms] →: {"type":3,"namespace":"/","id":9,"data":["got it"]}
+          [  120ms] ←: {"type":3,"namespace":"/","id":9,"data":["got it"]}
+          [  120ms] →: {"type":6,"namespace":"/","id":10,"data":["got the bytes"]}
+          [  130ms] ←: {"type":6,"namespace":"/","id":10,"data":["got the bytes"]}
+        
+        --- CONNECT (0) and DISCONNECT (1): reserved handler names
+          [  130ms] →: {"type":0,"namespace":"/"}
+          [  141ms] ←: {"type":2,"namespace":"/","data":["connected","welcome"]}
+          [  141ms] →: {"type":1,"namespace":"/"}
+          [  151ms] ←: {"type":2,"namespace":"/","data":["bye","the socket is still open"]}
+          [  151ms] socket still open: true
+          [  151ms] handler calls: {
+          connect: 1,
+          disconnect: 1,
+        }
+        
+        --- ERROR (4) from a client: the error handler gets its text
+          [  151ms] →: {"type":4,"namespace":"/","data":"the client broke"}
+          [  161ms] ←: {"type":2,"namespace":"/","data":["error-seen","the client broke"]}
+        
+        --- BINARY_EVENT (5): the payload travels as base64, arrives as a Buffer
+          [  161ms] →: {"type":5,"namespace":"/","data":["upload","cmF3IGJ5dGVz"]}
+          [  171ms] ←: {"type":2,"namespace":"/","data":["uploaded",{"isBuffer":true,"bytes":9,"text":"raw bytes"}]}
+          [  172ms] →: {"type":5,"namespace":"/","data":["store","MTIzNDU="],"id":11}
+          [  182ms] ←: {"type":3,"id":11,"namespace":"/","data":[5]}
+          [  182ms] →: {"type":5,"namespace":"/","data":["reverse","YWJj"],"id":12}
+          [  192ms] ←: {"type":6,"id":12,"namespace":"/","data":["Y2Jh"],"binary":[0]}
+          [  192ms] acked bytes, decoded: cba
+        
+        --- Replying with bytes: a Buffer as `data` is a BINARY_EVENT (5)
+          [  192ms] →: {"type":2,"namespace":"/","data":["download",null]}
+          [  202ms] ←: {"type":5,"namespace":"/","data":["file","/wDp"],"binary":[0]}
+          [  202ms] bytes, decoded: [ 255, 0, 233 ]
+        
+        --- A binary frame holding a JSON packet is read the same way
+          [  202ms] → (binary frame): {"type":2,"namespace":"/","data":["echo","hello"]}
+          [  213ms] echo payloads so far: [ "hello", "still here", "hello" ]
+        
+        --- A frame that is not JSON: ERROR packet, error handler, catch-all
+          [  213ms] →: this is not json
+          [  223ms] ←: {"type":4,"namespace":"/","data":"JSON Parse error: Unexpected identifier \"this\""}
+          [  223ms] error handler got: JSON Parse error: Unexpected identifier "this"
+          [  223ms] ←: {"type":2,"namespace":"/","data":["unrouted","this is not json"]}
+        
+        --- Frames that parse but cannot be routed go to the catch-all
+          [  223ms] →: {"type":42,"namespace":"/"}
+          [  223ms] →: {"type":2,"namespace":"/","data":"no array"}
+          [  234ms] unrouted payloads: [ "this is not json", "{\"type\":42,\"namespace\":\"/\"}", "{\"type\":2,\"namespace\":\"/\",\"data\":\"no array\"}" ]
+        
+        --- Exceptions: a thrown WsException arrives as an `exception` event
+          [  234ms] →: {"type":2,"namespace":"/","data":["fizzle",null]}
+        54 | ): Promise<void> {
+        55 |   const deadline = Date.now() + (options.timeout ?? 15_000);
+        56 | 
+        57 |   while (!(await predicate())) {
+        58 |     if (Date.now() > deadline) {
+        59 |       throw new Error(`Timed out waiting for: ${what}`);
+                             ^
+        error: Timed out waiting for: an "exception" event
+              at waitFor (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo12/examples/bun-nest/shared/console.ts:59:17)
+              at async next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo12/examples/bun-nest/04-websockets/fixtures/ws-client.ts:237:11)
+              at async receive (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo12/examples/bun-nest/04-websockets/message-formats.ts:202:31)
+        
+        Bun v1.4.4-canary.1+7583003d8 (Linux x64)
+  ok    02-http-adapter/controllers-and-routing.ts             9.4s
+
+20 examples: 15 passed, 0 skipped, 5 failed
+exit 1

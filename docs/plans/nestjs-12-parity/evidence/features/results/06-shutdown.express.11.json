@@ -1,0 +1,66 @@
+{
+  "probe": "06-shutdown",
+  "kind": "express",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "drainDefault": {
+    "inflight": {
+      "status": 200,
+      "connection": "keep-alive",
+      "body": "slow done"
+    },
+    "requestDuringShutdownHooks": {
+      "status": 200,
+      "connection": "close",
+      "body": "fast"
+    },
+    "closeMs": 6562
+  },
+  "drainReturn503": {
+    "inflight": {
+      "status": 200,
+      "connection": "keep-alive",
+      "body": "slow done"
+    },
+    "requestDuringShutdownHooks": {
+      "status": 200,
+      "connection": "close",
+      "body": "fast"
+    },
+    "closeMs": 6555
+  },
+  "closeWithOpenSseDefault": {
+    "closeResolved": false,
+    "closeMs": 3000
+  },
+  "closeWithOpenSseForce": {
+    "closeResolved": true,
+    "closeMs": 301
+  },
+  "listeningStateAfterClose": {
+    "listeningBefore": true,
+    "listeningAfter": true,
+    "getUrlAfterClose": {
+      "rejected": "TypeError: null is not an object (evaluating 'address.port')"
+    }
+  },
+  "concurrentClose": {
+    "beforeShutdownHooks": 2,
+    "shutdownHooks": 2,
+    "adapterCloses": 2
+  },
+  "listenInvalidPort": {
+    "listen": "rejected: RangeError [ERR_OUT_OF_RANGE]: The value of \"options.port\" is out of range. It must be >= 0 and <= 6",
+    "unhandledRejection": null
+  },
+  "listenBusyPort": {
+    "listen": "rejected: Error: Failed to start server. Is port 45351 in use?"
+  },
+  "listenSocketPath": {
+    "listen": "resolved",
+    "url": "http+unix://%2Ftmp%2Fnest12-sock-d6eW6k%2Fapp.sock",
+    "body": "fast",
+    "unhandledRejection": null
+  }
+}

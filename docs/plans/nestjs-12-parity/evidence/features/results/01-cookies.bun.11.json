@@ -1,0 +1,11 @@
+{
+  "probe": "01-cookies",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "nestSecret": "not-applicable: @nestjs/common has no Cookies decorator",
+  "noSecret": "not-applicable: @nestjs/common has no Cookies decorator",
+  "middlewareSecretOnly": "not-applicable: @nestjs/common has no Cookies decorator",
+  "bunParseCookiesOff": "not-applicable: @nestjs/common has no Cookies decorator"
+}

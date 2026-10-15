@@ -1,0 +1,8 @@
+bun-node-heavy-run: auto → slot (no history)
+bun test v1.4.4-canary.1 (7583003d8)
+
+ 2 pass
+ 0 fail
+ 12 expect() calls
+Ran 2 tests across 1 file. [694.00ms]
+exit 0

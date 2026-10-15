@@ -1,0 +1,58 @@
+bun test v1.4.4-canary.1 (7583003d8) 16x PARALLEL
+
+__tests__/expressCompat.nest.test.ts:
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-sendfile — res.sendFile(abs) [2.72ms]
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-download — res.download [1.52ms]
+
+ 126 pass
+ 2 fail
+ 254 expect() calls
+Ran 128 tests across 1 file. [641.00ms]

@@ -178,6 +178,24 @@ file, check every link into and out of it, `#anchors` included.
     per-attempt cost of a Nest context off-thread; what TypeScript catches
     from token to handler; Bun's decorator tsconfig lookup; guards as the
     management API's `authorize`.
+- **[`nestjs-12-parity/`](nestjs-12-parity/README.md)** — bun-nest and
+  bun-common on NestJS 12 (12.1.3, released): every change from 11.1.27
+  classified, the adapter contract, routing parity with platform-express,
+  supporting 11 and 12 together, the test matrix and the PRs.
+  - Evidence: [`nestjs-12-parity/evidence/`](nestjs-12-parity/evidence/README.md) —
+    two changelog matrices (434 rows) and a coverage check: every commit in
+    `v11.1.27..v12.1.3` touching a Nest package classified; the npm registry facts; the adapter contract diffed member by
+    member; **measured** in repo copies with Nest 12.1.3 or 11.x installed
+    (`nest-mirror.sh`), on Bun 1.4.2, 1.4.3 and 1.4.4-canary: bun-nest's
+    suite (420/427 on 12) with the seven failures root-caused and prototype
+    patches (427/427 on both majors), `examples/bun-nest`, consumer-check on
+    TS 6.0 and 5.9, the Nest 11 floor bisect (11.1.20); a routing
+    differential (175 requests, platform-express against `BunHttpAdapter`,
+    Nest 11 and 12); twelve feature probes (cookies, CSRF and security
+    headers, exception mapping, SSE, `StreamableFile`, shutdown, Standard
+    Schema, uploads, WebSockets against platform-ws, `QUERY`, logging,
+    instrumentation); a Bun `fetch()` double-slash bug, reproduced and
+    drafted, not filed.
 - **[`opentelemetry/`](opentelemetry/README.md)** — OpenTelemetry for
   bun-node.
   - Evidence: [`opentelemetry/evidence/`](opentelemetry/evidence/README.md) —

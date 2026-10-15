@@ -1,0 +1,109 @@
+{
+  "probe": "08-uploads",
+  "kind": "express",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "all": {
+    "multerStyleOptionsThrow": "no throw",
+    "single": {
+      "status": 201,
+      "headers": {
+        "content-length": "215",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"file\":{\"fieldname\":\"file\",\"originalname\":\"h.txt\",\"mimetype\":\"text/plain\",\"size\":5,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalname\",\"size\"]},\"body\":{\"title\":\"t\"}}"
+    },
+    "unexpectedField": {
+      "status": 400,
+      "headers": {
+        "content-length": "82",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Unexpected file field - other\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "tooLarge": {
+      "status": 413,
+      "headers": {
+        "content-length": "73",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"File too large\",\"error\":\"Payload Too Large\",\"statusCode\":413}"
+    },
+    "mergedLimitsTwoFiles": {
+      "status": 400,
+      "headers": {
+        "content-length": "67",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Too many files\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "nestingTooDeep": {
+      "status": 400,
+      "headers": {
+        "content-length": "90",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Field name nesting too deep - a[b][c]\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "arrayIndexTooLarge": {
+      "status": 400,
+      "headers": {
+        "content-length": "94",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Field name array index too large - arr[5]\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "nestingOk": {
+      "status": 201,
+      "headers": {
+        "content-length": "32",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"a\":{\"b\":\"1\"},\"arr\":[null,\"x\"]}"
+    },
+    "nestedDefault": {
+      "status": 201,
+      "headers": {
+        "content-length": "50",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"a\":{\"b\":{\"c\":\"1\"}},\"list\":[\"x\",\"y\"],\"plain\":\"p\"}"
+    },
+    "pngMislabelled": {
+      "status": 201,
+      "headers": {
+        "content-length": "185",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"fieldname\":\"file\",\"originalname\":\"x.bin\",\"mimetype\":\"image/png\",\"size\":70,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalname\",\"size\"]}"
+    },
+    "pngWrong": {
+      "status": 400,
+      "headers": {
+        "content-length": "131",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"message\":\"Validation failed (current file type is image/png, expected type is image/png)\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "svgPlusMeta": {
+      "status": 201,
+      "headers": {
+        "content-length": "189",
+        "content-type": "application/json; charset=utf-8",
+        "x-powered-by": "Express"
+      },
+      "body": "{\"fieldname\":\"file\",\"originalname\":\"x.svg\",\"mimetype\":\"image/svg+xml\",\"size\":88,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalname\",\"size\"]}"
+    }
+  }
+}
