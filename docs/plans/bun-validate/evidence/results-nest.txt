@@ -1,0 +1,15 @@
+# bun 1.4.4-canary.1+7583003d8, develop 73bf4a00, 2026-10-15T10:20:27Z
+## bun nest-schema-dto.ts
+N1 POST valid body, age "41" coerced  => 201 {"name":"Ada","age":41,"typeofAge":"number"}
+N2 POST invalid body                  => 400 {"error":"Validation failed","issues":[{"target":"body","message":"Too small: expected string to have >=1 characters","path":"name"},{"target":"body","message":"Invalid input: expected number, receive
+N3 GET ?page=2 via a query DTO         => 200 {"page":2,"typeofPage":"number"}
+N4 GET ?page=0                         => 400 {"error":"Validation failed","issues":[{"target":"query","message":"Too small: expected number to be >=1","path":"page"}]}
+## NOPIPE=1 bun nest-schema-dto.ts (negative control: no global pipe)
+N1 POST valid body, age "41" coerced  => 201 {"name":"Ada","age":"41","typeofAge":"string"}
+N2 POST invalid body                  => 201 {"name":"","age":"x","typeofAge":"string"}
+N3 GET ?page=2 via a query DTO         => 200 {"page":"2","typeofPage":"string"}
+N4 GET ?page=0                         => 200 {"page":"0","typeofPage":"string"}
+## type controls: nest-schema-dto.ts with every @ts-expect-error line removed (zz-mutant, deleted after)
+zz-mutant.ts(84,42): error TS2322: Type 'string' is not assignable to type 'number'.
+zz-mutant.ts(85,25): error TS2509: Base constructor return type '{ a: string; } | { b: number; }' is not an object type or intersection of object types with statically known members.
+Found 2 errors in 1 file, checked 217 files [848.69ms]

@@ -1,0 +1,8 @@
+# bun 7583003d8 1.4.4
+zod              returns sync     valid=true  ~standard.jsonSchema=true  5.86 us/check (20-item list)
+valibot          returns sync     valid=true  ~standard.jsonSchema=false  5.22 us/check (20-item list)
+arktype          returns sync     valid=true  ~standard.jsonSchema=true  1.49 us/check (20-item list)
+yup              returns Promise  valid=true  ~standard.jsonSchema=false  803.34 us/check (20-item list)
+bun-jobs s       returns sync     valid=true  ~standard.jsonSchema=false  11.18 us/check (20-item list)
+toStandardSchema returns sync     valid=true  ~standard.jsonSchema=false  0.03 us/check (20-item list)
+JSON.stringify   baseline                                        2.01 us/call

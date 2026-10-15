@@ -1,0 +1,15 @@
+# HEAVY_TICKET=ae-validate-proto bun-node-heavy-run.sh nice -n 10 timeout 900 bun response-check-proto.ts; develop 73bf4a00, 2026-10-15T10:17:02Z
+bun-node-heavy-run: auto → slot (no history)
+# bun 1.4.4 (7583003d8), loadavg 35.80 20.81 10.72
+P1a zod, mode error, bad body   => 500 {"type":"about:blank","title":"Response failed its schema","status":500,"detail":"items.7.email: Invalid input
+P1b zod, mode warn,  bad body   => 200 {"items":[{"id":"u0","name":"User 0","email":"u0@example.com"},{"id":"u1","name":"User 1","email":"u1@example. (warned 1)
+P1c yup (Promise), error, bad   => 500 {"type":"about:blank","title":"Response failed its schema","status":500,"detail":"items.7.email: items[7].emai
+P1d yup (Promise), error, good  => 200
+P1e undeclared status 418       => 500 {"type":"about:blank","title":"Response failed its schema","status":500,"detail":"status 418 is not declared"}
+P2 no middleware (baseline)               median 14.28 us/request  (min 5.62, max 93.37, 7 rounds)
+P2 check middleware, mode off             median 15.45 us/request  (min 5.84, max 123.92, 7 rounds)
+P2 zod, mode warn, valid body             median 21.96 us/request  (min 8.66, max 210.87, 7 rounds)
+P2 zod, mode error, valid body            median 27.90 us/request  (min 9.22, max 166.51, 7 rounds)
+P2 yup (Promise), mode error, valid body  median 1461.87 us/request  (min 233.19, max 4173.91, 7 rounds)
+P2 overhead vs baseline (medians): off +1.18 us, zod warn +7.68 us, zod error +13.63 us, yup error +1447.59 us
+# loadavg at end 40.98 22.87 11.61

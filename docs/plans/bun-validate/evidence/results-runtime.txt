@@ -1,0 +1,21 @@
+# bun 1.4.4-canary.1+7583003d8, develop 73bf4a00 + this folder, 2026-10-15T10:17:11Z
+R1 handler sends a body violating a 'responses' schema => 200 application/json;charset=utf-8 {"totally":"wrong"}
+R2a valid query, z.coerce.number() => 200 application/json;charset=utf-8 {"page":2}
+R2b invalid, default onFailure ('next'), BunRouter.fetch, no error handler => rejected: ValidationError: Request validation failed — query.page: Invalid input: expected number, received NaN (status 400)
+R2c invalid, onFailure 'respond' => 400 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"query","message":"Invalid input: expected number, received NaN","path":"page"}]}
+R2d invalid, onFailure 'respond', status 422 => 422 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"query","message":"Invalid input: expected number, received NaN","path":"page"}]}
+R2e invalid, onFailure 'throw', BunRouter.fetch => rejected: ValidationError: Request validation failed — query.page: Invalid input: expected number, received NaN (status 400)
+R2h onFailure 'respond' with status: undefined passed explicitly => 200 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"query","message":"Invalid input: expected number, received NaN","path":"page"}]}
+R2f invalid, default 'next', BunHttpAdapter.fetch (adapter's final handler) => 400 text/html; charset=utf-8 <!DOCTYPE html>
+R2g invalid, default 'next', app error handler reads ValidationError => 400 application/json;charset=utf-8 {"name":"ValidationError","targets":["query"],"issues":[{"target":"query","message":"Invalid input: expected number, received NaN","path":"page"}]}
+R3 query 'page=2' against z.number() (no coerce) => 400 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"query","message":"Invalid input: expected number, received string","path":"page"}]}
+R4a x-n: 5 against z.coerce.number() => 200 application/json;charset=utf-8 {"raw":"5","typeofRaw":"string"}
+R4b x-n: five => 400 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"headers","message":"Invalid input: expected number, received NaN","path":"x-n"}]}
+R5 validate({ cookies }) with a failing cookie => 200 application/json;charset=utf-8 {"reached":true}
+R6a params coerced, JSON body valid => 200 application/json;charset=utf-8 {"id":7,"typeofId":"number","body":{"title":"t"}}
+R6b both invalid: issues collected from every target => 400 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"params","message":"Invalid input: expected number, received NaN","path":"id"},{"target":"body","message":"Inva
+R7a s.query(s.object({ page: s.integer })) with page=3 => 200 application/json;charset=utf-8 {"page":3,"typeofPage":"number"}
+R7b same, page=0 => 400 application/json;charset=utf-8 {"error":"Validation failed","issues":[{"target":"query","message":"Expected a value of at least 1","path":"page"}]}
+R7c s schema: ~standard.vendor, has ~standard.jsonSchema, has .json => {"vendor":"bun-jobs","jsonSchema":false,"json":"object"}
+R8 job added with { to: 42 } for a BunQueue<{ to: string }> => {"workerSaw":{"to":42},"result":"sent number"}
+R9 own keys of validate()'s middleware; route callback is it; carries schemas => {"keys":["length","name"],"sameFn":true,"schemas":[]}

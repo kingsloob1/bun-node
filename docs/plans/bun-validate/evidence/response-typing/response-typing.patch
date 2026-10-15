@@ -1,0 +1,265 @@
+--- a/lib/BunResponse.ts
++++ b/lib/BunResponse.ts
+@@ -565,6 +565,15 @@
+   transformBody: BunResponseTransformBody | undefined = undefined;
+ }
+ 
++/** SPIKE: a declared response map, status code to that status's body type. */
++export type ResponseMap = Record<number, unknown>;
++/** SPIKE: statuses `status()` accepts — any number until responses are declared. */
++export type AllowedStatus<M> = [M] extends [ResponseMap] ? keyof M & number : number;
++/** SPIKE: the map left after `status(C)` narrowed it. */
++export type NarrowResponses<M, C extends number> = [M] extends [ResponseMap] ? Pick<M, C & keyof M> : undefined;
++/** SPIKE: what `json()` accepts — the declared bodies, or anything until declared. */
++export type JsonBodyFor<M> = [M] extends [ResponseMap] ? M[keyof M] : BunResponseBody;
++
+ export class BunResponse<
+   /**
+    * The `custom` data of a WebSocket this response upgrades to. `unknown`
+@@ -572,6 +581,8 @@
+    * `onUpgrade` hook returns as `custom`.
+    */
+   customWebsocketDataType = unknown,
++  /** SPIKE: the declared responses, or `undefined` for none (unconstrained). */
++  TResponses = undefined,
+ > implements TypedEmitter<BunResponseEvents> {
+   /**
+    * Rarely-used state, created on first write. Each field moved here is an
+@@ -1394,13 +1405,21 @@
+     return this.setHeader(key, value);
+   }
+ 
+-  public status(code: number): BunResponse {
++  public status<const C extends AllowedStatus<TResponses>>(
++    code: C,
++  ): BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>> {
++    this.options.status = code;
++    return this as unknown as BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>>;
++  }
++
++  /** SPIKE: the class's own status writes, which no declared map constrains. */
++  protected setStatusRaw(code: number): this {
+     this.options.status = code;
+     return this;
+   }
+ 
+   set statusCode(code: number) {
+-    this.status(code);
++    this.setStatusRaw(code);
+   }
+ 
+   /**
+@@ -1460,8 +1479,8 @@
+    * shape: `res.json<UserDto>(user)`. (`bigint` and `symbol`, which
+    * `JSON.stringify` cannot serialise, are rejected.)
+    */
+-  public json<T extends BunResponseBody>(body: T): BunResponse {
+-    this.#sentBody = body;
++  public json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse {
++    this.#sentBody = body as BunResponseSentBody;
+     if (this.#canSkipHeaders()) {
+       return this.#respondWithJson(body);
+     }
+@@ -1542,7 +1561,7 @@
+    */
+   #applyFreshnessAndStrip(): boolean {
+     if (this.req.fresh) {
+-      this.status(304);
++      this.setStatusRaw(304);
+     }
+ 
+     const code = this.statusCode;
+@@ -1930,7 +1949,7 @@
+       this.setHeaders(headers);
+     }
+     if (statusCode) {
+-      this.status(statusCode);
++      this.setStatusRaw(statusCode);
+     }
+ 
+     if (statusMessage) {
+@@ -2417,7 +2436,7 @@
+       body = `<p>${reason}. Redirecting to ${escapeHtml(address)}</p>`;
+     }
+ 
+-    this.status(status);
++    this.setStatusRaw(status);
+     this.setHeader(
+       "Content-Length",
+       String(new TextEncoder().encode(body).byteLength),
+@@ -3000,7 +3019,7 @@
+ 
+       if (ranges !== -2 && ranges.length === 1) {
+         const [{ start, end }] = ranges;
+-        this.status(206);
++        this.setStatusRaw(206);
+         this.headersObj.set(
+           "Content-Range",
+           `bytes ${start}-${end}/${stats.size}`,
+@@ -3117,7 +3136,7 @@
+       return;
+     }
+ 
+-    this.status(status);
++    this.setStatusRaw(status);
+     this.type("txt");
+     return this.send(STATUS_CODES[status] ?? String(status));
+   }
+--- a/lib/BunValidate.ts
++++ b/lib/BunValidate.ts
+@@ -111,7 +111,28 @@
+   S extends ValidationSchemas,
+   H = unknown,
+   R extends boolean = true,
+-> = [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
++  RS = undefined,
++> = [RS] extends [ResponseSchemas]
++  ? ([R] extends [true] ? InferValidatedShape<S, H> : EmptyShape) & { responses: InferResponses<RS> }
++  : [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
++
++/** SPIKE: response schemas by status; `null` declares a body-less status. */
++export type ResponseSchemas = Readonly<Record<number, StandardSchemaV1 | null>>;
++
++/**
++ * SPIKE: the body a handler may send for one schema — its input, the value the
++ * runtime check accepts, unless the input is `unknown` (a `toStandardSchema`
++ * wrapper, `z.unknown()`, a coercing schema), which would constrain nothing;
++ * then its output.
++ */
++export type ResponseBodyOf<T extends StandardSchemaV1> =
++  unknown extends StandardSchemaV1.InferInput<T> ? StandardSchemaV1.InferOutput<T> : StandardSchemaV1.InferInput<T>;
++
++/** SPIKE: status to the body type a handler may send. */
++export type InferResponses<RS> = RS extends ResponseSchemas
++  ? { [K in keyof RS]: RS[K] extends StandardSchemaV1 ? ResponseBodyOf<RS[K]> : undefined }
++  : never;
++
+ 
+ /** What to do when a target fails validation. */
+ export type ValidationFailureMode =
+@@ -201,7 +222,10 @@
+   S extends ValidationSchemas = ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  RS extends ResponseSchemas | undefined = undefined,
+ > {
++  /** SPIKE: response schemas by status; type the handler's `res`. */
++  responses?: RS;
+   /** Schemas to apply, keyed by request target. */
+   schemas: S;
+   /**
+@@ -405,14 +429,15 @@
+   S extends ValidationSchemas = ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  RS extends ResponseSchemas | undefined = undefined,
+ > {
+   /** Targets that have a schema, in a fixed order for predictable reporting. */
+   readonly #targets: ValidationTarget[];
+   /** The options given, with every behavioural default filled in. */
+   readonly #options: Required<
+-    Pick<BunValidateOptions<S, H, R>, "onFailure" | "status" | "abortEarly">
++    Pick<BunValidateOptions<S, H, R, RS>, "onFailure" | "status" | "abortEarly">
+   > &
+-    Omit<BunValidateOptions<S, H, R>, "replace"> & {
++    Omit<BunValidateOptions<S, H, R, RS>, "replace"> & {
+       /** Whether validated values are written back; defaults to `true`. */
+       replace: boolean;
+     };
+@@ -421,7 +446,7 @@
+    * @param options Schemas, hooks and failure behaviour; see
+    *   {@link BunValidateOptions}.
+    */
+-  constructor(options: BunValidateOptions<S, H, R>) {
++  constructor(options: BunValidateOptions<S, H, R, RS>) {
+     this.#options = {
+       onFailure: "next",
+       status: 400,
+@@ -444,7 +469,7 @@
+    * as a phantom type, so a verb method registering it can narrow the
+    * following handler's `req` without the caller restating anything.
+    */
+-  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
++  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+     const { onFailure, status, abortEarly, replace, schemas, formatError } =
+       this.#options;
+     // Erased for the loop, which handles every target through one code path:
+@@ -528,7 +553,7 @@
+       return next(error);
+     };
+ 
+-    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R>>;
++    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>>;
+   }
+ 
+   /** Shorthand for `new BunValidate(options).middleware()`. */
+@@ -560,9 +585,10 @@
+   S extends ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  const RS extends ResponseSchemas | undefined = undefined,
+ >(
+   schemas: S,
+-  options?: Omit<BunValidateOptions<S, H, R>, "schemas">,
+-): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
+-  return new BunValidate({ ...options, schemas }).middleware();
++  options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas">,
++): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
++  return new BunValidate<S, H, R, RS>({ ...options, schemas }).middleware();
+ }
+--- a/lib/types/general.ts
++++ b/lib/types/general.ts
+@@ -449,9 +449,11 @@
+   TQuery = Record<string, unknown>,
+   TBody = DefaultRequestBody,
+   R = unknown,
++  /** SPIKE: the response, narrowed by declared responses; last so existing uses compile. */
++  TRes = BunResponse,
+ > = (
+   req: BunRequest<TParams, TQuery, TBody>,
+-  res: BunResponse,
++  res: TRes,
+   next: NextFunction,
+ ) => R | Promise<R>;
+ 
+--- a/lib/types/routeTyping.ts
++++ b/lib/types/routeTyping.ts
+@@ -1,3 +1,4 @@
++import type { BunResponse } from "../BunResponse";
+ import type {
+   DefaultRequestBody,
+   RouterHandler,
+@@ -92,8 +93,13 @@
+   query?: unknown;
+   /** Parsed `req.body`, when the validator declared a body schema. */
+   body?: unknown;
++  /** SPIKE: declared responses, status to body type. */
++  responses?: Record<number, unknown>;
+ }
+ 
++/** SPIKE: the response map a shape declares, or `undefined` (unconstrained). */
++export type ResolveResponses<S> = S extends { responses: infer M } ? M : undefined;
++
+ /** A shape contributing nothing — the default for a non-validator position. */
+ export type EmptyShape = Record<never, never>;
+ 
+@@ -144,7 +150,9 @@
+ export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
+   ResolveParams<TPath, S>,
+   ResolveQuery<S>,
+-  ResolveBody<S>
++  ResolveBody<S>,
++  unknown,
++  BunResponse<unknown, ResolveResponses<S>>
+ >;
+ 
+ /**
+@@ -198,5 +206,7 @@
+ > = TypedRouteHandler<
+   ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
+   ResolveQuery<MergeShape<TMountShape, TShape>>,
+-  ResolveBody<MergeShape<TMountShape, TShape>>
++  ResolveBody<MergeShape<TMountShape, TShape>>,
++  unknown,
++  BunResponse<unknown, ResolveResponses<MergeShape<TMountShape, TShape>>>
+ >;

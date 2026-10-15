@@ -183,6 +183,22 @@ file, check every link into and out of it, `#anchors` included.
   - Evidence: [`opentelemetry/evidence/`](opentelemetry/evidence/README.md) —
     a standalone Bun project measuring OTel span cost and Bun's
     `AsyncLocalStorage` behaviour.
+- **[`bun-validate/`](bun-validate/README.md)** — an audit of what
+  `BunValidate` validates and types today (requests yes; responses, Nest,
+  WebSockets, job data and caches no), and the plan for the rest on one
+  Standard Schema core: response contracts and checks, Nest pipes and
+  `SchemaDto`, WebSocket message schemas, schema-backed job data, the cache
+  hook. Adopts the [`api-docs-generation/`](api-docs-generation/README.md)
+  response and `@Validate` designs and orders them with its own PRs.
+  - Evidence: [`bun-validate/evidence/`](bun-validate/evidence/README.md) —
+    on Bun 1.4.4-canary.1 at `73bf4a00`: runtime and type probes of today's
+    BunValidate (`fetch()`, no socket; 7 type controls), which vendors answer
+    synchronously and what one check costs, a prototype of response checks
+    that answers 500 on a sync or async mismatch with its per-request cost,
+    the api-docs plan's response typing re-applied to today's bun-common as a
+    patch with its type tests, bun-nest checked against it and the overloads
+    unchanged, and a `SchemaDto` + global pipe through Nest's real pipeline
+    on bun-nest.
 
 ## Evidence
 
