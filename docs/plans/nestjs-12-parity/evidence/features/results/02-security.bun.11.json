@@ -1,0 +1,22 @@
+{
+  "probe": "02-security",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "both": {
+    "startupThrew": "Error: no useSecurityHeaders on this Nest"
+  },
+  "withPrefix": {
+    "startupThrew": "Error: no useSecurityHeaders on this Nest"
+  },
+  "withFilterAndPayloadLimit": {
+    "startupThrew": "Error: no useSecurityHeaders on this Nest"
+  },
+  "bunDeferBody": {
+    "startupThrew": "TypeError: app.enableCsrfProtection is not a function. (In 'app.enableCsrfProtection()', 'app.enableCsrfProtection' is undefined)"
+  },
+  "afterInit": {
+    "threw": "TypeError: b.app.useSecurityHeaders is not a function. (In 'b.app.useSecurityHeaders()', 'b.app.useSecurityHeaders' is undefined)"
+  }
+}

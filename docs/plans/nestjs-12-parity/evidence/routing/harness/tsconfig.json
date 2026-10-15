@@ -1,0 +1,15 @@
+{
+  // Decorator options must be in the cwd's tsconfig for Bun to apply them
+  // (see the bun-tsconfig-cwd-decorators memory): run the harness from here.
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "types": ["bun"]
+  },
+  "include": ["./*.ts"]
+}

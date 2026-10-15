@@ -1,0 +1,77 @@
+{
+  "probe": "03b-exception-shapes",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "cases": {
+    "invalidJson": {
+      "status": 400,
+      "seen": [
+        {
+          "ctor": "BadRequestException",
+          "name": "BadRequestException",
+          "message": "JSON Parse error: Expected '}'",
+          "status": 400,
+          "ownKeys": [
+            "response",
+            "status",
+            "options",
+            "message",
+            "name"
+          ]
+        }
+      ]
+    },
+    "overLimit": {
+      "status": 413,
+      "seen": [
+        {
+          "ctor": "PayloadTooLargeError",
+          "name": "PayloadTooLargeError",
+          "message": "Request body exceeds the maximum allowed size of 1024 bytes (received 4008 bytes)",
+          "status": 413,
+          "statusCode": 413,
+          "expose": true,
+          "ownKeys": [
+            "status",
+            "statusCode",
+            "expose",
+            "limit",
+            "length",
+            "name"
+          ]
+        }
+      ]
+    },
+    "badPercentParam": {
+      "status": 400,
+      "seen": [
+        {
+          "ctor": "BadRequestException",
+          "name": "BadRequestException",
+          "message": "Failed to decode param '%FF'",
+          "status": 400,
+          "ownKeys": [
+            "response",
+            "status",
+            "options",
+            "message",
+            "name"
+          ]
+        }
+      ]
+    },
+    "mwPlainObject": {
+      "status": 500,
+      "seen": [
+        {
+          "ctor": "Error",
+          "name": "Error",
+          "message": "[object Object]",
+          "ownKeys": []
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+  ok    01-quick-start/index.ts                                1.5s
+  ok    02-http-adapter/adapter-options.ts                     1.6s
+  ok    02-http-adapter/express-parity.ts                      3.0s
+  ok    02-http-adapter/middleware-and-versioning.ts           2.0s
+  ok    02-http-adapter/per-route-parsing.ts                   2.1s
+  ok    02-http-adapter/pipeline.ts                            2.1s
+  ok    02-http-adapter/undecodable-bodies.ts                  1.8s
+  ok    02-http-adapter/views.ts                               1.7s
+  ok    04-websockets/custom-adapter.ts                        2.0s
+  ok    04-websockets/adapter-options.ts                       2.2s
+  ok    03-file-uploads/interceptors.ts                        2.4s
+  ok    04-websockets/message-formats.ts                       1.8s
+  ok    04-websockets/gateway-basics.ts                        2.2s
+  ok    05-jobs-api/module.ts                                  2.6s
+  ok    02-http-adapter/controllers-and-routing.ts            10.9s
+  ok    10-options/http-adapter-options.ts                     2.4s
+  ok    10-options/interceptor-options.ts                      2.1s
+  ok    06-jobs-ui/mount.ts                                    3.1s
+  ok    10-options/jobs-api-module-options.ts                  2.2s
+  ok    10-options/websocket-adapter-options.ts                1.4s
+
+20 examples: 20 passed, 0 skipped, 0 failed
+exit 0

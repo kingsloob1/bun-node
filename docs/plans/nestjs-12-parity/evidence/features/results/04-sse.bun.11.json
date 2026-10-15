@@ -1,0 +1,112 @@
+{
+  "probe": "04-sse",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "all": {
+    "hasSseSignal": false,
+    "ticks": {
+      "status": 200,
+      "headers": {
+        "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "expire": "0",
+        "pragma": "no-cache",
+        "x-accel-buffering": "no"
+      },
+      "text": "⏎event: tick⏎id: 1⏎data: {\"n\":0}⏎⏎event: tick⏎id: 2⏎data: {\"n\":1}⏎⏎",
+      "ended": true
+    },
+    "decorated": {
+      "status": 202,
+      "headers": {
+        "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+        "connection": "keep-alive",
+        "content-length": "16",
+        "content-type": "text/event-stream",
+        "expire": "0",
+        "pragma": "no-cache",
+        "x-accel-buffering": "no",
+        "x-decorated": "yes"
+      },
+      "text": "⏎id: 1⏎data: d⏎⏎",
+      "ended": true
+    },
+    "imperative": {
+      "status": 200,
+      "headers": {
+        "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+        "connection": "keep-alive",
+        "content-length": "16",
+        "content-type": "text/event-stream",
+        "expire": "0",
+        "pragma": "no-cache",
+        "x-accel-buffering": "no",
+        "x-imperative": "yes"
+      },
+      "text": "⏎id: 1⏎data: i⏎⏎",
+      "ended": true
+    },
+    "empty": {
+      "status": 200,
+      "headers": {
+        "content-length": "0"
+      },
+      "text": "",
+      "ended": true
+    },
+    "bigint": {
+      "status": 200,
+      "headers": {
+        "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "expire": "0",
+        "pragma": "no-cache",
+        "x-accel-buffering": "no"
+      },
+      "text": "⏎id: 1⏎data: ok⏎⏎",
+      "ended": false
+    },
+    "frozen": {
+      "status": 500,
+      "headers": {
+        "content-length": "52",
+        "content-type": "application/json;charset=utf-8"
+      },
+      "text": "{\"statusCode\":500,\"message\":\"Internal server error\"}",
+      "ended": true
+    },
+    "comment": {
+      "status": 200,
+      "headers": {
+        "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+        "connection": "keep-alive",
+        "content-length": "23",
+        "content-type": "text/event-stream",
+        "expire": "0",
+        "pragma": "no-cache",
+        "x-accel-buffering": "no"
+      },
+      "text": "⏎id: 1⏎⏎id: 2⏎data: x⏎⏎",
+      "ended": true
+    },
+    "slowSetup": {
+      "started": true,
+      "signalAborted": false,
+      "abortedAfterSetup": null,
+      "subscribed": true,
+      "unsubscribed": true
+    },
+    "endless": {
+      "unsubscribed": true,
+      "signalAborted": false
+    },
+    "plainObservable": {
+      "subscribed": true,
+      "unsubscribed": false
+    }
+  }
+}

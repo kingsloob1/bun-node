@@ -1,0 +1,27 @@
+Nest 11 floor bisect, 2026-10-15, Bun 1.4.4-canary.1+7583003d8, develop 73bf4a00 unchanged.
+Each row: evidence/nest-mirror.sh <worktree> <copy> <version>, then in packages/bun-nest:
+  bun test __tests__/sse.nest.test.ts      and   env -u AGENT -u CLAUDECODE -u REPL_ID bun --check
+(the copy lived under ~/.cache, so the expressCompat res.sendFile/res.download probes fail there on every
+version: the dot-path artefact, see ../failures/README.md)
+
+version  | sse.nest.test.ts | bun --check (255 files)                         | full suite
+11.0.0   | 5 pass 2 fail    | 7 errors: Ack/isAckHandledManually (websocket   | 410 pass 6 fail of 416 (bun-nest-suite.nest11.0.0.log)
+         |                  | tests, BunWebSocketAdapter.ts:879), CORS        |
+         |                  | delegate overloads BunHttpAdapter.ts:1369,1376  |
+11.1.7   | 5 pass 2 fail    | 2 errors (BunHttpAdapter.ts:1369, :1376)        | 423 pass 4 fail (bun-nest-suite.nest11.1.7.log)
+11.1.10  | 5 pass 2 fail    | 2 errors                                        |
+11.1.11  | 5 pass 2 fail    | 2 errors                                        |
+11.1.12  | 5 pass 2 fail    | 2 errors                                        |
+11.1.13  | 5 pass 2 fail    | 2 errors                                        |
+11.1.14  | 5 pass 2 fail    | clean                                           |
+11.1.18  | 5 pass 2 fail    | clean                                           |
+11.1.19  | 5 pass 2 fail    | clean                                           |
+11.1.20  | 7 pass 0 fail    | clean                                           |
+11.1.21  | 7 pass 0 fail    | clean                                           |
+11.1.22  | 7 pass 0 fail    | clean                                           |
+11.1.26  | 7 pass 0 fail    | clean                                           |
+11.1.27  | (develop's lock: suite 427/427 in the worktree)
+
+The two SSE failures below 11.1.20: "@Sse() failures and silence on BunHttpAdapter > served|adapter.fetch():
+an observable that errors before its first event is a 500, not a hang".
+Ack first shipped in v11.1.7 (nestjs/nest 4d9c18801 "feat(ws): add explore ack param").

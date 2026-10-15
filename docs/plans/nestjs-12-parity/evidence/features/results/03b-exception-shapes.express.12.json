@@ -1,0 +1,84 @@
+{
+  "probe": "03b-exception-shapes",
+  "kind": "express",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "cases": {
+    "invalidJson": {
+      "status": 400,
+      "seen": [
+        {
+          "ctor": "BadRequestException",
+          "name": "BadRequestException",
+          "message": "JSON Parse error: Expected '}'",
+          "status": 400,
+          "ownKeys": [
+            "response",
+            "status",
+            "options",
+            "cause",
+            "errorCode",
+            "message",
+            "name"
+          ]
+        }
+      ]
+    },
+    "overLimit": {
+      "status": 413,
+      "seen": [
+        {
+          "ctor": "PayloadTooLargeError",
+          "name": "PayloadTooLargeError",
+          "message": "request entity too large",
+          "status": 413,
+          "statusCode": 413,
+          "expose": true,
+          "type": "entity.too.large",
+          "ownKeys": [
+            "message",
+            "expected",
+            "length",
+            "limit",
+            "type"
+          ]
+        }
+      ]
+    },
+    "badPercentParam": {
+      "status": 400,
+      "seen": [
+        {
+          "ctor": "BadRequestException",
+          "name": "BadRequestException",
+          "message": "Failed to decode param '%FF'",
+          "status": 400,
+          "ownKeys": [
+            "response",
+            "status",
+            "options",
+            "cause",
+            "errorCode",
+            "message",
+            "name"
+          ]
+        }
+      ]
+    },
+    "mwPlainObject": {
+      "status": 409,
+      "seen": [
+        {
+          "ctor": "Object",
+          "message": "conflict",
+          "statusCode": 409,
+          "ownKeys": [
+            "statusCode",
+            "message"
+          ]
+        }
+      ]
+    }
+  }
+}

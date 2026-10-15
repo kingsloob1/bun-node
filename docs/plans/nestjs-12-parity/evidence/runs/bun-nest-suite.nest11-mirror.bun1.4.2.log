@@ -1,0 +1,130 @@
+bun test v1.4.2 (744846f84) 16x PARALLEL
+
+__tests__/wsOnUpgrade.test.ts:
+2026-10-15T10:17:23.228Z WARN  BunWebSocket: both `onUpgrade` and the deprecated `customDataToWsClientFn` were given; `onUpgrade` is used and `customDataToWsClientFn` is ignored.
+
+__tests__/httpAdapter.test.ts:
+[31m[Nest] 484263  - [39m10/15/2026, 10:17:24 AM [31m  ERROR[39m [38;5;3m[Error: Failed to start server. Is port 39427 in use?
+    at serve (unknown)
+    at listen (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/lib/BunHttpAdapter.ts:1010:24)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/httpAdapter.test.ts:481:28)] [39m[31mError while binding to 127.0.0.1:39427[39m
+[31m[Nest] 484263  - [39m10/15/2026, 10:17:24 AM [31m  ERROR[39m [38;5;3m[Error: Failed to start server. Is port 43241 in use?
+    at serve (unknown)
+    at listen (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/lib/BunHttpAdapter.ts:1010:24)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/httpAdapter.test.ts:503:36)] [39m[31mError while binding to 127.0.0.1:43241[39m
+
+__tests__/websocketAdapter.test.ts:
+2026-10-15T10:17:24.529Z ERROR Unhandled error on the WebSocket server {
+  status: 500,
+  method: undefined,
+  url: undefined,
+} 764 | /**
+765 |  * The error a parked pipeline fails with when its `timeout` runs out — the
+766 |  * same `Request Timedout` the adapters' response wait has always raised.
+767 |  */
+768 | function createRequestTimeoutError(): Error {
+769 |   const error = new Error("Request Timedout");
+                          ^
+error: Request Timedout
+      at createRequestTimeoutError (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-common/lib/BunRouter.ts:769:21)
+      at #resume (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-common/lib/BunRouter.ts:5681:17)
+      at #wake (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-common/lib/BunRouter.ts:5667:12)
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-common/lib/BunRouter.ts:5608:16)
+
+
+__tests__/expressCompat.common.test.ts:
+Error: Failed to lookup view "nope" in views directory "/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/fixtures/express-compat/views"
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/application.js:562:21)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/response.js:923:7)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/layer.js:152:17)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/route.js:157:13)
+    at dispatch (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/route.js:117:3)
+    at handle (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/index.js:435:11)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/layer.js:152:17)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/index.js:295:15)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/index.js:291:5)
+    at read (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/body-parser/lib/read.js:53:5)
+ReferenceError: /home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/fixtures/express-compat/views/broken.ejs:1
+ >> 1| <p><%= title.toUpperCase() %></p>
+    2| 
+
+title is not defined
+    at anonymous (file:///home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/ejs/lib/cjs/ejs.js:11:31)
+    at tryHandleCache (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/ejs/lib/cjs/ejs.js:247:41)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/view.js:139:8)
+    at tryRender (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/application.js:627:10)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/application.js:574:3)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/express/lib/response.js:923:7)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/layer.js:152:17)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/route.js:157:13)
+    at dispatch (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/lib/route.js:117:3)
+    at handle (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/router/index.js:435:11)
+SyntaxError: JSON Parse error: Unexpected EOF
+    at <parse> (:0)
+    at parse (unknown)
+    at parse (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/body-parser/lib/types/json.js:91:21)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/body-parser/lib/read.js:162:18)
+    at runInAsyncScope (node:async_hooks:207:23)
+    at invokeCallback (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/raw-body/index.js:238:16)
+    at done (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/raw-body/index.js:227:7)
+    at onEnd (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/raw-body/index.js:287:7)
+    at emit (node:events:97:22)
+    at endReadableNT (internal:streams/readable:901:50)
+    at processTicksAndRejections (native:7:39)
+
+__tests__/expressCompat.nest.test.ts:
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-sendfile — res.sendFile(abs) [51.42ms]
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-download — res.download [73.13ms]
+
+ 425 pass
+ 2 fail
+ 1054 expect() calls
+Ran 427 tests across 30 files. [14.56s]

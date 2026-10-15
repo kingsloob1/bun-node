@@ -1,0 +1,10 @@
+import { createReadStream } from "node:fs";
+let stream: any;
+const server = Bun.serve({ port: 0, fetch() { stream = createReadStream(new URL("./big.bin", import.meta.url).pathname, { highWaterMark: 16384 }); return new Response(stream); } });
+const ac = new AbortController();
+const res = await fetch(server.url, { signal: ac.signal });
+const reader = res.body!.getReader(); await reader.read();
+ac.abort();
+await Bun.sleep(1000);
+console.log("node stream destroyed after client abort:", stream.destroyed, "readableEnded:", stream.readableEnded, "bytesRead:", stream.bytesRead);
+server.stop(true);

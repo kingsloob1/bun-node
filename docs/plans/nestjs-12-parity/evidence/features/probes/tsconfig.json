@@ -1,0 +1,6 @@
+{
+  // Decorator options are read from the cwd's tsconfig by Bun: run the probes from here.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["./**/*"]
+}

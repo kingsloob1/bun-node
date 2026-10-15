@@ -1,0 +1,2 @@
+{ "compilerOptions": { "strict": true, "module": "nodenext", "moduleResolution": "nodenext", "target": "es2022", "skipLibCheck": true, "noEmit": true, "types": [], "typeRoots": ["/home/kingsloob1/.cache/bun-node-ae/plan-nest12/repo11/node_modules/@types"], "experimentalDecorators": true, "emitDecoratorMetadata": true, "verbatimModuleSyntax": false, "noUnusedLocals": false },
+  "files": ["internal-root.ts"] }

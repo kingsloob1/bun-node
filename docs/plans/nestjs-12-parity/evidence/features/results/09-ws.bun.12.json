@@ -1,0 +1,59 @@
+{
+  "probe": "09-ws",
+  "kind": "bun",
+  "nest": "12.1.3",
+  "websockets": "12.1.3",
+  "platformWs": "absent",
+  "bun": "1.4.4",
+  "echoAndErrors": {
+    "opened": true,
+    "received": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"echo\",{\"a\":1}]}",
+      "{\"event\":\"exception\",\"data\":{\"status\":\"error\",\"message\":\"nope\",\"cause\":{\"pattern\":\"fail\",\"data\":{\"x\":1}}}}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"valid\",{\"body\":{\"n\":5},\"nType\":\"number\"}]}",
+      "{\"event\":\"exception\",\"data\":{\"status\":\"error\",\"message\":\"Internal server error\",\"cause\":{\"pattern\":\"valid\",\"data\":{\"n\":\"x\"}}}}"
+    ]
+  },
+  "disconnectReason": {
+    "disconnects": [
+      {
+        "argCount": 2,
+        "reasonType": "object",
+        "reasonIsClient": true,
+        "reason": "<the client>"
+      }
+    ]
+  },
+  "serverSideClose": {
+    "clientSaw": {
+      "code": 4002,
+      "reason": "server says bye"
+    },
+    "disconnects": [
+      {
+        "argCount": 2,
+        "reasonType": "object",
+        "reasonIsClient": true,
+        "reason": "<the client>"
+      }
+    ]
+  },
+  "requestScoped": {
+    "a": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"instance\":1,\"requestIsClient\":true,\"requestType\":\"ServerWebSocket\"}]}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"instance\":1,\"requestIsClient\":true,\"requestType\":\"ServerWebSocket\"}]}"
+    ],
+    "b": [
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"who\",{\"instance\":2,\"requestIsClient\":true,\"requestType\":\"ServerWebSocket\"}]}"
+    ],
+    "scopedInstancesCreated": 2
+  },
+  "hookError": {
+    "opened": true,
+    "received": [
+      "{\"event\":\"exception\",\"data\":{\"status\":\"error\",\"message\":\"denied on connect\",\"cause\":{\"pattern\":\"handleConnection\"}}}",
+      "{\"type\":2,\"namespace\":\"/\",\"data\":[\"echo\",\"still alive?\"]}"
+    ],
+    "closed": null
+  }
+}

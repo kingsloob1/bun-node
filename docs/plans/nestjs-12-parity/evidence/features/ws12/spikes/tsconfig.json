@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "target": "ESNext", "module": "ESNext", "moduleResolution": "bundler",
+    "experimentalDecorators": true, "emitDecoratorMetadata": true, "strict": false, "noEmit": true, "skipLibCheck": true
+  }
+}

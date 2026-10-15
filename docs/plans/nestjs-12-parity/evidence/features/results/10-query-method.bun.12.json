@@ -1,0 +1,29 @@
+{
+  "probe": "10-query-method",
+  "kind": "bun",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "route": {
+    "startupThrew": "TypeError: this.instance.query is not a function. (In 'this.instance.query(...args)', 'this.instance.query' is undefined)"
+  },
+  "routeAndMiddleware": {
+    "startupThrew": "InternalServerErrorException: An invalid request method was encountered with value 16"
+  },
+  "bunPatchedRouteAndMiddleware": {
+    "query": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"method\":\"QUERY\",\"body\":{\"q\":\"x\"},\"mw\":\"query-mw\"}"
+    },
+    "get": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"method\":\"GET\",\"mw\":null}"
+    }
+  }
+}

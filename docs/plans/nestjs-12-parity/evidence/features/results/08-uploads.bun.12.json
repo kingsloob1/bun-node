@@ -1,0 +1,87 @@
+{
+  "probe": "08-uploads",
+  "kind": "bun",
+  "nest": "12.1.3",
+  "platformExpress": "12.1.3",
+  "bun": "1.4.4",
+  "all": {
+    "multerStyleOptionsThrow": "TypeError: Unknown upload storageType undefined: expected \"disk\", \"memory\" or \"custom\"",
+    "single": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"file\":{\"fieldname\":\"file\",\"mimetype\":\"text/plain\",\"size\":5,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalFilename\",\"size\",\"type\",\"validatedMimeType\"]},\"body\":{\"title\":\"t\"}}"
+    },
+    "unexpectedField": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":400,\"message\":\"Only Field file accept one file\",\"code\":\"LIMIT_UNEXPECTED_FILE\",\"field\":\"other\"}"
+    },
+    "tooLarge": {
+      "status": 413,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"statusCode\":413,\"message\":\"File too large\",\"code\":\"LIMIT_FILE_SIZE\",\"field\":\"file\"}"
+    },
+    "mergedLimitsTwoFiles": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"count\":2}"
+    },
+    "nestingTooDeep": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"a\":{\"b\":{\"c\":\"1\"}}}"
+    },
+    "arrayIndexTooLarge": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"arr\":[null,null,null,null,null,\"x\"]}"
+    },
+    "nestingOk": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"a\":{\"b\":\"1\"},\"arr\":[null,\"x\"]}"
+    },
+    "nestedDefault": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"a\":{\"b\":{\"c\":\"1\"}},\"list\":[\"x\",\"y\"],\"plain\":\"p\"}"
+    },
+    "pngMislabelled": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"fieldname\":\"file\",\"mimetype\":\"image/png\",\"size\":70,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalFilename\",\"size\",\"type\",\"validatedMimeType\"]}"
+    },
+    "pngWrong": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"message\":\"Validation failed (current file type is image/png, expected type is image/png)\",\"error\":\"Bad Request\",\"statusCode\":400}"
+    },
+    "svgPlusMeta": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json;charset=utf-8"
+      },
+      "body": "{\"fieldname\":\"file\",\"mimetype\":\"image/svg+xml\",\"size\":88,\"hasBuffer\":true,\"encoding\":\"7bit\",\"keys\":[\"buffer\",\"encoding\",\"fieldname\",\"mimetype\",\"originalFilename\",\"size\",\"type\",\"validatedMimeType\"]}"
+    }
+  }
+}

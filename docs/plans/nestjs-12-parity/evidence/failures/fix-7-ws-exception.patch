@@ -1,0 +1,97 @@
+--- repo12/packages/bun-nest/lib/BunWebSocketAdapter.ts	2026-10-15 11:03:44.737758515 +0100
++++ agent-failures/repo12f/packages/bun-nest/lib/BunWebSocketAdapter.ts	2026-10-15 11:22:01.200948531 +0100
+@@ -12,6 +12,7 @@
+ import { Buffer } from "node:buffer";
+ import {
+   BunWebSocket,
++  defineHidden,
+   isArray,
+   isFunction,
+   isNull,
+@@ -20,6 +21,63 @@
+   isUndefined,
+ } from "@kingsleyweb/bun-common";
+ 
++/** Marks the `emit` this adapter installs on a client (see `installEmit`). */
++const ADAPTER_EMIT = Symbol.for("@kingsleyweb/bun-nest/ws-emit");
++
++/** The part of Nest 12's `BaseWsExceptionFilter` the patch below replaces. */
++interface WsExceptionFilterPrototype {
++  /** Nest 12: sends `exception` through `client.send` for a native ws client. */
++  emitMessage?: (client: unknown, event: string, payload: unknown) => void;
++  /** Set once the patch is in place. */
++  [ADAPTER_EMIT]?: true;
++}
++
++let wsExceptionsPatched = false;
++
++/**
++ * Keeps a thrown `WsException` reaching this adapter's clients through
++ * `client.emit`, as an `EVENT` packet, on Nest 12 too.
++ *
++ * Nest 12's `BaseWsExceptionFilter.emitMessage` (nestjs/nest #16366) sends
++ * the error as `client.send(JSON.stringify({ event, data }))` to any client
++ * with a numeric `readyState` and a `send` — the `@nestjs/platform-ws` wire
++ * shape, which Bun's `ServerWebSocket` matches — and calls `emit` only
++ * otherwise. This adapter speaks its own packet protocol, so for a client
++ * carrying the adapter's `emit` it calls that instead; every other client,
++ * and Nest 11 (which has no `emitMessage` and always calls `emit`), is left
++ * alone. `@nestjs/websockets` is an optional peer, hence the guarded
++ * `require` rather than an import; the copy patched is the one this package
++ * resolves.
++ */
++function routeWsExceptionsThroughEmit(): void {
++  if (wsExceptionsPatched) {
++    return;
++  }
++  wsExceptionsPatched = true;
++  let proto: WsExceptionFilterPrototype | undefined;
++  try {
++    // eslint-disable-next-line ts/no-require-imports
++    proto = require("@nestjs/websockets").BaseWsExceptionFilter?.prototype;
++  } catch {
++    return;
++  }
++  const original = proto?.emitMessage;
++  if (!proto || !isFunction(original) || proto[ADAPTER_EMIT]) {
++    return;
++  }
++  proto.emitMessage = function (client, event, payload) {
++    const emit = isObject(client)
++      ? (client as { emit?: unknown }).emit
++      : undefined;
++    if (isFunction(emit) && (emit as { [ADAPTER_EMIT]?: true })[ADAPTER_EMIT]) {
++      emit.call(client, event, payload);
++      return;
++    }
++    original.call(this, client, event, payload);
++  };
++  defineHidden(proto, ADAPTER_EMIT, true);
++}
++
+ /**
+  * The shape a NestJS gateway handler may return to push a message back to the
+  * client (mirrors `@nestjs/websockets`' `WsResponse`). A handler can also
+@@ -632,11 +690,12 @@
+   private installEmit(
+     client: WebSocketClient<customWebsocketDataType>,
+   ): BunNestWebSocketClient<customWebsocketDataType> {
++    routeWsExceptionsThroughEmit();
+     const target = client as BunNestWebSocketClient<customWebsocketDataType>;
+     if (isFunction(target.emit)) {
+       return target;
+     }
+-    target.emit = (event, ...args) => {
++    const emit: WsEmitFunction = (event, ...args) => {
+       target.send(
+         JSON.stringify(
+           this.eventPacket(client?.data?.path ?? "/", String(event), args),
+@@ -644,6 +703,8 @@
+       );
+       return true;
+     };
++    defineHidden(emit, ADAPTER_EMIT, true);
++    target.emit = emit;
+     return target;
+   }
+ 

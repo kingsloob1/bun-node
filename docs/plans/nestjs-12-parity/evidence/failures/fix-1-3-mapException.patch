@@ -1,0 +1,35 @@
+--- repo12/packages/bun-nest/lib/BunHttpAdapter.ts	2026-10-15 11:27:07.547467647 +0100
++++ repo12f/packages/bun-nest/lib/BunHttpAdapter.ts	2026-10-15 11:27:07.565467327 +0100
+@@ -74,6 +74,7 @@
+   waitUntil,
+ } from "@kingsleyweb/bun-common";
+ import {
++  BadRequestException,
+   InternalServerErrorException,
+   Logger,
+   RequestMethod,
+@@ -1290,6 +1291,24 @@
+     response.setHeader(name, value);
+   }
+ 
++  /**
++   * Maps an error raised outside a route's own exception zone (a body the
++   * adapter refused, say) before Nest's exception filters see it — the same
++   * mapping as `@nestjs/platform-express`: a `SyntaxError` (unparsable JSON)
++   * or `URIError` (bad percent-encoding) becomes a `BadRequestException`
++   * with its message; anything else is returned as is.
++   *
++   * Nest 12 calls this from its exception layer (nestjs/nest #15075, which
++   * moved the mapping out of `RoutesResolver.mapExternalException` into each
++   * adapter). Nest 11 never calls it: its core maps these two itself.
++   */
++  public mapException(error: unknown): unknown {
++    if (error instanceof SyntaxError || error instanceof URIError) {
++      return new BadRequestException(error.message);
++    }
++    return error;
++  }
++
+   // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these
+   // handlers are applied globally as a final fallback (see `listen`).
+   public setErrorHandler(

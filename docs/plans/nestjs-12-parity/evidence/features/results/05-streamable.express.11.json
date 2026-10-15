@@ -1,0 +1,50 @@
+{
+  "probe": "05-streamable",
+  "kind": "express",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "buffer": {
+    "status": 200,
+    "headers": {
+      "content-disposition": "attachment; filename=\"h.txt\"",
+      "content-length": "5",
+      "content-type": "text/x-test",
+      "x-powered-by": "Express"
+    },
+    "body": "hello"
+  },
+  "endlessDisconnect": {
+    "sourceClosed": false
+  },
+  "disconnectBeforeReply": {
+    "replied": true,
+    "sourceClosed": false
+  },
+  "errorEarly": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "13",
+      "content-type": "application/octet-stream; charset=utf-8",
+      "date": "Thu, 15 Oct 2026 10:22:37 GMT",
+      "etag": "W/\"d-x9yrCTu/gwTK5Ebe7bTezANdGU0\"",
+      "keep-alive": "timeout=5",
+      "x-powered-by": "Express"
+    },
+    "body": "source failed"
+  },
+  "errorCustom": {
+    "status": 503,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "21",
+      "content-type": "application/octet-stream",
+      "date": "Thu, 15 Oct 2026 10:22:37 GMT",
+      "keep-alive": "timeout=5",
+      "x-powered-by": "Express"
+    },
+    "body": "custom: source failed",
+    "customHandlerCalled": true
+  }
+}

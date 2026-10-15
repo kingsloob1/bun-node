@@ -1,0 +1,194 @@
+bun test v1.4.4-canary.1 (7583003d8) 16x PARALLEL
+
+__tests__/wsOnUpgrade.test.ts:
+2026-10-15T10:24:20.726Z WARN  BunWebSocket: both `onUpgrade` and the deprecated `customDataToWsClientFn` were given; `onUpgrade` is used and `customDataToWsClientFn` is ignored.
+
+__tests__/sse.nest.test.ts:
+231 |   for (const mode of ["served", "adapter.fetch()"] as const) {
+232 |     it(`${mode}: an observable that errors before its first event is a 500, not a hang`, async () => {
+233 |       const get = await client(mode);
+234 |       const res = await within(get("/edges/err-before"), 5000);
+235 | 
+236 |       expect(res?.status).toBe(500);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 500
+Received: 200
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/sse.nest.test.ts:236:27)
+(fail) @Sse() failures and silence on BunHttpAdapter > served: an observable that errors before its first event is a 500, not a hang [27.44ms]
+231 |   for (const mode of ["served", "adapter.fetch()"] as const) {
+232 |     it(`${mode}: an observable that errors before its first event is a 500, not a hang`, async () => {
+233 |       const get = await client(mode);
+234 |       const res = await within(get("/edges/err-before"), 5000);
+235 | 
+236 |       expect(res?.status).toBe(500);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 500
+Received: 200
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/sse.nest.test.ts:236:27)
+(fail) @Sse() failures and silence on BunHttpAdapter > adapter.fetch(): an observable that errors before its first event is a 500, not a hang [20.21ms]
+
+__tests__/websocketAdapter.test.ts:
+2026-10-15T10:24:21.202Z ERROR Unhandled error on the WebSocket server {
+  status: 500,
+  method: undefined,
+  url: undefined,
+} 764 | /**
+765 |  * The error a parked pipeline fails with when its `timeout` runs out — the
+766 |  * same `Request Timedout` the adapters' response wait has always raised.
+767 |  */
+768 | function createRequestTimeoutError(): Error {
+769 |   const error = new Error("Request Timedout");
+                          ^
+error: Request Timedout
+      at createRequestTimeoutError (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-common/lib/BunRouter.ts:769:21)
+      at #resume (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-common/lib/BunRouter.ts:5681:17)
+      at #wake (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-common/lib/BunRouter.ts:5667:12)
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-common/lib/BunRouter.ts:5608:16)
+
+
+__tests__/expressCompat.common.test.ts:
+Error: Failed to lookup view "nope" in views directory "/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/fixtures/express-compat/views"
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/application.js:573:21)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/response.js:897:7)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/layer.js:152:17)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/route.js:157:13)
+    at dispatch (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/route.js:117:3)
+    at handle (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/index.js:435:11)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/layer.js:152:17)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/index.js:295:15)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/index.js:291:5)
+    at urlencodedParser (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/body-parser/lib/types/urlencoded.js:94:7)
+ReferenceError: /home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/fixtures/express-compat/views/broken.ejs:1
+ >> 1| <p><%= title.toUpperCase() %></p>
+    2| 
+
+title is not defined
+    at anonymous (file:///home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/ejs/lib/cjs/ejs.js:11:31)
+    at tryHandleCache (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/ejs/lib/cjs/ejs.js:247:41)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/view.js:139:8)
+    at tryRender (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/application.js:638:10)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/application.js:585:3)
+    at render (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/express/lib/response.js:897:7)
+    at handleRequest (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/layer.js:152:17)
+    at next (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/route.js:157:13)
+    at dispatch (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/lib/route.js:117:3)
+    at handle (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/router/index.js:435:11)
+
+__tests__/websocketGatewayAck.nest.test.ts:
+
+# Unhandled error between tests
+-------------------------------
+SyntaxError: Export named 'Ack' not found in module '/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/@nestjs/websockets/index.js'.
+-------------------------------
+
+
+__tests__/expressCompat.common.test.ts:
+SyntaxError: JSON Parse error: Unexpected EOF
+    at <parse> (:0)
+    at parse (unknown)
+    at parse (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/body-parser/lib/types/json.js:92:19)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/body-parser/lib/read.js:128:18)
+    at runInAsyncScope (node:async_hooks:207:23)
+    at invokeCallback (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/raw-body/index.js:238:16)
+    at done (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/raw-body/index.js:227:7)
+    at onEnd (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/node_modules/raw-body/index.js:287:7)
+    at emit (node:events:97:22)
+    at endReadableNT (internal:streams/readable:901:50)
+    at processTicksAndRejections (native:7:39)
+
+__tests__/httpAdapter.test.ts:
+[31m[Nest] 526137  - [39m10/15/2026, 10:24:21 AM [31m  ERROR[39m [38;5;3m[Error: Failed to start server. Is port 46667 in use?
+    at serve (unknown)
+    at listen (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/lib/BunHttpAdapter.ts:1010:24)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/httpAdapter.test.ts:481:28)] [39m[31mError while binding to 127.0.0.1:46667[39m
+[31m[Nest] 526137  - [39m10/15/2026, 10:24:21 AM [31m  ERROR[39m [38;5;3m[Error: Failed to start server. Is port 40993 in use?
+    at serve (unknown)
+    at listen (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/lib/BunHttpAdapter.ts:1010:24)
+    at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/httpAdapter.test.ts:503:36)] [39m[31mError while binding to 127.0.0.1:40993[39m
+
+__tests__/expressCompat.nest.test.ts:
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"body":{},"type":"object"}",
+-   "content-length": "27",
+-   "etag": "W/"1b-*"",
++   "body": "{"body":null,"type":"undefined"}",
++   "content-length": "32",
++   "etag": "W/"20-*"",
+  }
+
+- Expected  - 3
++ Received  + 3
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > POST /echo — POST without a body [1.83ms]
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-sendfile — res.sendFile(abs) [5.46ms]
+52 |         );
+53 | 
+54 |         // Every field outside the known differences is Express's.
+55 |         expect(
+56 |           Object.fromEntries(unexpected.map((name) => [name, bun[name]])),
+57 |         ).toEqual(
+               ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "body": "{"statusCode":404,"message":"Not Found"}",
+-   "content-length": "40",
+-   "content-type": "application/json; charset=utf-8",
+-   "etag": "W/"28-*"",
++   "body": "",
++   "content-length": "0",
++   "content-type": undefined,
++   "etag": undefined,
+  }
+
+- Expected  - 4
++ Received  + 4
+
+      at <anonymous> (/home/kingsloob1/.cache/bun-node-ae/plan-nest12/mirror-11.0.0/packages/bun-nest/__tests__/expressCompat.nest.test.ts:57:11)
+(fail) bun-nest vs platform-express: compat > GET /res-download — res.download [4.11ms]
+
+ 410 pass
+ 6 fail
+ 1 error
+ 1037 expect() calls
+Ran 416 tests across 30 files. [10.63s]

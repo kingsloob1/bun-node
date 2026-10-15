@@ -1,0 +1,29 @@
+{
+  "probe": "05-streamable",
+  "kind": "bun",
+  "nest": "11.1.27",
+  "platformExpress": "11.2.7",
+  "bun": "1.4.4",
+  "buffer": {
+    "status": 200,
+    "headers": {
+      "content-disposition": "attachment; filename=\"h.txt\"",
+      "content-length": "5",
+      "content-type": "text/x-test"
+    },
+    "body": "hello"
+  },
+  "endlessDisconnect": {
+    "sourceClosed": true
+  },
+  "disconnectBeforeReply": {
+    "replied": true,
+    "sourceClosed": false
+  },
+  "errorEarly": {
+    "threw": "TypeError: ECONNRESET: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"
+  },
+  "errorCustom": {
+    "threw": "TypeError: ECONNRESET: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"
+  }
+}
