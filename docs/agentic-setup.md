@@ -25,7 +25,7 @@ agreement between the agents.
 
 ## The agents
 
-Each session is one **role**. Session names (`bun-node-c0`, `bun-node-3a`, …)
+Each session holds one or more **roles**: one package to own, and plans to lead (below). Session names (`bun-node-c0`, `bun-node-3a`, …)
 change whenever a session restarts, so address peers by the name `ListAgents`
 shows today, and think in roles.
 
@@ -36,27 +36,27 @@ shows today, and think in roles.
 | **bun-jobs agent** | `packages/bun-jobs/**` (but see `lib/runner/**` below) | queues, drivers, schema sync, the management API; its tests, bench and package README; reviews every PR that touches `packages/bun-jobs/**` — compute providers, summon and host isolation are built by the features agent under this review |
 | **bun-jobs-ui agent** | `packages/bun-jobs-ui/**`, `playground/**` | the React UI and its server; its tests, e2e and package README; reviews every playground change |
 | **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
-| **Features agent** | nothing exclusively | cross-package and phase work: performance; streaming and SSE (bun-common, bun-nest); summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review. Also the [main agent](#the-main-agent) |
+| **Features agent** | nothing exclusively | cross-package and phase work: performance; summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review. Also the [main agent](#the-main-agent) |
 
-**As of 2026-10-10** (after a reboot restarted every session):
+**As of 2026-10-16.** Each session carries several roles (the user's
+decision): it owns a package, as the table above says, and **leads** one or
+more plans in [`docs/plans/`](plans/README.md). A plan's lead designs it,
+keeps its Status current, and builds its PRs. A PR that lands in another
+agent's package is built under that package owner's review, exactly as the
+features agent's cross-package work is. Each session is renamed to its
+name, which is then its `ListAgents` address; the second column is the name it
+started with:
 
-| Role | Session |
-|---|---|
-| bun-common agent | *to be started* (see [Starting a new agent](#starting-a-new-agent)) |
-| bun-nest agent | *to be started* |
-| bun-jobs agent | bun-node-4c |
-| bun-jobs-ui agent | bun-node-d6 |
-| Examples agent | bun-node-5a |
-| Features agent (main agent) | bun-node-ae |
+| Name (the address) | Started as | Owns | Leads |
+|---|---|---|---|
+| Bun-Node Common, Validate & Cache Agent | bun-node-11 | `packages/bun-common/**` (the bun-common agent) | [`bun-validate/`](plans/bun-validate/README.md), [`bun-cache/`](plans/bun-cache/README.md) (and the `@kingsleyweb/bun-cache` package once it exists, except its S3 driver sub-plan), [`api-docs-generation/`](plans/api-docs-generation/README.md), [`bun-native-routes/`](plans/bun-native-routes/README.md) (including the SSE helpers, PR-sse2 to sse5) |
+| Bun-Node Nest Agent | bun-node-15 | `packages/bun-nest/**` (the bun-nest agent) | [`nestjs-12-parity/`](plans/nestjs-12-parity/README.md), [`nest-jobs-decorators/`](plans/nest-jobs-decorators/README.md), [`typed-client/nest-typed-routes.md`](plans/typed-client/nest-typed-routes.md) |
+| Bun-Node Jobs & Telemetry Agent | bun-node-e9 | `packages/bun-jobs/**` (the bun-jobs agent) | [`opentelemetry/`](plans/opentelemetry/README.md), [`bun-cache/bun-jobs-s3-driver.md`](plans/bun-cache/bun-jobs-s3-driver.md) |
+| Bun-Node UI, Views & Client Agent | bun-node-99 | `packages/bun-jobs-ui/**`, `playground/**` (the bun-jobs-ui agent) | [`bun-views/`](plans/bun-views/README.md) (and `@kingsleyweb/bun-views` once it exists), [`typed-client/`](plans/typed-client/README.md) (except its Nest sub-plan) |
+| Bun-Node Examples & Tooling Agent | bun-node-74 (until renamed) | `examples/**` (the examples agent) | [`bun-lint-fmt/`](plans/bun-lint-fmt/README.md): the lint and format tooling in every directory, each package's config changed under its owner's review |
+| Bun-Node Features Agent and Coordinator of other UI Agents | bun-node-ae | nothing exclusively (the features agent; also the [main agent](#the-main-agent)) | [`worker-runtimes/`](plans/worker-runtimes/README.md) and all its sub-plans (summon and compute providers, remote workers and the gateway, host isolation); performance; anything cross-package no one else leads |
 
-Until the bun-common and bun-nest agents exist, the features agent builds
-changes in those two packages and the examples agent checks them against the
-examples, as they have so far.
-Once they start, the features agent hands bun-common and bun-nest work to
-them, and keeps its cross-package work (it still writes code in their
-packages when a feature spans several, under their review). At hand-over, its
-only planned work in those packages is the SSE helpers, PR-sse2 to sse5
-(`docs/plans/bun-native-routes/README.md` §16, not started); nothing else is open.
+A plan not in this table is the features agent's until it is assigned.
 
 Update the dated table when a session is replaced. Nothing else in this file
 should need to change for that.
