@@ -1,0 +1,27 @@
+     17 eslint-skip
+     16 eslint-disable-next-line no-console
+     11 eslint-disable no-console
+     10 eslint-disable-next-line ts/consistent-type-definitions
+      9 eslint-disable-next-line prefer-spread
+      7 eslint-disable-next-line react/no-array-index-key
+      5 eslint-disable-next-line no-new
+      3 eslint-disable-next-line ts/method-signature-style
+      2 eslint-disable-next-line ts/no-this-alias
+      2 eslint-disable-next-line no-throw-literal
+      2 eslint-disable perfectionist/sort-exports
+      2 eslint-disable antfu/no-top-level-await , no-console
+      1 eslint-enable react/no-unnecessary-use-prefix
+      1 eslint-enable perfectionist/sort-exports
+      1 eslint-disable-next-line ts/no-use-before-define
+      1 eslint-disable-next-line ts/no-require-imports
+      1 eslint-disable-next-line ts/no-namespace
+      1 eslint-disable-next-line regexp/no-obscure-range
+      1 eslint-disable-next-line no-new-func
+      1 eslint-disable-next-line no-control-regex
+      1 eslint-disable-next-line no-cond-assign
+      1 eslint-disable-next-line antfu/no-top-level-await
+      1 eslint-disable-line no-throw-literal
+      1 eslint-disable unused-imports/no-unused-vars
+      1 eslint-disable ts/no-unsafe-function-type
+      1 eslint-disable react/no-unnecessary-use-prefix
+      1 eslint-disable antfu/no-top-level-await

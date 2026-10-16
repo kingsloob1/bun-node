@@ -1,0 +1,291 @@
+# GENERATED from ESLint's effective config by tools/gen-bunfig.ts — native rules only (no JS plugins).
+[lint]
+plugins = [{ name = "regexp", specifier = "eslint-plugin-regexp" }]
+ignorePatterns = ["**/dist/**", "**/dts/**", "docs/**", "benchmarks/**", "**/bench/**/results/**"]
+reportUnusedDisableDirectives = "warn"
+
+[lint.rules]
+"@typescript-eslint/ban-ts-comment" = ["error", { ts-expect-error = "allow-with-description" }]
+"@typescript-eslint/ban-types" = "off"
+"@typescript-eslint/consistent-type-definitions" = ["error", "interface"]
+"@typescript-eslint/consistent-type-imports" = ["error", { disallowTypeAnnotations = false, fixStyle = "separate-type-imports", prefer = "type-imports" }]
+"@typescript-eslint/explicit-function-return-type" = "off"
+"@typescript-eslint/explicit-module-boundary-types" = "off"
+"@typescript-eslint/method-signature-style" = ["error", "property"]
+"@typescript-eslint/no-array-constructor" = "error"
+"@typescript-eslint/no-dupe-class-members" = "error"
+"@typescript-eslint/no-duplicate-enum-values" = "error"
+"@typescript-eslint/no-dynamic-delete" = "off"
+"@typescript-eslint/no-empty-object-type" = ["error", { allowInterfaces = "always" }]
+"@typescript-eslint/no-explicit-any" = "off"
+"@typescript-eslint/no-extra-non-null-assertion" = "error"
+"@typescript-eslint/no-extraneous-class" = "off"
+"@typescript-eslint/no-import-type-side-effects" = "error"
+"@typescript-eslint/no-invalid-void-type" = "off"
+"@typescript-eslint/no-misused-new" = "error"
+"@typescript-eslint/no-namespace" = "error"
+"@typescript-eslint/no-non-null-asserted-nullish-coalescing" = "error"
+"@typescript-eslint/no-non-null-asserted-optional-chain" = "error"
+"@typescript-eslint/no-non-null-assertion" = "off"
+"@typescript-eslint/no-redeclare" = ["error", { builtinGlobals = false }]
+"@typescript-eslint/no-require-imports" = "error"
+"@typescript-eslint/no-this-alias" = "error"
+"@typescript-eslint/no-unnecessary-type-constraint" = "error"
+"@typescript-eslint/no-unsafe-declaration-merging" = "error"
+"@typescript-eslint/no-unsafe-function-type" = "error"
+"@typescript-eslint/no-unused-expressions" = ["error", { allowShortCircuit = true, allowTaggedTemplates = true, allowTernary = true }]
+"@typescript-eslint/no-unused-vars" = ["error", { args = "after-used", argsIgnorePattern = "^_", caughtErrorsIgnorePattern = "^_", ignoreRestSiblings = true, vars = "all", varsIgnorePattern = "^_" }]
+"@typescript-eslint/no-use-before-define" = ["error", { classes = false, functions = false, variables = true }]
+"@typescript-eslint/no-useless-constructor" = "off"
+"@typescript-eslint/no-wrapper-object-types" = "error"
+"@typescript-eslint/prefer-as-const" = "error"
+"@typescript-eslint/prefer-literal-enum-member" = "error"
+"@typescript-eslint/prefer-namespace-keyword" = "error"
+"@typescript-eslint/triple-slash-reference" = "off"
+"@typescript-eslint/unified-signatures" = "off"
+"accessor-pairs" = ["error", { enforceForTSTypes = false, enforceForClassMembers = true, getWithoutSet = false, setWithoutGet = true }]
+"array-callback-return" = ["error", { allowImplicit = false, checkForEach = false, allowVoid = false }]
+"arrow-body-style" = "off"
+"block-scoped-var" = "error"
+"bun/format" = "error"
+"constructor-super" = "off"
+"curly" = "off"
+"default-case-last" = "error"
+"dot-notation" = ["error", { allowKeywords = true, allowPattern = "" }]
+"eqeqeq" = ["error", "smart"]
+"getter-return" = "off"
+"import/consistent-type-specifier-style" = ["error", "prefer-top-level"]
+"import/first" = "error"
+"import/newline-after-import" = ["error", { count = 1 }]
+"import/no-duplicates" = "error"
+"import/no-mutable-exports" = "error"
+"import/no-named-default" = "error"
+"n/handle-callback-err" = ["error", "^(err|error)$"]
+"n/no-exports-assign" = "error"
+"n/no-new-require" = "error"
+"n/no-path-concat" = "error"
+"n/no-top-level-await" = "error"
+"new-cap" = ["error", { capIsNew = false, capIsNewExceptions = ["Array", "Boolean", "Date", "Error", "Function", "Number", "Object", "RegExp", "String", "Symbol", "BigInt"], newIsCap = true, newIsCapExceptions = [], properties = true }]
+"no-alert" = "error"
+"no-array-constructor" = "off"
+"no-async-promise-executor" = "off"
+"no-caller" = "error"
+"no-case-declarations" = "error"
+"no-class-assign" = "off"
+"no-compare-neg-zero" = "error"
+"no-cond-assign" = ["error", "always"]
+"no-console" = ["warn", {  }]
+"no-const-assign" = "off"
+"no-control-regex" = "error"
+"no-debugger" = "error"
+"no-delete-var" = "error"
+"no-dupe-args" = "off"
+"no-dupe-class-members" = "off"
+"no-dupe-keys" = "off"
+"no-duplicate-case" = "error"
+"no-empty" = ["error", { allowEmptyCatch = true }]
+"no-empty-character-class" = "off"
+"no-empty-pattern" = ["error", { allowObjectPatternsAsParameters = false }]
+"no-eval" = ["error", { allowIndirect = false }]
+"no-ex-assign" = "error"
+"no-extend-native" = ["error", { exceptions = [] }]
+"no-extra-bind" = "error"
+"no-extra-boolean-cast" = ["error", {  }]
+"no-fallthrough" = ["error", { allowEmptyCase = false, reportUnusedFallthroughComment = false }]
+"no-func-assign" = "off"
+"no-global-assign" = ["error", { exceptions = [] }]
+"no-implied-eval" = "error"
+"no-import-assign" = "off"
+"no-invalid-regexp" = "off"
+"no-irregular-whitespace" = ["error", { skipComments = false, skipJSXText = false, skipRegExps = false, skipStrings = true, skipTemplates = false }]
+"no-iterator" = "error"
+"no-labels" = "off"
+"no-lone-blocks" = "error"
+"no-loss-of-precision" = "error"
+"no-misleading-character-class" = ["error", { allowEscape = false }]
+"no-multi-str" = "error"
+"no-new" = "error"
+"no-new-func" = "error"
+"no-new-native-nonconstructor" = "off"
+"no-new-symbol" = "off"
+"no-new-wrappers" = "error"
+"no-obj-calls" = "off"
+"no-octal" = "error"
+"no-octal-escape" = "error"
+"no-proto" = "error"
+"no-prototype-builtins" = "error"
+"no-redeclare" = "off"
+"no-regex-spaces" = "error"
+"no-restricted-globals" = ["error", { message = "Use `globalThis` instead.", name = "global" }, { message = "Use `globalThis` instead.", name = "self" }]
+"no-restricted-properties" = ["error", { message = "Use `Object.getPrototypeOf` or `Object.setPrototypeOf` instead.", property = "__proto__" }, { message = "Use `Object.defineProperty` instead.", property = "__defineGetter__" }, { message = "Use `Object.defineProperty` instead.", property = "__defineSetter__" }, { message = "Use `Object.getOwnPropertyDescriptor` instead.", property = "__lookupGetter__" }, { message = "Use `Object.getOwnPropertyDescriptor` instead.", property = "__lookupSetter__" }]
+"no-restricted-syntax" = "off"
+"no-self-assign" = ["error", { props = true }]
+"no-self-compare" = "error"
+"no-sequences" = ["error", { allowInParentheses = true }]
+"no-setter-return" = "off"
+"no-shadow-restricted-names" = ["error", { reportGlobalThis = true }]
+"no-sparse-arrays" = "error"
+"no-template-curly-in-string" = "error"
+"no-this-before-super" = "off"
+"no-throw-literal" = "error"
+"no-undef" = "off"
+"no-undef-init" = "error"
+"no-unexpected-multiline" = "off"
+"no-unmodified-loop-condition" = "error"
+"no-unneeded-ternary" = ["error", { defaultAssignment = false }]
+"no-unreachable" = "off"
+"no-unreachable-loop" = ["error", { ignore = [] }]
+"no-unsafe-finally" = "error"
+"no-unsafe-negation" = "off"
+"no-unused-expressions" = "off"
+"no-unused-vars" = "off"
+"no-use-before-define" = "off"
+"no-useless-backreference" = "off"
+"no-useless-call" = "error"
+"no-useless-catch" = "error"
+"no-useless-computed-key" = ["error", { enforceForClassMembers = true }]
+"no-useless-constructor" = "off"
+"no-useless-rename" = ["error", { ignoreDestructuring = false, ignoreImport = false, ignoreExport = false }]
+"no-useless-return" = "error"
+"no-var" = "error"
+"no-with" = "off"
+"object-shorthand" = ["error", "always", { avoidQuotes = true, ignoreConstructors = false }]
+"one-var" = ["error", { initialized = "never" }]
+"prefer-arrow-callback" = "off"
+"prefer-const" = ["error", { destructuring = "all", ignoreReadBeforeAssign = true }]
+"prefer-exponentiation-operator" = "error"
+"prefer-object-has-own" = "error"
+"prefer-promise-reject-errors" = ["error", { allowEmptyReject = false }]
+"prefer-regex-literals" = ["error", { disallowRedundantWrapping = true }]
+"prefer-rest-params" = "error"
+"prefer-spread" = "error"
+"prefer-template" = "error"
+"react/jsx-child-element-spacing" = "off"
+"react/jsx-closing-bracket-location" = "off"
+"react/jsx-closing-tag-location" = "off"
+"react/jsx-curly-brace-presence" = ["error", { props = "never", children = "never", propElementValues = "always" }]
+"react/jsx-curly-newline" = "off"
+"react/jsx-curly-spacing" = "off"
+"react/jsx-equals-spacing" = "off"
+"react/jsx-first-prop-new-line" = "off"
+"react/jsx-indent" = "off"
+"react/jsx-indent-props" = "off"
+"react/jsx-max-props-per-line" = "off"
+"react/jsx-newline" = "off"
+"react/jsx-one-expression-per-line" = "off"
+"react/jsx-props-no-multi-spaces" = "off"
+"react/jsx-tag-spacing" = "off"
+"react/jsx-wrap-multilines" = "off"
+"symbol-description" = "error"
+"unicode-bom" = ["error", "never"]
+"unicorn/consistent-empty-array-spread" = "error"
+"unicorn/empty-brace-spaces" = "off"
+"unicorn/error-message" = "error"
+"unicorn/escape-case" = ["error", "uppercase"]
+"unicorn/new-for-builtins" = "error"
+"unicorn/no-abusive-eslint-disable" = "error"
+"unicorn/no-instanceof-builtins" = ["error", { useErrorIsError = false, strategy = "loose", include = [], exclude = [] }]
+"unicorn/no-nested-ternary" = "off"
+"unicorn/no-new-array" = "error"
+"unicorn/no-new-buffer" = "error"
+"unicorn/number-literal-case" = "off"
+"unicorn/prefer-array-some" = "error"
+"unicorn/prefer-date-now" = "error"
+"unicorn/prefer-dom-node-text-content" = "error"
+"unicorn/prefer-includes" = "error"
+"unicorn/prefer-node-protocol" = "error"
+"unicorn/prefer-number-properties" = ["error", { checkInfinity = false, checkNaN = true }]
+"unicorn/prefer-regexp-test" = "error"
+"unicorn/prefer-string-starts-ends-with" = "error"
+"unicorn/prefer-type-error" = "error"
+"unicorn/throw-new-error" = "error"
+"use-isnan" = ["error", { enforceForIndexOf = true, enforceForSwitchCase = true }]
+"valid-typeof" = ["error", { requireStringLiterals = true }]
+"vars-on-top" = "error"
+"yoda" = ["error", "never", { exceptRange = false, onlyEquality = false }]
+
+# eslint-plugin-regexp, run as a JavaScript plugin (loads without the eslint package)
+"regexp/confusing-quantifier" = "warn"
+"regexp/control-character-escape" = "error"
+"regexp/match-any" = "error"
+"regexp/negation" = "error"
+"regexp/no-contradiction-with-assertion" = "error"
+"regexp/no-dupe-characters-character-class" = "error"
+"regexp/no-dupe-disjunctions" = "error"
+"regexp/no-empty-alternative" = "warn"
+"regexp/no-empty-capturing-group" = "error"
+"regexp/no-empty-character-class" = "error"
+"regexp/no-empty-group" = "error"
+"regexp/no-empty-lookarounds-assertion" = "error"
+"regexp/no-empty-string-literal" = "error"
+"regexp/no-escape-backspace" = "error"
+"regexp/no-extra-lookaround-assertions" = "error"
+"regexp/no-invalid-regexp" = "error"
+"regexp/no-invisible-character" = "error"
+"regexp/no-lazy-ends" = "warn"
+"regexp/no-legacy-features" = "error"
+"regexp/no-misleading-capturing-group" = "error"
+"regexp/no-misleading-unicode-character" = "error"
+"regexp/no-missing-g-flag" = "error"
+"regexp/no-non-standard-flag" = "error"
+"regexp/no-obscure-range" = "error"
+"regexp/no-optional-assertion" = "error"
+"regexp/no-potentially-useless-backreference" = "warn"
+"regexp/no-super-linear-backtracking" = "error"
+"regexp/no-trivially-nested-assertion" = "error"
+"regexp/no-trivially-nested-quantifier" = "error"
+"regexp/no-unused-capturing-group" = "error"
+"regexp/no-useless-assertions" = "error"
+"regexp/no-useless-backreference" = "error"
+"regexp/no-useless-character-class" = "error"
+"regexp/no-useless-dollar-replacements" = "error"
+"regexp/no-useless-escape" = "error"
+"regexp/no-useless-flag" = "warn"
+"regexp/no-useless-lazy" = "error"
+"regexp/no-useless-non-capturing-group" = "error"
+"regexp/no-useless-quantifier" = "error"
+"regexp/no-useless-range" = "error"
+"regexp/no-useless-set-operand" = "error"
+"regexp/no-useless-string-literal" = "error"
+"regexp/no-useless-two-nums-quantifier" = "error"
+"regexp/no-zero-quantifier" = "error"
+"regexp/optimal-lookaround-quantifier" = "warn"
+"regexp/optimal-quantifier-concatenation" = "error"
+"regexp/prefer-character-class" = "error"
+"regexp/prefer-d" = "error"
+"regexp/prefer-plus-quantifier" = "error"
+"regexp/prefer-predefined-assertion" = "error"
+"regexp/prefer-question-quantifier" = "error"
+"regexp/prefer-range" = "error"
+"regexp/prefer-set-operation" = "error"
+"regexp/prefer-star-quantifier" = "error"
+"regexp/prefer-unicode-codepoint-escapes" = "error"
+"regexp/prefer-w" = "error"
+"regexp/simplify-set-operations" = "error"
+"regexp/sort-flags" = "error"
+"regexp/strict" = "error"
+"regexp/use-ignore-case" = "error"
+
+[[lint.overrides]]
+files = ["**/__tests__/**", "**/*.spec.*", "**/*.test.*", "**/*.bench.*", "**/*.benchmark.*"]
+rules = { "bun:test/consistent-test-it" = ["error", { fn = "it", withinDescribe = "it" }], "bun:test/no-focused-tests" = "error", "bun:test/no-identical-title" = "error", "bun:test/prefer-hooks-in-order" = "error", "bun:test/prefer-lowercase-title" = ["error", { ignore = [], allowedPrefixes = [], ignoreTopLevelDescribe = false, lowercaseFirstCharacterOnly = true }], "n/no-top-level-await" = "off", "vitest/no-import-node-test" = "error" }
+
+[[lint.overrides]]
+files = ["packages/bun-jobs-ui/**", "examples/bun-jobs-ui/**"]
+rules = { "react/error-boundaries" = "error", "react/exhaustive-deps" = "warn", "react/iframe-missing-sandbox" = "warn", "react/jsx-key" = "error", "react/jsx-no-comment-textnodes" = "warn", "react/jsx-no-script-url" = "warn", "react/no-access-state-in-setstate" = "error", "react/no-array-index-key" = "warn", "react/no-children-prop" = "warn", "react/no-clone-element" = "warn", "react/no-danger" = "warn", "react/no-danger-with-children" = "error", "react/no-did-mount-set-state" = "warn", "react/no-did-update-set-state" = "warn", "react/no-direct-mutation-state" = "error", "react/no-find-dom-node" = "error", "react/no-namespace" = "error", "react/no-render-return-value" = "error", "react/no-unsafe" = "warn", "react/no-unstable-nested-components" = "error", "react/no-unused-class-component-methods" = "warn", "react/no-will-update-set-state" = "warn", "react/only-export-components" = ["error", { allowConstantExport = false, allowExportNames = [] }], "react/purity" = "warn", "react/rules-of-hooks" = "error", "react/set-state-in-effect" = "warn", "react/set-state-in-render" = "error", "react/static-components" = "error", "react/unsupported-syntax" = "error", "react/use-memo" = "error", "react/void-dom-elements-no-children" = "error" }
+
+# antfu's per-glob disables (antfu/disables/scripts, cli, dts, cjs, config-files), kept as they are today.
+[[lint.overrides]]
+files = ["**/scripts/**", "**/cli/**", "**/cli.*", "**/*.config.*"]
+rules = { "n/no-top-level-await" = "off" }
+[[lint.overrides]]
+files = ["**/*.d.ts", "**/*.d.mts", "**/*.d.cts"]
+rules = { "@typescript-eslint/no-unused-vars" = "off", "unicorn/no-abusive-eslint-disable" = "off" }
+[[lint.overrides]]
+files = ["**/*.js", "**/*.cjs"]
+rules = { "@typescript-eslint/no-require-imports" = "off" }
+
+# CLI entry points: printing is the product, and top-level await blocks no importer.
+[[lint.overrides]]
+files = ["scripts/**", "playground/**", "examples/**", "templates/*/scripts/**"]
+rules = { "no-console" = "off", "n/no-top-level-await" = "off" }

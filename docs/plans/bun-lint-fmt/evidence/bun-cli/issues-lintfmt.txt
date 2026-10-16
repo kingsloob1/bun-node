@@ -1,0 +1,19 @@
+# oven-sh/bun issues about bun lint / bun fmt, from gh search issues (queries: "bun lint", "bun fmt", "lint in:title", "fmt in:title", "formatter in:title"; created >= 2026-09-01), read 2026-10-16. Unrelated hits of those queries removed.
+#45115 closed 2026-10-13 bun fmt: bring back the built-in Svelte formatter
+#45154 closed 2026-10-13 bun lint: JS plugin with import-only exports fails to load
+#45162 open 2026-10-13 `bun lint`: JavaScript plugin rules get no type information on TypeScript files with `projectService`
+#45163 open 2026-10-13 `bun lint`, `bun check`: native support for framework components (Vue, Svelte, Astro), as `bun fmt` has
+#45165 closed 2026-10-13 `[lint.categories]` turns on every built-in plugin, and bunfig cannot turn a plugin off
+#45320 open 2026-10-15 bun fmt: .git/info/exclude is not respected, and --ignore-path=.git/info/exclude matches nothing
+#45378 open 2026-10-15 bun fmt is not idempotent: a second run changes the output again (TS object-union return type)
+#45383 open 2026-10-15 `bun fmt` rewrites Flow `extends` type-parameter bounds to the legacy `:` form
+#45384 open 2026-10-15 `bun fmt` adds brackets around an object-type arrow return annotation when the parameters break
+#45385 open 2026-10-15 `bun fmt` wraps a multi-line JSX body of a Flow `match` arm in brackets
+#45390 open 2026-10-15 `bun lint --doctor` / `bun fmt --doctor` report optional peer dependencies of a shared config as "Still needed"
+#45405 open 2026-10-15 `bun lint` / `bun fmt`: a documented way to run the tool when package.json has a `lint` or `fmt` script
+#45406 open 2026-10-15 `bun fmt`: a file with classes to sort is not formatted at all when `tailwindcss` isn't installed
+#45407 open 2026-10-15 `bun lint`: import resolution slows down when a parent directory has many entries
+#45409 open 2026-10-15 `bun lint`: a JS plugin report at `loc: { line: 0, column: 0 }` loses its location
+#45470 open 2026-10-16 bun lint: overrides[].files extglob patterns silently never match with an oxlint config, but match with an ESLint config
+#45479 open 2026-10-16 lint --tsconfig bypasses nearer project configs, changing oxlint-compatible type-aware results
+#45480 open 2026-10-16 only-throw-error ignores a JSDoc Error assertion on a property access

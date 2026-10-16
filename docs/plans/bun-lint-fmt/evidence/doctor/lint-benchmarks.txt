@@ -1,0 +1,11 @@
+No ESLint or oxlint config found. Using Bun's defaults.
+
+   15 files to lint
+
+   94 rules are on
+        eslint               68
+        @typescript-eslint   19
+        bun:test              6
+        react                 1
+
+Run bun lint --init to add a [lint] section to bunfig.toml

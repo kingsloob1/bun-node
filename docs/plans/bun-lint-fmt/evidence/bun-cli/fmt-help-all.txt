@@ -1,0 +1,97 @@
+Usage: bun fmt [flags] [...files, directories or patterns]
+  Format JavaScript, TypeScript, CSS, HTML, JSON, YAML, Markdown and more.
+
+Options:
+      --config=<val>                          Use this config file instead of looking for one
+      --no-config                             Do not look for a config file
+      --no-editorconfig                       Do not read .editorconfig
+      --init                                  Add a [fmt] section to bunfig.toml
+      --doctor                                Show which files are formatted natively and which packages you can remove
+      --print-width=<val>                     The line length to wrap at (default: 80)
+      --tab-width=<val>                       Spaces per indentation level (default: 2)
+      --use-tabs                              Indent with tabs
+      --no-semi                               Only print semicolons where they are needed
+      --single-quote                          Use single quotes
+      --jsx-single-quote                      Use single quotes in JSX
+      --quote-props=<val>                     as-needed (default), consistent, or preserve
+      --trailing-comma=<val>                  all (default), es5, or none
+      --no-bracket-spacing                    No spaces inside the braces of an object literal
+      --bracket-same-line                     Put the closing bracket of a multi-line element at the end of the last line
+      --arrow-parens=<val>                    always (default) or avoid
+      --object-wrap=<val>                     preserve (default) or collapse
+      --single-attribute-per-line             One attribute per line in HTML, Vue, and JSX
+      --html-whitespace-sensitivity=<val>     css (default), strict, or ignore
+      --vue-indent-script-and-style           Indent the code in the script and style tags of Vue files
+      --prose-wrap=<val>                      preserve (default), always, or never
+      --embedded-language-formatting=<val>    auto (default) or off
+      --end-of-line=<val>                     lf (default), crlf, cr, or auto
+      --no-insert-final-newline               Do not end files with a newline
+      --sort-imports                          Sort and group imports
+      --sort-tailwindcss                      Sort Tailwind CSS classes
+      --sort-package-json                     Sort the keys of package.json
+      --jsdoc                                 Format JSDoc comments
+      --svelte                                Format Svelte components (default without a Prettier or oxfmt config)
+      --no-svelte                             Do not format Svelte components
+
+Files:
+      --staged                           Only format files that are staged in git, and stage them again
+      --changed=<val>                    Only format files that differ from a branch or commit (default: the default branch)
+      --stdin-filepath=<val>             Format standard input as this file and print the result
+      --ignore-path=<val>                Read ignore patterns from these files (default: .gitignore and .prettierignore)
+      --ignore-pattern=<val>             Skip files that match this pattern
+      --with-node-modules                Format files in node_modules too
+      --no-error-on-unmatched-pattern    Do not fail when an argument matches no file
+  -u, --ignore-unknown                   Ignore files in an unknown language
+      --allow-unsupported                Warn instead of failing when the language of a file is not supported
+      --list-files                       Print the files that would be formatted and exit
+      --cwd=<val>                        Set the working directory
+
+Output:
+  -c, --check              Do not write. Exit with 1 if a file needs formatting
+  -l, --list-different     Do not write. Print the files that need formatting and exit with 1 if there are any
+      --log-level=<val>    silent, error, warn, log (default), or debug
+  -f, --format=<val>       With --doctor, print the report as json
+      --color              Always use colors
+      --no-color           Never use colors
+      --timing             Print how long each phase took
+
+Other:
+      --threads=<val>    Number of threads (default: one per CPU core)
+      --debug-check      Do not write. Fail if formatting a file would change what it means
+  -v, --version          Print the version of Bun
+  -h, --help             Print the common flags. With --all, every flag
+      --all              With --help, print every flag
+      --help-all         The same as --help --all
+
+Compatibility with Prettier:
+  -w, --write                                   Write the files. This is the default
+      --config-precedence=<val>                 cli-override (default), file-override, or prefer-file
+      --find-config-path=<val>                  Print the path of the config for a file and exit
+      --parser=<val>                            Read every file with this parser. Without files, format standard input
+      --plugin=<val>                            Load these plugins
+      --require-pragma                          Only format files that start with a @format or @prettier comment
+      --check-ignore-pragma                     Skip files that start with a @noformat or @noprettier comment
+      --insert-pragma                           Put a @format comment at the top of formatted files
+      --range-start=<val>                       Only format the statements from this offset on
+      --range-end=<val>                         Only format the statements up to this offset
+      --cursor-offset=<val>                     For standard input, print on stderr where this offset ends up
+      --experimental-ternaries                  Put the question mark of a ternary after the condition
+      --experimental-operator-position=<val>    end (default) or start
+      --jsx-bracket-same-line                   The old name of --bracket-same-line
+      --cache                                   No effect. Every run formats every file
+      --cache-location=<val>                    No effect
+      --cache-strategy=<val>                    No effect
+      --experimental-cli                        No effect
+
+Compatibility with oxfmt:
+      --flavor=<val>             Without a config file, format like prettier or like oxfmt
+      --disable-nested-config    Use the config file in the working directory for every file
+      --migrate=<val>            Not supported
+      --lsp                      Not supported
+
+Examples:
+  bun fmt
+  bun fmt src test/a.test.ts
+  bun fmt --check
+
+Full documentation is available at https://bun.com/docs/format

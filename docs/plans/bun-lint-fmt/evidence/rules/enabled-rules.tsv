@@ -1,0 +1,385 @@
+rule	severity	files	options
+accessor-pairs	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"enforceForTSTypes":false,"enforceForClassMembers":true,"getWithoutSet":false,"setWithoutGet":true}]
+antfu/consistent-chaining	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+antfu/consistent-list-newline	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+antfu/import-dedupe	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+antfu/no-import-dist	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+antfu/no-import-node-modules-by-path	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+antfu/no-top-level-await	error	bun-common-lib-ts,bun-common-package-json,bun-common-tsconfig-json,bun-jobs-ui-app-tsx	
+array-callback-return	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowImplicit":false,"checkForEach":false,"allowVoid":false}]
+block-scoped-var	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+command/command	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+constructor-super	error	bun-common-package-json,bun-common-tsconfig-json	
+default-case-last	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+dot-notation	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowKeywords":true,"allowPattern":""}]
+e18e/prefer-array-fill	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-array-some	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-date-now	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-includes	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-nullish-coalescing	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-object-has-own	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-regex-test	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-timer-args	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+e18e/prefer-url-canparse	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+eqeqeq	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["smart"]
+eslint-comments/no-aggregating-enable	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+eslint-comments/no-duplicate-disable	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+eslint-comments/no-unlimited-disable	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+eslint-comments/no-unused-enable	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+import/consistent-type-specifier-style	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["top-level"]
+import/first	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+import/newline-after-import	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"count":1}]
+import/no-duplicates	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+import/no-mutable-exports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+import/no-named-default	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/check-access	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/check-alignment	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/check-param-names	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/check-property-names	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/check-types	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/empty-tags	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/implements-on-classes	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/multiline-blocks	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/no-defaults	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/no-multi-asterisks	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-param-name	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-property	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-property-description	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-property-name	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-returns-check	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-returns-description	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsdoc/require-yields-check	warn	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+jsonc/array-bracket-spacing	error	bun-common-package-json,bun-common-tsconfig-json	["never"]
+jsonc/comma-dangle	error	bun-common-package-json,bun-common-tsconfig-json	["never"]
+jsonc/comma-style	error	bun-common-package-json,bun-common-tsconfig-json	["last"]
+jsonc/indent	error	bun-common-package-json,bun-common-tsconfig-json	[2]
+jsonc/key-spacing	error	bun-common-package-json,bun-common-tsconfig-json	[{"afterColon":true,"beforeColon":false}]
+jsonc/no-bigint-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-binary-expression	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-binary-numeric-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-dupe-keys	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-escape-sequence-in-identifier	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-floating-decimal	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-hexadecimal-numeric-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-infinity	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-multi-str	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-nan	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-number-props	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-numeric-separators	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-octal	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-octal-escape	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-octal-numeric-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-parenthesized	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-plus-sign	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-regexp-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-sparse-arrays	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-template-literals	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-undefined-value	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-unicode-codepoint-escapes	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/no-useless-escape	error	bun-common-package-json,bun-common-tsconfig-json	[{"allowRegexCharacters":[]}]
+jsonc/object-curly-newline	error	bun-common-package-json,bun-common-tsconfig-json	[{"consistent":true,"multiline":true}]
+jsonc/object-curly-spacing	error	bun-common-package-json,bun-common-tsconfig-json	["always"]
+jsonc/object-property-newline	error	bun-common-package-json,bun-common-tsconfig-json	[{"allowAllPropertiesOnSameLine":true,"allowMultiplePropertiesPerLine":false}]
+jsonc/quote-props	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/quotes	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/sort-array-values	error	bun-common-package-json	[{"order":{"type":"asc"},"pathPattern":"^files$"}]
+jsonc/sort-keys	error	bun-common-package-json,bun-common-tsconfig-json	[{"order":["publisher","name","displayName","type","version","private","packageManager","description","author","contributors","license","funding","homepage","repository","bugs","keywords","categories","sideEffects","imports","exports","main","module","unpkg","jsdelivr","types","typesVersions","bin","icon","files","engines","activationEvents","contributes","scripts","peerDependencies","peerDependenciesMeta","dependencies","optionalDependencies","devDependencies","pnpm","overrides","resolutions","husky","simple-git-hooks","lint-staged","eslintConfig"],"pathPattern":"^$"},{"order":{"type":"asc"},"pathPattern":"^(?:dev|peer|optional|bundled)?[Dd]ependencies(Meta)?$"},{"order":{"type":"asc"},"pathPattern":"^(?:resolutions|overrides|pnpm.overrides)$"},{"order":{"type":"asc"},"pathPattern":"^workspaces\\.catalog$"},{"order":{"type":"asc"},"pathPattern":"^workspaces\\.catalogs\\.[^.]+$"},{"order":["types","import","require","default"],"pathPattern":"^exports.*$"},{"order":["pre-commit","prepare-commit-msg","commit-msg","post-commit","pre-rebase","post-rewrite","post-checkout","post-merge","pre-push","pre-auto-gc"],"pathPattern":"^(?:gitHooks|husky|simple-git-hooks)$"}]
+jsonc/space-unary-ops	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/valid-json-number	error	bun-common-package-json,bun-common-tsconfig-json	
+jsonc/vue-custom-block/no-parsing-error	error	bun-common-package-json,bun-common-tsconfig-json	
+markdown/heading-increment	error	bun-common-readme-md	[{"frontmatterTitle":"^(?!\\s*['\"]title[:=]['\"])\\s*\\{?\\s*['\"]?title['\"]?\\s*[:=]"}]
+markdown/no-duplicate-definitions	error	bun-common-readme-md	[{"allowDefinitions":["//"],"allowFootnoteDefinitions":[],"checkFootnoteDefinitions":true}]
+markdown/no-empty-definitions	error	bun-common-readme-md	[{"allowDefinitions":["//"],"allowFootnoteDefinitions":[],"checkFootnoteDefinitions":true}]
+markdown/no-empty-images	error	bun-common-readme-md	
+markdown/no-empty-links	error	bun-common-readme-md	
+markdown/no-invalid-label-refs	error	bun-common-readme-md	
+markdown/no-missing-atx-heading-space	error	bun-common-readme-md	[{"checkClosedHeadings":false}]
+markdown/no-missing-link-fragments	error	bun-common-readme-md	[{"ignoreCase":true,"allowPattern":""}]
+markdown/no-multiple-h1	error	bun-common-readme-md	[{"frontmatterTitle":"^(?!\\s*['\"]title[:=]['\"])\\s*\\{?\\s*['\"]?title['\"]?\\s*[:=]"}]
+markdown/no-reference-like-urls	error	bun-common-readme-md	
+markdown/no-reversed-media-syntax	error	bun-common-readme-md	
+markdown/no-space-in-emphasis	error	bun-common-readme-md	[{"checkStrikethrough":false}]
+markdown/no-unused-definitions	error	bun-common-readme-md	[{"allowDefinitions":["//"],"allowFootnoteDefinitions":[],"checkFootnoteDefinitions":true}]
+markdown/require-alt-text	error	bun-common-readme-md	
+markdown/table-column-count	error	bun-common-readme-md	[{"checkMissingCells":false}]
+new-cap	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"capIsNew":false,"capIsNewExceptions":["Array","Boolean","Date","Error","Function","Number","Object","RegExp","String","Symbol","BigInt"],"newIsCap":true,"newIsCapExceptions":[],"properties":true}]
+no-alert	error	bun-common-lib-ts,bun-common-package-json,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-array-constructor	error	bun-common-package-json,bun-common-tsconfig-json	
+no-caller	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-case-declarations	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-class-assign	error	bun-common-package-json,bun-common-tsconfig-json	
+no-compare-neg-zero	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-cond-assign	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["always"]
+no-console	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	[{}]
+no-const-assign	error	bun-common-package-json,bun-common-tsconfig-json	
+no-control-regex	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-debugger	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-delete-var	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-dupe-args	error	bun-common-package-json,bun-common-tsconfig-json	
+no-dupe-class-members	error	bun-common-package-json,bun-common-tsconfig-json	
+no-dupe-keys	error	bun-common-package-json,bun-common-tsconfig-json	
+no-duplicate-case	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-empty	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowEmptyCatch":true}]
+no-empty-pattern	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowObjectPatternsAsParameters":false}]
+no-eval	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowIndirect":false}]
+no-ex-assign	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-extend-native	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"exceptions":[]}]
+no-extra-bind	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-extra-boolean-cast	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{}]
+no-fallthrough	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowEmptyCase":false,"reportUnusedFallthroughComment":false}]
+no-func-assign	error	bun-common-package-json,bun-common-tsconfig-json	
+no-global-assign	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"exceptions":[]}]
+no-implied-eval	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-import-assign	error	bun-common-package-json,bun-common-tsconfig-json	
+no-irregular-whitespace	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"skipComments":false,"skipJSXText":false,"skipRegExps":false,"skipStrings":true,"skipTemplates":false}]
+no-iterator	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-lone-blocks	error	bun-common-lib-ts,bun-common-package-json,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-loss-of-precision	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-misleading-character-class	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowEscape":false}]
+no-multi-str	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-new	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-new-func	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-new-native-nonconstructor	error	bun-common-package-json,bun-common-tsconfig-json	
+no-new-wrappers	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-obj-calls	error	bun-common-package-json,bun-common-tsconfig-json	
+no-octal	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-octal-escape	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-proto	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-prototype-builtins	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-redeclare	error	bun-common-package-json,bun-common-tsconfig-json	[{"builtinGlobals":false}]
+no-regex-spaces	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-restricted-globals	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"message":"Use `globalThis` instead.","name":"global"},{"message":"Use `globalThis` instead.","name":"self"}]
+no-restricted-properties	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"message":"Use `Object.getPrototypeOf` or `Object.setPrototypeOf` instead.","property":"__proto__"},{"message":"Use `Object.defineProperty` instead.","property":"__defineGetter__"},{"message":"Use `Object.defineProperty` instead.","property":"__defineSetter__"},{"message":"Use `Object.getOwnPropertyDescriptor` instead.","property":"__lookupGetter__"},{"message":"Use `Object.getOwnPropertyDescriptor` instead.","property":"__lookupSetter__"}]
+no-self-assign	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"props":true}]
+no-self-compare	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-sequences	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowInParentheses":true}]
+no-shadow-restricted-names	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"reportGlobalThis":true}]
+no-sparse-arrays	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-template-curly-in-string	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-this-before-super	error	bun-common-package-json,bun-common-tsconfig-json	
+no-throw-literal	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-undef	error	bun-common-package-json,bun-common-tsconfig-json	[{"typeof":false}]
+no-undef-init	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-unmodified-loop-condition	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-unneeded-ternary	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"defaultAssignment":false}]
+no-unreachable	error	bun-common-package-json,bun-common-tsconfig-json	
+no-unreachable-loop	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"ignore":[]}]
+no-unsafe-finally	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-unsafe-negation	error	bun-common-package-json,bun-common-tsconfig-json	[{"enforceForOrderingRelations":false}]
+no-unused-expressions	error	bun-common-package-json,bun-common-tsconfig-json	[{"allowShortCircuit":true,"allowTernary":true,"allowTaggedTemplates":true,"enforceForJSX":false,"ignoreDirectives":false}]
+no-unused-vars	error	bun-common-package-json,bun-common-tsconfig-json	[{"vars":"all","args":"none","ignoreRestSiblings":true,"caughtErrors":"none","ignoreClassWithStaticInitBlock":false,"ignoreUsingDeclarations":false,"reportUsedIgnorePattern":false}]
+no-use-before-define	error	bun-common-package-json,bun-common-tsconfig-json	[{"classes":false,"functions":false,"variables":true,"allowNamedExports":false,"enums":true,"typedefs":true,"ignoreTypeReferences":true}]
+no-useless-call	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-useless-catch	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-useless-computed-key	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"enforceForClassMembers":true}]
+no-useless-constructor	error	bun-common-package-json,bun-common-tsconfig-json	
+no-useless-rename	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"ignoreDestructuring":false,"ignoreImport":false,"ignoreExport":false}]
+no-useless-return	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-var	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+no-with	error	bun-common-package-json,bun-common-tsconfig-json	
+node/handle-callback-err	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["^(err|error)$"]
+node/no-deprecated-api	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+node/no-exports-assign	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+node/no-new-require	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+node/no-path-concat	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+node/prefer-global/buffer	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["never"]
+node/prefer-global/process	error	bun-common-lib-ts,bun-jobs-ui-app-tsx,examples-bun-jobs-ts,scripts-ts	["never"]
+node/process-exit-as-throw	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+object-shorthand	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["always",{"avoidQuotes":true,"ignoreConstructors":false}]
+one-var	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"initialized":"never"}]
+perfectionist/sort-exports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"order":"asc","type":"natural"}]
+perfectionist/sort-imports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"groups":["type-import",["type-parent","type-sibling","type-index","type-internal"],"value-builtin","value-external","value-internal",["value-parent","value-sibling","value-index"],"side-effect","ts-equals-import","unknown"],"newlinesBetween":"ignore","newlinesInside":"ignore","order":"asc","type":"natural"}]
+perfectionist/sort-named-exports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"order":"asc","type":"natural"}]
+perfectionist/sort-named-imports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"order":"asc","type":"natural"}]
+prefer-const	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"destructuring":"all","ignoreReadBeforeAssign":true}]
+prefer-exponentiation-operator	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+prefer-promise-reject-errors	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowEmptyReject":false}]
+prefer-regex-literals	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"disallowRedundantWrapping":true}]
+prefer-rest-params	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+prefer-spread	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+prefer-template	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+prettier/prettier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"endOfLine":"lf","singleQuote":false,"singleAttributePerLine":true,"trailingComma":"all","tabWidth":2,"useTabs":false,"bracketSpacing":true,"jsxBracketSameLine":false,"semi":true}]
+react-refresh/only-export-components	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	[{"allowConstantExport":false,"allowExportNames":[]}]
+react/dom-no-dangerously-set-innerhtml	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-dangerously-set-innerhtml-with-children	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-find-dom-node	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-flush-sync	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-hydrate	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-render	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-render-return-value	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-script-url	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-unsafe-iframe-sandbox	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-use-form-state	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/dom-no-void-elements-with-children	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/error-boundaries	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/exhaustive-deps	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-children-prop	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-children-prop-with-children	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-comment-textnodes	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-key-after-spread	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-leaked-dollar	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-leaked-semicolon	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/jsx-no-namespace	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/naming-convention-context-name	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/naming-convention-id-name	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/naming-convention-ref-name	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-access-state-in-setstate	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-array-index-key	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-children-count	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-children-for-each	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-children-map	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-children-only	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-children-to-array	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-clone-element	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-component-will-mount	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-component-will-receive-props	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-component-will-update	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-context-provider	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-create-ref	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-direct-mutation-state	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-forward-ref	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-missing-key	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-nested-component-definitions	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-nested-lazy-component-declarations	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-set-state-in-component-did-mount	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-set-state-in-component-did-update	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-set-state-in-component-will-update	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-unnecessary-use-prefix	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-unsafe-component-will-mount	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-unsafe-component-will-receive-props	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-unsafe-component-will-update	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-unused-class-component-members	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/no-use-context	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/purity	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/rsc-function-definition	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/rules-of-hooks	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/set-state-in-effect	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/set-state-in-render	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/static-components	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/unsupported-syntax	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/use-memo	error	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/use-state	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-event-listener	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-fetch	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-intersection-observer	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-interval	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-resize-observer	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+react/web-api-no-leaked-timeout	warn	bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx	
+regexp/confusing-quantifier	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/control-character-escape	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/match-any	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/negation	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-contradiction-with-assertion	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-dupe-characters-character-class	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-dupe-disjunctions	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-alternative	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-capturing-group	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-character-class	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-group	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-lookarounds-assertion	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-empty-string-literal	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-escape-backspace	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-extra-lookaround-assertions	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-invalid-regexp	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-invisible-character	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-lazy-ends	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-legacy-features	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-misleading-capturing-group	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-misleading-unicode-character	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-missing-g-flag	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-non-standard-flag	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-obscure-range	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-optional-assertion	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-potentially-useless-backreference	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-super-linear-backtracking	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-trivially-nested-assertion	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-trivially-nested-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-unused-capturing-group	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-assertions	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-backreference	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-character-class	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-dollar-replacements	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-escape	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-flag	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-lazy	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-non-capturing-group	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-range	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-set-operand	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-string-literal	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-useless-two-nums-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/no-zero-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/optimal-lookaround-quantifier	warn	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/optimal-quantifier-concatenation	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-character-class	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-d	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-plus-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-predefined-assertion	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-question-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-range	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-set-operation	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-star-quantifier	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-unicode-codepoint-escapes	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/prefer-w	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/simplify-set-operations	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/sort-flags	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/strict	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+regexp/use-ignore-case	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+style/jsx-curly-brace-presence	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"props":"never","children":"never","propElementValues":"always"}]
+style/jsx-function-call-newline	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["multiline"]
+style/lines-between-class-members	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["always",{"exceptAfterOverload":true,"exceptAfterSingleLine":true}]
+style/spaced-comment	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["always",{"block":{"balanced":true,"exceptions":["*"],"markers":["!"]},"line":{"exceptions":["/","#"],"markers":["/"]}}]
+symbol-description	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+test/consistent-test-it	error	bun-common-test-ts,bun-jobs-ui-test-tsx	[{"fn":"it","withinDescribe":"it"}]
+test/no-identical-title	error	bun-common-test-ts,bun-jobs-ui-test-tsx	
+test/no-import-node-test	error	bun-common-test-ts,bun-jobs-ui-test-tsx	
+test/no-only-tests	error	bun-common-test-ts,bun-jobs-ui-test-tsx	
+test/prefer-hooks-in-order	error	bun-common-test-ts,bun-jobs-ui-test-tsx	
+test/prefer-lowercase-title	error	bun-common-test-ts,bun-jobs-ui-test-tsx	[{"ignore":[],"allowedPrefixes":[],"ignoreTopLevelDescribe":false,"lowercaseFirstCharacterOnly":true}]
+ts/ban-ts-comment	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"ts-expect-error":"allow-with-description"}]
+ts/consistent-type-definitions	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["interface"]
+ts/consistent-type-imports	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"disallowTypeAnnotations":false,"fixStyle":"separate-type-imports","prefer":"type-imports"}]
+ts/method-signature-style	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["property"]
+ts/no-array-constructor	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-dupe-class-members	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-duplicate-enum-values	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-empty-object-type	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowInterfaces":"always"}]
+ts/no-extra-non-null-assertion	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-import-type-side-effects	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-misused-new	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-namespace	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-non-null-asserted-nullish-coalescing	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-non-null-asserted-optional-chain	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-redeclare	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"builtinGlobals":false}]
+ts/no-require-imports	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-this-alias	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-unnecessary-type-constraint	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-unsafe-declaration-merging	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-unsafe-function-type	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/no-unused-expressions	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"allowShortCircuit":true,"allowTaggedTemplates":true,"allowTernary":true}]
+ts/no-use-before-define	error	bun-common-lib-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"classes":false,"functions":false,"variables":true}]
+ts/no-wrapper-object-types	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/prefer-as-const	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/prefer-literal-enum-member	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+ts/prefer-namespace-keyword	error	bun-common-lib-ts,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicode-bom	error	bun-common-lib-ts,bun-common-package-json,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["never"]
+unicorn/consistent-empty-array-spread	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/error-message	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/escape-case	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["uppercase"]
+unicorn/new-for-builtins	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/no-instanceof-builtins	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"useErrorIsError":false,"strategy":"loose","include":[],"exclude":[]}]
+unicorn/no-new-array	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/no-new-buffer	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/prefer-dom-node-text-content	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/prefer-includes	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/prefer-node-protocol	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/prefer-number-properties	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"checkInfinity":false,"checkNaN":true}]
+unicorn/prefer-string-starts-ends-with	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/prefer-type-error	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unicorn/throw-new-error	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unused-imports/no-unused-imports	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+unused-imports/no-unused-vars	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"args":"after-used","argsIgnorePattern":"^_","caughtErrorsIgnorePattern":"^_","ignoreRestSiblings":true,"vars":"all","varsIgnorePattern":"^_"}]
+use-isnan	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"enforceForIndexOf":true,"enforceForSwitchCase":true}]
+valid-typeof	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	[{"requireStringLiterals":true}]
+vars-on-top	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	
+yoda	error	bun-common-lib-ts,bun-common-package-json,bun-common-readme-codeblock-ts,bun-common-test-ts,bun-common-tsconfig-json,bun-jobs-ui-app-tsx,bun-jobs-ui-test-tsx,examples-bun-jobs-ts,scripts-ts	["never",{"exceptRange":false,"onlyEquality":false}]

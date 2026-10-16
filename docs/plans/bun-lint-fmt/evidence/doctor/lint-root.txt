@@ -1,0 +1,41 @@
+No ESLint or oxlint config found. Using Bun's defaults.
+Also examples/bun-common/eslint.config.mjs, examples/bun-jobs-ui/eslint.config.mjs, examples/bun-jobs/eslint.config.mjs, examples/bun-nest/eslint.config.mjs, packages/bun-common/eslint.config.mjs, packages/bun-jobs-ui/eslint.config.mjs, packages/bun-jobs/eslint.config.mjs, packages/bun-nest/eslint.config.mjs, playground/eslint.config.mjs, scripts/eslint.config.mjs, templates/eslint.config.mjs
+
+ 1997 files to lint
+   56 of them go to your installed ESLint: 56 *.json
+
+  148 rules are on
+        eslint              118
+        @typescript-eslint   19
+        bun:test              6
+        react-hooks           2
+        react                 2
+        prettier              1
+ 2083 rules run in JavaScript
+        eslint-plugin-regexp                             660
+        @typescript-eslint/eslint-plugin                 286
+        eslint-plugin-jsdoc                              187
+        eslint-plugin-unicorn                            154
+        @eslint/markdown                                 150
+        @eslint-react/eslint-plugin                      130
+        @e18e/eslint-plugin                               99
+        eslint-plugin-n                                   88
+        eslint-plugin-import-lite                         66
+        eslint-plugin-antfu                               60
+        @eslint-community/eslint-plugin-eslint-comments   44
+        @stylistic/eslint-plugin                          44
+        eslint-plugin-perfectionist                       44
+        eslint-plugin-unused-imports                      22
+        eslint-plugin-command                             11
+        packages/bun-common/eslint.config.mjs              6
+        packages/bun-jobs-ui/eslint.config.mjs             6
+        packages/bun-jobs/eslint.config.mjs                6
+        packages/bun-nest/eslint.config.mjs                6
+        scripts/eslint.config.mjs                          6
+        templates/eslint.config.mjs                        6
+        eslint-plugin-react-refresh                        2
+
+Still needed:   @antfu/eslint-config, eslint-config-prettier, eslint-plugin-prettier, typescript (examples/bun-common/eslint.config.mjs loads them)
+                eslint (some files go to it)
+
+Run bun lint --init to add a [lint] section to bunfig.toml

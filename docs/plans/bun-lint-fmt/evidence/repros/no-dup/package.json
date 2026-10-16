@@ -1,0 +1,16 @@
+{
+  "name": "nodup",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "8.59.4",
+    "@typescript-eslint/parser": "8.59.4",
+    "eslint": "10.5.0",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-import-lite": "0.6.0",
+    "eslint-plugin-n": "18.4.1",
+    "eslint-plugin-unicorn": "64.0.0",
+    "oxlint": "^1.88.0",
+    "typescript": "6.0.3"
+  }
+}
