@@ -1,0 +1,973 @@
+
+=== What each screen needs: permissions, per queue and per runner ===
+
+--- A host whose authorize decides per queue and per runner
+  [   77ms] meta.readOnly / addableNames / features: {
+  readOnly: false,
+  addableNames: [ "send-email" ],
+  features: {
+    logs: true,
+    update: true,
+    limits: true,
+    flows: true,
+    addFlow: true,
+    search: true,
+    workers: true,
+    workerControl: true,
+    throughput: true,
+    runnerLogs: true,
+    runnerMetrics: true,
+    workerMetrics: true,
+    jobAttribution: true,
+    addedByState: true,
+    jobDefaults: true,
+    jobDefaultsApply: true,
+    demand: true,
+    providers: true,
+    summonResetBudget: true,
+    summonList: true,
+    summonStoredStatus: true,
+    summonPolicy: true,
+  },
+  maxBulkIds: 1000,
+  maxClean: 10000,
+  defaultClean: 1000,
+  maxRetryAllIds: 1000,
+}
+
+--- The UI's rules, one entry per row of the package README's table
+
+--- GATES against the README's table, row for row
+  ✓ the README lists the same 130 elements, in the same order
+  ✓ the examples README says how many rows this file checks, and means it
+  ✓ README "Overview nav entry and `/`" needs what GATES says
+  ✓ README "Overview counts" needs what GATES says
+  ✓ README "Overview queue table" needs what GATES says
+  ✓ README "Overview queue table pager" needs what GATES says
+  ✓ README "Overview sparklines" needs what GATES says
+  ✓ README "Overview queue table Demand column" needs what GATES says
+  ✓ README "Overview "Over the range" figure" needs what GATES says
+  ✓ README "Overview "Over the range" added-by-state group ("Added in range, where they are now (still stored)")" needs what GATES says
+  ✓ README "Overview Runners section" needs what GATES says
+  ✓ README "Overview Workers section" needs what GATES says
+  ✓ README "Overview Runners section row links" needs what GATES says
+  ✓ README "Overview Workers section row links" needs what GATES says
+  ✓ README "Overview Runners / Workers note "Showing the N busiest … of M"" needs what GATES says
+  ✓ README "Overview range caption ("This is not exactly the range asked for: …")" needs what GATES says
+  ✓ README "Overview "No numbers are kept for this range"" needs what GATES says
+  ✓ README "Queues nav entry and every `/queues*` route" needs what GATES says
+  ✓ README "Queue header total and paused badge" needs what GATES says
+  ✓ README "Jobs table, and the job links in it" needs what GATES says
+  ✓ README "Jobs table "Processed by" column" needs what GATES says
+  ✓ README "Jobs table "Processed by" worker link" needs what GATES says
+  ✓ README "Jobs table and worker page jobs, newest added first on every tab (`sort=createdAt`)" needs what GATES says
+  ✓ README "Pause / Resume" needs what GATES says
+  ✓ README "Drain…, Clean…, Retry all…" needs what GATES says
+  ✓ README "Add job" needs what GATES says
+  ✓ README "Add job's name suggestions" needs what GATES says
+  ✓ README "Add flow" needs what GATES says
+  ✓ README "Bulk Retry / Promote / Remove selected" needs what GATES says
+  ✓ README "Limits panel" needs what GATES says
+  ✓ README "Limits panel, editable" needs what GATES says
+  ✓ README "Job defaults panel" needs what GATES says
+  ✓ README "Job defaults Settings…" needs what GATES says
+  ✓ README "Job defaults Apply to N pending jobs…" needs what GATES says
+  ✓ README "Workers panel" needs what GATES says
+  ✓ README "Demand panel" needs what GATES says
+  ✓ README "Summon panel" needs what GATES says
+  ✓ README "Summon panel budget" needs what GATES says
+  ✓ README "Summon panel Summon now…" needs what GATES says
+  ✓ README "Summon panel Reset…" needs what GATES says
+  ✓ README "Summon panel Reset: also clear budget usage" needs what GATES says
+  ✓ README "Summon panel summoner readiness" needs what GATES says
+  ✓ README "Summon panel Test connection" needs what GATES says
+  ✓ README "Summon panel group card" needs what GATES says
+  ✓ README "Summon panel shared unit" needs what GATES says
+  ✓ README "Summon panel overlaps warning" needs what GATES says
+  ✓ README "Summon panel attempt coverage" needs what GATES says
+  ✓ README "Summon panel partial outcome" needs what GATES says
+  ✓ README "Summon panel policy" needs what GATES says
+  ✓ README "Throughput panel" needs what GATES says
+  ✓ README "Repeatables panel" needs what GATES says
+  ✓ README "Repeatables panel, Remove" needs what GATES says
+  ✓ README "Repeatables panel pager" needs what GATES says
+  ✓ README "Job screen" needs what GATES says
+  ✓ README "Job logs" needs what GATES says
+  ✓ README "Job Clear logs…" needs what GATES says
+  ✓ README "Job Retry" needs what GATES says
+  ✓ README "Job Promote" needs what GATES says
+  ✓ README "Job Remove" needs what GATES says
+  ✓ README "Job Edit" needs what GATES says
+  ✓ README "Job "Processed by"" needs what GATES says
+  ✓ README "Job "Processed by" worker link" needs what GATES says
+  ✓ README "Runners nav entry and every `/runners*` route" needs what GATES says
+  ✓ README "Runners list pager" needs what GATES says
+  ✓ README "Runner screen" needs what GATES says
+  ✓ README "Runner stats and history" needs what GATES says
+  ✓ README "Runner history pager" needs what GATES says
+  ✓ README "Runner active runs" needs what GATES says
+  ✓ README "Runner run log, and the history's Log column" needs what GATES says
+  ✓ README "A run's Log button (in the history row, and Show log in its expanded details)" needs what GATES says
+  ✓ README "A history row's "N lines dropped" badge" needs what GATES says
+  ✓ README "Runner Trigger…" needs what GATES says
+  ✓ README "Runner Pause / Resume…" needs what GATES says
+  ✓ README "Runner Reschedule…" needs what GATES says
+  ✓ README "Runner Kill…" needs what GATES says
+  ✓ README "Runner Reset stats…" needs what GATES says
+  ✓ README "Runner Clear history…" needs what GATES says
+  ✓ README "Runner non-local hint" needs what GATES says
+  ✓ README "Workers nav entry and `/workers`" needs what GATES says
+  ✓ README "Summoning nav entry and `/summon`" needs what GATES says
+  ✓ README "Summoning row" needs what GATES says
+  ✓ README "Summoning groups section" needs what GATES says
+  ✓ README "Providers nav entry and `/providers`" needs what GATES says
+  ✓ README "Providers card" needs what GATES says
+  ✓ README "Providers Test connection" needs what GATES says
+  ✓ README "Providers config schema" needs what GATES says
+  ✓ README "Workers page queue links" needs what GATES says
+  ✓ README "Workers page Queue, Service and State filters" needs what GATES says
+  ✓ README "Workers page Host filter" needs what GATES says
+  ✓ README "Workers table key links (the Workers page and a queue's Workers panel)" needs what GATES says
+  ✓ README "Worker page (`/workers/:queue/:key`)" needs what GATES says
+  ✓ README "Worker page queue link" needs what GATES says
+  ✓ README "Worker page Edit settings…" needs what GATES says
+  ✓ README "Worker page Reset to code values… (no live instance)" needs what GATES says
+  ✓ README "Worker page "Change pending" badge" needs what GATES says
+  ✓ README "Worker page throughput and busyness" needs what GATES says
+  ✓ README "Worker page jobs ("Jobs whose last attempt this key ran")" needs what GATES says
+  ✓ README "Worker page jobs' job links" needs what GATES says
+  ✓ README "Workers table Completed / Failed columns (the Workers page and a queue's Workers panel)" needs what GATES says
+  ✓ README "Workers table Memory column (the Workers page and a worker page's Instances table, not a queue's Workers panel)" needs what GATES says
+  ✓ README "Workers table target badge (the Workers page, a queue's Workers panel and a worker page's Instances table)" needs what GATES says
+  ✓ README "Worker page Target card" needs what GATES says
+  ✓ README "Workers table summon badge (the Workers page, a queue's Workers panel and a worker page's Instances table)" needs what GATES says
+  ✓ README "Worker page Summoned card" needs what GATES says
+  ✓ README "Workers page server table pager" needs what GATES says
+  ✓ README "Queue Workers panel pager" needs what GATES says
+  ✓ README "Worker page Instances pager" needs what GATES says
+  ✓ README "Queue Workers panel housekeeping note" needs what GATES says
+  ✓ README "Worker instruction wording ("Paused X" vs "Asked X to pause")" needs what GATES says
+  ✓ README "Worker Pause" needs what GATES says
+  ✓ README "Worker Resume" needs what GATES says
+  ✓ README "Worker Stop…" needs what GATES says
+  ✓ README "Worker Start" needs what GATES says
+  ✓ README "Worker Stop… persistence choice" needs what GATES says
+  ✓ README "Worker Settings…" needs what GATES says
+  ✓ README "Worker "Change pending" badge and the Settings dialog's pending note" needs what GATES says
+  ✓ README "Worker actions column" needs what GATES says
+  ✓ README "Events nav entry and `/events`" needs what GATES says
+  ✓ README "Events queue and job channel pickers' queue list" needs what GATES says
+  ✓ README "Events runner channel picker's runner list" needs what GATES says
+  ✓ README "API docs nav entry and every `/docs*` route" needs what GATES says
+  ✓ README "HTTP API nav entry (under API docs), the HTTP reference (`/docs/http*`) and its card on `/docs`" needs what GATES says
+  ✓ README "WebSocket API nav entry (under API docs), the WebSocket reference (`/docs/ws*`) and its card on `/docs`" needs what GATES says
+  ✓ README "HTTP operation's permission marker, "You have" / "You lack"" needs what GATES says
+  ✓ README "WebSocket channel's and operation's permission markers, "You have this" / "You lack this"" needs what GATES says
+  ✓ README "HTTP try-it Send" needs what GATES says
+  ✓ README "HTTP try-it confirmation" needs what GATES says
+  ✓ README "WebSocket try-it, "Open in the Events console"" needs what GATES says
+  ✓ README "Job Fail…" needs what GATES says
+  ✓ README "Repeatables panel, Disable / Enable" needs what GATES says
+  ✓ README "Runner Settings…" needs what GATES says
+  ✓ README "Runner summary's override rows" needs what GATES says
+  ✓ a row the README calls "untargeted" is decided on the untargeted map (or a worker table's, which is it on /workers)
+  ✓ a Runner row that is not untargeted is decided on the runner's own map
+  ✓ a row that waits "until they have loaded" does so in GATES
+  ✓ every gate's mutations are mutations, and its reads are not
+  ✓ and "the above" names the row just before
+  ✓ a gate that restates another's needs (sameAs) lists exactly its reads, features and /meta fields
+  [   84ms] the figure each pager row states, as `PAGE_FIGURE` reads it: [ "Overview queue table pager: 20", "Repeatables panel pager: 20", "Runners list pager: 25",
+  "Runner history pager: 50", "Workers page server table pager: 25", "Queue Workers panel pager: 25",
+  "Worker page Instances pager: 10"
+]
+  ✓ all 7 pager rows state the page size their table pages at
+  ✓ rewording a row around an unchanged figure does not move the figure (PR #141's own edit), while the pattern it replaced read only the first spelling
+  ✓ a row that says "opt-in" gates on an opt-in action (JOBS_API_OPT_IN_ACTIONS)
+  ✓ and every row gating on one says so (Add job and Job Edit included)
+  [   85ms] where the app's code needs more than its README row says: []
+  ✓ those rows, by name: none left, every row states what its code needs
+  ✓ and no README row names an unlisted feature (else it is listed, not unlisted)
+
+--- GET /meta/permissions: the map the app boots with
+  [   87ms] untargeted map: {
+  "meta.read": true,
+  "docs.read": true,
+  "metrics.read": true,
+  "queues.list": true,
+  "queues.read": true,
+  "queues.summon": false,
+  "queues.pause": false,
+  "queues.resume": false,
+  "queues.drain": false,
+  "queues.clean": false,
+  "queues.limits": false,
+  "queues.defaults": false,
+  "queues.applyDefaults": false,
+  "providers.read": true,
+  "providers.validate": false,
+  "workers.list": true,
+  "workers.read": true,
+  "workers.pause": false,
+  "workers.resume": false,
+  "workers.stop": false,
+  "workers.start": false,
+  "workers.configure": false,
+  "jobs.list": true,
+  "jobs.read": true,
+  "jobs.logs": true,
+  "jobs.clearLogs": false,
+  "jobs.update": false,
+  "jobs.remove": false,
+  "jobs.retry": false,
+  "jobs.promote": false,
+  "jobs.fail": false,
+  "jobs.retryAll": false,
+  "jobs.add": false,
+  "repeatables.list": true,
+  "repeatables.remove": false,
+  "repeatables.disable": false,
+  "repeatables.enable": false,
+  "definitions.list": true,
+  "runners.list": true,
+  "runners.read": true,
+  "runners.clearHistory": false,
+  "runners.logs": true,
+  "runners.trigger": false,
+  "runners.pause": false,
+  "runners.resume": false,
+  "runners.reschedule": false,
+  "runners.kill": false,
+  "runners.configure": false,
+  "runners.resetStats": false,
+  "events.connect": true,
+  "events.subscribe": true,
+}
+  ✓ authorize was asked once per routed action, plus once for the request
+  ✓ every read is allowed
+  ✓ and no mutation: none names a queue or runner here
+  ✓ mode: 'both' routes every runner action
+  ✓ queues.list and runners.list are true: the Queues and Runners nav entries exist
+  ✓ before ?queue= loads, or if it fails, the fallback shows no mutation
+  ✓ the job screen waits for ?queue= (closed while pending), and falls back only if it fails
+
+--- The Events console: meta.websocket and events.connect
+  ✓ meta.websocket names the socket's path
+  ✓ events.connect is in the untargeted map, and true
+  ✓ authorize was asked about events.connect with no queue or runner
+  ✓ so the Events nav entry and both pickers' lists are on
+  ✓ in mode jobs only the queue list, in mode runner only the runner list
+  ✓ and sections.manage off hides the Events entry with the others
+  ✓ authorize refuses events.connect: meta.websocket is set, events.connect false
+  ✓ so no Events entry, and no pickers either, though the lists are allowed
+  ✓ websocket: false → meta.websocket null, events.connect and events.subscribe absent
+  ✓ so no Events entry: an authorize that says yes to everything cannot add one
+
+--- The API docs: meta.docs, docs.read, and each operation's page
+  ✓ meta.docs names both documents, under the basePath
+  ✓ docs.read is in the untargeted map, and true; meta.readOnly is false
+  ✓ so the API docs entry and both references are on
+  ✓ a docs-only UI (sections.manage off) keeps every one: manage is not needed
+  ✓ sections.docs off removes them all
+  ✓ websocket: false → meta.docs has openapi only (asyncapi absent, not null)
+  ✓ so the HTTP reference stays, and /docs/ws has no reference, only its note
+  ✓ docs: false → meta.docs null, and docs.read absent from the map, not false
+  ✓ so no API docs entry at all
+  ✓ authorize refuses docs.read: meta.docs is still set, docs.read false, no entry
+  [  165ms] GET /jobs-api/openapi.json: operations: 85
+  ✓ every operation names an action the contract knows, and a method the client sends
+  ✓ and x-bun-jobs-mutation is exactly the contract's JOBS_API_MUTATIONS
+  ✓ GET getQueue: You have, Send enabled, no confirmation
+  ✓ POST pauseQueue: You lack, Send DISABLED (not absent), asks first, nothing typed
+  ✓ DELETE removeJob: You lack, Send disabled, asks first and needs removeJob typed
+  ✓ POST failJob: You lack, Send disabled, asks first and needs failJob typed
+  ✓ while POST disableRepeatable / enableRepeatable only ask first (idempotent)
+  ✓ every mutation asks first, and only mutations
+  ✓ every DELETE, and every remove / drain / clean / kill / fail, needs its operationId typed
+  ✓ the DELETEs among them: two clears, three resets and two removals
+  ✓ a caller holding every action: every Send enabled (reads and mutations)
+  ✓ readOnly: meta.readOnly true, and its OpenAPI documents no mutation at all
+  ✓ the rule: on a read-only API a mutation's Send is disabled, even with the action
+  ✓ with sections.docs off there is no page: Send is absent, not disabled
+  [  456ms] GET /jobs-api/asyncapi.json: channels, and each operation's x-bun-jobs-action: {
+  channels: [ "connection", "all", "queues", "queue", "job", "workers", "queueWorkers", "runners",
+    "runner"
+  ],
+  operations: {
+    subscribe: "events.subscribe",
+    unsubscribe: "events.subscribe",
+    ping: "events.connect",
+    receiveControl: "events.connect",
+    receiveAllEvents: "events.subscribe",
+    receiveQueuesEvents: "events.subscribe",
+    receiveQueueEvents: "events.subscribe",
+    receiveJobEvents: "events.subscribe",
+    receiveWorkersEvents: "events.subscribe",
+    receiveQueueWorkersEvents: "events.subscribe",
+    receiveRunnersEvents: "events.subscribe",
+    receiveRunnerEvents: "events.subscribe",
+  },
+}
+  ✓ every WebSocket operation's action is one the UI knows, and this caller has it
+  ✓ an action the UI does not know: its own marker, not You lack this
+  ✓ on the host refusing events.connect: the connect marker reads You lack this
+  ✓ queue/{queue} with mail → queue/mail, and the link opens
+  ✓ a job id is escaped with encodeJobId: a/b → a%2Fb
+  ✓ every channel parameter carries its x-bun-jobs-schema but the job id, which is anything (escaped)
+  ✓ a name its x-bun-jobs-schema refuses (..), or none: the link is DISABLED, with the reason
+  ✓ an older API without x-bun-jobs-schema: the client's name rule decides (mail opens; .. and a/b are disabled)
+  ✓ the connection is the one channel carrying the ws upgrade binding or a socket path
+  ✓ the connection channel has no try-it: absent, not disabled (nothing to subscribe to)
+  ✓ and neither has any channel under another key that carries the upgrade binding or a socket path
+  ✓ a runner channel where meta.mode offers none (mode jobs): disabled
+  ✓ without the Events console (docs-only, or events.connect refused): a note, and no link
+  ✓ a WebSocket operation's page has no try-it at all
+  ✓ over 440 screens: a gate that is absent when denied is never shown disabled
+  ✓ and a docs element denied on its shown page is never absent
+
+--- GET /meta/permissions?queue=…: what each queue screen shows
+  ✓ ?queue=mail → 200, the same actions as the untargeted map
+  ✓ and authorize was told queue=mail for every queue-side action, and no queue for providers.read and providers.validate (a provider is the process's, and its routes name none)
+  ✓ ?queue=audit → 200, the same actions as the untargeted map
+  ✓ and authorize was told queue=audit for every queue-side action, and no queue for providers.read and providers.validate (a provider is the process's, and its routes name none)
+  ✓ ?queue=payroll → 200, the same actions as the untargeted map
+  ✓ and authorize was told queue=payroll for every queue-side action, and no queue for providers.read and providers.validate (a provider is the process's, and its routes name none)
+┌───────────────────────────────────────────────────────┬───────┬───────┬─────────┐
+│                                                       │ mail  │ audit │ payroll │
+├───────────────────────────────────────────────────────┼───────┼───────┼─────────┤
+│                                   Overview: nav and / │ true  │ true  │ true    │
+│                                      Overview: counts │ true  │ true  │ true    │
+│                                 Overview: queue table │ true  │ true  │ true    │
+│                           Overview: queue table pager │ false │ false │ false   │
+│                                  Overview: sparklines │ true  │ true  │ true    │
+│                               Overview: Demand column │ true  │ true  │ true    │
+│                       overview: Over the range figure │ true  │ true  │ true    │
+│              overview: Over the range, added by state │ true  │ true  │ true    │
+│                             overview: Runners section │ true  │ true  │ true    │
+│                             overview: Workers section │ true  │ true  │ true    │
+│                     overview: Runners row runner link │ true  │ true  │ true    │
+│                        overview: Workers row key link │ true  │ true  │ true    │
+│                      overview: Workers row queue link │ true  │ true  │ true    │
+│                        overview: Runners busiest note │ false │ false │ false   │
+│                        overview: Workers busiest note │ false │ false │ false   │
+│                          overview: Jobs range caption │ false │ false │ false   │
+│                       overview: Runners range caption │ false │ false │ false   │
+│                       overview: Workers range caption │ false │ false │ false   │
+│                               overview: Jobs not kept │ false │ false │ false   │
+│                            overview: Runners not kept │ false │ false │ false   │
+│                            overview: Workers not kept │ false │ false │ false   │
+│                              Queues: nav and /queues* │ true  │ true  │ true    │
+│                     queue: header total, paused badge │ true  │ true  │ false   │
+│                                     queue: jobs table │ true  │ true  │ false   │
+│                            queue: Processed by column │ true  │ true  │ false   │
+│                       queue: Processed by worker link │ false │ false │ false   │
+│       queue: jobs newest added first (sort=createdAt) │ true  │ true  │ false   │
+│ worker page: jobs newest added first (sort=createdAt) │ true  │ true  │ false   │
+│                                          queue: Pause │ true  │ false │ false   │
+│                                         queue: Resume │ false │ false │ false   │
+│                                         queue: Drain… │ true  │ false │ false   │
+│                                         queue: Clean… │ true  │ false │ false   │
+│                                     queue: Retry all… │ true  │ false │ false   │
+│                                        queue: Add job │ true  │ false │ false   │
+│                     queue: Add job's name suggestions │ false │ false │ false   │
+│                                       queue: Add flow │ true  │ false │ false   │
+│                            queue: bulk Retry selected │ true  │ false │ false   │
+│                          queue: bulk Promote selected │ true  │ false │ false   │
+│                          queue: bulk Remove selected… │ true  │ false │ false   │
+│                                          panel=limits │ true  │ true  │ false   │
+│                                panel=limits, editable │ true  │ false │ false   │
+│                                    panel=job-defaults │ true  │ true  │ false   │
+│                         panel=job-defaults, Settings… │ true  │ false │ false   │
+│          panel=job-defaults, Apply to N pending jobs… │ false │ false │ false   │
+│                                         panel=workers │ true  │ true  │ false   │
+│                                          panel=demand │ true  │ true  │ false   │
+│                                          panel=summon │ false │ false │ false   │
+│                                        summon: budget │ false │ false │ false   │
+│                                   summon: Summon now… │ false │ false │ false   │
+│                                        summon: Reset… │ false │ false │ false   │
+│                summon: Reset… also clear budget usage │ false │ false │ false   │
+│                            summon: summoner readiness │ false │ false │ false   │
+│                    summon: what the summoner declares │ false │ false │ false   │
+│                               summon: Test connection │ false │ false │ false   │
+│                                    summon: group card │ false │ false │ false   │
+│                                   summon: shared unit │ false │ false │ false   │
+│                              summon: overlaps warning │ false │ false │ false   │
+│                              summon: attempt coverage │ false │ false │ false   │
+│                               summon: partial outcome │ false │ false │ false   │
+│                                        summon: policy │ false │ false │ false   │
+│                              summon: policy elsewhere │ false │ false │ false   │
+│                                      panel=throughput │ true  │ true  │ false   │
+│                                     panel=repeatables │ true  │ true  │ false   │
+│                             panel=repeatables, Remove │ true  │ false │ false   │
+│                              panel=repeatables, pager │ false │ false │ false   │
+│                                           job: screen │ true  │ true  │ false   │
+│                                             job: logs │ true  │ true  │ false   │
+│                                      job: Clear logs… │ true  │ false │ false   │
+│                                            job: Retry │ false │ false │ false   │
+│                                          job: Promote │ false │ false │ false   │
+│                                           job: Remove │ true  │ false │ false   │
+│                                             job: Edit │ true  │ false │ false   │
+│                                     job: Processed by │ true  │ true  │ false   │
+│                         job: Processed by worker link │ false │ false │ false   │
+│                            Runners: nav and /runners* │ true  │ true  │ true    │
+│                                   runners: list pager │ false │ false │ false   │
+│                             Workers: nav and /workers │ true  │ true  │ true    │
+│                            Summoning: nav and /summon │ true  │ true  │ true    │
+│                                        summoning: row │ false │ false │ false   │
+│                             summoning: groups section │ true  │ true  │ true    │
+│                         Providers: nav and /providers │ true  │ true  │ true    │
+│                                       providers: card │ false │ false │ false   │
+│                            providers: Test connection │ false │ false │ false   │
+│                              providers: config schema │ false │ false │ false   │
+│                             workers page: queue links │ true  │ true  │ true    │
+│        workers page: Queue, Service and State filters │ true  │ true  │ true    │
+│                             workers page: Host filter │ false │ false │ false   │
+│                               worker table: key links │ false │ false │ false   │
+│                                    worker page: route │ true  │ true  │ true    │
+│                                worker page: instances │ true  │ true  │ false   │
+│                               worker page: queue link │ true  │ true  │ true    │
+│                           worker page: Edit settings… │ false │ false │ false   │
+│                    worker page: Reset to code values… │ false │ false │ false   │
+│                           worker page: Change pending │ false │ false │ false   │
+│                  worker page: throughput and busyness │ true  │ true  │ false   │
+│                                     worker page: jobs │ true  │ true  │ false   │
+│                          worker page: jobs' job links │ true  │ true  │ false   │
+│                              worker page: Target card │ true  │ true  │ false   │
+│                            worker page: Summoned card │ false │ false │ false   │
+│                      workers page: server table pager │ false │ false │ false   │
+│                                  panel=workers, pager │ false │ false │ false   │
+│                          worker page: instances pager │ false │ false │ false   │
+│                               Events: nav and /events │ true  │ true  │ true    │
+│       events: queue list in the queue and job pickers │ true  │ true  │ true    │
+│              events: runner list in the runner picker │ true  │ true  │ true    │
+│                                  Docs: nav and /docs* │ true  │ true  │ true    │
+│              docs: HTTP API entry, reference and card │ true  │ true  │ true    │
+│         docs: WebSocket API entry, reference and card │ true  │ true  │ true    │
+│                                            job: Fail… │ false │ false │ false   │
+│                            panel=repeatables, Disable │ false │ false │ false   │
+│                             panel=repeatables, Enable │ false │ false │ false   │
+└───────────────────────────────────────────────────────┴───────┴───────┴─────────┘
+  ✓ mail (running): every gate is open but those needing a state or data
+  ✓ audit: reads only
+  ✓ payroll: only what the untargeted map decides
+  ✓ and no queue screen opens a runner gate
+  ✓ payroll's job screen: Job hidden (no jobs.read on its map)
+  ✓ the seeded jobs' states
+  ✓ mail, a dead job: Retry and Remove, not Promote
+  ✓ mail, a delayed job: Promote, not Retry
+  ✓ audit, a dead job: no Retry
+
+--- Fail… and Disable / Enable: decided by the map, then by state
+  ✓ ?queue= maps: jobs.fail, repeatables.disable, repeatables.enable
+  ✓ and the untargeted map says no to all three (they always name a queue)
+  ✓ mail: Fail… in every state but completed and dead, active included
+  ✓ audit: Fail… in no state (no jobs.fail on its map)
+  ✓ doomed-1 is waiting, so Fail… is offered
+  ✓ failJob's body: reason required, 1 to 4,096 characters
+  ✓ POST /queues/mail/jobs/doomed-1/fail → 200; the job is dead, with the reason
+  ✓ so Fail… is gone from its screen
+  ✓ a client that fails a dead job anyway: 409 JOB_STATE_CONFLICT
+  ✓ and a job that does not exist: 404 JOB_NOT_FOUND
+  ✓ digest is enabled, so the panel offers Disable, not Enable
+  ✓ audit, with the same series: neither (read-only)
+  ✓ POST …/digest/disable → 200 { disabled: true }; listed disabled
+  ✓ so Enable replaces Disable
+  ✓ disabling it again changes nothing (idempotent: no confirmation asked)
+  ✓ POST …/digest/enable → 200 { enabled: true }; enabled, a next run scheduled
+  ✓ a series that does not exist: 404 REPEATABLE_NOT_FOUND
+
+--- The server's 403 is authoritative: a client that tries anyway
+  ✓ POST /queues/mail/pause → 200
+  ✓ and the queue is paused
+  ✓ mail (paused): Resume replaces Pause
+  ✓ audit reads its detail too, but may do neither
+  ✓ resumed: Pause again
+  ✓ POST /queues/audit/pause → 403 FORBIDDEN
+  ✓ POST /queues/audit/drain → 403 FORBIDDEN
+  ✓ POST /queues/audit/clean → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/retry-all → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/dead-1/retry → 403 FORBIDDEN
+  ✓ DELETE /queues/audit/jobs/dead-1 → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/retry → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/remove → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/promote → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs → 403 FORBIDDEN
+  ✓ PATCH /queues/audit/jobs/later-1 → 403 FORBIDDEN
+  ✓ PUT /queues/audit/limits → 403 FORBIDDEN
+  ✓ POST /queues/audit/jobs/waiting-1/fail → 403 FORBIDDEN
+  ✓ POST /queues/audit/repeatables/digest/disable → 403 FORBIDDEN
+  ✓ POST /queues/audit/repeatables/digest/enable → 403 FORBIDDEN
+  ✓ and audit is untouched
+  ✓ GET /queues/payroll → 403
+  ✓ GET /queues/payroll/jobs → 403
+  ✓ GET /queues/payroll/jobs/dead-1 → 403
+  ✓ the mail map allows jobs.remove
+  ✓ DELETE /queues/mail/jobs/vip-1 → 403 all the same
+  ✓ POST /queues/mail/jobs/vip-1/fail → 403 too: the map's jobs.fail is advisory
+  ✓ and the job is still there, still delayed
+
+--- GET /runners: which runners are local
+  ✓ the list: local runners first, then the ids only the driver knows
+  [  986ms] GET /runners/nightly: isLocal, local: {
+  isLocal: true,
+  local: {
+    status: "running",
+    activeRuns: [],
+    nextRunAt: 1792202400000,
+  },
+}
+  ✓ nightly: isLocal, local.status running (started), no run in flight
+  ✓ remote-sync: not local, and no local block at all
+
+--- GET /meta/permissions?runner=…: what each runner screen shows
+  ✓ ?runner=nightly → 200, the same actions as the untargeted map
+  ✓ and authorize was told runner=nightly for every runner action, and no queue
+  ✓ ?runner=ledger → 200, the same actions as the untargeted map
+  ✓ and authorize was told runner=ledger for every runner action, and no queue
+  ✓ ?runner=vault → 200, the same actions as the untargeted map
+  ✓ and authorize was told runner=vault for every runner action, and no queue
+  ✓ ?runner=remote-sync → 200, the same actions as the untargeted map
+  ✓ and authorize was told runner=remote-sync for every runner action, and no queue
+  [  988ms] ?runner=ledger: {
+  "runners.clearHistory": false,
+  "runners.configure": false,
+  "runners.kill": false,
+  "runners.list": true,
+  "runners.logs": true,
+  "runners.pause": false,
+  "runners.read": true,
+  "runners.reschedule": false,
+  "runners.resetStats": false,
+  "runners.resume": false,
+  "runners.trigger": false,
+}
+  ✓ nightly: every runner action
+  ✓ ledger: runners.list and runners.read, no mutation
+  ✓ vault: no runner action at all, not even runners.list
+  ✓ remote-sync: every runner action (the map is not asked where it runs)
+┌─────────────────────────────────────────────────┬─────────┬────────┬───────┬─────────────┐
+│                                                 │ nightly │ ledger │ vault │ remote-sync │
+├─────────────────────────────────────────────────┼─────────┼────────┼───────┼─────────────┤
+│                             Overview: nav and / │ true    │ true   │ true  │ true        │
+│                                Overview: counts │ true    │ true   │ true  │ true        │
+│                           Overview: queue table │ true    │ true   │ true  │ true        │
+│                     Overview: queue table pager │ false   │ false  │ false │ false       │
+│                            Overview: sparklines │ true    │ true   │ true  │ true        │
+│                         Overview: Demand column │ true    │ true   │ true  │ true        │
+│                 overview: Over the range figure │ true    │ true   │ true  │ true        │
+│        overview: Over the range, added by state │ true    │ true   │ true  │ true        │
+│                       overview: Runners section │ true    │ true   │ true  │ true        │
+│                       overview: Workers section │ true    │ true   │ true  │ true        │
+│               overview: Runners row runner link │ true    │ true   │ true  │ true        │
+│                  overview: Workers row key link │ true    │ true   │ true  │ true        │
+│                overview: Workers row queue link │ true    │ true   │ true  │ true        │
+│                  overview: Runners busiest note │ false   │ false  │ false │ false       │
+│                  overview: Workers busiest note │ false   │ false  │ false │ false       │
+│                    overview: Jobs range caption │ false   │ false  │ false │ false       │
+│                 overview: Runners range caption │ false   │ false  │ false │ false       │
+│                 overview: Workers range caption │ false   │ false  │ false │ false       │
+│                         overview: Jobs not kept │ false   │ false  │ false │ false       │
+│                      overview: Runners not kept │ false   │ false  │ false │ false       │
+│                      overview: Workers not kept │ false   │ false  │ false │ false       │
+│                        Queues: nav and /queues* │ true    │ true   │ true  │ true        │
+│                 queue: Processed by worker link │ false   │ false  │ false │ false       │
+│                   job: Processed by worker link │ false   │ false  │ false │ false       │
+│                      Runners: nav and /runners* │ true    │ true   │ true  │ true        │
+│                             runners: list pager │ false   │ false  │ false │ false       │
+│                                  runner: screen │ true    │ true   │ false │ true        │
+│                       runner: stats and history │ true    │ true   │ false │ true        │
+│                           runner: history pager │ false   │ false  │ false │ false       │
+│                             runner: active runs │ true    │ true   │ false │ false       │
+│                  runner: run log and Log column │ true    │ true   │ false │ true        │
+│                      runner: a run's Log button │ false   │ false  │ false │ false       │
+│                         runner: N lines dropped │ false   │ false  │ false │ false       │
+│                                runner: Trigger… │ true    │ false  │ false │ true        │
+│              runner: Trigger…'s Arguments field │ true    │ false  │ false │ true        │
+│                                   runner: Pause │ true    │ false  │ false │ true        │
+│                                 runner: Resume… │ false   │ false  │ false │ false       │
+│                             runner: Reschedule… │ true    │ false  │ false │ true        │
+│                                   runner: Kill… │ false   │ false  │ false │ false       │
+│                            runner: Reset stats… │ true    │ false  │ false │ false       │
+│                          runner: Clear history… │ true    │ false  │ false │ true        │
+│                          runner: non-local hint │ false   │ false  │ false │ true        │
+│                       Workers: nav and /workers │ true    │ true   │ true  │ true        │
+│                      Summoning: nav and /summon │ true    │ true   │ true  │ true        │
+│                       summoning: groups section │ true    │ true   │ true  │ true        │
+│                   Providers: nav and /providers │ true    │ true   │ true  │ true        │
+│                                 providers: card │ false   │ false  │ false │ false       │
+│                      providers: Test connection │ false   │ false  │ false │ false       │
+│                        providers: config schema │ false   │ false  │ false │ false       │
+│                       workers page: queue links │ true    │ true   │ true  │ true        │
+│  workers page: Queue, Service and State filters │ true    │ true   │ true  │ true        │
+│                       workers page: Host filter │ false   │ false  │ false │ false       │
+│                         worker table: key links │ false   │ false  │ false │ false       │
+│                              worker page: route │ true    │ true   │ true  │ true        │
+│                         worker page: queue link │ true    │ true   │ true  │ true        │
+│                    worker page: jobs' job links │ false   │ false  │ false │ false       │
+│                workers page: server table pager │ false   │ false  │ false │ false       │
+│                         Events: nav and /events │ true    │ true   │ true  │ true        │
+│ events: queue list in the queue and job pickers │ true    │ true   │ true  │ true        │
+│        events: runner list in the runner picker │ true    │ true   │ true  │ true        │
+│                            Docs: nav and /docs* │ true    │ true   │ true  │ true        │
+│        docs: HTTP API entry, reference and card │ true    │ true   │ true  │ true        │
+│   docs: WebSocket API entry, reference and card │ true    │ true   │ true  │ true        │
+│                               runner: Settings… │ true    │ false  │ false │ true        │
+│                 runner: summary's override rows │ true    │ true   │ false │ true        │
+└─────────────────────────────────────────────────┴─────────┴────────┴───────┴─────────────┘
+  ✓ vault: Runner hidden, so the runner was never requested
+  ✓ nightly (local, running, nothing in flight): all but Resume…, Kill…, the remote hint and a run's
+  ✓ ledger (local): reads only
+  ✓ vault: only what the untargeted map decides
+  ✓ remote-sync: no active runs, Kill… or Reset stats…, but the remote hint and Clear history…
+  ✓ and no runner screen opens a queue gate
+  ✓ the runner screen waits for ?runner= (closed while pending), and falls back only if it fails
+
+--- A run in flight offers Kill…, a paused runner Resume…
+  ✓ POST /runners/nightly/trigger → 202 started
+  ✓ in flight here: Kill… is offered
+  ✓ POST /runners/nightly/kill { wait: true } → 200, naming the run
+  ✓ settled: Kill… is gone, and the history and stats have the run
+  ✓ POST /runners/nightly/pause → 200; isPaused, and Resume… replaces Pause
+  ✓ resumed: Pause again
+  ✓ POST /runners/remote-sync/pause → 200; isPaused, and Resume… replaces Pause
+  ✓ resumed: Pause again
+
+--- The server's answer is authoritative for runners too
+  ✓ POST /runners/ledger/trigger → 403 FORBIDDEN
+  ✓ POST /runners/ledger/pause → 403 FORBIDDEN
+  ✓ POST /runners/ledger/resume → 403 FORBIDDEN
+  ✓ PUT /runners/ledger/schedule → 403 FORBIDDEN
+  ✓ POST /runners/ledger/kill → 403 FORBIDDEN
+  ✓ POST /runners/ledger/stats/reset → 403 FORBIDDEN
+  ✓ and ledger is untouched
+  ✓ GET /runners/vault → 403
+  ✓ GET /runners/vault/stats → 403
+  ✓ GET /runners/vault/history → 403
+  ✓ POST /runners/remote-sync/kill → 409 RUNNER_NOT_LOCAL
+  ✓ POST /runners/remote-sync/stats/reset → 409 RUNNER_NOT_LOCAL
+  ✓ GET /runners/ghost → 404 RUNNER_NOT_FOUND
+
+--- readOnly: every mutation is absent from the map, not false
+  ✓ meta.readOnly, addableNames
+  ✓ no mutation is in the map at all
+  ✓ so the queue screens offer none: the same gates as audit
+  ✓ and the runner screen none: nightly, read-only, gates as ledger does
+  [ 1019ms] POST /ro-api/queues/mail/pause → 404: ROUTE_NOT_FOUND
+  ✓ and the route itself does not exist
+
+--- Clean…'s default limit is /meta's limits.defaultClean
+  ✓ here: defaultClean is 1,000, below maxClean
+  ✓ limits: { maxClean: 3 } → /meta says maxClean 3, defaultClean 3
+  ✓ POST clean with no limit removes defaultClean (3) of 5
+  ✓ and a limit above maxClean is refused, as the dialog refuses it
+
+--- The new actions, on each map: per queue and per runner
+  ✓ they are mutations, but runners.logs, which is a read
+  ✓ ?queue= maps: yes on mail, no on audit (read-only) and payroll, and no untargeted
+  ✓ ?runner= maps: configure, clearHistory, logs (logs is a read: ledger has it)
+
+--- Worker controls: the queue's map decides, not the Workers page's
+  [ 2047ms] GET /workers: key, queue, state, control, counts, host: [
+  {
+    key: "auditor",
+    queue: "audit",
+    state: "running",
+    control: {
+      enabled: true,
+      mode: "subscribe",
+      appliedSeq: 0,
+      configSeq: 0,
+      pending: false,
+      stopPersistence: "process",
+      stopPersistenceOverridable: false,
+    },
+    completed: 1,
+    host: true,
+  }, {
+    key: "mailer",
+    queue: "mail",
+    state: "running",
+    control: {
+      enabled: true,
+      mode: "subscribe",
+      appliedSeq: 0,
+      configSeq: 0,
+      pending: false,
+      stopPersistence: "process",
+      stopPersistenceOverridable: false,
+    },
+    completed: 1,
+    host: true,
+  }
+]
+  ✓ both report a key, control.enabled, a host, and counts
+  ✓ /workers (the untargeted map, no mutation): no action on either row, and no Actions column
+  ✓ but its own elements: queue links, filters, the Host filter (hosts exposed), key links, Completed / Failed
+  ✓ both report their process's resident memory
+  ✓ the Memory column: the Workers page asks and somebody reports; a queue's Workers panel never asks; a table of workers reporting none has no column even where it is asked for
+  ✓ both report where their attempts run: in process, a function
+  ✓ the target badge: on all three worker tables for a worker reporting target, read-only audit's panel included; on none of them for one too old to report it (absent is not in-process)
+  ✓ neither real worker reports summon: nothing here summoned them
+  ✓ the summon badge: on all three worker tables for a worker reporting summon, read-only audit's panel included; on none of them for one reporting none (absent is not "not summoned")
+  ✓ both report that they take part in the queue's housekeeping (maintenance is on by default)
+  ✓ the note: shown where a live worker reports sweeps:false and none reports true; gone as soon as one takes part; nothing at all where every live worker is too old to say (absent is not false); shown, hedged, where some omit it; and never outside a queue's panel
+  ✓ a worker list whose workers carry no host (serialize.exposeHosts off): no Host filter
+  ✓ mail's Workers panel (mail's map): Pause, Stop… and Settings… on the running worker, and the column
+  ✓ audit's Workers panel (audit's map): nothing, and no Actions column
+  ✓ Stop…'s persistence: not overridable here, so the dialog states control.stopPersistence
+  ✓ the rule on a worker that stopped reporting: no lifecycle action, but Settings… stays
+  ✓ and on one that does not listen (control.enabled false): nothing at all
+  ✓ a worker reporting control.pending shows Change pending; mailer does not
+  ✓ POST …/workers/<mailer>/pause?wait=2000 → 200, applied: the toast says Paused, not Asked to pause
+  ✓ the listing reads paused: Resume and Stop… replace Pause
+  ✓ POST …/resume?wait=2000 → 200, applied; running again
+  ✓ a client pausing audit's worker anyway: 403, and it keeps running
+
+--- A worker page: /workers/:queue/:key, on the queue's own map
+  ✓ mail/mailer: one live instance; Edit settings…, the numbers and the jobs; no Reset (it is live)
+  ✓ audit/auditor: the same reads, and no Edit settings… (read-only)
+  ✓ payroll: the route exists, but Instances hidden (no read sent), and Jobs hidden
+  ✓ the Summoned card: only where the Instances card is and an instance reports summon; none on a key with no live instance, and hidden with the Instances on payroll
+  ✓ the Target card: wherever the Instances card is, a key with no live instance included (it says the target is known once one reports), and hidden with it on payroll
+  ✓ PUT …/worker-configs/retired → 200; its page: no instance, the override listed, Reset… offered
+  ✓ DELETE …/worker-configs/retired → 200; the listing keeps the key, emptied (values {}, a new seq)
+  ✓ so the page reads nothing stored, and offers no Reset…
+  ✓ audit may do neither: PUT and DELETE …/worker-configs/auditor → 403
+
+--- Opt-in actions: routed only when a host lists them
+  ✓ JOBS_API_OPT_IN_ACTIONS: the nine
+  ✓ a default host routes every action but those: absent from the map, not false
+  ✓ while the new default-on ones are routed, and true for an authorize saying yes
+  ✓ and its opt-in routes do not exist: 404, whatever authorize says
+  ✓ so the elements they gate are absent, while the panels and rows they sit in stay
+
+--- Job defaults: the panel, Settings… and Apply to N pending jobs…
+  ✓ mail: nothing overridden, jobs pending: the panel and Settings…, no Apply (the panel says why)
+  ✓ PUT …/job-defaults { attempts: 3 } → 200: attempts overridden, so Apply to N pending jobs… is offered
+  ✓ its dry run (POST …/job-defaults/apply { dryRun: true }) → 200, done, writing nothing
+  ✓ audit sees the same panel, with neither button: its PUT and apply → 403
+  ✓ DELETE …/job-defaults → 200, a new seq, nothing overridden: no Apply again
+
+--- Processed by, newest first, and Clear logs…
+  ✓ logged-1: completed, processed by the mailer key; column and line, both linked to its worker page
+  ✓ later-1 (never run): processedBy null, so "No worker recorded" and no link
+  ✓ the links need the Workers nav entry: with sections.manage off they are plain text
+  ✓ sort=createdAt (features.addedByState): 200, newest added first; not on a page counting its total
+  ✓ logged-1 logged one line; mail's job screen offers Clear logs…, audit's does not
+  ✓ DELETE …/logged-1/logs → 200, removed 1; the log is empty now
+  ✓ a client clearing an audit job's logs anyway: 403
+
+--- Runners: run logs, Clear history… and Settings…
+  [ 2325ms] nightly's killed run: status, logLines, logsDropped: {
+  status: "killed",
+  logLines: 0,
+  logsDropped: 0,
+}
+  ✓ its Log button follows its logLines (a finished run that logged 0 offers none)
+  ✓ the rule: a running run offers it before it reports logLines; 0 lines finished does not; dropped lines show
+  ✓ GET …/runs/<id>/logs → 200 (runners.logs, a read); ledger has the read too, vault not
+  ✓ every runner here reports a config; Clear history… and Settings… on nightly and remote-sync
+  ✓ DELETE /runners/remote-sync/history → 200: a remote runner's history clears too (no RUNNER_NOT_LOCAL)
+  ✓ DELETE /runners/nightly/history → 200, and its history is empty
+  ✓ ledger may do neither: DELETE …/history and PUT …/config → 403
+
+--- The Overview's analytics: captions, 'not kept', and the busiest note
+  ✓ meta.analytics is set and records runners and workers: every section is on
+  [ 2334ms] GET /analytics/jobs, the last hour: range: {
+  resolution: 60,
+  interval: 60000,
+  from: 1792137480000,
+  to: 1792141080000,
+  end: 1792141140000,
+  requested: {
+    from: 1792137505157,
+    to: 1792141105157,
+  },
+  clamped: true,
+  reason: "retention",
+}
+  ✓ the last hour: every read is clamped (reason retention), so every section captions it
+  ✓ two days, beyond meta.analytics.maxSpanMs: 400 INVALID_ARGUMENT, not a clamp and not "not kept"
+  ✓ a range wholly older than retention: 400 RANGE_NOT_RETAINED on each, so "No numbers are kept"
+  ✓ four runners and two worker keys are far under 100 rows: no "Showing the N busiest" note
+  ✓ the rule: a truncated roll-up shows the note; a caller without metrics.read sees no section
+  ✓ a backend recording no analytics (meta.analytics null): no sparklines, no figure, no sections
+
+--- the analytics rows' links: the worker, the queue and the runner
+  ✓ this caller: the key links to its worker page, the queue to the queue screen, the runner to its page
+  ✓ `workers.list` granted per queue but not untargeted: every key is plain text, and the queue link survives
+  ✓ the same for the queue column: `queues.list` per queue only leaves every row's queue plain text, and the key still links
+  ✓ and without untargeted `runners.list` the runner is plain text, while the Workers row keeps both links
+  ✓ a backend keeping no worker registry (meta.features.workers false): no key link, since /workers is not routed
+  ✓ the demand gates: the panel wherever `queues.read` is, read-only audit's included, and the Overview column; both gone with meta.features.demand false (runner mode)
+
+--- The pagers: on a list table only where its rows outnumber one page
+  [ 2351ms] the pager gates, in the order the README lists them: [ "Overview: queue table pager", "panel=repeatables, pager", "runners: list pager", "runner: history pager",
+  "workers page: server table pager", "panel=workers, pager", "worker page: instances pager"
+]
+  ✓ no rows on screen: no pager anywhere
+  ✓ exactly one page in every table: still no pager
+  ✓ one row more than a page: every pager, each at its own size
+  ✓ payroll: the three queue-side pagers close with their tables; the rest the untargeted map decides
+  ✓ audit reads all of them, as it reads the tables they page
+  ✓ and without untargeted queues.list there is no Overview queue table, so nothing to page
+
+--- A runner's history: paged on the server, over the whole stored history
+  [ 2360ms] limits.maxHistory, as this API reports it: 200
+  [ 2360ms] the README's row for the history pager: the Runner stats and history's needs, and the runner has stored more runs than one page holds — the “Runs shown” number, which is the page size (50 by default, or `limits.maxHistory` when that is smaller). It pages the runner's whole history **on the server**, re-reading it with a new offset, and keeps the window in the URL; a run whose log the URL opens is on the page that link carries, and the card says so when it is not on the page shown
+  ✓ its row states that figure as a default: the size is the “Runs shown” number, capped by `limits.maxHistory`, and the paging is on the server with the window in the URL
+  [ 2360ms] the README's row for `history`: Runs **per page** in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The "Runs shown" select and the pager's own "Rows per page" are two views of it, offering `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter, and any change resets `offset`.
+  ✓ `history` is the page size: the README calls it runs per page, says a change resets `offset`, and the size follows it
+  ✓ the figure its pager row states is that default, and the size in force with no `history` in the URL
+  [ 2360ms] the README's row for `offset`: Runs skipped before the page, sent as `GET /runners/:runner/history?offset=`. Defaults to `0`. Deliberately uncapped, as the route is: `keepHistory` may store far more runs than `limits.maxHistory`, and this is what reaches them. A value past the end answers an empty page — "No runs on this page", with the pager and Clear history… still live — rather than the last page with rows.
+  ✓ `limits.maxHistory` caps a page and not the window: the README says `offset` is uncapped, and only the size clamps
+  ✓ the pager follows the stored total against the page size, whatever is on screen
+  ✓ `offset` past the end reads no rows, and the README's row says what that page shows: "No runs on this page", the pager and Clear history… still live
+  ✓ a `logs=` run off the page is called out rather than silently opened, and a link carrying its own `offset` lands on it
+
+--- The Summon panel: summon state for the queue, or no tab
+  ✓ the memory host: GET /queues/:queue/summon is 409 SUMMON_NOT_CONFIGURED on mail and audit (no tab), 403 on payroll (not read at all)
+  [ 2409ms] GET /summon-api/queues/:queue/summon: {
+  mail: "200 local=true",
+  audit: "200 local=true",
+  payroll: "403 FORBIDDEN",
+  plain: "409 SUMMON_NOT_CONFIGURED",
+}
+  ✓ the summon host: 200 (local) where a controller runs here, 403 where authorize refuses the read, 409 SUMMON_NOT_CONFIGURED where none does
+  ✓ the Summon tab, Summon now… and Reset…: all three on mail; the tab alone on read-only audit; nothing on payroll (no queues.read) or on plain (queues.read, but no controller: the 409 shows no tab)
+  ✓ with mail's map (queues.read and queues.summon both granted): a 409 or 404 (null) or no read shows no tab and no button, and a status from another process's controller (local: false) the tab without them
+  [ 2424ms] POST /summon-api/queues/mail/summon: {
+  action: "summoned",
+  id: "sm_be5sl4hai6s4ny7ulrhpsjtytr",
+  outcome: "started",
+  demand: {
+    queue: "mail",
+    at: 1792141105243,
+    paused: false,
+    waiting: 1,
+    dueNow: 0,
+    stalled: 0,
+    active: 0,
+    workers: 0,
+    nextDueAt: null,
+    demand: 1,
+    outstanding: 1,
+    capped: false,
+    exact: true,
+  },
+}
+  ✓ Summon now… on mail: 200 summoned, started; the summoner was handed one manual request, and started nothing
+  ✓ Reset… on mail: 200, the status after it: no failures, and the attempt on its way kept
+  ✓ and the server refuses both where the buttons are absent: 403 on audit, payroll and plain, whatever the controller
+  ✓ readOnly, and a host built with the default actions (queues.summon is opt-in): mail keeps its tab, loses both buttons, and neither POST is routed
+  ✓ and the summoner was handed nothing more: one request in all
+
+--- Summoning: the nav entry, its rows, the budget and Reset's box
+  ✓ the Summoning entry and GET /summon: there with the untargeted queues.list (not opt-in, so the default actions have it too); absent in runner mode (features.summonList false, not routed), on an older API that leaves features.summonList out, where authorize refuses the untargeted queues.list (403), and with sections.manage off (the server still answers: sections are the UI's)
+  [ 2458ms] GET /summon-api/summon: [ "audit: example-record, ready", "mail: example-record, ready" ]
+  ✓ GET /summon lists, by queue name, the controllers whose queue authorize lets this caller read: audit and mail; not payroll (a controller, but queues.read refused) nor plain (queues.read, but no controller)
+  ✓ and a Summoning row is open on exactly the queues GET /summon lists: on queues.read for its queue, which the API asked; no row at all where the entry is absent (authorize refusing the untargeted queues.list)
+  ✓ each listed row is a controller here (local: true) and carries its budget, with both limits and both reset times, as the Summon panel's status does
+  ✓ the Summon panel's budget: on mail and audit (a status with budget), not on payroll or plain (no tab), and not on mail for a status without budget (an older API)
+  ✓ Reset's "Also clear budget usage" box: on mail; not on read-only audit (no Reset…), on mail where /meta lacks features.summonResetBudget (an older API), on a readOnly host or one with the default actions (no Reset…); and runner mode has no reset to take it
+  ✓ ticked, Reset sends { budget: true }: the attempt counted this hour and today goes back to 0, where the unticked reset above kept it, and the attempt on its way is still kept
+  ✓ and the server refuses the box where the dialog is absent: 403 on audit
+
+--- Summon groups, and a queue whose controller runs in another process
+  [ 2481ms] GET /summon-api/summon/groups: [ "outbound: 1/20 this hour, 1/200 today; mail 1" ]
+  ✓ mail's status names its group, outbound, with the group's own budget and mail's share of today's attempts: the one Summon now… made
+  ✓ and GET /summon/groups lists it, with that share: 200, one group, outbound, charged by mail
+  ✓ the Summon panel's group card: on mail (a status with group); not on audit (a controller in no group), payroll (no queues.read, no tab) or plain (no controller, no tab); and not on mail for a status without group
+  ✓ audit's status really has no group, so the card's absence there is the API's answer
+
+--- A shared summon unit: every member's map decides its Summon now…
+  [ 2500ms] GET /unit-api/queues/:queue/summon, queues: {
+  renders: [ "renders", "thumbs", "previews" ],
+  thumbs: [ "renders", "thumbs", "previews" ],
+  previews: [ "renders", "thumbs", "previews" ],
+}
+  ✓ every member answers the unit's status: local, in the group media, listing all three queues for a caller who may read them
+  ✓ with every member's map granting queues.summon: the tab, the Shared unit line, Summon now… and Reset… on each member; no overlaps warning
+  ✓ while one member's map is still loading (or failed), Summon now… and Reset… are not offered on any member; the line stays
+  ✓ and the server agrees: POST /queues/thumbs/summon answers 200
+  ✓ an authorize refusing queues.summon on thumbs: renders' own map still grants it, and thumbs' map refuses it
+  ✓ so no member offers Summon now… or Reset…, renders included; the tab and the line stay
+  ✓ and the server agrees: POST /queues/renders/summon answers 403, since thumbs refuses it
+  ✓ renders' gates with thumbs' map replaced by one that grants it: Summon now… and Reset… back, so it is the member's map that decided
+  ✓ an authorize hiding previews: renders and thumbs list only the two members the caller may read, and previews' screen reads no status
+  ✓ the Shared unit line, Summon now… and Reset… on renders and thumbs, whose maps grant queues.summon; nothing on previews (no queues.read, no tab)
+  ✓ yet the server refuses it, 403: previews, which the caller cannot see, refuses queues.summon, and the panel toasts that the action needs every queue of the unit
+  ✓ readOnly: the tab and the Shared unit line on each member; no Summon now… or Reset…
+  ✓ a single queue's status lists no queues, so mail and audit show no Shared unit line, and Summon now… is decided on mail's own map as before
+  ✓ no other group's workers were ever seen, so no status carries overlaps (absent, never []), and no member shows the warning
+  ✓ the warning on a status with overlaps, a shared unit's or a single queue's; not without the tab (previews, hidden), and not on an empty list, which the panel ignores
+  [ 2570ms] GET /unit-api/queues/renders/summon after Summon now…, pending: [
+  {
+    id: "sm_dmbc2l4ojzsw6qghzkedyhwzcq",
+    coverage: {
+      renders: "pending",
+      thumbs: "pending",
+      previews: "pending",
+    },
+  }
+]
+  ✓ after Summon now… on the unit: one attempt on its way, its coverage every queue pending, so renders shows the Coverage column; the status read before it, with no attempt, shows none
+  ✓ no column for a single queue's attempt (mail's, which the API sends no coverage for), for an attempt without coverage, or under an unreadable marker whatever the data; an empty coverage still shows it
+  ✓ the partial outcome line on a last outcome missing thumbs, unreadable marker or not; not for missing: [], a last without missing, or a status with no last (the real ones here)
+  ✓ the Summon groups section: there with the Summoning entry and features.summonStoredStatus; absent where authorize refuses the untargeted queues.list (entry and section, 403), on a driver without listQueueState (the entry stays, the feature is off and GET /summon/groups is not routed: 404), on an older API that leaves the flag out, and in runner mode
+  ✓ features.summonStoredStatus as each /meta reports it: on for the summon host, off without listQueueState and in runner mode
+  ✓ the other context's controller summoned for newsletter: one request handed to the summoner, started
+  [ 2607ms] GET /summon-api/queues/newsletter/summon: {
+  status: 200,
+  local: false,
+  summoner: undefined,
+  group: "outbound",
+}
+  ✓ newsletter's status: 200, local: false, no summoner, and the group read from storage, charged by both queues
+  ✓ newsletter's map grants queues.summon, providers.read and providers.validate
+  ✓ on that local: false status: the tab and the group card; no Summon now… or Reset… although queues.summon is granted; no readiness and no Test connection (no summoner), with a preflight provider listed
+  ✓ and the server agrees: both POSTs on newsletter are 409 SUMMON_NOT_CONFIGURED, and the recording summoner was handed nothing more for newsletter
+  ✓ the summon host's /meta has features.summonPolicy, and mail's status, local, carries its policy: the Policy section, not the line
+  ✓ newsletter's status, read from storage (local: false), carries no policy: the muted line instead of the section
+  ✓ with the flag false (runner mode) or absent (an older API), neither shows, local or not; with it on, a local status without policy shows nothing either
+
+--- A summoned worker's actual mode: resolvedMode, beside the one requested
+  ✓ GET /workers: the worker runSummoned runs reports resolvedMode until-stopped beside the requested exit-on-idle; the one run by hand reports the request alone
+  ✓ the badge on both rows and the Summoned card: summon decides, resolvedMode does not — the same with it taken out
+  ✓ closed from outside, runSummoned ends with reason closed and exits nothing
+
+--- Providers: the nav entry, cards, Test connection and the schema
+  [ 2712ms] GET /provider-api/providers: [ "custom:example-record@0.0.0~1: ready, preflight false, configSchema false", "bun-jobs-provider-cumulus@1.0.0~1: ready, preflight true, configSchema true",
+  "bun-jobs-provider-cumulus@1.0.0~2: failed, preflight true, configSchema true", "bun-jobs-provider-cumulus@1.0.0~3: pending, preflight true, configSchema true",
+  "custom:example-plain@0.0.0~1: ready, preflight false, configSchema false"
+]
+  ✓ GET /providers lists every provider configured in this process, oldest first: the summon host's plain summoner, the ready, failed and pending Cumulus (preflight and schema), and the plain summoner (neither)
+  ✓ the Providers entry and GET /providers: there with providers.read; absent in runner mode (features.providers false, not routed), with features.providers false on a map granting providers.read, without providers.read (not routed) and where authorize refuses it (403), and with sections.manage off (the server still answers: sections are the UI's)
+  ✓ a card per provider GET /providers lists: all five here, none without providers.read, and one authorize refuses by id is not listed, so it has no card
+  ✓ and that provider's own routes refuse it too: 403 on its schema and its Test connection
+  ✓ on /providers, [Test connection, config schema] per card: both for each Cumulus (a preflight and a configSchema), neither for the two plain summoners
+  ✓ Test connection needs providers.validate and no readOnly: on a host without it, under readOnly and where authorize refuses it, no card offers it, while the schema stays
+  [ 2734ms] POST /provider-api/providers/<ready>/validate: {
+  id: "bun-jobs-provider-cumulus@1.0.0~1",
+  ok: true,
+  checks: [
+    {
+      id: "credentials",
+      status: "pass",
+    }
+  ],
+}
+  ✓ Test connection where it is offered: the ready Cumulus passes (one call to the platform) and the failed one says whose problem it is (misconfigured, without calling it); the plain summoner, which has no preflight, would check its config alone: ok, no checks
+  ✓ and where it is absent the server agrees: 404 (not routed) without providers.validate and under readOnly, 403 where authorize refuses it; the platform was not called again
+  ✓ the config schema, read only when opened: Cumulus's answers with its properties; a plain summoner's is 404 PROVIDER_SCHEMA_NOT_FOUND, where no card offers it; and readOnly keeps the read
+  ✓ each queue's summon status points at the list: the providerId of its summoner
+  ✓ the Summon panel's summoner, per queue, [readiness, capabilities sent, readiness shown, what it declares shown]: readiness always; style, boot budget and longest life only for a ready summoner, since the status sends them only then
+  ✓ a readiness this version does not know still shows (as its raw string), with nothing declared; and without the tab, nothing of the summoner
+  ✓ the Summon panel's Test connection, per queue: offered where the summoner's provider has a preflight (each Cumulus, ready or not), not for the plain summoner
+  ✓ on mail it needs all of them: taken away one at a time, providers.read (a map without it closes it even with the list cached), providers.validate, readOnly, features.providers, the status's providerId and the listed provider's preflight each close it
+  ✓ and without providers.read the panel reads nothing: mail's map lacks it or says no, GET /providers is 404 (not routed) or 403, and the tab and the readiness stay
+  ✓ the memory host: the Providers entry and 200 from GET /providers (the registry is the process's, so it lists these five too), no Test connection on a card, and 403 on the request
+  ✓ an authorize granting only on queue mail: mail's map answers providers.read and providers.validate untargeted, so both are refused; the tab stays, Test connection is absent even with the list cached, and the server agrees: 403 on GET /providers and on the POST
+  ✓ and where the untargeted authorize grants the provider actions: mail's map grants both, the panel offers Test connection, and the POST passes
+  ✓ at the end, GET /providers still lists every provider held above, in order
+
+468 checks passed.

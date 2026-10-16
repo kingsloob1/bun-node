@@ -1,0 +1,32 @@
+{
+  "config": {
+    "path": null,
+    "kind": "none",
+    "nested": [],
+    "editorconfig": false,
+    "bunfig": null
+  },
+  "files": {
+    "formatted": 149,
+    "by_prettier": {},
+    "not_formatted": {},
+    "left_for_plugins": 0
+  },
+  "plugins": {
+    "built_in": [],
+    "by_prettier": [],
+    "not_supported": [],
+    "not_installed": []
+  },
+  "options_not_supported": [],
+  "packages": {
+    "removable": [],
+    "needed": [],
+    "not_checked": [
+      "other tools' configs",
+      "CI files",
+      "Git hooks"
+    ]
+  },
+  "notes": []
+}

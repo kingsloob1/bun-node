@@ -1,0 +1,305 @@
+=== eslint/no-unused-vars
+no-unused-vars
+==============
+
+Disallow variables, functions, imports, and parameters that are never used
+
+On by default as a warning. Also called eslint/no-unused-vars. See also
+@typescript-eslint/no-unused-vars.
+
+A name that's declared and never read is clutter at best. Often it points to a
+bug. Maybe you computed a value and then used a different name, or a refactor
+left an import behind.
+
+"Used" means read. A variable that's only assigned to or incremented isn't used,
+and neither is a function that only calls itself. Anything you export is used.
+
+--fix-suggestions removes the declaration, but only if that can't change what
+the program does: an unused import, function or class, or a variable set to a
+plain value. const sent = sendEmail(user); stays, because removing it would also
+remove the call. So do parameters, names in a destructuring pattern, and the top
+level of a script that's neither an ES module nor CommonJS, which a web page can
+use. With an ESLint config file the suggestions are ESLint's.
+
+An unused import always goes. import { setup } from "./polyfills"; is removed as
+a whole, so the module is no longer loaded. import setup from "./polyfills";
+becomes import "./polyfills";, which is how you load a module only for its side
+effects.
+
+To keep a name that you don't use, start it with _.
+
+This rule is on by default in JavaScript files. In TypeScript files,
+@typescript-eslint/no-unused-vars is on instead.
+
+Configure
+---------
+
+On by default as a warning. To turn it off:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "no-unused-vars" = "off" # or "error"
++-
+
+Every option, set to its default:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "no-unused-vars" = ["warn", {
+|   vars = "all", # "all" or "local"
+|   varsIgnorePattern = "^_",
+|   args = "after-used", # "all", "after-used" or "none"
+|   argsIgnorePattern = "^_",
+|   caughtErrors = "all", # "all" or "none"
+|   caughtErrorsIgnorePattern = "^_",
+|   destructuredArrayIgnorePattern = "^_",
+|   ignoreRestSiblings = true,
+|   ignoreClassWithStaticInitBlock = false,
+=== typescript/no-floating-promises
+@typescript-eslint/no-floating-promises
+=======================================
+
+Require promises to be awaited, returned, or handled
+
+Off by default, needs types. Also called typescript-eslint/no-floating-promises,
+typescript/no-floating-promises.
+
+A promise that nobody awaits runs on its own. If it rejects, the try around the
+call doesn't catch the error, and the code after it runs before the work is
+done.
+
+A promise counts as handled if it's awaited, returned, given a .catch() or a
+second argument to .then(), or marked as ignored on purpose with void.
+
+bun lint --type-aware turns this rule on in TypeScript files.
+
+Configure
+---------
+
+Off by default. This rule needs types, so turning it on makes bun lint type
+check your code first.
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "@typescript-eslint/no-floating-promises" = "error" # or "warn"
++-
+
+Every option, set to its default:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "@typescript-eslint/no-floating-promises" = ["error", {
+|   ignoreVoid = true,
+|   ignoreIIFE = false,
+|   checkThenables = false,
+|   allowForKnownSafePromises = [], # list of strings or objects
+|   allowForKnownSafeCalls = [], # list of strings or objects
+| }]
++-
+
+Examples
+--------
+
+Reported:
+
++- ts
+| async function save(data: string): Promise<void> {}
+| 
+| function onClick() {
+|   save("draft");
+| }
++-
+
+Not reported:
+
+=== prettier/prettier
+prettier/prettier
+=================
+
+Require code to be formatted the way Prettier prints it
+
+Off by default, fixable.
+
+This rule compares each file with what Prettier prints and reports every place
+where they differ. Formatting problems then show up next to your lint problems,
+in the terminal and in the editor.
+
+It's the rule from eslint-plugin-prettier, for projects with an ESLint config
+that loads that package. Bun has it built in. It compares the file with the
+output of bun fmt, which matches Prettier 3.9, so it never starts Prettier.
+
+If Bun can't guarantee the same output as your Prettier, the package's rule runs
+in JavaScript with your installed Prettier, and a note says why. That happens,
+for example, with a Prettier version other than 3.9 or a Prettier plugin that
+bun fmt doesn't have.
+
+--fix formats the file.
+
+Configure
+---------
+
+Off by default. To turn it on:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "prettier/prettier" = "error" # or "warn"
++-
+
+Examples
+--------
+
+Reported:
+
++- js
+| const user = {name:'Ada'}
++-
+
+The message says what to change. In it, · is a space, ⏎ is a line break, and ↹
+is a tab:
+
++- txt
+| Replace `name:'Ada'}` with `·name:·"Ada"·};`
++-
+
+Not reported:
+
++- js
+| const user = { name: "Ada" };
++-
+
+To change the style, use a .prettierrc or an .editorconfig. Prettier and bun fmt
+read them too.
+
+.prettierrc
+=== bun/format
+bun/format
+==========
+
+Require code to be formatted the way bun fmt prints it
+
+Off by default, fixable.
+
+This rule compares each file with what bun fmt prints and reports every place
+where they differ. Formatting problems then show up next to your lint problems,
+in the terminal and in the editor.
+
+It reads the same settings as bun fmt: your .prettierrc, .editorconfig, and the
+[fmt] section of bunfig.toml. It skips the files that bun fmt skips. The options
+and the messages are the same as for prettier/prettier, and you don't need
+Prettier installed.
+
+If Bun can't format a file the way your config asks, for example because of a
+Prettier plugin that bun fmt doesn't have, the file gets one report that says
+why.
+
+--fix formats the file.
+
+Configure
+---------
+
+Off by default. To turn it on:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "bun/format" = "error" # or "warn"
++-
+
+Examples
+--------
+
+Reported:
+
++- js
+| const user = {name:'Ada'}
++-
+
+Not reported:
+
++- js
+| const user = { name: "Ada" };
++-
+
+Options
+-------
+
+The first option is an object of formatting options, using the same names as in
+a .prettierrc. They override your config files.
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "bun/format" = ["error", { singleQuote = true, semi = false }]
+=== eslint/sort-imports
+sort-imports
+============
+
+Enforce sorted import declarations and sorted names inside them
+
+Off by default, fixable. Also called eslint/sort-imports.
+
+A sorted list of imports is quick to scan, and two people who add an import put
+it in the same place.
+
+The rule checks three things:
+  * The names inside { ... } are in alphabetical order.
+  * Declarations are grouped by syntax. The default order is imports with no
+    names, then * as imports, then imports of several names, then imports of one
+    name.
+  * Inside a group, declarations are sorted alphabetically by the first name
+    they import. The rule compares the local name, not the module path.
+
+Capital letters sort before lowercase letters unless you set ignoreCase.
+
+--fix sorts the names inside { ... }, unless there are comments between them. It
+doesn't move declarations.
+
+Configure
+---------
+
+Off by default. To turn it on:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "sort-imports" = "error" # or "warn"
++-
+
+Every option, set to its default:
+
+bunfig.toml
+
++- toml
+| [lint.rules]
+| "sort-imports" = ["error", {
+|   ignoreCase = false,
+|   ignoreDeclarationSort = false,
+|   ignoreMemberSort = false,
+|   memberSyntaxSortOrder = ["none", "all", "multiple", "single"],
+|   allowSeparatedGroups = false,
+| }]
++-
+
+Examples
+--------
+
+Reported:
+
++- js
+| import { writeFile, readFile } from "node:fs/promises";
++-
+
+fs sorts before path:

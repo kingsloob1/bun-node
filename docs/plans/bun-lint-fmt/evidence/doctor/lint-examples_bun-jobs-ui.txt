@@ -1,0 +1,23 @@
+Using eslint.config.mjs (ESLint flat config)
+
+   42 files to lint
+    2 of them go to your installed ESLint: 2 *.json
+
+   97 rules run natively
+  241 rules run in JavaScript
+        @eslint-react/eslint-plugin                       65
+        eslint-plugin-regexp                              60
+        @typescript-eslint/eslint-plugin                  26
+        eslint-plugin-jsdoc                               17
+        @eslint/markdown                                  15
+        eslint-plugin-unicorn                             14
+        @e18e/eslint-plugin                                9
+        eslint-plugin-n                                    8
+        eslint-plugin-import-lite                          6
+        eslint-plugin-antfu                                5
+        @eslint-community/eslint-plugin-eslint-comments    4
+        @stylistic/eslint-plugin                           4
+        eslint-plugin-perfectionist                        4
+        eslint-plugin-unused-imports                       2
+        eslint-plugin-command                              1
+        eslint-plugin-react-refresh                        1

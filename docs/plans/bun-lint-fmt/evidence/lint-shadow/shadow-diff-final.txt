@@ -1,0 +1,23 @@
+ESLint findings (code files): 71; native: 814; same file:line:rule: 71
+
+Only ESLint:
+
+Only bun lint:
+  465	bun:test/prefer-lowercase-title
+  136	bun/format
+  37	bun:test/prefer-hooks-in-order
+  31	bun:test/consistent-test-it
+  16	no-useless-assignment
+  12	bun:test/valid-expect
+  11	bun:test/no-disabled-tests
+  8	import/no-duplicates
+  7	bun:test/no-export
+  4	no-useless-escape
+  3	preserve-caught-error
+  3	unicorn/prefer-regexp-test
+  2	bun:test/no-identical-title
+  2	n/handle-callback-err
+  2	unicorn/prefer-string-starts-ends-with
+  2	no-unused-private-class-members
+  1	@typescript-eslint/no-unused-vars
+  1	(parse)

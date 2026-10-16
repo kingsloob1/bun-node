@@ -1,0 +1,30 @@
+Using eslint.config.mjs (ESLint flat config)
+
+  460 files to lint
+   11 of them go to your installed ESLint: 11 *.json
+
+   98 rules run natively
+  248 rules run in JavaScript
+        @eslint-react/eslint-plugin                       65
+        eslint-plugin-regexp                              60
+        @typescript-eslint/eslint-plugin                  26
+        eslint-plugin-jsdoc                               17
+        @eslint/markdown                                  15
+        eslint-plugin-unicorn                             14
+        @e18e/eslint-plugin                                9
+        eslint-plugin-n                                    8
+        eslint-plugin-antfu                                6
+        eslint-plugin-import-lite                          6
+        eslint.config.mjs                                  6
+        @eslint-community/eslint-plugin-eslint-comments    4
+        @stylistic/eslint-plugin                           4
+        eslint-plugin-perfectionist                        4
+        eslint-plugin-unused-imports                       2
+        eslint-plugin-command                              1
+        eslint-plugin-react-refresh                        1
+
+You can remove: eslint-plugin-react-hooks
+Still needed:   @antfu/eslint-config, eslint-config-prettier, eslint-plugin-prettier, typescript (eslint.config.mjs loads them)
+                @eslint-react/eslint-plugin, eslint-plugin-react-refresh (their rules run in JavaScript)
+                eslint (some files go to it)
+Not checked:    other tools' configs, CI files, Git hooks

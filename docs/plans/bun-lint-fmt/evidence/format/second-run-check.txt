@@ -1,0 +1,5 @@
+docs/plans/bun-native-routes/evidence/elysia2-performance/nest-breakdown.ts
+docs/plans/bun-native-routes/evidence/prototype/tests/differential.test.ts
+docs/plans/nestjs-12-parity/evidence/routing/harness/app.ts
+docs/plans/typed-client/evidence/nest/explore.ts
+4 files need formatting. Run bun fmt to fix them.

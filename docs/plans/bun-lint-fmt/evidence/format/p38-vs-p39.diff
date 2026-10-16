@@ -1,0 +1,1714 @@
+diff --git a/examples/bun-common/04-request/body-parsing.ts b/examples/bun-common/04-request/body-parsing.ts
+index b5bb9e96..16f90092 100644
+--- a/examples/bun-common/04-request/body-parsing.ts
++++ b/examples/bun-common/04-request/body-parsing.ts
+@@ -1083,8 +1083,7 @@ check(
+   clientErrorLogs.map((event) => [event.level, event.error?.message]),
+ );
+ const logged = clientErrorLogs[0]?.error as
+-  | (Error & { req?: unknown })
+-  | undefined;
++  (Error & { req?: unknown }) | undefined;
+ check(
+   "…with err.req still readable, but hidden from Object.keys",
+   logged?.req !== undefined && !Object.keys(logged ?? {}).includes("req"),
+@@ -1568,8 +1567,7 @@ let bareRouteRan = false;
+ bareRouter.post("/echo", (req, res) => {
+   bareRouteRan = true;
+   const refused = req.bodyDecodingError as
+-    | (Error & { status: number; type: string })
+-    | undefined;
++    (Error & { status: number; type: string }) | undefined;
+   res.json({
+     body: req.body === undefined ? "undefined" : describeBody(req),
+     refused: refused ? [refused.name, refused.status, refused.type] : null,
+@@ -1647,8 +1645,7 @@ const optInRan: string[] = [];
+ const seeRefusal: RouterHandler = (req, res) => {
+   optInRan.push(req.path);
+   const refused = req.bodyDecodingError as
+-    | (Error & { status: number; type?: string })
+-    | undefined;
++    (Error & { status: number; type?: string }) | undefined;
+   res.json({
+     body: req.body === undefined ? "unset" : describeBody(req),
+     refused: refused
+diff --git a/examples/bun-jobs-ui/04-screens/permissions.ts b/examples/bun-jobs-ui/04-screens/permissions.ts
+index 42499ae7..dd48a383 100644
+--- a/examples/bun-jobs-ui/04-screens/permissions.ts
++++ b/examples/bun-jobs-ui/04-screens/permissions.ts
+@@ -2597,8 +2597,8 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
+     !meta.readOnly && can(permissions, action);
+   const parent = GATES.find((other) => other.name === gate.extends);
+   const screen = GATES.find((other) => other.name === gate.on);
+-  const needed = (gate.needsOf ?? []).map(
+-    (name) => GATES.find((other: Gate) => other.name === name)!,
++  const needed = (gate.needsOf ?? []).map((name) =>
++    GATES.find((other: Gate) => other.name === name)!,
+   );
+   return (
+     (parent === undefined || isOpen(parent, inputs)) &&
+@@ -3878,8 +3878,7 @@ function wsItems(document: SpecDocument) {
+           ([name, parameter]) => [
+             name,
+             objectOf(objectOf(parameter)?.["x-bun-jobs-schema"]) as
+-              | ParameterSchema
+-              | undefined,
++              ParameterSchema | undefined,
+           ],
+         ),
+       ),
+@@ -8835,15 +8834,13 @@ checkEqual(
+   [providerNoValidate, providerReadOnly, providerRefuseValidate].map((host) =>
+     cardElements(host),
+   ),
+-  [0, 1, 2].map(
+-    (): Record<string, [boolean, boolean]> => ({
+-      [PROVIDER_IDS.record]: [false, false],
+-      [PROVIDER_IDS.ready]: [false, true],
+-      [PROVIDER_IDS.failed]: [false, true],
+-      [PROVIDER_IDS.pending]: [false, true],
+-      [PROVIDER_IDS.plain]: [false, false],
+-    }),
+-  ),
++  [0, 1, 2].map((): Record<string, [boolean, boolean]> => ({
++    [PROVIDER_IDS.record]: [false, false],
++    [PROVIDER_IDS.ready]: [false, true],
++    [PROVIDER_IDS.failed]: [false, true],
++    [PROVIDER_IDS.pending]: [false, true],
++    [PROVIDER_IDS.plain]: [false, false],
++  })),
+ );
+ 
+ // Behind the buttons. The pending Cumulus is not tested: its preflight waits
+diff --git a/examples/bun-jobs-ui/06-browser/helpers/log-runner.ts b/examples/bun-jobs-ui/06-browser/helpers/log-runner.ts
+index 2271b2b2..fc72cb5f 100644
+--- a/examples/bun-jobs-ui/06-browser/helpers/log-runner.ts
++++ b/examples/bun-jobs-ui/06-browser/helpers/log-runner.ts
+@@ -53,8 +53,7 @@ export default defineHandler<LogRunnerArgs, { logged: number }>(async (ctx) => {
+   const name = ctx.args?.hold;
+   if (name !== undefined) {
+     const gates = (globalThis as Record<symbol, unknown>)[LOG_RUNNER_GATES] as
+-      | Map<string, Promise<void>>
+-      | undefined;
++      Map<string, Promise<void>> | undefined;
+     const gate = gates?.get(name);
+     if (!gate) {
+       throw new Error(`no gate named ${name}`);
+diff --git a/examples/bun-jobs/10-options/driver-options.ts b/examples/bun-jobs/10-options/driver-options.ts
+index edbc1e8e..fb8a86f7 100644
+--- a/examples/bun-jobs/10-options/driver-options.ts
++++ b/examples/bun-jobs/10-options/driver-options.ts
+@@ -909,10 +909,9 @@ check(
+ /** Stored events for one runner, in the SQLite event table. */
+ const sqliteEvents: StoredEvents = async (namespace, target) => {
+   const row = inspect
+-    .query<
+-      { n: number },
+-      [string, string]
+-    >(`SELECT COUNT(*) AS n FROM "${eventTable}" WHERE ns = ? AND channel = ?`)
++    .query<{ n: number }, [string, string]>(
++      `SELECT COUNT(*) AS n FROM "${eventTable}" WHERE ns = ? AND channel = ?`,
++    )
+     .get(namespace, `runner:${target}`);
+   return row?.n ?? 0;
+ };
+diff --git a/examples/bun-nest/02-http-adapter/undecodable-bodies.ts b/examples/bun-nest/02-http-adapter/undecodable-bodies.ts
+index 041cbfb7..5ed7b708 100644
+--- a/examples/bun-nest/02-http-adapter/undecodable-bodies.ts
++++ b/examples/bun-nest/02-http-adapter/undecodable-bodies.ts
+@@ -73,8 +73,7 @@ class QueuesController {
+   pause(@Req() req: BunRequest, @Body() body: unknown) {
+     calls.handler++;
+     const refused = req.bodyDecodingError as
+-      | (Error & { status: number; type?: string })
+-      | undefined;
++      (Error & { status: number; type?: string }) | undefined;
+     if (refused) {
+       throw new BadRequestException({
+         code: "INVALID_JSON",
+diff --git a/packages/bun-common/__tests__/compression.chrome.e2e.test.ts b/packages/bun-common/__tests__/compression.chrome.e2e.test.ts
+index c5887654..8efe4d65 100644
+--- a/packages/bun-common/__tests__/compression.chrome.e2e.test.ts
++++ b/packages/bun-common/__tests__/compression.chrome.e2e.test.ts
+@@ -228,8 +228,7 @@ describe.skipIf(!ENABLED)(
+         sessionId,
+       );
+       const details = result.exceptionDetails as
+-        | { text: string; exception?: { description?: string } }
+-        | undefined;
++        { text: string; exception?: { description?: string } } | undefined;
+       if (details) {
+         throw new Error(
+           `page threw: ${details.exception?.description ?? details.text}`,
+diff --git a/packages/bun-common/__tests__/expressAdapterParity.test.ts b/packages/bun-common/__tests__/expressAdapterParity.test.ts
+index d5e8290a..c8099760 100644
+--- a/packages/bun-common/__tests__/expressAdapterParity.test.ts
++++ b/packages/bun-common/__tests__/expressAdapterParity.test.ts
+@@ -273,8 +273,7 @@ describe("a body that does not parse: a bare router routes it, the adapter refus
+     const router = new BunRouter();
+     router.post("/j", (req, res) => {
+       const refused = req.bodyDecodingError as
+-        | (Error & { status?: number; type?: string })
+-        | undefined;
++        (Error & { status?: number; type?: string }) | undefined;
+       res.json({
+         body: req.body ?? null,
+         refused: refused ? [refused.name, refused.status, refused.type] : null,
+diff --git a/packages/bun-common/__tests__/response.test.ts b/packages/bun-common/__tests__/response.test.ts
+index 49409f6e..058dadcb 100644
+--- a/packages/bun-common/__tests__/response.test.ts
++++ b/packages/bun-common/__tests__/response.test.ts
+@@ -976,7 +976,9 @@ describe("BunResponse: Express parity", () => {
+   });
+ 
+   it("json() gets the automatic ETag and revalidates to 304", async () => {
+-    const first = await (await makeResponse())
++    const first = await (
++      await makeResponse()
++    )
+       .setEtag()
+       .json({ a: 1 })
+       .getNativeResponse(0);
+diff --git a/packages/bun-common/lib/BunHttpAdapter.ts b/packages/bun-common/lib/BunHttpAdapter.ts
+index c4f4711a..19ead018 100644
+--- a/packages/bun-common/lib/BunHttpAdapter.ts
++++ b/packages/bun-common/lib/BunHttpAdapter.ts
+@@ -235,8 +235,8 @@ export class BunHttpAdapter<
+   private _instance!: BunRouter;
+   private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
+   private _serverInstance:
+-    | BunServer<WebSocketClientData<customWebsocketDataType>>
+-    | undefined = undefined;
++    BunServer<WebSocketClientData<customWebsocketDataType>> | undefined =
++    undefined;
+ 
+   private _listeningHost = "127.0.0.1";
+   private _listeningPort: string | number = 3000;
+@@ -850,8 +850,7 @@ export class BunHttpAdapter<
+       hostname = this._serverInstance.hostname ?? hostname;
+       port = Number(this._serverInstance.port);
+       address = get(this._serverInstance, "address", undefined) as
+-        | AddressInfo
+-        | undefined;
++        AddressInfo | undefined;
+     }
+ 
+     if (address) {
+@@ -901,8 +900,7 @@ export class BunHttpAdapter<
+     path: string,
+     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+     fnOrOptions?:
+-      | WebSocketRouteOptions<TCustom>
+-      | WebSocketCustomDataFn<TCustom>,
++      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
+   ): this {
+     return super.ws(
+       path,
+@@ -936,8 +934,7 @@ export class BunHttpAdapter<
+    * of the router requests run through, like {@link webSocketUpgradeHeaders}.
+    */
+   override get webSocketUpgradeData():
+-    | Partial<WebSocketClientData>
+-    | undefined {
++    Partial<WebSocketClientData> | undefined {
+     return this.instance === this
+       ? super.webSocketUpgradeData
+       : this.instance.webSocketUpgradeData;
+@@ -1629,8 +1626,7 @@ export class BunHttpAdapter<
+             "removeAllListeners",
+           ].includes(prop as string): {
+             let method = get(this.eventEmitter, prop as string) as
+-              | CallableFunction
+-              | undefined;
++              CallableFunction | undefined;
+ 
+             if (method) {
+               method = method.bind(this.eventEmitter);
+diff --git a/packages/bun-common/lib/BunRequest.ts b/packages/bun-common/lib/BunRequest.ts
+index 95fe0e3b..038f712d 100644
+--- a/packages/bun-common/lib/BunRequest.ts
++++ b/packages/bun-common/lib/BunRequest.ts
+@@ -131,12 +131,7 @@ export type QueryParserOpts =
+  * untouched as a raw `Buffer`.
+  */
+ export type ContentParserType =
+-  | "json"
+-  | "urlencoded"
+-  | "xml"
+-  | "multipart"
+-  | "text"
+-  | "raw";
++  "json" | "urlencoded" | "xml" | "multipart" | "text" | "raw";
+ 
+ /**
+  * The recognized {@link ContentParserType} kinds, used to filter out invalid
+@@ -994,8 +989,7 @@ type SocketListener = (...args: unknown[]) => void;
+ 
+ /** Any listener the socket accepts, typed or not. */
+ type AnySocketListener =
+-  | BunRequestSocketEvents[keyof BunRequestSocketEvents]
+-  | SocketListener;
++  BunRequestSocketEvents[keyof BunRequestSocketEvents] | SocketListener;
+ 
+ /** An event name that is not one of {@link BunRequestSocketEvents}. */
+ type UntypedSocketEvent<E extends string> =
+@@ -1707,13 +1701,8 @@ export class BunRequest<
+   #method: string | undefined = undefined;
+   public _route: BunRequestInterface["route"] | undefined = undefined;
+   private _contentType:
+-    | "json"
+-    | "text"
+-    | "buffer"
+-    | "form"
+-    | "xml"
+-    | "multipart"
+-    | undefined = undefined;
++    "json" | "text" | "buffer" | "form" | "xml" | "multipart" | undefined =
++    undefined;
+ 
+   /**
+    * Normalized set of body-parser kinds permitted by `allowedContentTypes` or
+@@ -1759,8 +1748,7 @@ export class BunRequest<
+    * present when at least one kind supplies an object config.
+    */
+   get #perTypeConfig():
+-    | Map<ContentParserType, PerTypeParserConfig>
+-    | undefined {
++    Map<ContentParserType, PerTypeParserConfig> | undefined {
+     return this.#resolvedBodyConfig().perTypeConfig;
+   }
+ 
+@@ -1926,9 +1914,7 @@ export class BunRequest<
+   private _buffer: Buffer | undefined = undefined;
+   /** Uploaded files — lazily allocated; only multipart requests populate it. */
+   get #storageFiles():
+-    | StorageFile[]
+-    | Record<string, StorageFile[]>
+-    | undefined {
++    StorageFile[] | Record<string, StorageFile[]> | undefined {
+     const holder = this.#state;
+     return holder === undefined ? undefined : holder.storageFiles;
+   }
+@@ -3993,8 +3979,7 @@ export class BunRequest<
+     kind: K,
+   ): ContentTypeParserOptsMap[K] | undefined {
+     return this.#perTypeConfig?.get(kind)?.opts as
+-      | ContentTypeParserOptsMap[K]
+-      | undefined;
++      ContentTypeParserOptsMap[K] | undefined;
+   }
+ 
+   /**
+diff --git a/packages/bun-common/lib/BunResponse.ts b/packages/bun-common/lib/BunResponse.ts
+index 52c04f59..9c1a428d 100644
+--- a/packages/bun-common/lib/BunResponse.ts
++++ b/packages/bun-common/lib/BunResponse.ts
+@@ -208,10 +208,7 @@ export interface BunResponseHeaders {
+  * string or JSON body, the bytes of a binary one, or a `Blob`/`BunFile`.
+  */
+ export type BunResponseTransformBody =
+-  | string
+-  | ArrayBufferView
+-  | ArrayBufferLike
+-  | Blob;
++  string | ArrayBufferView | ArrayBufferLike | Blob;
+ 
+ /** What a {@link BunResponseTransform} receives beside the `Response`. */
+ export interface BunResponseTransformContext {
+@@ -519,8 +516,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
+   _webSocketUpgradeHeaders: Headers | undefined = undefined;
+   /** Backs BunResponse's `_webSocketUpgradeData`; see its documentation there. */
+   _webSocketUpgradeData:
+-    | Partial<WebSocketClientData<customWebsocketDataType>>
+-    | undefined = undefined;
++    Partial<WebSocketClientData<customWebsocketDataType>> | undefined =
++    undefined;
+ 
+   /** Backs BunResponse's `_isLongLived`; see its documentation there. */
+   _isLongLived: boolean = false;
+@@ -536,8 +533,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
+   readableStreamCloseResolve: (() => void) | undefined = undefined;
+   /** Backs BunResponse's `#readableStreamEventMap`; see its documentation there. */
+   readableStreamEventMap:
+-    | Map<string, string | ArrayBufferView | ArrayBufferLike>
+-    | undefined = undefined;
++    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined =
++    undefined;
+ 
+   /** Backs BunResponse's `#streamWriteNotifier`; see its documentation there. */
+   streamWriteNotifier: Deferred<void> | undefined = undefined;
+@@ -581,8 +578,7 @@ export class BunResponse<
+   #state: BunResponseState<customWebsocketDataType> | undefined = undefined;
+ 
+   private get _upgradeToWsData():
+-    | WebSocketClientData<customWebsocketDataType>
+-    | undefined {
++    WebSocketClientData<customWebsocketDataType> | undefined {
+     const holder = this.#state;
+     return holder === undefined ? undefined : holder._upgradeToWsData;
+   }
+@@ -624,8 +620,7 @@ export class BunResponse<
+ 
+   /** Per-request `ws.data` values — see {@link webSocketUpgradeData}. */
+   private get _webSocketUpgradeData():
+-    | Partial<WebSocketClientData<customWebsocketDataType>>
+-    | undefined {
++    Partial<WebSocketClientData<customWebsocketDataType>> | undefined {
+     const holder = this.#state;
+     return holder === undefined ? undefined : holder._webSocketUpgradeData;
+   }
+@@ -819,8 +814,7 @@ export class BunResponse<
+    * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
+    */
+   get #readableStreamEventMap():
+-    | Map<string, string | ArrayBufferView | ArrayBufferLike>
+-    | undefined {
++    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined {
+     const holder = this.#state;
+     return holder === undefined ? undefined : holder.readableStreamEventMap;
+   }
+@@ -1643,8 +1637,7 @@ export class BunResponse<
+    * Stored as a shallow copy; `undefined` clears it.
+    */
+   public get webSocketUpgradeData():
+-    | Partial<WebSocketClientData<customWebsocketDataType>>
+-    | undefined {
++    Partial<WebSocketClientData<customWebsocketDataType>> | undefined {
+     return this._webSocketUpgradeData;
+   }
+ 
+@@ -1713,8 +1706,7 @@ export class BunResponse<
+       custom: {} as customWebsocketDataType,
+       // The router-wide base carries no custom type of its own.
+       ...(defaults?.webSocketUpgradeData as
+-        | Partial<WebSocketClientData<customWebsocketDataType>>
+-        | undefined),
++        Partial<WebSocketClientData<customWebsocketDataType>> | undefined),
+       ...(inherit ? this._webSocketUpgradeData : undefined),
+     } satisfies WebSocketClientData<customWebsocketDataType>;
+     return this;
+diff --git a/packages/bun-common/lib/BunRouter.ts b/packages/bun-common/lib/BunRouter.ts
+index f5da60b6..3ee73a94 100644
+--- a/packages/bun-common/lib/BunRouter.ts
++++ b/packages/bun-common/lib/BunRouter.ts
+@@ -82,8 +82,7 @@ export interface RouteSpecificityEntry {
+  *   stable sort, so handlers it rates equal keep their registration order.
+  */
+ export type RouteSpecificityOption =
+-  | boolean
+-  | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
++  boolean | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
+ 
+ /**
+  * A route paired with its callbacks.
+@@ -439,10 +438,7 @@ export type UnmountedRouter = Router & {
+ type GroupCallback = (router: never) => void;
+ 
+ export type FetchInput =
+-  | string
+-  | URL
+-  | Request
+-  | (RequestInit & { url: string | URL });
++  string | URL | Request | (RequestInit & { url: string | URL });
+ 
+ /** Origin used when {@link BunRouter.fetch} is given a bare path. */
+ const FETCH_DEFAULT_ORIGIN = "http://localhost";
+@@ -1425,12 +1421,10 @@ export class BunRouter<
+     path: string,
+     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+     fnOrOptions?:
+-      | WebSocketRouteOptions<TCustom>
+-      | WebSocketCustomDataFn<TCustom>,
++      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
+   ): this {
+     const bunWebSocket = this.getBunWebsocket() as
+-      | BunWebSocket<TCustom>
+-      | undefined;
++      BunWebSocket<TCustom> | undefined;
+     if (!bunWebSocket) {
+       throw new Error(
+         `ws("${path}"): no BunWebSocket is attached to this router. Pass the ` +
+@@ -5309,10 +5303,7 @@ export class BunRouter<
+   dispatch(
+     options: PipelineOptions,
+   ):
+-    | matchedRoute
+-    | true
+-    | undefined
+-    | Promise<matchedRoute | true | undefined> {
++    matchedRoute | true | undefined | Promise<matchedRoute | true | undefined> {
+     const state = this.#startPipeline(options, undefined);
+     const result = this.#run(state);
+     return result === PARKED
+diff --git a/packages/bun-common/lib/BunValidate.ts b/packages/bun-common/lib/BunValidate.ts
+index 3a63f520..c6ccb210 100644
+--- a/packages/bun-common/lib/BunValidate.ts
++++ b/packages/bun-common/lib/BunValidate.ts
+@@ -92,9 +92,9 @@ type TargetResult<
+  * written onto the request.
+  */
+ export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
+-  [K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1
+-    ? K
+-    : never]: TargetResult<S, H, K>;
++  [
++    K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1 ? K : never
++  ]: TargetResult<S, H, K>;
+ };
+ 
+ /**
+@@ -304,8 +304,7 @@ function writeTarget(
+ export type StandardValidateFunction<TOutput> = (
+   value: unknown,
+ ) =>
+-  | StandardSchemaV1.Result<TOutput>
+-  | Promise<StandardSchemaV1.Result<TOutput>>;
++  StandardSchemaV1.Result<TOutput> | Promise<StandardSchemaV1.Result<TOutput>>;
+ 
+ /** Options for {@link toStandardSchema}. */
+ export interface ToStandardSchemaOptions {
+diff --git a/packages/bun-common/lib/BunWebSocket.ts b/packages/bun-common/lib/BunWebSocket.ts
+index 82b51927..6e14aef4 100644
+--- a/packages/bun-common/lib/BunWebSocket.ts
++++ b/packages/bun-common/lib/BunWebSocket.ts
+@@ -256,12 +256,7 @@ export type WebSocketClient<TCustom = unknown> = ServerWebSocket<
+ 
+ /** The lifecycle events a route's {@link BunWebSocketHandlerType} can handle. */
+ export type BunWebSocketRouteEvent =
+-  | "open"
+-  | "close"
+-  | "drain"
+-  | "message"
+-  | "ping"
+-  | "pong";
++  "open" | "close" | "drain" | "message" | "ping" | "pong";
+ 
+ /**
+  * What a route handler for `E` receives after the client itself: `[message]`
+@@ -456,8 +451,7 @@ export class BunWebSocket<
+   private _serverInstance?: BunWebSocketServerType<TCustom>;
+   /** Returns the shared server, when `newInstance` is `false`. */
+   private _getServerInstance?: () =>
+-    | BunWebSocketServerType<TCustom>
+-    | undefined;
++    BunWebSocketServerType<TCustom> | undefined;
+ 
+   /** The router upgrade routes register on; created lazily when none was given. */
+   private _routerInstance: BunRouter | undefined = undefined;
+@@ -1080,8 +1074,7 @@ export class BunWebSocket<
+ 
+         const defaults = defaultsFrom ?? this.router;
+         const responseData = res.webSocketUpgradeData as
+-          | Partial<WebSocketClientData<TCustom>>
+-          | undefined;
++          Partial<WebSocketClientData<TCustom>> | undefined;
+ 
+         let data: WebSocketClientData<TCustom>;
+         if (result?.data) {
+@@ -1110,8 +1103,7 @@ export class BunWebSocket<
+             custom: undefined as TCustom,
+             // The router-wide base carries no custom type of its own.
+             ...(defaults.webSocketUpgradeData as
+-              | Partial<WebSocketClientData<TCustom>>
+-              | undefined),
++              Partial<WebSocketClientData<TCustom>> | undefined),
+             ...responseData,
+             // Dispatch keys: always the match's, whatever a layer said.
+             route: path,
+diff --git a/packages/bun-common/lib/compression.ts b/packages/bun-common/lib/compression.ts
+index 142b696b..aca0056d 100644
+--- a/packages/bun-common/lib/compression.ts
++++ b/packages/bun-common/lib/compression.ts
+@@ -68,8 +68,7 @@ export type CompressionEncoding = "br" | "zstd" | "gzip" | "deflate";
+  * supported encoding. Typed so a misspelt encoding is a compile error.
+  */
+ export type CompressionEncodingsOption =
+-  | "*"
+-  | readonly (CompressionEncoding | "*")[];
++  "*" | readonly (CompressionEncoding | "*")[];
+ 
+ /**
+  * Decides whether a response may be compressed, as the package's `filter`.
+diff --git a/packages/bun-common/lib/cors.ts b/packages/bun-common/lib/cors.ts
+index 10add9fb..1153118b 100644
+--- a/packages/bun-common/lib/cors.ts
++++ b/packages/bun-common/lib/cors.ts
+@@ -15,10 +15,7 @@ import type { NextFunction } from "./types/general";
+  *   request's origin when any entry matches it.
+  */
+ export type CorsStaticOrigin =
+-  | boolean
+-  | string
+-  | RegExp
+-  | (boolean | string | RegExp)[];
++  boolean | string | RegExp | (boolean | string | RegExp)[];
+ 
+ /**
+  * Decides the origin per request, as the `cors` package's `CustomOrigin`:
+diff --git a/packages/bun-common/lib/multipart/buffered.ts b/packages/bun-common/lib/multipart/buffered.ts
+index 10028261..7df435b0 100644
+--- a/packages/bun-common/lib/multipart/buffered.ts
++++ b/packages/bun-common/lib/multipart/buffered.ts
+@@ -134,8 +134,7 @@ export interface BufferedMultipartFile {
+ 
+ /** One part, in body order. */
+ export type BufferedMultipartPart =
+-  | BufferedMultipartField
+-  | BufferedMultipartFile;
++  BufferedMultipartField | BufferedMultipartFile;
+ 
+ const MAX_HEADER_PAIRS = 2000;
+ const MAX_HEADER_SIZE = 16 * 1024;
+diff --git a/packages/bun-common/lib/multipart/index.ts b/packages/bun-common/lib/multipart/index.ts
+index 2230ae6a..0adaee72 100644
+--- a/packages/bun-common/lib/multipart/index.ts
++++ b/packages/bun-common/lib/multipart/index.ts
+@@ -82,9 +82,7 @@ export interface Storage<T extends StorageFile = StorageFile, K = unknown> {
+ }
+ 
+ export type UploadFilterFile =
+-  | DiskStorageFile
+-  | MemoryStorageFile
+-  | StorageFile;
++  DiskStorageFile | MemoryStorageFile | StorageFile;
+ 
+ export type UploadFilterHandler = (
+   req: BunRequest,
+@@ -141,9 +139,7 @@ export type CustomUploadOptions<TFile extends StorageFile = StorageFile> =
+ 
+ /** Every accepted upload configuration; `TFile` is a custom storage's file. */
+ export type UploadOptions<TFile extends StorageFile = StorageFile> =
+-  | DiskUploadOptions
+-  | MemoryUploadOptions
+-  | CustomUploadOptions<TFile>;
++  DiskUploadOptions | MemoryUploadOptions | CustomUploadOptions<TFile>;
+ 
+ export const DEFAULT_UPLOAD_OPTIONS: MemoryUploadOptions = {
+   storageType: "memory",
+diff --git a/packages/bun-common/lib/types/routeParams.ts b/packages/bun-common/lib/types/routeParams.ts
+index 858fa34b..758f9bc6 100644
+--- a/packages/bun-common/lib/types/routeParams.ts
++++ b/packages/bun-common/lib/types/routeParams.ts
+@@ -54,9 +54,7 @@ type WildcardName<Seg extends string> = Seg extends `{*${infer Name}}`
+ 
+ /** True when a segment is any wildcard form. */
+ type IsWildcard<Seg extends string> = Seg extends
+-  | `{*${string}}`
+-  | `*${string}`
+-  | "*"
++  `{*${string}}` | `*${string}` | "*"
+   ? true
+   : false;
+ 
+diff --git a/packages/bun-common/lib/utils/native.ts b/packages/bun-common/lib/utils/native.ts
+index d9b72f4f..a4b78efe 100644
+--- a/packages/bun-common/lib/utils/native.ts
++++ b/packages/bun-common/lib/utils/native.ts
+@@ -33,9 +33,7 @@ export type JsonPrimitive = string | number | boolean | null;
+ 
+ /** Any JSON document — a primitive, an array of them, or an object of them. */
+ export type JsonValue =
+-  | JsonPrimitive
+-  | JsonValue[]
+-  | { [key: string]: JsonValue };
++  JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+ 
+ /**
+  * What `JSON.stringify` refuses to write: it drops such a property from an
+@@ -57,11 +55,10 @@ type JsonifyProperty<V> =
+     ? V
+     : unknown extends V
+       ? JsonValue | undefined
+-      :
+-          | JsonifyValue<Exclude<V, JsonUnrepresentable>>
+-          | ([Extract<V, JsonUnrepresentable>] extends [never]
+-              ? never
+-              : undefined);
++      : | JsonifyValue<Exclude<V, JsonUnrepresentable>>
++        | ([Extract<V, JsonUnrepresentable>] extends [never]
++            ? never
++            : undefined);
+ 
+ /** An array element after JSON: an unrepresentable element becomes `null`. */
+ type JsonifyElement<E> =
+@@ -2150,9 +2147,7 @@ export interface XmlElement<L extends XmlPrimitive = XmlPrimitive> {
+ 
+ /** Any value in a parsed XML document: a leaf, an element, or repeated siblings. */
+ export type XmlNode<L extends XmlPrimitive = XmlPrimitive> =
+-  | L
+-  | XmlElement<L>
+-  | (L | XmlElement<L>)[];
++  L | XmlElement<L> | (L | XmlElement<L>)[];
+ 
+ /** What {@link parseXmlToObject} returns: the root element's value under its name. */
+ export type XmlDocument<L extends XmlPrimitive = XmlPrimitive> = Record<
+@@ -2836,14 +2831,7 @@ function safeStringify(value: unknown): string {
+  * `dictionaries` — `dcb` and `dcz`. `identity` is the absence of a coding.
+  */
+ export type SupportedContentEncoding =
+-  | "identity"
+-  | "gzip"
+-  | "x-gzip"
+-  | "deflate"
+-  | "br"
+-  | "zstd"
+-  | "dcb"
+-  | "dcz";
++  "identity" | "gzip" | "x-gzip" | "deflate" | "br" | "zstd" | "dcb" | "dcz";
+ 
+ /**
+  * The dictionary-compressed codings of RFC 9842: `dcb` (Dictionary-Compressed
+@@ -2859,8 +2847,7 @@ export type DictionaryContentEncoding = "dcb" | "dcz";
+  * defines `*` for `Accept-Encoding` only, so it is an unknown coding.)
+  */
+ export type ContentEncodingAllowlist =
+-  | "*"
+-  | readonly (SupportedContentEncoding | "*")[];
++  "*" | readonly (SupportedContentEncoding | "*")[];
+ 
+ /**
+  * Finds the dictionary a `dcb`/`dcz` body was compressed with, from the
+@@ -2880,8 +2867,7 @@ export type CompressionDictionaryResolver = (
+  * the first time it is used, so replace it rather than mutating it.
+  */
+ export type CompressionDictionaries =
+-  | readonly Uint8Array[]
+-  | CompressionDictionaryResolver;
++  readonly Uint8Array[] | CompressionDictionaryResolver;
+ 
+ /** Options for {@link decompressBody}. */
+ export interface DecompressBodyOptions {
+diff --git a/packages/bun-common/lib/utils/routeTree.ts b/packages/bun-common/lib/utils/routeTree.ts
+index 1693c1ee..69a7d829 100644
+--- a/packages/bun-common/lib/utils/routeTree.ts
++++ b/packages/bun-common/lib/utils/routeTree.ts
+@@ -29,9 +29,7 @@ import type { Route } from "@routejs/router";
+ 
+ /** One part of a compiled source. */
+ type Part =
+-  | { kind: "literal"; text: string }
+-  | { kind: "param" }
+-  | { kind: "rest" };
++  { kind: "literal"; text: string } | { kind: "param" } | { kind: "rest" };
+ 
+ /** A source in the tree's grammar. */
+ interface CompiledSource {
+diff --git a/packages/bun-common/lib/utils/wsUpgrade.ts b/packages/bun-common/lib/utils/wsUpgrade.ts
+index ffd7667a..62d7154b 100644
+--- a/packages/bun-common/lib/utils/wsUpgrade.ts
++++ b/packages/bun-common/lib/utils/wsUpgrade.ts
+@@ -55,9 +55,7 @@ export function mergeUpgradeHeaders(
+  */
+ export function toUpgradeHook<TCustom>(
+   fn:
+-    | WebSocketUpgradeHook<TCustom>
+-    | WebSocketCustomDataFn<TCustom>
+-    | undefined,
++    WebSocketUpgradeHook<TCustom> | WebSocketCustomDataFn<TCustom> | undefined,
+   kind: "hook" | "custom",
+ ): WebSocketUpgradeHook<TCustom> | undefined {
+   if (!isFunction(fn)) {
+@@ -79,9 +77,7 @@ export function toUpgradeHook<TCustom>(
+  */
+ export function routeUpgradeHook<TCustom>(
+   fnOrOptions:
+-    | WebSocketRouteOptions<TCustom>
+-    | WebSocketCustomDataFn<TCustom>
+-    | undefined,
++    WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom> | undefined,
+ ): WebSocketUpgradeHook<TCustom> | undefined {
+   if (isFunction(fnOrOptions)) {
+     return toUpgradeHook(
+diff --git a/packages/bun-jobs-ui/__tests__/app/pkg/fixtures/clear-actions/gated-runner.ts b/packages/bun-jobs-ui/__tests__/app/pkg/fixtures/clear-actions/gated-runner.ts
+index 2c142b7a..6e74c2a6 100644
+--- a/packages/bun-jobs-ui/__tests__/app/pkg/fixtures/clear-actions/gated-runner.ts
++++ b/packages/bun-jobs-ui/__tests__/app/pkg/fixtures/clear-actions/gated-runner.ts
+@@ -18,8 +18,7 @@ export default defineHandler<{ hold?: string }, { held: boolean }>(
+       return { held: false };
+     }
+     const gates = (globalThis as Record<symbol, unknown>)[GATES] as
+-      | Map<string, Promise<void>>
+-      | undefined;
++      Map<string, Promise<void>> | undefined;
+     const gate = gates?.get(name);
+     if (!gate) {
+       throw new Error(`no gate named ${name}`);
+diff --git a/packages/bun-jobs-ui/__tests__/app/pkg/worker-actions.integration.test.ts b/packages/bun-jobs-ui/__tests__/app/pkg/worker-actions.integration.test.ts
+index 4743d63c..09724ff6 100644
+--- a/packages/bun-jobs-ui/__tests__/app/pkg/worker-actions.integration.test.ts
++++ b/packages/bun-jobs-ui/__tests__/app/pkg/worker-actions.integration.test.ts
+@@ -369,8 +369,7 @@ describe("a worker's row against a real API", () => {
+     await until(
+       async () => {
+         const config = (await reported(queue)).config as
+-          | { overridden: string[] }
+-          | undefined;
++          { overridden: string[] } | undefined;
+         return config?.overridden.includes("concurrency") === true;
+       },
+       () => "the worker never reported the override",
+@@ -402,8 +401,7 @@ describe("a worker's row against a real API", () => {
+     await until(
+       async () => {
+         const config = (await reported(queue)).config as
+-          | { overridden: string[] }
+-          | undefined;
++          { overridden: string[] } | undefined;
+         return config?.overridden.length === 0;
+       },
+       () => "the worker never dropped the override",
+diff --git a/packages/bun-jobs-ui/app/api/client.ts b/packages/bun-jobs-ui/app/api/client.ts
+index 01eed853..b837603f 100644
+--- a/packages/bun-jobs-ui/app/api/client.ts
++++ b/packages/bun-jobs-ui/app/api/client.ts
+@@ -23,10 +23,7 @@ export type QueryScalar = string | number | boolean;
+  * `null` are left out.
+  */
+ export type QueryValue =
+-  | QueryScalar
+-  | readonly QueryScalar[]
+-  | null
+-  | undefined;
++  QueryScalar | readonly QueryScalar[] | null | undefined;
+ 
+ /** The query of one request. */
+ export type QueryParams = Readonly<Record<string, QueryValue>>;
+diff --git a/packages/bun-jobs-ui/app/components/Badge.tsx b/packages/bun-jobs-ui/app/components/Badge.tsx
+index a0ae2d94..8d4a8046 100644
+--- a/packages/bun-jobs-ui/app/components/Badge.tsx
++++ b/packages/bun-jobs-ui/app/components/Badge.tsx
+@@ -3,12 +3,7 @@ import { cx } from "./classNames";
+ 
+ /** Colour of a {@link Badge}. */
+ export type BadgeTone =
+-  | "neutral"
+-  | "info"
+-  | "success"
+-  | "warning"
+-  | "danger"
+-  | "accent";
++  "neutral" | "info" | "success" | "warning" | "danger" | "accent";
+ 
+ /** Props of {@link Badge}. */
+ export interface BadgeProps {
+diff --git a/packages/bun-jobs-ui/app/components/copy.ts b/packages/bun-jobs-ui/app/components/copy.ts
+index 13b9aca4..c9b0f405 100644
+--- a/packages/bun-jobs-ui/app/components/copy.ts
++++ b/packages/bun-jobs-ui/app/components/copy.ts
+@@ -84,7 +84,6 @@ export function toJsonSafe(value: unknown): unknown {
+  */
+ export function safeStringify(value: unknown, indent = 2): string {
+   const text = JSON.stringify(toJsonSafe(value), null, indent) as
+-    | string
+-    | undefined;
++    string | undefined;
+   return text ?? "undefined";
+ }
+diff --git a/packages/bun-jobs-ui/app/live/client.ts b/packages/bun-jobs-ui/app/live/client.ts
+index 6c891c07..31c704e4 100644
+--- a/packages/bun-jobs-ui/app/live/client.ts
++++ b/packages/bun-jobs-ui/app/live/client.ts
+@@ -37,11 +37,7 @@ import {
+ 
+ /** Where the connection stands (see `LiveState` in `live.ts`). */
+ export type LiveClientState =
+-  | "off"
+-  | "connecting"
+-  | "live"
+-  | "reconnecting"
+-  | "refused";
++  "off" | "connecting" | "live" | "reconnecting" | "refused";
+ 
+ /** What {@link LiveClient.getSnapshot} returns; a new object only when something changed. */
+ export interface LiveClientSnapshot {
+diff --git a/packages/bun-jobs-ui/app/live/live.ts b/packages/bun-jobs-ui/app/live/live.ts
+index 2cc97461..52b24748 100644
+--- a/packages/bun-jobs-ui/app/live/live.ts
++++ b/packages/bun-jobs-ui/app/live/live.ts
+@@ -40,11 +40,7 @@ import { LiveContext } from "./context";
+  *   it will keep refusing); no more retries until reload.
+  */
+ export type LiveState =
+-  | "off"
+-  | "connecting"
+-  | "live"
+-  | "reconnecting"
+-  | "refused";
++  "off" | "connecting" | "live" | "reconnecting" | "refused";
+ 
+ /** What the header badge and the polling fallback read. */
+ export interface LiveStatus {
+diff --git a/packages/bun-jobs-ui/app/screens/docs/http/TryItPanel.tsx b/packages/bun-jobs-ui/app/screens/docs/http/TryItPanel.tsx
+index f7c49521..0efb01b5 100644
+--- a/packages/bun-jobs-ui/app/screens/docs/http/TryItPanel.tsx
++++ b/packages/bun-jobs-ui/app/screens/docs/http/TryItPanel.tsx
+@@ -310,8 +310,7 @@ function Snippets({
+   request,
+ }: {
+   /** The request, when the form is complete. */ request:
+-    | TryItRequest
+-    | undefined;
++    TryItRequest | undefined;
+ }) {
+   const config = useUiConfig();
+   const [tab, setTab] = useState<SnippetTab>("curl");
+diff --git a/packages/bun-jobs-ui/app/screens/job/jobErrors.ts b/packages/bun-jobs-ui/app/screens/job/jobErrors.ts
+index e7b80121..24fbc153 100644
+--- a/packages/bun-jobs-ui/app/screens/job/jobErrors.ts
++++ b/packages/bun-jobs-ui/app/screens/job/jobErrors.ts
+@@ -5,13 +5,7 @@ import { STATE_LABELS } from "../../format";
+ 
+ /** A job action whose failures get a plain-language explanation. */
+ export type JobAction =
+-  | "retry"
+-  | "promote"
+-  | "remove"
+-  | "update"
+-  | "add"
+-  | "fail"
+-  | "clearLogs";
++  "retry" | "promote" | "remove" | "update" | "add" | "fail" | "clearLogs";
+ 
+ /** The past participle of each action, for "cannot be …". */
+ const VERBS: Readonly<Record<JobAction, string>> = {
+diff --git a/packages/bun-jobs-ui/app/screens/queues/panels/demand.ts b/packages/bun-jobs-ui/app/screens/queues/panels/demand.ts
+index d9d1fe7c..913144c9 100644
+--- a/packages/bun-jobs-ui/app/screens/queues/panels/demand.ts
++++ b/packages/bun-jobs-ui/app/screens/queues/panels/demand.ts
+@@ -19,12 +19,7 @@ import { formatNumber } from "../../../format";
+ 
+ /** A count of a demand reading. */
+ export type DemandFigure =
+-  | "demand"
+-  | "outstanding"
+-  | "waiting"
+-  | "dueNow"
+-  | "stalled"
+-  | "active";
++  "demand" | "outstanding" | "waiting" | "dueNow" | "stalled" | "active";
+ 
+ /** The figures the fallback of a backend that cannot count demand approximates. */
+ const APPROXIMATE: ReadonlySet<DemandFigure> = new Set<DemandFigure>([
+diff --git a/packages/bun-jobs-ui/app/screens/runners/actions/index.tsx b/packages/bun-jobs-ui/app/screens/runners/actions/index.tsx
+index 85b10c2b..f261aace 100644
+--- a/packages/bun-jobs-ui/app/screens/runners/actions/index.tsx
++++ b/packages/bun-jobs-ui/app/screens/runners/actions/index.tsx
+@@ -30,13 +30,7 @@ export interface RunnerActionsProps {
+ 
+ /** Which dialog is open. */
+ type OpenDialog =
+-  | "trigger"
+-  | "resume"
+-  | "schedule"
+-  | "config"
+-  | "kill"
+-  | "reset"
+-  | null;
++  "trigger" | "resume" | "schedule" | "config" | "kill" | "reset" | null;
+ 
+ /**
+  * The action buttons (and their dialogs) for one runner, each present only
+diff --git a/packages/bun-jobs-ui/app/screens/runners/actions/schedule.ts b/packages/bun-jobs-ui/app/screens/runners/actions/schedule.ts
+index a4058ae4..12d5d85b 100644
+--- a/packages/bun-jobs-ui/app/screens/runners/actions/schedule.ts
++++ b/packages/bun-jobs-ui/app/screens/runners/actions/schedule.ts
+@@ -287,8 +287,7 @@ export function scheduleFieldErrors(
+   let other: string | undefined;
+   for (const [path, message] of Object.entries(fieldErrors)) {
+     const leaf = /^schedule\.(cron|tz|every|anchor|at)\b/.exec(path)?.[1] as
+-      | ScheduleField
+-      | undefined;
++      ScheduleField | undefined;
+     const field = leaf ?? mainField(mode);
+     if (field) {
+       fields[field] ??= message;
+diff --git a/packages/bun-jobs/__tests__/api/api-contract.test.ts b/packages/bun-jobs/__tests__/api/api-contract.test.ts
+index 44c491fc..57993944 100644
+--- a/packages/bun-jobs/__tests__/api/api-contract.test.ts
++++ b/packages/bun-jobs/__tests__/api/api-contract.test.ts
+@@ -428,8 +428,7 @@ describe("one definition of each constant", () => {
+     // documented enum cannot drift from what a client is typed against.
+     for (const schema of [RunRecordSchema, RunnerInfoSchema]) {
+       const properties = schema.json.properties as
+-        | Record<string, { enum?: unknown[] }>
+-        | undefined;
++        Record<string, { enum?: unknown[] }> | undefined;
+       const field = schema === RunRecordSchema ? "mode" : "executionMode";
+       expect({ field, values: properties?.[field]?.enum }).toEqual({
+         field,
+diff --git a/packages/bun-jobs/__tests__/fixtures/processes/runner-owner.ts b/packages/bun-jobs/__tests__/fixtures/processes/runner-owner.ts
+index c0f914c8..f4345028 100644
+--- a/packages/bun-jobs/__tests__/fixtures/processes/runner-owner.ts
++++ b/packages/bun-jobs/__tests__/fixtures/processes/runner-owner.ts
+@@ -42,9 +42,7 @@ const runner = new BunRunner<
+     ? {
+         allowedOverrides: {
+           executionModes: process.env.EXECUTION_MODES.split(",") as (
+-            | "child-process"
+-            | "worker-thread"
+-            | "in-process"
++            "child-process" | "worker-thread" | "in-process"
+           )[],
+         },
+       }
+diff --git a/packages/bun-jobs/__tests__/helpers/driverContract.ts b/packages/bun-jobs/__tests__/helpers/driverContract.ts
+index ba67d925..466d0ad6 100644
+--- a/packages/bun-jobs/__tests__/helpers/driverContract.ts
++++ b/packages/bun-jobs/__tests__/helpers/driverContract.ts
+@@ -7314,10 +7314,10 @@ export function driverContract(
+         const scope = testNamespace("purge-inflight");
+         const now = Date.now();
+         const token = newToken();
+-        const queues = Array.from(
+-          { length: 40 },
+-          (_, index): QueueRef => ({ ns: scope, queue: `q${index}` }),
+-        );
++        const queues = Array.from({ length: 40 }, (_, index): QueueRef => ({
++          ns: scope,
++          queue: `q${index}`,
++        }));
+ 
+         for (const target of queues) {
+           await driver.addJob(
+diff --git a/packages/bun-jobs/__tests__/mongo-added-by-state.test.ts b/packages/bun-jobs/__tests__/mongo-added-by-state.test.ts
+index c1ae22df..a7aad252 100644
+--- a/packages/bun-jobs/__tests__/mongo-added-by-state.test.ts
++++ b/packages/bun-jobs/__tests__/mongo-added-by-state.test.ts
+@@ -196,7 +196,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
+           ...hint,
+         };
+ 
+-  const result = await (await monitoredClient())
++  const result = await (
++    await monitoredClient()
++  )
+     .db()
+     .command({ explain: explained, verbosity: "executionStats" });
+ 
+diff --git a/packages/bun-jobs/__tests__/mongo-job-attribution.test.ts b/packages/bun-jobs/__tests__/mongo-job-attribution.test.ts
+index b26651b5..d44f4db6 100644
+--- a/packages/bun-jobs/__tests__/mongo-job-attribution.test.ts
++++ b/packages/bun-jobs/__tests__/mongo-job-attribution.test.ts
+@@ -196,7 +196,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
+           ...hint,
+         };
+ 
+-  const result = await (await monitoredClient())
++  const result = await (
++    await monitoredClient()
++  )
+     .db()
+     .command({ explain: explained, verbosity: "executionStats" });
+ 
+diff --git a/packages/bun-jobs/__tests__/mongo-job-defaults.test.ts b/packages/bun-jobs/__tests__/mongo-job-defaults.test.ts
+index 4efe5d41..7066cb88 100644
+--- a/packages/bun-jobs/__tests__/mongo-job-defaults.test.ts
++++ b/packages/bun-jobs/__tests__/mongo-job-defaults.test.ts
+@@ -289,7 +289,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
+       : { projection: command.projection }),
+   };
+ 
+-  const result = await (await monitoredClient())
++  const result = await (
++    await monitoredClient()
++  )
+     .db()
+     .command({ explain: explained, verbosity: "executionStats" });
+ 
+diff --git a/packages/bun-jobs/__tests__/mongo-metrics-grouped.test.ts b/packages/bun-jobs/__tests__/mongo-metrics-grouped.test.ts
+index 39a2d1b6..1d5d29f6 100644
+--- a/packages/bun-jobs/__tests__/mongo-metrics-grouped.test.ts
++++ b/packages/bun-jobs/__tests__/mongo-metrics-grouped.test.ts
+@@ -205,7 +205,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
+         }
+       : { find: command.find, filter: command.filter, ...hint };
+ 
+-  const result = await (await monitoredClient())
++  const result = await (
++    await monitoredClient()
++  )
+     .db()
+     .command({ explain: explained, verbosity: "executionStats" });
+ 
+@@ -473,7 +475,9 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
+     await driver.flushMetrics();
+ 
+     // The roll-up is stored as an entity like any other, in range.
+-    const stored = await (await monitoredClient())
++    const stored = await (
++      await monitoredClient()
++    )
+       .db()
+       .collection(metrics)
+       .find({ ns, entity: NAMESPACE_ENTITY, interval: MINUTE_BUCKET_MS })
+diff --git a/packages/bun-jobs/__tests__/provider/local-compute.test.ts b/packages/bun-jobs/__tests__/provider/local-compute.test.ts
+index 22c9c780..bc51e8d0 100644
+--- a/packages/bun-jobs/__tests__/provider/local-compute.test.ts
++++ b/packages/bun-jobs/__tests__/provider/local-compute.test.ts
+@@ -297,8 +297,7 @@ function issuePaths(fn: () => unknown): string[] {
+   } catch (error) {
+     expect(error).toBeInstanceOf(ConfigError);
+     const issues = (error as ConfigError).context?.issues as
+-      | { path?: unknown }[]
+-      | undefined;
++      { path?: unknown }[] | undefined;
+     return (issues ?? []).map((issue) => String(issue.path));
+   }
+   throw new Error("expected a ConfigError");
+diff --git a/packages/bun-jobs/__tests__/redis-driver.test.ts b/packages/bun-jobs/__tests__/redis-driver.test.ts
+index 8074bfc8..bed9a106 100644
+--- a/packages/bun-jobs/__tests__/redis-driver.test.ts
++++ b/packages/bun-jobs/__tests__/redis-driver.test.ts
+@@ -300,8 +300,7 @@ describe.skipIf(!URL)("Redis driver: excluding names", () => {
+ 
+     const raw = new BunRedis(URL);
+     const cursors = (await raw.send("HGETALL", [keys.excludeCursors])) as
+-      | Record<string, string>
+-      | string[];
++      Record<string, string> | string[];
+     const stored = Array.isArray(cursors)
+       ? cursors[1]
+       : Object.values(cursors)[0];
+diff --git a/packages/bun-jobs/__tests__/runner-config.test.ts b/packages/bun-jobs/__tests__/runner-config.test.ts
+index 6afcfd31..0b978346 100644
+--- a/packages/bun-jobs/__tests__/runner-config.test.ts
++++ b/packages/bun-jobs/__tests__/runner-config.test.ts
+@@ -497,8 +497,7 @@ describe("remote runner configuration — validation", () => {
+         logger: noopLogger,
+         allowedOverrides: {
+           executionModes: executionModes as (
+-            | "child-process"
+-            | "worker-thread"
++            "child-process" | "worker-thread"
+           )[],
+         },
+       });
+diff --git a/packages/bun-jobs/__tests__/sql-servers.test.ts b/packages/bun-jobs/__tests__/sql-servers.test.ts
+index 71e74ef0..e5c98be9 100644
+--- a/packages/bun-jobs/__tests__/sql-servers.test.ts
++++ b/packages/bun-jobs/__tests__/sql-servers.test.ts
+@@ -1264,8 +1264,7 @@ describe.skipIf(!postgres)(
+         await waitFor(() => locked === 1, { timeout: 5_000 });
+ 
+         let answered:
+-          | Awaited<ReturnType<SqlDriver["promoteDelayed"]>>
+-          | "waited";
++          Awaited<ReturnType<SqlDriver["promoteDelayed"]>> | "waited";
+         try {
+           answered = await Promise.race([
+             driver.promoteDelayed(q, Date.now(), 100),
+diff --git a/packages/bun-jobs/__tests__/summon-group-race.test.ts b/packages/bun-jobs/__tests__/summon-group-race.test.ts
+index fb6d69d1..e935503d 100644
+--- a/packages/bun-jobs/__tests__/summon-group-race.test.ts
++++ b/packages/bun-jobs/__tests__/summon-group-race.test.ts
+@@ -157,8 +157,7 @@ for (const backend of BACKENDS) {
+                 SUMMON_MARKER,
+               );
+               const value = marker?.value as
+-                | { budget?: { hour: number } }
+-                | undefined;
++                { budget?: { hour: number } } | undefined;
+               counted += value?.budget?.hour ?? 0;
+             }
+             expect(counted).toBe(calls.length);
+diff --git a/packages/bun-jobs/__tests__/summon-race.test.ts b/packages/bun-jobs/__tests__/summon-race.test.ts
+index 0789ff08..7303510a 100644
+--- a/packages/bun-jobs/__tests__/summon-race.test.ts
++++ b/packages/bun-jobs/__tests__/summon-race.test.ts
+@@ -157,8 +157,8 @@ for (const backend of BACKENDS) {
+         ),
+       ).toEqual([0, 0]);
+ 
+-      const records = lines.map(
+-        (own) => own.find((line) => line.event === "record")!,
++      const records = lines.map((own) =>
++        own.find((line) => line.event === "record")!,
+       );
+       const summoned = records.filter((record) => record.summon !== null);
+       const plain = records.filter((record) => record.summon === null);
+diff --git a/packages/bun-jobs/__tests__/worker-close-maintenance-pass.test.ts b/packages/bun-jobs/__tests__/worker-close-maintenance-pass.test.ts
+index e02f130f..c59eb792 100644
+--- a/packages/bun-jobs/__tests__/worker-close-maintenance-pass.test.ts
++++ b/packages/bun-jobs/__tests__/worker-close-maintenance-pass.test.ts
+@@ -236,9 +236,7 @@ async function storedLease(set: Setup): Promise<QueueStateEntry | null> {
+ /** Who the stored stalled lease names, if anyone. */
+ async function leaseHolder(set: Setup): Promise<string | undefined> {
+   const value = (await storedLease(set))?.value as
+-    | { holder?: string }
+-    | null
+-    | undefined;
++    { holder?: string } | null | undefined;
+   return value?.holder;
+ }
+ 
+diff --git a/packages/bun-jobs/lib/api/contract/constants.ts b/packages/bun-jobs/lib/api/contract/constants.ts
+index 70399add..bf90a831 100644
+--- a/packages/bun-jobs/lib/api/contract/constants.ts
++++ b/packages/bun-jobs/lib/api/contract/constants.ts
+@@ -385,9 +385,7 @@ export const EVENT_TYPES = [
+   "state",
+   "config",
+ ] as const satisfies readonly (
+-  | QueueEventName
+-  | RunnerEventName
+-  | WorkerEventName
++  QueueEventName | RunnerEventName | WorkerEventName
+ )[];
+ 
+ /** Any event name a subscription can filter on. */
+diff --git a/packages/bun-jobs/lib/api/contract/types.ts b/packages/bun-jobs/lib/api/contract/types.ts
+index 92e07273..bc4ae61c 100644
+--- a/packages/bun-jobs/lib/api/contract/types.ts
++++ b/packages/bun-jobs/lib/api/contract/types.ts
+@@ -2213,10 +2213,7 @@ export interface AnalyticsRangeQuery {
+  *   records minutes only).
+  */
+ export type AnalyticsClampReason =
+-  | "retention"
+-  | "maxBuckets"
+-  | "resolution"
+-  | "driver";
++  "retention" | "maxBuckets" | "resolution" | "driver";
+ 
+ /** What the request asked for, echoed in {@link AnalyticsRangeDto}. */
+ export interface AnalyticsRangeRequestedDto {
+diff --git a/packages/bun-jobs/lib/api/contract/ws.ts b/packages/bun-jobs/lib/api/contract/ws.ts
+index 1ff606ec..6a08159c 100644
+--- a/packages/bun-jobs/lib/api/contract/ws.ts
++++ b/packages/bun-jobs/lib/api/contract/ws.ts
+@@ -363,9 +363,7 @@ export interface JobsApiPingMessage {
+ 
+ /** Anything a client may send. */
+ export type JobsApiClientMessage =
+-  | JobsApiSubscribeMessage
+-  | JobsApiUnsubscribeMessage
+-  | JobsApiPingMessage;
++  JobsApiSubscribeMessage | JobsApiUnsubscribeMessage | JobsApiPingMessage;
+ 
+ /** Sent once, on open. */
+ export interface JobsApiHelloMessage {
+diff --git a/packages/bun-jobs/lib/api/errors.ts b/packages/bun-jobs/lib/api/errors.ts
+index aae80634..8afdc087 100644
+--- a/packages/bun-jobs/lib/api/errors.ts
++++ b/packages/bun-jobs/lib/api/errors.ts
+@@ -314,10 +314,7 @@ function isValidationError(error: unknown): error is ValidationError {
+  * the generic title.
+  */
+ export type ProblemCallSite =
+-  | "setLimits"
+-  | "jobInput"
+-  | "limitsInput"
+-  | "jobDefaults";
++  "setLimits" | "jobInput" | "limitsInput" | "jobDefaults";
+ 
+ /**
+  * Narrows an error by where it was thrown. Returns an {@link ApiError} when the
+diff --git a/packages/bun-jobs/lib/api/schema/validate.ts b/packages/bun-jobs/lib/api/schema/validate.ts
+index 1c8f20ab..c6137da7 100644
+--- a/packages/bun-jobs/lib/api/schema/validate.ts
++++ b/packages/bun-jobs/lib/api/schema/validate.ts
+@@ -15,13 +15,7 @@ import { coerceForTypes } from "./coerce";
+ 
+ /** The JSON types a node may name. */
+ export type JsonSchemaType =
+-  | "string"
+-  | "integer"
+-  | "number"
+-  | "boolean"
+-  | "object"
+-  | "array"
+-  | "null";
++  "string" | "integer" | "number" | "boolean" | "object" | "array" | "null";
+ 
+ /** A JSON primitive, as `const` and `enum` hold. */
+ export type JsonPrimitive = string | number | boolean | null;
+diff --git a/packages/bun-jobs/lib/api/sources.ts b/packages/bun-jobs/lib/api/sources.ts
+index a8c11884..d4f63b69 100644
+--- a/packages/bun-jobs/lib/api/sources.ts
++++ b/packages/bun-jobs/lib/api/sources.ts
+@@ -45,11 +45,7 @@ function notConfigured(name: string): ApiError {
+ 
+ /** Which kind of name a segment is. */
+ export type SegmentKind =
+-  | "queue"
+-  | "runner"
+-  | "worker"
+-  | "worker key"
+-  | "group";
++  "queue" | "runner" | "worker" | "worker key" | "group";
+ 
+ /** What each kind is called in the message a bad segment is refused with. */
+ const SEGMENT_LABELS: Record<SegmentKind, string> = {
+diff --git a/packages/bun-jobs/lib/api/spec/security.ts b/packages/bun-jobs/lib/api/spec/security.ts
+index f8184785..d22955d1 100644
+--- a/packages/bun-jobs/lib/api/spec/security.ts
++++ b/packages/bun-jobs/lib/api/spec/security.ts
+@@ -25,8 +25,7 @@ export interface OpenApiSecurity {
+  */
+ export function openApiSecurity(
+   docs:
+-    | Pick<ResolvedJobsApiDocsOptions, "securitySchemes" | "security">
+-    | false,
++    Pick<ResolvedJobsApiDocsOptions, "securitySchemes" | "security"> | false,
+ ): OpenApiSecurity {
+   const schemes = docs === false ? undefined : docs.securitySchemes;
+   if (!schemes || Object.keys(schemes).length === 0) {
+diff --git a/packages/bun-jobs/lib/api/ws/attach.ts b/packages/bun-jobs/lib/api/ws/attach.ts
+index 674f72d2..c493b388 100644
+--- a/packages/bun-jobs/lib/api/ws/attach.ts
++++ b/packages/bun-jobs/lib/api/ws/attach.ts
+@@ -311,8 +311,7 @@ export function createJobsApiWebSocket(
+   const handler: BunWebSocketHandlerType<JobsApiSocketData> = {
+     open(client) {
+       const data = client.data?.custom as
+-        | Partial<JobsApiSocketData>
+-        | undefined;
++        Partial<JobsApiSocketData> | undefined;
+       if (data?.request instanceof BunRequest) {
+         release(data.request);
+       }
+@@ -407,8 +406,7 @@ export function createJobsApiWebSocket(
+     // `getBunWebsocket()` returns whichever instance is current now, which is
+     // the whole point. (`BunRequest` carries no router of its own.)
+     const current = boundRouter?.getBunWebsocket() as
+-      | BunWebSocket<JobsApiSocketData>
+-      | undefined;
++      BunWebSocket<JobsApiSocketData> | undefined;
+     const target = current ?? boundTo;
+     if (!target) {
+       return next(
+diff --git a/packages/bun-jobs/lib/drivers/driver.ts b/packages/bun-jobs/lib/drivers/driver.ts
+index c39006ec..2888613f 100644
+--- a/packages/bun-jobs/lib/drivers/driver.ts
++++ b/packages/bun-jobs/lib/drivers/driver.ts
+@@ -1297,8 +1297,7 @@ export interface JobPatch {
+ 
+ /** What should happen to a job whose attempt failed. */
+ export type FailOutcome =
+-  | { retry: true; runAt: number }
+-  | { retry: false; retention: Retention };
++  { retry: true; runAt: number } | { retry: false; retention: Retention };
+ 
+ /** A repeatable job's definition. */
+ export interface RepeatRecord {
+diff --git a/packages/bun-jobs/lib/drivers/jobCursor.ts b/packages/bun-jobs/lib/drivers/jobCursor.ts
+index cdb55aa7..ab2f3eaa 100644
+--- a/packages/bun-jobs/lib/drivers/jobCursor.ts
++++ b/packages/bun-jobs/lib/drivers/jobCursor.ts
+@@ -55,11 +55,7 @@ const JOB_LIST_CURSOR_KIND = "jobsList";
+  * names all name the same five.
+  */
+ export type JobOrderField =
+-  | "priority"
+-  | "createdAt"
+-  | "runAt"
+-  | "lockExpiresAt"
+-  | "finishedOn";
++  "priority" | "createdAt" | "runAt" | "lockExpiresAt" | "finishedOn";
+ 
+ /**
+  * The fields a listing's order rests on, before the id tie-break — the single
+diff --git a/packages/bun-jobs/lib/drivers/mongo/mongo-driver.ts b/packages/bun-jobs/lib/drivers/mongo/mongo-driver.ts
+index 41d63e15..69e7a85d 100644
+--- a/packages/bun-jobs/lib/drivers/mongo/mongo-driver.ts
++++ b/packages/bun-jobs/lib/drivers/mongo/mongo-driver.ts
+@@ -3553,9 +3553,10 @@ export class MongoDriver implements JobsDriver {
+     // written (and whoever wrote since left the values asked for); any other
+     // left the walked states or changed before its write, and is `moved`.
+     const now = await jobs
+-      .find<
+-        Pick<JobDocument, "_id" | "opts">
+-      >({ _id: { $in: [...planned.keys()] } }, { projection: { _id: 1, opts: 1 } })
++      .find<Pick<JobDocument, "_id" | "opts">>(
++        { _id: { $in: [...planned.keys()] } },
++        { projection: { _id: 1, opts: 1 } },
++      )
+       .toArray();
+     const stored = new Map(now.map((found) => [found._id, found.opts]));
+ 
+diff --git a/packages/bun-jobs/lib/drivers/redis/redis-driver.ts b/packages/bun-jobs/lib/drivers/redis/redis-driver.ts
+index 49f6afa3..d3fc0185 100644
+--- a/packages/bun-jobs/lib/drivers/redis/redis-driver.ts
++++ b/packages/bun-jobs/lib/drivers/redis/redis-driver.ts
+@@ -2314,8 +2314,7 @@ export class RedisDriver implements JobsDriver {
+     await this.connect();
+ 
+     const counts = (await this.#runQueue(q, scripts.COUNT_JOBS, [])) as
+-      | number[]
+-      | null;
++      number[] | null;
+ 
+     const [waiting, delayed, active, completed, failed, dead, children] =
+       counts ?? [];
+diff --git a/packages/bun-jobs/lib/provider/configure.ts b/packages/bun-jobs/lib/provider/configure.ts
+index fa2ecbe9..7ad643de 100644
+--- a/packages/bun-jobs/lib/provider/configure.ts
++++ b/packages/bun-jobs/lib/provider/configure.ts
+@@ -179,8 +179,7 @@ function checkFacet(identity: ProviderIdentity, facet: unknown): SummonFacet {
+     }
+   }
+   const capabilities = candidate.capabilities as
+-    | Partial<SummonCapabilities>
+-    | undefined;
++    Partial<SummonCapabilities> | undefined;
+   if (typeof capabilities !== "object" || capabilities === null) {
+     throw malformed(identity, "needs capabilities");
+   }
+diff --git a/packages/bun-jobs/lib/provider/errors.ts b/packages/bun-jobs/lib/provider/errors.ts
+index c32313ac..20530d9d 100644
+--- a/packages/bun-jobs/lib/provider/errors.ts
++++ b/packages/bun-jobs/lib/provider/errors.ts
+@@ -30,12 +30,7 @@ import { ConfigError, JobsError } from "../shared/errors";
+  *   `error` log saying so.
+  */
+ export type ProviderErrorKind =
+-  | "transient"
+-  | "throttled"
+-  | "quota"
+-  | "auth"
+-  | "misconfigured"
+-  | "conflict";
++  "transient" | "throttled" | "quota" | "auth" | "misconfigured" | "conflict";
+ 
+ /** Every {@link ProviderErrorKind}, for the constructor's check. */
+ const KINDS: ReadonlySet<string> = new Set<ProviderErrorKind>([
+diff --git a/packages/bun-jobs/lib/provider/redact.ts b/packages/bun-jobs/lib/provider/redact.ts
+index e34d57b7..a6388907 100644
+--- a/packages/bun-jobs/lib/provider/redact.ts
++++ b/packages/bun-jobs/lib/provider/redact.ts
+@@ -190,9 +190,7 @@ const CREDENTIAL_SHAPES = textRedactor([]);
+ 
+ /** Why a `describe()` fact is not served, by {@link factProblem}. */
+ export type FactProblem =
+-  | "credential-key"
+-  | "url-userinfo"
+-  | "credential-shape";
++  "credential-key" | "url-userinfo" | "credential-shape";
+ 
+ /**
+  * Internal: the one rule for a `describe()` fact, shared by the status
+diff --git a/packages/bun-jobs/lib/provider/testing/checks.ts b/packages/bun-jobs/lib/provider/testing/checks.ts
+index 1d877a9b..9193e5c2 100644
+--- a/packages/bun-jobs/lib/provider/testing/checks.ts
++++ b/packages/bun-jobs/lib/provider/testing/checks.ts
+@@ -1352,8 +1352,7 @@ export async function timeoutChecks(run: KitRun): Promise<void> {
+   }
+ 
+   const result = settled as
+-    | { at: number; rejected: boolean; error?: unknown }
+-    | undefined;
++    { at: number; rejected: boolean; error?: unknown } | undefined;
+   if (result === undefined) {
+     run.set(
+       "summon.timeouts.rejects-on-abort",
+diff --git a/packages/bun-jobs/lib/queue/BunQueue.ts b/packages/bun-jobs/lib/queue/BunQueue.ts
+index af2d347b..4fddbaa4 100644
+--- a/packages/bun-jobs/lib/queue/BunQueue.ts
++++ b/packages/bun-jobs/lib/queue/BunQueue.ts
+@@ -2640,8 +2640,7 @@ export class BunQueue<
+       const now = Date.now();
+       const pointer = await driver.getQueueState!(this.ref, pointerName);
+       const current = pointer?.value as
+-        | (DebouncePointer & { until?: number })
+-        | undefined;
++        (DebouncePointer & { until?: number }) | undefined;
+ 
+       if (current && kind === "debounce") {
+         const updated = await driver.updateJob!(
+diff --git a/packages/bun-jobs/lib/queue/Job.ts b/packages/bun-jobs/lib/queue/Job.ts
+index 8efeb27e..f69235e4 100644
+--- a/packages/bun-jobs/lib/queue/Job.ts
++++ b/packages/bun-jobs/lib/queue/Job.ts
+@@ -664,11 +664,7 @@ export class Job<TData = unknown, TResult = unknown> {
+   /** The driver, checked to implement an optional method a caller needs. */
+   #require(
+     method:
+-      | "updateJob"
+-      | "addJobLog"
+-      | "getJobLogs"
+-      | "clearJobLogs"
+-      | "buryJob",
++      "updateJob" | "addJobLog" | "getJobLogs" | "clearJobLogs" | "buryJob",
+     what: string,
+   ): JobsDriver {
+     if (typeof this.#driver[method] !== "function") {
+diff --git a/packages/bun-jobs/lib/queue/types.ts b/packages/bun-jobs/lib/queue/types.ts
+index d5739536..3e5740ae 100644
+--- a/packages/bun-jobs/lib/queue/types.ts
++++ b/packages/bun-jobs/lib/queue/types.ts
+@@ -578,8 +578,7 @@ export type TypedJobProcessor<TJobs, TName extends JobName<TJobs>> = (
+   job: TypedJob<TJobs, TName>,
+   ctx: ProcessorContext,
+ ) =>
+-  | JobHandlerResultOf<TJobs, TName>
+-  | Promise<JobHandlerResultOf<TJobs, TName>>;
++  JobHandlerResultOf<TJobs, TName> | Promise<JobHandlerResultOf<TJobs, TName>>;
+ 
+ /**
+  * The payload property of an entry that names its job: optional exactly when
+@@ -671,8 +670,7 @@ export interface ForeignFlowNode extends FlowNode {
+  * @typeParam TJobs The declared job map.
+  */
+ export type RegistryFlowChild<TJobs> =
+-  | RegistryFlowNode<TJobs>
+-  | ForeignFlowNode;
++  RegistryFlowNode<TJobs> | ForeignFlowNode;
+ 
+ /**
+  * What `addBulk` takes: plain entries with no declared map, exactly as
+@@ -1359,8 +1357,9 @@ export type JobScopedEvent =
+  * them is unaffected.
+  */
+ export type JobScopedEvents<TEvents, TName extends string = string> = {
+-  [Event in keyof TEvents &
+-    JobScopedEvent as `${Event}:${TName}`]: TEvents[Event];
++  [
++    Event in keyof TEvents & JobScopedEvent as `${Event}:${TName}`
++  ]: TEvents[Event];
+ };
+ 
+ /**
+@@ -1522,7 +1521,9 @@ export type BunQueueWorkerEvents<
+  * @typeParam TPerName Each declared name's own event map.
+  */
+ type TypedScopedEvents<TJobs, TEvents, TPerName> = {
+-  [TKey in `${keyof TEvents & JobScopedEvent}:${JobName<TJobs>}`]: TKey extends `${infer TEvent extends keyof TEvents & JobScopedEvent}:${infer TName extends JobName<TJobs>}`
++  [
++    TKey in `${keyof TEvents & JobScopedEvent}:${JobName<TJobs>}`
++  ]: TKey extends `${infer TEvent extends keyof TEvents & JobScopedEvent}:${infer TName extends JobName<TJobs>}`
+     ? TName extends keyof TPerName
+       ? TEvent extends keyof TPerName[TName]
+         ? TPerName[TName][TEvent]
+diff --git a/packages/bun-jobs/lib/queue/workerTarget.ts b/packages/bun-jobs/lib/queue/workerTarget.ts
+index e24207d9..c8907ea5 100644
+--- a/packages/bun-jobs/lib/queue/workerTarget.ts
++++ b/packages/bun-jobs/lib/queue/workerTarget.ts
+@@ -101,10 +101,7 @@ export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
+  * {@link WorkerTargetFactory} for a target this package does not ship.
+  */
+ export type WorkerTarget =
+-  | WorkerTargetMode
+-  | LocalWorkerTarget
+-  | ContainerTarget
+-  | WorkerTargetFactory;
++  WorkerTargetMode | LocalWorkerTarget | ContainerTarget | WorkerTargetFactory;
+ 
+ export type { ContainerTarget } from "./container/target";
+ 
+@@ -115,9 +112,7 @@ export type { ContainerTarget } from "./container/target";
+  * from plain JavaScript.
+  */
+ export type LocalWorkerTarget =
+-  | InProcessTarget
+-  | WorkerThreadTarget
+-  | ChildProcessTarget;
++  InProcessTarget | WorkerThreadTarget | ChildProcessTarget;
+ 
+ /** `"in-process"` as an object, so every local mode has one. */
+ export interface InProcessTarget {
+diff --git a/packages/bun-jobs/lib/remote/types.ts b/packages/bun-jobs/lib/remote/types.ts
+index 3e0d6e93..eb658f96 100644
+--- a/packages/bun-jobs/lib/remote/types.ts
++++ b/packages/bun-jobs/lib/remote/types.ts
+@@ -212,9 +212,7 @@ export interface RemoteRejectedOutcome {
+ 
+ /** One job's outcome in an `invoke-result`. A job left out is `unknown`: its lease lapses. */
+ export type RemoteOutcome =
+-  | RemoteResultOutcome
+-  | RemoteFailOutcome
+-  | RemoteRejectedOutcome;
++  RemoteResultOutcome | RemoteFailOutcome | RemoteRejectedOutcome;
+ 
+ /** A retained outcome, as a `status-result` repeats it: the outcome without its job and attempt. */
+ export type RemoteRetainedOutcome =
+@@ -237,10 +235,7 @@ export interface RemoteAttemptStatus {
+ 
+ /** Why the gateway cancels an attempt. */
+ export type RemoteCancelReason =
+-  | "timeout"
+-  | "lock-lost"
+-  | "closing"
+-  | "cancelled";
++  "timeout" | "lock-lost" | "closing" | "cancelled";
+ 
+ /** One attempt's answer in a `cancel-result`. */
+ export interface RemoteCancelledJob {
+diff --git a/packages/bun-jobs/lib/runner/BunRunnerManager.ts b/packages/bun-jobs/lib/runner/BunRunnerManager.ts
+index 8db4be7b..3f3f95de 100644
+--- a/packages/bun-jobs/lib/runner/BunRunnerManager.ts
++++ b/packages/bun-jobs/lib/runner/BunRunnerManager.ts
+@@ -124,8 +124,7 @@ export class BunRunnerManager {
+     // The registry holds runners of every declared type, so the caller names
+     // the one it registered; nothing at runtime can check it.
+     return this.#runners.get(id) as
+-      | BunRunner<TArgs, TResult, TToHandler, TFromHandler>
+-      | undefined;
++      BunRunner<TArgs, TResult, TToHandler, TFromHandler> | undefined;
+   }
+ 
+   /** Every registered runner. */
+diff --git a/packages/bun-jobs/lib/shared/events.ts b/packages/bun-jobs/lib/shared/events.ts
+index 01790da1..a1230e42 100644
+--- a/packages/bun-jobs/lib/shared/events.ts
++++ b/packages/bun-jobs/lib/shared/events.ts
+@@ -106,11 +106,7 @@ export const NOT_JOB_ID_EVENTS: ReadonlySet<QueueEventName> =
+  * `RunnerController.updateConfig`/`resetConfig`).
+  */
+ export type RunnerControlAction =
+-  | "pause"
+-  | "resume"
+-  | "schedule"
+-  | "trigger"
+-  | "config";
++  "pause" | "resume" | "schedule" | "trigger" | "config";
+ 
+ /** What each runner event carries on the wire, by name. */
+ export interface RunnerEventPayloads {
+@@ -301,9 +297,7 @@ export type WorkerDriverEvent = {
+ 
+ /** Anything a driver may be asked to publish or deliver. */
+ export type DriverEvent =
+-  | QueueDriverEvent
+-  | RunnerDriverEvent
+-  | WorkerDriverEvent;
++  QueueDriverEvent | RunnerDriverEvent | WorkerDriverEvent;
+ 
+ /** Which subsystem an event came from. */
+ export type EventKind = DriverEvent["kind"];
+diff --git a/packages/bun-jobs/lib/summon/controller.ts b/packages/bun-jobs/lib/summon/controller.ts
+index 1d44d2bb..7d41f4e5 100644
+--- a/packages/bun-jobs/lib/summon/controller.ts
++++ b/packages/bun-jobs/lib/summon/controller.ts
+@@ -521,8 +521,7 @@ interface ResolvedPolicy {
+   env: Readonly<Record<string, string>>;
+   /** `onSummonFailed`, when set. */
+   onSummonFailed:
+-    | ((failure: SummonFailure) => void | Promise<void>)
+-    | undefined;
++    ((failure: SummonFailure) => void | Promise<void>) | undefined;
+   /**
+    * Each queue's capacity, by queue, in the controller's order: the
+    * policy's `jobsPerWorker` and `maxWorkers`, or a shared unit's
+diff --git a/packages/bun-jobs/lib/summon/groups.ts b/packages/bun-jobs/lib/summon/groups.ts
+index 17156656..96634653 100644
+--- a/packages/bun-jobs/lib/summon/groups.ts
++++ b/packages/bun-jobs/lib/summon/groups.ts
+@@ -92,8 +92,7 @@ interface SummonPolicyMap {
+  * of its queues: an array entry's `queues`, or a record's one queue.
+  */
+ export type SummonOption =
+-  | SummonPolicyMap
+-  | readonly (SummonGroup | SummonPolicyRecord)[];
++  SummonPolicyMap | readonly (SummonGroup | SummonPolicyRecord)[];
+ 
+ /** Whether `value` is a non-null, non-array object. */
+ function isRecord(value: unknown): value is Record<string, unknown> {
+diff --git a/packages/bun-jobs/lib/summon/types.ts b/packages/bun-jobs/lib/summon/types.ts
+index ab5a60a9..068b79db 100644
+--- a/packages/bun-jobs/lib/summon/types.ts
++++ b/packages/bun-jobs/lib/summon/types.ts
+@@ -31,12 +31,7 @@ export type {
+ 
+ /** Why a check ran. */
+ export type SummonReason =
+-  | "add"
+-  | "event"
+-  | "poll"
+-  | "schedule"
+-  | "manual"
+-  | "timer";
++  "add" | "event" | "poll" | "schedule" | "manual" | "timer";
+ 
+ /** What one attempt ended as, as recorded on the marker and in `summon` events. */
+ export type SummonOutcomeKind =
+diff --git a/packages/bun-nest/lib/BunHttpAdapter.ts b/packages/bun-nest/lib/BunHttpAdapter.ts
+index 7de6068d..492d6180 100644
+--- a/packages/bun-nest/lib/BunHttpAdapter.ts
++++ b/packages/bun-nest/lib/BunHttpAdapter.ts
+@@ -167,8 +167,7 @@ export class BunHttpAdapter<
+   public _logger!: Logger;
+   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
+   private _serverInstance:
+-    | BunWebSocketServerType<customWebsocketDataType>
+-    | undefined = undefined;
++    BunWebSocketServerType<customWebsocketDataType> | undefined = undefined;
+ 
+   private _listeningHost = "127.0.0.1";
+   private _listeningPort: string | number = 3000;
+@@ -700,8 +699,7 @@ export class BunHttpAdapter<
+       hostname = this._serverInstance.hostname ?? hostname;
+       port = Number(this._serverInstance.port);
+       address = get(this._serverInstance, "address", undefined) as
+-        | AddressInfo
+-        | undefined;
++        AddressInfo | undefined;
+     }
+ 
+     if (address) {
+@@ -1496,8 +1494,7 @@ export class BunHttpAdapter<
+               "removeAllListeners",
+             ].includes(prop as string): {
+               let method = get(this.eventEmitter, prop as string) as
+-                | CallableFunction
+-                | undefined;
++                CallableFunction | undefined;
+ 
+               if (method) {
+                 method = method.bind(this.eventEmitter);
+diff --git a/packages/bun-nest/lib/interceptors.ts b/packages/bun-nest/lib/interceptors.ts
+index c75fb674..024bd910 100644
+--- a/packages/bun-nest/lib/interceptors.ts
++++ b/packages/bun-nest/lib/interceptors.ts
+@@ -46,9 +46,9 @@ export const getMultipartRequest = (ctx: HttpArgumentsHost) => {
+   const req = ctx.getRequest<BunMultipartRequest>();
+ 
+   const contentType = req.headersObj.get("content-type");
+-  if (
+-    !(isString(contentType) && contentType.includes("multipart/form-data;"))
+-  ) {
++  if (!(
++    isString(contentType) && contentType.includes("multipart/form-data;")
++  )) {
+     throw new BadRequestException("Not a multipart request");
+   }
+ 
+diff --git a/playground/compute/units.ts b/playground/compute/units.ts
+index f9b585dc..88164722 100644
+--- a/playground/compute/units.ts
++++ b/playground/compute/units.ts
+@@ -57,11 +57,7 @@ import { ConfigError } from "@kingsleyweb/bun-jobs";
+ 
+ /** Faults injected into a unit, through its environment (`LOCAL_COMPUTE_FAULT`). */
+ export type UnitFault =
+-  | "crash"
+-  | "die"
+-  | "slow-boot"
+-  | "ignore-stop"
+-  | "forget-queue";
++  "crash" | "die" | "slow-boot" | "ignore-stop" | "forget-queue";
+ 
+ /** Faults the vault provider answers with, before any unit starts. */
+ export type ProviderFault = "throttled" | "quota" | "auth" | "transient";
+@@ -418,7 +414,7 @@ export class UnitBoard {
+         .map((status) => status.handle),
+     );
+     let excess = this.#units.length - KEEP;
+-    for (let index = 0; index < this.#units.length && excess > 0; ) {
++    for (let index = 0; index < this.#units.length && excess > 0;) {
+       if (ended.has(this.#units[index]!.handle)) {
+         this.#units.splice(index, 1);
+         excess--;
+diff --git a/templates/compute-provider/src/errors.ts b/templates/compute-provider/src/errors.ts
+index 90458dd4..2682be9a 100644
+--- a/templates/compute-provider/src/errors.ts
++++ b/templates/compute-provider/src/errors.ts
+@@ -88,8 +88,7 @@ export async function acmeError(
+   now: number,
+ ): Promise<ProviderError> {
+   const body = (await response.json().catch(() => undefined)) as
+-    | { error?: { code?: unknown } }
+-    | undefined;
++    { error?: { code?: unknown } } | undefined;
+   const platformCode = platformCodeOf(body?.error?.code);
+   const kind =
+     (platformCode === undefined ? undefined : BY_CODE[platformCode]) ??

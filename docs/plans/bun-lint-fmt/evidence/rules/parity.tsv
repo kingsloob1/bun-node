@@ -1,0 +1,385 @@
+rule	severity	category	bun_rule	note
+accessor-pairs	error	native-same	accessor-pairs	
+antfu/consistent-chaining	error	missing		eslint-plugin-antfu: JS plugin, loads without eslint
+antfu/consistent-list-newline	error	missing		eslint-plugin-antfu: JS plugin, loads without eslint
+antfu/import-dedupe	error	missing		eslint-plugin-antfu: JS plugin, loads without eslint
+antfu/no-import-dist	error	missing		eslint-plugin-antfu: JS plugin, loads without eslint
+antfu/no-import-node-modules-by-path	error	missing		eslint-plugin-antfu: JS plugin, loads without eslint
+antfu/no-top-level-await	error	native-different	n/no-top-level-await	also reports for-await and await using
+array-callback-return	error	native-same	array-callback-return	
+block-scoped-var	error	native-same	block-scoped-var	
+command/command	error	missing		eslint-plugin-command: comment-driven codemods
+constructor-super	error	native-same	constructor-super	
+default-case-last	error	native-same	default-case-last	
+dot-notation	error	native-same	dot-notation	
+e18e/prefer-array-fill	error	missing		@e18e/eslint-plugin: JS plugin, loads without eslint
+e18e/prefer-array-some	error	native-different	unicorn/prefer-array-some	oxlint port
+e18e/prefer-date-now	error	native-different	unicorn/prefer-date-now	oxlint port
+e18e/prefer-includes	error	native-different	unicorn/prefer-includes	oxlint port
+e18e/prefer-nullish-coalescing	error	native-different	@typescript-eslint/prefer-nullish-coalescing	needs types (--type-aware)
+e18e/prefer-object-has-own	error	native-different	prefer-object-has-own	ESLint core
+e18e/prefer-regex-test	error	native-different	unicorn/prefer-regexp-test	oxlint port; reports .match() on non-strings
+e18e/prefer-timer-args	error	missing		@e18e/eslint-plugin: JS plugin, loads without eslint
+e18e/prefer-url-canparse	error	missing		@e18e/eslint-plugin: JS plugin, loads without eslint
+eqeqeq	error	native-same	eqeqeq	
+eslint-comments/no-aggregating-enable	error	missing		@eslint-community/eslint-comments: JS plugin, loads without eslint
+eslint-comments/no-duplicate-disable	error	native-different	reportUnusedDisableDirectives	a linter option; a duplicate disable is an unused one
+eslint-comments/no-unlimited-disable	error	native-different	unicorn/no-abusive-eslint-disable	oxlint port
+eslint-comments/no-unused-enable	error	native-different	reportUnusedInlineConfigs	a linter option, not a rule
+import/consistent-type-specifier-style	error	native-different	import/consistent-type-specifier-style	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+import/first	error	native-different	import/first	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+import/newline-after-import	error	native-different	import/newline-after-import	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+import/no-duplicates	error	native-different	import/no-duplicates	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+import/no-mutable-exports	error	native-different	import/no-mutable-exports	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+import/no-named-default	error	native-different	import/no-named-default	Bun ports eslint-plugin-import 2.32; we run antfu's fork eslint-plugin-import-lite
+jsdoc/check-access	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/check-alignment	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/check-param-names	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/check-property-names	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/check-types	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/empty-tags	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/implements-on-classes	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/multiline-blocks	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/no-defaults	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/no-multi-asterisks	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-param-name	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-property	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-property-description	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-property-name	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-returns-check	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-returns-description	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsdoc/require-yields-check	warn	missing		eslint-plugin-jsdoc: JS plugin, and it needs the eslint package to load
+jsonc/array-bracket-spacing	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/comma-dangle	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/comma-style	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/indent	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/key-spacing	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-bigint-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-binary-expression	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-binary-numeric-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-dupe-keys	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-escape-sequence-in-identifier	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-floating-decimal	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-hexadecimal-numeric-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-infinity	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-multi-str	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-nan	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-number-props	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-numeric-separators	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-octal	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-octal-escape	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-octal-numeric-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-parenthesized	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-plus-sign	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-regexp-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-sparse-arrays	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-template-literals	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-undefined-value	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-unicode-codepoint-escapes	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/no-useless-escape	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/object-curly-newline	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/object-curly-spacing	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/object-property-newline	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/quote-props	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/quotes	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/sort-array-values	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/sort-keys	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/space-unary-ops	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/valid-json-number	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+jsonc/vue-custom-block/no-parsing-error	error	missing		JSON files: Bun hands them to the eslint package; bun fmt sortPackageJson covers package.json key order only
+markdown/heading-increment	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-duplicate-definitions	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-empty-definitions	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-empty-images	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-empty-links	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-invalid-label-refs	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-missing-atx-heading-space	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-missing-link-fragments	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-multiple-h1	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-reference-like-urls	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-reversed-media-syntax	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-space-in-emphasis	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/no-unused-definitions	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/require-alt-text	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+markdown/table-column-count	error	missing		Markdown is an ESLint language: needs the eslint package; Bun has no native Markdown rules
+new-cap	error	native-same	new-cap	
+no-alert	error	native-same	no-alert	
+no-array-constructor	error	native-same	no-array-constructor	
+no-caller	error	native-same	no-caller	
+no-case-declarations	error	native-same	no-case-declarations	
+no-class-assign	error	native-same	no-class-assign	
+no-compare-neg-zero	error	native-same	no-compare-neg-zero	
+no-cond-assign	error	native-same	no-cond-assign	
+no-console	warn	native-same	no-console	
+no-const-assign	error	native-same	no-const-assign	
+no-control-regex	error	native-same	no-control-regex	
+no-debugger	error	native-same	no-debugger	
+no-delete-var	error	native-same	no-delete-var	
+no-dupe-args	error	native-same	no-dupe-args	
+no-dupe-class-members	error	native-same	no-dupe-class-members	
+no-dupe-keys	error	native-same	no-dupe-keys	
+no-duplicate-case	error	native-same	no-duplicate-case	
+no-empty	error	native-same	no-empty	
+no-empty-pattern	error	native-same	no-empty-pattern	
+no-eval	error	native-same	no-eval	
+no-ex-assign	error	native-same	no-ex-assign	
+no-extend-native	error	native-same	no-extend-native	
+no-extra-bind	error	native-same	no-extra-bind	
+no-extra-boolean-cast	error	native-same	no-extra-boolean-cast	
+no-fallthrough	error	native-same	no-fallthrough	
+no-func-assign	error	native-same	no-func-assign	
+no-global-assign	error	native-same	no-global-assign	
+no-implied-eval	error	native-same	no-implied-eval	
+no-import-assign	error	native-same	no-import-assign	
+no-irregular-whitespace	error	native-same	no-irregular-whitespace	
+no-iterator	error	native-same	no-iterator	
+no-lone-blocks	error	native-same	no-lone-blocks	
+no-loss-of-precision	error	native-same	no-loss-of-precision	
+no-misleading-character-class	error	native-same	no-misleading-character-class	
+no-multi-str	error	native-same	no-multi-str	
+no-new	error	native-same	no-new	
+no-new-func	error	native-same	no-new-func	
+no-new-native-nonconstructor	error	native-same	no-new-native-nonconstructor	
+no-new-wrappers	error	native-same	no-new-wrappers	
+no-obj-calls	error	native-same	no-obj-calls	
+no-octal	error	native-same	no-octal	
+no-octal-escape	error	native-same	no-octal-escape	
+no-proto	error	native-same	no-proto	
+no-prototype-builtins	error	native-same	no-prototype-builtins	
+no-redeclare	error	native-same	no-redeclare	
+no-regex-spaces	error	native-same	no-regex-spaces	
+no-restricted-globals	error	native-same	no-restricted-globals	
+no-restricted-properties	error	native-same	no-restricted-properties	
+no-self-assign	error	native-same	no-self-assign	
+no-self-compare	error	native-same	no-self-compare	
+no-sequences	error	native-same	no-sequences	
+no-shadow-restricted-names	error	native-same	no-shadow-restricted-names	
+no-sparse-arrays	error	native-same	no-sparse-arrays	
+no-template-curly-in-string	error	native-same	no-template-curly-in-string	
+no-this-before-super	error	native-same	no-this-before-super	
+no-throw-literal	error	native-same	no-throw-literal	
+no-undef	error	native-same	no-undef	
+no-undef-init	error	native-same	no-undef-init	
+no-unmodified-loop-condition	error	native-same	no-unmodified-loop-condition	
+no-unneeded-ternary	error	native-same	no-unneeded-ternary	
+no-unreachable	error	native-same	no-unreachable	
+no-unreachable-loop	error	native-same	no-unreachable-loop	
+no-unsafe-finally	error	native-same	no-unsafe-finally	
+no-unsafe-negation	error	native-same	no-unsafe-negation	
+no-unused-expressions	error	native-same	no-unused-expressions	
+no-unused-vars	error	native-same	no-unused-vars	
+no-use-before-define	error	native-same	no-use-before-define	
+no-useless-call	error	native-same	no-useless-call	
+no-useless-catch	error	native-same	no-useless-catch	
+no-useless-computed-key	error	native-same	no-useless-computed-key	
+no-useless-constructor	error	native-same	no-useless-constructor	
+no-useless-rename	error	native-same	no-useless-rename	
+no-useless-return	error	native-same	no-useless-return	
+no-var	error	native-same	no-var	
+no-with	error	native-same	no-with	
+node/handle-callback-err	error	native-same	n/handle-callback-err	antfu's prefix node/ is n/ in bunfig and in eslint-disable comments
+node/no-deprecated-api	error	missing		eslint-plugin-n rule Bun has not ported (Bun ports 15 rules of n)
+node/no-exports-assign	error	native-same	n/no-exports-assign	antfu's prefix node/ is n/ in bunfig and in eslint-disable comments
+node/no-new-require	error	native-same	n/no-new-require	antfu's prefix node/ is n/ in bunfig and in eslint-disable comments
+node/no-path-concat	error	native-same	n/no-path-concat	antfu's prefix node/ is n/ in bunfig and in eslint-disable comments
+node/prefer-global/buffer	error	missing		eslint-plugin-n rule Bun has not ported (Bun ports 15 rules of n)
+node/prefer-global/process	error	missing		eslint-plugin-n rule Bun has not ported (Bun ports 15 rules of n)
+node/process-exit-as-throw	error	missing		eslint-plugin-n rule Bun has not ported (Bun ports 15 rules of n)
+object-shorthand	error	native-same	object-shorthand	
+one-var	error	native-same	one-var	
+perfectionist/sort-exports	error	missing		JS plugin needing the eslint package; bun fmt sortImports sorts imports (not exports) in its own order
+perfectionist/sort-imports	error	missing		JS plugin needing the eslint package; bun fmt sortImports sorts imports (not exports) in its own order
+perfectionist/sort-named-exports	error	missing		JS plugin needing the eslint package; bun fmt sortImports sorts imports (not exports) in its own order
+perfectionist/sort-named-imports	error	missing		JS plugin needing the eslint package; bun fmt sortImports sorts imports (not exports) in its own order
+prefer-const	error	native-same	prefer-const	
+prefer-exponentiation-operator	error	native-same	prefer-exponentiation-operator	
+prefer-promise-reject-errors	error	native-same	prefer-promise-reject-errors	
+prefer-regex-literals	error	native-same	prefer-regex-literals	
+prefer-rest-params	error	native-same	prefer-rest-params	
+prefer-spread	error	native-same	prefer-spread	
+prefer-template	error	native-same	prefer-template	
+prettier/prettier	error	native-different	bun/format	checks against bun fmt (Prettier 3.9 output)
+react-refresh/only-export-components	error	native-different	react/only-export-components	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/dom-no-dangerously-set-innerhtml	warn	native-different	react/no-danger	
+react/dom-no-dangerously-set-innerhtml-with-children	error	native-different	react/no-danger-with-children	
+react/dom-no-find-dom-node	error	native-different	react/no-find-dom-node	
+react/dom-no-flush-sync	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/dom-no-hydrate	error	native-different	react/no-deprecated	
+react/dom-no-render	error	native-different	react/no-deprecated	covers ReactDOM.render among others
+react/dom-no-render-return-value	error	native-different	react/no-render-return-value	
+react/dom-no-script-url	warn	native-different	react/jsx-no-script-url	
+react/dom-no-unsafe-iframe-sandbox	warn	native-different	react/iframe-missing-sandbox	narrower: missing sandbox only
+react/dom-no-use-form-state	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/dom-no-void-elements-with-children	error	native-different	react/void-dom-elements-no-children	
+react/error-boundaries	error	native-different	react/error-boundaries	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/exhaustive-deps	warn	native-different	react/exhaustive-deps	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/jsx-no-children-prop	warn	native-different	react/no-children-prop	
+react/jsx-no-children-prop-with-children	error	native-different	react/no-children-prop	approximate
+react/jsx-no-comment-textnodes	warn	native-different	react/jsx-no-comment-textnodes	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/jsx-no-key-after-spread	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/jsx-no-leaked-dollar	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/jsx-no-leaked-semicolon	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/jsx-no-namespace	error	native-different	react/no-namespace	
+react/naming-convention-context-name	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/naming-convention-id-name	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/naming-convention-ref-name	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-access-state-in-setstate	error	native-different	react/no-access-state-in-setstate	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/no-array-index-key	warn	native-different	react/no-array-index-key	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/no-children-count	warn	native-different	react/no-react-children	one rule for all Children.* calls
+react/no-children-for-each	warn	native-different	react/no-react-children	
+react/no-children-map	warn	native-different	react/no-react-children	
+react/no-children-only	warn	native-different	react/no-react-children	
+react/no-children-to-array	warn	native-different	react/no-react-children	
+react/no-clone-element	warn	native-different	react/no-clone-element	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/no-component-will-mount	error	native-different	react/no-deprecated	
+react/no-component-will-receive-props	error	native-different	react/no-deprecated	
+react/no-component-will-update	error	native-different	react/no-deprecated	
+react/no-context-provider	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-create-ref	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-direct-mutation-state	error	native-different	react/no-direct-mutation-state	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/no-forward-ref	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-missing-key	error	native-different	react/jsx-key	eslint-plugin-react
+react/no-nested-component-definitions	error	native-different	react/no-unstable-nested-components	also react/static-components (React Compiler)
+react/no-nested-lazy-component-declarations	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-set-state-in-component-did-mount	warn	native-different	react/no-did-mount-set-state	
+react/no-set-state-in-component-did-update	warn	native-different	react/no-did-update-set-state	
+react/no-set-state-in-component-will-update	warn	native-different	react/no-will-update-set-state	
+react/no-unnecessary-use-prefix	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/no-unsafe-component-will-mount	warn	native-different	react/no-unsafe	
+react/no-unsafe-component-will-receive-props	warn	native-different	react/no-unsafe	
+react/no-unsafe-component-will-update	warn	native-different	react/no-unsafe	
+react/no-unused-class-component-members	warn	native-different	react/no-unused-class-component-methods	
+react/no-use-context	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/purity	warn	native-different	react/purity	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/rsc-function-definition	error	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/rules-of-hooks	error	native-different	react/rules-of-hooks	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/set-state-in-effect	warn	native-different	react/set-state-in-effect	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/set-state-in-render	error	native-different	react/set-state-in-render	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/static-components	error	native-different	react/static-components	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/unsupported-syntax	error	native-different	react/unsupported-syntax	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/use-memo	error	native-different	react/use-memo	same name, different upstream: we run @eslint-react; Bun has eslint-plugin-react / React Compiler / oxlint rules
+react/use-state	warn	native-different	react/hook-use-state	approximate
+react/web-api-no-leaked-event-listener	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/web-api-no-leaked-fetch	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/web-api-no-leaked-intersection-observer	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/web-api-no-leaked-interval	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/web-api-no-leaked-resize-observer	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+react/web-api-no-leaked-timeout	warn	missing		@eslint-react rule with no eslint-plugin-react / React Compiler counterpart; @eslint-react needs the eslint package
+regexp/confusing-quantifier	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/control-character-escape	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/match-any	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/negation	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-contradiction-with-assertion	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-dupe-characters-character-class	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-dupe-disjunctions	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-alternative	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-capturing-group	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-character-class	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-group	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-lookarounds-assertion	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-empty-string-literal	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-escape-backspace	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-extra-lookaround-assertions	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-invalid-regexp	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-invisible-character	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-lazy-ends	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-legacy-features	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-misleading-capturing-group	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-misleading-unicode-character	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-missing-g-flag	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-non-standard-flag	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-obscure-range	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-optional-assertion	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-potentially-useless-backreference	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-super-linear-backtracking	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-trivially-nested-assertion	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-trivially-nested-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-unused-capturing-group	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-assertions	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-backreference	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-character-class	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-dollar-replacements	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-escape	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-flag	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-lazy	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-non-capturing-group	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-range	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-set-operand	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-string-literal	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-useless-two-nums-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/no-zero-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/optimal-lookaround-quantifier	warn	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/optimal-quantifier-concatenation	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-character-class	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-d	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-plus-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-predefined-assertion	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-question-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-range	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-set-operation	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-star-quantifier	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-unicode-codepoint-escapes	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/prefer-w	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/simplify-set-operations	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/sort-flags	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/strict	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+regexp/use-ignore-case	error	missing		eslint-plugin-regexp: no native equivalent; loads in bun lint as a JS plugin without the eslint package
+style/jsx-curly-brace-presence	error	native-different	react/jsx-curly-brace-presence	eslint-plugin-react's rule
+style/jsx-function-call-newline	error	missing		@stylistic: formatting rules; Bun runs no deprecated formatting rules
+style/lines-between-class-members	error	missing		@stylistic: formatting rules; Bun runs no deprecated formatting rules
+style/spaced-comment	error	missing		@stylistic: formatting rules; Bun runs no deprecated formatting rules
+symbol-description	error	native-same	symbol-description	
+test/consistent-test-it	error	native-different	bun:test/consistent-test-it	we run @vitest/eslint-plugin, which does not recognise bun:test imports; Bun's bun:test rules do
+test/no-identical-title	error	native-different	bun:test/no-identical-title	we run @vitest/eslint-plugin, which does not recognise bun:test imports; Bun's bun:test rules do
+test/no-import-node-test	error	native-different	vitest/no-import-node-test	we run @vitest/eslint-plugin, which does not recognise bun:test imports; Bun's bun:test rules do
+test/no-only-tests	error	native-different	bun:test/no-focused-tests	
+test/prefer-hooks-in-order	error	native-different	bun:test/prefer-hooks-in-order	we run @vitest/eslint-plugin, which does not recognise bun:test imports; Bun's bun:test rules do
+test/prefer-lowercase-title	error	native-different	bun:test/prefer-lowercase-title	we run @vitest/eslint-plugin, which does not recognise bun:test imports; Bun's bun:test rules do
+ts/ban-ts-comment	error	native-same	@typescript-eslint/ban-ts-comment	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/consistent-type-definitions	error	native-same	@typescript-eslint/consistent-type-definitions	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/consistent-type-imports	error	native-same	@typescript-eslint/consistent-type-imports	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/method-signature-style	error	native-same	@typescript-eslint/method-signature-style	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-array-constructor	error	native-same	@typescript-eslint/no-array-constructor	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-dupe-class-members	error	native-same	@typescript-eslint/no-dupe-class-members	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-duplicate-enum-values	error	native-same	@typescript-eslint/no-duplicate-enum-values	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-empty-object-type	error	native-same	@typescript-eslint/no-empty-object-type	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-extra-non-null-assertion	error	native-same	@typescript-eslint/no-extra-non-null-assertion	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-import-type-side-effects	error	native-same	@typescript-eslint/no-import-type-side-effects	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-misused-new	error	native-same	@typescript-eslint/no-misused-new	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-namespace	error	native-same	@typescript-eslint/no-namespace	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments; Bun's default allowDeclarations = true differs from typescript-eslint: set it to false
+ts/no-non-null-asserted-nullish-coalescing	error	native-same	@typescript-eslint/no-non-null-asserted-nullish-coalescing	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-non-null-asserted-optional-chain	error	native-same	@typescript-eslint/no-non-null-asserted-optional-chain	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-redeclare	error	native-same	@typescript-eslint/no-redeclare	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-require-imports	error	native-same	@typescript-eslint/no-require-imports	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-this-alias	error	native-same	@typescript-eslint/no-this-alias	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-unnecessary-type-constraint	error	native-same	@typescript-eslint/no-unnecessary-type-constraint	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-unsafe-declaration-merging	error	native-same	@typescript-eslint/no-unsafe-declaration-merging	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-unsafe-function-type	error	native-same	@typescript-eslint/no-unsafe-function-type	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-unused-expressions	error	native-same	@typescript-eslint/no-unused-expressions	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-use-before-define	error	native-same	@typescript-eslint/no-use-before-define	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/no-wrapper-object-types	error	native-same	@typescript-eslint/no-wrapper-object-types	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/prefer-as-const	error	native-same	@typescript-eslint/prefer-as-const	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/prefer-literal-enum-member	error	native-same	@typescript-eslint/prefer-literal-enum-member	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+ts/prefer-namespace-keyword	error	native-same	@typescript-eslint/prefer-namespace-keyword	antfu's prefix ts/ is @typescript-eslint/ in bunfig and in eslint-disable comments
+unicode-bom	error	native-same	unicode-bom	
+unicorn/consistent-empty-array-spread	error	native-different	unicorn/consistent-empty-array-spread	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/error-message	error	native-different	unicorn/error-message	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/escape-case	error	native-different	unicorn/escape-case	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/new-for-builtins	error	native-different	unicorn/new-for-builtins	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/no-instanceof-builtins	error	native-different	unicorn/no-instanceof-builtins	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/no-new-array	error	native-different	unicorn/no-new-array	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/no-new-buffer	error	native-different	unicorn/no-new-buffer	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-dom-node-text-content	error	native-different	unicorn/prefer-dom-node-text-content	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-includes	error	native-different	unicorn/prefer-includes	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-node-protocol	error	native-different	unicorn/prefer-node-protocol	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-number-properties	error	native-different	unicorn/prefer-number-properties	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-string-starts-ends-with	error	native-different	unicorn/prefer-string-starts-ends-with	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/prefer-type-error	error	native-different	unicorn/prefer-type-error	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unicorn/throw-new-error	error	native-different	unicorn/throw-new-error	Bun's unicorn rules are ports of oxlint's, used only from bunfig
+unused-imports/no-unused-imports	error	native-different	@typescript-eslint/no-unused-vars	unused imports are reported by no-unused-vars; removed by --fix-suggestions, not --fix
+unused-imports/no-unused-vars	error	native-different	@typescript-eslint/no-unused-vars	same options (^_ patterns are Bun's default too); does not treat a JSDoc {@link X} as a use (1 hit)
+use-isnan	error	native-same	use-isnan	
+valid-typeof	error	native-same	valid-typeof	
+vars-on-top	error	native-same	vars-on-top	
+yoda	error	native-same	yoda	

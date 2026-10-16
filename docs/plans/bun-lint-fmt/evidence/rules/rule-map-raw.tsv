@@ -1,0 +1,385 @@
+rule	severity	candidate	native	header
+accessor-pairs	error	accessor-pairs	yes	accessor-pairs | Require a getter for every setter in objects and classes Off by default. Also called eslint/accessor-pairs. 
+antfu/consistent-chaining	error	antfu/consistent-chaining	no	
+antfu/consistent-list-newline	error	antfu/consistent-list-newline	no	
+antfu/import-dedupe	error	antfu/import-dedupe	no	
+antfu/no-import-dist	error	antfu/no-import-dist	no	
+antfu/no-import-node-modules-by-path	error	antfu/no-import-node-modules-by-path	no	
+antfu/no-top-level-await	error	antfu/no-top-level-await	no	
+array-callback-return	error	array-callback-return	yes	array-callback-return | Require callbacks of array methods such as map and filter to return a value Off by default. Also called eslint/array-callback-return. 
+block-scoped-var	error	block-scoped-var	yes	block-scoped-var | Disallow using a var outside the block it is declared in Off by default. Also called eslint/block-scoped-var. 
+command/command	error	command/command	no	
+constructor-super	error	constructor-super	yes	constructor-super | Require super() to be called exactly once in the constructor of a derived class On by default as an error. Also called eslint/constructor-super. 
+default-case-last	error	default-case-last	yes	default-case-last | Require default to be the last clause of a switch Off by default. Also called eslint/default-case-last. 
+dot-notation	error	dot-notation	yes	dot-notation | Require user.name instead of user["name"] Off by default, fixable. Also called eslint/dot-notation. See also @typescript-eslint/dot-notation.
+e18e/prefer-array-fill	error	e18e/prefer-array-fill	no	
+e18e/prefer-array-some	error	e18e/prefer-array-some	no	
+e18e/prefer-date-now	error	e18e/prefer-date-now	no	
+e18e/prefer-includes	error	e18e/prefer-includes	no	
+e18e/prefer-nullish-coalescing	error	e18e/prefer-nullish-coalescing	no	
+e18e/prefer-object-has-own	error	e18e/prefer-object-has-own	no	
+e18e/prefer-regex-test	error	e18e/prefer-regex-test	no	
+e18e/prefer-timer-args	error	e18e/prefer-timer-args	no	
+e18e/prefer-url-canparse	error	e18e/prefer-url-canparse	no	
+eqeqeq	error	eqeqeq	yes	eqeqeq | Require === and !== instead of == and != Off by default, fixable. Also called eslint/eqeqeq. 
+eslint-comments/no-aggregating-enable	error	eslint-comments/no-aggregating-enable	no	
+eslint-comments/no-duplicate-disable	error	eslint-comments/no-duplicate-disable	no	
+eslint-comments/no-unlimited-disable	error	eslint-comments/no-unlimited-disable	no	
+eslint-comments/no-unused-enable	error	eslint-comments/no-unused-enable	no	
+import/consistent-type-specifier-style	error	import/consistent-type-specifier-style	yes	import/consistent-type-specifier-style | Enforce one way to mark type-only imports: import type { A } or import { type A } Off by default, fixable. Also called import-x/consistent-type-specifier-style.
+import/first	error	import/first	yes	import/first | Require all imports to come before every other statement in the file Off by default, fixable. Also called import-x/first. 
+import/newline-after-import	error	import/newline-after-import	yes	import/newline-after-import | Require an empty line between the last import and the code that follows Off by default, fixable. Also called import-x/newline-after-import. 
+import/no-duplicates	error	import/no-duplicates	yes	import/no-duplicates | Disallow importing the same module more than once in a file Off by default, fixable. Also called import-x/no-duplicates. 
+import/no-mutable-exports	error	import/no-mutable-exports	yes	import/no-mutable-exports | Disallow exporting a variable declared with let or var Off by default. Also called import-x/no-mutable-exports. 
+import/no-named-default	error	import/no-named-default	yes	import/no-named-default | Disallow import { default as name } in favor of import name Off by default. Also called import-x/no-named-default. 
+jsdoc/check-access	warn	jsdoc/check-access	no	
+jsdoc/check-alignment	warn	jsdoc/check-alignment	no	
+jsdoc/check-param-names	warn	jsdoc/check-param-names	no	
+jsdoc/check-property-names	warn	jsdoc/check-property-names	no	
+jsdoc/check-types	warn	jsdoc/check-types	no	
+jsdoc/empty-tags	warn	jsdoc/empty-tags	no	
+jsdoc/implements-on-classes	warn	jsdoc/implements-on-classes	no	
+jsdoc/multiline-blocks	warn	jsdoc/multiline-blocks	no	
+jsdoc/no-defaults	warn	jsdoc/no-defaults	no	
+jsdoc/no-multi-asterisks	warn	jsdoc/no-multi-asterisks	no	
+jsdoc/require-param-name	warn	jsdoc/require-param-name	no	
+jsdoc/require-property	warn	jsdoc/require-property	no	
+jsdoc/require-property-description	warn	jsdoc/require-property-description	no	
+jsdoc/require-property-name	warn	jsdoc/require-property-name	no	
+jsdoc/require-returns-check	warn	jsdoc/require-returns-check	no	
+jsdoc/require-returns-description	warn	jsdoc/require-returns-description	no	
+jsdoc/require-yields-check	warn	jsdoc/require-yields-check	no	
+jsonc/array-bracket-spacing	error	jsonc/array-bracket-spacing	no	
+jsonc/comma-dangle	error	jsonc/comma-dangle	no	
+jsonc/comma-style	error	jsonc/comma-style	no	
+jsonc/indent	error	jsonc/indent	no	
+jsonc/key-spacing	error	jsonc/key-spacing	no	
+jsonc/no-bigint-literals	error	jsonc/no-bigint-literals	no	
+jsonc/no-binary-expression	error	jsonc/no-binary-expression	no	
+jsonc/no-binary-numeric-literals	error	jsonc/no-binary-numeric-literals	no	
+jsonc/no-dupe-keys	error	jsonc/no-dupe-keys	no	
+jsonc/no-escape-sequence-in-identifier	error	jsonc/no-escape-sequence-in-identifier	no	
+jsonc/no-floating-decimal	error	jsonc/no-floating-decimal	no	
+jsonc/no-hexadecimal-numeric-literals	error	jsonc/no-hexadecimal-numeric-literals	no	
+jsonc/no-infinity	error	jsonc/no-infinity	no	
+jsonc/no-multi-str	error	jsonc/no-multi-str	no	
+jsonc/no-nan	error	jsonc/no-nan	no	
+jsonc/no-number-props	error	jsonc/no-number-props	no	
+jsonc/no-numeric-separators	error	jsonc/no-numeric-separators	no	
+jsonc/no-octal	error	jsonc/no-octal	no	
+jsonc/no-octal-escape	error	jsonc/no-octal-escape	no	
+jsonc/no-octal-numeric-literals	error	jsonc/no-octal-numeric-literals	no	
+jsonc/no-parenthesized	error	jsonc/no-parenthesized	no	
+jsonc/no-plus-sign	error	jsonc/no-plus-sign	no	
+jsonc/no-regexp-literals	error	jsonc/no-regexp-literals	no	
+jsonc/no-sparse-arrays	error	jsonc/no-sparse-arrays	no	
+jsonc/no-template-literals	error	jsonc/no-template-literals	no	
+jsonc/no-undefined-value	error	jsonc/no-undefined-value	no	
+jsonc/no-unicode-codepoint-escapes	error	jsonc/no-unicode-codepoint-escapes	no	
+jsonc/no-useless-escape	error	jsonc/no-useless-escape	no	
+jsonc/object-curly-newline	error	jsonc/object-curly-newline	no	
+jsonc/object-curly-spacing	error	jsonc/object-curly-spacing	no	
+jsonc/object-property-newline	error	jsonc/object-property-newline	no	
+jsonc/quote-props	error	jsonc/quote-props	no	
+jsonc/quotes	error	jsonc/quotes	no	
+jsonc/sort-array-values	error	jsonc/sort-array-values	no	
+jsonc/sort-keys	error	jsonc/sort-keys	no	
+jsonc/space-unary-ops	error	jsonc/space-unary-ops	no	
+jsonc/valid-json-number	error	jsonc/valid-json-number	no	
+jsonc/vue-custom-block/no-parsing-error	error	jsonc/vue-custom-block/no-parsing-error	no	
+markdown/heading-increment	error	markdown/heading-increment	no	
+markdown/no-duplicate-definitions	error	markdown/no-duplicate-definitions	no	
+markdown/no-empty-definitions	error	markdown/no-empty-definitions	no	
+markdown/no-empty-images	error	markdown/no-empty-images	no	
+markdown/no-empty-links	error	markdown/no-empty-links	no	
+markdown/no-invalid-label-refs	error	markdown/no-invalid-label-refs	no	
+markdown/no-missing-atx-heading-space	error	markdown/no-missing-atx-heading-space	no	
+markdown/no-missing-link-fragments	error	markdown/no-missing-link-fragments	no	
+markdown/no-multiple-h1	error	markdown/no-multiple-h1	no	
+markdown/no-reference-like-urls	error	markdown/no-reference-like-urls	no	
+markdown/no-reversed-media-syntax	error	markdown/no-reversed-media-syntax	no	
+markdown/no-space-in-emphasis	error	markdown/no-space-in-emphasis	no	
+markdown/no-unused-definitions	error	markdown/no-unused-definitions	no	
+markdown/require-alt-text	error	markdown/require-alt-text	no	
+markdown/table-column-count	error	markdown/table-column-count	no	
+new-cap	error	new-cap	yes	new-cap | Require constructor names to begin with a capital letter Off by default. Also called eslint/new-cap. 
+no-alert	error	no-alert	yes	no-alert | Disallow alert, confirm, and prompt Off by default. Also called eslint/no-alert. 
+no-array-constructor	error	no-array-constructor	yes	no-array-constructor | Disallow Array constructors in favor of array literals Off by default, fixable. Also called eslint/no-array-constructor. See also @typescript-eslint/no-array-constructor.
+no-caller	error	no-caller	yes	no-caller | Disallow arguments.caller and arguments.callee Off by default. Also called eslint/no-caller. 
+no-case-declarations	error	no-case-declarations	yes	no-case-declarations | Disallow let, const, function and class declarations directly in a case clause On by default as a warning. Also called eslint/no-case-declarations. 
+no-class-assign	error	no-class-assign	yes	no-class-assign | Disallow assigning to the name of a class On by default as an error. Also called eslint/no-class-assign. 
+no-compare-neg-zero	error	no-compare-neg-zero	yes	no-compare-neg-zero | Disallow comparing against -0 On by default as an error. Also called eslint/no-compare-neg-zero. 
+no-cond-assign	error	no-cond-assign	yes	no-cond-assign | Disallow assignments in the test of if, loops and ? : On by default as a warning. Also called eslint/no-cond-assign. 
+no-console	warn	no-console	yes	no-console | Disallow the use of console Off by default. Also called eslint/no-console. 
+no-const-assign	error	no-const-assign	yes	no-const-assign | Disallow reassigning const, using and await using variables On by default as an error. Also called eslint/no-const-assign. 
+no-control-regex	error	no-control-regex	yes	no-control-regex | Disallow control characters in regular expressions On by default as a warning. Also called eslint/no-control-regex. 
+no-debugger	error	no-debugger	yes	no-debugger | Disallow debugger statements On by default as an error. Also called eslint/no-debugger. 
+no-delete-var	error	no-delete-var	yes	no-delete-var | Disallow delete on variables On by default as a warning. Also called eslint/no-delete-var. 
+no-dupe-args	error	no-dupe-args	yes	no-dupe-args | Disallow two parameters with the same name in a function On by default as an error. Also called eslint/no-dupe-args. 
+no-dupe-class-members	error	no-dupe-class-members	yes	no-dupe-class-members | Disallow two class members with the same name On by default as an error. Also called eslint/no-dupe-class-members. See also @typescript-eslint/no-dupe-class-members.
+no-dupe-keys	error	no-dupe-keys	yes	no-dupe-keys | Disallow two keys with the same name in an object literal On by default as an error. Also called eslint/no-dupe-keys. 
+no-duplicate-case	error	no-duplicate-case	yes	no-duplicate-case | Disallow two case labels with the same test in a switch On by default as an error. Also called eslint/no-duplicate-case. 
+no-empty	error	no-empty	yes	no-empty | Disallow empty block statements On by default as a warning. Also called eslint/no-empty. 
+no-empty-pattern	error	no-empty-pattern	yes	no-empty-pattern | Disallow destructuring patterns that bind nothing On by default as a warning. Also called eslint/no-empty-pattern. 
+no-eval	error	no-eval	yes	no-eval | Disallow eval() Off by default. Also called eslint/no-eval. 
+no-ex-assign	error	no-ex-assign	yes	no-ex-assign | Disallow assigning to the error parameter of a catch clause On by default as a warning. Also called eslint/no-ex-assign. 
+no-extend-native	error	no-extend-native	yes	no-extend-native | Disallow adding properties to the prototypes of built-in objects Off by default. Also called eslint/no-extend-native. 
+no-extra-bind	error	no-extra-bind	yes	no-extra-bind | Disallow .bind() on functions that do not use this Off by default, fixable. Also called eslint/no-extra-bind. 
+no-extra-boolean-cast	error	no-extra-boolean-cast	yes	no-extra-boolean-cast | Disallow !! and Boolean() where the value is converted to a boolean anyway On by default as a warning, fixable. Also called eslint/no-extra-boolean-cast. 
+no-fallthrough	error	no-fallthrough	yes	no-fallthrough | Disallow case clauses that run on into the next one On by default as an error. Also called eslint/no-fallthrough. 
+no-func-assign	error	no-func-assign	yes	no-func-assign | Disallow assigning to the name of a function declaration On by default as an error. Also called eslint/no-func-assign. 
+no-global-assign	error	no-global-assign	yes	no-global-assign | Disallow assigning to built-in and other read-only global variables On by default as a warning. Also called eslint/no-global-assign. 
+no-implied-eval	error	no-implied-eval	yes	no-implied-eval | Disallow passing a string of code to setTimeout(), setInterval() or execScript() Off by default. Also called eslint/no-implied-eval. See also @typescript-eslint/no-implied-eval.
+no-import-assign	error	no-import-assign	yes	no-import-assign | Disallow assigning to imported bindings On by default as an error. Also called eslint/no-import-assign. 
+no-irregular-whitespace	error	no-irregular-whitespace	yes	no-irregular-whitespace | Disallow whitespace characters other than the ordinary space, tab and line break On by default as an error. Also called eslint/no-irregular-whitespace. 
+no-iterator	error	no-iterator	yes	no-iterator | Disallow the __iterator__ property Off by default. Also called eslint/no-iterator. 
+no-lone-blocks	error	no-lone-blocks	yes	no-lone-blocks | Disallow blocks that do nothing Off by default. Also called eslint/no-lone-blocks. 
+no-loss-of-precision	error	no-loss-of-precision	yes	no-loss-of-precision | Disallow number literals that cannot be stored exactly as written On by default as an error. Also called eslint/no-loss-of-precision. See also @typescript-eslint/no-loss-of-precision.
+no-misleading-character-class	error	no-misleading-character-class	yes	no-misleading-character-class | Disallow characters made of several code points inside a regular expression character class On by default as an error. Also called eslint/no-misleading-character-class.
+no-multi-str	error	no-multi-str	yes	no-multi-str | Disallow strings that continue on the next line with a backslash Off by default. Also called eslint/no-multi-str. 
+no-new	error	no-new	yes	no-new | Disallow new when the created object is thrown away Off by default. Also called eslint/no-new. 
+no-new-func	error	no-new-func	yes	no-new-func | Disallow creating functions from strings with Function Off by default. Also called eslint/no-new-func. 
+no-new-native-nonconstructor	error	no-new-native-nonconstructor	yes	no-new-native-nonconstructor | Disallow new Symbol() and new BigInt() On by default as an error. Also called eslint/no-new-native-nonconstructor. 
+no-new-wrappers	error	no-new-wrappers	yes	no-new-wrappers | Disallow new String(), new Number() and new Boolean() Off by default. Also called eslint/no-new-wrappers. 
+no-obj-calls	error	no-obj-calls	yes	no-obj-calls | Disallow calling Math, JSON, Reflect, Atomics, Intl and Temporal as functions On by default as an error. Also called eslint/no-obj-calls. 
+no-octal	error	no-octal	yes	no-octal | Disallow number literals that start with 0 followed by a digit On by default as a warning. Also called eslint/no-octal. 
+no-octal-escape	error	no-octal-escape	yes	no-octal-escape | Disallow octal escape sequences such as \251 in strings Off by default. Also called eslint/no-octal-escape. 
+no-proto	error	no-proto	yes	no-proto | Disallow the __proto__ property Off by default. Also called eslint/no-proto. 
+no-prototype-builtins	error	no-prototype-builtins	yes	no-prototype-builtins | Disallow calling hasOwnProperty and other Object.prototype methods on the object itself On by default as a warning. Also called eslint/no-prototype-builtins.
+no-redeclare	error	no-redeclare	yes	no-redeclare | Disallow declaring the same variable twice in one scope On by default as a warning. Also called eslint/no-redeclare. See also @typescript-eslint/no-redeclare.
+no-regex-spaces	error	no-regex-spaces	yes	no-regex-spaces | Disallow several spaces in a row in a regular expression On by default as a warning, fixable. Also called eslint/no-regex-spaces. 
+no-restricted-globals	error	no-restricted-globals	yes	no-restricted-globals | Disallow the global variables you list Off by default. Also called eslint/no-restricted-globals. 
+no-restricted-properties	error	no-restricted-properties	yes	no-restricted-properties | Disallow the object properties you list Off by default. Also called eslint/no-restricted-properties. 
+no-self-assign	error	no-self-assign	yes	no-self-assign | Disallow assigning a variable or a property to itself On by default as a warning. Also called eslint/no-self-assign. 
+no-self-compare	error	no-self-compare	yes	no-self-compare | Disallow comparing a value with itself Off by default. Also called eslint/no-self-compare. 
+no-sequences	error	no-sequences	yes	no-sequences | Disallow the comma operator Off by default. Also called eslint/no-sequences. 
+no-shadow-restricted-names	error	no-shadow-restricted-names	yes	no-shadow-restricted-names | Disallow variables named undefined, NaN, Infinity, eval, arguments or globalThis On by default as a warning. Also called eslint/no-shadow-restricted-names. 
+no-sparse-arrays	error	no-sparse-arrays	yes	no-sparse-arrays | Disallow array literals with holes On by default as an error. Also called eslint/no-sparse-arrays. 
+no-template-curly-in-string	error	no-template-curly-in-string	yes	no-template-curly-in-string | Disallow ${} placeholders in strings with ordinary quotes Off by default. Also called eslint/no-template-curly-in-string. 
+no-this-before-super	error	no-this-before-super	yes	no-this-before-super | Disallow this and super.x before super() in a constructor On by default as an error. Also called eslint/no-this-before-super. 
+no-throw-literal	error	no-throw-literal	yes	no-throw-literal | Require throw to be given something that can be an Error Off by default. Also called eslint/no-throw-literal. 
+no-undef	error	no-undef	yes	no-undef | Disallow variables that are not declared anywhere On by default as an error. Also called eslint/no-undef. 
+no-undef-init	error	no-undef-init	yes	no-undef-init | Disallow initializing a variable to undefined Off by default, fixable. Also called eslint/no-undef-init. 
+no-unmodified-loop-condition	error	no-unmodified-loop-condition	yes	no-unmodified-loop-condition | Disallow loop conditions that test variables the loop never changes Off by default. Also called eslint/no-unmodified-loop-condition. 
+no-unneeded-ternary	error	no-unneeded-ternary	yes	no-unneeded-ternary | Disallow ? : where the condition alone says the same Off by default, fixable. Also called eslint/no-unneeded-ternary. 
+no-unreachable	error	no-unreachable	yes	no-unreachable | Disallow code after return, throw, break, and continue that can never run On by default as a warning. Also called eslint/no-unreachable. 
+no-unreachable-loop	error	no-unreachable-loop	yes	no-unreachable-loop | Disallow loops with a body that can only run once Off by default. Also called eslint/no-unreachable-loop. 
+no-unsafe-finally	error	no-unsafe-finally	yes	no-unsafe-finally | Disallow return, throw, break, and continue in finally blocks On by default as an error. Also called eslint/no-unsafe-finally. 
+no-unsafe-negation	error	no-unsafe-negation	yes	no-unsafe-negation | Disallow negating the left operand of in and instanceof On by default as an error. Also called eslint/no-unsafe-negation. 
+no-unused-expressions	error	no-unused-expressions	yes	no-unused-expressions | Disallow statements that compute a value and throw it away Off by default. Also called eslint/no-unused-expressions. See also @typescript-eslint/no-unused-expressions.
+no-unused-vars	error	no-unused-vars	yes	no-unused-vars | Disallow variables, functions, imports, and parameters that are never used On by default as a warning. Also called eslint/no-unused-vars. See also @typescript-eslint/no-unused-vars.
+no-use-before-define	error	no-use-before-define	yes	no-use-before-define | Disallow using a variable, function, or class above the line that declares it Off by default. Also called eslint/no-use-before-define. See also @typescript-eslint/no-use-before-define.
+no-useless-call	error	no-useless-call	yes	no-useless-call | Disallow .call() and .apply() where a normal call does the same Off by default. Also called eslint/no-useless-call. 
+no-useless-catch	error	no-useless-catch	yes	no-useless-catch | Disallow catch clauses that only rethrow the error On by default as a warning. Also called eslint/no-useless-catch. 
+no-useless-computed-key	error	no-useless-computed-key	yes	no-useless-computed-key | Disallow brackets around a property key that is a plain string or number Off by default, fixable. Also called eslint/no-useless-computed-key. 
+no-useless-constructor	error	no-useless-constructor	yes	no-useless-constructor | Disallow constructors that do what the default constructor does Off by default. Also called eslint/no-useless-constructor. See also @typescript-eslint/no-useless-constructor.
+no-useless-rename	error	no-useless-rename	yes	no-useless-rename | Disallow renaming an import, export, or destructured value to the same name Off by default, fixable. Also called eslint/no-useless-rename. 
+no-useless-return	error	no-useless-return	yes	no-useless-return | Disallow a return without a value where the function ends anyway Off by default, fixable. Also called eslint/no-useless-return. 
+no-var	error	no-var	yes	no-var | Require let or const instead of var On by default as a warning, fixable. Also called eslint/no-var. 
+no-with	error	no-with	yes	no-with | Disallow with statements On by default as a warning. Also called eslint/no-with. 
+node/handle-callback-err	error	n/handle-callback-err	yes	n/handle-callback-err | Require callbacks to use their error parameter Off by default. Also called node/handle-callback-err. See also handle-callback-err.
+node/no-deprecated-api	error	n/no-deprecated-api	no	
+node/no-exports-assign	error	n/no-exports-assign	yes	n/no-exports-assign | Disallow assigning to exports Off by default, fixable. Also called node/no-exports-assign. 
+node/no-new-require	error	n/no-new-require	yes	n/no-new-require | Disallow new require() Off by default. Also called node/no-new-require. See also no-new-require. 
+node/no-path-concat	error	n/no-path-concat	yes	n/no-path-concat | Disallow joining __dirname and __filename to a path with + or a template Off by default. Also called node/no-path-concat. See also no-path-concat. 
+node/prefer-global/buffer	error	n/prefer-global/buffer	no	
+node/prefer-global/process	error	n/prefer-global/process	no	
+node/process-exit-as-throw	error	n/process-exit-as-throw	no	
+object-shorthand	error	object-shorthand	yes	object-shorthand | Require or disallow the short forms { name } and { save() {} } in object literals Off by default, fixable. Also called eslint/object-shorthand.
+one-var	error	one-var	yes	one-var | Require variables to be declared in one statement, or in one statement each Off by default, fixable. Also called eslint/one-var. 
+perfectionist/sort-exports	error	perfectionist/sort-exports	no	
+perfectionist/sort-imports	error	perfectionist/sort-imports	no	
+perfectionist/sort-named-exports	error	perfectionist/sort-named-exports	no	
+perfectionist/sort-named-imports	error	perfectionist/sort-named-imports	no	
+prefer-const	error	prefer-const	yes	prefer-const | Require const for variables that are never reassigned On by default as a warning, fixable. Also called eslint/prefer-const. 
+prefer-exponentiation-operator	error	prefer-exponentiation-operator	yes	prefer-exponentiation-operator | Require the ** operator instead of Math.pow() Off by default, fixable. Also called eslint/prefer-exponentiation-operator. 
+prefer-promise-reject-errors	error	prefer-promise-reject-errors	yes	prefer-promise-reject-errors | Require an Error object as the reason of a promise rejection Off by default. Also called eslint/prefer-promise-reject-errors. See also @typescript-eslint/prefer-promise-reject-errors.
+prefer-regex-literals	error	prefer-regex-literals	yes	prefer-regex-literals | Require regular expression literals instead of RegExp() with a fixed pattern Off by default. Also called eslint/prefer-regex-literals. 
+prefer-rest-params	error	prefer-rest-params	yes	prefer-rest-params | Require rest parameters instead of arguments On by default as a warning. Also called eslint/prefer-rest-params. 
+prefer-spread	error	prefer-spread	yes	prefer-spread | Require spread syntax instead of .apply() to pass an array as arguments On by default as a warning. Also called eslint/prefer-spread. See also unicorn/prefer-spread.
+prefer-template	error	prefer-template	yes	prefer-template | Require template literals instead of string concatenation Off by default, fixable. Also called eslint/prefer-template. 
+prettier/prettier	error	prettier/prettier	yes	prettier/prettier | Require code to be formatted the way Prettier prints it Off by default, fixable. 
+react-refresh/only-export-components	error	react/only-export-components	yes	react/only-export-components | Require files with components to export only components, so Fast Refresh works Off by default. 
+react/dom-no-dangerously-set-innerhtml	warn	react/dom-no-dangerously-set-innerhtml	no	
+react/dom-no-dangerously-set-innerhtml-with-children	error	react/dom-no-dangerously-set-innerhtml-with-children	no	
+react/dom-no-find-dom-node	error	react/dom-no-find-dom-node	no	
+react/dom-no-flush-sync	error	react/dom-no-flush-sync	no	
+react/dom-no-hydrate	error	react/dom-no-hydrate	no	
+react/dom-no-render	error	react/dom-no-render	no	
+react/dom-no-render-return-value	error	react/dom-no-render-return-value	no	
+react/dom-no-script-url	warn	react/dom-no-script-url	no	
+react/dom-no-unsafe-iframe-sandbox	warn	react/dom-no-unsafe-iframe-sandbox	no	
+react/dom-no-use-form-state	error	react/dom-no-use-form-state	no	
+react/dom-no-void-elements-with-children	error	react/dom-no-void-elements-with-children	no	
+react/error-boundaries	error	react/error-boundaries	yes	react-hooks/error-boundaries | Disallow JSX inside a try block, where catch cannot see rendering errors Off by default, fixable. Also called react_hooks/error-boundaries, react/error-boundaries.
+react/exhaustive-deps	warn	react/exhaustive-deps	yes	react-hooks/exhaustive-deps | Require the dependency array of a hook to list every value its callback reads On by default as a warning, fixable. Also called react_hooks/exhaustive-deps, react/exhaustive-deps.
+react/jsx-no-children-prop	warn	react/jsx-no-children-prop	no	
+react/jsx-no-children-prop-with-children	error	react/jsx-no-children-prop-with-children	no	
+react/jsx-no-comment-textnodes	warn	react/jsx-no-comment-textnodes	yes	react/jsx-no-comment-textnodes | Disallow // and /* */ comments written as text between JSX tags Off by default. 
+react/jsx-no-key-after-spread	error	react/jsx-no-key-after-spread	no	
+react/jsx-no-leaked-dollar	warn	react/jsx-no-leaked-dollar	no	
+react/jsx-no-leaked-semicolon	warn	react/jsx-no-leaked-semicolon	no	
+react/jsx-no-namespace	error	react/jsx-no-namespace	no	
+react/naming-convention-context-name	warn	react/naming-convention-context-name	no	
+react/naming-convention-id-name	warn	react/naming-convention-id-name	no	
+react/naming-convention-ref-name	warn	react/naming-convention-ref-name	no	
+react/no-access-state-in-setstate	error	react/no-access-state-in-setstate	yes	react/no-access-state-in-setstate | Disallow reading this.state in the argument of this.setState() Off by default. 
+react/no-array-index-key	warn	react/no-array-index-key	yes	react/no-array-index-key | Disallow the index of an array item as its key Off by default. 
+react/no-children-count	warn	react/no-children-count	no	
+react/no-children-for-each	warn	react/no-children-for-each	no	
+react/no-children-map	warn	react/no-children-map	no	
+react/no-children-only	warn	react/no-children-only	no	
+react/no-children-to-array	warn	react/no-children-to-array	no	
+react/no-clone-element	warn	react/no-clone-element	yes	react/no-clone-element | Disallow React.cloneElement Off by default. 
+react/no-component-will-mount	error	react/no-component-will-mount	no	
+react/no-component-will-receive-props	error	react/no-component-will-receive-props	no	
+react/no-component-will-update	error	react/no-component-will-update	no	
+react/no-context-provider	warn	react/no-context-provider	no	
+react/no-create-ref	error	react/no-create-ref	no	
+react/no-direct-mutation-state	error	react/no-direct-mutation-state	yes	react/no-direct-mutation-state | Disallow assigning to this.state outside of the constructor Off by default. 
+react/no-forward-ref	warn	react/no-forward-ref	no	
+react/no-missing-key	error	react/no-missing-key	no	
+react/no-nested-component-definitions	error	react/no-nested-component-definitions	no	
+react/no-nested-lazy-component-declarations	error	react/no-nested-lazy-component-declarations	no	
+react/no-set-state-in-component-did-mount	warn	react/no-set-state-in-component-did-mount	no	
+react/no-set-state-in-component-did-update	warn	react/no-set-state-in-component-did-update	no	
+react/no-set-state-in-component-will-update	warn	react/no-set-state-in-component-will-update	no	
+react/no-unnecessary-use-prefix	warn	react/no-unnecessary-use-prefix	no	
+react/no-unsafe-component-will-mount	warn	react/no-unsafe-component-will-mount	no	
+react/no-unsafe-component-will-receive-props	warn	react/no-unsafe-component-will-receive-props	no	
+react/no-unsafe-component-will-update	warn	react/no-unsafe-component-will-update	no	
+react/no-unused-class-component-members	warn	react/no-unused-class-component-members	no	
+react/no-use-context	warn	react/no-use-context	no	
+react/purity	warn	react/purity	yes	react-hooks/purity | Disallow calls such as Math.random() and Date.now() while a component renders Off by default, fixable. Also called react_hooks/purity, react/purity. 
+react/rsc-function-definition	error	react/rsc-function-definition	no	
+react/rules-of-hooks	error	react/rules-of-hooks	yes	react-hooks/rules-of-hooks | Require hooks to be called at the top level of a component or a custom hook On by default as an error. Also called react_hooks/rules-of-hooks, react/rules-of-hooks.
+react/set-state-in-effect	warn	react/set-state-in-effect	yes	react-hooks/set-state-in-effect | Disallow calling a state setter directly in the body of an effect Off by default, fixable. Also called react_hooks/set-state-in-effect, react/set-state-in-effect.
+react/set-state-in-render	error	react/set-state-in-render	yes	react-hooks/set-state-in-render | Disallow calling a state setter unconditionally while a component renders Off by default, fixable. Also called react_hooks/set-state-in-render, react/set-state-in-render.
+react/static-components	error	react/static-components	yes	react-hooks/static-components | Disallow components that are created while another component renders Off by default, fixable. Also called react_hooks/static-components, react/static-components.
+react/unsupported-syntax	error	react/unsupported-syntax	yes	react-hooks/unsupported-syntax | Disallow syntax that the React Compiler cannot compile, such as eval() Off by default, fixable. Also called react_hooks/unsupported-syntax, react/unsupported-syntax.
+react/use-memo	error	react/use-memo	yes	react-hooks/use-memo | Require useMemo() callbacks to take no parameters, be synchronous, and not reassign outer variables Off by default, fixable. Also called react_hooks/use-memo, react/use-memo.
+react/use-state	warn	react/use-state	no	
+react/web-api-no-leaked-event-listener	warn	react/web-api-no-leaked-event-listener	no	
+react/web-api-no-leaked-fetch	warn	react/web-api-no-leaked-fetch	no	
+react/web-api-no-leaked-intersection-observer	warn	react/web-api-no-leaked-intersection-observer	no	
+react/web-api-no-leaked-interval	warn	react/web-api-no-leaked-interval	no	
+react/web-api-no-leaked-resize-observer	warn	react/web-api-no-leaked-resize-observer	no	
+react/web-api-no-leaked-timeout	warn	react/web-api-no-leaked-timeout	no	
+regexp/confusing-quantifier	warn	regexp/confusing-quantifier	no	
+regexp/control-character-escape	error	regexp/control-character-escape	no	
+regexp/match-any	error	regexp/match-any	no	
+regexp/negation	error	regexp/negation	no	
+regexp/no-contradiction-with-assertion	error	regexp/no-contradiction-with-assertion	no	
+regexp/no-dupe-characters-character-class	error	regexp/no-dupe-characters-character-class	no	
+regexp/no-dupe-disjunctions	error	regexp/no-dupe-disjunctions	no	
+regexp/no-empty-alternative	warn	regexp/no-empty-alternative	no	
+regexp/no-empty-capturing-group	error	regexp/no-empty-capturing-group	no	
+regexp/no-empty-character-class	error	regexp/no-empty-character-class	no	
+regexp/no-empty-group	error	regexp/no-empty-group	no	
+regexp/no-empty-lookarounds-assertion	error	regexp/no-empty-lookarounds-assertion	no	
+regexp/no-empty-string-literal	error	regexp/no-empty-string-literal	no	
+regexp/no-escape-backspace	error	regexp/no-escape-backspace	no	
+regexp/no-extra-lookaround-assertions	error	regexp/no-extra-lookaround-assertions	no	
+regexp/no-invalid-regexp	error	regexp/no-invalid-regexp	no	
+regexp/no-invisible-character	error	regexp/no-invisible-character	no	
+regexp/no-lazy-ends	warn	regexp/no-lazy-ends	no	
+regexp/no-legacy-features	error	regexp/no-legacy-features	no	
+regexp/no-misleading-capturing-group	error	regexp/no-misleading-capturing-group	no	
+regexp/no-misleading-unicode-character	error	regexp/no-misleading-unicode-character	no	
+regexp/no-missing-g-flag	error	regexp/no-missing-g-flag	no	
+regexp/no-non-standard-flag	error	regexp/no-non-standard-flag	no	
+regexp/no-obscure-range	error	regexp/no-obscure-range	no	
+regexp/no-optional-assertion	error	regexp/no-optional-assertion	no	
+regexp/no-potentially-useless-backreference	warn	regexp/no-potentially-useless-backreference	no	
+regexp/no-super-linear-backtracking	error	regexp/no-super-linear-backtracking	no	
+regexp/no-trivially-nested-assertion	error	regexp/no-trivially-nested-assertion	no	
+regexp/no-trivially-nested-quantifier	error	regexp/no-trivially-nested-quantifier	no	
+regexp/no-unused-capturing-group	error	regexp/no-unused-capturing-group	no	
+regexp/no-useless-assertions	error	regexp/no-useless-assertions	no	
+regexp/no-useless-backreference	error	regexp/no-useless-backreference	no	
+regexp/no-useless-character-class	error	regexp/no-useless-character-class	no	
+regexp/no-useless-dollar-replacements	error	regexp/no-useless-dollar-replacements	no	
+regexp/no-useless-escape	error	regexp/no-useless-escape	no	
+regexp/no-useless-flag	warn	regexp/no-useless-flag	no	
+regexp/no-useless-lazy	error	regexp/no-useless-lazy	no	
+regexp/no-useless-non-capturing-group	error	regexp/no-useless-non-capturing-group	no	
+regexp/no-useless-quantifier	error	regexp/no-useless-quantifier	no	
+regexp/no-useless-range	error	regexp/no-useless-range	no	
+regexp/no-useless-set-operand	error	regexp/no-useless-set-operand	no	
+regexp/no-useless-string-literal	error	regexp/no-useless-string-literal	no	
+regexp/no-useless-two-nums-quantifier	error	regexp/no-useless-two-nums-quantifier	no	
+regexp/no-zero-quantifier	error	regexp/no-zero-quantifier	no	
+regexp/optimal-lookaround-quantifier	warn	regexp/optimal-lookaround-quantifier	no	
+regexp/optimal-quantifier-concatenation	error	regexp/optimal-quantifier-concatenation	no	
+regexp/prefer-character-class	error	regexp/prefer-character-class	no	
+regexp/prefer-d	error	regexp/prefer-d	no	
+regexp/prefer-plus-quantifier	error	regexp/prefer-plus-quantifier	no	
+regexp/prefer-predefined-assertion	error	regexp/prefer-predefined-assertion	no	
+regexp/prefer-question-quantifier	error	regexp/prefer-question-quantifier	no	
+regexp/prefer-range	error	regexp/prefer-range	no	
+regexp/prefer-set-operation	error	regexp/prefer-set-operation	no	
+regexp/prefer-star-quantifier	error	regexp/prefer-star-quantifier	no	
+regexp/prefer-unicode-codepoint-escapes	error	regexp/prefer-unicode-codepoint-escapes	no	
+regexp/prefer-w	error	regexp/prefer-w	no	
+regexp/simplify-set-operations	error	regexp/simplify-set-operations	no	
+regexp/sort-flags	error	regexp/sort-flags	no	
+regexp/strict	error	regexp/strict	no	
+regexp/use-ignore-case	error	regexp/use-ignore-case	no	
+style/jsx-curly-brace-presence	error	jsx-curly-brace-presence	yes	react/jsx-curly-brace-presence | Disallow curly braces around plain strings in JSX, or require them Off by default, fixable. 
+style/jsx-function-call-newline	error	@stylistic/jsx-function-call-newline	no	
+style/lines-between-class-members	error	@stylistic/lines-between-class-members	no	
+style/spaced-comment	error	@stylistic/spaced-comment	no	
+symbol-description	error	symbol-description	yes	symbol-description | Require a description when creating a Symbol Off by default. Also called eslint/symbol-description. 
+test/consistent-test-it	error	vitest/consistent-test-it	yes	vitest/consistent-test-it | Enforce one of test or it for defining tests Off by default, fixable. See also bun:test/consistent-test-it, jest/consistent-test-it.
+test/no-identical-title	error	vitest/no-identical-title	yes	vitest/no-identical-title | Disallow two tests or two describe blocks with the same title in one block Off by default. See also bun:test/no-identical-title, jest/no-identical-title. 
+test/no-import-node-test	error	vitest/no-import-node-test	yes	vitest/no-import-node-test | Disallow importing from node:test in a project that uses Vitest Off by default. 
+test/no-only-tests	error	vitest/no-only-tests	no	
+test/prefer-hooks-in-order	error	vitest/prefer-hooks-in-order	yes	vitest/prefer-hooks-in-order | Require hooks to be written in the order they run Off by default. See also bun:test/prefer-hooks-in-order, jest/prefer-hooks-in-order.
+test/prefer-lowercase-title	error	vitest/prefer-lowercase-title	yes	vitest/prefer-lowercase-title | Require the titles of tests and describe blocks to start with a lowercase letter Off by default, fixable. See also bun:test/prefer-lowercase-title, jest/prefer-lowercase-title.
+ts/ban-ts-comment	error	@typescript-eslint/ban-ts-comment	yes	@typescript-eslint/ban-ts-comment | Disallow @ts-ignore and @ts-nocheck, and require a reason after @ts-expect-error On by default as a warning. Also called typescript-eslint/ban-ts-comment, typescript/ban-ts-comment.
+ts/consistent-type-definitions	error	@typescript-eslint/consistent-type-definitions	yes	@typescript-eslint/consistent-type-definitions | Require either interface or type for object types, consistently Off by default, fixable. Also called typescript-eslint/consistent-type-definitions,
+ts/consistent-type-imports	error	@typescript-eslint/consistent-type-imports	yes	@typescript-eslint/consistent-type-imports | Require import type for imports that are only used as types Off by default, fixable. Also called typescript-eslint/consistent-type-imports, typescript/consistent-type-imports.
+ts/method-signature-style	error	@typescript-eslint/method-signature-style	yes	@typescript-eslint/method-signature-style | Enforce one way to write a method in an interface or type literal Off by default, fixable. Also called typescript-eslint/method-signature-style, typescript/method-signature-style.
+ts/no-array-constructor	error	@typescript-eslint/no-array-constructor	yes	@typescript-eslint/no-array-constructor | Disallow Array() and new Array() in favor of array literals On by default as a warning, fixable. Also called typescript-eslint/no-array-constructor, typescript/no-array-constructor. See
+ts/no-dupe-class-members	error	@typescript-eslint/no-dupe-class-members	yes	@typescript-eslint/no-dupe-class-members | Disallow two class members with the same name Off by default. Also called typescript-eslint/no-dupe-class-members, typescript/no-dupe-class-members. See also no-dupe-class-members.
+ts/no-duplicate-enum-values	error	@typescript-eslint/no-duplicate-enum-values	yes	@typescript-eslint/no-duplicate-enum-values | Disallow two enum members with the same value On by default as a warning. Also called typescript-eslint/no-duplicate-enum-values, typescript/no-duplicate-enum-values.
+ts/no-empty-object-type	error	@typescript-eslint/no-empty-object-type	yes	@typescript-eslint/no-empty-object-type | Disallow the {} type and empty interfaces On by default as a warning. Also called typescript-eslint/no-empty-object-type, typescript/no-empty-object-type.
+ts/no-extra-non-null-assertion	error	@typescript-eslint/no-extra-non-null-assertion	yes	@typescript-eslint/no-extra-non-null-assertion | Disallow a non-null assertion that has no effect On by default as a warning, fixable. Also called typescript-eslint/no-extra-non-null-assertion,
+ts/no-import-type-side-effects	error	@typescript-eslint/no-import-type-side-effects	yes	@typescript-eslint/no-import-type-side-effects | Require import type when every name in an import is marked type Off by default, fixable. Also called typescript-eslint/no-import-type-side-effects,
+ts/no-misused-new	error	@typescript-eslint/no-misused-new	yes	@typescript-eslint/no-misused-new | Disallow new in a class and constructor in an interface On by default as an error. Also called typescript-eslint/no-misused-new, typescript/no-misused-new.
+ts/no-namespace	error	@typescript-eslint/no-namespace	yes	@typescript-eslint/no-namespace | Disallow TypeScript namespace and module blocks On by default as a warning. Also called typescript-eslint/no-namespace, typescript/no-namespace. See also import/no-namespace, react/no-namespace.
+ts/no-non-null-asserted-nullish-coalescing	error	@typescript-eslint/no-non-null-asserted-nullish-coalescing	yes	@typescript-eslint/no-non-null-asserted-nullish-coalescing | Disallow ! on the left side of ?? Off by default. Also called typescript-eslint/no-non-null-asserted-nullish-coalescing,
+ts/no-non-null-asserted-optional-chain	error	@typescript-eslint/no-non-null-asserted-optional-chain	yes	@typescript-eslint/no-non-null-asserted-optional-chain | Disallow ! after an optional chain On by default as a warning. Also called typescript-eslint/no-non-null-asserted-optional-chain,
+ts/no-redeclare	error	@typescript-eslint/no-redeclare	yes	@typescript-eslint/no-redeclare | Disallow declaring the same name twice in one scope Off by default. Also called typescript-eslint/no-redeclare, typescript/no-redeclare. See also no-redeclare.
+ts/no-require-imports	error	@typescript-eslint/no-require-imports	yes	@typescript-eslint/no-require-imports | Disallow require() in favor of import Off by default. Also called typescript-eslint/no-require-imports, typescript/no-require-imports.
+ts/no-this-alias	error	@typescript-eslint/no-this-alias	yes	@typescript-eslint/no-this-alias | Disallow storing this in a variable On by default as a warning. Also called typescript-eslint/no-this-alias, typescript/no-this-alias.
+ts/no-unnecessary-type-constraint	error	@typescript-eslint/no-unnecessary-type-constraint	yes	@typescript-eslint/no-unnecessary-type-constraint | Disallow extends any and extends unknown on a type parameter On by default as a warning. Also called typescript-eslint/no-unnecessary-type-constraint,
+ts/no-unsafe-declaration-merging	error	@typescript-eslint/no-unsafe-declaration-merging	yes	@typescript-eslint/no-unsafe-declaration-merging | Disallow a class and an interface with the same name On by default as a warning. Also called typescript-eslint/no-unsafe-declaration-merging,
+ts/no-unsafe-function-type	error	@typescript-eslint/no-unsafe-function-type	yes	@typescript-eslint/no-unsafe-function-type | Disallow the built-in Function type On by default as a warning. Also called typescript-eslint/no-unsafe-function-type, typescript/no-unsafe-function-type.
+ts/no-unused-expressions	error	@typescript-eslint/no-unused-expressions	yes	@typescript-eslint/no-unused-expressions | Disallow statements that compute a value and do nothing with it On by default as a warning. Also called typescript-eslint/no-unused-expressions, typescript/no-unused-expressions. See also no-unused-expressions.
+ts/no-use-before-define	error	@typescript-eslint/no-use-before-define	yes	@typescript-eslint/no-use-before-define | Disallow using a variable, function, class, enum, or type above the line that declares it Off by default. Also called typescript-eslint/no-use-before-define,
+ts/no-wrapper-object-types	error	@typescript-eslint/no-wrapper-object-types	yes	@typescript-eslint/no-wrapper-object-types | Disallow String, Number, Boolean, BigInt, Symbol, and Object as types On by default as a warning, fixable. Also called typescript-eslint/no-wrapper-object-types, typescript/no-wrapper-object-types.
+ts/prefer-as-const	error	@typescript-eslint/prefer-as-const	yes	@typescript-eslint/prefer-as-const | Require as const instead of repeating a literal as its own type On by default as a warning, fixable. Also called typescript-eslint/prefer-as-const, typescript/prefer-as-const.
+ts/prefer-literal-enum-member	error	@typescript-eslint/prefer-literal-enum-member	yes	@typescript-eslint/prefer-literal-enum-member | Require enum values to be literals, not computed expressions Off by default. Also called typescript-eslint/prefer-literal-enum-member, typescript/prefer-literal-enum-member.
+ts/prefer-namespace-keyword	error	@typescript-eslint/prefer-namespace-keyword	yes	@typescript-eslint/prefer-namespace-keyword | Require namespace instead of module to declare a namespace On by default as a warning, fixable. Also called typescript-eslint/prefer-namespace-keyword, typescript/prefer-namespace-keyword.
+unicode-bom	error	unicode-bom	yes	unicode-bom | Require or disallow a Unicode byte order mark at the start of a file Off by default, fixable. Also called eslint/unicode-bom. 
+unicorn/consistent-empty-array-spread	error	unicorn/consistent-empty-array-spread	yes	unicorn/consistent-empty-array-spread | Require both branches of a spread ternary in an array to have the same type Off by default. 
+unicorn/error-message	error	unicorn/error-message	yes	unicorn/error-message | Require a message when creating a built-in error Off by default. 
+unicorn/escape-case	error	unicorn/escape-case	yes	unicorn/escape-case | Require uppercase hexadecimal digits in escape sequences Off by default, fixable. 
+unicorn/new-for-builtins	error	unicorn/new-for-builtins	yes	unicorn/new-for-builtins | Require new for built-in classes and disallow it for String, Number, Boolean, Symbol, BigInt Off by default.
+unicorn/no-instanceof-builtins	error	unicorn/no-instanceof-builtins	yes	unicorn/no-instanceof-builtins | Disallow instanceof with built-in constructors such as Array, String, and Function Off by default.
+unicorn/no-new-array	error	unicorn/no-new-array	yes	unicorn/no-new-array | Disallow new Array() with a single argument Off by default. 
+unicorn/no-new-buffer	error	unicorn/no-new-buffer	yes	unicorn/no-new-buffer | Require Buffer.from() or Buffer.alloc() instead of the deprecated new Buffer() Off by default. 
+unicorn/prefer-dom-node-text-content	error	unicorn/prefer-dom-node-text-content	yes	unicorn/prefer-dom-node-text-content | Require .textContent instead of .innerText Off by default, fixable. 
+unicorn/prefer-includes	error	unicorn/prefer-includes	yes	unicorn/prefer-includes | Require .includes() instead of comparing .indexOf() with -1 or 0 Off by default. See also @typescript-eslint/prefer-includes. 
+unicorn/prefer-node-protocol	error	unicorn/prefer-node-protocol	yes	unicorn/prefer-node-protocol | Require the node: prefix when importing Node.js built-in modules Off by default, fixable. 
+unicorn/prefer-number-properties	error	unicorn/prefer-number-properties	yes	unicorn/prefer-number-properties | Require Number.isNaN, Number.parseInt and the like instead of the globals Off by default, fixable. 
+unicorn/prefer-string-starts-ends-with	error	unicorn/prefer-string-starts-ends-with	yes	unicorn/prefer-string-starts-ends-with | Require startsWith() and endsWith() instead of a regex with ^ or $ Off by default, fixable. See also @typescript-eslint/prefer-string-starts-ends-with.
+unicorn/prefer-type-error	error	unicorn/prefer-type-error	yes	unicorn/prefer-type-error | Require TypeError when the throw follows a type check Off by default, fixable. 
+unicorn/throw-new-error	error	unicorn/throw-new-error	yes	unicorn/throw-new-error | Require new when creating an error Off by default, fixable. 
+unused-imports/no-unused-imports	error	unused-imports/no-unused-imports	no	
+unused-imports/no-unused-vars	error	unused-imports/no-unused-vars	no	
+use-isnan	error	use-isnan	yes	use-isnan | Require Number.isNaN() instead of a comparison with NaN On by default as an error. Also called eslint/use-isnan. 
+valid-typeof	error	valid-typeof	yes	valid-typeof | Require typeof to be compared with a valid type name On by default as an error. Also called eslint/valid-typeof. 
+vars-on-top	error	vars-on-top	yes	vars-on-top | Require var declarations at the top of their function or file Off by default. Also called eslint/vars-on-top. 
+yoda	error	yoda	yes	yoda | Require or disallow comparisons with the literal on the left Off by default, fixable. Also called eslint/yoda. 

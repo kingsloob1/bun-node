@@ -1,0 +1,54 @@
+
+=== The scaler recipes, held to the API ===
+
+--- Read the recipes out of the package README
+  [    2ms] the scaler API, as the README builds it: {
+  basePath: "/scaler",
+  actions: [ "queues.read", "queues.list" ],
+  readOnly: true,
+}
+  [    2ms] found: {
+  metricsApiTriggers: [ "KEDA ScaledJob: a worker per burst",
+    "KEDA ScaledObject: replicas on outstanding",
+    "KEDA on the Prometheus exposition", "Azure Container Apps event jobs"
+  ],
+  scrapes: [
+    {
+      from: "KEDA on the Prometheus exposition",
+      path: "/scaler/demand",
+      format: "prometheus",
+    }, {
+      from: "GKE: an HPA on an external metric",
+      path: "/scaler/demand",
+      format: "prometheus",
+    }
+  ],
+  metrics: [ "bunjobs_queue_outstanding", "bunjobs_demand_truncated" ],
+}
+  ✓ the README still holds what this checks: four metrics-api triggers, two scrapes
+
+--- The scaler's own API, built as the README builds it
+  ✓ the routes it registers are the README's, all GET
+  ✓ as many as the README counts, where this backend serves counts/added
+  ✓ with actions ["queues.read"] alone, /queues and /demand go too
+  ✓ a missing or wrong token is 403, and a mutation is 404
+
+--- Every metrics-api trigger, asked as KEDA asks it
+  ✓ KEDA ScaledJob: a worker per burst: /scaler/queues/emails/demand answers json, and demand reads the queue's demand
+  ✓ KEDA ScaledObject: replicas on outstanding: /scaler/queues/emails/demand answers json, and outstanding reads the queue's outstanding
+  ✓ KEDA on the Prometheus exposition: /scaler/queues/emails/demand?format=prometheus answers prometheus, and bunjobs_queue_outstanding{queue="emails"} reads the queue's outstanding
+  ✓ Azure Container Apps event jobs: /scaler/queues/emails/demand answers json, and demand reads the queue's demand
+
+--- Every Prometheus scrape, and every metric the recipes name
+  ✓ KEDA on the Prometheus exposition: /scaler/demand with format=prometheus is the exposition, carrying every metric the recipes name as a gauge, and every label they select on
+  ✓ GKE: an HPA on an external metric: /scaler/demand with format=prometheus is the exposition, carrying every metric the recipes name as a gauge, and every label they select on
+
+--- The claims between the recipes
+  ✓ no Accept header gets JSON, as KEDA's metrics-api sends none
+  ✓ a Prometheus 3 scrape's Accept selects the exposition
+  ✓ the per-queue route is 404 for an unknown queue, so a typo fails loudly
+  ✓ a paused queue reads 0 on both demand and outstanding
+
+--- Clean up
+
+15 checks passed.

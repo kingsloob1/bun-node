@@ -217,6 +217,21 @@ file, check every link into and out of it, `#anchors` included.
     patch with its type tests, bun-nest checked against it and the overloads
     unchanged, and a `SchemaDto` + global pipe through Nest's real pipeline
     on bun-nest.
+- **[`bun-lint-fmt/`](bun-lint-fmt/README.md)** — replacing ESLint and
+  Prettier with `bun lint` and `bun fmt` (there is no oxlint to drop): rule and
+  formatter parity, the proposed `bunfig.toml`, VS Code, gating on a stable
+  Bun release, the phases and PRs.
+  - Evidence: [`bun-lint-fmt/evidence/`](bun-lint-fmt/evidence/README.md) —
+    on Bun 1.4.4-canary.1 at `5f5799ed1`, in clones of develop: ESLint's
+    effective config (384 rules) mapped onto `bun lint`'s 1,021 (127 native,
+    85 under another name or upstream, 172 missing); a shadow run reproducing
+    all 71 ESLint findings natively and explaining 743 more, with single-file
+    reproductions against the upstream plugins and oxlint; `bun fmt` against
+    Prettier 3.8.4 and 3.9.10 on every file (identical to 3.9.10), its
+    idempotence, `--debug-check`, the parsed READMEs and the generated
+    overloads; import and `package.json` sorting churn; `--doctor` per
+    directory; ESLint, `bun lint`, Prettier and `bun fmt` timed three times
+    each; editor-path latency.
 
 ## Evidence
 

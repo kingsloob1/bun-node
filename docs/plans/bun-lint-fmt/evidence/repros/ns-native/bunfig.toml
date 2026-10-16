@@ -1,0 +1,2 @@
+[lint.rules]
+"@typescript-eslint/no-namespace" = "error"

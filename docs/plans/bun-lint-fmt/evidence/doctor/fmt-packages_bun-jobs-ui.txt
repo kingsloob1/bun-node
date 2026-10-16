@@ -1,0 +1,7 @@
+No Prettier or oxfmt config found. Bun formats like Prettier by default.
+
+  480 files are formatted natively
+
+Still needed:   prettier (eslint-plugin-prettier needs it)
+
+Run bun fmt --init to add a [fmt] section to bunfig.toml
