@@ -52,6 +52,7 @@ describe("BunRouter: route registration", () => {
       "propfind",
       "proppatch",
       "purge",
+      "query",
       "report",
       "search",
       "subscribe",
@@ -2016,5 +2017,122 @@ describe("BunRouter: ws()", () => {
     const router = new BunRouter({ bunWebsocket: socket });
 
     expect(() => router.ws("/chat", null as never)).toThrow(TypeError);
+  });
+});
+
+describe("BunRouter: query() — the HTTP QUERY verb", () => {
+  const json = { "content-type": "application/json" };
+
+  /** A QUERY route that echoes what it received. */
+  function echoRouter(): BunRouter {
+    const router = new BunRouter();
+    router.query("/search", (req, res) => {
+      res.json({ method: req.method, body: req.body, query: req.query });
+    });
+    return router;
+  }
+
+  it("routes QUERY with its parsed body and the URL's query string", async () => {
+    const router = echoRouter();
+
+    const response = await router.fetch("/search?page=2", {
+      method: "QUERY",
+      headers: json,
+      body: JSON.stringify({ term: "bun" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      method: "QUERY",
+      body: { term: "bun" },
+      query: { page: "2" },
+    });
+  });
+
+  it("parses a text body, and leaves req.body undefined with none", async () => {
+    const router = echoRouter();
+
+    const text = await router.fetch("/search", {
+      method: "QUERY",
+      headers: { "content-type": "text/plain" },
+      body: "abc",
+    });
+    expect(((await text.json()) as { body: unknown }).body).toBe("abc");
+
+    const empty = await router.fetch("/search", { method: "QUERY" });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ method: "QUERY", query: {} });
+  });
+
+  it("matches a lowercase method, as every verb does", async () => {
+    const router = echoRouter();
+    const response = await router.fetch("/search", { method: "query" });
+    expect(response.status).toBe(200);
+  });
+
+  // Guards that the HEAD-from-GET fallback was not widened: a QUERY route
+  // answers QUERY only, and QUERY does not fall back to a GET route.
+  it("answers QUERY only: GET, HEAD and POST on it 404, QUERY on a GET route 404", async () => {
+    const router = echoRouter();
+    router.get("/only-get", (_req, res) => res.send("get"));
+
+    for (const method of ["GET", "HEAD", "POST"]) {
+      expect((await router.fetch("/search", { method })).status).toBe(404);
+    }
+    expect((await router.fetch("/only-get", { method: "QUERY" })).status).toBe(
+      404,
+    );
+    expect((await router.fetch("/only-get", { method: "HEAD" })).status).toBe(
+      200,
+    );
+  });
+
+  it("is a route handler: next('route') reaches the next QUERY route", async () => {
+    const router = new BunRouter();
+    router.query("/r", (_req, _res, next) => next("route"));
+    router.query("/r", (_req, res) => res.send("second"));
+    const response = await router.fetch("/r", { method: "QUERY" });
+    expect(await response.text()).toBe("second");
+  });
+
+  it("use(), useMethod('query') and all() see QUERY requests", async () => {
+    const router = new BunRouter();
+    const seen: string[] = [];
+    router.use((_req, _res, next) => {
+      seen.push("use");
+      next();
+    });
+    router.useMethod("query", (_req, _res, next) => {
+      seen.push("useMethod");
+      next();
+    });
+    router.all("/all", (req, res) => res.send(req.method));
+
+    const response = await router.fetch("/all", { method: "QUERY" });
+    expect(await response.text()).toBe("QUERY");
+    expect(seen).toEqual(["use", "useMethod"]);
+
+    seen.length = 0;
+    expect(await (await router.fetch("/all")).text()).toBe("GET");
+    expect(seen).toEqual(["use"]);
+  });
+
+  it("a mounted sub-router's query() route sees the mount's params", async () => {
+    const root = new BunRouter();
+    const orgs = new BunRouter<"/orgs/:org">();
+    orgs.query("/q/:id", (req, res) => {
+      res.json({ params: req.params, body: req.body });
+    });
+    root.use("/orgs/:org", orgs);
+
+    const response = await root.fetch("/orgs/acme/q/7", {
+      method: "QUERY",
+      headers: json,
+      body: JSON.stringify({ a: 1 }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      params: { org: "acme", id: "7" },
+      body: { a: 1 },
+    });
   });
 });

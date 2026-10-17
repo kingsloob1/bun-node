@@ -145,6 +145,49 @@ adapter.propfind("/pf/:id", (_req) => {
   type _ = Expect<Equal<typeof _req.params, { id: string }>>;
 });
 
+// `proppatch` and `query` are declared without `override` (`@routejs/router`
+// lacks them) and still get the generated overloads.
+router.proppatch("/pp/:id", (_req) => {
+  type _ = Expect<Equal<typeof _req.params, { id: string }>>;
+});
+
+/* --- query(): the HTTP QUERY verb ----------------------------------- */
+
+router.query("/search/:index", (_req) => {
+  type _ = Expect<Equal<typeof _req.params, { index: string }>>;
+});
+
+// bun-common's adapter inherits it, overloads included.
+adapter.query("/search", validate({ body: BodySchema }), (_req) => {
+  type _b = Expect<Equal<typeof _req.body, { title: string }>>;
+});
+
+adapter.query(
+  "/search/:index",
+  (_req, _res, next) => next(),
+  validate({ query: QuerySchema, body: BodySchema }),
+  (_req) => {
+    type _q = Expect<Equal<typeof _req.query, { page: number }>>;
+    type _b = Expect<Equal<typeof _req.body, { title: string }>>;
+    type _p = Expect<Equal<typeof _req.params, { index: string }>>;
+  },
+);
+
+// A sub-router's query() route sees the params of the path it is mounted at.
+const orgRoutes = new BunRouter<"/orgs/:org">();
+orgRoutes.query("/q/:id", (_req) => {
+  type _ = Expect<Equal<typeof _req.params, { org: string; id: string }>>;
+});
+
+// The error-handler and middleware-only forms register, and it chains.
+router.query(((_err, _req, _res, next) => {
+  next();
+}) satisfies RouterErrorMiddlewareHandler);
+const chained: BunRouter = router
+  .query("/a", (_req, res) => res.send("a"))
+  .get("/b", (_req, res) => res.send("b"));
+void chained;
+
 /* --- a handler declared ahead of the call --------------------------- */
 
 // Typed as the route's own handler type. It cannot follow an *inline*

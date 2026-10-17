@@ -984,7 +984,9 @@ narrow a handler's request:
   type it carries.
 
 They live between `/* --- BEGIN generated typed overloads: <verb> --- */`
-markers. **Do not edit them by hand** — regenerate:
+markers. A verb the base class lacks (`proppatch` and `query` on `BunRouter`)
+is declared without `override` and is still generated; the generator prints
+the verbs it found. **Do not edit them by hand** — regenerate:
 
 ```bash
 cd packages/bun-common

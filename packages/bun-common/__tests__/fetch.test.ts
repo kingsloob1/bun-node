@@ -361,6 +361,56 @@ describe("BunHttpAdapter.fetch: matches a real socket request", () => {
     }
   });
 
+  it("answers a QUERY with a body as a served request does", async () => {
+    /** A QUERY route echoing its params, query string and body. */
+    function buildQuery(adapter: BunHttpAdapter): void {
+      adapter.query("/search/:index", (req, res) => {
+        res.json({
+          method: req.method,
+          params: req.params,
+          query: req.query,
+          body: req.body,
+        });
+      });
+    }
+
+    const served = new BunHttpAdapter(0);
+    buildQuery(served);
+    await served.listen(0);
+
+    const offline = new BunHttpAdapter(0);
+    buildQuery(offline);
+
+    const init = {
+      method: "QUERY",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ term: "bun" }),
+    };
+    try {
+      const overSocket = await fetch(
+        `http://127.0.0.1:${served.listeningPort}/search/books?page=2`,
+        init,
+      );
+      const offlineResponse = await offline.fetch("/search/books?page=2", init);
+
+      expect(overSocket.status).toBe(200);
+      expect(offlineResponse.status).toBe(overSocket.status);
+      expect(offlineResponse.headers.get("content-type")).toBe(
+        overSocket.headers.get("content-type"),
+      );
+      const body = await overSocket.text();
+      expect(await offlineResponse.text()).toBe(body);
+      expect(JSON.parse(body)).toEqual({
+        method: "QUERY",
+        params: { index: "books" },
+        query: { page: "2" },
+        body: { term: "bun" },
+      });
+    } finally {
+      await served.close();
+    }
+  });
+
   it("runs the adapter's not-found handler", async () => {
     const adapter = new BunHttpAdapter(0);
     adapter.setNotFoundHandler((_req, res) => {
