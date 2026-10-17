@@ -1,0 +1,13 @@
+# probe2.ts (@Sse), re-run by bun-node-11 on 2026-10-17; columns: major, adapter, path, status, content-type, body (first 200 chars)
+11 express /sync-first 500 application/json; charset=utf-8 "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+11 express /async-second 200 text/event-stream "\nevent: ok\nid: 1\n\nevent: error\nid: 2\ndata: issue at data.n: secret-value\n\n"
+11 express /untyped 200 text/event-stream "\nid: 1\ndata: {\"x\":1}\n\n"
+11 bun /sync-first 500 application/json;charset=utf-8 "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+11 bun /async-second 200 text/event-stream "\nevent: ok\nid: 1\n\nevent: error\nid: 2\ndata: issue at data.n: secret-value\n\n"
+11 bun /untyped 200 text/event-stream "\nid: 1\ndata: {\"x\":1}\n\n"
+12 express /sync-first 500 application/json; charset=utf-8 "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+12 express /async-second 200 text/event-stream "\nevent: ok\nid: 1\ndata: 0\n\nevent: error\nid: 2\ndata: issue at data.n: secret-value\n\n"
+12 express /untyped 200 text/event-stream "\nid: 1\ndata: {\"x\":1}\n\n"
+12 bun /sync-first 500 application/json;charset=utf-8 "{\"statusCode\":500,\"message\":\"Internal server error\"}"
+12 bun /async-second 200 text/event-stream "\nevent: ok\nid: 1\ndata: 0\n\nevent: error\nid: 2\ndata: issue at data.n: secret-value\n\n"
+12 bun /untyped 200 text/event-stream "\nid: 1\ndata: {\"x\":1}\n\n"

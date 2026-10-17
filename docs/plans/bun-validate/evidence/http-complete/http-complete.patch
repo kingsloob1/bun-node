@@ -1,0 +1,2004 @@
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/BunRequest.ts packages/bun-common/lib/BunRequest.ts
+--- a/lib/BunRequest.ts
++++ b/lib/BunRequest.ts
+@@ -1475,9 +1475,15 @@
+   TQuery = Record<string, unknown>,
+   /** Shape of `req.body`. Defaults to the union the body parsers produce. */
+   TBody = DefaultRequestBody,
++  /** SPIKE: shape of `req.cookies`; a `cookies` validator narrows it. */
++  TCookies = Record<string, JsonValue>,
++  /** SPIKE: shape of `req.signedCookies`; a `signedCookies` validator narrows it. */
++  TSignedCookies = Record<string, JsonValue>,
++  /** SPIKE: shape of `req.valid`, every part the validators parsed (headers included). */
++  TValid = Record<never, never>,
+ >
+   implements
+-    BunRequestInterface<TParams, TQuery, TBody>,
++    BunRequestInterface<TParams, TQuery, TBody, TCookies, TSignedCookies>,
+     TypedEmitter<BunRequestEvents>
+ {
+   /**
+@@ -2738,7 +2744,7 @@
+       );
+     }
+     if (scheduled & INIT_COOKIES) {
+-      tasks.push({ cookies: this.cookies, signedCookies: this.signedCookies });
++      tasks.push({ cookies: this.cookies, signedCookies: this.signedCookies } as BunRequestCookies);
+     }
+     return await Promise.allSettled(tasks);
+   }
+@@ -2969,20 +2975,20 @@
+    * string, or the parsed JSON of a `j:` cookie (an object, array, number,
+    * boolean or `null`), so it is typed `JsonValue`.
+    */
+-  get cookies(): Record<string, JsonValue> {
++  get cookies(): TCookies {
+     if (this.#scheduled & COOKIES_PENDING) {
+       this.#parsePendingCookies();
+     }
+-    return (this.#cookies ??= {});
++    return (this.#cookies ??= {}) as TCookies;
+   }
+ 
+-  set cookies(value: Record<string, JsonValue>) {
++  set cookies(value: TCookies) {
+     // The parse the options asked for happens first, as it did while the
+     // request was built: an assignment replaces its result, not the reverse.
+     if (this.#scheduled & COOKIES_PENDING) {
+       this.#parsePendingCookies();
+     }
+-    this.#cookies = value;
++    this.#cookies = value as Record<string, JsonValue>;
+   }
+ 
+   /**
+@@ -3003,21 +3009,31 @@
+    * Signed cookies — lazily allocated on first access. A verified cookie's
+    * value (parsed JSON for a `j:` one), or `false` when no secret verifies it.
+    */
+-  get signedCookies(): Record<string, JsonValue> {
++  get signedCookies(): TSignedCookies {
+     if (this.#scheduled & COOKIES_PENDING) {
+       this.#parsePendingCookies();
+     }
+-    return (this.#signedCookies ??= {});
++    return (this.#signedCookies ??= {}) as TSignedCookies;
+   }
+ 
+-  set signedCookies(value: Record<string, JsonValue>) {
++  set signedCookies(value: TSignedCookies) {
+     if (this.#scheduled & COOKIES_PENDING) {
+       this.#parsePendingCookies();
+     }
+-    this.#signedCookies = value;
++    this.#signedCookies = value as Record<string, JsonValue>;
+   }
+ 
+   /**
++   * SPIKE: every request part the validators parsed, by target — `headers`,
++   * `cookies`, `signedCookies`, `params`, `query`, `body` — as each schema
++   * (or `transform`) produced it. Set by a validator, merged across a mount's
++   * and a route's; `undefined` before any. The one typed view of headers,
++   * which are never written back (`req.headers` stays the raw view the body
++   * parsers, `accepts` and busboy read).
++   */
++  declare public valid: TValid;
++
++  /**
+    * Matched route params — lazily allocated; the router assigns the real set.
+    * Typed as `TParams`, which a path literal or a validator narrows.
+    */
+@@ -4478,8 +4494,8 @@
+     if (!cookieStr) {
+       const empty = { cookies: {}, signedCookies: {} };
+       if (updateRequest) {
+-        this.cookies = {};
+-        this.signedCookies = {};
++        this.cookies = {} as TCookies;
++        this.signedCookies = {} as TSignedCookies;
+       }
+       return empty;
+     }
+@@ -4525,8 +4541,8 @@
+     };
+ 
+     if (updateRequest) {
+-      this.cookies = resp.cookies;
+-      this.signedCookies = resp.signedCookies;
++      this.cookies = resp.cookies as TCookies;
++      this.signedCookies = resp.signedCookies as TSignedCookies;
+     }
+ 
+     return resp;
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/BunResponse.ts packages/bun-common/lib/BunResponse.ts
+--- a/lib/BunResponse.ts
++++ b/lib/BunResponse.ts
+@@ -563,6 +563,136 @@
+   responseTransforms: BunResponseTransform[] | undefined = undefined;
+   /** Backs BunResponse's `#transformBody`; see its documentation there. */
+   transformBody: BunResponseTransformBody | undefined = undefined;
++  /** SPIKE: the response gate's state, once a validator installs one. */
++  gate: GateState | undefined = undefined;
++}
++
++/** SPIKE: what one declared status lets a handler send, at the type level. */
++export interface ResponseTypeSpec {
++  /** The body `json()` takes; `never` when no JSON media type is declared. */
++  json: unknown;
++  /** The body `send()` takes (JSON, text, bytes, a stream); `never` when none. */
++  send: unknown;
++  /** Declared header names (lower-case) to the value `set()`/`header()` take. */
++  headers: object;
++  /** Declared `Set-Cookie` names to the value `cookie()` takes. */
++  cookies: object;
++}
++/** SPIKE: a declared response map, status code to that status's types. */
++export type ResponseMap = Record<number, ResponseTypeSpec>;
++/** SPIKE: statuses `status()` accepts — any number until responses are declared. */
++export type AllowedStatus<M> = [M] extends [ResponseMap] ? keyof M & number : number;
++/** SPIKE: the map left after `status(C)` narrowed it. */
++export type NarrowResponses<M, C extends number> = [M] extends [ResponseMap] ? Pick<M, C & keyof M> : undefined;
++/** SPIKE: one field of every declared status's spec, as a union. */
++type SpecField<M, F extends keyof ResponseTypeSpec> = M[keyof M] extends infer S
++  ? S extends ResponseTypeSpec
++    ? S[F]
++    : never
++  : never;
++/** SPIKE: what `json()` accepts — the declared JSON bodies, or anything until declared. */
++export type JsonBodyFor<M> = [M] extends [ResponseMap] ? SpecField<M, "json"> : BunResponseBody;
++/** SPIKE: what `send()` accepts — every declared body (a native `Response` too), or anything. */
++export type SendBodyFor<M> = [M] extends [ResponseMap] ? SpecField<M, "send"> | Response : BunResponseBody;
++/** SPIKE: names any declared status declares, in `headers` or `cookies`. */
++type DeclaredNames<M, P extends "headers" | "cookies"> = (SpecField<M, P> extends infer O
++  ? O extends object
++    ? keyof O
++    : never
++  : never) &
++  string;
++/** SPIKE: the declared value type of `N` across the statuses declaring it. */
++type DeclaredValue<M, P extends "headers" | "cookies", N> = SpecField<M, P> extends infer O
++  ? O extends object
++    ? N extends keyof O
++      ? O[N]
++      : never
++    : never
++  : never;
++/** SPIKE: the value `set(name, …)` takes: the declared type for a declared name (any case), else any header value. */
++export type HeaderValueFor<M, N extends string> = [M] extends [ResponseMap]
++  ? Lowercase<N> extends DeclaredNames<M, "headers">
++    ? DeclaredValue<M, "headers", Lowercase<N>> & (string | string[])
++    : string | string[]
++  : string | string[];
++/** SPIKE: the value `cookie(name, …)` takes for a declared cookie, else any cookie value. */
++export type CookieValueFor<M, N extends string> = [M] extends [ResponseMap]
++  ? N extends DeclaredNames<M, "cookies">
++    ? DeclaredValue<M, "cookies", N> & CookieValue
++    : CookieValue
++  : CookieValue;
++/** SPIKE: the statuses `redirect(status, url)` takes: the declared 3xx, or any number. */
++export type RedirectStatus<M> = [M] extends [ResponseMap]
++  ? Extract<keyof M & number, 300 | 301 | 302 | 303 | 305 | 307 | 308>
++  : number;
++/** SPIKE: `redirect(url)` sends 302, so it takes a URL only where 302 is declared. */
++export type RedirectUrl<M> = [M] extends [ResponseMap] ? (302 extends keyof M ? string : never) : string;
++
++/** SPIKE: what the producer of a committed response was, for the gate. */
++export type GateCommitKind =
++  | "json"
++  | "text"
++  | "bytes"
++  | "blob"
++  | "file"
++  | "stream"
++  | "stream-open"
++  | "native"
++  | "redirect"
++  | "status"
++  | "empty";
++
++/** SPIKE: what the gate is told at the commit point, beside the `Response`. */
++export interface GateCommit {
++  /** What produced it. */
++  kind: GateCommitKind;
++  /** The body as handed in: the raw `json()` value, the text, bytes, `Blob`/file; else `undefined`. */
++  body: unknown;
++  /** The Content-Type in force, the implicit one included (Bun adds `text/plain` itself). */
++  contentType: string | undefined;
++  /** Whether the request was conditional (`If-None-Match`/`If-Modified-Since`). */
++  conditional: boolean;
++  /** Whether an error handler is producing it (the pipeline is in error mode). */
++  errorPath: boolean;
++}
++
++/** SPIKE: a gate's answer. `undefined`: commit as is. */
++export type GateVerdict =
++  | undefined
++  | { reject: Error; replace?: undefined; destroy?: undefined }
++  | { replace: Response; reject?: undefined; destroy?: undefined }
++  | { destroy: Error; reject?: undefined; replace?: undefined };
++
++/**
++ * SPIKE: consulted once as the `Response` is committed (before transforms,
++ * waiters and `finish`), and for every `write()` chunk of an open stream.
++ * A Promise holds the commit, or the chunk, until it settles.
++ */
++export interface BunResponseGate {
++  /** At the commit point. */
++  commit(res: BunResponse, response: Response, ctx: GateCommit): GateVerdict | Promise<GateVerdict>;
++  /** For each chunk of an open stream. */
++  chunk(res: BunResponse, chunk: BunResponseChunk): GateVerdict | Promise<GateVerdict>;
++}
++
++/** SPIKE: the gate's per-response state, kept off the hot path until a validator installs it. */
++class GateState {
++  /** The gate, installed by a validator. */
++  gate: BunResponseGate | undefined = undefined;
++  /** Set once the gate decided; the error pipeline's own response is not checked. */
++  bypass = false;
++  /** Set when a stream's opening was refused: the handler's further writes are dropped. */
++  rejectedStream = false;
++  /** The commit being held for an async verdict. */
++  held: Promise<unknown> | undefined = undefined;
++  /** Chunks waiting for an async verdict, in order. */
++  chunkChain: Promise<unknown> | undefined = undefined;
++  /** The producer of the next commit, when it is not read off the body. */
++  kind: GateCommitKind | undefined = undefined;
++  /** A body the producer passed beside `#sentBody` (a file). */
++  body: unknown = undefined;
++  /** Set once an error handler runs: its response is checked, but only reported. */
++  errorPath = false;
+ }
+ 
+ export class BunResponse<
+@@ -572,6 +702,8 @@
+    * `onUpgrade` hook returns as `custom`.
+    */
+   customWebsocketDataType = unknown,
++  /** SPIKE: the declared responses, or `undefined` for none (unconstrained). */
++  TResponses = undefined,
+ > implements TypedEmitter<BunResponseEvents> {
+   /**
+    * Rarely-used state, created on first write. Each field moved here is an
+@@ -1048,7 +1180,7 @@
+     // Bind the pair at construction, as Express does with `req.res`, so
+     // `req.fresh` / `req.stale` can be computed from the moment the response
+     // exists — not only once `send()` runs.
+-    req.setResponse(this);
++    req.setResponse(this.#self);
+   }
+ 
+   /**
+@@ -1083,7 +1215,7 @@
+    */
+   public setEtag(option: EtagOption = true): BunResponse {
+     this.etag = option;
+-    return this;
++    return this.#self;
+   }
+ 
+   /** Whether any `ETag` is to be generated for this response. */
+@@ -1298,6 +1430,167 @@
+   }
+ 
+   private set response(value: Response | undefined) {
++    // SPIKE: the single commit point every producer passes through. The gate
++    // decides here, before transforms, waiters, `markResponded` and `finish`.
++    const gate = this.#state?.gate;
++    if (gate !== undefined && value !== undefined) {
++      if (gate.held !== undefined) {
++        return; // a commit is already waiting for its verdict
++      }
++      const kind = gate.kind;
++      gate.kind = undefined;
++      if (gate.gate !== undefined && !gate.bypass) {
++        const ctx = this.#gateCommit(value, kind);
++        const verdict = gate.gate.commit(this as unknown as BunResponse, value, ctx);
++        if (verdict instanceof Promise) {
++          // Hold: nothing is produced until the verdict settles.
++          gate.held = verdict.then(
++            (v) => {
++              gate.held = undefined;
++              this.#applyVerdict(gate, v, value, ctx.kind);
++            },
++            (error: unknown) => {
++              gate.held = undefined;
++              this.#rejectCommit(gate, error, ctx.kind);
++            },
++          );
++          return;
++        }
++        this.#applyVerdict(gate, verdict, value, ctx.kind);
++        return;
++      }
++    }
++    this.#commitResponse(value);
++  }
++
++  /** SPIKE: what the gate is told about the response being committed. */
++  #gateCommit(value: Response, kind: GateCommitKind | undefined): GateCommit {
++    const sent = this.#sentBody;
++    const holder = this.#state?.gate;
++    let body: unknown = sent;
++    if (kind === undefined) {
++      if (sent === undefined || sent === null) kind = "empty";
++      else if (typeof sent === "string") kind = "text";
++      else if (isBinaryBody(sent)) kind = "bytes";
++      else if (sent instanceof Blob) kind = "blob";
++      else if (
++        sent instanceof ReadableStream ||
++        isNodeReadableStream(sent) ||
++        isAsyncIterable(sent) ||
++        typeof sent === "function" ||
++        sent instanceof FormData ||
++        sent instanceof URLSearchParams
++      )
++        kind = "stream";
++      else kind = "json";
++    } else if (kind === "file") {
++      body = holder?.body;
++    }
++    if (holder !== undefined) holder.body = undefined;
++    const req = this.req;
++    return {
++      kind,
++      body,
++      contentType:
++        value.headers.get("content-type") ??
++        this.#implicitContentType ??
++        (kind === "text" ? TEXT_CONTENT_TYPE : undefined),
++      conditional:
++        req.getHeader("if-none-match") !== null ||
++        req.getHeader("if-modified-since") !== null,
++      errorPath: holder?.errorPath ?? false,
++    };
++  }
++
++  /** SPIKE: carries out a verdict at the commit point. */
++  #applyVerdict(
++    gate: GateState,
++    verdict: GateVerdict,
++    value: Response,
++    kind: GateCommitKind,
++  ): void {
++    if (verdict?.reject !== undefined) {
++      this.#rejectCommit(gate, verdict.reject, kind);
++      return;
++    }
++    gate.bypass = true;
++    this.#commitResponse(verdict?.replace ?? value);
++  }
++
++  /**
++   * SPIKE: refuses a commit. Nothing has gone out, so the error enters the
++   * pipeline (the current layer's `next`) and an error handler answers; the
++   * error handler's own response is not checked again.
++   */
++  #rejectCommit(gate: GateState, error: unknown, kind: GateCommitKind): void {
++    gate.bypass = true;
++    // The refused response's own headers do not describe the 500 that
++    // replaces it (a redirect's Location, a refused Set-Cookie, the body's
++    // Content-*); headers set for the request as a whole (CORS, Vary) stay.
++    for (const name of [
++      "location",
++      "set-cookie",
++      "content-type",
++      "content-length",
++      "content-disposition",
++      "content-encoding",
++      "etag",
++      "last-modified",
++    ]) {
++      this.headersObj.delete(name);
++    }
++    this.#implicitContentType = undefined;
++    if (kind === "stream-open") {
++      // The stream was opened but never handed out: undo it.
++      gate.rejectedStream = true;
++      this._isLongLived = false;
++      this.#readableStreamEventMap?.clear();
++      this.#readableStream = undefined;
++    }
++    const next = this.req.next;
++    if (next !== undefined) {
++      void next(error as Error);
++    } else {
++      this.#respondWithStatus(500);
++    }
++  }
++
++  /**
++   * SPIKE: this response as the unconstrained `BunResponse`. Typing `set()`,
++   * `header()` and `cookie()` by declared names makes a generic `this` no
++   * longer assignable to `BunResponse` inside the class, so the class's own
++   * `return this` / `setResponse(this)` sites go through this getter.
++   */
++  get #self(): BunResponse {
++    return this as unknown as BunResponse;
++  }
++
++  /** SPIKE: the router calls this as it enters an error handler. */
++  public enterErrorPath(): void {
++    const gate = this.#state?.gate;
++    if (gate !== undefined) {
++      gate.errorPath = true;
++    }
++  }
++
++  /** SPIKE: installs the response gate (a validator does, per request). */
++  public setResponseGate(gate: BunResponseGate): this {
++    ((this.#state ??= new BunResponseState<customWebsocketDataType>()).gate ??=
++      new GateState()).gate = gate;
++    return this;
++  }
++
++  /** SPIKE: marks what the next commit is, for producers whose body says nothing. */
++  #gateKind(kind: GateCommitKind, body?: unknown): void {
++    const gate = this.#state?.gate;
++    if (gate !== undefined) {
++      gate.kind = kind;
++      gate.body = body;
++    }
++  }
++
++  /** The original setter: transforms, `markResponded`, waiters, `finish`. */
++  #commitResponse(value: Response | undefined) {
+     if (value && this.#responseTransforms !== undefined) {
+       value = this.#applyResponseTransforms(value, this.#responseTransforms);
+     }
+@@ -1376,7 +1669,7 @@
+ 
+     let current = response;
+     for (const transform of transforms) {
+-      const next = transform.transform(current, { res: this, body });
++      const next = transform.transform(current, { res: this.#self, body });
+       if (next !== current) {
+         // The body described no longer is the one being sent.
+         body = undefined;
+@@ -1390,17 +1683,25 @@
+     return this.req.isKeepAlive || this._isLongLived || false;
+   }
+ 
+-  public header(key: string, value: string | string[]) {
+-    return this.setHeader(key, value);
++  public header<N extends string, V extends HeaderValueFor<TResponses, N>>(key: N, value: V) {
++    return this.setHeader(key, value as string | string[]);
++  }
++
++  public status<const C extends AllowedStatus<TResponses>>(
++    code: C,
++  ): BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>> {
++    this.options.status = code;
++    return this as unknown as BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>>;
+   }
+ 
+-  public status(code: number): BunResponse {
++  /** SPIKE: the class's own status writes, which no declared map constrains. */
++  protected setStatusRaw(code: number): this {
+     this.options.status = code;
+     return this;
+   }
+ 
+   set statusCode(code: number) {
+-    this.status(code);
++    this.setStatusRaw(code);
+   }
+ 
+   /**
+@@ -1431,7 +1732,7 @@
+       ? type
+       : (mime.getType(type) ?? "application/octet-stream");
+     this.headersObj.set("Content-Type", contentType);
+-    return this;
++    return this.#self;
+   }
+ 
+   public contentType(...args: Parameters<BunResponse["type"]>) {
+@@ -1440,12 +1741,12 @@
+ 
+   public option(option: ResponseInit): BunResponse {
+     this.options = Object.assign(this.options, option);
+-    return this;
++    return this.#self;
+   }
+ 
+   public statusText(text: string): BunResponse {
+     this.options.statusText = text;
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -1460,8 +1761,9 @@
+    * shape: `res.json<UserDto>(user)`. (`bigint` and `symbol`, which
+    * `JSON.stringify` cannot serialise, are rejected.)
+    */
+-  public json<T extends BunResponseBody>(body: T): BunResponse {
+-    this.#sentBody = body;
++  public json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse {
++    this.#sentBody = body as BunResponseSentBody;
++    this.#gateKind("json");
+     if (this.#canSkipHeaders()) {
+       return this.#respondWithJson(body);
+     }
+@@ -1484,7 +1786,7 @@
+       this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
+       return this.#respondWithText(JSON.stringify(body));
+     }
+-    this.req.setResponse(this);
++    this.req.setResponse(this.#self);
+     this.#implicitContentType = JSON_CONTENT_TYPE;
+     const kind = typeof body;
+     // `JSON.stringify` gives `undefined` for `undefined`, a function or a
+@@ -1493,7 +1795,7 @@
+       kind === "undefined" || kind === "function" || kind === "symbol"
+         ? new Response(undefined, this.#initWithoutHeaders())
+         : Response.json(body, this.#initWithoutHeaders());
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -1511,8 +1813,8 @@
+     let callback: unknown = this.req.query.callback;
+ 
+     if (!this.hasHeader("Content-Type")) {
+-      this.set("X-Content-Type-Options", "nosniff");
+-      this.set("Content-Type", JSON_CONTENT_TYPE);
++      this.setHeader("X-Content-Type-Options", "nosniff");
++      this.setHeader("Content-Type", JSON_CONTENT_TYPE);
+     }
+ 
+     if (isArray(callback)) {
+@@ -1520,8 +1822,8 @@
+     }
+ 
+     if (isString(callback) && callback.length !== 0) {
+-      this.set("X-Content-Type-Options", "nosniff");
+-      this.set("Content-Type", "text/javascript");
++      this.setHeader("X-Content-Type-Options", "nosniff");
++      this.setHeader("Content-Type", "text/javascript");
+ 
+       const name = callback.replace(/[^[\]\w$.]/g, "");
+       const payload =
+@@ -1531,7 +1833,7 @@
+       text = `/**/ typeof ${name} === 'function' && ${name}(${payload});`;
+     }
+ 
+-    return this.send(text);
++    return this.sendRaw(text);
+   }
+ 
+   /**
+@@ -1542,7 +1844,7 @@
+    */
+   #applyFreshnessAndStrip(): boolean {
+     if (this.req.fresh) {
+-      this.status(304);
++      this.setStatusRaw(304);
+     }
+ 
+     const code = this.statusCode;
+@@ -1554,7 +1856,7 @@
+     }
+ 
+     if (code === 205) {
+-      this.set("Content-Length", "0");
++      this.setHeader("Content-Length", "0");
+       this.removeHeader("Transfer-Encoding");
+       return true;
+     }
+@@ -1568,7 +1870,7 @@
+    * `text/plain` unless a Content-Type is already set. Synchronous.
+    */
+   #respondWithText(text: string): BunResponse {
+-    this.req.setResponse(this);
++    this.req.setResponse(this.#self);
+ 
+     // Nothing set a header: send the text with no `Headers` object at all.
+     // Bun writes `text/plain;charset=utf-8` for a string body itself, which
+@@ -1587,7 +1889,7 @@
+           IMPLICIT_TEXT_RESPONSES.add(response);
+         }
+         this.response = response;
+-        return this;
++        return this.#self;
+       }
+     }
+ 
+@@ -1602,7 +1904,7 @@
+ 
+     if (this.#applyFreshnessAndStrip()) {
+       this.response = new Response(null, this.options);
+-      return this;
++      return this.#self;
+     }
+ 
+     if (!this.headersObj.has("content-type")) {
+@@ -1613,7 +1915,7 @@
+       this.#transformBody = text;
+     }
+     this.response = new Response(text, this.options);
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -1766,9 +2068,14 @@
+    * sends those as JSON. `null`/`undefined` send an empty body with no
+    * Content-Type, as Express does.
+    */
+-  send(body: BunResponseBody): BunResponse {
++  send(body: SendBodyFor<TResponses>): BunResponse {
++    return this.sendRaw(body as BunResponseBody);
++  }
++
++  /** SPIKE: `send` without the declared-body constraint, for the class's own calls. */
++  protected sendRaw(body: BunResponseBody): BunResponse {
+     if (this.headersSent) {
+-      return this;
++      return this.#self;
+     }
+ 
+     // Capture the body for inspection (see `getBody`) before any 204/304
+@@ -1796,7 +2103,7 @@
+         const peeked = Bun.peek(body.getNativeResponse(0));
+         if (!(peeked instanceof Response)) {
+           this.response = new Response(undefined, this.options);
+-          return this;
++          return this.#self;
+         }
+         response = peeked;
+       }
+@@ -1807,15 +2114,16 @@
+           respHeaders.set(key, headerValue);
+         }
+       });
++      this.#gateKind("native");
+       this.response = response;
+-      return this;
++      return this.#self;
+     }
+ 
+     if (isNumber(body) || typeof body === "boolean") {
+       return this.#respondWithText(String(body));
+     }
+ 
+-    this.req.setResponse(this);
++    this.req.setResponse(this.#self);
+ 
+     if (isBinaryBody(body)) {
+       // Binary bodies (Buffer, any typed array, DataView, ArrayBuffer,
+@@ -1832,7 +2140,7 @@
+ 
+       if (this.#applyFreshnessAndStrip()) {
+         this.response = new Response(null, this.options);
+-        return this;
++        return this.#self;
+       }
+ 
+       // Express defaults a binary body to `application/octet-stream`; be
+@@ -1845,7 +2153,7 @@
+         body as ConstructorParameters<typeof Response>[0],
+         this.options,
+       );
+-      return this;
++      return this.#self;
+     }
+ 
+     if (
+@@ -1862,6 +2170,7 @@
+       ) &&
+       (isObject(body) || isArray(body))
+     ) {
++      this.#gateKind("json");
+       if (this.#canSkipHeaders()) {
+         return this.#respondWithJson(body);
+       }
+@@ -1875,14 +2184,14 @@
+     // and `async function*` stream.
+     if (this.#applyFreshnessAndStrip() || isNull(body) || isUndefined(body)) {
+       this.response = new Response(null, this.options);
+-      return this;
++      return this.#self;
+     }
+ 
+     this.response = new Response(
+       body as ConstructorParameters<typeof Response>[0],
+       this.options,
+     );
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -1930,7 +2239,7 @@
+       this.setHeaders(headers);
+     }
+     if (statusCode) {
+-      this.status(statusCode);
++      this.setStatusRaw(statusCode);
+     }
+ 
+     if (statusMessage) {
+@@ -1958,6 +2267,7 @@
+     this._isLongLived = true;
+     this.options.headers = this.headersObj;
+     const readableStream = this.readableStream;
++    this.#gateKind("stream-open");
+     this.response = new Response(readableStream, this.options);
+     return true;
+   }
+@@ -2308,8 +2618,30 @@
+       return false;
+     }
+ 
++    const gate = this.#state?.gate;
++    if (gate?.rejectedStream) {
++      return false;
++    }
++
+     if (!this._isLongLived) {
+       this.initLongLivedConnection();
++      if (gate?.rejectedStream) {
++        return false; // the opening was refused; the error pipeline answers
++      }
++    }
++
++    if (gate?.gate !== undefined) {
++      // SPIKE: each chunk, in order; an async verdict queues what follows.
++      if (gate.chunkChain !== undefined) {
++        gate.chunkChain = gate.chunkChain.then(() => this.#checkedWrite(gate, chunk));
++        return true;
++      }
++      const verdict = gate.gate.chunk(this as unknown as BunResponse, chunk);
++      if (verdict instanceof Promise) {
++        gate.chunkChain = verdict.then((v) => this.#chunkVerdict(v, chunk));
++        return true;
++      }
++      return this.#chunkVerdict(verdict, chunk);
+     }
+ 
+     if (this._isLongLived) {
+@@ -2319,6 +2651,23 @@
+     return true;
+   }
+ 
++  /** SPIKE: a chunk checked after the ones before it. */
++  async #checkedWrite(gate: GateState, chunk: BunResponseChunk): Promise<boolean> {
++    return this.#chunkVerdict(await gate.gate!.chunk(this as unknown as BunResponse, chunk), chunk);
++  }
++
++  /** SPIKE: after the stream started, `"error"` can only cut it off. */
++  #chunkVerdict(verdict: GateVerdict, chunk: BunResponseChunk): boolean {
++    if (verdict?.destroy !== undefined) {
++      this.destroy(verdict.destroy);
++      return false;
++    }
++    if (this._isLongLived && !this.#destroyed) {
++      this.getWritable()?.write(chunk);
++    }
++    return true;
++  }
++
+   /**
+    * Finishes the response and resolves with it (Node's `res.end()` returns the
+    * response). On a long-lived stream a given `chunk` is written as the last
+@@ -2341,7 +2690,7 @@
+       if (hasChunk) {
+         this.#emitWriteAfterEnd();
+       }
+-      return Promise.resolve(this);
++      return Promise.resolve(this.#self);
+     }
+ 
+     return this.#endOpen(hasChunk ? chunk : undefined);
+@@ -2349,15 +2698,27 @@
+ 
+   /** {@link end} on a response that has not ended yet. */
+   async #endOpen(chunk: BunResponseChunk | undefined): Promise<BunResponse> {
++    if (this.#state?.gate?.rejectedStream) {
++      return this.#self;
++    }
+     if (this._isLongLived) {
+       if (chunk !== undefined) {
+         this.write(chunk);
+       }
++      // SPIKE: chunks still waiting for an async verdict go first; a chunk
++      // that failed cut the stream off, which must not then end cleanly.
++      const chain = this.#state?.gate?.chunkChain;
++      if (chain !== undefined) {
++        await chain;
++        if (this.#destroyed) {
++          return this.#self;
++        }
++      }
+       await this.endLongLivedConnection();
+-      return this;
++      return this.#self;
+     }
+ 
+-    return this.send(chunk);
++    return this.sendRaw(chunk);
+   }
+ 
+   /**
+@@ -2374,15 +2735,15 @@
+    * With a `ResponseInit` second argument the response is Bun's
+    * `Response.redirect(url, init)`, unchanged.
+    */
+-  redirect(url: string): BunResponse;
+-  redirect(status: number, url: string): BunResponse;
+-  redirect(url: string, status: ResponseInit | number | undefined): BunResponse;
++  redirect(url: RedirectUrl<TResponses>): BunResponse;
++  redirect<const C extends RedirectStatus<TResponses>>(status: C, url: string): BunResponse;
++  redirect(url: string, status: ResponseInit | RedirectStatus<TResponses> | undefined): BunResponse;
+   redirect(
+     first: string | number,
+     second?: string | ResponseInit | number,
+   ): BunResponse {
+     if (this.headersSent) {
+-      return this;
++      return this.#self;
+     }
+ 
+     let address: string;
+@@ -2393,8 +2754,9 @@
+     } else {
+       address = first;
+       if (isObject(second)) {
++        this.#gateKind("redirect");
+         this.response = Response.redirect(first, second as ResponseInit);
+-        return this;
++        return this.#self;
+       }
+       if (typeof second === "number" && Number.isFinite(second)) {
+         status = second;
+@@ -2417,19 +2779,20 @@
+       body = `<p>${reason}. Redirecting to ${escapeHtml(address)}</p>`;
+     }
+ 
+-    this.status(status);
++    this.setStatusRaw(status);
+     this.setHeader(
+       "Content-Length",
+       String(new TextEncoder().encode(body).byteLength),
+     );
+-    this.req.setResponse(this);
++    this.req.setResponse(this.#self);
+     this.#sentBody = body;
+     this.options.headers = this.headersObj;
++    this.#gateKind("redirect");
+     this.response = new Response(
+       this.req.method === "HEAD" || body === "" ? null : body,
+       this.options,
+     );
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -2474,7 +2837,7 @@
+         if (!this.hasHeader("Content-Type")) {
+           this.setHeader("Content-Type", "text/html; charset=utf-8");
+         }
+-        this.send(html ?? "");
++        this.sendRaw(html ?? "");
+       });
+ 
+     (this.#views ??= new BunViews()).render(view, opts, finish);
+@@ -2769,7 +3132,7 @@
+     }
+ 
+     this.headersObj.set("Content-Disposition", contentDisposition(filename));
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -2802,6 +3165,7 @@
+ 
+     this.options.status = 404;
+     this.options.statusText = "Not Found";
++    this.#gateKind("status");
+     this.response = new Response(undefined, this.options);
+     return this;
+   }
+@@ -2814,8 +3178,9 @@
+     this.options.status = code;
+     this.options.statusText = STATUS_CODES[code] ?? "";
+     this.options.headers = this.headersObj;
++    this.#gateKind("status");
+     this.response = new Response(null, this.options);
+-    return this;
++    return this.#self;
+   }
+ 
+   /**
+@@ -2912,7 +3277,7 @@
+     }
+ 
+     if (this.headersSent) {
+-      return this;
++      return this.#self;
+     }
+ 
+     const acceptRanges = opts.acceptRanges ?? opts.accepRanges ?? true;
+@@ -2964,7 +3329,7 @@
+     }
+ 
+     this.options.headers = this.headersObj;
+-    this.req.setResponse(this);
++    this.req.setResponse(this.#self);
+ 
+     // Conditional GET.
+     if (this.#isPreconditionFailure()) {
+@@ -3000,7 +3365,7 @@
+ 
+       if (ranges !== -2 && ranges.length === 1) {
+         const [{ start, end }] = ranges;
+-        this.status(206);
++        this.setStatusRaw(206);
+         this.headersObj.set(
+           "Content-Range",
+           `bytes ${start}-${end}/${stats.size}`,
+@@ -3012,8 +3377,9 @@
+     if (this.#responseTransforms !== undefined) {
+       this.#transformBody = body;
+     }
++    this.#gateKind("file", body);
+     this.response = new Response(body, this.options);
+-    return this;
++    return this.#self;
+   }
+ 
+   /** `send`'s `isPreconditionFailure`: a failed `If-Match` or `If-Unmodified-Since`. */
+@@ -3117,13 +3483,14 @@
+       return;
+     }
+ 
+-    this.status(status);
++    this.setStatusRaw(status);
+     this.type("txt");
+-    return this.send(STATUS_CODES[status] ?? String(status));
++    this.#gateKind("status");
++    return this.sendRaw(STATUS_CODES[status] ?? String(status));
+   }
+ 
+-  public set(name: string, value: string | string[], replace = true) {
+-    return this.setHeader(name, value, replace);
++  public set<N extends string, V extends HeaderValueFor<TResponses, N>>(name: N, value: V, replace = true) {
++    return this.setHeader(name, value as string | string[], replace);
+   }
+ 
+   /**
+@@ -3141,14 +3508,14 @@
+       loc = referer || "/";
+     }
+ 
+-    return this.set("Location", encodeUrl(loc));
++    return this.setHeader("Location", encodeUrl(loc));
+   }
+ 
+   public links(links: Record<string, string>) {
+     let link = this.get("Link", "") || "";
+     if (link) link += ", ";
+ 
+-    return this.set(
++    return this.setHeader(
+       "Link",
+       link +
+         Object.keys(links)
+@@ -3166,7 +3533,7 @@
+    * numeric string); `path` defaults to `/`. The caller's `opts` object is not
+    * modified.
+    */
+-  public cookie(name: string, value: CookieValue, opts?: BunCookieOptions) {
++  public cookie<N extends string, V extends CookieValueFor<TResponses, N>>(name: N, value: V, opts?: BunCookieOptions) {
+     const { signed, secret: optsSecret, maxAge, ...rest } = opts ?? {};
+     const options: CookieSerializeOptions = { ...rest };
+ 
+@@ -3208,7 +3575,7 @@
+    */
+   public clearCookie(name: string, opts?: BunCookieOptions) {
+     const { maxAge: _maxAge, ...rest } = opts ?? {};
+-    return this.cookie(name, "", {
++    return (this as unknown as BunResponse).cookie(name, "", {
+       path: "/",
+       ...rest,
+       expires: new Date(1),
+@@ -3248,10 +3615,10 @@
+     this.vary("Accept");
+ 
+     if (matchedType) {
+-      this.set("Content-Type", matchedType);
+-      obj[keyStr](req, this, next);
++      this.setHeader("Content-Type", matchedType);
++      obj[keyStr](req, this.#self, next);
+     } else if (obj.default) {
+-      obj.default(req, this, next);
++      obj.default(req, this.#self, next);
+     } else if (pipelineNext) {
+       pipelineNext(
+         Object.assign(new Error("Not Acceptable"), {
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/BunRouter.ts packages/bun-common/lib/BunRouter.ts
+--- a/lib/BunRouter.ts
++++ b/lib/BunRouter.ts
+@@ -5472,6 +5472,10 @@
+       // such as `res.format()` can hand an error to the pipeline.
+       request.baseUrl = layer.baseUrl;
+       request.next = next;
++      if (layer.isErrorHandler) {
++        // SPIKE: an error handler's response is checked but never replaced.
++        response.enterErrorPath();
++      }
+ 
+       let invoked: unknown;
+       try {
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/BunValidate.ts packages/bun-common/lib/BunValidate.ts
+--- a/lib/BunValidate.ts
++++ b/lib/BunValidate.ts
+@@ -1,12 +1,29 @@
+ import type { BunRequest } from "./BunRequest";
+-import type { BunResponse } from "./BunResponse";
++import type {
++  BunResponse,
++  BunResponseBody,
++  BunResponseChunk,
++} from "./BunResponse";
++import type { LoggerLike } from "./logging";
++import type {
++  ResponseSchemas,
++  ResponseValidationMode,
++} from "./responseContract";
++import { createLogger, resolveLogger } from "./logging";
++import { compileResponses, createResponseGate } from "./responseContract";
+ import type { NextFunction, RouterHandler } from "./types/general";
+ import type { EmptyShape } from "./types/routeTyping";
+ import type { StandardSchemaV1 } from "./types/standardSchema";
+ import type { JsonValue } from "./utils/native";
+ 
+ /** The request members `BunValidate` can validate. */
+-export type ValidationTarget = "params" | "query" | "body" | "headers";
++export type ValidationTarget =
++  | "params"
++  | "query"
++  | "body"
++  | "headers"
++  | "cookies"
++  | "signedCookies";
+ 
+ /** Schemas to apply, keyed by target. Every one is optional. */
+ export interface ValidationSchemas {
+@@ -18,6 +35,13 @@
+   body?: StandardSchemaV1;
+   /** Validates the request headers as a plain object. */
+   headers?: StandardSchemaV1;
++  /** SPIKE: validates `req.cookies` (unsigned; `j:` values already parsed). Written back. */
++  cookies?: StandardSchemaV1;
++  /**
++   * SPIKE: validates `req.signedCookies`: only cookies whose signature
++   * verified, a tampered one as `false`. The way to require a signature.
++   */
++  signedCookies?: StandardSchemaV1;
+ }
+ 
+ /**
+@@ -35,6 +59,10 @@
+   body: BunRequest["body"];
+   /** `req.headers`, as a plain object. */
+   headers: BunRequest["headers"];
++  /** `req.cookies`. */
++  cookies: BunRequest["cookies"];
++  /** `req.signedCookies`. */
++  signedCookies: BunRequest["signedCookies"];
+ }
+ 
+ /** The output type of a target's schema, or `unknown` when it has none. */
+@@ -111,7 +139,95 @@
+   S extends ValidationSchemas,
+   H = unknown,
+   R extends boolean = true,
+-> = [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
++  RS = undefined,
++> = [RS] extends [ResponseSchemas]
++  ? RequestShapeFor<S, H, R> & { responses: InferResponses<RS> }
++  : RequestShapeFor<S, H, R>;
++
++/**
++ * SPIKE: the request side of the shape, unchanged: the written-back parts
++ * with `replace: true`, nothing with `replace: false`. `req.valid` is read
++ * off the same shape (`ResolveValid`), so it adds no key here.
++ */
++export type RequestShapeFor<S extends ValidationSchemas, H, R extends boolean> =
++  [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
++
++/**
++ * SPIKE: the body a handler may send for one schema — its input, the value the
++ * runtime check accepts, unless the input is `unknown` (a `toStandardSchema`
++ * wrapper, `z.unknown()`, a coercing schema), which would constrain nothing;
++ * then its output.
++ */
++export type ResponseBodyOf<T extends StandardSchemaV1> =
++  unknown extends StandardSchemaV1.InferInput<T> ? StandardSchemaV1.InferOutput<T> : StandardSchemaV1.InferInput<T>;
++
++/** SPIKE: media types whose body `json()` sends. */
++type JsonMedia = "application/json" | `${string}+json`;
++/** SPIKE: a status's content map: a bare schema is a JSON body; `undefined`: unchecked. */
++type ContentOf<Sp> = Sp extends null
++  ? null
++  : Sp extends StandardSchemaV1
++    ? { "application/json": Sp }
++    : Sp extends { content: infer C }
++      ? C
++      : undefined;
++/** SPIKE: what `json()` takes: the JSON media types' bodies. */
++type JsonOf<C> = C extends null
++  ? never
++  : C extends Readonly<Record<string, unknown>>
++    ? {
++        [K in keyof C]: K extends JsonMedia
++          ? C[K] extends StandardSchemaV1
++            ? ResponseBodyOf<C[K]>
++            : never
++          : never;
++      }[keyof C]
++    : BunResponseBodyLike;
++/** SPIKE: what `send()` takes for one media type. */
++type SendOneOf<K, V> = V extends null
++  ? null | undefined
++  : V extends StandardSchemaV1
++    ? K extends JsonMedia | `text/${string}`
++      ? ResponseBodyOf<V>
++      : ResponseBodyOf<V> | Blob
++    : V extends { kind: "opaque" }
++      ? ArrayBufferView | ArrayBufferLike | Blob | ReadableStream
++      : V extends { kind: "chunks" | "sse" }
++        ? ReadableStream | AsyncIterable<BunResponseChunk> | string
++        : never;
++/** SPIKE: what `send()` takes: every media type's body. */
++type SendOf<C> = C extends null
++  ? null | undefined
++  : C extends Readonly<Record<string, unknown>>
++    ? { [K in keyof C]: SendOneOf<K, C[K]> }[keyof C]
++    : BunResponseBodyLike;
++/** SPIKE: anything, for a status that declares no content map. */
++type BunResponseBodyLike = BunResponseBody;
++/** SPIKE: declared response headers, lower-case name to value. */
++type HeadersOf<Sp> = Sp extends { headers: infer H extends StandardSchemaV1 }
++  ? ResponseBodyOf<H>
++  : EmptyShape;
++/** SPIKE: declared `Set-Cookie`s, name to the value `res.cookie()` takes. */
++type CookiesOf<Sp> = Sp extends { cookies: infer C extends StandardSchemaV1 }
++  ? {
++      [N in keyof ResponseBodyOf<C>]: ResponseBodyOf<C>[N] extends { value: infer V }
++        ? V
++        : never;
++    }
++  : EmptyShape;
++
++/** SPIKE: status to what a handler may send for it. */
++export type InferResponses<RS> = RS extends ResponseSchemas
++  ? {
++      [K in keyof RS]: {
++        json: JsonOf<ContentOf<RS[K]>>;
++        send: SendOf<ContentOf<RS[K]>>;
++        headers: HeadersOf<RS[K]>;
++        cookies: CookiesOf<RS[K]>;
++      };
++    }
++  : never;
++
+ 
+ /** What to do when a target fails validation. */
+ export type ValidationFailureMode =
+@@ -201,7 +317,19 @@
+   S extends ValidationSchemas = ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  RS extends ResponseSchemas | undefined = undefined,
+ > {
++  /**
++   * SPIKE: the response contract by status — a schema (a JSON body), `null`
++   * (no body) or `{ headers, cookies, content }`. Types the handler's `res`
++   * always; checked at runtime per {@link responseValidation}. A status not
++   * declared is a mismatch.
++   */
++  responses?: RS;
++  /** SPIKE: runtime response checks: `"off"` (default), `"warn"`, `"error"`. */
++  responseValidation?: ResponseValidationMode;
++  /** SPIKE: where response mismatches are logged; defaults to a console logger. */
++  logger?: LoggerLike;
+   /** Schemas to apply, keyed by request target. */
+   schemas: S;
+   /**
+@@ -262,6 +390,10 @@
+       return req.query;
+     case "body":
+       return req.body;
++    case "cookies":
++      return req.cookies;
++    case "signedCookies":
++      return req.signedCookies;
+     default:
+       return req.headers;
+   }
+@@ -288,6 +420,12 @@
+     case "body":
+       req.body = value as never;
+       break;
++    case "cookies":
++      req.cookies = value as never;
++      break;
++    case "signedCookies":
++      req.signedCookies = value as never;
++      break;
+     default:
+       // Headers are validated for their shape but never replaced: the parsed
+       // view is a plain object, while `req.headers` is backed by the live
+@@ -405,14 +543,15 @@
+   S extends ValidationSchemas = ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  RS extends ResponseSchemas | undefined = undefined,
+ > {
+   /** Targets that have a schema, in a fixed order for predictable reporting. */
+   readonly #targets: ValidationTarget[];
+   /** The options given, with every behavioural default filled in. */
+   readonly #options: Required<
+-    Pick<BunValidateOptions<S, H, R>, "onFailure" | "status" | "abortEarly">
++    Pick<BunValidateOptions<S, H, R, RS>, "onFailure" | "status" | "abortEarly">
+   > &
+-    Omit<BunValidateOptions<S, H, R>, "replace"> & {
++    Omit<BunValidateOptions<S, H, R, RS>, "replace"> & {
+       /** Whether validated values are written back; defaults to `true`. */
+       replace: boolean;
+     };
+@@ -421,7 +560,7 @@
+    * @param options Schemas, hooks and failure behaviour; see
+    *   {@link BunValidateOptions}.
+    */
+-  constructor(options: BunValidateOptions<S, H, R>) {
++  constructor(options: BunValidateOptions<S, H, R, RS>) {
+     this.#options = {
+       onFailure: "next",
+       status: 400,
+@@ -430,7 +569,14 @@
+       replace: options.replace ?? true,
+     };
+ 
+-    const order: ValidationTarget[] = ["headers", "params", "query", "body"];
++    const order: ValidationTarget[] = [
++      "headers",
++      "cookies",
++      "signedCookies",
++      "params",
++      "query",
++      "body",
++    ];
+     this.#targets = order.filter((target) => !!options.schemas[target]);
+   }
+ 
+@@ -444,7 +590,7 @@
+    * as a phantom type, so a verb method registering it can narrow the
+    * following handler's `req` without the caller restating anything.
+    */
+-  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
++  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+     const { onFailure, status, abortEarly, replace, schemas, formatError } =
+       this.#options;
+     // Erased for the loop, which handles every target through one code path:
+@@ -458,6 +604,16 @@
+         }
+       | undefined;
+     const targets = this.#targets;
++    // SPIKE: the response contract, compiled once; no gate at all when "off".
++    const mode = this.#options.responseValidation ?? "off";
++    const compiled =
++      this.#options.responses !== undefined && mode !== "off"
++        ? compileResponses(this.#options.responses)
++        : undefined;
++    const logger =
++      compiled === undefined
++        ? undefined
++        : resolveLogger(this.#options.logger, createLogger({ name: "bun-validate" }));
+ 
+     const handler: RouterHandler = async (
+       req: BunRequest,
+@@ -498,12 +654,25 @@
+           ? targetHooks.transform(result.value, req)
+           : result.value;
+ 
++        // SPIKE: every parsed part, headers included, on one typed view.
++        const holder = req as unknown as { valid?: Record<string, unknown> };
++        (holder.valid ??= {})[target] = value;
++
+         if (replace) {
+           writeTarget(req, target, value);
+         }
+       }
+ 
+       if (issues.length === 0) {
++        if (compiled !== undefined) {
++          res.setResponseGate(
++            createResponseGate(compiled, {
++              mode: mode as "warn" | "error",
++              logger: logger!,
++              route: `${req.method} ${req.path}`,
++            }),
++          );
++        }
+         return next();
+       }
+ 
+@@ -528,7 +697,7 @@
+       return next(error);
+     };
+ 
+-    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R>>;
++    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>>;
+   }
+ 
+   /** Shorthand for `new BunValidate(options).middleware()`. */
+@@ -560,9 +729,10 @@
+   S extends ValidationSchemas,
+   H extends ValidationHooks<S> = ValidationHooks<S>,
+   R extends boolean = true,
++  const RS extends ResponseSchemas | undefined = undefined,
+ >(
+   schemas: S,
+-  options?: Omit<BunValidateOptions<S, H, R>, "schemas">,
+-): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
+-  return new BunValidate({ ...options, schemas }).middleware();
++  options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas">,
++): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
++  return new BunValidate<S, H, R, RS>({ ...options, schemas }).middleware();
+ }
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/responseContract.ts packages/bun-common/lib/responseContract.ts
+--- a/lib/responseContract.ts
++++ b/lib/responseContract.ts
+@@ -0,0 +1,512 @@
++/**
++ * SPIKE (plan evidence, http-complete): runtime response contracts.
++ *
++ * A contract declares, per status code, the response headers, the
++ * `Set-Cookie`s and the body by media type. `createResponseGate` turns one into
++ * the per-request {@link BunResponseGate} that `BunResponse` consults at its
++ * single commit point (the private `response` setter, which every producer —
++ * `json`, `send` of any body, `redirect`, `sendFile`, a stream's first
++ * `write` — passes through) and, for a stream, at every chunk.
++ *
++ * A minimal local runner; the shared core (`validateStandard`) is another
++ * spike's subject (evidence/contract-core/).
++ */
++import type {
++  BunResponse,
++  BunResponseChunk,
++  BunResponseGate,
++  GateCommit,
++  GateVerdict,
++} from "./BunResponse";
++import type { Logger } from "./logging";
++import type { StandardSchemaV1 } from "./types/standardSchema";
++
++/** `"off"`: no checks; `"warn"`: log and send; `"error"`: fail the response. */
++export type ResponseValidationMode = "off" | "warn" | "error";
++
++/** A streamed body checked chunk by chunk (each `write()`, each stream chunk). */
++export interface StreamChunks<S extends StandardSchemaV1 = StandardSchemaV1> {
++  /** Discriminant. */
++  readonly kind: "chunks";
++  /** The schema every chunk must pass: a `string`, or a `Uint8Array` for bytes. */
++  readonly chunk: S;
++}
++
++/** A `text/event-stream` body checked event by event, by event name. */
++export interface SseEvents<
++  E extends Record<string, StandardSchemaV1 | null> = Record<string, StandardSchemaV1 | null>,
++> {
++  /** Discriminant. */
++  readonly kind: "sse";
++  /** Event name (`message` when the event has no `event:` line) to its `data` schema; `null`: no data. */
++  readonly events: E;
++}
++
++/** A media type declared without reading its content (a file, an image). */
++export interface OpaqueBody {
++  /** Discriminant. */
++  readonly kind: "opaque";
++}
++
++/** What one media type of a status may carry. `null`: an empty body. */
++export type ContentSpec =
++  | StandardSchemaV1
++  | null
++  | StreamChunks
++  | SseEvents
++  | OpaqueBody;
++
++/** The full form of one status's contract. */
++export interface ResponseSpecObject {
++  /** The response headers, as an object of lower-case names (`set-cookie` excluded). */
++  headers?: StandardSchemaV1;
++  /** The `Set-Cookie`s, as `{ [name]: { value, httpOnly, secure, sameSite?, path?, domain?, maxAge?, expires?, partitioned } }`. */
++  cookies?: StandardSchemaV1;
++  /** The body by media type (`type/*` and `*\/*` match as fallbacks); `null`: no body. Omitted: body unchecked. */
++  content?: Readonly<Record<string, ContentSpec>> | null;
++}
++
++/** One status: a schema (shorthand for a JSON body), `null` (no body), or the full form. */
++export type ResponseSpec = StandardSchemaV1 | null | ResponseSpecObject;
++
++/** The declared responses, by status code. */
++export type ResponseSchemas = Readonly<Record<number, ResponseSpec>>;
++
++/** Declares a body checked per chunk. */
++export function chunks<S extends StandardSchemaV1>(chunk: S): StreamChunks<S> {
++  return { kind: "chunks", chunk };
++}
++
++/** Declares a server-sent events body checked per event. */
++export function sse<const E extends Record<string, StandardSchemaV1 | null>>(
++  events: E,
++): SseEvents<E> {
++  return { kind: "sse", events };
++}
++
++/** Declares a media type whose content is not read. */
++export function opaque(): OpaqueBody {
++  return { kind: "opaque" };
++}
++
++/** Which part of a response an issue is about. */
++export type ResponsePart = "status" | "headers" | "cookies" | "body" | "chunk" | "event";
++
++/** One response mismatch. */
++export interface ResponseIssue {
++  /** Always `"response"`, so request and response issues share one shape. */
++  target: "response";
++  /** The part of the response. */
++  part: ResponsePart;
++  /** The schema's message, or the contract's. */
++  message: string;
++  /** Dotted path within the part; `""` for the part itself. */
++  path: string;
++}
++
++/** A response broke its contract (mode `"error"`). Status 500. */
++export class ResponseValidationError extends Error {
++  /** Every mismatch found. */
++  public readonly issues: ResponseIssue[];
++  /** The status the response was going to have. */
++  public readonly responseStatus: number;
++  /** The status to answer with. */
++  public readonly status = 500;
++
++  constructor(issues: ResponseIssue[], responseStatus: number) {
++    super(
++      `Response validation failed (${responseStatus}) — ${issues
++        .map((i) => `${i.part}${i.path ? `.${i.path}` : ""}: ${i.message}`)
++        .join("; ")}`,
++    );
++    this.name = "ResponseValidationError";
++    this.issues = issues;
++    this.responseStatus = responseStatus;
++  }
++}
++
++/** A status's contract, normalised once at construction. */
++interface CompiledSpec {
++  headers: StandardSchemaV1 | undefined;
++  cookies: StandardSchemaV1 | undefined;
++  /** `undefined`: body unchecked; `null`: no body; else by media type. */
++  content: Readonly<Record<string, ContentSpec>> | null | undefined;
++}
++
++/** A compiled contract: status → spec. */
++export type CompiledResponses = Map<number, CompiledSpec>;
++
++function isSchema(value: unknown): value is StandardSchemaV1 {
++  return typeof value === "object" && value !== null && "~standard" in value;
++}
++
++/** Normalises every status once, so the gate does no shape tests per request. */
++export function compileResponses(responses: ResponseSchemas): CompiledResponses {
++  const map: CompiledResponses = new Map();
++  for (const [code, spec] of Object.entries(responses)) {
++    const status = Number(code);
++    if (spec === null) {
++      map.set(status, { headers: undefined, cookies: undefined, content: null });
++    } else if (isSchema(spec)) {
++      map.set(status, { headers: undefined, cookies: undefined, content: { "application/json": spec } });
++    } else {
++      map.set(status, {
++        headers: spec.headers,
++        cookies: spec.cookies,
++        content: spec.content,
++      });
++    }
++  }
++  return map;
++}
++
++function formatPath(issue: StandardSchemaV1.Issue): string {
++  if (!issue.path || issue.path.length === 0) return "";
++  return issue.path
++    .map((s) => (typeof s === "object" && s !== null && "key" in s ? String(s.key) : String(s)))
++    .join(".");
++}
++
++type Found = ResponseIssue[];
++/** Runs one schema; sync when the vendor is. */
++function run(
++  schema: StandardSchemaV1,
++  value: unknown,
++  part: ResponsePart,
++  prefix = "",
++): Found | Promise<Found> {
++  const map = (result: StandardSchemaV1.Result<unknown>): Found =>
++    result.issues
++      ? result.issues.map((issue) => {
++          const path = formatPath(issue);
++          return { target: "response", part, message: issue.message, path: prefix && path ? `${prefix}.${path}` : prefix || path };
++        })
++      : [];
++  const result = schema["~standard"].validate(value);
++  return result instanceof Promise ? result.then(map) : map(result);
++}
++
++const issue = (part: ResponsePart, message: string, path = ""): ResponseIssue => ({
++  target: "response",
++  part,
++  message,
++  path,
++});
++
++function mediaTypeOf(contentType: string | null | undefined): string | undefined {
++  if (!contentType) return undefined;
++  const semi = contentType.indexOf(";");
++  return (semi === -1 ? contentType : contentType.slice(0, semi)).trim().toLowerCase();
++}
++
++function isJsonMedia(media: string): boolean {
++  return media === "application/json" || media.endsWith("+json");
++}
++
++function pickContent(
++  content: Readonly<Record<string, ContentSpec>>,
++  media: string,
++): ContentSpec | undefined {
++  if (media in content) return content[media];
++  const wild = `${media.slice(0, media.indexOf("/"))}/*`;
++  if (wild in content) return content[wild];
++  return "*/*" in content ? content["*/*"] : undefined;
++}
++
++/** The headers a schema sees: lower-case names, `set-cookie` left to `cookies`. */
++function headersObject(response: Response, contentType: string | undefined): Record<string, string> {
++  const out: Record<string, string> = {};
++  response.headers.forEach((value, key) => {
++    if (key !== "set-cookie") out[key] = value;
++  });
++  if (contentType !== undefined && out["content-type"] === undefined) out["content-type"] = contentType;
++  return out;
++}
++
++/** One parsed `Set-Cookie` line. */
++export interface SetCookieView {
++  /** The value as written (URL-decoded; `j:`/`s:` prefixes kept). */
++  value: string;
++  /** `HttpOnly` present. */
++  httpOnly: boolean;
++  /** `Secure` present. */
++  secure: boolean;
++  /** `Partitioned` present. */
++  partitioned: boolean;
++  /** `SameSite`, lower-cased, when present. */
++  sameSite?: string;
++  /** `Path`, when present. */
++  path?: string;
++  /** `Domain`, when present. */
++  domain?: string;
++  /** `Max-Age` in seconds, when present. */
++  maxAge?: number;
++  /** `Expires`, as written, when present. */
++  expires?: string;
++}
++
++function setCookies(response: Response): Record<string, SetCookieView> {
++  const out: Record<string, SetCookieView> = {};
++  for (const line of response.headers.getSetCookie()) {
++    const [pair = "", ...attrs] = line.split(";");
++    const eq = pair.indexOf("=");
++    const name = pair.slice(0, eq).trim();
++    let value = pair.slice(eq + 1).trim();
++    try {
++      value = decodeURIComponent(value);
++    } catch {}
++    const view: SetCookieView = { value, httpOnly: false, secure: false, partitioned: false };
++    for (const attr of attrs) {
++      const i = attr.indexOf("=");
++      const key = (i === -1 ? attr : attr.slice(0, i)).trim().toLowerCase();
++      const v = i === -1 ? "" : attr.slice(i + 1).trim();
++      if (key === "httponly") view.httpOnly = true;
++      else if (key === "secure") view.secure = true;
++      else if (key === "partitioned") view.partitioned = true;
++      else if (key === "samesite") view.sameSite = v.toLowerCase();
++      else if (key === "path") view.path = v;
++      else if (key === "domain") view.domain = v;
++      else if (key === "max-age") view.maxAge = Number(v);
++      else if (key === "expires") view.expires = v;
++    }
++    out[name] = view;
++  }
++  return out;
++}
++
++const decoder = new TextDecoder();
++function toBytes(body: ArrayBufferView | ArrayBufferLike): Uint8Array {
++  return ArrayBuffer.isView(body)
++    ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
++    : new Uint8Array(body as ArrayBuffer);
++}
++
++/** The value a whole-body schema sees, by media type: JSON parsed, text decoded, else bytes. */
++function bodyValue(media: string, kind: "json" | "text" | "bytes", body: unknown): { ok: true; value: unknown } | { ok: false } {
++  if (kind === "json") return { ok: true, value: body };
++  if (kind === "text") {
++    if (!isJsonMedia(media)) return { ok: true, value: body };
++    try {
++      return { ok: true, value: JSON.parse(body as string) };
++    } catch {
++      return { ok: false };
++    }
++  }
++  const bytes = body as Uint8Array;
++  if (isJsonMedia(media)) {
++    try {
++      return { ok: true, value: JSON.parse(decoder.decode(bytes)) };
++    } catch {
++      return { ok: false };
++    }
++  }
++  return { ok: true, value: media.startsWith("text/") ? decoder.decode(bytes) : bytes };
++}
++
++/** Per-response state of a stream's chunk checks. */
++class ChunkChecker {
++  #sseBuffer = "";
++  readonly #decoder = new TextDecoder();
++  constructor(
++    readonly spec: StreamChunks | SseEvents,
++    readonly media: string,
++  ) {}
++
++  /** Issues for one chunk (several SSE events may complete in it). */
++  check(chunk: BunResponseChunk): Found | Promise<Found> {
++    if (this.spec.kind === "chunks") {
++      const value = typeof chunk === "string" ? chunk : this.media.startsWith("text/") ? this.#decoder.decode(toBytes(chunk), { stream: true }) : toBytes(chunk);
++      return run(this.spec.chunk, value, "chunk");
++    }
++    this.#sseBuffer += typeof chunk === "string" ? chunk : this.#decoder.decode(toBytes(chunk), { stream: true });
++    const found: (Found | Promise<Found>)[] = [];
++    let end: RegExpExecArray | null;
++    const re = /\r?\n\r?\n/;
++    while ((end = re.exec(this.#sseBuffer)) !== null) {
++      const block = this.#sseBuffer.slice(0, end.index);
++      this.#sseBuffer = this.#sseBuffer.slice(end.index + end[0].length);
++      found.push(this.#checkEvent(block));
++    }
++    return merge(found);
++  }
++
++  #checkEvent(block: string): Found | Promise<Found> {
++    let name = "message";
++    const data: string[] = [];
++    let any = false;
++    for (const line of block.split(/\r?\n/)) {
++      if (line === "" || line.startsWith(":")) continue;
++      any = true;
++      const i = line.indexOf(":");
++      const field = i === -1 ? line : line.slice(0, i);
++      const value = i === -1 ? "" : line.slice(i + 1).replace(/^ /, "");
++      if (field === "event") name = value;
++      else if (field === "data") data.push(value);
++    }
++    if (!any) return [];
++    const events = (this.spec as SseEvents).events;
++    if (!(name in events)) return [issue("event", `event "${name}" is not declared`, name)];
++    const schema = events[name];
++    const text = data.join("\n");
++    if (schema === null) return text === "" ? [] : [issue("event", `event "${name}" declares no data`, name)];
++    let value: unknown = text;
++    try {
++      value = JSON.parse(text);
++    } catch {}
++    return run(schema!, value, "event", name);
++  }
++}
++
++function merge(parts: (Found | Promise<Found>)[]): Found | Promise<Found> {
++  if (parts.some((p) => p instanceof Promise)) return Promise.all(parts).then((xs) => xs.flat());
++  return (parts as Found[]).flat();
++}
++
++/** Options of {@link createResponseGate}. */
++export interface ResponseGateOptions {
++  /** `"warn"` or `"error"` (an `"off"` contract installs no gate). */
++  mode: Exclude<ResponseValidationMode, "off">;
++  /** Where `"warn"` mismatches, and `"error"` ones after a stream started, are logged. */
++  logger: Logger;
++  /** `METHOD path`, for the log line. */
++  route: string;
++}
++
++/**
++ * The gate for one request. Sync vendors decide in place; a Promise holds the
++ * commit in `"error"` mode, and is only logged in `"warn"` mode.
++ */
++export function createResponseGate(
++  compiled: CompiledResponses,
++  { mode, logger, route }: ResponseGateOptions,
++): BunResponseGate {
++  let checker: ChunkChecker | undefined;
++  let warnedStream = false;
++
++  let errorPath = false;
++  const report = (found: Found, status: number): GateVerdict => {
++    if (found.length === 0) return undefined;
++    const error = new ResponseValidationError(found, status);
++    // An error handler's response is only reported: replacing it would mask
++    // the error it renders with a ResponseValidationError.
++    if (mode === "warn" || errorPath) {
++      logger.warn("Response does not match its contract", { route, status, mismatch: error.issues });
++      return undefined;
++    }
++    return { reject: error };
++  };
++  const settle = (found: Found | Promise<Found>, status: number): GateVerdict | Promise<GateVerdict> => {
++    if (!(found instanceof Promise)) return report(found, status);
++    if (mode === "warn" || errorPath) {
++      void found.then((f) => report(f, status));
++      return undefined;
++    }
++    return found.then((f) => report(f, status));
++  };
++
++  /** Wraps a user stream so each chunk is checked on its way out. */
++  const wrapStream = (response: Response, c: ChunkChecker, status: number): Response => {
++    const check = new TransformStream<Uint8Array, Uint8Array>({
++      transform(chunk, controller) {
++        const fail = (found: Found) => {
++          if (found.length === 0) return controller.enqueue(chunk);
++          const error = new ResponseValidationError(found, status);
++          logger[mode === "error" ? "error" : "warn"]("Streamed response chunk does not match its contract", { route, status, mismatch: error.issues });
++          if (mode === "error") controller.error(error);
++          else controller.enqueue(chunk);
++        };
++        const found = c.check(chunk);
++        return found instanceof Promise ? found.then(fail) : fail(found);
++      },
++    });
++    return new Response(response.body!.pipeThrough(check), response);
++  };
++
++  return {
++    commit(_res: BunResponse, response: Response, ctx: GateCommit) {
++      errorPath = ctx.errorPath;
++      const status = response.status;
++      const spec = compiled.get(status);
++      if (spec === undefined) {
++        // A 304 the freshness check made from a conditional request.
++        if (status === 304 && ctx.conditional) return undefined;
++        return settle([issue("status", `status ${status} is not declared (declared: ${[...compiled.keys()].join(", ")})`)], status);
++      }
++      const parts: (Found | Promise<Found>)[] = [];
++      if (spec.headers) parts.push(run(spec.headers, headersObject(response, ctx.contentType), "headers"));
++      if (spec.cookies) parts.push(run(spec.cookies, setCookies(response), "cookies"));
++
++      let replace: Response | undefined;
++      const exempt = ctx.kind === "redirect" || ctx.kind === "status" || status === 204 || status === 205 || status === 304;
++      const content = spec.content;
++      if (!exempt && content !== undefined) {
++        const empty = ctx.kind === "empty" || (ctx.kind === "json" && ctx.body === undefined);
++        if (content === null) {
++          if (!empty) parts.push([issue("body", `status ${status} declares no body`)]);
++        } else {
++          const media = mediaTypeOf(ctx.contentType);
++          const picked = media === undefined ? undefined : pickContent(content, media);
++          if (media === undefined || picked === undefined) {
++            parts.push([issue("body", `media type ${media ?? "(none)"} is not declared for status ${status} (declared: ${Object.keys(content).join(", ")})`)]);
++          } else if (picked === null) {
++            if (!empty) parts.push([issue("body", `${media} declares no body`)]);
++          } else if (!isSchema(picked) && picked.kind === "opaque") {
++            // declared, content not read
++          } else if (!isSchema(picked)) {
++            // chunks() / sse()
++            const c = new ChunkChecker(picked, media);
++            if (ctx.kind === "stream-open") checker = c;
++            else if (ctx.kind === "stream") replace = wrapStream(response, c, status);
++            else if (ctx.kind === "text" || ctx.kind === "bytes") parts.push(c.check(ctx.body as BunResponseChunk));
++            else parts.push([issue("body", `a ${ctx.kind} body cannot be checked per chunk`)]);
++          } else {
++            // A whole-body schema.
++            const kind = ctx.kind;
++            if (kind === "json" || kind === "text" || kind === "bytes") {
++              const v = bodyValue(media, kind, kind === "bytes" ? toBytes(ctx.body as ArrayBufferView) : ctx.body);
++              parts.push(v.ok ? run(picked, v.value, "body") : [issue("body", "body is not valid JSON")]);
++            } else if (kind === "blob" || kind === "file" || kind === "native") {
++              // Read without consuming what is sent: a Blob reads again; a Response is cloned.
++              const source = kind === "native" ? response.clone() : (ctx.body as Blob);
++              parts.push(
++                source.arrayBuffer().then((buf) => {
++                  const v = bodyValue(media, "bytes", new Uint8Array(buf));
++                  return v.ok ? run(picked, v.value, "body") : [issue("body", "body is not valid JSON")];
++                }),
++              );
++            } else if (kind === "empty") {
++              parts.push(run(picked, undefined, "body"));
++            } else if (!warnedStream) {
++              // A stream against a whole-body schema: not buffered; say so once.
++              warnedStream = true;
++              logger.warn("A streamed body is not checked against a whole-body schema; declare chunks() or sse()", { route, status, media });
++            }
++          }
++        }
++      }
++      const verdict = settle(merge(parts), status);
++      if (replace === undefined) return verdict;
++      if (verdict instanceof Promise) return verdict.then((v) => v ?? { replace });
++      return verdict ?? { replace };
++    },
++
++    chunk(_res: BunResponse, chunk: BunResponseChunk) {
++      if (checker === undefined) return undefined;
++      const found = checker.check(chunk);
++      const status = _res.statusCode;
++      const after = (f: Found): GateVerdict => {
++        if (f.length === 0) return undefined;
++        const error = new ResponseValidationError(f, status);
++        logger[mode === "error" ? "error" : "warn"]("Streamed response chunk does not match its contract", { route, status, mismatch: error.issues });
++        return mode === "error" ? { destroy: error } : undefined;
++      };
++      if (!(found instanceof Promise)) return after(found);
++      if (mode === "warn") {
++        // "warn" never holds a chunk back.
++        void found.then(after);
++        return undefined;
++      }
++      return found.then(after);
++    },
++  };
++}
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/types/general.ts packages/bun-common/lib/types/general.ts
+--- a/lib/types/general.ts
++++ b/lib/types/general.ts
+@@ -96,6 +96,10 @@
+   TParams = Record<string, string>,
+   TQuery = Record<string, unknown>,
+   TBody = DefaultRequestBody,
++  /** SPIKE: shape of `cookies`. */
++  TCookies = Record<string, JsonValue>,
++  /** SPIKE: shape of `signedCookies`. */
++  TSignedCookies = Record<string, JsonValue>,
+ > {
+   parsedUrl: InstanceType<typeof URL>;
+   headersObj: InstanceType<typeof Headers>;
+@@ -131,9 +135,9 @@
+    */
+   baseUrl: string;
+   /** Parsed cookies. A `j:`-prefixed value is JSON-decoded, as cookie-parser does. */
+-  cookies: Record<string, JsonValue>;
++  cookies: TCookies;
+   /** Cookies whose signature verified against `secret`, decoded like `cookies`. */
+-  signedCookies: Record<string, JsonValue>;
++  signedCookies: TSignedCookies;
+   hostname: string;
+   ip: string;
+   ips: string[];
+@@ -449,9 +453,13 @@
+   TQuery = Record<string, unknown>,
+   TBody = DefaultRequestBody,
+   R = unknown,
++  /** SPIKE: the response, narrowed by declared responses; last so existing uses compile. */
++  TRes = BunResponse,
++  /** SPIKE: the request, when cookies or `valid` are narrowed too. */
++  TReq = BunRequest<TParams, TQuery, TBody>,
+ > = (
+-  req: BunRequest<TParams, TQuery, TBody>,
+-  res: BunResponse,
++  req: TReq,
++  res: TRes,
+   next: NextFunction,
+ ) => R | Promise<R>;
+ 
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/lib/types/routeTyping.ts packages/bun-common/lib/types/routeTyping.ts
+--- a/lib/types/routeTyping.ts
++++ b/lib/types/routeTyping.ts
+@@ -1,3 +1,6 @@
++import type { BunRequest } from "../BunRequest";
++import type { BunResponse } from "../BunResponse";
++import type { JsonValue } from "../utils/native";
+ import type {
+   DefaultRequestBody,
+   RouterHandler,
+@@ -92,8 +95,29 @@
+   query?: unknown;
+   /** Parsed `req.body`, when the validator declared a body schema. */
+   body?: unknown;
++  /** SPIKE: declared responses, status to body type. */
++  responses?: Record<number, unknown>;
++  /** SPIKE: parsed `req.cookies`, when the validator declared a cookies schema. */
++  cookies?: unknown;
++  /** SPIKE: parsed `req.signedCookies`, when the validator declared one. */
++  signedCookies?: unknown;
++  /** SPIKE: parsed headers, read through `req.valid.headers` only (never written back). */
++  headers?: unknown;
+ }
+ 
++/** SPIKE: `req.cookies`: what a validator parsed, else the parser's untyped output. */
++export type ResolveCookies<S> = S extends { cookies: infer C } ? C : Record<string, JsonValue>;
++/** SPIKE: `req.signedCookies`, likewise. */
++export type ResolveSignedCookies<S> = S extends { signedCookies: infer C } ? C : Record<string, JsonValue>;
++/**
++ * SPIKE: `req.valid`: every request part a validator parsed — the shape's
++ * own keys, `headers` included, without `responses`; `{}` with none.
++ */
++export type ResolveValid<S> = { [K in keyof S as K extends "responses" ? never : K]: S[K] };
++
++/** SPIKE: the response map a shape declares, or `undefined` (unconstrained). */
++export type ResolveResponses<S> = S extends { responses: infer M } ? M : undefined;
++
+ /** A shape contributing nothing — the default for a non-validator position. */
+ export type EmptyShape = Record<never, never>;
+ 
+@@ -144,7 +168,17 @@
+ export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
+   ResolveParams<TPath, S>,
+   ResolveQuery<S>,
+-  ResolveBody<S>
++  ResolveBody<S>,
++  unknown,
++  BunResponse<unknown, ResolveResponses<S>>,
++  BunRequest<
++    ResolveParams<TPath, S>,
++    ResolveQuery<S>,
++    ResolveBody<S>,
++    ResolveCookies<S>,
++    ResolveSignedCookies<S>,
++    ResolveValid<S>
++  >
+ >;
+ 
+ /**
+@@ -198,5 +232,15 @@
+ > = TypedRouteHandler<
+   ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
+   ResolveQuery<MergeShape<TMountShape, TShape>>,
+-  ResolveBody<MergeShape<TMountShape, TShape>>
++  ResolveBody<MergeShape<TMountShape, TShape>>,
++  unknown,
++  BunResponse<unknown, ResolveResponses<MergeShape<TMountShape, TShape>>>,
++  BunRequest<
++    ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
++    ResolveQuery<MergeShape<TMountShape, TShape>>,
++    ResolveBody<MergeShape<TMountShape, TShape>>,
++    ResolveCookies<MergeShape<TMountShape, TShape>>,
++    ResolveSignedCookies<MergeShape<TMountShape, TShape>>,
++    ResolveValid<MergeShape<TMountShape, TShape>>
++  >
+ >;
+diff -ruN -x spike -x tsconfig.json -x node_modules pristine-bun-common/__tests__/verbTyping.type-test.ts packages/bun-common/__tests__/verbTyping.type-test.ts
+--- a/__tests__/verbTyping.type-test.ts
++++ b/__tests__/verbTyping.type-test.ts
+@@ -178,8 +178,9 @@
+   declaredHandler,
+ );
+ 
+-// The limit itself, pinned so a TypeScript that lifts it is noticed.
+-// @ts-expect-error an inline generic validator loses inference to TShape
++// SPIKE: the limit is lifted once the handler's request is one type
++// argument (TypedRouteHandler's TReq): the inline form now infers TShape.
++// The negative control below still fires.
+ router.get("/declared/:id", validate({ query: QuerySchema }), declaredHandler);
+ 
+ // Negative control: a declared handler expecting a shape the validator does

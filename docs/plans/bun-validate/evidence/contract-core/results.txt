@@ -1,0 +1,226 @@
+# contract-core results, recorded 2026-10-17T14:22Z on 68023d36 (docs/plan-bun-validate-scope), 16 cores
+# run.ts three times: the cases are deterministic; the timings vary with the load, so README.md quotes each figure's minimum over the three runs
+
+## bun run.ts, run 1 (load before: 13.11 24.64 15.07)
+# bun 1.4.4 (5f5799ed1) linux/x64
+C1   policy=error  reply={"type":"chat.ack","payload":{"seq":1}}  handler saw 1, payload.at is a Date (parsed) 
+C2   policy=error  reply={"type":"error","payload":{"issues":[{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]}}  handler saw 0
+C3   policy=warn  reply={"type":"chat.ack","payload":{"seq":2}}  handler saw 1, payload.at is string 
+C3   warn logged 1: contract mismatch {"transport":"udp","side":"inbound","key":"chat.post","issues":[{"target":"payload","path":"text","message":"Too big: expected string to have <=20 characters","key":"chat.post"}]}
+C4   policy=off  reply={"type":"chat.ack","payload":{"seq":3}}  handler saw 1, payload.at is string 
+C4   "off": guard.checks=false, schema calls 0; the same contract under "error": schema calls 1
+C5   policy=error  reply={"type":"error","payload":{"issues":[{"target":"type","message":"type chat.delete is not declared","path":"","key":"chat.delete"}]}}  handler saw 0
+C6   client-side check: ContractError before send, 1 issue(s): [{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]
+C7   valid publish answers sync: 1 delivery; consumer saw total=12 (number)
+C8   invalid publish answers sync: ContractError, issues [{"target":"payload","message":"Invalid input: expected number, received NaN","path":"total","key":"orders"}]; deliveries now 1
+C9   yup topic answers Promise: 1 delivery, consumer saw "s1"; a schema-less topic ("audit") answers sync, consumer saw "audit"
+C10  vendor        direct ~standard.validate  validateStandard  receiver guard  sender guard
+     zod 4         sync                       sync              sync            sync
+     valibot 1     sync                       sync              sync            sync
+     arktype 2     sync                       sync              sync            sync
+     yup 1.7       Promise                    Promise           Promise         Promise
+     custom sync   sync                       sync              sync            sync
+     custom async  Promise                    Promise           Promise         Promise
+C10  mixed zod+yup parts on one message: Promise (one async part makes the message async)
+C11  case                 vendor issue leaks?  core issue: message leaks? path leaks?  core message
+     zod type             false                false                    false        "Invalid input: expected number, received string"
+     zod unknown key      true                 false                    false        "Invalid value (unrecognized_keys)"
+     valibot type         true                 false                    false        "Invalid value"
+     valibot email        true                 false                    false        "Invalid value"
+     valibot unknown key  true                 false                    true         "Invalid value"
+     arktype email        true                 false                    false        "Invalid value (pattern)"
+     arktype enum         true                 false                    false        "Invalid value (union)"
+     arktype unknown key  true                 false                    true         "Invalid value (predicate)"
+     yup number           true                 false                    false        "Invalid value"
+C12  warn log: no value; fields transport,side,key,issues; issue keys target,path,message,key; [{"message":"contract mismatch","fields":{"transport":"broker","side":"inbound","key":"t","issues":[{"target":"payload","path":"card","message":"Invalid length: Expected 16 but received 14","key":"t"}]}}]
+C13  no schema for the key: sync, same object true; no side declared: sync, same object true, guard.checks=false; with a schema: same object false (a parsed copy), guard.checks=true
+C14  ns/message, min of 7: handler directly 0.43; through a guard, no schema for the key 15.12; no side declared 2.77 (calling the identity guard), 3.83 (adapter skips on guard.checks); one zod part 151.3
+C15  live Objects added by 100,000 retained results: no schema 0; no side -1; one zod part 199999
+C16  onIssues: 0 call(s) on a valid message, then 2 for 2 failing; {"transport":"broker","side":"inbound","key":"typed","policy":"error"} → target=payload paths=["n"] count=1 | {"transport":"broker","side":"inbound","key":"nope","policy":"error"} → target=topic paths=[""] count=1
+C17  ns/message, min of 7: valid 165.0 without the hook, 163.6 with it; failing 1661 without, 1679 with (hook calls 400000)
+C18  ns/check, min of 7    direct   validateStandard  receiver   sender   (20-item list | 2-field object)
+     zod 4                   4345    5409    5730    5806  |       85      87     226     196
+     valibot 1               4018    4045    4288    4129  |       82      89     236     198
+     arktype 2               1291    1205    1327    1179  |       64      84     197     173
+C18  yup 1.7 (2-field, awaited): direct 4577 ns, receiver 5344 ns
+C19  200 text/plain "u1": ok
+C19  200 "Text/Plain; charset=utf-8" (parameters and case ignored at runtime): ok
+C19  200 text/plain 42: error [{"target":"body","message":"Invalid input: expected string, received number","path":"","key":"200","mediaType":"text/plain"}]
+C19  200 text/html: error [{"target":"body","message":"Media type \"text/html\" is not declared (application/json, text/plain)","path":"","mediaType":"text/html","key":"200"}]
+C19  201 without Location: error [{"target":"headers","message":"Invalid input: expected string, received undefined","path":"location","key":"201"}]
+C19  204 with a body: error [{"target":"body","message":"No body is declared here","path":"","key":"204"}]
+C19  418: error [{"target":"status","message":"status 418 is not declared","path":"","key":"418"}]
+C19  client parses a 200: {"status":200,"headers":{"x-rate-limit-remaining":7},"body":{"mediaType":"application/json","value":{"id":"u1"}}} (header coerced to number)
+C20  getContract(handler) === route: true; enumerable keys of the handler: []; describeContract → 7 entries
+     inbound             params                   zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    text/plain       zod  {"type":"string"}
+     outbound status=200 headers                  zod  {"type":"object","properties":{"x-rate-limit-remaining":{"type":"number"}},"required":["x-rate-limit-remaining"]}
+     outbound status=201 headers                  zod  {"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}
+     outbound status=201 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=204 body                          (absent)
+C21  valid flow parent: sync {"data":{"docId":"d1"},"children":{"ocr":{"text":"hello"},"resize":{"width":640}}}; a bad child result: [{"target":"children","message":"Invalid input: expected string, received number","path":"ocr.text"}]
+C22  key that is also a part: TypeError "x.inbound: the key "payload" cannot also be a part" | media part not a part: TypeError "x.inbound: media part "b" is not a part" | undeclared part: TypeError "http.inbound: "bdy" is not a part (params, query, headers, cookies, body)" | undeclared side: TypeError "jobs: no sideways side"
+exit=0 (load after: 11.24 23.66 14.90)
+
+## bun run.ts, run 2 (load before: 11.24 23.66 14.90)
+# bun 1.4.4 (5f5799ed1) linux/x64
+C1   policy=error  reply={"type":"chat.ack","payload":{"seq":1}}  handler saw 1, payload.at is a Date (parsed) 
+C2   policy=error  reply={"type":"error","payload":{"issues":[{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]}}  handler saw 0
+C3   policy=warn  reply={"type":"chat.ack","payload":{"seq":2}}  handler saw 1, payload.at is string 
+C3   warn logged 1: contract mismatch {"transport":"udp","side":"inbound","key":"chat.post","issues":[{"target":"payload","path":"text","message":"Too big: expected string to have <=20 characters","key":"chat.post"}]}
+C4   policy=off  reply={"type":"chat.ack","payload":{"seq":3}}  handler saw 1, payload.at is string 
+C4   "off": guard.checks=false, schema calls 0; the same contract under "error": schema calls 1
+C5   policy=error  reply={"type":"error","payload":{"issues":[{"target":"type","message":"type chat.delete is not declared","path":"","key":"chat.delete"}]}}  handler saw 0
+C6   client-side check: ContractError before send, 1 issue(s): [{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]
+C7   valid publish answers sync: 1 delivery; consumer saw total=12 (number)
+C8   invalid publish answers sync: ContractError, issues [{"target":"payload","message":"Invalid input: expected number, received NaN","path":"total","key":"orders"}]; deliveries now 1
+C9   yup topic answers Promise: 1 delivery, consumer saw "s1"; a schema-less topic ("audit") answers sync, consumer saw "audit"
+C10  vendor        direct ~standard.validate  validateStandard  receiver guard  sender guard
+     zod 4         sync                       sync              sync            sync
+     valibot 1     sync                       sync              sync            sync
+     arktype 2     sync                       sync              sync            sync
+     yup 1.7       Promise                    Promise           Promise         Promise
+     custom sync   sync                       sync              sync            sync
+     custom async  Promise                    Promise           Promise         Promise
+C10  mixed zod+yup parts on one message: Promise (one async part makes the message async)
+C11  case                 vendor issue leaks?  core issue: message leaks? path leaks?  core message
+     zod type             false                false                    false        "Invalid input: expected number, received string"
+     zod unknown key      true                 false                    false        "Invalid value (unrecognized_keys)"
+     valibot type         true                 false                    false        "Invalid value"
+     valibot email        true                 false                    false        "Invalid value"
+     valibot unknown key  true                 false                    true         "Invalid value"
+     arktype email        true                 false                    false        "Invalid value (pattern)"
+     arktype enum         true                 false                    false        "Invalid value (union)"
+     arktype unknown key  true                 false                    true         "Invalid value (predicate)"
+     yup number           true                 false                    false        "Invalid value"
+C12  warn log: no value; fields transport,side,key,issues; issue keys target,path,message,key; [{"message":"contract mismatch","fields":{"transport":"broker","side":"inbound","key":"t","issues":[{"target":"payload","path":"card","message":"Invalid length: Expected 16 but received 14","key":"t"}]}}]
+C13  no schema for the key: sync, same object true; no side declared: sync, same object true, guard.checks=false; with a schema: same object false (a parsed copy), guard.checks=true
+C14  ns/message, min of 7: handler directly 0.49; through a guard, no schema for the key 17.91; no side declared 3.03 (calling the identity guard), 4.15 (adapter skips on guard.checks); one zod part 163.9
+C15  live Objects added by 100,000 retained results: no schema 0; no side -1; one zod part 199999
+C16  onIssues: 0 call(s) on a valid message, then 2 for 2 failing; {"transport":"broker","side":"inbound","key":"typed","policy":"error"} → target=payload paths=["n"] count=1 | {"transport":"broker","side":"inbound","key":"nope","policy":"error"} → target=topic paths=[""] count=1
+C17  ns/message, min of 7: valid 165.5 without the hook, 165.7 with it; failing 1707 without, 1689 with (hook calls 400000)
+C18  ns/check, min of 7    direct   validateStandard  receiver   sender   (20-item list | 2-field object)
+     zod 4                   4540    8296    5842    5379  |       83      82     203     179
+     valibot 1               3770    3785    3965    3757  |       65      74     189     165
+     arktype 2               1087    1070    1241    1154  |       63      87     211     186
+C18  yup 1.7 (2-field, awaited): direct 4564 ns, receiver 4832 ns
+C19  200 text/plain "u1": ok
+C19  200 "Text/Plain; charset=utf-8" (parameters and case ignored at runtime): ok
+C19  200 text/plain 42: error [{"target":"body","message":"Invalid input: expected string, received number","path":"","key":"200","mediaType":"text/plain"}]
+C19  200 text/html: error [{"target":"body","message":"Media type \"text/html\" is not declared (application/json, text/plain)","path":"","mediaType":"text/html","key":"200"}]
+C19  201 without Location: error [{"target":"headers","message":"Invalid input: expected string, received undefined","path":"location","key":"201"}]
+C19  204 with a body: error [{"target":"body","message":"No body is declared here","path":"","key":"204"}]
+C19  418: error [{"target":"status","message":"status 418 is not declared","path":"","key":"418"}]
+C19  client parses a 200: {"status":200,"headers":{"x-rate-limit-remaining":7},"body":{"mediaType":"application/json","value":{"id":"u1"}}} (header coerced to number)
+C20  getContract(handler) === route: true; enumerable keys of the handler: []; describeContract → 7 entries
+     inbound             params                   zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    text/plain       zod  {"type":"string"}
+     outbound status=200 headers                  zod  {"type":"object","properties":{"x-rate-limit-remaining":{"type":"number"}},"required":["x-rate-limit-remaining"]}
+     outbound status=201 headers                  zod  {"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}
+     outbound status=201 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=204 body                          (absent)
+C21  valid flow parent: sync {"data":{"docId":"d1"},"children":{"ocr":{"text":"hello"},"resize":{"width":640}}}; a bad child result: [{"target":"children","message":"Invalid input: expected string, received number","path":"ocr.text"}]
+C22  key that is also a part: TypeError "x.inbound: the key "payload" cannot also be a part" | media part not a part: TypeError "x.inbound: media part "b" is not a part" | undeclared part: TypeError "http.inbound: "bdy" is not a part (params, query, headers, cookies, body)" | undeclared side: TypeError "jobs: no sideways side"
+exit=0 (load after: 9.56 22.68 14.72)
+
+## bun run.ts, run 3 (load before: 9.56 22.68 14.72)
+# bun 1.4.4 (5f5799ed1) linux/x64
+C1   policy=error  reply={"type":"chat.ack","payload":{"seq":1}}  handler saw 1, payload.at is a Date (parsed) 
+C2   policy=error  reply={"type":"error","payload":{"issues":[{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]}}  handler saw 0
+C3   policy=warn  reply={"type":"chat.ack","payload":{"seq":2}}  handler saw 1, payload.at is string 
+C3   warn logged 1: contract mismatch {"transport":"udp","side":"inbound","key":"chat.post","issues":[{"target":"payload","path":"text","message":"Too big: expected string to have <=20 characters","key":"chat.post"}]}
+C4   policy=off  reply={"type":"chat.ack","payload":{"seq":3}}  handler saw 1, payload.at is string 
+C4   "off": guard.checks=false, schema calls 0; the same contract under "error": schema calls 1
+C5   policy=error  reply={"type":"error","payload":{"issues":[{"target":"type","message":"type chat.delete is not declared","path":"","key":"chat.delete"}]}}  handler saw 0
+C6   client-side check: ContractError before send, 1 issue(s): [{"target":"payload","message":"Too big: expected string to have <=20 characters","path":"text","key":"chat.post"}]
+C7   valid publish answers sync: 1 delivery; consumer saw total=12 (number)
+C8   invalid publish answers sync: ContractError, issues [{"target":"payload","message":"Invalid input: expected number, received NaN","path":"total","key":"orders"}]; deliveries now 1
+C9   yup topic answers Promise: 1 delivery, consumer saw "s1"; a schema-less topic ("audit") answers sync, consumer saw "audit"
+C10  vendor        direct ~standard.validate  validateStandard  receiver guard  sender guard
+     zod 4         sync                       sync              sync            sync
+     valibot 1     sync                       sync              sync            sync
+     arktype 2     sync                       sync              sync            sync
+     yup 1.7       Promise                    Promise           Promise         Promise
+     custom sync   sync                       sync              sync            sync
+     custom async  Promise                    Promise           Promise         Promise
+C10  mixed zod+yup parts on one message: Promise (one async part makes the message async)
+C11  case                 vendor issue leaks?  core issue: message leaks? path leaks?  core message
+     zod type             false                false                    false        "Invalid input: expected number, received string"
+     zod unknown key      true                 false                    false        "Invalid value (unrecognized_keys)"
+     valibot type         true                 false                    false        "Invalid value"
+     valibot email        true                 false                    false        "Invalid value"
+     valibot unknown key  true                 false                    true         "Invalid value"
+     arktype email        true                 false                    false        "Invalid value (pattern)"
+     arktype enum         true                 false                    false        "Invalid value (union)"
+     arktype unknown key  true                 false                    true         "Invalid value (predicate)"
+     yup number           true                 false                    false        "Invalid value"
+C12  warn log: no value; fields transport,side,key,issues; issue keys target,path,message,key; [{"message":"contract mismatch","fields":{"transport":"broker","side":"inbound","key":"t","issues":[{"target":"payload","path":"card","message":"Invalid length: Expected 16 but received 14","key":"t"}]}}]
+C13  no schema for the key: sync, same object true; no side declared: sync, same object true, guard.checks=false; with a schema: same object false (a parsed copy), guard.checks=true
+C14  ns/message, min of 7: handler directly 0.50; through a guard, no schema for the key 16.11; no side declared 3.17 (calling the identity guard), 4.19 (adapter skips on guard.checks); one zod part 177.1
+C15  live Objects added by 100,000 retained results: no schema 0; no side -1; one zod part 199999
+C16  onIssues: 0 call(s) on a valid message, then 2 for 2 failing; {"transport":"broker","side":"inbound","key":"typed","policy":"error"} → target=payload paths=["n"] count=1 | {"transport":"broker","side":"inbound","key":"nope","policy":"error"} → target=topic paths=[""] count=1
+C17  ns/message, min of 7: valid 188.2 without the hook, 187.7 with it; failing 2875 without, 1907 with (hook calls 400000)
+C18  ns/check, min of 7    direct   validateStandard  receiver   sender   (20-item list | 2-field object)
+     zod 4                   4733    4820    5037    5069  |       71      79     199     172
+     valibot 1               3540    3551    4207    3858  |       72      86     238     242
+     arktype 2               1724    2142    1688    1476  |       70      87     226     185
+C18  yup 1.7 (2-field, awaited): direct 4957 ns, receiver 5652 ns
+C19  200 text/plain "u1": ok
+C19  200 "Text/Plain; charset=utf-8" (parameters and case ignored at runtime): ok
+C19  200 text/plain 42: error [{"target":"body","message":"Invalid input: expected string, received number","path":"","key":"200","mediaType":"text/plain"}]
+C19  200 text/html: error [{"target":"body","message":"Media type \"text/html\" is not declared (application/json, text/plain)","path":"","mediaType":"text/html","key":"200"}]
+C19  201 without Location: error [{"target":"headers","message":"Invalid input: expected string, received undefined","path":"location","key":"201"}]
+C19  204 with a body: error [{"target":"body","message":"No body is declared here","path":"","key":"204"}]
+C19  418: error [{"target":"status","message":"status 418 is not declared","path":"","key":"418"}]
+C19  client parses a 200: {"status":200,"headers":{"x-rate-limit-remaining":7},"body":{"mediaType":"application/json","value":{"id":"u1"}}} (header coerced to number)
+C20  getContract(handler) === route: true; enumerable keys of the handler: []; describeContract → 7 entries
+     inbound             params                   zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=200 body    text/plain       zod  {"type":"string"}
+     outbound status=200 headers                  zod  {"type":"object","properties":{"x-rate-limit-remaining":{"type":"number"}},"required":["x-rate-limit-remaining"]}
+     outbound status=201 headers                  zod  {"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}
+     outbound status=201 body    application/json zod  {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+     outbound status=204 body                          (absent)
+C21  valid flow parent: sync {"data":{"docId":"d1"},"children":{"ocr":{"text":"hello"},"resize":{"width":640}}}; a bad child result: [{"target":"children","message":"Invalid input: expected string, received number","path":"ocr.text"}]
+C22  key that is also a part: TypeError "x.inbound: the key "payload" cannot also be a part" | media part not a part: TypeError "x.inbound: media part "b" is not a part" | undeclared part: TypeError "http.inbound: "bdy" is not a part (params, query, headers, cookies, body)" | undeclared side: TypeError "jobs: no sideways side"
+exit=0 (load after: 9.31 21.74 14.58)
+
+## bash check-types.sh
+## clean: bun --check in contract-core/
+✓ No type errors in 36 files [182.90ms]
+exit=0
+
+## mutant: every @ts-expect-error removed (24 controls)
+types.probe.ts(51,7): error TS2322: Type 'number' is not assignable to type 'string'.
+types.probe.ts(57,7): error TS2345: Argument of type '418' is not assignable to parameter of type '200 | 201 | 204 | 207 | 404'.
+types.probe.ts(58,14): error TS2741: Property 'location' is missing in type '{}' but required in type '{ location: string; "set-cookie"?: string[] | undefined; }'.
+types.probe.ts(59,14): error TS2322: Type '{ mediaType: string; value: {}; }' is not assignable to type 'undefined'.
+types.probe.ts(60,22): error TS2322: Type '"text/plain"' is not assignable to type '"application/json"'.
+types.probe.ts(60,47): error TS2322: Type 'string' is not assignable to type '{ title: string; }'.
+types.probe.ts(61,89): error TS2322: Type 'number' is not assignable to type 'string | { id: string; born: Date; }'.
+types.probe.ts(62,100): error TS2322: Type 'string' is not assignable to type 'Date'.
+types.probe.ts(65,62): error TS2322: Type 'string' is not assignable to type 'number'.
+types.probe.ts(75,45): error TS2339: Property 'headers' does not exist on type '{ readonly body: { mediaType: "application/json"; value: { title: string; }; }; status: 404; }'.
+types.probe.ts(77,28): error TS2561: Object literal may only specify known properties, but 'bdy' does not exist in type 'PartsDef<{ readonly parts: readonly ["params", "query", "headers", "cookies", "body"]; readonly media: readonly ["body"]; }> & NoExtra<PartsDef<{ readonly parts: readonly ["params", "query", "headers", "cookies", "body"]; readonly media: readonly [...]; }> | undefined, "body" | ... 3 more ... | "query">'. Did you mean to write 'body'?
+types.probe.ts(78,28): error TS2353: Object literal may only specify known properties, and '200' does not exist in type 'PartsDef<{ readonly parts: readonly ["params", "query", "headers", "cookies", "body"]; readonly media: readonly ["body"]; }> & NoExtra<PartsDef<{ readonly parts: readonly ["params", "query", "headers", "cookies", "body"]; readonly media: readonly [...]; }> | undefined, "body" | ... 3 more ... | "query">'.
+types.probe.ts(79,37): error TS2353: Object literal may only specify known properties, and '"application/json"' does not exist in type 'StandardSchemaV1<unknown, unknown>'.
+types.probe.ts(89,10): error TS2322: Type '"chat.post"' is not assignable to type '"chat.message" | "pong"'.
+types.probe.ts(89,29): error TS2741: Property 'from' is missing in type '{ text: string; }' but required in type '{ from: string; text: string; }'.
+types.probe.ts(98,31): error TS2322: Type 'string' is not assignable to type 'number'.
+types.probe.ts(99,16): error TS2322: Type '{}' is not assignable to type 'never'.
+types.probe.ts(109,7): error TS2322: Type 'string' is not assignable to type 'number'.
+types.probe.ts(110,33): error TS2339: Property 'thumb' does not exist on type '{ readonly ocr: { text: string; confidence: number; }; readonly resize: { width: number; }; }'.
+types.probe.ts(117,54): error TS2322: Type 'string' is not assignable to type 'number'.
+types.probe.ts(118,66): error TS2322: Type 'number' is not assignable to type 'string'.
+types.probe.ts(119,16): error TS2322: Type '"refunds"' is not assignable to type '"orders"'.
+types.probe.ts(131,73): error TS2322: Type 'number' is not assignable to type 'string'.
+types.probe.ts(140,41): error TS2322: Type 'number' is not assignable to type 'string'.
+types.probe.ts(147,47): error TS2339: Property 'items' does not exist on type '{ readonly body: { readonly "application/json": ZodObject<{ id: ZodString; born: ZodDate; }, $strip>; readonly "text/plain": ZodString; }; readonly headers: ZodObject<...>; }'.
+types.probe.ts(150,12): error TS2344: Type 'false' does not satisfy the constraint 'true'.
+Found 26 errors in 1 file, checked 33 files [190.38ms]
+mutant: 26 errors; controls=24
+expected lines: 51 57 58 59 60 61 62 65 75 77 78 79 89 98 99 109 110 117 118 119 131 140 147 150 
+error lines:    51 57 58 59 60 61 62 65 75 77 78 79 89 98 99 109 110 117 118 119 131 140 147 150 
+PASS: every control fires, and nothing else fails

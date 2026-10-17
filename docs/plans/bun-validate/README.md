@@ -1,7 +1,7 @@
-# BunValidate everywhere: responses, Nest, WebSockets, jobs and cache on one Standard Schema core
+# BunValidate: one validation contract for HTTP, Nest, WebSockets, SSE, jobs and any transport
 
-An audit of what `BunValidate` does today, and a plan for what is missing.
-The user asked for this on 2026-10-15:
+An audit of what `BunValidate` does today, and a plan to make it complete and
+transport-agnostic. The user asked for the audit on 2026-10-15:
 
 > "I need to know if bun validate currently types and validates the response
 > from each endpoint and also the helper decorator for the full bun validate
@@ -9,25 +9,52 @@ The user asked for this on 2026-10-15:
 > bun validate feeds into websocket, bun jobs, bun cache and the typed route.
 > If not prepare a plan to implement this."
 
-So this document has two halves: **Part A** answers the questions with
-evidence (§2), and **Part B** plans what Part A finds missing (§4 to §9).
+and set the full scope on 2026-10-17, in these words:
 
-Written 2026-10-15 against `develop` at `73bf4a00`. **No product code was
-changed.** Every `file:line` is at `73bf4a00` and relative to `packages/`
-unless it says otherwise. Measurements ran on the installed Bun,
-1.4.4-canary.1 (`7583003d8`); the repo's floor is 1.4.3. The evidence is in
+> "robustness and features to be complete with cookies, header, response body
+> and status validation and full typing"
+>
+> "the nest js bun validate implementation with body, query, header, cookie and
+> response body and status validation and typing"
+>
+> "built to support future typed client and open api doc generation"
+>
+> "built in such a way that it is usable for other validations such as bun
+> websocket, bun queue data and response, bun queue flow, grpc, message brokers
+> (apache kafka, rabbitMQ, amqp), sse for both http adapter, udp etc."
+>
+> "The bun validate for response can validate even response headers and the
+> response body. It shouldnt be for only json body."
+
+with the order: **(1)** full NestJS 12 support (the
+[nestjs-12-parity plan](../nestjs-12-parity/README.md), built first by the
+Nest agent); **(2)** BunValidate made robust and complete; **(3)** BunValidate's
+NestJS implementation.
+
+So this document has two halves: **Part A** answers the 2026-10-15 questions
+with evidence (§2), and **Part B** designs the whole of the 2026-10-17 scope
+(§4 to §9). Part A is unchanged from the first version apart from §2.9, which
+adds what the revision measured, and §2.3's "planned fix" column.
+
+First written 2026-10-15 against `develop` at `73bf4a00`; **revised
+2026-10-17 against `68023d36`**. **No product code was changed.** Every
+`file:line` is relative to `packages/` unless it says otherwise; Part A's are
+at `73bf4a00`, the revision's at `68023d36`. Measurements ran on the installed
+Bun, 1.4.4-canary.1; the repo's floor is 1.4.3. The evidence is in
 [`evidence/`](evidence/README.md), and each measurement there re-runs with one
 command.
 
-### Status (2026-10-15)
+### Status (2026-10-17)
 
 | Part | State |
 |---|---|
-| This plan | written; nothing built |
-| Response contracts on the validator, `@Validate` for Nest, `.describe()`, `__schemas`, OpenAPI ([`api-docs-generation/`](../api-docs-generation/README.md), "AD") | plan only. **This plan adopts AD's design for responses and `@Validate`** and records two corrections found by re-running it (§4.2, §4.3) |
-| Route model, typed client, typed channels ([`typed-client/`](../typed-client/README.md), "TC"; [`nest-typed-routes.md`](../typed-client/nest-typed-routes.md), "NTR") | plan only; consumes what this plan builds |
-| Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | plan only; uses this plan's shared core |
-| `StandardSchemaPipe` for job data ([`nest-jobs-decorators/`](../nest-jobs-decorators/README.md), "NJD" §7.4) | plan only; **merged here with NTR's pipe of the same name** (§4.4) |
+| This plan | **revised to the user's 2026-10-17 scope**; nothing built. Open questions in §8 await the user |
+| The transport-agnostic core (§4.1) | spiked: [`evidence/contract-core/`](evidence/contract-core/README.md), with a UDP and an in-process broker adapter, 24 type controls shown to fire |
+| HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
+| NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
+| bun-jobs data, results and flows (§4.8) | designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of the code; e9 builds it |
+| OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | plan only; §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
+| Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | plan only; uses this plan's core |
 
 ### Contents
 
@@ -47,8 +74,10 @@ command.
 
 - **[M]** measured here, by a file in [`evidence/`](evidence/README.md),
   named in the bracket.
-- **[S]** read from source at `73bf4a00`.
+- **[S]** read from source.
 - **[P]** decided in another plan, cited; not restated.
+- **[A]** agreed with the owning agent (bun-node-15 for bun-nest, bun-node-e9
+  for bun-jobs), on 2026-10-17.
 - **[D]** designed here.
 - **[I]** inferred and not run; a PR must prove it.
 
@@ -61,23 +90,37 @@ follow-up of one plan:
 
 - **Five plans each own a slice of validation and none owns validation.** AD
   puts responses on the validator to document them; TC reads them to type a
-  client; NTR and NJD each plan a `StandardSchemaPipe` (the same name, two
-  designs) and each asks bun-common for a shared helper under a different
-  name (`validateTarget`, NTR §4.1; `validateStandard`, NJD §7.4); BC plans a
-  `validate` option on caches. Someone has to say which of these is the one.
-- **Two of the user's four areas are planned nowhere**: schema-backed job
-  data in bun-jobs itself, and runtime validation of WebSocket messages on
-  bun-common's `BunWebSocket` (AD (e) only documents them; TC PR-M4 types
-  them but leaves the validation semantics open).
+  client; NTR ([`typed-client/nest-typed-routes.md`](../typed-client/nest-typed-routes.md))
+  and NJD ([`nest-jobs-decorators/`](../nest-jobs-decorators/README.md)) each
+  plan a `StandardSchemaPipe` (the same name, two designs) and each asks
+  bun-common for a shared helper under a different name; BC plans a `validate`
+  option on caches. Someone has to say which of these is the one.
+- **The user's scope is transport-agnostic.** HTTP is one of a dozen places a
+  schema checks a message: WebSockets, SSE on both adapters, job data, results
+  and flows, and gRPC, Kafka, RabbitMQ/AMQP and UDP, for which no package
+  exists yet. One contract has to serve all of them, so it cannot live inside
+  any one consumer plan.
 - **The audit found three defects and two gaps in what exists** (§2.3), which
   belong to BunValidate, not to any consumer plan.
 
-So this is the hub: it **adopts** AD's response and `@Validate` designs by
-reference (§3), corrects them where a re-run disagreed (§4.2, §4.3), designs
-what nobody planned (§4.4 to §4.7), and gives one PR order across all of it
-(§6). A PR that already belongs to another plan (AD (b1), AD (g), TC PR-M4,
-NTR PR-N5) keeps its home and its estimate; this plan lists it so the order
-is in one place.
+So this is the hub: it designs the one core every transport plugs into (§4.1,
+§4.2), applies it transport by transport (§4.3 to §4.10), **adopts** AD's
+`@Validate` and TC's `defineChannel` designs by reference and corrects them
+where a re-run disagreed (§3), and gives one PR order across all of it (§6).
+
+### 0.1 What changed in the 2026-10-17 revision
+
+| Before | Now | Why |
+|---|---|---|
+| An HTTP validator with add-ons for other places | **one transport-agnostic contract** (§4.1): parts → schemas, one runner, one issue shape, one policy, types derived from it, schemas readable at runtime | the user's scope (§0) |
+| Headers validate-only (old Q9) | **typed**, on a new `req.valid` view; never written back | the user; writing back breaks busboy, `type-is` and `accepts` [M `http-complete` Q2] |
+| Cookies "later, on demand" (old Q10) | **`cookies` and `signedCookies` targets**, validated, written back, typed | the user; a forged unsigned cookie passes a `cookies` schema, so signatures need their own target [M H49–H51] |
+| Responses optional, JSON bodies only, streams excluded | **per status: status, headers, cookies, and a body of every kind**, keyed by media type; an undeclared status is a failure; streams per chunk, SSE per event | the user |
+| One hook moved before `json()` builds the `Response` | **one commit gate in `BunResponse`'s single `set response` setter** that every producer goes through, plus a chunk gate for streams | re-measured at `68023d36` [M `http-complete`] |
+| Nest: `@Validate` adopted from AD | **`@Validate` composing with Nest 12's own Standard Schema pipes**, on Nest 11 and 12, with response checks in the interceptor (it sees the final status and `@Header()` headers, measured) plus a before-write hook PR-6c adds for redirects, files and `@Res()` | Nest 12.0 added `StandardSchemaValidationPipe` and `@Body({ schema })`; bun-nest supports 11 and 12 [A] |
+| Job data and results | **plus flows, and every other write of job data**, checks living in `BunQueue` | e9's survey: enqueue bypasses the definitions today [A] |
+| — | **an extension point for future transports**, proven by two spike adapters | the user |
+| PRs ordered by dependency | **re-sliced in the user's order**: core + HTTP, then Nest, then other transports, then client/docs hooks (§6) | the user |
 
 ---
 
@@ -85,14 +128,14 @@ is in one place.
 
 ### 1.1 The answer
 
-**No, BunValidate neither types nor validates responses**, on any endpoint,
-on either adapter. **The request side is solid**: any Standard Schema
-vendor, four targets, typed handlers through the generated overloads, three
-failure modes. **bun-nest has no validation piece at all**: no decorator,
-pipe, interceptor or filter; users hand-write a pipe today. **Nothing feeds
-WebSockets, job data or caches.** The one place in the repo that already
-validates responses is bun-jobs' management API, which logs a mismatch and
-nothing more.
+Unchanged from the first version: **no, BunValidate neither types nor
+validates responses**, on any endpoint, on either adapter. **The request side
+is solid**: any Standard Schema vendor, four targets, typed handlers through
+the generated overloads, three failure modes. **bun-nest has no validation
+piece at all**: no decorator, pipe, interceptor or filter; users hand-write a
+pipe today. **Nothing feeds WebSockets, job data or caches.** The one place
+in the repo that already validates responses is bun-jobs' management API,
+which logs a mismatch and nothing more.
 
 | # | Question | Answer | Key evidence |
 |---|---|---|---|
@@ -109,24 +152,32 @@ nothing more.
 
 | # | Decision | Why |
 |---|---|---|
-| V-D1 | **Standard Schema V1 is the one contract** across HTTP, Nest, WebSockets, jobs and caches; its JSON Schema companion (`StandardJSONSchemaV1`, AD (b0)) is the one route to documents. No vendor dependency anywhere. | It already is the contract in bun-common, bun-jobs' providers and bun-jobs' `s` [S, §2.6]. |
-| V-D2 | **One shared runner in bun-common, `validateStandard(schema, value)`**: answers synchronously when the vendor does, flattens issues to `{ target, message, path }`. NTR's `validateTarget` and NJD's `validateStandard` are this one function. | The flattening exists three times already (`BunValidate.ts:368-379`, `bun-jobs/lib/api/routes/define.ts:313-342`, `bun-jobs/lib/remote/schemas.ts:551-574`) plus the examples' pipe [S]. Sync matters: §4.2. |
-| V-D3 | **Responses are AD (b1)**: `validate(schemas, { responses })` by status, typed through the same single shape the overloads already carry. **Corrected here**: the server is held to the schema's *input* type, falling back to its *output* when the input is `unknown`. | Re-measured on today's router: the overloads are untouched and the bun-common and bun-nest type tests still pass [M `response-typing/`]. With input alone, three of AD's negative controls silently passed (§4.3). |
-| V-D4 | **Runtime response checks: `"off" \| "warn" \| "error"`**, default `"off"`, settable on the router or adapter and per validator. `"error"` decides **before** the `Response` is produced, holding it while an async vendor settles. | The response is built synchronously inside `json()` (`bun-common/lib/BunResponse.ts:1463-1495`) and its transforms are synchronous (`:235-252`); a prototype made a 500 out of both a sync (zod) and a Promise (yup) mismatch through the real pipeline [M `response-check-proto.ts`]. |
-| V-D5 | **bun-nest: AD's `@Validate` interceptor, one `StandardSchemaPipe`, and a `SchemaDto(schema)` class plus a global `StandardValidationPipe`** as the `ValidationPipe` equivalent. | `SchemaDto` gives parameter types from the schema with no restating, which a parameter decorator cannot (AD §3.8.3); measured on bun-nest with Nest's real pipeline [M `nest-schema-dto.ts`]. |
-| V-D6 | **WebSockets: declared `receives`/`sends` schemas per channel, keyed by a discriminator; an invalid frame gets an error frame and the socket stays open.** | bun-jobs' API socket already does exactly this (`bun-jobs/lib/api/ws/session.ts:136`, `:168-200`, `:461-464`, `:1590-1603`) [S]. |
-| V-D7 | **bun-jobs: a definition may carry `schema: { data, result }`**; data is checked on enqueue and again before the handler; a failure at processing is unrecoverable; the schema also types the registry. | R8: nothing checks a payload today, and the producer may be another deployment or the management API, whose `data` is `s.unknown` (`bun-jobs/lib/api/schemas/jobs.ts:513`) [M, S]. |
-| V-D8 | **bun-cache uses the shared runner for BC's validate-on-read** and nothing more; a cached HTTP response is checked when it is produced, never on replay. | BC §3.13 already designs the semantics; only the runner and the order with `cacheResponse()` (BC §9.6) are this plan's. |
+| V-D1 | **Standard Schema V1 is the one schema contract** everywhere; its JSON Schema companion (`StandardJSONSchemaV1`, AD (b0)) is the one route to documents. No vendor dependency anywhere. | It already is the contract in bun-common, bun-jobs' providers and bun-jobs' `s` [S, §2.6]. |
+| V-D2 | **One transport-agnostic core in bun-common** (§4.1): a transport declares its **parts** and its **key** (`defineTransport`); a **contract** maps parts to schemas on an inbound and an outbound side; **one runner** (`validateStandard`) answers synchronously when the vendor does; **one issue shape**; **one policy**, `"off" \| "warn" \| "error"`; types derive from the contract; the contract is readable at runtime (`getContract`, `describeContract`). | Spiked: HTTP, WebSocket, SSE, jobs with flows, Kafka, gRPC, UDP and a broker each declare in 3–5 lines; 24 type controls fire [M `contract-core`]. |
+| V-D3 | **Three rules hold in every transport**: an issue never carries the received value; a part with no schema costs nothing (synchronous, no allocation); one optional `onIssues` hook, free when unset, feeds telemetry. | Agreed with e9 [A]. Measured: the vendors' own messages leak values (valibot, arktype, yup, zod) and the core scrubs them; the no-schema path retains 0 objects over 100,000 messages; the hook costs nothing measurable [M `contract-core` C11–C17]. |
+| V-D4 | **HTTP requests**: targets `params`, `query`, `headers`, `cookies`, `signedCookies`, `body`; every parsed part also lands on a typed **`req.valid`**; headers are **never** written back. | Replacing `req.headers` broke busboy, `type-is` and `accepts` and reverted on `setHeader`; `req.valid` broke nothing [M `http-complete` Q2, H46]. Signed cookies need their own target [M H49–H51]. |
+| V-D5 | **HTTP responses**: per status, `headers`, `cookies` and a `content` map from media type to body schema (or `null`, `chunks(S)`, `sse({...})`, `opaque()`); an undeclared status, media type, header or cookie is a mismatch. | The user. OpenAPI's own shape (`content: { "application/json": … }`). |
+| V-D6 | **One commit gate** in `BunResponse`'s `set response` setter, which every producer passes through, checks status, headers, cookies, media type and a buffered body **before** the response is handed on; a **chunk gate** checks each streamed chunk or SSE event. | Re-measured at `68023d36`: `json()`, text, bytes, `Blob`, `send(Response)`, `redirect`, `sendFile` and the first `write()` all commit there [M `http-complete`]. |
+| V-D7 | **Policy on a response**: `"off"` installs no gate; `"warn"` sends and logs once, never holding; `"error"` makes a mismatch a `ResponseValidationError` (500) through the error pipeline, **holding** the commit while an async vendor settles; after a body has started it can only cut the stream off and log. Default `"off"`. | Measured for every body kind × mode × a sync and an async vendor (H1–H24) [M]. |
+| V-D8 | **Response typing**: `status()` narrows to declared statuses; `json()`, `send()`, `set()`, `header()`, `cookie()` and `redirect()` take what that status declares; the server is held to the schema's **input**, or its **output** when the input is `unknown`, **field by field** (`WireInput`, §4.1.4). The generated overloads stay byte-identical. | 18 controls fire; `generate-verb-overloads --check` up to date [M `http-complete`]; the input/output rule from the first version [M `response-typing/`]. |
+| V-D9 | **bun-nest**: `@Validate({ params, query, headers, cookies, body, responses })`, an interceptor, **composes** with Nest 12's `@Body({ schema })` and `StandardSchemaSerializerInterceptor` instead of replacing them, and does everything itself on Nest 11; `SchemaDto(S)` types parameters; one generic `@Validated(part)` parameter decorator (no `@Cookies()` of ours: Nest 12.1 has one); responses checked in the interceptor's `map()`/`catchError`, which see the final status and `@Header()` headers, plus PR-6c's before-write hook (name TBD) for redirects, `StreamableFile` and plain `@Res()`. | Agreed with bun-node-15 [A]; `SchemaDto` measured [M `nest-schema-dto.ts`]; what `map()` sees measured on Nest 11 and 12 [M `nest-interceptor/`]. |
+| V-D10 | **WebSockets**: a channel contract keyed by message type on both sides; an invalid frame gets an error frame and the socket stays open; messages stay in order. | bun-jobs' API socket already does this (`bun-jobs/lib/api/ws/session.ts:136`, `:168-210`, `:1590-1603`) [S]. |
+| V-D11 | **SSE on both adapters**: a contract keyed by event name, checked per event as it is written, through bun-common's `SseWriter` (bun-native-routes PR-sse2) and Nest's `@Sse()`. | No plan types SSE events today; the per-event gate is measured [M `http-complete` H21–H24]. |
+| V-D12 | **bun-jobs**: a definition carries `schema: { data, result }`, **beside** its options; checks live in `BunQueue` so every enqueue path (add, bulk, flows, the API, updates, debounce, repeat series) runs them; processing re-runs the data schema once, in the worker, before any executor; flows validate every node before the first write. | e9's survey of the code and its nine constraints [A]. |
+| V-D13 | **Future transports** (gRPC, Kafka, RabbitMQ/AMQP, UDP) need no core change: `defineTransport` plus a small adapter; no integrations are built. | Two spike adapters, UDP over loopback (about 100 lines) and an in-process broker (about 80) [M `contract-core` C1–C9]. |
+| V-D14 | **Docs and the typed client read one thing**: the contract a route, channel, SSE endpoint or job definition carries (`getContract`), flattened by `describeContract` to `{ side, key, part, mediaType, schema }` rows. AD's `__schemas` becomes that. | Spiked [M `contract-core` C20]; AD and TC already expect request parts and per-status responses (§4.11). |
 
 ### 1.3 What it costs
 
 | Work | Effort | Owner |
 |---|---|---|
-| New in this plan: V0 fixes, V1 shared core, V4 `s` and API alignment, V5 job schemas, V6 Nest pipes and `SchemaDto`, deltas on AD (b1) and TC PR-M4, V10 cache hook | **~13.5 d** | features (bun-common, bun-nest), 4c (bun-jobs) |
-| Adopted, estimated in their own plans: AD (b0) 0.5–1, AD (b1) 4–5, AD (g) 5–7, TC PR-M4 ~5, NTR PR-N5 ~4.5 | **~19–22.5 d** | as there |
-| Examples, per PR | **~3.5 d** | 5a |
+| Group 1 — core and HTTP completeness, bun-common (V0, V1, V2, V3a, V3b) | **~14–15 d** | bun-common agent (bun-node-11) |
+| Group 2 — NestJS (V6, V7a, V7b) | **~8–10 d** | bun-common agent builds in bun-nest; bun-node-15 reviews |
+| Group 3 — other transports: WebSocket (V8, V9), SSE (V11), jobs (V4, V5a, V5c, V5b), cache (V10) | **~17–20 d** | bun-common agent (WS, SSE); bun-node-e9 (jobs); BC's owner (cache) |
+| Group 4 — client and docs hooks (AD (b0), V12, AD (a)/(b)/(e) deltas) | **~3 d new** + AD's own estimates; bun-node-99 reviewed the shapes (§4.12) | bun-common agent |
+| Examples, per PR | **~5 d** | bun-node-74 |
 
-§6 has the order.
+§6 has the order and the per-PR figures.
 
 ---
 
@@ -206,8 +257,8 @@ Defects and gaps found:
 
 | # | Finding | Evidence | Planned fix |
 |---|---|---|---|
-| G1 | **Headers are validated but neither written back nor typed.** `x-n: "5"` passes `z.coerce.number()` and the handler still reads the string `"5"`; `req.headers` keeps its raw type. `InferValidatedShape` does carry a `headers` key (`:79-80`), but `ValidationShape` has none, so it never reaches `req`. | [M `R4a`, `T6`]; write-back skipped on purpose (`:291-295`) | document; Q9 |
-| G2 | **`cookies` is not a target, and a `cookies` schema next to a known one compiles and is ignored at runtime**: a failing cookie reached the handler. Alone it is TS2353. | [M `R5`, `T7`] | V0: unknown target is a `ConfigError`; Q10 |
+| G1 | **Headers are validated but neither written back nor typed.** `x-n: "5"` passes `z.coerce.number()` and the handler still reads the string `"5"`; `req.headers` keeps its raw type. `InferValidatedShape` does carry a `headers` key (`:79-80`), but `ValidationShape` has none, so it never reaches `req`. | [M `R4a`, `T6`]; write-back skipped on purpose (`:291-295`) | V2: typed on `req.valid`, never written back (§4.3.3) |
+| G2 | **`cookies` is not a target, and a `cookies` schema next to a known one compiles and is ignored at runtime**: a failing cookie reached the handler. Alone it is TS2353. | [M `R5`, `T7`] | V0: unknown target is a `ConfigError`; V2: `cookies` and `signedCookies` targets (§4.3.2) |
 | G3 | **An explicit `undefined` option overrides its default.** The constructor spreads `options` over the defaults (`:425-431`), so `{ onFailure: "respond", status: undefined }` answered a **failed** request `200` with the issues body. It compiles. | [M `R2h`, `T8`] | V0 |
 | G4 | **The default failure mode gives a client nothing to act on** unless the app adds an error handler: on `BunHttpAdapter` a failed query is an HTML `400 Bad Request` page; `BunRouter.fetch()` rejects with the `ValidationError`. With an app error handler, the issues are all there. | [M `R2b`, `R2f`, `R2g`] | V-D2's issue shape reused by every adapter-level filter (§4.4); Q11 |
 | G5 | **The schemas are unreachable at runtime.** `validate()` returns a bare function (own keys `length`, `name`), so no route list, document or client can read them. | [M `R9`]; AD Decision 2 | AD (b)'s `__schemas`, landed early in V1 |
@@ -317,407 +368,1191 @@ Against the "full set" asked for:
   it; valibot, yup, `s` and `toStandardSchema` do not
   [M `results-vendors.txt`], which matches AD's Decision 3 table.
 
+### 2.9 What the 2026-10-17 revision measured and read
+
+At `68023d36`. These facts shape §4; each is cited where it is used.
+
+- **Request headers exist twice** [S]. `req.headersObj` is the native
+  `Headers`, read lazily, with a setter (`bun-common/lib/BunRequest.ts:1529-1533`).
+  `req.headers` is a plain `Record<string, string | string[]>` built from it
+  on first read and cached, also with a setter (`:5154-5163`); `setHeader` and
+  `removeHeader` clear the cache (`:5197`, `:5218`). **The two do not sync**:
+  assigning `req.headers` leaves `getHeader`, `fresh` and CORS reading the
+  original. busboy (`:3850`), `accepts` (`:5367`), `type-is` (`:4158`,
+  `:4684`), `rawHeaders` and `headersDistinct` read `req.headers`.
+- **Replacing `req.headers` with a schema's output breaks the request**
+  [M `http-complete` Q2]: on one multipart POST, `req.is("multipart")` became
+  `null`, `typeIs.hasBody` `false`, busboy threw `Missing Content-Type`,
+  `rawHeaders` fell from 8 to 2, and the coerced value reverted to `"5"` after
+  a later `setHeader`. Merging instead put the number `5` into
+  `headersDistinct`, and still reverted. A parsed copy beside it broke nothing.
+- **Cookies** [S]: `req.cookies` and `req.signedCookies` are
+  `Record<string, JsonValue>` with getters and setters, parsed lazily
+  (`BunRequest.ts:2972-3018`); a `j:` cookie is parsed JSON; a signed cookie no
+  secret verifies is `false`. **A forged unsigned `sid` lands in
+  `req.cookies` and passes a `cookies` schema**; against `signedCookies` it is
+  absent and fails, and a tampered one is `false` and fails
+  [M `http-complete` Q1c–Q1e, H49–H51]. No library code reads `req.cookies`
+  after the parse, so writing a parsed value back is safe [M Q1g].
+- **Every response commits through one setter** [S, M]: `BunResponse`'s
+  private `set response` (`bun-common/lib/BunResponse.ts:1300`) is reached by
+  `json()`'s fast path, text, bytes, `Blob`, `send(Response)`, `redirect`,
+  `sendFile` and the stream the first `write()` opens. It runs the (synchronous,
+  text-only) transforms, `markResponded`, the waiters and `finish`. Building
+  the native `Response` is harmless; handing it on is the point of no return.
+  `headersSent` reads only the native response (`:2576`) and the pipeline
+  waits on it (`BunRouter.ts:808`), so a commit can be **held**.
+- **Status writers** [S]: `status()` (`BunResponse.ts:1397`), the `statusCode`
+  setter (`:1402`), `writeHead` (`:1933`), `redirect` (`:2420`; its
+  `ResponseInit` form returns `Response.redirect`, `:2380-2397`),
+  `sendStatus` (`:3115`), the freshness 304 (`:1544`), `handleNotFound`
+  (`:2803`), the 416 of `#respondWithStatus` (`:2813`) and `sendFile`'s 206
+  (`:3003`). Every one is visible at the commit point.
+- **A handler's return value is ignored** (`BunRouter.ts:5286`): returning a
+  native `Response` sends nothing [M `http-complete` H52].
+- **SSE**: no helper exists in bun-common or bun-nest; the
+  [bun-native-routes plan](../bun-native-routes/README.md) §16 designs one
+  (PR-sse2: `lib/sse/`, `res.sse()` returning an `SseWriter`, a `./sse`
+  subpath), whose `SseMessage.data` is untyped. **No plan validates SSE
+  events.** Nest's `@Sse()` streams on bun-nest unchanged [S].
+- **Nest 12 ships Standard Schema itself** [A, from the nestjs-12-parity
+  plan's changelog evidence]: 12.0.0 (#16373) added
+  `StandardSchemaValidationPipe`, `@Body/@Query/@Param({ schema })`,
+  `StandardSchemaSerializerInterceptor` and `@SerializeOptions({ schema })`;
+  #17107 put field paths in its messages; 12.1.0 (#17834) added
+  `@Cookies()`/`@SignedCookies()`. None exist on 11, and bun-nest supports
+  both majors. `@RawBody({ schema })` is validated only when the pipe is
+  `StandardSchemaValidationPipe({ validateCustomDecorators: true })` (it
+  receives a `Buffer`) [M `nest-interceptor/`].
+- **bun-jobs** [A, from e9's survey; paths under `bun-jobs/lib/`]:
+  - **Enqueue bypasses the definitions.** `BunQueue.add`, `addBulk`,
+    `addFlow` and the API's add route never consult the definitions
+    (`JOB_ROUTER` serves only the builder verbs; `BunJobs#addDefined` is never
+    called). A check keyed on `define()` must live in `BunQueue`.
+  - **Flows**: `BunQueue.addFlow(node)` with `FlowNode { name, data, opts?,
+    queue?, children? }` (`queue/types.ts:168-185`); a parent waits as
+    `waiting-children`. Children are keyed **`queue:id`** (`drivers/flow.ts:11-13`),
+    not by name; a parent reads `job.getChildrenValues(): Record<string,
+    unknown>` (`queue/Job.ts:694-697`), untyped. **A flow add is atomic on no
+    driver**: a synchronous `#planFlow` pre-pass, then one awaited `addJob`
+    per node (`queue/BunQueue.ts:1494-1635`).
+  - **Isolated targets** (Worker, child process, container) receive the raw
+    `JobRecord` (`queue/workerTarget.ts:871-872`) over JSON or a structured
+    clone; `#buildRecord` asserts JSON safety (`BunQueue.ts:3001`).
+  - **Other writes of data**: `BunQueue.update`, `Job.updateData`/`update`,
+    `PATCH /queues/:queue/jobs/:id` (`BunQueue.ts:1784-1837`,
+    `Job.ts:453-517`), debounce replacements (`:2647-2655`), repeat series
+    (`queue/repeat.ts:292`, `queue/repeatControl.ts:274`).
+  - **A fourth copy of issue flattening** (`provider/configure.ts:134-155`)
+    joins the three §4.1 of the first version listed.
+  - The management API's `VALIDATION` problem is **400**
+    (`api/errors.ts:92`), as BunValidate's default is.
+- **The vendors' own issue messages leak the received value** [M
+  `contract-core` C11]: valibot in its messages and path objects, arktype
+  `(was "…")`, yup `cast from the value`, zod for an unrecognised key.
+
 ---
 
 ## 3. What other plans already decide
 
-Adopted by reference. This plan does not restate them; it builds on them and
-changes only what §4 says.
+Adopted by reference. This plan builds on them and changes only what §4 says.
 
 | Piece | Where | Status | This plan's delta |
 |---|---|---|---|
-| `__schemas` on the validator middleware | AD Decision 2, phase (b) | plan | lands early, in V1 (§4.1), because NTR, NJD, TC and V5 all need it |
-| Spec types 1.1.0 (`StandardJSONSchemaV1`) | AD phase (b0) | plan | unchanged |
-| `validate(schemas, { responses })`, `BunResponse<_, TResponses>`, `status()` narrows, `json()` constrains | AD §3.7, phase (b1) | plan, spiked on an older router | **re-measured on `73bf4a00`**; body type rule corrected (§4.3) |
-| Runtime response checking at finalisation, modes `"off" \| "log" \| "throw"` | AD §3.5, phase (b1) | plan | **hook point moved before the `Response` is built**, async vendors held, modes renamed (§4.2) |
-| `@Validate` interceptor, class + method, return-type constraint, swagger bridge | AD §3.8, phase (g) | plan | input/output rule; standalone response interceptor (§4.4) |
-| `StandardSchemaPipe` | NTR §4.1; NJD §7.4 | plan, twice | **one pipe, bun-nest root**, on the shared core (§4.4) |
-| `ProblemDetailsFilter` | NTR §3.3 | plan | `ValidationExceptionFilter` beside it (§4.4) |
-| `defineChannel({ receives, sends })` | TC §6.5, PR-M4 | plan, validation semantics open | the semantics (§4.5) |
-| `@ValidateMessage`, `@Emits` | NTR §7, PR-N5 | plan | error frame and filter (§4.5) |
-| `validate` on read for caches | BC §3.13 | plan | runner and order only (§4.7) |
-| Client-side validation, `Jsonify` responses | TC §4.1, §5 | plan | unchanged; the server side here feeds it (§4.8) |
+| `__schemas` on the validator middleware | AD Decision 2, phase (b) | plan | **becomes the contract** the middleware carries (`getContract`, §4.1.5); lands in V1 |
+| Spec types 1.1.0 (`StandardJSONSchemaV1`) | AD phase (b0) | plan | unchanged; group 4 |
+| `validate(schemas, { responses })`, `BunResponse<_, TResponses>`, `status()` narrows, `json()` constrains | AD §3.7, phase (b1) | plan | **extended to headers, cookies and every body kind** (§4.4); the input/output rule (§4.4.4) |
+| Runtime response checking, `"off" \| "log" \| "throw"` at finalisation | AD §3.5 | plan | **replaced**: the commit gate (§4.4.2), modes `"off" \| "warn" \| "error"` |
+| `@Validate` interceptor, class + method, return-type constraint, swagger bridge | AD §3.8, phase (g) | plan | composes with Nest 12; headers and cookies; per-status responses in the interceptor and PR-6c's before-write hook (§4.5) |
+| `StandardSchemaPipe` | NTR §4.1; NJD §7.4 | plan, twice | **one pipe, bun-nest root**, on the core (§4.5.3) |
+| `ProblemDetailsFilter` | NTR §3.3 | plan | `ValidationExceptionFilter` beside it (§4.5.5) |
+| `defineChannel({ receives, sends })` | TC §6.5, PR-M4 | plan, validation semantics open | a WebSocket contract on the core; the semantics (§4.6) |
+| `@ValidateMessage`, `@Emits` | NTR §7, PR-N5 | plan | on the core; error frame and filter (§4.6.2) |
+| SSE helpers: `res.sse()`, `SseWriter`, `./sse` | bun-native-routes §16, PR-sse2 | plan, not started; this plan's lead owns it | the writer takes an SSE contract (§4.7) |
+| `validate` on read for caches | BC §3.13 | plan | runner and order only (§4.10) |
+| Client-side validation, `Jsonify` responses, the route model | TC §3.0, §4.1, §5 | plan | reads `describeContract` (§4.11) |
+| NestJS 12 support | [nestjs-12-parity](../nestjs-12-parity/README.md) | plan, being built | the Nest PRs here stack on its PR-2, PR-3, PR-5, PR-6a, PR-6c (§6) |
 
 ---
 
 ## 4. Part B: the design
 
-### 4.1 The shared core (bun-common) [D]
+### 4.1 The contract core (bun-common) [D, M `contract-core`]
+
+One model every transport plugs into. Spiked in
+[`evidence/contract-core/`](evidence/contract-core/README.md): `core.ts` is the
+prototype, `transports.ts` declares eight transports through it, `udp.ts` and
+`broker.ts` are working adapters, `types.probe.ts` holds 24 type controls
+(all shown to fire, line-exact), and `run.ts` cases C1–C22.
+
+#### 4.1.1 Transports, parts, keys and contracts
+
+A **transport** says which **parts** a message has on each **side** and, when
+a side carries several kinds of message, the name of its **key**. A
+**contract** maps parts to schemas.
 
 ```ts
-/** A validation outcome, flattened: the typed value, or every issue found. */
-export type StandardOutcome<T, TTarget extends string = ValidationTarget> =
-  | { ok: true; value: T }
-  | { ok: false; issues: ValidationIssue<TTarget>[] };
+type Schema = StandardSchemaV1;
+interface MediaMap { readonly [mediaType: string]: Schema }       // OpenAPI's `content`
+type PartDecl = Schema | MediaMap | null;                        // null: must be absent (a 204 body)
+interface SideSpec { parts: readonly string[]; key?: string; media?: readonly string[] }
+interface TransportSpec { name: string; inbound?: SideSpec; outbound?: SideSpec }
 
-/**
- * Runs one Standard Schema and flattens its issues. Answers synchronously
- * when the vendor does (zod, valibot, arktype, `s`, `toStandardSchema`), and
- * with a promise only when it returns one (yup). Callers that must decide
- * before something else happens (a response, an enqueue) rely on that.
- */
-export function validateStandard<S extends StandardSchemaV1, TTarget extends string = ValidationTarget>(
-  schema: S,
-  value: unknown,
-  options?: { target?: TTarget },
-): StandardOutcome<StandardSchemaV1.InferOutput<S>, TTarget>
- | Promise<StandardOutcome<StandardSchemaV1.InferOutput<S>, TTarget>>;
-
-/** `issue.path` as a dotted string, `""` for the value itself. */
-export function formatIssuePath(issue: StandardSchemaV1.Issue): string;
+function defineTransport<const T extends TransportSpec>(spec: T): Transport<T>;
+interface Transport<T> {
+  spec: T;
+  contract<const D extends ContractDef<T>>(def: D & StrictDef<T, D>, meta?: ContractMeta): Contract<T, D>;
+}
 ```
 
-- `ValidationIssue` gains a type parameter for its `target`, defaulting to
-  today's four, so `"response"`, `"message"`, `"data"`, `"result"` and
-  `"cache"` issues share one shape without widening existing code.
-- **`__schemas`** (AD Decision 2): the middleware carries its schemas, and
-  now its `responses`, as a non-enumerable property. Three lines; the
-  prerequisite for OpenAPI, the route model, `@Validate`'s reuse of the
-  middleware and §4.2.
-- **bun-jobs adopts it where it copies it** (`define.ts:313-342`,
-  `remote/schemas.ts:551-574`, `api/ws/session.ts:168-200`), as its owner
-  decides; nothing forces it.
-- **`s` gains `~standard.jsonSchema`** (`{ input, output }` returning its
-  `.json`), so AD's converter reads it on the primary path with no
-  `bun-jobs` vendor entry (V4).
-- **V0 fixes ride first**: defaults survive an explicit `undefined` (G3); a
-  key outside the known targets is a `ConfigError` at construction (G2),
-  because a type cannot catch it on an inferred generic.
+| Transport | Inbound | Outbound | Key |
+|---|---|---|---|
+| HTTP | `params`, `query`, `headers`, `cookies`, `signedCookies`, `body` (by media type) | `headers`, `cookies`, `body` (by media type) | outbound: `status` |
+| WebSocket | `data` | `data` | `type` on both |
+| SSE | (the HTTP request) | `data`, `id` | `event` |
+| jobs | `data` | `result` | — (a flow's children are a part, §4.8.4) |
+| Kafka | `payload`, `key`, `headers` | the same (a producer's outbound is a consumer's inbound) | `topic` |
+| RabbitMQ / AMQP | `payload`, `headers`, `properties` | the same | `routingKey` |
+| gRPC | `request`, `metadata` | `response`, `metadata` | `method` |
+| UDP (spike) | `payload`, `meta` | `payload` | `type` |
 
-### 4.2 Response validation at runtime [D, M]
+A **side** that has a key is a map from key to parts (a status to its
+response); a side without one is one set of parts (a request). A part listed in
+`media` takes a `MediaMap`, so HTTP's nesting is **key → parts → media
+type**, with nothing more in the model:
 
-**Shape** (AD §3.5, renamed):
+```ts
+http.contract({
+  inbound: { params: IdParams, query: Page, cookies: Session },
+  outbound: {
+    200: { headers: z.object({ "x-rate-limit-remaining": z.coerce.number() }),
+           body: { "application/json": User, "text/plain": z.string() } },
+    201: { headers: z.object({ location: z.string() }), body: { "application/json": User } },
+    204: { body: null },
+  },
+});
+```
+
+What the spike changed from the first sketch, each for a measured reason
+(`contract-core/README.md`, "What changed"): a message is **flat** and uses the
+transport's own key name (`{ status, headers, body }`, `{ topic, payload,
+key }`), because Kafka has a part called `key`; `defineTransport` rejects a key
+that is also a part. `StrictDef` exists because a `const` generic skips
+excess-property checks, so `http.contract({ inbound: { bdy } })` compiled
+without it. Declaration mistakes are type errors **and** `TypeError`s at
+runtime (C22).
+
+#### 4.1.2 One runner, and one issue shape
+
+```ts
+interface ValidationIssue<TTarget extends string = string> {
+  target: TTarget;      // the part ("body", "headers", "payload"), or the key's name when the key is undeclared
+  message: string;      // never quotes the received value (§4.1.6)
+  path: string;         // dotted, "" for the part itself — today's meaning
+  key?: string;         // the status, message type, event, topic or method
+  mediaType?: string;   // when the part is keyed by media type
+}
+type StandardOutcome<T> = { ok: true; value: T } | { ok: false; issues: ValidationIssue[] };
+
+function validateStandard<S extends Schema>(
+  schema: S, value: unknown, target: string, key?: string, mediaType?: string,
+): StandardOutcome<InferOutput<S>> | Promise<StandardOutcome<InferOutput<S>>>;
+```
+
+- **Synchronous when the vendor is** [M C10]: zod 4.6, valibot 1.5, arktype
+  2.2 and a hand-rolled sync schema answer synchronously at every level (the
+  runner, a receiver, a sender); yup 1.7 and an async schema return a Promise,
+  and so does any message with one async part. That is what lets a broker
+  publish reject before the enqueue (C8) and an HTTP response decide before it
+  is handed on (§4.4.2).
+- **`ValidationIssue` keeps today's three fields and their meaning**; `key`
+  and `mediaType` are optional additions, and the type parameter defaults to
+  `string`, while BunValidate's request side narrows it to its targets. The
+  first version's `target`-only shape is a special case.
+- **The four copies of issue flattening** (`BunValidate.ts:368-379`,
+  `bun-jobs/lib/api/routes/define.ts:313-342`,
+  `bun-jobs/lib/remote/schemas.ts:551-574`,
+  `bun-jobs/lib/provider/configure.ts:134-155`) and the examples' pipe become
+  calls to it, as each owner decides.
+
+#### 4.1.3 Guards, and one policy
+
+```ts
+type Policy = "off" | "warn" | "error";
+interface GuardOptions {
+  policy?: Policy;                                                       // default "error"
+  logger?: LoggerLike;                                                   // "warn" logs here
+  onIssues?: (issues: readonly ValidationIssue[], ctx: IssueContext) => void;  // telemetry; free when unset
+  undeclaredKey?: "report" | "allow";                                    // default "report"
+}
+interface IssueContext { transport: string; side: "inbound" | "outbound"; key?: string; policy: Policy }
+class ContractError extends Error { issues: readonly ValidationIssue[]; context: IssueContext }
+interface Guard<In, Out> { (message: In): Out | ContractError | Promise<Out | ContractError>; readonly checks: boolean }
+
+function createReceiver<C, Sd>(contract: C, side: Sd, options?: GuardOptions): Guard<unknown, Received<C, Sd>>;
+function createSender<C, Sd>(contract: C, side: Sd, options?: GuardOptions): Guard<Sent<C, Sd>, Sent<C, Sd>>;
+```
+
+- **Two guards, because the two ends want different things** [M]: a
+  **receiver parses** and hands on each part's output (a `z.coerce.date()`
+  arrives as a `Date`, C1); a **sender checks** and hands back the very object
+  it was given, because what goes on the wire is the sender's value. One
+  Kafka topic map is the producer's outbound and the consumer's inbound.
+- **A guard returns a `ContractError` rather than throwing**, and is compiled
+  once per side with a plan per key; that is what keeps the no-schema path
+  allocation-free and the sync answer sync. `guard.checks === false` lets an
+  adapter skip the call entirely.
+- **The policy** (the same three words everywhere):
+
+  | Policy | Receiver (inbound) | Sender (outbound) |
+  |---|---|---|
+  | `"off"` | no check; the raw message is handed on | no check |
+  | `"warn"` | checked; on a mismatch one log line (no values) and the **raw** message is handed on | checked; sent anyway; one log line |
+  | `"error"` | a mismatch is a `ContractError` the adapter turns into its transport's refusal (HTTP 400, an error frame, a rejected enqueue) | a mismatch is refused before anything is written, where the transport allows (§4.4.2) |
+
+  `"warn"` and `"off"` on a **receiver** hand a handler a value its type says
+  was parsed when it was not (C3, C4: a `Date`-typed field is a string). So
+  receivers default to `"error"`, and §8 asks whether they may take anything
+  else (Q-C1).
+- Each adapter maps a `ContractError` to its transport's refusal: HTTP's
+  request side keeps BunValidate's `ValidationError` and `onFailure` modes
+  (§4.3.4); HTTP's response side raises `ResponseValidationError` (§4.4.3);
+  WebSocket answers an error frame (§4.6); jobs reject the enqueue or fail the
+  job (§4.8).
+
+#### 4.1.4 Static types from the contract
+
+```ts
+type ReceiveOf<S> = StandardSchemaV1.InferOutput<S>;
+// Field by field: each field's input type, or its output where the input is
+// `unknown` (a coercion), with the input's optionality; deep through objects
+// and arrays. (The spike's `SendOf` applied this to the whole part; V1 replaces it.)
+type WireInput<S> = DeepWire<StandardSchemaV1.InferInput<S>, StandardSchemaV1.InferOutput<S>>;
+type Received<C, Sd>;   // the flat message: { [keyName]: K, ...each part's output }, a union over the keys
+type Sent<C, Sd>;       // the same, each part held to WireInput
+type KeysOf<C, Sd>; type PartsOf<C, Sd, K, R>;
+type MediaValue<M, R> = { mediaType: K; value: … };   // a union over the media map
+```
+
+- A **receiver** gets each part's **output**; a **sender** is held, **field
+  by field**, to each field's **input**, or its **output** where the input is
+  `unknown` (`WireInput`). This is
+  the first version's rule (§4.4.4), now general: the spike checks it on HTTP,
+  WebSocket, SSE, jobs, Kafka and gRPC (`types.probe.ts`).
+- **The rule applies per field, not per part** (bun-node-99's review, M1;
+  §4.12): the spike's `SendOf` takes the whole part's input, so a query
+  `z.object({ page: z.coerce.number(), q: z.string().default("") })` sends as
+  `{ page: unknown; q?: string }` and `{ page: "x" }` compiles. V1 replaces it
+  with a deep **`WireInput<S>`**: each field takes its input type, or its output
+  where the input is `unknown` (a coercion), with the input's optionality.
+  `Sent`, V-D8's response typing and TC's client inputs all use it.
+- An undeclared key (a 418), a missing required part (a 201 without
+  `Location`), a body on a `null` part, a media type a status does not
+  declare, and a part a transport does not have are all type errors.
+- **What the wire changes is not the core's**: a header arrives as a
+  string, a JSON body as its `Jsonify`. A client's response types follow the
+  **wire**, `Jsonify<WireInput<S>>`, not the schema's output (a body `{ n:
+  z.string().transform(s => s.length) }` is sent as a string, M2), and its
+  output only when the client parses with the schema itself (TC §5.4). §8 Q-C5
+  proposes a per-transport `wire` mapping, which V1 also records as **data**
+  on each row (§4.12, m3), because generated client validators need it at
+  runtime.
+
+#### 4.1.5 Contracts readable at runtime
+
+```ts
+const CONTRACT: unique symbol;                    // the spike's Symbol.for("bun-validate.contract"); the name is §9's
+function attachContract<X extends object, C>(target: X, contract: C): X & Carries<C>;
+function getContract<C>(x: Carries<C>): C;
+function getContract(x: unknown): AnyContract | undefined;
+function describeContract(c: AnyContract): ContractDescription;
+interface ContractDescription {
+  // Every side and key the contract declares, even one with no parts (`202: {}`),
+  // and whether a side is declared at all ("nothing declared" ≠ "declared empty").
+  sides: { inbound?: { declared: true; keys?: string[] }; outbound?: { declared: true; keys?: string[] } };
+  entries: ContractEntry[];   // in canonical order (§4.12, m1)
+}
+interface ContractEntry {
+  side: "inbound" | "outbound"; keyName?: string; key?: string; part: string; mediaType?: string;
+  kind: "value" | "chunks" | "sse" | "opaque";        // §4.12 M4; an sse() expands into nested event rows
+  encoding: "path-string" | "querystring" | "header-string" | "cookie-string" | "signed-cookie" | "set-cookie" | "body";  // m3
+  origin?: string;                                    // the layer it came from, after mergeContracts (M3)
+  schema: StandardSchemaV1; vendor?: string;
+}
+```
+
+- A validator middleware, a channel handler, an SSE endpoint, a job
+  definition and a Nest route each **carry** their contract under one symbol,
+  non-enumerable, so nothing changes for code that enumerates them [M C20: the
+  handler has no enumerable keys].
+- `describeContract` flattens a contract into its declared sides and keys
+  plus rows a generator walks: one per `(side, key, part, mediaType)`, each
+  with its body `kind`, its wire `encoding` and its `origin` (§4.12, from
+  bun-node-99's review: B1, M3, M4, m3). An OpenAPI or AsyncAPI generator, the route
+  model and bun-jobs' `/definitions` read **only this** (§4.11). The spike's
+  seven-row HTTP contract took its JSON Schema from zod's
+  `~standard.jsonSchema` (C20).
+- **This replaces AD's `__schemas`**: the same idea (the middleware carries
+  its schemas), one name for every transport, and a typed accessor.
+
+#### 4.1.6 Three rules every transport keeps [A, M]
+
+1. **An issue never carries the received value.** The vendors' own messages
+   do (valibot, arktype, yup, zod; §2.9), so the runner copies only `message`
+   and the path keys, and replaces a message quoting a received leaf with
+   `Invalid value (<code>)`. After that, nothing leaked in any of 9 cases, and
+   a `"warn"` log holds only `transport, side, key` and each issue's `target,
+   path, message, key` [M C11, C12]. **Two limits**, put to the user as Q-C2
+   and Q-C3: a path can still hold user data (an unknown key's name, a record
+   keyed by user data), and the scrub is a heuristic.
+2. **No schema costs nothing.** A side or key with no schema answers
+   synchronously with the same object and allocates nothing; 100,000 retained
+   results add 0 live objects (199,999 with one zod part) [M C13–C15]. An
+   adapter with no contract never calls the guard. bun-jobs' enqueue
+   throughput is benchmark-guarded, so this is a release gate there (§4.8).
+3. **One telemetry hook**, `onIssues(issues, ctx)`, called once per failing
+   message and never on a passing one; with and without it, a valid message
+   cost 164 and 165 ns [M C16, C17]. Its first user is the OpenTelemetry
+   plan's `validation.failed` span event, with `validation.target`,
+   `validation.issue_count` and the paths, never values [A, e9].
+
+#### 4.1.7 Cost [M `contract-core` C18]
+
+Minimum of three runs, on a 2-field object, in ns, at load 9–13 on 16 cores
+(it had peaked at 61 minutes before, so read these as orders of magnitude):
+
+| Vendor | `~standard.validate` | `validateStandard` | receiver | sender |
+|---|---|---|---|---|
+| zod | 71 | 79 | 199 | 172 |
+| valibot | 65 | 74 | 189 | 165 |
+| arktype | 63 | 84 | 197 | 173 |
+
+These are fixed costs, lost in the noise on a 20-item list (zod 4.3 µs).
+A failing message costs about 1.7 µs (the scrub and a `ContractError` stack).
+A keyed side with no schema for the key costs about 15 ns; Q-C6 proposes a
+cached `checksKey(key)` for routers and topic tables.
+
+#### 4.1.8 Where it lives
+
+`packages/bun-common/lib/contract/`, exported from the package root **and**
+from a **browser-safe subpath** (`@kingsleyweb/bun-common/contract`), as
+`./sse` is for the SSE parser (bun-native-routes §16). Its browser user is a
+**shared contract module**, a channel's or a route's contract imported by both
+the server and a browser client (§4.12, m12); the typed client itself needs
+nothing of bun-common at runtime, and bun-jobs-ui reads `/definitions` as
+JSON. The core
+needs no Bun or Node API: the spike's `core.ts` has one import, the
+`StandardSchemaV1` type, which bun-common vendors in
+`bun-common/lib/types/standardSchema.ts` (no imports) [S]; the real module
+takes it from there, so the subpath stays browser-safe, which V1 proves with a
+bundle-safety test like bun-jobs-ui's [I]. §8 Q-C7.
+
+### 4.2 The extension point: adding a transport [D, M `contract-core`]
+
+A transport is a declaration plus an adapter; the core does the rest. **No
+gRPC, Kafka, RabbitMQ/AMQP or UDP integration is built**: we have no
+packages for them, and this plan only makes sure one would need nothing new.
+
+**What a transport author writes**:
+
+1. `defineTransport({ name, inbound, outbound })` — part and key names, and
+   which parts take media maps (3–5 lines, `transports.ts`).
+2. An adapter that, at its two seams, calls `createReceiver(...)` on what
+   arrives and `createSender(...)` on what leaves, and maps a `ContractError`
+   to the transport's refusal (an error reply, a nack, a dead letter).
+3. `attachContract(handler, contract)` wherever it registers a handler, so
+   docs and clients find it.
+
+**What it gets**: typed handlers and senders, validation in three policies,
+the issue shape, the no-value and no-cost rules, the telemetry hook, and
+document rows from `describeContract`.
+
+**The proof** [M]:
+
+- **UDP over loopback** (`udp.ts`, `Bun.udpSocket`, port 0; the server about 55
+  lines, the client about 45): a valid datagram reaches the typed handler
+  parsed (C1); an invalid one gets an error frame `{ target: "payload", path:
+  "text", key: "chat.post" }` and the handler is not called (C2); `"warn"`
+  logs once and passes the raw value (C3); `"off"` never calls the schema
+  (C4); an undeclared `type` is `target: "type"` (C5); the typed client
+  refuses an invalid request before sending (C6).
+- **An in-process broker** (`broker.ts`, about 80 lines; topic → handlers,
+  parts `payload`, `key`, `headers`): a valid publish answers synchronously and
+  the consumer sees coerced output (C7); an invalid one returns a
+  `ContractError` synchronously with zero deliveries (C8); a yup topic answers
+  with a Promise and a schema-less one synchronously (C9). It checks on publish
+  **and** on delivery, which is right across services and redundant in one
+  process; Q-C8.
+
+**How the named future transports map** (declarations in `transports.ts`,
+types only):
+
+| Transport | Key | Parts | A refusal is | Documents |
+|---|---|---|---|---|
+| gRPC | `method` | `request`, `metadata` / `response`, `metadata` | `INVALID_ARGUMENT` with the issues in details | protobuf is its own contract; the schema checks the decoded message |
+| Kafka | `topic` | `payload`, `key`, `headers` | a dead-letter topic, or a skipped offset with a log | AsyncAPI `channels` (§4.11) |
+| RabbitMQ / AMQP | `routingKey` | `payload`, `headers`, `properties` | a nack without requeue (to the dead-letter exchange) | AsyncAPI |
+| UDP | `type` | `payload`, `meta` | an error datagram | AsyncAPI |
+
+A guide, "Writing a transport", goes in bun-common's README with V1, using the
+UDP adapter as its worked example.
+
+### 4.3 HTTP requests in bun-common [D, M `http-complete`]
+
+`validate()` and `BunValidate` keep their signatures and behaviour; underneath,
+a validator becomes an HTTP contract on the core (§4.1) with a receiver guard
+on its inbound side, and the middleware carries the contract
+(`attachContract`). Existing code compiles and behaves as today, apart from
+V0's two fixes.
+
+#### 4.3.1 V0: the fixes that ride first (unchanged from the first version)
+
+- **G3**: defaults survive an explicit `undefined` (the constructor spreads
+  `options` over the defaults, `BunValidate.ts:425-431`, so `{ onFailure:
+  "respond", status: undefined }` answered a failed request **200** [M
+  `R2h`]).
+- **G2**: a key outside the known targets is a `ConfigError` at construction,
+  because a type cannot catch it on an inferred generic [M `R5`, `T7`].
+
+#### 4.3.2 Targets
+
+```ts
+type ValidationTarget = "params" | "query" | "body" | "headers" | "cookies" | "signedCookies";
+interface ValidationSchemas {
+  params?: StandardSchemaV1; query?: StandardSchemaV1; body?: StandardSchemaV1;
+  headers?: StandardSchemaV1;        // lower-case keys; typed on req.valid.headers; never written back
+  cookies?: StandardSchemaV1;        // req.cookies: written back and typed
+  signedCookies?: StandardSchemaV1;  // req.signedCookies: only verified cookies; a tampered one is false
+}
+```
+
+The fixed order becomes `headers → cookies → signedCookies → params → query →
+body`, so a cheap header or session check fails before a body is parsed.
+
+- **Cookies are two targets** [M H47–H51]: only `signedCookies` can require a
+  signature, since a forged unsigned `sid` lands in `req.cookies` and passes a
+  `cookies` schema (§2.9). Both are written back (as `query` and `body` are)
+  and typed on `req.cookies` / `req.signedCookies`. A schema that strips
+  unknown keys strips unknown cookies, as it does unknown query keys.
+- **Headers are typed, never written back** [M Q2, H46]: §2.9 shows what
+  replacing or merging `req.headers` breaks. Schema keys are lower-case
+  (a `Content-Type`-keyed schema fails, Q2e); the README says so.
+
+#### 4.3.3 `req.valid`: every parsed part, typed
+
+```ts
+class BunRequest<TParams, TQuery, TBody,
+  TCookies = Record<string, JsonValue>,
+  TSignedCookies = Record<string, JsonValue>,
+  TValid = Record<never, never>> {
+  get cookies(): TCookies;
+  get signedCookies(): TSignedCookies;
+  declare valid: TValid;   // { headers?, cookies?, signedCookies?, params?, query?, body? } as parsed
+}
+```
+
+- `req.valid` holds each part a validator parsed, as Hono's
+  `c.req.valid("header")` does: the **one** place a typed header lives
+  (`req.valid.headers["x-n"]` is the number `5` while `req.headers["x-n"]`
+  stays `"5"` and `accepts` still works, H46), and a uniform view of the rest.
+  A mount's validator and a route's merge at runtime; the route's type wins on
+  a key both declare (`MergeShape`, as today).
+- The three new `BunRequest` type parameters are **trailing and defaulted**,
+  so every existing `BunRequest<P, Q, B>` compiles [M: bun-common's own
+  `__tests__`, 95 files, and bun-nest's lib and tests, check clean against the
+  patch].
+- Under `replace: false`, `req.*` keep their raw types as today; whether
+  `req.valid` is still typed there is Q-H8 (it changes five existing type-test
+  assertions).
+
+#### 4.3.4 Failures
+
+Unchanged: `ValidationError` (`issues`, `targets`, `status`, default 400),
+`onFailure: "next" | "throw" | "respond"`, `abortEarly`. Issues now come from
+the core, so they carry no received value (§4.1.6) and gain the optional
+`key` and `mediaType` fields. bun-jobs' management API maps BunValidate issues
+into its own `ProblemIssueDto`, whose `target` is today's four-member union
+(`bun-jobs/lib/api/contract/types.ts:61`, `api/serialize.ts:65`): widening
+`ValidationTarget` breaks it at `bun-jobs/lib/api/errors.ts:409` [M
+`http-complete` step d]. That DTO is the contract bun-jobs-ui reads, so V2
+widens it in the same PR, reviewed by bun-node-e9 and bun-node-99 (Q-H7).
+
+#### 4.3.5 Typing
+
+`ValidationShape` gains `cookies`, `signedCookies`, `headers` and `responses`
+(§4.4); `MountedHandler` and `ResolvedHandler` pass
+`BunRequest<P, Q, B, ResolveCookies<S>, ResolveSignedCookies<S>,
+ResolveValid<S>>`, and `TypedRouteHandler` gains `TRes` and `TReq` as trailing
+parameters. **The generated overloads are byte-identical**
+(`generate-verb-overloads.ts --check`: "up to date (25 verbs)" and "(16
+verbs)") [M]. One documented limit lifts: an inline validator followed by a
+`ResolvedHandler`-typed handler now infers, which changes five lines of
+`__tests__/verbTyping.type-test.ts:181-182` (Q-H9). A handler typed
+`TypedRouteHandler` ahead of the call keeps the limit (L1, pinned by the
+probe).
+
+After nestjs-12-parity PR-5, named wildcards (`*name`, `{*name}`) are
+`string[]` everywhere [A]: a `params` schema on a wildcard route must accept
+an array, and V2's type tests carry one such case.
+
+### 4.4 HTTP responses in bun-common: status, headers, cookies and every body kind [D, M `http-complete`]
+
+#### 4.4.1 The response contract
 
 ```ts
 validate(
   { params: IdParams },
   {
-    responses: { 200: User, 404: Problem, 204: null },  // null: no body
-    responseValidation: "warn",                         // per validator; else the router's
-    undeclaredStatus: "report",                         // or "allow"
+    responses: {
+      200: { headers: RateLimit, content: { "application/json": User, "text/plain": z.string() } },
+      201: { headers: z.object({ location: z.string() }), content: { "application/json": User } },
+      204: null,                                   // no body
+      302: { headers: z.object({ location: z.string().startsWith("/app") }) },
+      404: Problem,                                // shorthand: { content: { "application/json": Problem } }
+    },
+    responseValidation: "error",                   // per validator; else the router's or adapter's; default "off"
   },
 );
-new BunHttpAdapter({ responseValidation: process.env.NODE_ENV === "production" ? "off" : "error" });
 ```
-
-| Mode | What happens on a mismatch | Holds the response? |
-|---|---|---|
-| `"off"` (default) | nothing; no check runs | no |
-| `"warn"` | the router's logger at `warn` with `{ method, path, status, mismatch }`, bun-jobs' wording; the response is sent unchanged | **never** — the check runs after the `Response` is produced |
-| `"error"` | a `ResponseValidationError` (status 500, `issues` with target `"response"`) enters the error pipeline **instead of** the response, so the app's error handler renders it; with none, the adapter's 500 | only while an async vendor settles |
-
-**Where it hooks: before the `Response` is built, not at finalisation.**
-AD put the check at finalisation, reading `#sentBody`. But `json()` builds
-the native `Response` at once (`BunResponse.ts:1463-1495`) and the
-transforms run synchronously as it is produced (`:235-252`, `:1336`), so by
-finalisation a 500 can no longer replace it. So in `"error"` mode:
-
-- `json()`, `jsonp()` and `send(value)` run `validateStandard` on the raw
-  value first. **A sync result decides in place**: valid, produce the
-  response as today; invalid, hand the error to the pipeline and produce
-  nothing.
-- **A Promise result holds the response**: the call records the pending
-  check and returns; the response is produced (or the error raised) when it
-  settles. The pipeline already waits for a layer's response, so nothing
-  else changes. **Measured** with a prototype that wraps `res.json` per
-  request: a yup (Promise) mismatch became a `500` problem body and a valid
-  yup body a `200`, through `router.fetch()` [M `results-proto.txt`, `P1c`,
-  `P1d`]; a zod mismatch a `500` [`P1a`]; an undeclared `418` a `500`
-  [`P1e`]; `"warn"` sent the bad body `200` and logged once [`P1b`].
-- `"warn"` never holds: the response goes out and the check runs after it,
-  async or not.
-
-**Exclusions** (unchanged from AD §3.5): streams (`write`/`end` chunks, a
-`ReadableStream`, `sendFile`, a `Blob`), redirects, `HEAD`, a 304 produced
-by freshness, and a response already sent. `send(string)` is checked only
-against a string schema. A stream is skipped with one `warn` per route.
-
-**Cost** [M `results-vendors.txt`, a 20-item list, per check]: arktype 1.5
-µs, valibot 5.2 µs, zod 5.9 µs, `s` 11.2 µs, yup **803 µs** (it always
-answers with a Promise), against `JSON.stringify` 2.0 µs for the same body.
-Through the pipeline [M `results-proto.txt`; the machine was at load 35 to
-41, so the spread is wide and the minimum is the fairer figure]: baseline
-5.6 µs/request; the check middleware with mode `off` +0.2 µs; zod `warn`
-+3.0 µs, zod `error` +3.6 µs; yup `error` +228 µs. Hence the default `"off"`
-and the advice: `"error"` in development and tests, `"off"` or `"warn"` in
-production.
-
-**Error statuses a route does not own** (the validator's own 400, an auth
-401) are declared once on the router: `commonResponses` (TC §4.2) merges
-under every route's `responses`, and `undeclaredStatus: "allow"` opts a route
-out.
-
-**bun-jobs' `validateResponses`** keeps its boolean and accepts the modes
-too (`true` = `"warn"`), so the two speak one vocabulary (V4).
-
-### 4.3 Response typing through the generated overloads [D, M]
-
-**The design is AD §3.7's**: `ValidationShape` gains `responses`; `validate()`
-infers them with `const`; `MountedHandler` and `ResolvedHandler` hand the
-handler `BunResponse<unknown, ResolveResponses<Shape>>`; `BunResponse` gains a
-defaulted `TResponses`; `status(C)` narrows to the declared statuses;
-`json()` takes the declared bodies; one `protected setStatusRaw` covers the
-class's own six status writes; `TypedRouteHandler` gains `TRes` as its
-**last** parameter so existing uses compile.
-
-**Re-measured on `73bf4a00`** [M `response-typing/`: the patch, the probe,
-`run.sh`, `results.txt`]: applied to a copy of bun-common, 78 added lines
-over four files, and checked with `bun --check`:
-
-- the patched library **and bun-common's own `__tests__`** (92 files) check
-  clean; bun-nest's lib and tests (252 files) check clean against it;
-- all **9 negative controls** fire (wrong body for a status, undeclared
-  status, `json()` held to the union, an inline validator, preceding plain
-  handlers, a mount-declared shape, a zod `Date` field, …); the same probe
-  against **unpatched** bun-common fails with 21 errors;
-- `generate-verb-overloads.ts --check`: "up to date (25 verbs)" and
-  "(16 verbs)" — **the overloads are byte-identical**.
-
-**How it survives the three overload constraints** (CLAUDE.md, "Typed
-routes"):
-
-1. *Generated per verb, inside the class, ahead of the existing overloads* —
-   untouched: no overload is added or reordered; only `MountedHandler`'s
-   body changes, which every generated overload already names.
-2. *Exactly one position carries a shape* — responses ride **inside** the
-   shape that one validator position already carries; there is no second
-   shape position.
-3. *Preceding positions are `RouterHandler`* — untouched; the spike's case 7
-   puts two plain handlers before the validator and the constraint still
-   binds.
-
-**Correction to AD: which side of the schema binds the server.** The first
-run of the spike typed `json()` from each schema's **input**, the value the
-runtime check receives. Three of AD's controls then passed silently: a
-`toStandardSchema<User>` has input `unknown` (`BunValidate.ts:345-348`), so
-`json()` accepted anything. The rule that held every control: **the input
-type, unless it is `unknown`, then the output type.** For zod the input binds
-(a `z.date()` field must be a `Date` on the server, case 14); for a wrapper or
-a coercing schema, the output does. The client still sees
-`Jsonify<output>` (TC D5).
-
-**Boundaries, unchanged from AD and re-confirmed** (they must compile): `send()`
-and `jsonp()` are unconstrained, a helper taking a bare `BunResponse`
-escapes, a returned body is ignored by the router, separate
-`res.status(200); res.json(b)` is held only to the union, a declared status
-never sent is not an error.
-
-### 4.4 bun-nest: decorators, pipes, interceptor, filters [D, M]
-
-#### 4.4.1 `@Validate` (AD §3.8, phase (g))
-
-Adopted as designed: an **interceptor** (it runs before the handler and
-wraps its result, so one construct validates the request and the response),
-method and class forms with per-target merge, `responses` constraining the
-method's **return type** (AD measured; NTR re-measured), schemas or DTO
-classes per target, the swagger bridge. Changes here:
-
-- the return type follows §4.3's input/output rule;
-- request validation calls `validateStandard`, and replaces `req.query`/
-  `req.body` in place, as the router middleware does;
-- response checking follows §4.2's modes; in an interceptor it is naturally
-  async (an `rxjs` `mergeMap`), so `"error"` throws
-  `InternalServerErrorException` carrying the issues and Nest's filters render
-  it.
-
-#### 4.4.2 One `StandardSchemaPipe`
-
-`new StandardSchemaPipe(schema, { target? })`, exported from bun-nest's
-**root** (NJD's placement; NTR wanted `./typed`): it serves controllers
-(`@Query(new StandardSchemaPipe(Page))`), gateways
-(`@MessageBody(...)`) and job handlers (`@JobData(...)`, NJD) alike. It
-throws `BadRequestException` with `{ error: "Validation failed", issues }`,
-BunValidate's shape. One implementation replaces NTR PR-N3's pipe half and
-NJD's pipe.
-
-#### 4.4.3 `SchemaDto(schema)` and a global `StandardValidationPipe`: the `ValidationPipe` equivalent, and typed parameters
-
-A parameter decorator cannot type its parameter (AD §3.8.3). A **class** can,
-because the parameter's type is the class:
 
 ```ts
-const CreateUser = z.object({ name: z.string().min(1), age: z.coerce.number().int() });
-class CreateUserDto extends SchemaDto(CreateUser) {}      // instance type = the schema's output
-
-@Post()
-create(@Body() body: CreateUserDto) { body.age; }          // number — nothing restated
-
-app.useGlobalPipes(new StandardValidationPipe());           // validates every SchemaDto parameter
+type ResponseSchemas = Readonly<Record<number, ResponseSpec>>;
+type ResponseSpec =
+  | StandardSchemaV1                     // shorthand for { content: { "application/json": S } }
+  | null                                 // no body
+  | {
+      headers?: StandardSchemaV1;        // lower-case names; set-cookie is the cookies part
+      cookies?: StandardSchemaV1;        // { [name]: { value, httpOnly, secure, sameSite?, path?, domain?, maxAge?, expires?, partitioned } }
+      content?: Readonly<Record<string, ContentSpec>> | null;   // media type → body; type/* and */* fall back
+    };
+type ContentSpec = StandardSchemaV1 | null | StreamChunks | SseEvents | OpaqueBody;
+function chunks<S extends StandardSchemaV1>(chunk: S): StreamChunks<S>;          // a stream, per chunk
+function sse<const E extends Record<string, StandardSchemaV1 | null>>(events: E): SseEvents<E>;  // per event name
+function opaque(): OpaqueBody;                                                  // a type, never read
 ```
 
-`SchemaDto(S)` returns an abstract class whose instance type is
-`InferOutput<S>` and which carries `S` as a static `schema`. With
-`emitDecoratorMetadata`, Nest hands that class to every pipe as
-`metadata.metatype`, so **one global pipe** validates every parameter typed
-with a `SchemaDto` and passes the rest through — exactly how Nest's own
-`ValidationPipe` finds class-validator DTOs.
+- **An undeclared status is a mismatch**, as the user asked: whatever the
+  body, a status the contract does not list fails (H25, H26, H35, H36).
+  Statuses a route does not own (the validator's own 400, an auth 401) are
+  declared once on the router or adapter with `commonResponses` (TC §4.2),
+  which merges under every route's `responses`.
+- **Response headers and cookies are parts**: a mismatched or missing
+  `x-ratelimit-remaining` (H28, H29) and a `Set-Cookie` without `HttpOnly`
+  where the contract requires it (H31) fail like a body does.
+- **Media types are keys**, matched on the bare type with parameters and case
+  ignored at runtime (`text/plain; charset=utf-8` matches `text/plain`), and
+  exact in the types; an undeclared one is a mismatch (H27, H37, H38). Wildcards
+  are Q-C4.
+- The **HTTP transport declares** `outbound: { key: "status", parts:
+  ["headers", "cookies", "body"], media: ["body"] }`; the `content` map is the
+  body's media map, and `chunks()`, `sse()` and `opaque()` are body schemas
+  with a stated reading rule.
 
-**Measured on bun-nest's `BunHttpAdapter`** with Nest's real pipeline
-through `adapter.fetch()` [M `nest-schema-dto.ts`, `results-nest.txt`]: a
-valid body is coerced (`age: "41"` → `41`) and answered 201; an invalid body
-and an invalid query are 400 with `issues` naming `body.name`, `body.age` and
-`query.page`. **Negative controls**: the same app without the pipe accepts
-the invalid body (201) and hands the handler strings typed as numbers; a
-wrong-typed literal against the DTO type is TS2322; a schema whose output is
-a **union** cannot be a class instance type (TS2509), so such a schema uses
-`StandardSchemaPipe` and an `Infer<typeof S>` annotation instead.
+#### 4.4.2 Where it is checked: one commit gate and one chunk gate
 
-This is the nestjs-zod `createZodDto` pattern, made vendor-neutral. It is
-also the cheapest migration path from class-validator (§4.4.6): the
-parameter keeps a DTO class name.
+Every producer commits through `BunResponse`'s private `set response`
+(`BunResponse.ts:1300`, §2.9). The design puts **one gate in that setter,
+before the transforms**, and one more on each streamed write:
 
-#### 4.4.4 Response-validation interceptor
+- **`commit()`** checks the status, the headers, the `Set-Cookie`s, the media
+  type and a buffered body, and answers *go*, *reject*, *replace* (a stream
+  wrapped so its chunks are checked) or *destroy*.
+- **`chunk()`** checks each `write()` of an open stream or each chunk of a
+  piped one, and each SSE event.
+- A **Promise** verdict in `"error"` mode **holds** the commit (or the chunk,
+  in order) until it settles; that is safe because `headersSent` reads only the
+  native response and the pipeline waits on it (§2.9).
+- A *reject* goes to the layer's `next` (`BunRouter.ts:5474`), so the app's
+  error handler renders the `ResponseValidationError`; with none, the
+  adapter's 500, and `router.fetch()` rejects with it (H43).
+- **Before the body has started, `"error"` is always a clean 500. After it
+  has started, it can only cut the stream off** (`res.destroy()` for
+  `write()`, `controller.error()` for a piped stream) and log at `error`; the
+  status line is already out. The router already runs error handlers for a
+  late error and destroys a stream none handles (CLAUDE.md, "Router"), so this
+  matches it.
+- On a refusal, the refused response's own headers (`Location`,
+  `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) are dropped and the
+  request-wide ones (CORS, `Vary`) kept, so the 500 describes itself (H45,
+  Q-H3).
+- `"off"` installs no gate at all.
 
-`@Validate({ responses })` checks its own route. For a whole app,
-`app.useGlobalInterceptors(new ResponseValidationInterceptor({ mode }))`
-reads each route's `bun:validate` metadata (NTR §3.1's key) and checks every
-declared route, so one line turns on checks in development without touching
-controllers.
+This corrects the first version's hook (inside `json()`/`send()`, before the
+`Response` is built): building it is harmless; handing it on is the point of no
+return, and one setter covers every kind.
 
-#### 4.4.5 Exception filters
+#### 4.4.3 Every body kind
 
-- **`ValidationExceptionFilter`** catches BunValidate's `ValidationError`
-  (thrown by a `validate()` middleware in `"throw"` mode under Nest, or by the
-  pipes) and `ResponseValidationError`, and answers `{ error, issues }` with
-  the error's status. Opt-in, `@Catch`-scoped, so it never shadows an app's
-  own filters.
-- **`ProblemDetailsFilter`** (NTR §3.3) stays the problem+json option.
-- A `validate()` middleware mounted with `adapter.use()` runs **below**
-  Nest's pipeline (AD §3.8's table): its errors reach the adapter's error
-  handler, never a Nest filter. The README says so; `@Validate` is the Nest
-  route.
+| Body | What the schema sees | When | `"error"` |
+|---|---|---|---|
+| `json(value)`, `send(object)` | the raw value, not its text | commit | sync vendor decides in place; a Promise holds; a mismatch → `ResponseValidationError` (500) |
+| `send(string)`, text or HTML | the string; parsed first when the media type is JSON | commit | 500 |
+| `send(Buffer \| Uint8Array \| ArrayBuffer)` | a `Uint8Array`; decoded for `text/*`, parsed for JSON | commit | 500 |
+| `send(Blob)` | its bytes, read with `arrayBuffer()` (a Blob reads again, so what is sent is untouched) | commit; **always async, so held for every vendor** | held, then 500 |
+| `res.send(new Response(…))` | status and headers from it; the body from `clone()` | commit; held | held, then 500 |
+| a handler **returning** a `Response` | not supported by bun-common (return values are ignored, H52) | — | out of scope (Q-H6) |
+| `redirect()` | status (a declared 3xx) and headers (`location`); the generated body is exempt | commit | 500, with `Location` dropped |
+| `sendFile()` / `download()` | status (200, 206, and the 304/404/412/416 it can answer), headers; the file's bytes **only** under a whole-body schema; `opaque()` declares the type unread | commit, after `stat`, ranges and freshness | held while read, then 500 |
+| `send(ReadableStream \| Readable \| async iterable)` | status, headers and media type at the commit; then each chunk via `chunks(S)` through a piped `TransformStream` | commit, then per chunk | before the start 500; after, the stream is errored and logged |
+| `write()` / `end()` | the first `write()` commits (it can still be refused, H38); then each write, async verdicts chained in order, `end()` waiting for the chain | commit, then per write | before the start 500; after, `destroy()` and a log |
+| SSE (`text/event-stream`) | each event, framed across chunk boundaries; `data` JSON-parsed when it parses; the schema chosen by the event name (`message` by default); an undeclared name is a mismatch | per event | cut off at the bad event, logged (H23, H24, H39) |
+| a stream against a **whole-body** schema | nothing: a stream is never buffered | — | one `warn` per route (H40, Q-H4) |
+| `sendStatus()`, `handleNotFound()`, `sendFile` failures, 204/205/304 | status and headers; the body is exempt | commit | 500 |
+| `HEAD` | checked as the GET it reuses | commit | 500 on a mismatch (H41) |
+| a freshness 304 for a conditional request | allowed without being declared (Q-H1) | — | — (H42) |
+| an error handler's own response | checked and **only reported** (Q-H2) | commit | logged, never replaced (H44) |
 
-#### 4.4.6 Composing with BunHttpAdapter, with plain Nest, and with class-validator
+All of it is measured through `router.fetch()` for each kind × `off`/`warn`/
+`error` × zod and yup (H1–H24): `off` sends the bad body, `warn` sends it and
+logs once, `error` answers 500 for every buffered kind and cuts streams off
+with an `error` log, and every **good** body answers 200 under `error` with
+both vendors.
 
-| Situation | What works |
-|---|---|
-| bun-nest `BunHttpAdapter` | everything above; the interceptor reaches the real `BunRequest` as `getMultipartRequest` does (`bun-nest/lib/interceptors.ts:45`) |
-| `@nestjs/platform-express` or `-fastify` | the pipes, `SchemaDto` and the filters are platform-neutral; `@Validate`'s in-place replacement must use `Object.defineProperty` for Express 5's getter `req.query` [I: to measure in PR-V7] |
-| Existing class-validator DTOs | keep `ValidationPipe` for them; `StandardValidationPipe` passes non-`SchemaDto` parameters through, so both can be global. AD (b2) makes a DTO class acceptable to `@Validate` and `validate()` |
-| Migrating a DTO | replace `class CreateUserDto { @IsString() name }` with `class CreateUserDto extends SchemaDto(CreateUser) {}`: the parameter, its name and every import stay |
-| Both pipes owning one parameter | do not: the interceptor runs before pipes, so `ValidationPipe({ transform: true })` would re-coerce parsed output (AD §3.8) |
+#### 4.4.4 Typing
 
-### 4.5 WebSockets [D]
+```ts
+status<const C extends AllowedStatus<TResponses>>(code: C): BunResponse<_, NarrowResponses<TResponses, C>>;
+json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse;              // application/json and *+json bodies
+send(body: SendBodyFor<TResponses>): BunResponse;                           // every declared body, or a native Response
+set<N extends string, V extends HeaderValueFor<TResponses, N>>(name: N, value: V, replace?: boolean): this;
+header<N extends string, V extends HeaderValueFor<TResponses, N>>(name: N, value: V): this;
+cookie<N extends string, V extends CookieValueFor<TResponses, N>>(name: N, value: V, opts?: BunCookieOptions): this;
+redirect(url: RedirectUrl<TResponses>): BunResponse;                        // 302 must be declared
+redirect<const C extends RedirectStatus<TResponses>>(status: C, url: string): BunResponse;
+```
 
-#### 4.5.1 bun-common: validation semantics for TC's `defineChannel`
+- **The server is held to the schema's input, or its output when the input is
+  `unknown`** (the first version's correction, §4.3 there, measured in
+  `response-typing/`): a `z.date()` field must be a `Date` on the server; a
+  `toStandardSchema<User>` wrapper binds by its output.
+- `set()`/`header()` constrain a **declared** name (in any case) and leave any
+  other name free; `cookie()` constrains a declared name's value; `write()` is
+  not typed per event (typed SSE writes come with the writer, §4.7).
+- **18 negative controls fire** (`types.probe.ts`, N1–N18): wrong body for a
+  status, undeclared status, text where only JSON is declared, a wrong header
+  value type, an undeclared cookie read, a typed header read, among others;
+  the probe against **unpatched** bun-common fails 25 times. Typing
+  `set`/`header`/`cookie` broke 35 internal `this` call sites in the class,
+  which one private `#self` getter fixes (Q-H13); a typed `res` still passes to
+  a helper that takes a bare `BunResponse`.
+- **Boundaries** (compile, by design): a helper taking a bare `BunResponse`
+  escapes; separate `res.status(200); res.json(b)` is held only to the union;
+  a declared status never sent is not an error.
+
+#### 4.4.5 Policy settings and cost
+
+`responseValidation: "off" | "warn" | "error"` on a validator, a router and an
+adapter (the most specific wins); default `"off"` (Q2). Measured per request
+through the pipeline, zod, minimum µs [M `http-complete` bench, run 2: 15
+rounds, load 18.0 → 15.6 on 16 cores; medians within 25% of the minimums]:
+
+| Kind | Base | `off` | `error` | Gate cost |
+|---|---|---|---|---|
+| json, 20 items | 3.28 | 3.24 | 6.01 | +2.77 |
+| text | 1.97 | 2.09 | 3.36 | +1.27 |
+| html | 2.49 | 2.84 | 3.85 | +1.01 |
+| Buffer | 2.57 | 2.77 | 4.21 | +1.44 |
+| Uint8Array | 2.35 | 2.46 | 3.46 | +1.00 |
+| Blob | 2.79 | 3.12 | 5.51 | +2.39 |
+| native `Response` | 3.60 | 3.67 | 11.95 | +8.28 |
+| redirect | 3.93 | 3.98 | 5.59 | +1.61 |
+| `sendFile` | 28.99 | 28.50 | 44.26 | +15.76 |
+| `ReadableStream`, 4 chunks | 4.56 | 4.47 | 16.08 | +11.61 |
+| `write`/`end`, 4 chunks | 8.86 | 9.38 | 11.56 | +2.18 |
+| SSE, 4 events | 9.31 | 9.91 | 17.63 | +7.72 |
+| request headers + cookies | 2.95 | — | 5.91 | +2.96 |
+
+`"off"` costs nothing beyond the validator; the dearer kinds are those that
+must read something (a cloned `Response`, a file) or wrap a stream. yup was not
+re-measured; the first version's figure, +228 µs per request in `"error"`,
+stands (it always answers with a Promise). Hence the default `"off"`, and the
+README's advice: `"error"` in development and tests, `"off"` or `"warn"` in
+production.
+
+**bun-jobs' `validateResponses`** keeps its boolean and accepts the modes
+(`true` = `"warn"`), so the two speak one vocabulary (V4).
+
+### 4.5 NestJS: body, query, headers, cookies, and responses of every kind [D, A]
+
+Agreed with the Nest agent (bun-node-15) on 2026-10-17. bun-nest supports
+Nest 11 and 12 together (the nestjs-12-parity plan's Q1), so everything here
+works on 11 with nothing of Nest 12's, and on 12 **composes** with what Nest 12
+added (§2.9).
+
+#### 4.5.1 `@Validate`
+
+```ts
+@Validate({
+  params: IdParams, query: Page, headers: ApiHeaders, cookies: Session, body: CreateUser,
+  responses: {
+    201: { headers: z.object({ location: z.string() }), content: { "application/json": User } },
+    409: Problem,
+  },
+})
+@Post(":id")
+create(@Validated("body") body: Infer<typeof CreateUser>) { … }
+```
+
+- **An interceptor** (it runs before the handler and wraps its result), method
+  or class level with per-part merge, on the core: request parts go through a
+  receiver guard and are replaced in place as the router middleware does;
+  `responses` is the same `ResponseSchemas` as bun-common's (§4.4.1), so one
+  declaration documents both adapters. Adopted from AD §3.8 with the changes
+  below.
+- **Composing with Nest 12** [A, M `nest-interceptor/`]: a parameter's
+  `{ schema }` is checked **only if a `StandardSchemaValidationPipe` applies**
+  to it (global, `@UsePipes` or param-level): `@Body({ schema })` with no such
+  pipe validated nothing, and a bad body got 201. So at bootstrap `@Validate`
+  reads the route's argument metadata (`'__routeArguments__'`, from
+  `@nestjs/common/constants`, on both majors; entries `"<paramtype>:<index>":
+  { index, data?, pipes, schema? }`, `schema` on 12 only; paramtypes BODY 3,
+  QUERY 4, PARAM 5, RAW_BODY 12, and COOKIES 14 and SIGNED_COOKIES 15 on 12
+  only, since 11.1.27's enum ends at ACK 13) and **skips a part only when that
+  parameter's `data` is undefined (it covers the whole part, not one property:
+  `@Query('page', { schema })` covers `page` alone) and the pipe applies**.
+  Otherwise it checks the part itself, and the README documents the overlap.
+  It still records every schema in the route's contract, so documents see it.
+  `@Headers`, `@Cookies` and `@SignedCookies` take no `schema` on 12, so
+  `@Validate` always owns those parts. **RAW_BODY counts as a raw-body part,
+  never `body`**: Nest maps it to `'custom'`
+  (`@nestjs/core/pipes/params-token-factory.js`), which the pipe checks only
+  with `validateCustomDecorators: true`, and a `@RawBody({ schema })` checks
+  the `Buffer`, so it never makes `@Validate({ body })` skip. Interceptors run **before** pipes, so an
+  in-place replacement by `@Validate` hands Nest's pipe an already-parsed value;
+  the skip rule is what keeps one parse per part. On Nest 11 none of this
+  exists and `@Validate` does all of it. Q-N1 asks the user to confirm compose
+  over replace.
+- **The serializer's order is the interceptors' order** [M]: on 12, an outer
+  `StandardSchemaSerializerInterceptor` sees `@Validate`'s pass-through value,
+  an inner one hands `@Validate` its serialized output. A method-level
+  `@Validate` inside a global serializer checks the handler's return; a global
+  `ResponseValidationInterceptor` outside a method-level serializer checks the
+  serialized output. The README states the rule, and V7b tests both placements.
+- **`@RawBody({ schema })`** is validated by Nest only with
+  `StandardSchemaValidationPipe({ validateCustomDecorators: true })`, receiving
+  a `Buffer` [M]; otherwise `@Validate({ body })` covers a raw body, and the
+  README says so.
+- The middleware form (`adapter.use(validate(...))`) runs **below** Nest's
+  pipeline: its errors reach the adapter's error handler, never a Nest filter
+  (AD §3.8). `@Validate` is the Nest route.
+
+#### 4.5.2 Typing parameters, headers and cookies
+
+- **`SchemaDto(S)`** (first version, measured [M `nest-schema-dto.ts`]) gives a
+  parameter its type from the schema with nothing restated: `class
+  CreateUserDto extends SchemaDto(CreateUser) {}`, then `@Body() body:
+  CreateUserDto`. A union output cannot be a class (TS2509) and uses
+  `Infer<typeof S>` instead.
+- **`@Validated(part)`**, one parameter decorator for any validated part
+  (`"headers"`, `"cookies"`, `"signedCookies"`, `"params"`, `"query"`,
+  `"body"`), reads the request's `req.valid` view (§4.3.3), so a coerced header
+  arrives coerced. **No `@Cookies()` of ours**: Nest 12.1 has one, and a
+  second would clash [A]. The name is §9's.
+- **The return type** is held to the declared bodies (AD §3.8, the input/
+  output rule). Per-status typing needs a typed result; the design offers a
+  `reply(status, body, { headers? })` helper whose type is the route's
+  declared responses, which the interceptor unwraps (Q-N2), alongside the
+  plain return, which is checked against the status Nest will send.
+- After nestjs-12-parity PR-5, `*name` params are `string[]`, so a wildcard
+  route's `params` schema and `SchemaDto` take an array; the type tests carry
+  one [A].
+
+#### 4.5.3 One `StandardSchemaPipe`, and `StandardValidationPipe`
+
+From the first version (§4.4.2–§4.4.3 there), on the core: one
+`StandardSchemaPipe(schema)` at bun-nest's root for controllers, gateways and
+job handlers (replacing NTR's and NJD's two), and a global
+`StandardValidationPipe` that validates every `SchemaDto` parameter and passes
+the rest through, the way `ValidationPipe` finds class-validator DTOs. On Nest
+12, `StandardSchemaValidationPipe` and `@Body({ schema })` already serve
+per-parameter schemas, so the README presents ours as the Nest 11 path and the
+`SchemaDto` path, and shows Nest 12's beside them (Q-N1).
+
+#### 4.5.4 Responses: status, headers and every body kind
+
+What an interceptor's `map()` sees, measured by bun-node-15 on Nest 11.1.27
+and 12.1.3, on `ExpressAdapter` and bun-nest's `BunHttpAdapter` (all four
+identical) [M `nest-interceptor/`]:
+
+| Case | Seen in `map()`: status / headers / sent | On the wire |
+|---|---|---|
+| GET | 200 / – / no | 200 |
+| POST | 201 / – / no | 201 |
+| `@HttpCode(202)` | 202 / – / no | 202 |
+| `@Header('x-a', '1')` | 200 / `x-a` / no | `x-a` |
+| `@Redirect('/x', 301)` | 200 / no `location` / no | 301 + `location` |
+| `@Res({ passthrough: true })`, `status(203)` | 203 / `x-b` / no | 203 |
+| plain `@Res()` | `map()` **still fires**, with a discarded value; 206 / headers / **sent** | 206 |
+| `StreamableFile` | 200 / no `content-type` yet / no | — |
+| `@Sse()` | events arrive after the headers are committed | — |
+
+- **The status and `@Header()` headers are already set when `map()` runs**:
+  `RouterExecutionContext.create` calls `setStatus` (the `@HttpCode` value, or
+  201 for POST, 200 otherwise) and `setHeaders` **before**
+  `interceptorsConsumer.intercept`, on both majors
+  (`@nestjs/core/router/router-execution-context.js`: `setStatus` and
+  `setHeaders` at `:43-46` and `intercept` after them on 11.1.27; `setStatus`
+  at `:52` and `intercept` at `:67` on 12.1.3) [S, M]. So
+  `@Validate` reads the status from `res.statusCode` and the headers from the
+  response object directly. What `map()` cannot see yet is applied later by
+  `reply`: a redirect (taken from `REDIRECT_METADATA`, overridden by a returned
+  `{ url, statusCode }`, default 302) and `StreamableFile`'s headers (from
+  `file.getHeaders()`). The first version's "map() runs before Nest applies
+  them" was an inference that this measurement refutes.
+- **Declared non-2xx responses never reach `map()`** (a `409: Problem` is
+  thrown to the filters): `@Validate` checks the status in `catchError`, and
+  such a body can be checked only in a filter or the before-write hook below.
+- **A before-write hook is still needed, but only for what `map()` cannot
+  see**: redirects, `StreamableFile`, plain `@Res()` and headers an adapter
+  sets. It is **not** `setOnResponseHook`: in platform-express that runs on
+  `res.on('finish')`, after the response is sent, and only logs errors (both
+  majors; 12's docs say "after the response has been sent"), and PR-6c keeps
+  that for parity [A, S]. It is **"PR-6c's before-write hook (name TBD)"**, a
+  separately named hook on bun-nest's adapter, designed in PR-6c. On Express
+  or Fastify adapters those cases are checked as far as `map()` and the filters
+  reach, and the README says which.
+- **Plain `@Res()`**: `map()` runs **after** the response is sent, with a
+  discarded value [M], so `@Validate` detects a `RESPONSE` or `NEXT` parameter
+  without `passthrough` at bootstrap and skips the response check there rather
+  than throwing after the send; on bun-nest the before-write hook covers it.
+- **Body kinds** follow §4.4.3: a returned object is the JSON body;
+  `StreamableFile` is checked by its headers and type, its bytes only under a
+  whole-body schema (`opaque()` otherwise); a redirect by its status and
+  `location`; `@Sse()` per event (§4.7.2).
+- **A standalone `ResponseValidationInterceptor`**, global, reads each
+  route's contract and checks every declared route, so one line turns checks
+  on in development.
+
+#### 4.5.5 Filters
+
+`ValidationExceptionFilter` catches BunValidate's `ValidationError`,
+`ResponseValidationError` and the pipes' errors and answers `{ error, issues }`
+with the error's status; opt-in and `@Catch`-scoped. NTR's
+`ProblemDetailsFilter` stays the problem+json option. nestjs-12-parity PR-2
+changes how body-parse errors reach filters on 12 (`mapException`), so the
+filter is tested on both majors after PR-2 [A].
+
+#### 4.5.6 Composing with other platforms and class-validator
+
+Unchanged from the first version's table (§4.4.6 there): the pipes,
+`SchemaDto` and the filters are platform-neutral; `@Validate`'s in-place
+replacement uses `Object.defineProperty` for Express 5's getter `req.query`
+[I]; class-validator DTOs keep `ValidationPipe`, and `StandardValidationPipe`
+passes them through, so both can be global.
+
+**A name clash to document** [A]: class-validator exports a `@Validate(constraint)`
+decorator (its public API; not installed in this repo). An app using both
+imports one under an alias (`import { Validate as ValidateRoute } from
+"@kingsleyweb/bun-nest"`); the README shows it. `@Validated` clashes with
+nothing in Nest 11 or 12.
+
+### 4.6 WebSockets [D]
+
+#### 4.6.1 bun-common: channels on the core (TC's `defineChannel`)
 
 ```ts
 const chat = defineChannel({
   path: "/rooms/:room",
-  discriminator: "type",                                  // default; frames are JSON { type, data, id? }
-  receives: { say: Say, typing: null },                   // client → server; null: no payload
-  sends: { said: Said, error: ChannelError },             // server → client
-  messageValidation: { in: "error", out: "warn" },        // as responseValidation
+  receives: { say: Say, typing: null },        // client → server, keyed by `type`; null: no data
+  sends: { said: Said, error: ChannelError },  // server → client
+  messageValidation: { in: "error", out: "warn" },
 });
 router.ws(chat.path, chat.handler({
-  say(ws, msg, { reply }) { chat.publish(ws.data.params.room, "said", { by: ws.data.custom.user, text: msg.text }); },
+  say(ws, msg) { chat.publish(ws.data.params.room, "said", { by: ws.data.custom.user, text: msg.text }); },
 }));
 ```
 
-- **Incoming**: parse JSON, pick the schema by the discriminator, run
-  `validateStandard`; **an invalid frame gets an error frame and the socket
-  stays open**: `{ type: "error", id?, code: "VALIDATION", status: 400,
-  issues }`, the bun-jobs socket's shape plus `issues`. `closeOnInvalid: true`
-  closes with 1007 (invalid payload) instead. An unknown `type` is the same
-  error with `code: "UNKNOWN_MESSAGE"`.
-- **Order is kept**: a socket's messages are validated and handled through
-  one promise chain, so an async vendor never reorders frames (bun-jobs'
-  `#work` chain, `api/ws/session.ts:468`).
-- **Outgoing**: `chat.send(ws, "said", data)` and `chat.publish(topic, …)`
-  are typed by `sends`; in `"warn"`/`"error"` they are checked before the
-  frame is written (`"error"` throws to the caller rather than sending).
-- **Typed handlers**: each handler's `msg` is the schema's output; `ws.data.params`
-  from the path literal (TC's typed `router.ws()` overload).
-- **Binary frames** are not validated (a schema sees a `Buffer` only if the
-  channel declares `binary: true`).
-- **Documents**: the same declaration is AD (e)'s `WsChannelDoc`
-  (`receives`/`sends`), so AsyncAPI reads it unchanged.
+- A channel **is a WebSocket contract** (`inbound` and `outbound` keyed by
+  `type`, part `data`) plus a path; its handler carries the contract
+  (`attachContract`), and AD (e)'s `WsChannelDoc` reads it through
+  `describeContract`.
+- **Incoming**: parse JSON, receive through the guard; **an invalid frame gets
+  an error frame and the socket stays open**: `{ type: "error", id?, code:
+  "VALIDATION", status: 400, issues }`, the bun-jobs socket's shape plus
+  `issues` (`bun-jobs/lib/api/ws/session.ts:1590-1603`). `closeOnInvalid:
+  true` closes with 1007 instead. An unknown `type` is the same error with
+  `code: "UNKNOWN_MESSAGE"` (the core's `target: "type"` issue).
+- **Order is kept**: a socket's frames are received and handled through one
+  promise chain, so an async vendor never reorders them (bun-jobs' `#work`
+  chain, `session.ts:468`); a sync vendor never awaits.
+- **Outgoing**: `chat.send(ws, "said", data)` and `chat.publish(topic, …)` are
+  typed by `sends` (the sender rule) and checked by the sender guard under
+  `out`; `"error"` throws to the caller instead of writing.
+- **Binary frames** are not validated unless the channel declares `binary:
+  true`, when the schema sees a `Uint8Array`.
 
-#### 4.5.2 bun-nest
+#### 4.6.2 bun-nest gateways
 
-- `@ValidateMessage(schema, { ack })` and `@Emits({ event: schema })` (NTR §7,
-  PR-N5) on the shared core; a `@MessageBody(new StandardSchemaPipe(S))`
-  works without them.
-- **Error frames**: `WsValidationFilter` maps a `ValidationError` or the
-  pipe's `BadRequestException` to a `WsException`, which bun-nest already
-  sends as `["exception", { status, message, cause }]` (AD §5.2), with the
-  issues as `cause`.
+`@ValidateMessage(schema, { ack })` and `@Emits({ event: schema })` (NTR §7,
+PR-N5) on the core; `@MessageBody(new StandardSchemaPipe(S))` and, on Nest 12,
+`@MessageBody({ schema })` work without them. Nest's `BaseWsExceptionFilter`
+sends `status: "error"` (a string) and `cause: { pattern, data }`, the
+client's own message, not issues [A, S]; a `WsException` built with an
+**object** is emitted verbatim. So `WsValidationFilter` maps a
+`ValidationError` or the pipe's error to `new WsException({ status: 400, code:
+"VALIDATION", issues })`, the same fields as bun-common's error frame (§4.6.1),
+rather than relying on `cause`. On 12 the frame shape holds only after
+nestjs-12-parity PR-2 with its Q4(a), so V9 depends on PR-2.
+Today's frame parse is a cast (`bun-nest/lib/BunWebSocketAdapter.ts:962-964`);
+a gateway with a contract receives through the guard instead.
 
-### 4.6 bun-jobs: schema-backed job data and results [D]
+### 4.7 SSE on both HTTP adapters [D, M `http-complete` H21–H24, H39]
+
+#### 4.7.1 bun-common
+
+An SSE endpoint's contract is the HTTP request's inbound side plus an
+**SSE outbound side keyed by event name**, parts `data` and `id`
+(`transports.ts`'s `sse`). Two ways to declare it, one check underneath:
+
+- **On the response contract**: `responses: { 200: { content: {
+  "text/event-stream": sse({ tick: Tick, done: null }) } } }`. The chunk gate
+  frames events across chunk boundaries, JSON-parses `data` when it parses,
+  picks the schema by `event:` (`message` by default), and treats an
+  undeclared name as a mismatch. Measured with zod and yup: `"warn"` passes
+  and logs; `"error"` cuts the stream at the bad event and logs at `error`
+  (H23, H24, H39). This works for a hand-written `write()` stream today.
+- **On the writer** (bun-native-routes PR-sse2, which this plan's lead owns):
+  `res.sse({ contract })` returns an `SseWriter` whose `send({ event, data,
+  id })` is **typed** by the contract (the sender rule) and checked by the
+  sender guard **before** the event is encoded, so under `"error"` a bad event
+  is refused to the caller and never cut mid-stream. Typed SSE writes are
+  §8 Q-H10 ("later" in the spike; this plan proposes them with PR-sse2).
+- Heartbeats and comments are not events and are never checked.
+
+#### 4.7.2 bun-nest
+
+`@Sse()` stays Nest's API (bun-native-routes PR-sse3 adds no decorator).
+`@Validate({ responses: { 200: { content: { "text/event-stream": sse({...}) } } } })`
+checks each emitted `MessageEvent` against its `type`'s schema in the
+interceptor's `map`, before Nest writes it [A]. Under `"error"`:
+
+- **A synchronous first event** (`of(...)`) fails before the headers are
+  committed, so Nest answers 500 through the filters [M
+  `nest-interceptor/out-sse.txt`: Nest 11.1.27 and 12.1.3, Express and
+  bun-nest adapters alike].
+- **After the commit**, Nest writes `event: error` with `data: err.message`
+  **verbatim** and logs nothing [M the same file: a planted `secret-value`
+  reached the client in the `error` event; S `router-response-controller.js`],
+  so the message `@Validate` throws must already be scrubbed (§4.1.6: no
+  values), and `@Validate` logs the mismatch itself.
+- A side observation from the same run: Nest 11 omits the `data:` line for a
+  falsy `data` (`0`), which 12 sends; the per-event check sees the value
+  either way.
+
+### 4.8 bun-jobs: data, results and flows [D, A]
+
+Designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of
+the code at `68023d36` (§2.9) and its nine constraints. e9 builds V4, V5a,
+V5c and V5b in bun-jobs; this plan's lead reviews.
+
+#### 4.8.1 The declaration
 
 ```ts
-const jobs = new BunJobs({ namespace: "shop", driver })
-  .define("sendEmail", async (job) => send(job.data.to), {
-    schema: { data: z.object({ to: z.email() }), result: z.object({ id: z.string() }) },
-    attempts: 5,
-  });
+jobs.define("sendEmail", async (job) => send(job.data.to), {
+  attempts: 5,
+  schema: { data: z.object({ to: z.email() }), result: z.object({ id: z.string() }) },
+});
 ```
 
-- **Types**: `define()` with a schema infers the handler's `job.data` and
-  return from it. A schema map types a whole registry:
-  `type Jobs = JobMapFromSchemas<typeof schemas>`, then `new BunJobs<Jobs>()`
-  as today (`lib/queue/types.ts:266` stays the mechanism).
-- **Where it runs**:
+- **`define()` lifts `schema` out into `definition.schema`, so
+  `definition.options` stays plain data** [A]: `GET /definitions`
+  JSON-serialises `definition.options` (`api/routes/repeatables.ts:141-143`)
+  and `#routeJob` passes options on as job defaults (`BunJobs.ts:1090`), so a
+  vendor schema left inside them would leak into both. `BunQueue` and
+  `BunQueueWorker` options lift it the same way.
+- **Types**: a definition with a schema infers `job.data` and the handler's
+  return from it; `JobMapFromSchemas<typeof schemas>` types a whole registry
+  through today's `JobMap` (`queue/types.ts:266`). A bare `BunQueue` or
+  `BunQueueWorker` takes `schema` in its own options.
+- A definition is a **jobs contract** (`inbound: { data }`, `outbound: {
+  result }`) and carries it, so `/definitions` and documents read it through
+  `describeContract`.
 
-  | Point | Default | On failure |
-  |---|---|---|
-  | **Enqueue** (`add`, `now`, `run().start()`, `addBulk`, flows) on a context that defines the name | on | the add rejects with `JobDataValidationError` (issues, target `"data"`); nothing is written |
-  | **Before the handler**, in the worker | on | the job fails as `UnrecoverableJobError` with the issues as `cause`: no retry, straight to `dead` (NJD measured the same rule for a Nest pipe: `attemptsMade=1` of 3) |
-  | **The result** | `"off"`; `"warn"`/`"error"` as §4.2 | `"warn"` logs; `"error"` fails the attempt |
+#### 4.8.2 Where data is checked
 
-- **Why both ends**: the enqueue check fails fast for the caller; the
-  processing check is the only net for a producer in another deployment, the
-  management API, or a job written before the schema changed — R8's case.
-  `dataValidation: "enqueue" | "process" | "both" | "off"` per definition
-  (default `"both"`).
-- **The handler gets the parsed value** (defaults applied, coercion done),
-  as a `replace: true` validator does; the stored job keeps what the
-  producer sent.
-- **Sync vendors decide synchronously** inside the add, as provider configs
-  do (`lib/provider/configure.ts:382`); an async vendor makes the add wait for
-  it. Cost is microseconds against a driver round trip.
-- **A bare `BunQueue`** knows no registry (README "A standalone
-  `new BunQueue(...)`"), so it takes `schema` in its own options for the
-  enqueue check; its worker takes the same.
-- **The management API**: `POST /queues/:queue/jobs` validates `data`
-  against the definition's schema and answers 400 `VALIDATION` with the
-  issues (today `data` is `s.unknown`); `GET /definitions` publishes each
-  definition's data and result JSON Schema (through AD's converter, `{}` and
-  a warning when a vendor has none), so bun-jobs-ui can render an add-job
-  form. This is a contract change for bun-jobs-ui (§6).
-- **`s` is unchanged in role**: the API's own DSL. Job schemas are the
-  user's, any vendor.
-- **Nest**: NJD's `@Process(Queue, name)` reads the definition's schema; its
-  `@JobData(new StandardSchemaPipe(S))` stays for the decorated style.
+**In `BunQueue`, not the definitions router** [A], because `add`, `addBulk`,
+`addFlow` and the API's add route never consult the definitions today (§2.9);
+the queue learns its context's schemas.
 
-### 4.7 bun cache [D]
+| Write of data | Check | On failure |
+|---|---|---|
+| `add`, `now`, `run().start()` | before the record is built | the add rejects with `JobDataValidationError` (issues, target `"data"`); nothing is written |
+| `addBulk` | **one pass over every item before the first write** | the whole bulk rejects; nothing is written |
+| `addFlow` | an async pass over **every node**, each against its own name's definition, after `#planFlow` and before the first `addJob` (`BunQueue.ts:1494-1635`) | nothing is written. A crash mid-write can still orphan children, as today (no driver adds a flow atomically); out of scope |
+| `update`, `Job.updateData`/`update` | before the write | rejects with `JobDataValidationError` (target `"data"`), as an add does; the job is unchanged |
+| a debounce into a pending job: the new add's data **replaces** the pending job's (`updateJob(…, { data })`, `BunQueue.ts:2647-2655`) | the new add's data, checked like any add, **before** `updateJob` | the add rejects; the pending job keeps its data |
+| a repeat series | **once, at series creation**, including the "no occurrences left" branch, which writes the series first today (`BunQueue.ts:3076-3087`) | rejects with `JobDataValidationError` |
+| the management API's add, update (`PATCH /queues/:queue/jobs/:id`) and flows (`POST /queues/:queue/flows`, `api/routes/flows.ts:238-317`) routes | **always**, whenever the definition has a schema, whatever the policy says: HTTP data never skips the check [A]; a flow's nodes each against their own name's definition | the existing `VALIDATION` problem, **400**, with the issues; a flow's at body paths (`children.0.data.to`), as its `ruleIssues` reports them today (`flows.ts:135-174`) |
 
-- BC §3.13's `validate: { "user:*": UserSchema }` runs through
-  `validateStandard` (a read is already async, so an async vendor costs
-  nothing extra in shape); a failing value is a miss plus an `error` event
-  carrying issues with target `"cache"`.
-- **Types from validators**: `createCache({ validate: { "user:*": User } })`
-  may infer its key map from the validators, so a schema written once types
-  and checks the cache (`CacheSchemaFrom<typeof validate>`).
-- **`validateOnWrite`** (development) checks a `set` and a loader's value
-  before storing, so a bad value never reaches a shared L2.
-- **`cacheResponse()` and response checks**: the check runs when the handler
-  produces the response, on a miss; a replayed hit is not re-checked (it
-  was checked when stored). `cacheResponse()` sits **before** `validate()`
-  (BC §9.6), so the order is cache → validate → handler and a hit skips both.
+- **Store the input, hand the handler the output** [A]: a schema may
+  transform (coerce, default, `Date`), and a stored job crosses JSON. So the
+  enqueue check validates and stores what the producer sent; the processing
+  check re-runs the schema and hands the handler the output. A schema must
+  therefore accept its own input every time it runs (documented).
+  `storeOutput: true` for transform-free schemas is Q-J1.
+- **No schema, no cost** [A]: a queue with no schema takes no extra await or
+  allocation per job (§4.1.6); enqueue throughput is benchmark-guarded
+  (`bench/queue.ts --compare`, including the overtaken check), and V5a must
+  pass it.
+- Async vendors are fine at enqueue and before the handler, both already
+  async.
+- **The policy per site** [A], `dataValidation: { enqueue, process }`:
 
-### 4.8 Typed routes, the typed client and OpenAPI [D]
+  | Site | `"error"` (default) | `"warn"` | `"off"` |
+  |---|---|---|---|
+  | `enqueue` | reject; nothing written | written; one warn, no values | no check |
+  | `process` | `UnrecoverableJobError` (§4.8.3) | the handler runs with the **stored input**; one warn | no check |
+  | the management API's routes | always checked; `"warn"` and `"off"` are ignored there | | |
 
-- **Responses join the route shape** (§4.3), so the route model (TC PR-M1)
-  reads `__schemas.responses`, the client types each status as
-  `Jsonify<output>` (TC D5, D6), and OpenAPI lists them (AD (a), (b), (b1)).
-- **One declaration feeds five things**: request validation, request types,
-  response types, runtime response checks, the document. bun-jobs'
-  `defineRoute` has proven that shape on 84 routes (TC §2.3).
-- **Headers (G1)** reach the model and the client as request headers to send,
-  even though the server does not write them back.
-- **Job and channel schemas** reach documents the same way: `/definitions`
-  (§4.6) and AsyncAPI channels (§4.5).
+#### 4.8.3 Where processing is checked, and what the handler gets
+
+- **Once, in `BunQueueWorker#process`, before `target.run` or the processor**
+  (about `BunQueueWorker.ts:2887-2893`) [A]. That covers bare workers, the
+  registry worker and every executor, and the schema never has to load inside
+  a sandbox. The registry worker's dispatch (`BunJobs.ts:1286-1299`) covers
+  only `define()`d jobs, so it is not the home.
+- **In-process**, the handler gets the parsed output. **Isolated targets**
+  (Worker, child process, container) receive the raw `JobRecord` over JSON or a
+  structured clone (`workerTarget.ts:871-872`), so the output replaces
+  `record.data` **only in the copy sent to the executor**, never in the stored
+  record, and every attempt (retries included) re-validates from the stored
+  input. That copy must survive the trip: a transform producing a `Date` or a
+  `Map` arrives degraded. Q-J2 recommends sending the output after a
+  `jsonClone`, so a coercion reaches every target; an output that cannot be
+  cloned (a `BigInt`, a cycle) fails the attempt as unrecoverable, naming the
+  definition and the target, and never silently sends the input instead. The
+  in-process handler and an isolated one can then see different values for a
+  non-JSON transform (`Date` against its string); the README says so.
+- **Deploy skew is the real hazard** [A]: a job enqueued under schema v1 may be
+  processed by v2. So the processing-side outcome is **its own policy**,
+  `dataValidation: { enqueue, process }`, defaulting to unrecoverable at
+  processing (`UnrecoverableJobError`, straight to `dead`; the worker matches
+  it by class or by name, so isolated targets count). The error names the job,
+  the definition and the issues, **never the data**.
+- **Schemas live in code** [A]: a worker in another process, thread, remote
+  host or summoned unit checks only if its own definition has the schema. A
+  bare `BunQueueWorker` with no schema checks nothing; that is not an error,
+  and the README says so. Remote executors keep their own handler registry; a
+  check there waits for the gateway.
+
+#### 4.8.4 Results, and flows
+
+- **Results are checked in `#settle`, before `storedResult`/`completeJob`**
+  (`BunQueueWorker.ts:3087-3157`) [A], under `resultValidation`, default
+  `"off"`:
+  - `"error"`: a refused result throws there, so the attempt fails through
+    `#recordFailure`, **retryable** like any thrown error (the processor may be
+    fixed by a retry), with a `failed` event. No `completed` event fires,
+    locally or published, and no `returnValue` is stored or delivered to a
+    parent: nothing downstream sees it.
+  - `"warn"`: everything gets what it gets today (the raw value locally,
+    `returnValue: result ?? null` published), plus one warn, no values.
+  - **What is stored** is what the handler returned (validated), not a
+    transformed output, for the same reason as data; a transforming result
+    schema's output is used for the check alone. Storing the output joins Q-J1.
+  - An async result schema delays completion; documented.
+- **Flows** [A]:
+  - Each node's data is checked against **its own name's** definition, in the
+    pre-write pass above.
+  - Children are keyed **`queue:id`** (`drivers/flow.ts:11-13`), not by name
+    (two children may share one), so `getChildrenValues()` keeps its keys and
+    gains a type mapping each key to its child's result: the flow's declared
+    shape types the parent's view (`recordOf` in the core composes the
+    children's result schemas, spiked in C21).
+  - A child's result is the same stored value the parent receives, and it was
+    checked at `#settle` under the **child's** result policy, so the parent
+    needs **typing only**, no second check. With the child's policy `"off"`
+    the parent's types are a claim, not a guarantee; the README says so.
+  - A child that may fail (`ignoreFailure`) is typed `T | undefined`
+    (Q-C9).
+
+#### 4.8.5 Alignment (V4)
+
+`s` gains `~standard.jsonSchema` (`{ input, output }` returning its `.json`),
+so AD's converter reads it on the primary path; `validateResponses` accepts the
+modes; the four issue-flattening copies may adopt `validateStandard`. The
+OpenTelemetry plan's `validation.failed` span event uses the core's `onIssues`
+hook (§4.1.6) [A].
+
+### 4.9 Future transports
+
+§4.2: no packages, no integrations; the extension point and its two spike
+adapters are the deliverable, and V1 ships the "Writing a transport" guide.
+When one of these packages is planned, its plan declares its transport on the
+core and states its refusal mapping (§4.2's table).
+
+### 4.10 bun cache [D]
+
+Unchanged from the first version (§4.7 there): BC §3.13's `validate: {
+"user:*": UserSchema }` runs through `validateStandard`; a failing value is a
+miss plus an `error` event carrying issues with target `"cache"`;
+`validateOnWrite` checks a `set` before storing; `cacheResponse()` sits before
+`validate()` (BC §9.6), so a replayed hit is not re-checked (it was checked
+when stored). A cache key pattern is the cache's key, so a cache is one more
+contract (`outbound` keyed by pattern), readable for documents like the rest.
+
+### 4.11 The typed client, OpenAPI and AsyncAPI: what they read [D]
+
+Every consumer reads **one runtime structure**: the contract a carrier holds
+(§4.1.5).
+
+| Consumer | Reads | From | Becomes |
+|---|---|---|---|
+| OpenAPI generator (AD (a), (b)) | the router's layers, each layer's contract via `getContract`, and `describeContract` rows | validator middleware, `@Validate` routes | `parameters` (params, query, headers, cookies), `requestBody.content`, `responses[status].headers`, `.content[mediaType]` |
+| AsyncAPI generator (AD (e)) | channel, SSE and broker contracts | `defineChannel` handlers, SSE endpoints, transports' handlers | `channels`, `messages` keyed by `type`/`event`/`topic`, `payload` |
+| The route model (TC PR-M1) | the same rows as OpenAPI, plus the path and method from the layer | router layers | `ModelRoute.request.{params, query, body, headers}`, plus **`cookies`** (new), and `responses[status]` with **headers and media types** (new) |
+| The typed client (TC) | types: `Jsonify<WireInput<…>>` per route and status, the wire side (§4.1.4, M2), and the schema's output only when the client parses with it (TC §5.4); inputs held to `WireInput` | the route model's types and rows' `encoding` | a result union discriminated by `status` (the spike's `HttpResult<C>` in `transports.ts` used the output and is corrected) |
+| bun-jobs `/definitions` (V5b) | each definition's contract | `define()` | each definition's data and result JSON Schema (`{}` and a warning when a vendor has none) |
+
+- **JSON Schema conversion stays AD's**: `~standard.jsonSchema` first (zod 4,
+  arktype 2, and `s` after V4), a vendor table next; valibot, yup and
+  `toStandardSchema` have none today [M `results-vendors.txt`]. The core never
+  converts; `describeContract` hands over the schema and its vendor.
+- **What this adds to AD and TC**: cookies as a request part, response headers
+  and cookies, media types per status, and the same model for channels, SSE
+  and jobs. AD's `RouteDoc.request` and TC's `ModelRoute.request` each gain
+  `cookies`; their `responses` gain `headers` and `content` (a change to their
+  plans, which this plan's lead also owns for AD; TC's owner, bun-node-99,
+  agreed the route model is settled jointly before either builds).
+- **Route keys sit above the contract** (method and path): a router layer
+  carries its contract through `attachContract`; the route is not a key of the
+  HTTP transport (Q-C10).
+
+
+### 4.12 Folded in from the typed-client review [A]
+
+bun-node-99 reviewed §4.1.4, §4.1.5, §4.11, Q-C5, V12 and V5b against the
+typed-client plan on 2026-10-17 with probes of the spike (its report:
+`~/.cache/bun-node-99/review-validate-contract/REPORT.md`). Verdict: TC can
+build on this contract. Each finding below is now a requirement of the PR
+named; none changes a decision of §1.2 except V-D8's per-field rule (M1).
+
+| # | Finding | Lands in | What the PR does |
+|---|---|---|---|
+| B1 | **`describeContract` drops a key with no parts** (`202: {}` vanishes) and cannot tell "nothing declared" from "declared empty" (probes P3, P4; `contract-core/core.ts:781-792`) | V1 | it returns the declared keys per side with the entries (`{ sides: { inbound?: { declared, keys? }, outbound?: … }, entries }`), so a client can be strict where a contract declares and lenient where none does |
+| M1 | **The sender rule per part, not per field** (P1) | V1, V3a | the deep `WireInput<S>` (§4.1.4) |
+| M2 | **Client response types from the output disagree with the wire** (P2) | V12, TC, AD | `Jsonify<WireInput<S>>` by default; the JSON Schema direction for responses pinned to the wire (input), against AD §4.3's output. AD §4.3 is corrected by this plan's lead (who also leads AD) in AD phase (b)'s converter PR, the same window as V12 |
+| M3 | **Layered contracts have no merge rule**; chained validators make the *first* the wire schema while the handler sees the last | V1 (`mergeContracts`), V12 (`effectiveContract(route)`) | Q-C11's rules; each row records its origin; `commonResponses` carried as a router-level contract, so TC's builder option is only an override |
+| M4 | **Rows cannot tell body kinds apart**; `sse()` hides its event map and gives a different row shape on the writer | V1, V3b | `kind: "value" \| "chunks" \| "sse" \| "opaque"` on `ContractEntry`; `sse()` expanded into nested rows (`keyName: "event"`, parts `data`, `id`), identical to the writer's; `chunks(S, { framing: "ndjson" })` |
+| M5 | **A wrapper drops the contract**: bun-jobs registers `deferred(validate(schemas))` (`bun-jobs/lib/api/routes/define.ts:484`, `:515`) and keeps responses in `respond(def)`, so a route listing finds a contract on none of its 84 routes | V1 (`forwardContract(wrapper, inner)`), V4 | `defineRoute` attaches a full HTTP contract (params, query, body, responses, alternate content as string bodies) to its terminal layer, so TC's bun-jobs pilot uses the generic route model |
+| M6 | **JSON-Schema-only parts have no place** (AD Decision 4's docs-only responses, NTR's swagger routes) | V1, V12 | `documented(json)` (Q-C12); AD Decision 4's merge restated in V12 |
+| M7 | **A WebSocket contract lacks what a channel model needs**: the upgrade request (where auth lives), the envelope and correlation id, reply and ack links, the implicit error frame, binary, subprotocol, topics, the SSE fallback; and `receives: { typing: null }` throws in the spike (P5) | V8 | a channel is the HTTP inbound side (the upgrade) plus the WebSocket sides, as SSE is (§4.7.1), plus channel meta `{ path, envelope (with its correlation `idField`), replies, binary, subprotocol, topics, fallback }`, the `fallback` naming an SSE endpoint for the same messages; a `null` message normalises to `{ data: null }`; the implicit `error` frame is a declared outbound key. TC's `ModelChannel` (proposed in the report) reads it |
+| m1 | row order | V1 | rows documented as unordered, emitted in a canonical order: sides (inbound, outbound); then keys, numeric statuses ascending, then string keys lexically (JavaScript cannot give integer-like keys in declaration order); then parts as the transport lists them; then media types lexically |
+| m2 | media keys with parameters never match | V3a | Q-C14 |
+| m3 | the wire encoding must exist as **data** | V1 | each row carries its part's encoding (`path-string`, `querystring`, `header-string`, `cookie-string`, `signed-cookie`, `set-cookie`, or a media-typed body), and V12 agrees one `Jsonify` with TC (`Date` → string; `undefined` and functions dropped; `bigint` → never; `toJSON` honoured; `Map`/`Set` → `{}`) |
+| m4 | cookies are not browser client inputs | V12, TC | cookies are documented (`in: cookie`) and left out of browser call options, and a response's `Set-Cookie` is left out of browser client result types; the signed-cookie encoding from m3 |
+| m5 | implicit statuses | V2 | a validator with `onFailure: "respond"` attaches its own 400 shape to its contract, marked implicit; with `"next"` the 400 is a `commonResponses` matter |
+| m6 | the request body's default media type and required-ness | V12 | `application/json` by default; required unless the schema's input accepts `undefined` |
+| m7 | two homes for names (`ContractMeta.name` vs `.describe({ operationId })`) | V1 | for HTTP, `.describe()` wins |
+| m8 | status ranges and `default` | — | out of scope here; later as string keys with most-specific-wins |
+| m9 | SSE data decoding guessed | V3b, V11 | Q-C13 |
+| m10 | `recordOf` and `toStandardSchema` carry no JSON Schema | V1 | `recordOf` composes its members'; `toStandardSchema` takes an optional `jsonSchema` |
+| m11 | `s.object`'s input equals its output, so a defaulted key is required on input | V4 | defaulted keys optional on input, required in output, in both the types and `~standard.jsonSchema` |
+| m12 | the browser subpath's real user | V1, V8 | a shared `defineChannel` contract module imported by both server and client: V8 splits a channel's pure contract (in `./contract`) from its server binding (handler, publish), and the bundle-safety test targets that |
+
+The spike's HTTP declaration has no inbound `signedCookies` and no outbound
+`cookies` (a nit from the same review); `transports.ts` in the real module
+declares both (§4.1.1's table already lists them).
 
 ---
 
@@ -725,66 +1560,91 @@ const jobs = new BunJobs({ namespace: "shop", driver })
 
 Every new check ships with a negative control: shown to fail on the base, or
 by a mutation that removes the thing it checks (`docs/agentic-setup.md`,
-"Negative controls").
+"Negative controls"). Type tests use `@ts-expect-error` controls proven by a
+mutant run, as both spikes do (`check-types.sh`, `run.sh` step c).
 
-| PR | Runtime tests | Type tests | Examples (5a) |
+| PR | Runtime tests | Type tests | Examples (bun-node-74) |
 |---|---|---|---|
-| V0 | `__tests__/bunValidate.test.ts`: explicit `undefined` keeps 400 (fails on base: 200, R2h); an unknown target throws `ConfigError` (base: silently passes, R5) | `__tests__/validate.type-test.ts`: unchanged | `examples/bun-common/12-options/validate-options.ts` gains both |
-| V1 | `bunValidate.test.ts`: `validateStandard` sync for zod/valibot/arktype, Promise for yup; issue paths; `__schemas` survives mounting | `validate.type-test.ts`: `StandardOutcome` narrowing; `ValidationIssue<"response">` | `06-validation/schema-libraries.ts` |
-| V3 (AD b1) | new `__tests__/bunValidate.responses.test.ts`: each mode × sync/async vendor × `json`/`send`/`jsonp`; exclusions (stream, redirect, HEAD, 304); `undeclaredStatus`; router-level default; the error pipeline sees `ResponseValidationError` | new `__tests__/responses.type-test.ts` from `evidence/response-typing/responses.spike.ts` (9 controls, 7 boundaries); `verbTyping.type-test.ts` and `mountTyping.type-test.ts` gain response cases; `bun-nest/__tests__/nestVerbTyping.type-test.ts` too; `generate-verb-overloads.ts --check` | `06-validation/responses.ts` (new) |
-| V4 | bun-jobs `__tests__/api/*`: `validateResponses: "error"`; `s` `~standard.jsonSchema` equals `.json` | — | `examples/bun-jobs/10-options/jobs-api-options.ts` (its `validateResponses` step) |
-| V5 | bun-jobs: enqueue rejects, nothing written; processing fails to `dead` with `attemptsMade=1`; parsed value reaches the handler; result modes; on memory plus one SQL and Redis; the API's 400 and `/definitions` schemas | `define` infers `job.data`; `JobMapFromSchemas`; negative controls | `examples/bun-jobs/` new `job-schemas.ts`; playground addition (d6 reviews) |
-| V6 | bun-nest: the pipe, the global pipe (with and without, as `results-nest.txt`), the filter, through `adapter.fetch()` | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe |
-| V7 (AD g) | as AD §9.5 and NTR §9.1, plus the response interceptor | return-type constraint with input/output rule | `examples/bun-nest/08-validate/` (AD) |
-| V8 (TC M4) | frames: valid, invalid → error frame, unknown type, order kept with an async vendor, `closeOnInvalid`, outgoing modes | handler `msg` types; `send` rejects an undeclared type | `examples/bun-common/` WebSocket channel example |
-| V9 (NTR N5) | as NTR §9.1, plus `WsValidationFilter` | as NTR | `examples/bun-nest/04-websockets/` |
+| V0 | `bunValidate.test.ts`: explicit `undefined` keeps 400 (base: 200, R2h); an unknown target throws `ConfigError` (base: passes, R5) | `validate.type-test.ts` unchanged | `examples/bun-common/12-options/validate-options.ts` |
+| V1 | new `__tests__/contract/*.test.ts` from `contract-core/run.ts`: sync vs Promise per vendor; receiver parses, sender returns the same object; policies; undeclared key/part/media; the no-value scrub against **each supported vendor** (C11); the no-schema path (C13–C15); `onIssues` (C16); `getContract`/`describeContract` (C20); declaration errors (C22); a UDP adapter test on port 0 (C1–C6); a bundle-safety test for the browser subpath; BunValidate's existing suite unchanged. **§4.12's, each with a negative control:** `describeContract`'s `sides` for `202: {}` and for an empty and an absent outbound (B1: the spike drops them); `mergeContracts` (outermost inbound wins, route over router outbound, `origin` on every row: M3); `forwardContract` through a wrapper (M5: `getContract` on the wrapper is `undefined` without it); `kind` rows and `sse()` expanded into event rows (M4); `documented(json)` documents and never checks (M6); each part's `encoding` (m3); the canonical row order (m1) | `contract.type-test.ts` from `types.probe.ts` (24 controls), plus a `WireInput` control: `{ page: "x" }` against `z.coerce.number()` must fail (M1; the spike's per-part `SendOf` lets it compile) | "Writing a transport" with the UDP adapter |
+| V2 | `bunValidate.test.ts`: cookies, signedCookies (genuine, forged, tampered: H49–H51), typed coerced header on `req.valid` with raw `req.headers` untouched and `accepts`/busboy working (H46), H47, H48; bun-jobs `ProblemIssueDto` round trip | `validate.type-test.ts`: `req.cookies`, `req.signedCookies`, `req.valid` types; a `string[]` wildcard param case; the lifted inline limit (5 lines of `verbTyping.type-test.ts`) | `06-validation/cookies-and-headers.ts` (new) |
+| V3a | new `bunValidate.responses.test.ts`: H1–H20, H25–H38, H41–H45 (buffered kinds × modes × zod/yup; status, headers, cookies, media type; exemptions); `commonResponses`; router- and adapter-level defaults | new `responses.type-test.ts` from `http-complete/types.probe.ts` (N1–N18, L1); `verbTyping`, `mountTyping` and `nestVerbTyping` response cases; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages (the `BunResponse` and `BunRequest` surfaces) | `06-validation/responses.ts` (new) |
+| V3b | streams, `write()`/`end()`, SSE per event, H21–H24, H39, H40; a cut-off stream reaches the client as an error | `chunks()`/`sse()`/`opaque()` types | `06-validation/streaming-responses.ts` (new) |
+| V6 | the pipe, the global pipe (with and without, `results-nest.txt`), the filter, through `adapter.fetch()`, on Nest 11 and 12 | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe |
+| V7a | `@Validate` request side: every part, `@Validated(part)`; the skip rule both ways (a `@Body({ schema })` with the pipe in effect is not checked twice; without the pipe, or with `@Query('page', { schema })`, `@Validate` still checks); on 11 and 12 | parameter and return types; a `string[]` wildcard | `examples/bun-nest/08-validate/` (AD) |
+| V7b | responses: the status and `@Header()` headers seen in `map()` (each row of §4.5.4's table), a thrown 409 checked in `catchError`, redirects and `StreamableFile` through the before-write hook, plain `@Res()` skipped without a throw, `@Sse` with a sync and an async first event, both serializer placements; `ResponseValidationInterceptor` | `reply()` per-status types | the same folder |
+| V8 | frames: valid, invalid → error frame, unknown type, order with an async vendor, `closeOnInvalid`, outgoing modes; the upgrade request's parts checked before the upgrade (M7); `receives: { typing: null }` normalised to `{ data: null }` (P5 throws in the spike); the implicit `error` frame listed as a declared outbound key; the pure channel contract bundles browser-safe, its server binding does not (m12) | handler `msg` types; `send` rejects an undeclared type | a WebSocket channel example |
+| V9 | as NTR §9.1, plus `WsValidationFilter` | as NTR | `examples/bun-nest/04-websockets/` |
+| V11 | `SseWriter.send` refuses a bad event before encoding under `"error"`; Nest `@Sse` per event | `send({ event, data })` typed | an SSE example on each adapter |
+| V4 | bun-jobs `__tests__/api/*`: `validateResponses: "error"`; `s` `~standard.jsonSchema` equals `.json` | — | `examples/bun-jobs/10-options/jobs-api-options.ts` |
+| V5a | every write in §4.8.2's table rejects and writes nothing (the debounce: the pending job keeps its data); each site's policy (`"warn"` at processing runs the stored input); processing failure to `dead` with `attemptsMade=1`; the parsed value reaches the handler in-process and what reaches an isolated target; result modes and the absent `completed` event; on memory plus one SQL and Redis; `bench/queue.ts --compare` passes | `define` infers `job.data`; `JobMapFromSchemas` | `examples/bun-jobs/` `job-schemas.ts` (new); a playground addition (bun-node-99 reviews) |
+| V5c | flows: a bad child writes nothing for the whole flow; each node against its own definition; typed `getChildrenValues` | the parent's typed children | a flow example |
+| V5b | the API's add, update and flows routes answer 400 `VALIDATION` with issues even under `"off"` (a flow's at body paths); `/definitions` publishes JSON Schema | the `api/contract` DTOs; bun-jobs-ui's fixtures | — |
 | V10 (in BC) | as BC §13, plus issues target `"cache"` | `CacheSchemaFrom` | BC's |
+| V12 | `listRoutes`/`effectiveContract` over mounted routers and wrapped middleware, with bun-jobs' 84 management routes visible (M5); OpenAPI rows for cookies, response headers and media types; m6's body defaults (`application/json`, required unless the input accepts `undefined`); the agreed `Jsonify` vector (m3) | `Jsonify<WireInput<…>>` response types (M2), with a transform control (`{ n: z.string().transform(s => s.length) }` types `n` as `string`); the `wire` mapping | — |
 
 ---
 
 ## 6. PR slicing, effort and owners
 
-Owners as of the 2026-10-10 roster (`docs/agentic-setup.md`): the **features
-agent** (bun-node-ae) builds bun-common and bun-nest until their own agents
-exist; **4c** owns bun-jobs; **d6** owns bun-jobs-ui and the playground;
-**5a** owns examples. Each PR passes the full gate for what it touches, and
-every user-facing PR sends 5a a CHANGE REPORT before merging.
+Owners as of the 2026-10-16 roster (`docs/agentic-setup.md`): **bun-node-11**
+(bun-common; leads this plan, AD and bun-native-routes' SSE helpers);
+**bun-node-15** (bun-nest); **bun-node-e9** (bun-jobs); **bun-node-99**
+(bun-jobs-ui, the playground, TC); **bun-node-74** (examples). A PR in another
+agent's package is built there under that owner's review. Each PR passes the
+full gate for what it touches, and every user-facing PR sends bun-node-74 a
+CHANGE REPORT before merging.
 
-| # | PR | Scope | Depends on | Effort | Owner |
+**In the user's order** (the user's first priority, NestJS 12 support, is the
+nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
+
+| # | PR | Scope | Depends on | Effort | Builds / reviews |
 |---|---|---|---|---|---|
-| 1 | **V0** BunValidate fixes | G3 (defaults survive `undefined`), G2 (unknown target → `ConfigError`) | — | 0.5 d | features |
-| 2 | **V1** shared core | `validateStandard`, `StandardOutcome`, `formatIssuePath`, `ValidationIssue<T>`, `__schemas` (AD (b)'s first commit) | V0 | 1 d | features |
-| 3 | **AD (b0)** spec types 1.1.0 | as AD | — | 0.5–1 d (AD) | features |
-| 4 | **V3 = AD (b1)** response contracts | AD's four files (the spike's patch) with §4.3's rule; §4.2's modes, hold for async vendors, router/adapter default, `ResponseValidationError`, `commonResponses`; consumer check for the `BunResponse` surface | V1, (b0) | 4–5 d (AD) **+1 d** | features; bun-nest owner reviews |
-| 5 | **V4** bun-jobs alignment | `s` gains `~standard.jsonSchema`; `validateResponses` accepts modes; optional adoption of `validateStandard` in its three copies | V1, (b0) | 1.5 d | 4c |
-| 6 | **V5a** job schemas, runtime | `define({ schema })`, `BunQueue`/worker `schema`, enqueue and process checks, result modes, `JobMapFromSchemas` | V1 | 3 d | 4c |
-| 7 | **V6** Nest pipes | `StandardSchemaPipe` (root), `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`; replaces NTR PR-N3's pipe half and NJD's pipe | V1 | 2.5 d | features |
-| 8 | **AD (a), (b)** route metadata and converters | as AD | V1 | 10–14 d (AD) | features |
-| 9 | **V5b** job schemas in the API | add-route validation, `/definitions` JSON Schema; **contract change** | V5a, AD (b) | 1.5 d | 4c; d6 reviews the contract |
-| 10 | **V7 = AD (g)** `@Validate` | as AD, §4.4.1's changes, `ResponseValidationInterceptor` | V3, V6, AD (d) | 5–7 d (AD) **+0.5 d** | features |
-| 11 | **V8 = TC PR-M4** typed channels | `defineChannel` with §4.5.1's semantics | V1, AD (e) for documents | ~5 d (TC) **+1 d** | features |
-| 12 | **V9 = NTR PR-N5** typed gateways | `@ValidateMessage`, `@Emits`, `WsValidationFilter` | V6 | ~4.5 d (NTR) **+0.5 d** | features |
-| 13 | **V10** cache hook | inside BC's core PR: `validateStandard`, target `"cache"`, `validateOnWrite`, `CacheSchemaFrom` | V1, BC core | 0.5 d inside BC | BC's owner |
+| **Group 1** | **Core and HTTP completeness, bun-common** | | | | |
+| 1 | **V0** BunValidate fixes | G3, G2 (§4.3.1) | — | 0.5 d | 11 |
+| 2 | **V1** the contract core | `lib/contract/`: `defineTransport`, contracts, `validateStandard`, `ValidationIssue<T>`, guards, policy, `onIssues`, `attachContract`/`getContract`/`describeContract`, the scrub; the browser-safe subpath; `validate()` rebuilt on it with no behaviour change; "Writing a transport" with the UDP adapter; and §4.12's B1, M1, M3–M6, m1, m3, m7, m10 (declared keys, `WireInput`, `mergeContracts`, `kind`, `forwardContract`, `documented()`, row encodings) | V0 | 4.5 d | 11 |
+| 3 | **V2** request completeness | `cookies`, `signedCookies`, typed headers, `req.valid`, the `BunRequest` type parameters, the new target order; a validator with `onFailure: "respond"` attaching its own 400 to its contract, marked implicit (§4.12 m5); bun-jobs `ProblemIssueDto` widened | V1; nestjs-12-parity PR-5 for the `string[]` wildcard test (or a follow-up line) | 2 d | 11; e9 and 99 review the DTO |
+| 4 | **V3a** responses, buffered | `ResponseSchemas`, the commit gate, every buffered kind, status/headers/cookies/media type, modes, router/adapter defaults, `ResponseValidationError`, `commonResponses`, response typing (`status`/`json`/`send`/`set`/`header`/`cookie`/`redirect`) held to `WireInput` (§4.12 M1), media keys matched with parameters stripped on both sides (m2, Q-C14), the `#self` getter; consumer check for all four packages | V2 | 5 d | 11; 15 reviews the bun-nest type surface |
+| 5 | **V3b** responses, streamed | the chunk gate, `chunks(S, { framing })`, `sse()` with its events expanded into rows (§4.12 M4) and declared `data: "json" \| "text"` (m9, Q-C13), `opaque()`, `sendFile` reads, stream cut-off | V3a | 2.5 d | 11 |
+| **Group 2** | **NestJS** | | | | |
+| 6 | **V6** pipes | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`; replaces NTR PR-N3's pipe half and NJD's pipe | V1; nestjs-12-parity PR-2 (filter tests on both majors) and **PR-3** (bun-nest's devDependencies on Nest 12, so its tests run on 12) | 2.5 d | 11 in bun-nest; 15 reviews |
+| 7 | **V7a** `@Validate`, request side | every part, `@Validated(part)`, Nest 12 composition (the skip rule of §4.5.1), `SchemaDto` integration | V2, V6; nestjs-12-parity **PR-3** (tests on 12) and **PR-5** (the `string[]` wildcard test) | 3 d | 11 in bun-nest; 15 reviews |
+| 8 | **V7b** `@Validate`, responses | per-status checks in `map()` and `catchError`, plus PR-6c's before-write hook (name TBD) for redirects, `StreamableFile` and plain `@Res()`; `reply()`, `@Sse`, `ResponseValidationInterceptor`, both serializer placements | V3b, V7a; nestjs-12-parity **PR-6a and PR-6c** | 3.5 d | 11 in bun-nest; 15 reviews |
+| **Group 3** | **Other transports** | | | | |
+| 9 | **V8** WebSocket channels (= TC PR-M4) | `defineChannel` on the core, §4.6.1; §4.12's M7 (the upgrade side, channel meta, the implicit error frame) and m12 (a pure contract apart from its server binding) | V1 | ~5 d (TC) **+1 d** | 11; 99 reviews (TC) |
+| 10 | **V9** Nest gateways (= NTR PR-N5) | `@ValidateMessage`, `@Emits`, `WsValidationFilter` (an object `WsException`, §4.6.2) | V6, V8; nestjs-12-parity **PR-2** (Q4(a): the frame shape on 12) | ~4.5 d (NTR) **+0.5 d** | 11 in bun-nest; 15 reviews |
+| 11 | **V11** SSE on both adapters | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event | V3b, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
+| 12 | **V4** bun-jobs alignment | `s` `~standard.jsonSchema`, with defaulted keys optional on input and required in output (§4.12 m11); `validateResponses` modes; `defineRoute` attaching a full HTTP contract to its terminal layer through `forwardContract` (M5); the flattening copies may adopt `validateStandard` | V1 | 2.5 d | e9; 11 reviews |
+| 13 | **V5a** job data and results | §4.8.1–§4.8.4 except flows; checks in `BunQueue`; `JobMapFromSchemas`; the bench guard | V1 | 3.5 d | e9; 11 reviews |
+| 14 | **V5c** flows | the pre-write pass, per-node definitions, typed `getChildrenValues` | V5a | 1.5 d | e9; 11 reviews |
+| 15 | **V5b** job schemas in the API | add, update and flows routes always check; `/definitions` JSON Schema as **optional** fields (the UI reads only `items[].name`, so no UI source change; `DefinitionListSchema`'s `additionalProperties: false` widened and `api-contract.type-test.ts:312` updated in the same PR); **contract change** | V5a, V12's converter | 1.5 d | e9; 99 reviews the contract |
+| 16 | **V10** cache hook | inside BC's core PR | V1, BC core | 0.5 d inside BC | BC's owner |
+| **Group 4** | **Client and docs hooks** | | | | |
+| 17 | **AD (b0)** spec types 1.1.0 | as AD | — | 0.5–1 d (AD) | 11 |
+| 18 | **V12** route listing and the route model's inputs | router layers carry contracts; `listRoutes(router)` → `{ key, method, path, params, contract (effective), doc }[]`, which TC PR-M1 serialises; `effectiveContract`; the `wire` mapping and one agreed `Jsonify`; AD's `RouteDoc` and TC's `ModelRoute` gain cookies, response headers and media types; §4.12's M2, M6, m4, m6 | V3a, (b0) | 3 d **+** AD (a)/(b) 10–14 d (AD) | 11; 99 reviews the route model |
+| 19 | **AD (e)** AsyncAPI | channels, SSE and broker contracts through `describeContract` | V8, V11, V12 | AD's estimate | 11 |
 
-**New in this plan**: V0 0.5 + V1 1 + V3 delta 1 + V4 1.5 + V5a 3 + V5b 1.5 +
-V6 2.5 + V7 delta 0.5 + V8 delta 1 + V9 delta 0.5 + V10 0.5 = **~13.5 d**.
-**Adopted** (estimated in AD, TC, NTR, and not counted again): (b0), (b1),
-(g), PR-M4, PR-N5 ≈ 19–22.5 d; AD (a)/(b) are AD's own critical path.
+**New in this plan**: V0 0.5 + V1 4.5 + V2 2 + V3a 5 + V3b 2.5 + V6 2.5 + V7a
+3 + V7b 3.5 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 2.5 + V5a 3.5 + V5c
+1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~40 d**. **Adopted** (estimated in AD, TC
+and NTR, not counted again): (b0), AD (a)/(b), AD (e), TC PR-M4, NTR PR-N5.
 
-**Order**: V0 → V1 → (b0) → V3. V4, V5a and V6 can run beside V3 once V1
-merges. V5b waits for AD (b)'s converter; V7 for V3, V6 and AD (d); V8 and V9
-come last, after AD (e) and TC PR-M1.
+**Order**: V0 → V1 → V2 → V3a → V3b, then group 2 (V6 → V7a → V7b, the last
+after nestjs-12-parity PR-6a and PR-6c). Group 3 may start once V1 merges where
+it depends on nothing else (V4, V5a, V8), but lands after group 2 unless the
+user reorders. Group 4's V12 can follow V3a.
 
-**Change reports**:
+**Change reports** (to bun-node-74 unless stated):
 
-| PR | To | What |
-|---|---|---|
-| V0 | 5a | behaviour change: explicit `undefined` keeps the default; unknown targets throw; affects `examples/bun-common/06-validation/*` and `12-options/validate-options.ts` if they rely on either |
-| V1, V3 | 5a; 4c; d6 | new exports and options; the `BunResponse` type parameter (bun-jobs' `define.ts` and bun-jobs-ui's server use `BunResponse` and must still check); consumer-check re-run |
-| V4, V5a, V5b | 5a (from 4c); **d6** | new definition option and errors; V5b changes `api/contract` (`DefinitionDto` gains data/result schemas; the add route a `VALIDATION` problem with issues), so bun-jobs-ui's fixtures and typecheck move with it; playground addition reviewed by d6 |
-| V6, V7, V9 | 5a | new bun-nest exports; `examples/bun-nest/02-http-adapter/pipeline.ts` can drop its `SchemaPipe` |
-| V8 | 5a | new channel API |
-| V10 | BC's owner | the runner it calls |
+| PR | What |
+|---|---|
+| V0 | behaviour change: explicit `undefined` keeps the default; unknown targets throw |
+| V1 | new exports (`lib/contract`, a subpath); issue messages may change where a vendor quoted a value (the scrub) |
+| V2 | new targets; `req.valid`; the target order; bun-jobs' `ProblemIssueDto` (to e9 and 99: bun-jobs-ui's fixtures move) |
+| V3a, V3b | `responses`, `responseValidation`, `ResponseValidationError`, `commonResponses`, `chunks`/`sse`/`opaque`; the `BunResponse` and `BunRequest` type parameters (bun-jobs' `define.ts` and bun-jobs-ui's server use `BunResponse` and must still check) |
+| V6, V7a, V7b, V9 | new bun-nest exports; `examples/bun-nest/02-http-adapter/pipeline.ts` can drop its `SchemaPipe` |
+| V8, V11 | channel API; typed SSE writer |
+| V4, V5a, V5c, V5b | from e9; V5b changes `api/contract` (to 99); `examples/bun-jobs/11-management-api/mounting-and-auth.ts:283-286` prints the whole `/definitions` body |
 
 ---
 
@@ -792,54 +1652,186 @@ come last, after AD (e) and TC PR-M1.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | **The `BunResponse` type parameter** ripples into consumers who name `BunResponse<T>` | it is defaulted and last; the spike checked bun-common's and bun-nest's tests clean; V3 re-runs `scripts/consumer-check.ts` for all four packages |
-| R2 | **Holding a response for an async vendor** changes timing for a route that writes after `json()` | only in `"error"` mode and only for a vendor returning a Promise; documented; yup is the one measured vendor that does |
-| R3 | **`"error"` in production** turns a stale schema into outages | default `"off"`; the README recommends `"error"` for development and tests only, as bun-jobs does ("on in tests") |
-| R4 | **A forgotten global pipe makes `SchemaDto` types a lie** (the control: strings typed as numbers) | `StandardValidationModule` registering the pipe as `APP_PIPE`; a dev-time warning when a route has a `SchemaDto` parameter and no pipe ran [D] |
-| R5 | **Decorator metadata** depends on the cwd's tsconfig (oven-sh/bun#28605) | `SchemaDto` needs `design:paramtypes`; the same bootstrap check NTR NR4 plans |
-| R6 | **Job schema drift across deployments** fails jobs at processing | that is the point of the second check; failures are unrecoverable and visible in `dead`, with the issues |
-| R7 | **Duplicate work** with AD/NTR/NJD if their PRs proceed independently | §3 and §6 are the single order; NTR PR-N3 and NJD's pipe are replaced by V6 |
+| R1 | **The `BunResponse` and `BunRequest` type parameters** ripple into consumers who name them | all defaulted and trailing; the spike checked bun-common's and bun-nest's tests clean; V3a re-runs `scripts/consumer-check.ts` for all four packages |
+| R2 | **Holding a response** for an async vendor or a read (`Blob`, file, cloned `Response`) changes timing | only in `"error"` mode; documented; `opaque()` declares without reading |
+| R3 | **`"error"` in production** turns a stale schema into outages | default `"off"`; the README recommends `"error"` for development and tests only |
+| R4 | **The value scrub is a heuristic** (a vendor's new message format could leak) | the C11 test runs against every supported vendor in V1; `messages: "generic"` for a guarantee (Q-C3) |
+| R5 | **Paths can carry user data** (unknown keys, user-keyed records) | stated as the rule's limit; `redactPaths` opt-in (Q-C2) |
+| R6 | **A receiver in `"warn"`/`"off"` hands handlers values their types misdescribe** | receivers default to `"error"` (Q-C1) |
+| R7 | **Nest 11/12 divergence**: double validation with `@Body({ schema })`, or a part left unchecked because no `StandardSchemaValidationPipe` applies; the serializer's placement | `@Validate` skips a part only when its `{ schema }` covers the whole part and the pipe applies (§4.5.1); the serializer order rule stated and both placements tested (V7b); tests on both majors |
+| R8 | **The before-write hook does not exist yet**, and Nest's `setOnResponseHook` cannot serve (it runs after the send) | the interceptor covers status, `@Header()` headers, returned bodies and non-2xx statuses (measured); PR-6c designs a separate before-write hook for redirects, `StreamableFile` and plain `@Res()`; on Express/Fastify those are checked only as far as `map()` reaches, documented |
+| R9 | **Job schema drift across deployments** fails waiting jobs at processing | that is the point of the second check; its policy is separate and its error names the job and issues; visible in `dead` |
+| R10 | **Transforms degrade on isolated targets** (`Date`, `Map` over JSON) | Q-J2; documented either way |
+| R11 | **The enqueue check slows the queue** | the no-schema path is free by construction and measured (C13–C15); `bench/queue.ts --compare` gates V5a |
+| R12 | **Decorator metadata** depends on the cwd's tsconfig (oven-sh/bun#28605) | `SchemaDto` needs `design:paramtypes`; the bootstrap check NTR NR4 plans |
+| R13 | **Duplicate work** with AD, TC, NTR and NJD | §3 and §6 are the single order; this plan's lead also leads AD |
 
 ---
 
 ## 8. Open questions for the user
 
-1. **Is this the right home** — a main plan that adopts AD's response and
-   `@Validate` designs and owns the order — rather than a sub-plan of AD?
-   **Recommended: yes** (§0).
-2. **Default for runtime response checks?** **Recommended: `"off"`**,
-   with the README recommending `"error"` in development and tests. (TC D11
-   turns client-side checks on in development; the server stays explicit, as
-   bun-jobs' `validateResponses` does.)
-3. **Mode names: `"off" | "warn" | "error"` (here) or AD's
-   `"off" | "log" | "throw"`?** **Recommended: here's.** `"throw"` reads as
-   if the handler throws; what happens is a 500 through the error pipeline.
-4. **The server is held to the schema's input, falling back to its output
-   when the input is `unknown`.** **Recommended: yes** (§4.3, measured).
-5. **A `"parse"` mode that sends the schema's output** (stripping unknown
-   keys, as Fastify's serialiser does, to stop leaking fields)? **Recommended:
-   later, opt-in.** Check-only never changes a response.
-6. **One shared runner named `validateStandard`** (NJD's name) instead of
+The user's 2026-10-17 words settled three of the first version's questions,
+now removed: **Q9** (headers are typed), **Q10** (cookies are a full target),
+and **whether responses are in scope** (they are, with status, headers and
+every body kind; an undeclared status fails). The 400-vs-422 question raised
+during the revision is also gone: bun-jobs' API already answers 400
+(`bun-jobs/lib/api/errors.ts:92`).
+
+**Group 1 cannot start until the questions marked ★ are answered**; the rest
+can be settled before the PR they name.
+
+### 8.1 Kept from the first version
+
+1. ★ **Is this the right home**: a main plan owning the core and the order,
+   adopting AD's and TC's designs, rather than a sub-plan of AD? **Recommended:
+   yes** (§0).
+2. ★ **Default for runtime response checks?** **Recommended: `"off"`**, with
+   the README recommending `"error"` in development and tests.
+3. ★ **Mode names `"off" | "warn" | "error"` (here) or AD's `"off" | "log" |
+   "throw"`?** **Recommended: here's**, now used by every transport.
+4. ★ **The server is held to the schema's input, falling back to its output
+   when the input is `unknown`, field by field (`WireInput`, §4.1.4).**
+   **Recommended: yes** (measured twice per part; per field from bun-node-99's
+   review, M1). A typed client's responses follow the same wire side.
+5. **A `"parse"` mode that sends the schema's output** (stripping unknown keys
+   to stop leaking fields)? **Recommended: later, opt-in.** Check-only never
+   changes a response.
+6. ★ **One shared runner named `validateStandard`** (NJD's name) instead of
    NTR's `validateTarget`? **Recommended: yes.**
-7. **One `StandardSchemaPipe` in bun-nest's root**, replacing NTR's and NJD's
+7. **One `StandardSchemaPipe` at bun-nest's root**, replacing NTR's and NJD's
    two? **Recommended: yes.**
 8. **`SchemaDto` + `StandardValidationPipe` as the `ValidationPipe`
    equivalent?** **Recommended: yes**; union-output schemas use the pipe and
    `Infer<>`.
-9. **Headers (G1)**: keep validate-only (documented), or write the parsed
-   headers somewhere typed? **Recommended: keep and document**; a new request
-   member is new API for little gain.
-10. **Cookies (G2)**: reject unknown targets now (V0), and add `cookies` as a
-    validate-only target later on demand? **Recommended: yes.**
-11. **The default `onFailure: "next"` answers an HTML 400 on the adapter
-    (G4).** Keep it (Express-style: the app decides), or default the
-    adapters to a JSON `{ error, issues }`? **Recommended: keep**, and show
-    the error handler in the README's first example.
-12. **Job data checked at both enqueue and processing by default**, a
-    processing failure unrecoverable, the handler given the parsed value?
-    **Recommended: yes to all three.**
-13. **An invalid WebSocket frame: an error frame with the socket left open**
-    (bun-jobs' behaviour), `closeOnInvalid` opt-in? **Recommended: yes.**
+9. **The default `onFailure: "next"`** answers an HTML 400 on the adapter (G4).
+   Keep it, or default the adapters to a JSON `{ error, issues }`?
+   **Recommended: keep**, and show the error handler in the README's first
+   example.
+10. **An invalid WebSocket frame: an error frame with the socket left open**,
+    `closeOnInvalid` opt-in? **Recommended: yes.**
+
+### 8.2 The core (§4.1)
+
+- **Q-C1** ★ **Receivers accept only `"error"`?** `"warn"`/`"off"` on a
+  receiver hand a handler raw values its types call parsed (C3, C4).
+  **Recommended: receivers default to `"error"` and also accept `"warn"`/
+  `"off"` only with the handler's input typed `unknown`**; senders take all
+  three.
+- **Q-C2** **Paths can carry user data** (an unknown key's name, a
+  user-keyed record). **Recommended: keep paths; state the rule as "no received
+  value"; add an opt-in `redactPaths`.**
+- **Q-C3** **The value scrub is heuristic.** **Recommended: keep it, add
+  `messages: "generic"` for deployments that need a guarantee, and test it
+  against every supported vendor.**
+- **Q-C4** **Media-type keys**: exact bare types (OpenAPI's), parameters and
+  case ignored at runtime, no wildcards? **Recommended: yes; wildcards later,
+  with most-specific-wins.**
+- **Q-C5** **What the wire changes** (`Jsonify`, header strings): a
+  per-transport `wire` mapping, recorded as **data** on each row (`encoding`,
+  §4.12 m3) and applied by client types, not the core's `Received`?
+  **Recommended: yes** (V1 records it, V12 applies it).
+- **Q-C6** **A cached `checksKey(key)`** so a router or topic table skips the
+  ~15 ns lookup for keys with no schema? **Recommended: yes, in V1.**
+- **Q-C7** ★ **Where the core lives**: bun-common's root **and** a
+  browser-safe subpath `@kingsleyweb/bun-common/contract`? **Recommended:
+  yes.**
+- **Q-C8** **An in-process broker checks on publish and delivery.**
+  **Recommended: keep both by default** (right across services); measure
+  before optimising.
+- **Q-C9** **A flow child that may fail** typed `T | undefined`, through a
+  per-child `optional`? **Recommended: yes.**
+- **Q-C10** **Route keys above the contract**: router layers carry contracts,
+  rather than the route being a key of the HTTP transport? **Recommended:
+  yes.**
+- **Q-C11** **How layered contracts merge** (a mount and a route, a Nest class
+  and method, `commonResponses`; §4.12 M3): inbound, the **outermost** layer
+  that declares a part is the wire schema and later ones refine it (with a
+  warning); outbound, route over router over adapter; every row records its
+  origin. **Recommended: yes.**
+- **Q-C12** **A `documented(json)` helper** for parts known only as JSON
+  Schema (docs-only `.describe({ responses })`, swagger-only Nest routes): a
+  pass-through Standard Schema that documents and never checks?
+  **Recommended: yes**, with AD Decision 4's rule: the validator wins, and a
+  disagreeing `.describe()` is a warning.
+- **Q-C13** **SSE `data` decoding declared, not guessed**: `sse({ … }, {
+  data: "json" | "text" })` rather than "JSON-parsed when it parses" (which
+  turns `"123"` into a number)? **Recommended: yes, default `"json"`.**
+- **Q-C14** **Media keys with parameters** (bun-jobs' Prometheus
+  `text/plain; version=0.0.4`): strip parameters on **both** sides when
+  matching, and keep the declared key's parameters for documents?
+  **Recommended: yes.**
+
+### 8.3 HTTP (§4.3, §4.4)
+
+- **Q-H1** **A freshness 304 for a conditional request is allowed without
+  being declared?** **Recommended: yes** (H42).
+- **Q-H2** **An error handler's response is checked and only reported, never
+  replaced?** **Recommended: yes** (H44); declare such statuses with
+  `commonResponses`.
+- **Q-H3** **On a refusal, drop the refused response's own headers**
+  (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`), keeping CORS
+  and `Vary`? **Recommended: yes** (H45).
+- **Q-H4** **A whole-body schema against a stream**: skip with one warning
+  per route? **Recommended: yes**; streams use `chunks()` or `sse()`.
+- **Q-H5** **Blobs, files and a passed-through `Response` are read to be
+  checked** (so `"error"` holds them)? **Recommended: yes, with `opaque()`
+  to declare without reading;** a size bound later.
+- **Q-H6** **A handler returning a native `Response`** is not supported by
+  bun-common. **Recommended: out of scope**; if it is ever added, it routes
+  into `send(response)` and is checked there.
+- **Q-H7** ★ **Widen bun-jobs' `ProblemIssueDto.target` in V2** (a management
+  API contract change bun-jobs-ui reads)? **Recommended: yes, in the same
+  PR**, reviewed by bun-node-e9 and bun-node-99.
+- **Q-H8** **Type `req.valid` under `replace: false`?** **Recommended:
+  later** (it changes five existing type-test assertions).
+- **Q-H9** **Accept the lifted inline-validator limit** (five lines of an
+  existing type test change)? **Recommended: yes.**
+- **Q-H10** **Typed SSE writes** (`SseWriter.send` typed by a contract)?
+  **Recommended: yes, inside bun-native-routes PR-sse2** (V11).
+- **Q-H11** **The response cookie view** holds values as written plus their
+  attributes? **Recommended: yes.**
+- **Q-H12** **`req.valid` as the name** of the parsed-parts view (Hono's
+  `c.req.valid`)? **Recommended: yes.** (Alternatives: `req.validated`,
+  `req.parsed`.)
+- **Q-H13** **The private `#self` getter** that keeps 35 internal call sites
+  compiling under typed `set`/`header`/`cookie`? **Recommended: yes**
+  (internal only).
+- **Q-H14** **The new target order** `headers → cookies → signedCookies →
+  params → query → body`? **Recommended: yes**: a cheap header or session
+  check fails before a body is parsed.
+
+### 8.4 NestJS (§4.5)
+
+- **Q-N1** **On Nest 12, `@Validate` composes with `@Body({ schema })` and
+  `StandardSchemaSerializerInterceptor`** rather than replacing them: it skips
+  a part only when that parameter's `{ schema }` covers the whole part **and**
+  a `StandardSchemaValidationPipe` applies, and otherwise checks it itself;
+  its order with the serializer is the interceptors' order (§4.5.1)?
+  **Recommended: compose.** (It gates V7a, not group 1.)
+- **Q-N2** **Per-status typing in a controller through a `reply(status, body,
+  { headers })` helper** the interceptor unwraps, beside the plain return?
+  **Recommended: yes.**
+- **Q-N3** **One `@Validated(part)` parameter decorator**, and no
+  `@Cookies()` of ours? **Recommended: yes.**
+- **Q-N4** **The name `@Validate`**, which class-validator also exports as
+  `@Validate(constraint)` (apps using both alias one; §4.5.6)? **Recommended:
+  keep it**, matching AD and NTR; the alternative is `@ValidateRoute`.
+
+### 8.5 bun-jobs (§4.8)
+
+- **Q-J1** **`storeOutput: true`** for transform-free schemas, storing the
+  parsed data (and result) instead of what the producer sent? **Recommended:
+  no for now**: store the input; offer it only if asked.
+- **Q-J2** **Transforms on isolated targets** (Worker, child process,
+  container): document "full in-process only", or send the output after a
+  `jsonClone` and document what degrades? **Recommended: send the
+  `jsonClone`d output and document it**, so a coercion (string → number)
+  reaches every target; an output that cannot be cloned fails the attempt as
+  unrecoverable rather than sending the input (§4.8.3). bun-node-e9 agrees.
+- **Q-J3** **Job data checked at enqueue and at processing by default**, a
+  processing failure unrecoverable by default under its own policy, the handler
+  given the parsed value? **Recommended: yes to all three** (the first
+  version's Q12, refined with e9).
 
 ---
 
@@ -847,13 +1839,18 @@ come last, after AD (e) and TC PR-M1.
 
 | Name | Kind | Where |
 |---|---|---|
-| `validateStandard`, `StandardOutcome`, `formatIssuePath` | functions, type | bun-common root |
-| `responses`, `responseValidation` (`"off" \| "warn" \| "error"`), `undeclaredStatus` | `validate()` options; `responseValidation` also a router and adapter option | bun-common |
+| `defineTransport`, `attachContract`, `getContract`, `describeContract`, `createReceiver`, `createSender`, `validateStandard`, `recordOf` | functions | bun-common root and `./contract` |
+| `ValidationIssue<T>` (generalised), `StandardOutcome`, `ContractError`, `ContractEntry`, `GuardOptions` (`policy`, `logger`, `onIssues`, `undeclaredKey`), `Received`, `Sent` | types, error class | bun-common |
+| `CONTRACT` symbol's registry key (the spike: `"bun-validate.contract"`) | symbol | bun-common |
+| `cookies`, `signedCookies` | `validate()` targets | bun-common |
+| `req.valid` | request member | bun-common |
+| `responses`, `responseValidation` (`"off" \| "warn" \| "error"`), `commonResponses` | `validate()` options; `responseValidation` and `commonResponses` also router and adapter options | bun-common |
+| `content`, `chunks()`, `sse()`, `opaque()` | response spec key and helpers | bun-common |
 | `ResponseValidationError` | error class | bun-common |
-| `commonResponses` | router and adapter option (TC's name) | bun-common |
-| `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `StandardValidationModule`, `ValidationExceptionFilter`, `ResponseValidationInterceptor`, `WsValidationFilter` | pipes, class factory, module, filters, interceptor | bun-nest root |
-| `schema: { data, result }`, `dataValidation`, `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` | definition and queue options, error, type | bun-jobs |
-| `discriminator`, `messageValidation`, `closeOnInvalid` | `defineChannel` options (TC's function) | bun-common |
+| `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `StandardValidationModule`, `ValidationExceptionFilter`, `ResponseValidationInterceptor`, `WsValidationFilter`, `@Validated(part)`, `reply()` | pipes, class factory, module, filters, interceptor, decorator, helper | bun-nest root |
+| `schema: { data, result }`, `dataValidation` (`{ enqueue, process }`), `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` | definition and queue options, error, type | bun-jobs |
+| `messageValidation`, `closeOnInvalid` | `defineChannel` options (TC's function) | bun-common |
+| `redactPaths`, `messages: "generic"` | guard options (if Q-C2, Q-C3) | bun-common |
 | `validateOnWrite`, `CacheSchemaFrom` | option, type | bun-cache |
 
 ---
@@ -865,9 +1862,12 @@ re-run each file and what passing means.
 
 | File | What it measures |
 |---|---|
-| `audit-runtime.ts` → `results-runtime.txt` | R1–R9: responses unchecked; failure modes and shapes; the `status: undefined` defect; coercion; headers; cookies ignored; params write-back; `s` through `validate()`; job data unchecked; schemas unreachable |
+| `audit-runtime.ts` → `results-runtime.txt` | R1–R9: responses unchecked; failure modes; the `status: undefined` defect; coercion; headers; cookies ignored; params write-back; `s` through `validate()`; job data unchecked; schemas unreachable |
 | `audit-types.ts` → `results-types.txt` | T1–T11 on develop, 7 negative controls shown to fire |
-| `vendors-sync.ts` → `results-vendors.txt` | which vendors answer synchronously, which carry `~standard.jsonSchema`, and the cost of one check |
-| `response-check-proto.ts` → `results-proto.txt` | a 500 from a sync and an async mismatch; `"warn"`; per-request cost (heavy-run wrapper, load 35–41) |
-| `response-typing/` (`response-typing.patch`, `responses.spike.ts`, `run.sh`, `results.txt`) | AD §3.7 re-applied to `73bf4a00`: library, bun-common tests and bun-nest clean; 9 controls fire; unpatched base fails; overloads unchanged |
+| `vendors-sync.ts` → `results-vendors.txt` | which vendors answer synchronously, which carry `~standard.jsonSchema`, the cost of one check |
+| `response-check-proto.ts` → `results-proto.txt` | the first version's response-check prototype (superseded by `http-complete/` for the hook point) |
+| `response-typing/` | AD §3.7 re-applied to `73bf4a00`; the input/output rule; overloads unchanged |
 | `nest-schema-dto.ts` → `results-nest.txt` | `SchemaDto` + a global pipe on bun-nest through Nest's real pipeline; no-pipe control; type controls |
+| **`contract-core/`** (2026-10-17) | the transport-agnostic core: eight transports declared; UDP and broker adapters; C1–C22 (sync/Promise per vendor, policies, the value scrub, the no-schema path, `onIssues`, `getContract`, flows, declaration errors); cost; 24 type controls, line-exact (`check-types.sh`) |
+| **`http-complete/`** (2026-10-17) | a patch on a copy of bun-common at `68023d36`: cookies and signed cookies, typed headers and `req.valid`, the commit and chunk gates, every body kind × mode × zod/yup (H1–H52), 18 type controls and the pinned limit, the unpatched base failing, overloads unchanged, cost per body kind |
+| **`nest-interceptor/`** (2026-10-17, bun-node-15) | what a Nest interceptor's `map()` sees (status, headers, sent) against the wire, on Nest 11.1.27 and 12.1.3, Express and bun-nest adapters; `@Body({ schema })` with and without the pipe; `@RawBody`; `@Sse` sync and async first events; the serializer's placement ; `out-sse.txt`: the `@Sse` cases, re-run by bun-node-11 |

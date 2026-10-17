@@ -1,0 +1,566 @@
+{
+ "major": 11,
+ "kind": "express",
+ "responses": {
+  "/get": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/post": {
+   "status": 201,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/code": {
+   "status": 202,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/hdr": {
+   "status": 200,
+   "xa": "1",
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/redir": {
+   "status": 301,
+   "xa": null,
+   "xb": null,
+   "loc": "/x",
+   "body": "Moved Permanently. Redirecting to /x"
+  },
+  "/pass": {
+   "status": 203,
+   "xa": null,
+   "xb": "2",
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/plainres": {
+   "status": 206,
+   "xa": null,
+   "xb": "2",
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/file": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "hi"
+  },
+  "/sse": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "\nevent: tick\nid: 1\ndata: {\"i\":0}\n\nevent: done\nid: 2\ndata: {\"i\":1}\n\n"
+  },
+  "/order?x=1": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "1"
+  },
+  "routeArgsMeta": {
+   "1:0": {
+    "index": 0,
+    "pipes": []
+   }
+  }
+ },
+ "interceptor": {
+  "get": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "post": [
+   {
+    "at": "probe:before",
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "code": [
+   {
+    "at": "probe:before",
+    "status": 202,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 202,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "hdr": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {
+     "x-a": "1"
+    },
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {
+     "x-a": "1"
+    },
+    "headersSent": false
+   }
+  ],
+  "redir": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "pass": [
+   {
+    "at": "probe:before",
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 203,
+    "headers": {
+     "x-b": "2"
+    },
+    "headersSent": false
+   }
+  ],
+  "plainres": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "ignored": true
+    },
+    "status": 206,
+    "headers": {
+     "x-b": "2",
+     "content-type": "application/json; charset=utf-8"
+    },
+    "headersSent": true
+   }
+  ],
+  "file": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": "StreamableFile",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "sse": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "type": "tick",
+     "data": {
+      "i": 0
+     },
+     "id": "1"
+    },
+    "status": 200,
+    "headers": {
+     "content-type": "text/event-stream"
+    },
+    "headersSent": true
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "type": "done",
+     "data": {
+      "i": 1
+     },
+     "id": "2"
+    },
+    "status": 200,
+    "headers": {
+     "content-type": "text/event-stream"
+    },
+    "headersSent": true
+   }
+  ],
+  "order": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   "interceptor:before",
+   "pipe:query",
+   "handler",
+   {
+    "at": "probe:map",
+    "value": 1,
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ]
+ }
+}
+{
+ "major": 11,
+ "kind": "bun",
+ "responses": {
+  "/get": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/post": {
+   "status": 201,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/code": {
+   "status": 202,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/hdr": {
+   "status": 200,
+   "xa": "1",
+   "xb": null,
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/redir": {
+   "status": 301,
+   "xa": null,
+   "xb": null,
+   "loc": "/x",
+   "body": "Moved Permanently. Redirecting to /x"
+  },
+  "/pass": {
+   "status": 203,
+   "xa": null,
+   "xb": "2",
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/plainres": {
+   "status": 206,
+   "xa": null,
+   "xb": "2",
+   "loc": null,
+   "body": "{\"a\":1}"
+  },
+  "/file": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "hi"
+  },
+  "/sse": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "\nevent: tick\nid: 1\ndata: {\"i\":0}\n\nevent: done\nid: 2\ndata: {\"i\":1}\n\n"
+  },
+  "/order?x=1": {
+   "status": 200,
+   "xa": null,
+   "xb": null,
+   "loc": null,
+   "body": "1"
+  },
+  "routeArgsMeta": {
+   "1:0": {
+    "index": 0,
+    "pipes": []
+   }
+  }
+ },
+ "interceptor": {
+  "get": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "post": [
+   {
+    "at": "probe:before",
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "code": [
+   {
+    "at": "probe:before",
+    "status": 202,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 202,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "hdr": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {
+     "x-a": "1"
+    },
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {
+     "x-a": "1"
+    },
+    "headersSent": false
+   }
+  ],
+  "redir": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "pass": [
+   {
+    "at": "probe:before",
+    "status": 201,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "a": 1
+    },
+    "status": 203,
+    "headers": {
+     "x-b": "2"
+    },
+    "headersSent": false
+   }
+  ],
+  "plainres": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "ignored": true
+    },
+    "status": 206,
+    "headers": {
+     "x-b": "2",
+     "content-type": "application/json;charset=utf-8"
+    },
+    "headersSent": true
+   }
+  ],
+  "file": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": "StreamableFile",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ],
+  "sse": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "type": "tick",
+     "data": {
+      "i": 0
+     },
+     "id": "1"
+    },
+    "status": 200,
+    "headers": {
+     "content-type": "text/event-stream"
+    },
+    "headersSent": true
+   },
+   {
+    "at": "probe:map",
+    "value": {
+     "type": "done",
+     "data": {
+      "i": 1
+     },
+     "id": "2"
+    },
+    "status": 200,
+    "headers": {
+     "content-type": "text/event-stream"
+    },
+    "headersSent": true
+   }
+  ],
+  "order": [
+   {
+    "at": "probe:before",
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   },
+   "interceptor:before",
+   "pipe:query",
+   "handler",
+   {
+    "at": "probe:map",
+    "value": 1,
+    "status": 200,
+    "headers": {},
+    "headersSent": false
+   }
+  ]
+ }
+}
