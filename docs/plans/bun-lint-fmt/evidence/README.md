@@ -19,7 +19,7 @@ it: the canary changes daily.
 | [`format/`](format/README.md) | `bun fmt` against Prettier 3.8.4 and 3.9.10 on every file, idempotence, `--debug-check`, the whole-repo diff, Markdown and the parsed READMEs, the generated overloads, import and `package.json` sorting | measured |
 | [`perf/`](perf/README.md) | ESLint, `bun lint` (four ways), Prettier and `bun fmt`, three runs each, wall and CPU time | measured |
 | [`type-aware/`](type-aware/README.md) | 2026-10-17, develop `930dd664`: the answered config ([`rules/bunfig.answered.toml`](rules/bunfig.answered.toml)) with and without `--type-aware` in the 11 directories, timed three times; every finding, one file per directory; a cross-check against typescript-eslint on bun-common; Q8's `no-restricted-globals` and Q1's `eslint-plugin-regexp` without `eslint` | measured |
-| [`bun-bugs/`](bun-bugs/README.md) | the candidates investigated; none of 2026-10-16 is a Bun bug; two suspected on 2026-10-17, not filed | measured |
+| [`bun-bugs/`](bun-bugs/README.md) | the candidates investigated; none of 2026-10-16 is a Bun bug; two found on 2026-10-17 and filed, [oven-sh/bun#45784](https://github.com/oven-sh/bun/issues/45784) and [oven-sh/bun#45785](https://github.com/oven-sh/bun/issues/45785) | measured |
 | [`tools/`](tools/) | the scripts that produced the above (paths inside point at the scratch directory) | — |
 
 The `tools/` scripts expect the layout of the scratch directory: `copy/` (a

@@ -29,8 +29,8 @@ handle.
 Found by cross-checking `bun lint --type-aware` against typescript-eslint
 8.59.4 on bun-common ([`../type-aware/`](../type-aware/README.md)). Unlike the
 rows above, Bun here differs from the upstream it ports, and neither behaviour
-is in `bun lint --explain`. **Not filed**: listed for the plan lead, who files
-Bun bugs. Bun 1.4.4-canary.1+5f5799ed1, ESLint 10.5.0,
+is in `bun lint --explain`. Both were filed on 2026-10-17, after a search
+found nothing open (rows below). Found on Bun 1.4.4-canary.1+5f5799ed1, ESLint 10.5.0,
 `@typescript-eslint/*` 8.59.4.
 
 | Folder | Code | Upstream | Bun native | Status |
