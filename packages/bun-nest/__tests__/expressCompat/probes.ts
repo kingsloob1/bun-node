@@ -10,7 +10,9 @@ import { ExpressAdapter } from "@nestjs/platform-express";
 import {
   CompatModule,
   configureCompat,
+  HAS_QUERY_METHOD,
   markResponse,
+  QueryModule,
   signCookie,
   SmallModule,
   VersionedModule,
@@ -33,6 +35,8 @@ export interface ProbeGroup {
   configure?: Configure;
   options?: NestApplicationOptions;
   probes: Probe[];
+  /** Why the group is skipped (visibly) on the installed Nest, if it is. */
+  skip?: string;
 }
 
 const html = { headers: { accept: "text/html" } };
@@ -479,6 +483,34 @@ export const GROUPS: ProbeGroup[] = [
       },
     ],
   },
+  // An array prefix: in v12.1.0's release notes but in no release (#17845
+  // reverted it), so Nest hands the array to the adapter as it is, and
+  // Express's `normalizePrefix` reads a non-string as no prefix at all.
+  {
+    name: "prefix-array",
+    module: SmallModule,
+    configure: (app) => {
+      app.setGlobalPrefix(["api", "v1"] as unknown as string);
+    },
+    probes: [
+      { name: "a route, unprefixed", path: "/hello" },
+      { name: "under the first prefix", path: "/api/hello" },
+      { name: "under the second prefix", path: "/v1/hello" },
+      { name: "a miss", path: "/nope" },
+    ],
+  },
+  // Two trailing slashes: Express strips only the last.
+  {
+    name: "prefix-two-trailing-slashes",
+    module: SmallModule,
+    configure: (app) => {
+      app.setGlobalPrefix("api//");
+    },
+    probes: [
+      { name: "a miss under it", path: "/api/nope" },
+      { name: "outside", path: "/hello" },
+    ],
+  },
   {
     name: "prefix-trailing-slash",
     module: SmallModule,
@@ -639,6 +671,31 @@ export const GROUPS: ProbeGroup[] = [
           body: jsonOfSize(100),
         },
       },
+    ],
+  },
+  // HTTP QUERY (RFC 10008): `@QueryMethod()`, Nest 11.2.0+ only.
+  {
+    name: "query-method",
+    module: QueryModule,
+    skip: HAS_QUERY_METHOD ? undefined : "Nest below 11.2 has no @QueryMethod",
+    probes: [
+      {
+        name: "QUERY with a JSON body",
+        path: "/q",
+        init: {
+          method: "QUERY",
+          headers: { "content-type": "application/json" },
+          body: '{"name":"nestjs"}',
+        },
+      },
+      { name: "GET on a QUERY route", path: "/q" },
+      { name: "HEAD on a QUERY route", path: "/q", init: { method: "HEAD" } },
+      {
+        name: "QUERY on @All()",
+        path: "/q/any",
+        init: { method: "QUERY" },
+      },
+      { name: "QUERY, a miss", path: "/nope", init: { method: "QUERY" } },
     ],
   },
 ];

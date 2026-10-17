@@ -1442,10 +1442,57 @@ describe("BunHttpAdapter.setNotFoundHandler: scoped to the global prefix on Nest
     }
   });
 
+  it("reads a non-string prefix (an array from setGlobalPrefix) as none, as Express", async () => {
+    const adapter = new BunHttpAdapter();
+    // Nest hands `setGlobalPrefix(["api", "v1"])`'s array over as it is.
+    adapter.setNotFoundHandler(notFound("root"), [
+      "api",
+      "v1",
+    ] as unknown as string);
+    for (const path of ["/api/x", "/v1", "/elsewhere"]) {
+      expect((await answer(adapter, path)).by).toBe("root");
+    }
+  });
+
   it("without a prefix answers everywhere, on 11 and 12", async () => {
     const adapter = new BunHttpAdapter();
     adapter.setNotFoundHandler(notFound("root"), "");
     expect((await answer(adapter, "/anything")).by).toBe("root");
     expect((await answer(adapter, "/")).by).toBe("root");
+  });
+});
+
+describe("BunHttpAdapter.query (HTTP QUERY, RFC 10008), on every Nest version", () => {
+  it("registers a QUERY route that reads the body; GET and HEAD are not it", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.query("/search", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+    const res = await adapter.fetch("/search", {
+      method: "QUERY",
+      headers: { "content-type": "application/json" },
+      body: '{"q":"bun"}',
+    });
+    expect([res.status, await res.json()]).toEqual([
+      200,
+      { method: "QUERY", body: { q: "bun" } },
+    ]);
+    for (const method of ["GET", "HEAD"]) {
+      expect((await adapter.fetch("/search", { method })).status).toBe(404);
+    }
+  });
+
+  it("maps RequestMethod.QUERY where Nest has it (11.2+), and refuses it nowhere else", () => {
+    const adapter = new BunHttpAdapter();
+    const query = (
+      RequestMethod as unknown as Record<string, RequestMethod | undefined>
+    ).QUERY;
+    if (query !== undefined) {
+      expect(adapter.getRequestMethodStr(query)).toBe("query");
+    }
+    // An unknown value still fails, as before.
+    expect(() => adapter.getRequestMethodStr(999 as RequestMethod)).toThrow(
+      "An invalid request method was encountered with value 999",
+    );
   });
 });

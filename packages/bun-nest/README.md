@@ -180,7 +180,7 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | `listen(port, hostname?, callback?)` | Binds `Bun.serve`. See [`listen()` and `close()`](#listen-and-close). |
 | `close()` | Stops the server with `stop(true)` and emits `close`. Routes and handlers stay registered. |
 | `fetch(input, init?)` | Runs a request through the adapter without a socket. See [Testing with `fetch()`](#testing-with-fetch). |
-| `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. `use` also mounts a `BunRouter`: see [Mounting a bun-common router](#mounting-a-bun-common-router). |
+| `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `query`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. `use` also mounts a `BunRouter`: see [Mounting a bun-common router](#mounting-a-bun-common-router). |
 | `enableCors(options, prefix?)` | See [CORS](#cors). |
 | `useStaticAssets(path, options)` | See [Static assets](#static-assets). |
 | `useBodyParser(type, rawBody, options)`, `registerParserMiddleware(prefix?, rawBody?)` | See [Body parsing and raw bodies](#body-parsing-and-raw-bodies). |
@@ -193,6 +193,12 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | `url`, `listeningHost`, `listeningPort`, `isListening`, `address()`, `getListenAddress()` | Server introspection. `getListenAddress()` resolves the URL once bound. |
 | `eventEmitter` | A Node `EventEmitter`: `listening` (with the server), `close`, and `error` (a bind failure, when a listener is attached). |
 | `webSocketAdapter` | The built-in `BunNestWebsocketAdapter`. Setting it also makes it the router's active WebSocket adapter. |
+
+`query` registers an HTTP `QUERY` route (RFC 10008), whose body is parsed as
+any other method's. Nest's `@QueryMethod()` and
+`forRoutes({ method: RequestMethod.QUERY })`, which arrived in Nest 11.2.0, go
+through it on 11.2 and 12; Nest 11.1 has neither, though `adapter.query()`
+itself works there too.
 | `getType()` | `"express"`, for libraries that branch on the platform. |
 
 `useStaticAssets` is not on Nest's `INestApplication` type, so call it on the

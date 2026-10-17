@@ -20,7 +20,10 @@ import { bootBoth, comparable as fields, observe } from "./expressCompat/app";
 import { GROUPS, KNOWN } from "./expressCompat/probes";
 
 function describeGroup(group: ProbeGroup) {
-  describe(`bun-nest vs platform-express: ${group.name}`, () => {
+  // A group the installed Nest cannot run is skipped, and says why.
+  const describeOrSkip = group.skip ? describe.skip : describe;
+  const suffix = group.skip ? ` (skipped: ${group.skip})` : "";
+  describeOrSkip(`bun-nest vs platform-express: ${group.name}${suffix}`, () => {
     let apps: Record<Side, Booted> | undefined;
 
     beforeAll(async () => {
