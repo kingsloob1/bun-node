@@ -12,8 +12,21 @@ results.
 | `probe2.ts` | the `@Sse` cases: a synchronous first event against an asynchronous one |
 | `out11.json`, `out12.json` | the outputs on Nest 11.1.27 and 12.1.3 |
 
-How to run: against a Nest version copy from `scripts/nest-matrix.ts`
-(`~/bun-node-nest-matrix/<version>`, the repo's CLAUDE.md "Nest versions"),
-`bun probe.ts > out<major>.json` and `bun probe2.ts`, from a directory whose
-`node_modules` resolves that copy's `@nestjs/*`. bun-node-15 holds the exact
-invocation; it is not part of any gate.
+How to run, one directory per Nest major (Nest is never installed into
+them; each has a `node_modules` symlink). Bun reads decorator options from the
+**cwd's** `tsconfig.json` (oven-sh/bun#28605, `docs/bun-bugs/`), so run from
+inside each directory:
+
+```bash
+# from this folder; first, from the repo root: bun scripts/nest-matrix.ts --prepare 12.1.3
+mkdir -p v11 v12
+cp probe.ts probe2.ts tsconfig.json v11/ && cp probe.ts probe2.ts tsconfig.json v12/
+ln -s "$(git rev-parse --show-toplevel)/node_modules" v11/node_modules   # Nest 11.1.27 until nestjs-12-parity PR-3
+ln -s ~/bun-node-nest-matrix/12.1.3/node_modules v12/node_modules
+(cd v11 && bun probe.ts > ../out11.json && bun probe2.ts)
+(cd v12 && bun probe.ts > ../out12.json && bun probe2.ts)
+```
+
+`probe.ts` reads the major from `@nestjs/core/package.json`; `probe2.ts` (the
+`@Sse` cases) prints to stdout. Delete `v11/` and `v12/` afterwards. It is not
+part of any gate.
