@@ -31,6 +31,8 @@
  * - `origin` as a plain **string** is sent as it is, whatever the request's
  *   origin; to allow one origin *conditionally*, use an array, a RegExp or a
  *   function.
+ * - The default `methods` leave out `QUERY`, as the `cors` package's do, so a
+ *   cross-origin `QUERY` needs `methods` to list it.
  */
 import type {
   BunRequest,
@@ -39,6 +41,7 @@ import type {
   RouterErrorMiddlewareHandler,
 } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, BunRouter, cors } from "@kingsleyweb/bun-common";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("CORS");
@@ -180,6 +183,60 @@ show("preflight", corsView(await preflight(strict)));
 show("…none of them on a simple request", corsView(await simple(strict, APP)));
 
 /* ------------------------------------------------------------------ */
+step("methods and QUERY — the default leaves it out");
+
+/** A router with `cors(options)` in front of one QUERY route. */
+function queryApi(options?: CorsOptions): BunRouter {
+  const router = new BunRouter();
+  router.use(cors(options));
+  router.query("/items/search", (req, res) => {
+    res.json({ matched: req.body as unknown });
+  });
+  return router;
+}
+
+/** The methods a preflight for a QUERY from the app allows. */
+async function queryPreflight(router: BunRouter): Promise<string | null> {
+  const response = await router.fetch("/items/search", {
+    method: "OPTIONS",
+    headers: {
+      Origin: APP,
+      "Access-Control-Request-Method": "QUERY",
+      "Access-Control-Request-Headers": "content-type",
+    },
+  });
+  return response.headers.get("access-control-allow-methods");
+}
+
+// The middleware answers a preflight either way; it is the browser that
+// refuses a QUERY the Allow-Methods header does not list.
+checkEqual(
+  "default methods: the QUERY preflight is not allowed",
+  await queryPreflight(queryApi()),
+  "GET,HEAD,PUT,PATCH,POST,DELETE",
+);
+const queryAllowed = queryApi({ methods: ["GET", "POST", "QUERY"] });
+checkEqual(
+  "methods listing QUERY: the preflight allows it",
+  await queryPreflight(queryAllowed),
+  "GET,POST,QUERY",
+);
+const crossQuery = await queryAllowed.fetch("/items/search", {
+  method: "QUERY",
+  headers: { Origin: APP, "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "a" }),
+});
+checkEqual(
+  "…and the QUERY that follows is answered with Allow-Origin",
+  {
+    status: crossQuery.status,
+    origin: crossQuery.headers.get("access-control-allow-origin"),
+    body: await crossQuery.json(),
+  },
+  { status: 200, origin: "*", body: { matched: { name: "a" } } },
+);
+
+/* ------------------------------------------------------------------ */
 step("exposedHeaders and credentials — every request");
 
 const withCookies = api({
@@ -263,3 +320,5 @@ const banned = await adapter.fetch("/account", {
   headers: { Origin: "https://banned.example.test" },
 });
 show("the delegate called back with an error → not served", banned.status);
+
+summary();

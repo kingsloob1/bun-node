@@ -22,6 +22,10 @@
  *   [docs/bun-bugs](../../../docs/bun-bugs/README.md).
  * - Param values are percent-decoded; `*name` publishes both `params.name`
  *   and the positional key `params[0]`.
+ * - `query()` registers the HTTP `QUERY` method (Express 5's `app.query`): a
+ *   safe request that carries a body. The body is parsed as for `POST`,
+ *   `req.query` is still the URL's query string, and a `QUERY` route answers
+ *   `QUERY` only — no `GET` or `HEAD` fallback either way.
  */
 import type { RouterVerb, RouterVerbMethod } from "@kingsleyweb/bun-common";
 import {
@@ -33,7 +37,7 @@ import {
   markSocketFree,
   toFetchResponse,
 } from "@kingsleyweb/bun-common";
-import { checkEqual, summary } from "../shared/check";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Verbs and params");
@@ -101,6 +105,7 @@ const VERBS = [
   "proppatch",
   "purge",
   "put",
+  "query",
   "report",
   "search",
   "subscribe",
@@ -122,20 +127,136 @@ for (const verb of VERBS) {
 
 // Matching needs no Request at all — and some of these methods (TRACE) are
 // ones `new Request()` refuses to build.
-const matched = VERBS.filter((verb) => {
-  return (
+/** How many of the routes on /doc each method matches. */
+const matched = Object.fromEntries(
+  VERBS.map((verb) => [
+    verb,
     webdav.getMatchedLayers({
       requestHost: "localhost",
       requestMethod: verb.toUpperCase(),
       requestUrl: "/doc",
-    }).length === 1
-  );
-});
-show(
-  `routes registered: ${webdav.routes().length}, each matching only its own method`,
-  matched.length,
+    }).length,
+  ]),
+);
+show("routes registered", webdav.routes().length);
+checkEqual(
+  "each method matches only its own route — HEAD also matches GET's",
+  matched,
+  Object.fromEntries(VERBS.map((verb) => [verb, verb === "head" ? 2 : 1])),
 );
 show("PROPFIND /doc", await call(webdav, "/doc", { method: "PROPFIND" }));
+checkEqual(
+  "QUERY /doc reaches the query() route",
+  await call(webdav, "/doc", { method: "QUERY" }),
+  "200 query",
+);
+
+/* ------------------------------------------------------------------ */
+step("QUERY — a safe request with a body");
+
+// QUERY is a GET whose query does not fit in a URL: it is safe and
+// idempotent, and its query travels in the body.
+const search = new BunRouter();
+search.query("/search/:index", (req, res) => {
+  // `params` is typed from the path literal, as for every verb.
+  const index: string = req.params.index;
+  // @ts-expect-error — the path declares no `:page`.
+  void req.params.page;
+  res.json({
+    method: req.method,
+    index,
+    body: req.body as unknown,
+    query: req.query,
+  });
+});
+search.get("/catalogue", (_req, res) => res.send("the GET route"));
+
+const searched = await search.fetch("/search/books?limit=2", {
+  method: "QUERY",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ title: "dune", year: { gte: 1960 } }),
+});
+checkEqual(
+  "QUERY /search/books?limit=2 with a JSON body",
+  { status: searched.status, json: await searched.json() },
+  {
+    status: 200,
+    json: {
+      method: "QUERY",
+      index: "books",
+      body: { title: "dune", year: { gte: 1960 } },
+      query: { limit: "2" },
+    },
+  },
+);
+
+// As for POST, a body with no Content-Type is read as a form, so say text.
+const textual = await search.fetch("/search/notes", {
+  method: "QUERY",
+  headers: { "Content-Type": "text/plain" },
+  body: "words near 'dune'",
+});
+checkEqual(
+  "…a text body arrives as a string",
+  ((await textual.json()) as { body: unknown }).body,
+  "words near 'dune'",
+);
+
+// The router matches the method case-insensitively. fetch() cannot show that
+// on Bun 1.4: its `Request` upper-cases a lowercase method it knows ("query"
+// arrives as "QUERY", where the Fetch spec and Node keep "query"), and turns a
+// mixed-case one into GET (oven-sh/bun#42497). So ask the matcher directly.
+/** How many layers match `method` on /search/books. */
+function layersFor(method: string): number {
+  return search.getMatchedLayers({
+    requestHost: "localhost",
+    requestMethod: method,
+    requestUrl: "/search/books",
+  }).length;
+}
+checkEqual(
+  "the matcher takes QUERY, query and Query alike",
+  [layersFor("QUERY"), layersFor("query"), layersFor("Query")],
+  [1, 1, 1],
+);
+checkEqual(
+  "fetch() with method: \"query\" reaches the route",
+  (
+    await search.fetch("/search/books", {
+      method: "query",
+      body: "{}",
+      headers: { "Content-Type": "application/json" },
+    })
+  ).status,
+  200,
+);
+show(
+  "new Request() with method: \"Query\" — the method Bun keeps (#42497)",
+  new Request("http://localhost/", { method: "Query" }).method,
+);
+
+/** The status `method` on `path` answers with. */
+async function statusOf(path: string, method: string): Promise<number> {
+  return (await search.fetch(path, { method })).status;
+}
+checkEqual(
+  "GET, HEAD and POST on the QUERY route are 404",
+  {
+    GET: await statusOf("/search/books", "GET"),
+    HEAD: await statusOf("/search/books", "HEAD"),
+    POST: await statusOf("/search/books", "POST"),
+  },
+  { GET: 404, HEAD: 404, POST: 404 },
+);
+checkEqual(
+  "QUERY on a GET-only route is 404 — no fallback that way either",
+  await statusOf("/catalogue", "QUERY"),
+  404,
+);
+check(
+  "…while HEAD on the GET route is still answered",
+  (await statusOf("/catalogue", "HEAD")) === 200,
+);
 
 /* ------------------------------------------------------------------ */
 step("all(), any(), add() and addRoute()");
