@@ -1,0 +1,6 @@
+{
+  // The contract-core spike, checked on its own (see README.md): its probe
+  // carries deliberate @ts-expect-error controls, so no repo project includes it.
+  "extends": "../tsconfig.json",
+  "include": ["./*.ts"]
+}

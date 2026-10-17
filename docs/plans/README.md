@@ -205,11 +205,14 @@ file, check every link into and out of it, `#anchors` included.
     `AsyncLocalStorage` behaviour.
 - **[`bun-validate/`](bun-validate/README.md)** — an audit of what
   `BunValidate` validates and types today (requests yes; responses, Nest,
-  WebSockets, job data and caches no), and the plan for the rest on one
-  Standard Schema core: response contracts and checks, Nest pipes and
-  `SchemaDto`, WebSocket message schemas, schema-backed job data, the cache
-  hook. Adopts the [`api-docs-generation/`](api-docs-generation/README.md)
-  response and `@Validate` designs and orders them with its own PRs.
+  WebSockets, job data and caches no), and, revised 2026-10-17 to the user's
+  full scope, one transport-agnostic validation contract every transport plugs
+  into: HTTP requests with cookies and typed headers, responses by status with
+  headers and every body kind, NestJS on 11 and 12, WebSockets, SSE on both
+  adapters, job data, results and flows, an extension point for gRPC, Kafka,
+  RabbitMQ/AMQP and UDP, and the runtime metadata OpenAPI, AsyncAPI and the
+  typed client read. Adopts the [`api-docs-generation/`](api-docs-generation/README.md)
+  `@Validate` design and orders it with its own PRs.
   - Evidence: [`bun-validate/evidence/`](bun-validate/evidence/README.md) —
     on Bun 1.4.4-canary.1 at `73bf4a00`: runtime and type probes of today's
     BunValidate (`fetch()`, no socket; 7 type controls), which vendors answer
@@ -218,7 +221,12 @@ file, check every link into and out of it, `#anchors` included.
     the api-docs plan's response typing re-applied to today's bun-common as a
     patch with its type tests, bun-nest checked against it and the overloads
     unchanged, and a `SchemaDto` + global pipe through Nest's real pipeline
-    on bun-nest.
+    on bun-nest. Added 2026-10-17 at `68023d36`: `contract-core/` (the
+    transport-agnostic core, eight transports declared, UDP and in-process
+    broker adapters, 24 type controls) and `http-complete/` (a patch on a copy
+    of bun-common: cookies, typed headers, response checks for every body kind,
+    H1–H52, 18 type controls, cost per body kind), and `nest-interceptor/`
+    (bun-node-15's probe of what a Nest interceptor sees on Nest 11 and 12).
 - **[`bun-lint-fmt/`](bun-lint-fmt/README.md)** — replacing ESLint and
   Prettier with `bun lint` and `bun fmt` (there is no oxlint to drop): rule and
   formatter parity, the proposed `bunfig.toml`, VS Code, gating on a stable
