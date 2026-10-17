@@ -77,7 +77,7 @@ describe("classify", () => {
 
   it("passes a run whose only errors are the known noise", () => {
     const noise =
-      "eslint.config.mjs(1,1): error TS2742: The inferred type of 'default' cannot be named.";
+      "eslint.legacy.config.mjs(1,1): error TS2742: The inferred type of 'default' cannot be named.";
     expect(IGNORED.test(noise)).toBe(true);
     expect(classify(`${noise}\nFound 1 error in 1 file`, 1)).toEqual({
       problems: [],

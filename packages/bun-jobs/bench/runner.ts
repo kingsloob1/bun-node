@@ -1,4 +1,4 @@
-/* eslint-disable antfu/no-top-level-await , no-console */
+/* eslint-disable antfu/no-top-level-await, n/no-top-level-await, no-console */
 import type { Baseline } from "./lib/compare";
 import type { Backend, Measurement, RunnerScenario } from "./lib/types";
 import { join } from "node:path";

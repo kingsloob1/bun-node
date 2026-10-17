@@ -220,7 +220,7 @@ checkEqual(
   [1, 1, 1],
 );
 checkEqual(
-  "fetch() with method: \"query\" reaches the route",
+  'fetch() with method: "query" reaches the route',
   (
     await search.fetch("/search/books", {
       method: "query",
@@ -231,7 +231,7 @@ checkEqual(
   200,
 );
 show(
-  "new Request() with method: \"Query\" — the method Bun keeps (#42497)",
+  'new Request() with method: "Query" — the method Bun keeps (#42497)',
   new Request("http://localhost/", { method: "Query" }).method,
 );
 

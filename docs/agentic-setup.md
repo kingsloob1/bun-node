@@ -117,7 +117,7 @@ failure this split exists to prevent.
   `http://localhost:4000/jobs`) so the user can see and try it, as its own
   small PR or in the feature's last one. The playground is the bun-jobs-ui
   agent's (the user's decision, 2026-10-06), so it reviews every playground
-  change before merge: the typecheck, `cd playground && CI=1 bunx eslint .`,
+  change before merge: the typecheck, `cd playground && CI=1 bun run lint:eslint`,
   and a smoke run on `PORT=0` that exercises the feature, stops on SIGINT and
   leaves no processes or data. The playground runs the working tree live, so
   flip a feature's capability flag last, after everything it advertises works.
@@ -264,8 +264,12 @@ full gate on the rebased branch. `CLAUDE.md` has each package's commands; in
 short:
 
 - `bun scripts/typecheck.ts` — every project, with `bun check`, and all must
-  pass (Bun ≥ 1.4.3 for development; the packages' users need 1.4.2; the
-  user's decision, 2026-10-10). Check one project with a bare `bun --check`
+  pass (Bun ≥ 1.4.4 for development, which until it is stable is the canary:
+  `bun upgrade --canary`, verified on 1.4.4-canary.1+5f5799ed1; the packages'
+  users need 1.4.2; the user's decisions of 2026-10-10 and 2026-10-17). A new
+  lint finding or reformatted file after a `bun upgrade --canary` is the
+  canary's: report it to the bun-lint-fmt lead with both `bun --revision`s
+  rather than fixing it in passing. Check one project with a bare `bun --check`
   in its directory, not `bun check -p`: `bun check` runs the nearest
   `package.json`'s `check` script, and the root's runs the whole repo. In a
   fresh worktree, first `bun install --frozen-lockfile` in
@@ -274,8 +278,13 @@ short:
   modules, and that noise hides real errors in the same projects. Frozen,
   because a plain install re-resolves and rewrites the lock, so the gate would
   check whatever the registry served that day (`CLAUDE.md`, "Dev workflow").
-- `CI=1 bunx eslint .` in each changed package or examples directory —
-  0 errors.
+- `CI=1 bun run lint:eslint` in each changed package or examples directory
+  (`bun run lint:eslint:scripts` from the root for `scripts/`) — 0 errors.
+  ESLint stays the gate until PR E of
+  [`bun-lint-fmt`](plans/bun-lint-fmt/README.md); its configs are named
+  `eslint.legacy.config.mjs`, so a bare `bunx eslint .` finds none. `bun run
+  lint` (`bun lint`) runs beside it and gates nothing yet; there is no
+  `format` script, and `bun fmt` is not run on whole directories before PR E.
 - `bun run test` in each changed package (it type-checks the tests first,
   `bun test --check`), plus `bun test --randomize` (serial) for bun-jobs-ui
   and `bun run test:seeded` for bun-jobs: 4 serial shards side by side,
@@ -327,7 +336,7 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
 - **Wrapper:** full suites, every bun-jobs-ui test (DOM and Chrome), the
   bun-jobs and bun-jobs-ui run-alls, `check-types.ts`, benches, and repeat,
   concurrent-copy and load loops.
-- **Direct, no wrapper:** lint in any directory, `bun scripts/typecheck.ts`,
+- **Direct, no wrapper:** lint in any directory (ESLint or `bun lint`), `bun scripts/typecheck.ts`,
   `bun scripts/consumer-check.ts`, every targeted test run in any package
   except bun-jobs-ui (named files, directories or filters, with or without
   database URLs, e.g. `bun test __tests__/summon __tests__/api`), the
@@ -501,7 +510,7 @@ On the first day, the new agent:
 
 1. Tells the main agent its role and session name, for the dated roster
    table above; the main agent makes that edit, so the table has one writer.
-2. Learns the package's gate: `bun run test`, `CI=1 bunx eslint .`,
+2. Learns the package's gate: `bun run test`, `CI=1 bun run lint:eslint`,
    `bun run check`, and — for bun-common — the downstream bun-nest and bun-jobs
    checks and the bench guard; for bun-nest, `examples/bun-nest`.
 3. Reads its package's open PRs and the memory entries that mention it.

@@ -774,7 +774,7 @@ describe("BunHttpAdapter.fetch: no error handler (finalhandler fallback)", () =>
       throw Object.assign(new Error("odd"), { status: 302 });
     });
     adapter.get("/primitive", () => {
-      // eslint-disable-next-line no-throw-literal
+      // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error
       throw "a bare string";
     });
     adapter.post("/json", (_req, res) => res.send("parsed"));

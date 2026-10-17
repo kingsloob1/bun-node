@@ -330,7 +330,7 @@ describe("TypedEmitterBase", () => {
    * are open to augmentation and so lack the implicit index signature
    * `TypedEmitterBase`'s `Record<string, …>` constraint needs.
    */
-  // eslint-disable-next-line ts/consistent-type-definitions
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
   type Events = {
     /** Something started, with its id. */
     started: (id: string) => void;

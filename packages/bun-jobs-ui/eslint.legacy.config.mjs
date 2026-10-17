@@ -2,6 +2,8 @@ import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import reactRefresh from "eslint-plugin-react-refresh";
+import { keepBunLintDirectives } from "../../eslint.legacy.directives.mjs";
 
 export default antfu({
   lessOpinionated: true,
@@ -12,12 +14,17 @@ export default antfu({
     semi: true,
   },
   typescript: true,
-  vue: true,
   jsonc: true,
   yaml: true,
   toml: true,
   test: true,
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",
@@ -27,6 +34,53 @@ export default antfu({
       "style/arrow-parens": "off",
       "style/indent-binary-ops": "off",
     },
+  })
+  .append({
+    // What antfu's `react: true` gave us besides `@eslint-react`, which is
+    // gone: `unmountLeaks.test.tsx` checks for leaked handles at runtime,
+    // and Bun's native `react/*` rules take over the rest with `bun lint`.
+    // The options are the ones antfu chose here (no Vite, Next.js or Remix).
+    files: ["**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"],
+    name: "bun-jobs-ui/react-refresh",
+    plugins: {
+      "react-refresh": reactRefresh,
+    },
+    rules: {
+      "react-refresh/only-export-components": [
+        "error",
+        { allowConstantExport: false, allowExportNames: [] },
+      ],
+    },
+  })
+  .append({
+    // `react/no-array-index-key` is a native `bun lint` rule now, and the
+    // `eslint-disable-next-line` comments that mark a deliberate index key
+    // are kept for it. ESLint lost the rule with `@eslint-react` and reports
+    // a directive naming an undefined rule as an error, so this defines the
+    // name and nothing else, in the files that carry one. Their directives
+    // suppress nothing under ESLint, and `--fix` would delete them as unused,
+    // so unused directives are not reported in these files. It goes when
+    // ESLint does.
+    files: [
+      "app/screens/docs/schema/Prose.tsx",
+      "app/screens/docs/ws/InlineText.tsx",
+      "app/screens/docs/ws/items.tsx",
+      "app/screens/job/ErrorDetails.tsx",
+      "app/screens/job/JobScreen.tsx",
+      "app/screens/queues/panels/SummonPanel.tsx",
+    ],
+    name: "bun-jobs-ui/react-directive-names",
+    plugins: {
+      react: {
+        rules: {
+          "no-array-index-key": {
+            meta: { type: "problem", schema: [] },
+            create: () => ({}),
+          },
+        },
+      },
+    },
+    linterOptions: { reportUnusedDisableDirectives: "off" },
   })
   .override("antfu/typescript/rules", {
     rules: {
@@ -72,7 +126,6 @@ export default antfu({
   .overrideRules({
     "unused-imports/no-unused-imports": "error",
     "unused-imports/no-unused-imports-ts": "error",
-    "unused-imports/no-unused-vars-ts": "error",
     // Keep antfu's `^_` ignore pattern: a leading underscore marks a
     // deliberately-unused binding (e.g. the mandatory 4th `next` parameter of
     // an Express-style error handler, kept for arity detection).

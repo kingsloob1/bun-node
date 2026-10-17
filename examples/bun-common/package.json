@@ -5,6 +5,8 @@
   "private": true,
   "description": "Runnable, commented examples for @kingsleyweb/bun-common: routing, the HTTP adapter, requests and responses, validation, CORS, static files, multipart uploads, WebSockets, logging and utilities",
   "scripts": {
-    "all": "bun run-all.ts"
+    "all": "bun run-all.ts",
+    "lint": "bun lint",
+    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
   }
 }

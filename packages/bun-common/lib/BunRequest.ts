@@ -927,7 +927,7 @@ function parseSearchString(raw: string, opts?: QueryParserOpts) {
  * `IncomingMessage`. Declared as a `type` (not an `interface`) so it satisfies
  * `TypedEmitter`'s `Record<string, …>` constraint.
  */
-// eslint-disable-next-line ts/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type BunRequestEvents = {
   /**
    * The connection was aborted **before a response was produced**. Once a
@@ -972,7 +972,7 @@ interface LegacyBodyOptions {
  * The events {@link BunRequestSocket} emits with a known payload. Any other
  * event name is accepted too, with `unknown` arguments.
  */
-// eslint-disable-next-line ts/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type BunRequestSocketEvents = {
   /**
    * The client disconnected. `hadError` is always `false`: Bun reports no
@@ -3109,7 +3109,7 @@ export class BunRequest<
       return this.#socket;
     }
 
-    // eslint-disable-next-line ts/no-this-alias
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const that = this;
     let emitter: EventEmitter | undefined;
 

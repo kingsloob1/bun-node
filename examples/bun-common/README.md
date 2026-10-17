@@ -147,6 +147,6 @@ every option.
 ```bash
 bun scripts/typecheck.ts        # from the repo root — includes examples/bun-common
 cd examples/bun-common
-bunx eslint .                   # the package's lint rules, minus no-console
+bun run lint:eslint             # the package's lint rules, minus no-console
 bun run-all.ts                  # run them all
 ```

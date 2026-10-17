@@ -24,7 +24,9 @@
     "test": "bun test --parallel --timings=bun-timings.json",
     "test:serial": "bun test",
     "test:timings": "rm -f bun-timings.json && bun test --parallel --timings=bun-timings.json --update-timings",
-    "check-types": "bun scripts/check-types.ts"
+    "check-types": "bun scripts/check-types.ts",
+    "lint": "bun lint",
+    "lint:eslint": "CI=1 eslint -c ../eslint.legacy.config.mjs ."
   },
   "peerDependencies": {
     "@kingsleyweb/bun-jobs": ">=2.2.0 <2.3.0"

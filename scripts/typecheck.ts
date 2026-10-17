@@ -13,7 +13,8 @@
  * the gap between the two was large enough to hide real errors in `__tests__/`
  * and `benchmarks/` while every documented command reported success.
  *
- * Each project runs through Bun's type checker (Bun ≥ 1.4.3), which reports
+ * Each project runs through Bun's type checker (Bun ≥ 1.4.3; the repo's
+ * development floor is 1.4.4, for `bun lint` and `bun fmt`), which reports
  * the same errors as `tsc --noEmit` on every core: measured on all 17
  * projects, the same verdict as the tsc version of this script in 7–10 s
  * against 109–112 s (the user's decision, 2026-10-10). The projects run one
@@ -60,8 +61,12 @@ export const PROJECTS = [
   "scripts/tsconfig.json",
 ] as const;
 
-/** The first Bun whose `bun check` this script relies on. */
-export const MIN_BUN = "1.4.3";
+/**
+ * The repo's development floor: `bun check` arrived in 1.4.3, and `bun lint`
+ * and `bun fmt` in 1.4.4, which until it is stable means the canary (every
+ * 1.4.4 canary reports `Bun.version` "1.4.4"; docs/plans/bun-lint-fmt/ §6).
+ */
+export const MIN_BUN = "1.4.4";
 
 /**
  * Errors that are known noise rather than a problem with the code.
@@ -217,8 +222,8 @@ if (import.meta.main) {
 
   if (Bun.semver.order(Bun.version, MIN_BUN) < 0) {
     console.error(
-      `bun scripts/typecheck.ts uses \`bun check\`, which needs Bun >= ${MIN_BUN} (this is ${Bun.version}). ` +
-        `Developing this repo needs ${MIN_BUN}; using its packages needs only 1.4.2. Run \`bun upgrade\`.`,
+      `Developing this repo needs Bun >= ${MIN_BUN} (this is ${Bun.version}), for \`bun check\`, \`bun lint\` and \`bun fmt\`; ` +
+        `using its packages needs only 1.4.2. Run \`bun upgrade --canary\` until 1.4.4 is stable, then \`bun upgrade\`.`,
     );
     process.exit(1);
   }

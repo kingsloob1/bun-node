@@ -91,6 +91,6 @@ every option of one part of the API and checks what happens with
 ```bash
 bun scripts/typecheck.ts        # from the repo root — includes examples/bun-nest
 cd examples/bun-nest
-bunx eslint .                   # the package's lint rules, minus no-console
+bun run lint:eslint             # the package's lint rules, minus no-console
 bun run-all.ts                  # run them all
 ```
