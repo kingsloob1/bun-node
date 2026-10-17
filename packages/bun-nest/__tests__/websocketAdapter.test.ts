@@ -1072,6 +1072,15 @@ describe("BunWebSocketAdapter: a packet that cannot be serialised", () => {
   /** Lets the rxjs pipeline and any rethrown subscriber error run. */
   const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
+  /**
+   * The test's own deadline, past bun:test's 5 s default. The echoed ACK's
+   * `JSON.stringify` overflow is about 1.5 s of CPU in Bun 1.4
+   * (oven-sh/bun#45791; measured 2026-10-17), done synchronously before
+   * `settle()`'s timer can fire, and the test took 5.7 s at a load of 42 on
+   * 16 cores. The work is finite, so a long deadline only gives it room.
+   */
+  const DEADLINE_MS = 30_000;
+
   /** A value `JSON.stringify` refuses: a cycle. */
   function circular() {
     const value: { self?: unknown } = {};
@@ -1079,57 +1088,61 @@ describe("BunWebSocketAdapter: a packet that cannot be serialised", () => {
     return value;
   }
 
-  it("is logged and dropped, as on platform-ws, for a WsResponse, an ack, an emit and an echoed ACK", async () => {
-    const errors = spyOn(Logger.prototype, "error").mockImplementation(
-      () => {},
-    );
-    try {
-      const adapter = newAdapter();
-      const { client, parsed } = makeFakeClient();
-      adapter.bindMessageHandlers(
-        client,
-        [
-          wsHandler("big", () => ({ event: "big", data: 10n })),
-          wsHandler("loop", (_data, ack) => ack(circular()), true),
-          wsHandler("ok", () => ({ event: "ok", data: 1 })),
-        ],
-        nestTransform as Parameters<
-          BunNestWebsocketAdapter["bindMessageHandlers"]
-        >[2],
+  it(
+    "is logged and dropped, as on platform-ws, for a WsResponse, an ack, an emit and an echoed ACK",
+    async () => {
+      const errors = spyOn(Logger.prototype, "error").mockImplementation(
+        () => {},
       );
-      const send = (packet: Record<string, unknown>) =>
+      try {
+        const adapter = newAdapter();
+        const { client, parsed } = makeFakeClient();
+        adapter.bindMessageHandlers(
+          client,
+          [
+            wsHandler("big", () => ({ event: "big", data: 10n })),
+            wsHandler("loop", (_data, ack) => ack(circular()), true),
+            wsHandler("ok", () => ({ event: "ok", data: 1 })),
+          ],
+          nestTransform as Parameters<
+            BunNestWebsocketAdapter["bindMessageHandlers"]
+          >[2],
+        );
+        const send = (packet: Record<string, unknown>) =>
+          adapter.emit(
+            "message",
+            client,
+            JSON.stringify({ namespace: "/", ...packet }) as never,
+          );
+        send({ type: MessageEventTypes.EVENT, data: ["big", null] });
+        send({ type: MessageEventTypes.EVENT, id: 1, data: ["loop", null] });
+        // An ACK is echoed back as it came: a payload nested deeper than
+        // `JSON.stringify` recurses, which `JSON.parse` accepted.
+        const depth = 200_000;
         adapter.emit(
           "message",
           client,
-          JSON.stringify({ namespace: "/", ...packet }) as never,
+          `{"type":3,"namespace":"/","id":2,"data":${"[".repeat(depth)}${"]".repeat(depth)}}` as never,
         );
-      send({ type: MessageEventTypes.EVENT, data: ["big", null] });
-      send({ type: MessageEventTypes.EVENT, id: 1, data: ["loop", null] });
-      // An ACK is echoed back as it came: a payload nested deeper than
-      // `JSON.stringify` recurses, which `JSON.parse` accepted.
-      const depth = 200_000;
-      adapter.emit(
-        "message",
-        client,
-        `{"type":3,"namespace":"/","id":2,"data":${"[".repeat(depth)}${"]".repeat(depth)}}` as never,
-      );
-      const emitted = (client as BunNestWebSocketClient).emit("x", 1n);
-      send({ type: MessageEventTypes.EVENT, data: ["ok", null] });
-      await settle();
+        const emitted = (client as BunNestWebSocketClient).emit("x", 1n);
+        send({ type: MessageEventTypes.EVENT, data: ["ok", null] });
+        await settle();
 
-      // Only the good reply went out; the client was never handed a frame.
-      expect(parsed()).toEqual([
-        { type: MessageEventTypes.EVENT, namespace: "/", data: ["ok", 1] },
-      ]);
-      expect(emitted).toBe(false);
-      expect(errors).toHaveBeenCalledTimes(4);
-      for (const [error] of errors.mock.calls) {
-        expect(error).toBeInstanceOf(Error);
+        // Only the good reply went out; the client was never handed a frame.
+        expect(parsed()).toEqual([
+          { type: MessageEventTypes.EVENT, namespace: "/", data: ["ok", 1] },
+        ]);
+        expect(emitted).toBe(false);
+        expect(errors).toHaveBeenCalledTimes(4);
+        for (const [error] of errors.mock.calls) {
+          expect(error).toBeInstanceOf(Error);
+        }
+      } finally {
+        errors.mockRestore();
       }
-    } finally {
-      errors.mockRestore();
-    }
-  });
+    },
+    DEADLINE_MS,
+  );
 });
 
 describe("BunWebSocketAdapter: Nest's WsException frames", () => {
