@@ -317,9 +317,9 @@ hand tests a constructor these examples never use, and it looks broken when it
 is not.
 
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
-`setup-databases.ts`, `consumer-check.ts`, and the heavy-run wrapper
-`heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to no
-package, so it has its own lint config and its own tests; after touching one,
+`setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, and the heavy-run
+wrapper `heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to
+no package, so it has its own lint config and its own tests; after touching one,
 check it from there:
 
 ```bash
@@ -399,6 +399,38 @@ package existed nothing declared them, and its typecheck passed only where an
 old install had left them in the root `node_modules`. Run `bun install` in each
 of the three bench directories, and in `templates/compute-provider/` (below),
 before `scripts/typecheck.ts`, or their projects fail on missing modules.
+
+### Nest versions
+
+bun-nest supports NestJS 11 and 12 from one build (the user's decision,
+2026-10-17; `docs/plans/nestjs-12-parity/` §8). **The floor is 11.1.20**:
+below it `bun --check` fails on `Ack` and the CORS delegate overloads, and
+two SSE tests fail (measured, §8.1). Nest versions other than the lock's run
+as columns of `scripts/nest-matrix.ts` (§9.3):
+
+| Column | When |
+|---|---|
+| 12-latest | every gate. From PR-3 of the plan on it is develop's lock, the repo itself; until then the lock is 11.1.27 and 12.1.3 is a column |
+| 11-latest (11.2.7) | every PR touching bun-nest or bun-common |
+| 11.1.20 and 12.0.0 (the floors) | once per merge window |
+| a new Nest release | when it ships, before the lock moves |
+
+```bash
+bun scripts/nest-matrix.ts --prepare 11.2.7      # direct: copy, pin, install, assert
+HEAVY_TICKET=<session>-nest-matrix /tmp/claude-1000/bun-node-heavy-run.sh \
+  nice -n 10 timeout 1800 bun scripts/nest-matrix.ts --run 11.2.7 > <log> 2>&1
+```
+
+A copy lives at `~/bun-node-nest-matrix/<version>/` (`--dir` or
+`NEST_MATRIX_DIR`), never under a dot segment such as `~/.cache`: Express's
+`send` refuses every file there, failing two expressCompat probes on both
+majors. `--run` runs bun-nest's suite, a bare `bun --check` in bun-nest,
+`examples/bun-nest`, bun-jobs-ui's `nest.nest.test.ts` and consumer-check
+(its consumer pinned to the column's Nest, its work in
+`<base>/cc-<version>/`), one line per check with counts, full output in
+`<copy>/matrix-logs/`. `--dry-run` prints the plan, `--list` the copies.
+**One column at a time**, several as `--run 12.1.3 11.2.7`: bun-nest's suite
+binds the fixed port 10000, so two runs at once fail a `beforeAll` (measured).
 
 ### The compute-provider template
 
