@@ -1,0 +1,190 @@
+# tools/answered-run.sh <tag> [--type-aware], in the scratch clone (develop 930dd664, ESLint configs deleted, directives renamed, the answered root bunfig.toml), Bun 1.4.4-canary.1+5f5799ed1, 16 cores, 2026-10-17
+
+## base-1
+load_start 2.57
+packages/bun-common exit=1
+packages/bun-common wall=0.68 user=1.07 sys=0.13
+packages/bun-nest exit=1
+packages/bun-nest wall=0.38 user=0.35 sys=0.06
+packages/bun-jobs exit=1
+packages/bun-jobs wall=1.10 user=4.43 sys=0.39
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=1.12 user=1.88 sys=0.18
+scripts exit=0
+scripts wall=0.37 user=0.35 sys=0.04
+playground exit=0
+playground wall=0.26 user=0.25 sys=0.03
+templates/compute-provider exit=0
+templates/compute-provider wall=0.27 user=0.25 sys=0.04
+examples/bun-common exit=0
+examples/bun-common wall=0.50 user=0.46 sys=0.07
+examples/bun-nest exit=0
+examples/bun-nest wall=0.35 user=0.32 sys=0.05
+examples/bun-jobs exit=1
+examples/bun-jobs wall=0.86 user=0.80 sys=0.08
+examples/bun-jobs-ui exit=0
+examples/bun-jobs-ui wall=0.53 user=0.81 sys=0.10
+total_wall 6.551439735
+load_end 2.55
+
+## base-2
+load_start 2.55
+packages/bun-common exit=1
+packages/bun-common wall=0.64 user=1.02 sys=0.12
+packages/bun-nest exit=1
+packages/bun-nest wall=0.38 user=0.36 sys=0.06
+packages/bun-jobs exit=1
+packages/bun-jobs wall=1.13 user=4.62 sys=0.38
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=1.06 user=1.84 sys=0.17
+scripts exit=0
+scripts wall=0.36 user=0.33 sys=0.05
+playground exit=0
+playground wall=0.26 user=0.24 sys=0.04
+templates/compute-provider exit=0
+templates/compute-provider wall=0.28 user=0.26 sys=0.04
+examples/bun-common exit=0
+examples/bun-common wall=0.50 user=0.48 sys=0.05
+examples/bun-nest exit=0
+examples/bun-nest wall=0.34 user=0.32 sys=0.04
+examples/bun-jobs exit=1
+examples/bun-jobs wall=0.84 user=0.82 sys=0.06
+examples/bun-jobs-ui exit=0
+examples/bun-jobs-ui wall=0.52 user=0.81 sys=0.08
+total_wall 6.457673059
+load_end 2.59
+
+## base-3
+load_start 2.59
+packages/bun-common exit=1
+packages/bun-common wall=0.66 user=1.07 sys=0.13
+packages/bun-nest exit=1
+packages/bun-nest wall=0.39 user=0.35 sys=0.06
+packages/bun-jobs exit=1
+packages/bun-jobs wall=1.18 user=4.80 sys=0.38
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=1.29 user=2.26 sys=0.17
+scripts exit=0
+scripts wall=0.44 user=0.41 sys=0.06
+playground exit=0
+playground wall=0.30 user=0.27 sys=0.04
+templates/compute-provider exit=0
+templates/compute-provider wall=0.28 user=0.27 sys=0.03
+examples/bun-common exit=0
+examples/bun-common wall=0.54 user=0.52 sys=0.06
+examples/bun-nest exit=0
+examples/bun-nest wall=0.37 user=0.34 sys=0.05
+examples/bun-jobs exit=1
+examples/bun-jobs wall=0.94 user=0.92 sys=0.08
+examples/bun-jobs-ui exit=0
+examples/bun-jobs-ui wall=0.58 user=0.88 sys=0.11
+total_wall 7.089691301
+load_end 2.62
+
+## ta-1
+load_start 2.57
+packages/bun-common exit=1
+packages/bun-common wall=0.97 user=3.56 sys=0.78
+packages/bun-nest exit=1
+packages/bun-nest wall=0.80 user=1.35 sys=0.61
+packages/bun-jobs exit=1
+packages/bun-jobs wall=2.46 user=13.92 sys=1.35
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=2.02 user=5.94 sys=1.15
+scripts exit=0
+scripts wall=0.53 user=0.68 sys=0.17
+playground exit=0
+playground wall=0.46 user=0.73 sys=0.37
+templates/compute-provider exit=0
+templates/compute-provider wall=0.37 user=0.51 sys=0.23
+examples/bun-common exit=1
+examples/bun-common wall=0.90 user=1.91 sys=0.48
+examples/bun-nest exit=1
+examples/bun-nest wall=0.58 user=1.10 sys=0.46
+examples/bun-jobs exit=1
+examples/bun-jobs wall=1.19 user=2.63 sys=0.54
+examples/bun-jobs-ui exit=1
+examples/bun-jobs-ui wall=0.89 user=1.63 sys=0.38
+total_wall 11.310478902
+load_end 2.64
+
+## ta-2
+load_start 2.64
+packages/bun-common exit=1
+packages/bun-common wall=1.22 user=4.25 sys=0.71
+packages/bun-nest exit=1
+packages/bun-nest wall=0.79 user=1.39 sys=0.61
+packages/bun-jobs exit=1
+packages/bun-jobs wall=2.40 user=13.99 sys=1.33
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=1.95 user=5.75 sys=1.10
+scripts exit=0
+scripts wall=0.50 user=0.63 sys=0.19
+playground exit=0
+playground wall=0.42 user=0.67 sys=0.34
+templates/compute-provider exit=0
+templates/compute-provider wall=0.36 user=0.51 sys=0.27
+examples/bun-common exit=1
+examples/bun-common wall=0.78 user=1.73 sys=0.43
+examples/bun-nest exit=1
+examples/bun-nest wall=0.58 user=1.15 sys=0.40
+examples/bun-jobs exit=1
+examples/bun-jobs wall=1.19 user=2.67 sys=0.56
+examples/bun-jobs-ui exit=1
+examples/bun-jobs-ui wall=0.80 user=1.51 sys=0.38
+total_wall 11.143594953
+load_end 3.33
+
+## ta-3
+load_start 3.33
+packages/bun-common exit=1
+packages/bun-common wall=1.15 user=4.13 sys=0.88
+packages/bun-nest exit=1
+packages/bun-nest wall=0.78 user=1.34 sys=0.61
+packages/bun-jobs exit=1
+packages/bun-jobs wall=2.33 user=13.49 sys=1.43
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=1.87 user=5.58 sys=1.10
+scripts exit=0
+scripts wall=0.48 user=0.60 sys=0.20
+playground exit=0
+playground wall=0.43 user=0.66 sys=0.33
+templates/compute-provider exit=0
+templates/compute-provider wall=0.37 user=0.53 sys=0.29
+examples/bun-common exit=1
+examples/bun-common wall=0.73 user=1.60 sys=0.41
+examples/bun-nest exit=1
+examples/bun-nest wall=0.53 user=1.04 sys=0.44
+examples/bun-jobs exit=1
+examples/bun-jobs wall=1.17 user=2.56 sys=0.51
+examples/bun-jobs-ui exit=1
+examples/bun-jobs-ui wall=0.79 user=1.46 sys=0.41
+total_wall 10.764540199
+load_end 3.20
+
+## ta-key
+load_start 2.95
+packages/bun-common exit=1
+packages/bun-common wall=1.38 user=4.97 sys=0.80
+packages/bun-nest exit=1
+packages/bun-nest wall=0.97 user=1.61 sys=0.48
+packages/bun-jobs exit=1
+packages/bun-jobs wall=2.89 user=16.16 sys=1.39
+packages/bun-jobs-ui exit=1
+packages/bun-jobs-ui wall=2.08 user=6.12 sys=1.06
+scripts exit=0
+scripts wall=0.55 user=0.67 sys=0.19
+playground exit=0
+playground wall=0.47 user=0.71 sys=0.40
+templates/compute-provider exit=0
+templates/compute-provider wall=0.57 user=0.75 sys=0.30
+examples/bun-common exit=1
+examples/bun-common wall=1.01 user=2.15 sys=0.46
+examples/bun-nest exit=1
+examples/bun-nest wall=0.70 user=1.31 sys=0.43
+examples/bun-jobs exit=1
+examples/bun-jobs wall=1.44 user=3.23 sys=0.52
+examples/bun-jobs-ui exit=1
+examples/bun-jobs-ui wall=1.06 user=1.95 sys=0.42
+total_wall 13.273517288
+load_end 3.73

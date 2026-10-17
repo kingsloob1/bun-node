@@ -1,6 +1,7 @@
 # Evidence: `bun lint` and `bun fmt` against ESLint and Prettier
 
-Everything here was measured or read on 2026-10-16 with **Bun
+Everything here, except `type-aware/` and the files marked 2026-10-17, was
+measured or read on 2026-10-16 with **Bun
 1.4.4-canary.1+5f5799ed1**, in scratch clones of develop at `f9baf24a`
 (`git clone --local` under `~/.cache/bun-node-ae/plan-lintfmt/`, never the
 worktree), on a 16-core Linux x64 machine shared with other sessions (the
@@ -17,7 +18,8 @@ it: the canary changes daily.
 | [`repros/`](repros/README.md) | single-file reproductions of each disagreement, against the upstream plugin and oxlint | measured |
 | [`format/`](format/README.md) | `bun fmt` against Prettier 3.8.4 and 3.9.10 on every file, idempotence, `--debug-check`, the whole-repo diff, Markdown and the parsed READMEs, the generated overloads, import and `package.json` sorting | measured |
 | [`perf/`](perf/README.md) | ESLint, `bun lint` (four ways), Prettier and `bun fmt`, three runs each, wall and CPU time | measured |
-| [`bun-bugs/`](bun-bugs/README.md) | the candidates investigated; none is a Bun bug, so nothing to file | measured |
+| [`type-aware/`](type-aware/README.md) | 2026-10-17, develop `930dd664`: the answered config ([`rules/bunfig.answered.toml`](rules/bunfig.answered.toml)) with and without `--type-aware` in the 11 directories, timed three times; every finding, one file per directory; a cross-check against typescript-eslint on bun-common; Q8's `no-restricted-globals` and Q1's `eslint-plugin-regexp` without `eslint` | measured |
+| [`bun-bugs/`](bun-bugs/README.md) | the candidates investigated; none of 2026-10-16 is a Bun bug; two found on 2026-10-17 and filed, [oven-sh/bun#45784](https://github.com/oven-sh/bun/issues/45784) and [oven-sh/bun#45785](https://github.com/oven-sh/bun/issues/45785) | measured |
 | [`tools/`](tools/) | the scripts that produced the above (paths inside point at the scratch directory) | — |
 
 The `tools/` scripts expect the layout of the scratch directory: `copy/` (a

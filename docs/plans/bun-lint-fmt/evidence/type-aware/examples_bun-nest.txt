@@ -1,0 +1,87 @@
+# examples/bun-nest: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 85 findings.
+examples/bun-nest/02-http-adapter/controllers-and-routing.ts:127:25	warn	@typescript-eslint/no-base-to-string [types]	'locals[key] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-nest/02-http-adapter/controllers-and-routing.ts:472:37	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/02-http-adapter/controllers-and-routing.ts:692:35	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-nest/02-http-adapter/controllers-and-routing.ts:836:28	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-nest/02-http-adapter/express-parity.ts:390:42	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-nest/02-http-adapter/middleware-and-versioning.ts:161:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/02-http-adapter/middleware-and-versioning.ts:295:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/02-http-adapter/pipeline.ts:434:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/02-http-adapter/views.ts:85:25	warn	@typescript-eslint/no-base-to-string [types]	'locals[name] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-nest/03-file-uploads/interceptors.ts:324:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/04-websockets/adapter-options.ts:447:7	warn	@typescript-eslint/require-await [types]	Async method 'callback' has no 'await' expression.
+examples/bun-nest/04-websockets/adapter-options.ts:454:7	warn	@typescript-eslint/require-await [types]	Async method 'callback' has no 'await' expression.
+examples/bun-nest/04-websockets/adapter-options.ts:529:7	warn	@typescript-eslint/require-await [types]	Async method 'callback' has no 'await' expression.
+examples/bun-nest/06-jobs-ui/mount.ts:81:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+examples/bun-nest/06-jobs-ui/mount.ts:126:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/06-jobs-ui/mount.ts:158:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+examples/bun-nest/10-options/http-adapter-options.ts:260:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/http-adapter-options.ts:270:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/http-adapter-options.ts:928:27	warn	@typescript-eslint/no-base-to-string [types]	'locals[key] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-nest/10-options/http-adapter-options.ts:1748:55	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-nest/10-options/http-adapter-options.ts:1781:56	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-nest/10-options/interceptor-options.ts:325:7	warn	@typescript-eslint/require-await [types]	Async method 'fieldInflator' has no 'await' expression.
+examples/bun-nest/10-options/interceptor-options.ts:496:7	warn	no-useless-assignment	The value assigned to 'released' is not used in subsequent statements.
+examples/bun-nest/10-options/interceptor-options.ts:677:7	warn	no-useless-assignment	The value assigned to 'removed' is not used in subsequent statements.
+examples/bun-nest/10-options/jobs-api-module-options.ts:149:19	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `Record<string, any>`.
+examples/bun-nest/10-options/jobs-api-module-options.ts:211:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+examples/bun-nest/10-options/jobs-api-module-options.ts:266:62	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .protocol on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:269:60	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .openapi on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:317:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:390:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:397:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:404:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:412:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:419:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .error on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:527:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:527:56	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:528:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .protocol on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:618:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+examples/bun-nest/10-options/jobs-api-module-options.ts:630:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:632:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:634:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:634:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:636:68	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:670:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:672:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:672:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:674:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:687:42	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:704:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:763:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+examples/bun-nest/10-options/jobs-api-module-options.ts:784:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:784:56	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:787:11	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .protocol on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:791:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:793:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:793:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-nest/10-options/jobs-api-module-options.ts:795:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .channels on an `any` value.
+examples/bun-nest/10-options/websocket-adapter-options.ts:381:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:452:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:455:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:466:7	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:473:70	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:481:62	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:487:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:493:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:496:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:502:48	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:509:32	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-nest/10-options/websocket-adapter-options.ts:512:29	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:517:69	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:522:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:525:34	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:528:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:534:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:537:29	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:559:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:935:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:935:41	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:940:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:940:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:1318:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:1503:38	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/10-options/websocket-adapter-options.ts:1507:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/run-all.ts:69:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-nest/shared/check.ts:105:56	warn	@typescript-eslint/no-base-to-string [types]	'code' will use Object's default stringification format ('[object Object]') when stringified.

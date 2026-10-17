@@ -1,0 +1,279 @@
+# packages/bun-nest: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 277 findings.
+packages/bun-nest/__tests__/express-use.test.ts:28:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/express-use.test.ts:44:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/express-use.test.ts:75:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/express-use.test.ts:100:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/express-use.test.ts:122:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/express-use.test.ts:144:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:120:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .locals on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:121:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:121:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .render on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:126:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:126:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .json on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:129:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:129:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .json on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:129:20	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:129:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .body on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:137:11	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:140:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:140:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .status on an `any` value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:141:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/expressCompat.common.test.ts:141:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .render on an `any` value.
+packages/bun-nest/__tests__/helpers.ts:121:13	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/helpers.ts:126:15	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/httpAdapter.test.ts:28:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/httpAdapter.test.ts:192:6	error	bun:test/no-identical-title	Test title is used multiple times in the same describe block.
+packages/bun-nest/__tests__/httpAdapter.test.ts:481:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/__tests__/httpAdapterBodyParser.nest.test.ts:200:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/__tests__/index.test.ts:19:20	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/interceptors.test.ts:40:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/interceptors.test.ts:114:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/interceptors.test.ts:129:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/__tests__/jobsApiBarrelIsolation.nest.test.ts:99:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:36:43	warn	@typescript-eslint/no-redundant-type-constituents [types]	'unknown' overrides all other types in this union type.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:176:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:201:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:201:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:204:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:205:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:205:39	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:207:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:218:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:218:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:219:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:234:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:257:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:287:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:288:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:288:39	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:290:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:317:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:320:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:320:62	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:367:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:369:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:380:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:405:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:457:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:478:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:485:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:485:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:487:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:513:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:536:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:536:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:542:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:543:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:543:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiGatewayCoexistence.nest.test.ts:545:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .channels on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:28:43	warn	@typescript-eslint/no-redundant-type-constituents [types]	'unknown' overrides all other types in this union type.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:53:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:221:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:221:59	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:233:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:233:60	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:234:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:268:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:296:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:301:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:346:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:346:62	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:353:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:354:29	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:354:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:356:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+packages/bun-nest/__tests__/jobsApiModule.nest.test.ts:387:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/nestWebSocketAdapterUse.type-test.ts:94:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a type that could not be resolved.
+packages/bun-nest/__tests__/packaging.test.ts:112:36	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `string[]`.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:67:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:69:35	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:86:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:86:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:107:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:129:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:129:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:131:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:131:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:132:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .path on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:133:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .search on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:134:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .hash on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:135:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .originalUrl on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:136:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .host on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:155:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:155:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:158:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:159:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:160:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:160:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:167:7	warn	@typescript-eslint/require-await [types]	Async method 'slow' has no 'await' expression.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:172:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:172:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:174:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:188:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:210:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:210:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:231:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:231:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:232:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:239:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:239:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:240:19	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:249:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:250:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:253:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:266:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:266:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.e2e.test.ts:268:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:99:78	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:162:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:259:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:271:40	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:271:56	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:360:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:360:55	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:373:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:531:37	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:534:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:544:9	warn	@typescript-eslint/require-await [types]	Async method 'callback' has no 'await' expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:594:41	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:595:49	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:811:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:811:55	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:844:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:851:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:867:13	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:881:26	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:882:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:894:47	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:914:13	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:915:13	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:931:24	error	@typescript-eslint/no-implied-eval [types]	Implied eval. Consider passing a function.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:931:24	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `(args_0: string) => void`.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:948:13	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:966:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:982:40	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:989:49	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-nest/__tests__/websocketAdapter.test.ts:1040:11	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-nest/__tests__/websocketAdapterSwap.nest.test.ts:35:43	warn	@typescript-eslint/no-redundant-type-constituents [types]	'unknown' overrides all other types in this union type.
+packages/bun-nest/__tests__/websocketAdapterSwap.nest.test.ts:65:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-nest/__tests__/websocketCustomAdapter.nest.test.ts:91:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketCustomAdapter.nest.test.ts:100:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketCustomAdapter.nest.test.ts:100:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketCustomAdapter.nest.test.ts:102:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:125:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:142:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:142:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:144:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:151:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:151:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:153:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:161:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:161:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:165:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:166:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:167:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:167:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGateway.nest.test.ts:176:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:78:3	warn	@typescript-eslint/require-await [types]	Async method 'autoPromise' has no 'await' expression.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:144:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:144:45	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:147:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:149:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketGatewayAck.nest.test.ts:150:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:99:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:99:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:101:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:109:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:109:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:111:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:119:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:119:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:120:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:126:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:136:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayBinding.nest.test.ts:136:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:113:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:113:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:115:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:125:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:125:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:127:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:136:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:136:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:138:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:152:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:152:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:154:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:164:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:164:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:166:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:183:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:183:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:184:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:196:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:196:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:197:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:227:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:227:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:229:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:237:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:237:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayFeatures.nest.test.ts:239:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayPorts.nest.test.ts:100:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayPorts.nest.test.ts:104:19	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/__tests__/websocketGatewayPorts.nest.test.ts:105:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketGatewayPorts.nest.test.ts:106:26	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketNewInstanceAdapter.nest.test.ts:111:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-nest/__tests__/websocketNewInstanceAdapter.nest.test.ts:111:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/websocketNewInstanceAdapter.nest.test.ts:114:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-nest/__tests__/wsOnUpgrade.test.ts:75:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/lib/BunHttpAdapter.ts:408:14	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-nest/lib/BunHttpAdapter.ts:543:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `for await...of` of a value that is not async iterable.
+packages/bun-nest/lib/BunHttpAdapter.ts:624:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/lib/BunHttpAdapter.ts:998:9	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/lib/BunHttpAdapter.ts:1054:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-nest/lib/BunHttpAdapter.ts:1195:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/lib/BunHttpAdapter.ts:1527:17	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:1566:3	warn	@typescript-eslint/require-await [types]	Async method 'init' has no 'await' expression.
+packages/bun-nest/lib/BunHttpAdapter.ts:3394:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/lib/BunHttpAdapter.ts:3403:9	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3403:9	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3417:13	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3417:20	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3424:13	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3424:20	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3435:13	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3435:20	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3439:13	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3439:20	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3470:15	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3470:22	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3481:17	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3481:24	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3485:17	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3485:24	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3509:15	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3509:22	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3515:15	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3515:22	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunHttpAdapter.ts:3519:15	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-nest/lib/BunHttpAdapter.ts:3519:22	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a `Function` typed value.
+packages/bun-nest/lib/BunWebSocketAdapter.ts:1148:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-nest/lib/BunWebSocketAdapter.ts:1199:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-nest/lib/interceptors.ts:121:3	error	n/handle-callback-err	Expected error to be handled.
+packages/bun-nest/lib/interceptors.ts:123:42	error	n/handle-callback-err	Expected error to be handled.
+packages/bun-nest/lib/interceptors.ts:206:37	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+packages/bun-nest/lib/interceptors.ts:243:37	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+packages/bun-nest/lib/interceptors.ts:277:37	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+packages/bun-nest/lib/interceptors.ts:312:37	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+packages/bun-nest/lib/interceptors.ts:344:37	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+packages/bun-nest/lib/jobs/BunJobsApiModule.ts:99:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/scripts/build-declarations.ts:174:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/scripts/build-declarations.ts:251:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/scripts/build-declarations.ts:405:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-nest/scripts/build-declarations.ts:545:5	warn	no-console	Unexpected console statement.
+packages/bun-nest/scripts/build-declarations.ts:550:5	warn	no-console	Unexpected console statement.
+packages/bun-nest/scripts/build-declarations.ts:555:5	warn	no-console	Unexpected console statement.
+packages/bun-nest/scripts/build-declarations.ts:556:31	warn	no-console	Unexpected console statement.
+packages/bun-nest/scripts/build-declarations.ts:559:3	warn	no-console	Unexpected console statement.
