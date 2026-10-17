@@ -1,4 +1,21 @@
-# Bun bugs: none found to file
+# Bun bugs: none found to file (2026-10-16); two filed (2026-10-17)
+
+**2026-10-17:** the type-aware run found two places where `bun lint` differs
+from typescript-eslint 8.59.4, reduced to single files in
+[`../repros/`](../repros/README.md) ("Added 2026-10-17"): `unbound-method` on
+an element access with a union-typed key, and a core rule's
+`eslint-disable` directive silencing its typescript-eslint twin. Both were
+searched for (no existing issue), reproduced on the latest canary from GitHub
+releases (1.4.4-canary.1+5f5799ed1) and against ESLint 9.39.5 with
+typescript-eslint 8.59.4, and filed on 2026-10-17:
+[oven-sh/bun#45784](https://github.com/oven-sh/bun/issues/45784) (`unbound-method`)
+and [oven-sh/bun#45785](https://github.com/oven-sh/bun/issues/45785) (the
+directive). Neither needs a workaround before the flip. For #45785, the
+plan's PR A has the 3 `no-throw-literal` directives name
+`@typescript-eslint/only-throw-error`, so they mean the same under both tools
+whatever Bun decides (§7, PR A).
+
+The rest of this page is the record of 2026-10-16.
 
 Bun 1.4.4-canary.1+5f5799ed1, 2026-10-16. Every disagreement between `bun lint`
 / `bun fmt` and our tools was reduced to a single file and compared with the

@@ -1,0 +1,93 @@
+# examples/bun-common: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 91 findings.
+examples/bun-common/02-routing/fetch-testing.ts:185:13	error	@typescript-eslint/restrict-plus-operands [types]	Invalid operand for a '+' operation. Operands must each be a number or string, allowing a string + any of: `any`, `boolean`, `null`, `RegExp`, `undefined`. Got `Buffer<ArrayBufferLike>`.
+examples/bun-common/02-routing/middleware-and-errors.ts:414:15	error	@typescript-eslint/restrict-plus-operands [types]	Invalid operand for a '+' operation. Operands must each be a number or string, allowing a string + any of: `any`, `boolean`, `null`, `RegExp`, `undefined`. Got `Buffer<ArrayBufferLike>`.
+examples/bun-common/02-routing/middleware-and-errors.ts:516:43	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/02-routing/route-cache.ts:77:29	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/02-routing/route-cache.ts:201:42	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of type `any[]` to a variable of type `RouterCallback[]`.
+examples/bun-common/02-routing/route-cache.ts:292:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/02-routing/route-cache.ts:297:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/02-routing/route-cache.ts:297:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/02-routing/serving-async.ts:201:42	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/02-routing/serving-async.ts:208:38	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/02-routing/serving-async.ts:231:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/02-routing/verbs-and-params.ts:117:49	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/02-routing/verbs-and-params.ts:278:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-common/04-request/body-parsing.ts:183:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-common/04-request/body-parsing.ts:389:33	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-common/04-request/body-parsing.ts:607:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-common/04-request/body-parsing.ts:828:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/04-request/body-parsing.ts:1085:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/05-response/files-and-streams.ts:140:45	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/05-response/files-and-streams.ts:144:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/05-response/files-and-streams.ts:210:31	warn	@typescript-eslint/require-await [types]	Async generator function 'rows' has no 'await' expression.
+examples/bun-common/05-response/files-and-streams.ts:299:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-common/05-response/files-and-streams.ts:303:30	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/05-response/files-and-streams.ts:443:28	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/05-response/files-and-streams.ts:453:36	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/05-response/sending.ts:96:12	warn	@typescript-eslint/require-await [types]	Async generator function 'generate' has no 'await' expression.
+examples/bun-common/05-response/sending.ts:172:19	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/05-response/views.ts:80:17	warn	@typescript-eslint/no-base-to-string [types]	'value ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/06-validation/schema-libraries.ts:214:48	warn	@typescript-eslint/no-base-to-string [types]	'goodBody.page' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/06-validation/typed-handlers.ts:55:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an error typed value.
+examples/bun-common/06-validation/validate-requests.ts:55:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-common/08-multipart/limits-and-filters.ts:235:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-common/08-multipart/storage.ts:217:3	warn	@typescript-eslint/require-await [types]	Async method 'handleFile' has no 'await' expression.
+examples/bun-common/08-multipart/storage.ts:236:3	warn	@typescript-eslint/require-await [types]	Async method 'removeFile' has no 'await' expression.
+examples/bun-common/09-websocket/echo-and-events.ts:58:24	warn	@typescript-eslint/no-base-to-string [types]	'req.query.name ?? "anonymous"' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/09-websocket/helpers/client.ts:122:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-common/09-websocket/options.ts:297:40	warn	@typescript-eslint/no-base-to-string [types]	'req.query.channel ?? "general"' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/09-websocket/rooms-and-broadcast.ts:81:17	warn	@typescript-eslint/no-base-to-string [types]	'ws.data.user?.name ?? "someone"' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/09-websocket/rooms-and-broadcast.ts:127:29	warn	@typescript-eslint/no-base-to-string [types]	'req.query.token ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/09-websocket/rooms-and-broadcast.ts:212:24	warn	@typescript-eslint/no-base-to-string [types]	'req.query.room ?? "lobby"' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/11-utilities/async-control.ts:140:12	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/11-utilities/async-control.ts:207:27	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/11-utilities/objects-and-collections.ts:137:1	warn	@typescript-eslint/require-await [types]	Async generator function 'chunks' has no 'await' expression.
+examples/bun-common/12-options/compression-options.ts:390:35	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-common/12-options/http-adapter-options.ts:97:12	warn	@typescript-eslint/no-base-to-string [types]	'options[key] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/12-options/http-adapter-options.ts:177:5	warn	no-useless-assignment	The value assigned to 'reachedHandler' is not used in subsequent statements.
+examples/bun-common/12-options/multipart-options.ts:145:3	warn	@typescript-eslint/require-await [types]	Async method 'handleFile' has no 'await' expression.
+examples/bun-common/12-options/multipart-options.ts:200:4	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:212:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:213:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:214:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:224:4	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:325:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:593:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/multipart-options.ts:686:9	warn	@typescript-eslint/require-await [types]	Async method 'filter' has no 'await' expression.
+examples/bun-common/12-options/multipart-options.ts:992:5	warn	@typescript-eslint/require-await [types]	Async method 'fieldInflator' has no 'await' expression.
+examples/bun-common/12-options/multipart-options.ts:1009:7	warn	@typescript-eslint/require-await [types]	Async method 'fileInflator' has no 'await' expression.
+examples/bun-common/12-options/native-utilities.ts:275:1	warn	@typescript-eslint/require-await [types]	Async generator function 'generate' has no 'await' expression.
+examples/bun-common/12-options/native-utilities.ts:1073:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/native-utilities.ts:1362:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/native-utilities.ts:1502:32	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/native-utilities.ts:1550:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/native-utilities.ts:2071:37	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/native-utilities.ts:2588:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/native-utilities.ts:2590:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/native-utilities.ts:2591:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/native-utilities.ts:2592:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/12-options/request-options.ts:756:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-common/12-options/request-options.ts:1334:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-common/12-options/response-options.ts:418:8	warn	@typescript-eslint/require-await [types]	Async generator function 'gen' has no 'await' expression.
+examples/bun-common/12-options/response-options.ts:429:16	warn	@typescript-eslint/require-await [types]	Async generator function 'gen' has no 'await' expression.
+examples/bun-common/12-options/response-options.ts:523:23	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/response-options.ts:998:12	warn	@typescript-eslint/no-base-to-string [types]	'options[key] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/12-options/response-options.ts:1404:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-common/12-options/response-options.ts:1405:44	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+examples/bun-common/12-options/router-options.ts:457:47	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/router-options.ts:1163:12	warn	@typescript-eslint/no-base-to-string [types]	'options[key] ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/12-options/validate-options.ts:524:33	warn	@typescript-eslint/no-base-to-string [types]	'value.page ?? "1"' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/12-options/validate-options.ts:539:27	warn	@typescript-eslint/no-base-to-string [types]	'(value as { title?: unknown }).title ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-common/12-options/websocket-options.ts:279:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:280:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:281:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:282:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:283:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:284:7	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-common/12-options/websocket-options.ts:1076:25	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/websocket-options.ts:1119:25	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/websocket-options.ts:1150:25	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/12-options/websocket-options.ts:1228:25	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-common/run-all.ts:73:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-common/shared/check.ts:105:56	warn	@typescript-eslint/no-base-to-string [types]	'code' will use Object's default stringification format ('[object Object]') when stringified.

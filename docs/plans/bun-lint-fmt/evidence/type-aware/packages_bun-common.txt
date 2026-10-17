@@ -1,0 +1,382 @@
+# packages/bun-common: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 380 findings.
+packages/bun-common/__tests__/asyncWait.test.ts:58:114	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/asyncWait.test.ts:64:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:68:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:96:5	error	bun:test/valid-expect	Async assertions must be awaited.
+packages/bun-common/__tests__/asyncWait.test.ts:97:5	error	bun:test/valid-expect	Async assertions must be awaited.
+packages/bun-common/__tests__/asyncWait.test.ts:98:5	error	bun:test/valid-expect	Async assertions must be awaited.
+packages/bun-common/__tests__/asyncWait.test.ts:106:9	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:112:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:129:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:152:9	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:176:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:200:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:202:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:237:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:252:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:256:5	error	bun:test/valid-expect	Async assertions must be awaited.
+packages/bun-common/__tests__/asyncWait.test.ts:277:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:318:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:338:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:342:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/asyncWait.test.ts:358:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/bodyFastPath.test.ts:225:30	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `DefaultRequestBody`.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:39:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:104:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:113:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:125:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:156:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:170:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:182:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:211:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:212:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:230:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:231:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:248:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.test.ts:249:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/bunValidate.libraries.type-test.ts:116:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/compression.chrome.e2e.test.ts:374:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/compression.test.ts:259:29	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/compression.test.ts:267:44	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/compression.test.ts:891:23	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+packages/bun-common/__tests__/compression.test.ts:895:21	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `Uint8Array<ArrayBufferLike>`.
+packages/bun-common/__tests__/constructionFastPath.test.ts:250:15	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/__tests__/constructionFastPath.test.ts:251:9	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/__tests__/constructionFastPath.test.ts:251:46	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-common/__tests__/constructionFastPath.test.ts:251:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .bind on an `any` value.
+packages/bun-common/__tests__/constructionFastPath.test.ts:329:50	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/constructionFastPath.test.ts:511:11	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/__tests__/constructionFastPath.test.ts:519:50	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/constructionFastPath.test.ts:553:9	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/__tests__/cors-static-multipart.type-test.ts:98:3	warn	@typescript-eslint/require-await [types]	Async method 'handleFile' has no 'await' expression.
+packages/bun-common/__tests__/cors-static-multipart.type-test.ts:112:3	warn	@typescript-eslint/require-await [types]	Async method 'removeFile' has no 'await' expression.
+packages/bun-common/__tests__/cors-static-multipart.type-test.ts:186:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/dispatch.test.ts:49:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/dispatch.test.ts:138:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/express-use.test.ts:42:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:55:34	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:78:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/express-use.test.ts:81:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:108:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:124:25	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:176:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:214:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:218:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/express-use.test.ts:238:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:272:48	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:276:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:289:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:293:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:305:53	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:324:48	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:325:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:434:35	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/express-use.test.ts:467:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/expressParity.test.ts:29:15	error	@typescript-eslint/restrict-plus-operands [types]	Invalid operand for a '+' operation. Operands must each be a number or string, allowing a string + any of: `any`, `boolean`, `null`, `RegExp`, `undefined`. Got `Buffer<ArrayBufferLike>`.
+packages/bun-common/__tests__/expressParity.test.ts:72:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/__tests__/expressParity.test.ts:251:39	error	@typescript-eslint/restrict-template-expressions [types]	Invalid type "URL" of template literal expression.
+packages/bun-common/__tests__/expressParity.test.ts:254:46	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+packages/bun-common/__tests__/expressParity.test.ts:259:23	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+packages/bun-common/__tests__/expressParity.test.ts:261:42	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+packages/bun-common/__tests__/expressParity.test.ts:336:39	error	@typescript-eslint/restrict-template-expressions [types]	Invalid type "URL" of template literal expression.
+packages/bun-common/__tests__/fetch.test.ts:578:7	warn	@typescript-eslint/require-await [types]	Async method 'arrayBuffer' has no 'await' expression.
+packages/bun-common/__tests__/finalErrorResponse.test.ts:131:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/httpAdapter.test.ts:36:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/httpAdapter.test.ts:117:14	warn	@typescript-eslint/require-await [types]	Async generator function has no 'await' expression.
+packages/bun-common/__tests__/httpAdapter.test.ts:230:6	error	bun:test/no-identical-title	Test title is used multiple times in the same describe block.
+packages/bun-common/__tests__/jsonDirect.test.ts:72:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:91:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:196:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:203:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:218:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:232:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:246:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/jsonDirect.test.ts:275:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/lazyState.test.ts:97:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/lazyState.test.ts:128:45	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/lazyState.test.ts:187:47	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/lazyState.test.ts:209:49	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/lazyState.test.ts:230:5	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/__tests__/multipart.test.ts:454:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:581:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:598:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:612:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:629:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:672:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/multipart.test.ts:708:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/multipart.test.ts:830:9	warn	@typescript-eslint/require-await [types]	Async method 'fieldInflator' has no 'await' expression.
+packages/bun-common/__tests__/multipart.test.ts:849:9	warn	@typescript-eslint/require-await [types]	Async method 'fileInflator' has no 'await' expression.
+packages/bun-common/__tests__/multipart.test.ts:1108:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/native.test.ts:173:9	warn	@typescript-eslint/require-await [types]	Async generator method has no 'await' expression.
+packages/bun-common/__tests__/native.test.ts:542:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:659:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:732:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:883:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:901:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:1151:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:1180:41	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/native.test.ts:1299:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:1307:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/native.test.ts:1350:9	warn	no-useless-assignment	The value assigned to 'overLimit' is not used in subsequent statements.
+packages/bun-common/__tests__/native.type-test.ts:185:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/native.type-test.ts:492:1	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a type that could not be resolved.
+packages/bun-common/__tests__/packaging.test.ts:102:36	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `string[]`.
+packages/bun-common/__tests__/parseBody.test.ts:134:60	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/parseBody.test.ts:250:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:432:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/parseBody.test.ts:495:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:498:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:557:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:614:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:622:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:647:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:654:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:661:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:669:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:695:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:703:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:712:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:720:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:734:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:739:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:746:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:757:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:770:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:771:54	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/parseBody.test.ts:786:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:796:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:801:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:810:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:906:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:907:51	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/__tests__/parseBody.test.ts:909:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:912:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:961:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/parseBody.test.ts:975:7	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/request.test.ts:21:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/request.test.ts:576:53	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/request.test.ts:577:23	warn	@typescript-eslint/no-base-to-string [types]	'req.body' may use Object's default stringification format ('[object Object]') when stringified.
+packages/bun-common/__tests__/request.test.ts:608:53	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/response.test.ts:73:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/response.test.ts:236:14	warn	@typescript-eslint/require-await [types]	Async generator function has no 'await' expression.
+packages/bun-common/__tests__/response.test.ts:248:7	warn	@typescript-eslint/require-await [types]	Async generator method has no 'await' expression.
+packages/bun-common/__tests__/response.test.ts:277:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/response.test.ts:661:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/response.test.ts:669:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/response.test.ts:675:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/response.test.ts:676:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/response.test.ts:1064:48	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/response.test.ts:1079:48	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/response.test.ts:1086:49	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/response.test.ts:1092:52	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/response.test.ts:1163:21	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+packages/bun-common/__tests__/response.test.ts:1167:40	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayBuffer | ArrayBufferView<ArrayBufferLike> | null | undefined`.
+packages/bun-common/__tests__/response.test.ts:1327:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/responseNoHeaders.test.ts:30:15	error	@typescript-eslint/restrict-plus-operands [types]	Invalid operand for a '+' operation. Operands must each be a number or string, allowing a string + any of: `any`, `boolean`, `null`, `RegExp`, `undefined`. Got `Buffer<ArrayBufferLike>`.
+packages/bun-common/__tests__/responseNoHeaders.test.ts:89:7	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `BunResponseHeaders`.
+packages/bun-common/__tests__/responseNoHeaders.test.ts:103:38	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `BunResponseHeaders`.
+packages/bun-common/__tests__/responseNoHeaders.test.ts:318:5	error	bun:test/valid-expect	Async assertions must be awaited.
+packages/bun-common/__tests__/routeIndex.test.ts:186:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/router-adapter.type-test.ts:221:71	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/router-adapter.type-test.ts:235:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/router-adapter.type-test.ts:321:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a type that could not be resolved.
+packages/bun-common/__tests__/router-adapter.type-test.ts:327:55	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/router-adapter.type-test.ts:334:5	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a type that could not be resolved.
+packages/bun-common/__tests__/router-adapter.type-test.ts:340:57	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/router-adapter.type-test.ts:344:3	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/router-adapter.type-test.ts:362:60	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+packages/bun-common/__tests__/router.test.ts:360:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/router.test.ts:370:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/router.test.ts:389:34	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/router.test.ts:393:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/router.test.ts:526:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/router.test.ts:607:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `await` of a non-Promise (non-"Thenable") value.
+packages/bun-common/__tests__/router.test.ts:1598:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/serveStatic.test.ts:417:33	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+packages/bun-common/__tests__/serveStatic.test.ts:417:33	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/__tests__/serveStatic.test.ts:417:37	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .setHeader on an `any` value.
+packages/bun-common/__tests__/serveStatic.test.ts:451:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/__tests__/serveStatic.test.ts:479:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/upgradeHeaders.test.ts:154:69	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/validate.type-test.ts:173:31	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type error.
+packages/bun-common/__tests__/validate.type-test.ts:177:31	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of a type that could not be resolved.
+packages/bun-common/__tests__/validate.type-test.ts:177:31	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type error.
+packages/bun-common/__tests__/websocket.test.ts:22:33	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/__tests__/websocket.type-test.ts:212:5	warn	@typescript-eslint/require-await [types]	Async method 'onUpgrade' has no 'await' expression.
+packages/bun-common/__tests__/websocket.type-test.ts:261:12	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/__tests__/wsOnUpgrade.test.ts:143:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/__tests__/wsOnUpgrade.test.ts:179:53	warn	@typescript-eslint/require-await [types]	Async arrow function 'startStandalone' has no 'await' expression.
+packages/bun-common/__tests__/wsOnUpgrade.test.ts:278:11	warn	@typescript-eslint/require-await [types]	Async method 'onUpgrade' has no 'await' expression.
+packages/bun-common/__tests__/wsOnUpgrade.test.ts:361:69	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/bench/xml.ts:95:57	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/bench/xml.ts:97:3	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:106:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/bench/xml.ts:106:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .name on an `any` value.
+packages/bun-common/bench/xml.ts:107:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/bench/xml.ts:107:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .attribs on an `any` value.
+packages/bun-common/bench/xml.ts:111:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .children on an `any` value.
+packages/bun-common/bench/xml.ts:112:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-common/bench/xml.ts:113:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-common/bench/xml.ts:113:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-common/bench/xml.ts:114:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-common/bench/xml.ts:115:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .children on an `any` value.
+packages/bun-common/bench/xml.ts:116:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-common/bench/xml.ts:116:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+packages/bun-common/bench/xml.ts:125:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/bench/xml.ts:125:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+packages/bun-common/bench/xml.ts:149:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:153:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:163:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:167:3	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:193:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:200:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:204:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/bench/xml.ts:213:7	warn	no-useless-assignment	The value assigned to 'elapsed' is not used in subsequent statements.
+packages/bun-common/bench/xml.ts:224:1	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:229:3	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:230:3	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:246:7	warn	no-console	Unexpected console statement.
+packages/bun-common/bench/xml.ts:262:5	warn	no-console	Unexpected console statement.
+packages/bun-common/lib/BunHttpAdapter.ts:433:14	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/BunHttpAdapter.ts:560:5	warn	@typescript-eslint/await-thenable [types]	Unexpected `for await...of` of a value that is not async iterable.
+packages/bun-common/lib/BunHttpAdapter.ts:641:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunHttpAdapter.ts:1331:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunHttpAdapter.ts:1602:3	warn	@typescript-eslint/require-await [types]	Async method 'init' has no 'await' expression.
+packages/bun-common/lib/BunHttpAdapter.ts:1660:15	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/lib/BunRequest.ts:468:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunRequest.ts:594:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunRequest.ts:688:16	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunRequest.ts:1208:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:1243:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:1282:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:1323:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:1530:34	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:2743:37	warn	@typescript-eslint/await-thenable [types]	Unexpected iterable of non-Promise (non-"Thenable") values passed to promise aggregator.
+packages/bun-common/lib/BunRequest.ts:2844:29	warn	@typescript-eslint/no-redundant-type-constituents [types]	"abort" | "aborted" | "close" | "data" | "end" | "error" is overridden by string in this union type.
+packages/bun-common/lib/BunRequest.ts:2940:25	warn	@typescript-eslint/no-redundant-type-constituents [types]	"abort" | "aborted" | "close" | "data" | "end" | "error" is overridden by string in this union type.
+packages/bun-common/lib/BunRequest.ts:3554:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRequest.ts:3616:9	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/BunRequest.ts:3713:30	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/BunRequest.ts:3900:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunRequest.ts:4064:23	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+packages/bun-common/lib/BunRequest.ts:4069:26	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .byteLength on an `any` value.
+packages/bun-common/lib/BunRequest.ts:4074:23	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `Uint8Array<ArrayBufferLike>`.
+packages/bun-common/lib/BunRequest.ts:4472:7	warn	no-useless-assignment	The value assigned to 'reqSecret' is not used in subsequent statements.
+packages/bun-common/lib/BunRequest.ts:4502:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRequest.ts:4779:22	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/BunRequest.ts:5330:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRequest.ts:5331:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunResponse.ts:1282:25	warn	@typescript-eslint/no-redundant-type-constituents [types]	"close" | "drain" | "error" | "finish" | "pipe" | "unpipe" is overridden by string in this union type.
+packages/bun-common/lib/BunResponse.ts:1826:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunResponse.ts:1952:3	warn	@typescript-eslint/require-await [types]	Async method 'initLongLivedConnection' has no 'await' expression.
+packages/bun-common/lib/BunResponse.ts:2035:5	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/lib/BunResponse.ts:2242:3	warn	@typescript-eslint/require-await [types]	Async method 'closeWritableStream' has no 'await' expression.
+packages/bun-common/lib/BunResponse.ts:2261:3	warn	@typescript-eslint/require-await [types]	Async method 'writeToWritableStream' has no 'await' expression.
+packages/bun-common/lib/BunResponse.ts:2312:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/lib/BunResponse.ts:2316:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/lib/BunResponse.ts:2392:24	warn	@typescript-eslint/no-base-to-string [types]	'second ?? ""' may use Object's default stringification format ('[object Object]') when stringified.
+packages/bun-common/lib/BunResponse.ts:2396:50	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunResponse.ts:2709:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunResponse.ts:2798:3	warn	@typescript-eslint/require-await [types]	Async method 'handleNotFound' has no 'await' expression.
+packages/bun-common/lib/BunRouter.ts:133:13	error	@typescript-eslint/only-throw-error [types]	Expected an error object to be thrown.
+packages/bun-common/lib/BunRouter.ts:849:9	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/BunRouter.ts:1343:38	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRouter.ts:1351:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRouter.ts:4953:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRouter.ts:5143:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunRouter.ts:5258:15	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/BunRouter.ts:5293:3	error	@typescript-eslint/no-misused-promises [types]	Promise-returning method provided where a void return was expected by extended/implemented type 'Router'.
+packages/bun-common/lib/BunRouter.ts:5340:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunRouter.ts:5941:13	error	@typescript-eslint/only-throw-error [types]	Expected an error object to be thrown.
+packages/bun-common/lib/BunValidate.ts:362:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunValidate.ts:470:24	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/BunValidate.ts:531:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunWebSocket.ts:489:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/BunWebSocket.ts:662:25	warn	@typescript-eslint/no-redundant-type-constituents [types]	"close" | "connect" | "disconnect" | "drain" | "message" | "open" | "ping" | "pong" is overridden by string in this union type.
+packages/bun-common/lib/BunWebSocket.ts:767:17	error	@typescript-eslint/only-throw-error [types]	Expected an error object to be thrown.
+packages/bun-common/lib/BunWebSocket.ts:866:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/lib/BunWebSocket.ts:968:11	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/lib/BunWebSocket.ts:1005:3	warn	@typescript-eslint/require-await [types]	Async method 'setRouteHandler' has no 'await' expression.
+packages/bun-common/lib/BunWebSocket.ts:1011:9	warn	@typescript-eslint/no-duplicate-type-constituents [types]	Explicit undefined is unnecessary on an optional parameter.
+packages/bun-common/lib/BunWebSocket.ts:1134:39	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/compression.ts:570:30	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `string`.
+packages/bun-common/lib/compression.ts:578:18	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `string`.
+packages/bun-common/lib/compression.ts:1164:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/multipart/buffered.ts:277:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/multipart/buffered.ts:424:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/multipart/index.ts:295:5	warn	@typescript-eslint/await-thenable [types]	Unexpected iterable of non-Promise (non-"Thenable") values passed to promise aggregator.
+packages/bun-common/lib/multipart/index.ts:302:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/multipart/storage/memory-storage.ts:30:3	warn	@typescript-eslint/require-await [types]	Async method 'handleFile' has no 'await' expression.
+packages/bun-common/lib/requestParsing.ts:82:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/types/general.ts:403:27	warn	@typescript-eslint/no-duplicate-type-constituents [types]	Explicit undefined is unnecessary on an optional parameter.
+packages/bun-common/lib/utils/general.ts:76:9	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `PropertyDescriptor & ThisType<any>`.
+packages/bun-common/lib/utils/native.ts:324:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/native.ts:375:39	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+packages/bun-common/lib/utils/native.ts:643:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:643:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [segment] on an `any` value.
+packages/bun-common/lib/utils/native.ts:646:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+packages/bun-common/lib/utils/native.ts:693:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:693:26	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [segment] on an `any` value.
+packages/bun-common/lib/utils/native.ts:696:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [segment] on an `any` value.
+packages/bun-common/lib/utils/native.ts:698:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:698:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [segment] on an `any` value.
+packages/bun-common/lib/utils/native.ts:701:11	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [segments[segments.length - 1]] on an `any` value.
+packages/bun-common/lib/utils/native.ts:724:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:733:33	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+packages/bun-common/lib/utils/native.ts:734:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:734:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [key] on an `any` value.
+packages/bun-common/lib/utils/native.ts:735:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:735:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [key] on an `any` value.
+packages/bun-common/lib/utils/native.ts:739:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:739:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [key] on an `any` value.
+packages/bun-common/lib/utils/native.ts:742:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:742:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [key] on an `any` value.
+packages/bun-common/lib/utils/native.ts:744:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:744:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [key] on an `any` value.
+packages/bun-common/lib/utils/native.ts:886:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:887:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:980:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/native.ts:981:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/native.ts:982:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/native.ts:1405:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+packages/bun-common/lib/utils/native.ts:1658:12	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/utils/native.ts:1693:11	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+packages/bun-common/lib/utils/native.ts:2089:8	warn	@typescript-eslint/require-await [types]	Async function 'getPort' has no 'await' expression.
+packages/bun-common/lib/utils/native.ts:2112:7	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/lib/utils/native.ts:2743:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.
+packages/bun-common/lib/utils/routeTree.ts:413:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/wsUpgrade.ts:88:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/lib/utils/wsUpgrade.ts:94:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/playground/httpAdapter/index.ts:6:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+packages/bun-common/playground/httpAdapter/index.ts:11:3	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:16:5	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/playground/normal/api.ts:17:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:31:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:34:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:37:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:45:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:59:3	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/normal/api.ts:63:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/playground/normal/api.ts:64:3	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:33:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:38:5	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+packages/bun-common/playground/sse/api.ts:39:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:74:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/playground/sse/api.ts:119:7	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:122:7	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:128:7	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:135:3	warn	@typescript-eslint/require-await [types]	Async method 'error' has no 'await' expression.
+packages/bun-common/playground/sse/api.ts:141:5	warn	no-console	Unexpected console statement.
+packages/bun-common/playground/sse/api.ts:147:1	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/build-declarations.ts:174:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/scripts/build-declarations.ts:251:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/scripts/build-declarations.ts:405:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+packages/bun-common/scripts/build-declarations.ts:545:5	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/build-declarations.ts:550:5	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/build-declarations.ts:555:5	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/build-declarations.ts:556:31	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/build-declarations.ts:559:3	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/generate-verb-overloads.ts:188:7	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/generate-verb-overloads.ts:193:7	warn	no-console	Unexpected console statement.
+packages/bun-common/scripts/generate-verb-overloads.ts:200:3	warn	no-console	Unexpected console statement.

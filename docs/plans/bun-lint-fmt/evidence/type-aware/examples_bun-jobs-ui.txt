@@ -1,0 +1,228 @@
+# examples/bun-jobs-ui: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 226 findings.
+examples/bun-jobs-ui/01-quick-start/index.ts:154:26	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+examples/bun-jobs-ui/02-serving/shell-and-assets.ts:73:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/02-serving/shell-and-assets.ts:169:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/02-serving/shell-and-assets.ts:170:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/02-serving/shell-and-assets.ts:395:29	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/03-deployments/cross-origin.ts:58:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/03-deployments/cross-origin.ts:59:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:283:37	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:355:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:356:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:358:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:359:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:393:24	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:473:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/deep-links.ts:484:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:383:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2546:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2743:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2753:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2794:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2802:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2828:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2829:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2830:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2873:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2880:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2884:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2892:49	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:2892:64	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:3872:28	warn	@typescript-eslint/no-base-to-string [types]	'channel.address ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs-ui/04-screens/permissions.ts:4236:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4407:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4454:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4455:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4456:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4477:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4647:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4659:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4724:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4849:38	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4852:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4857:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4862:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4867:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4873:41	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:4878:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5226:49	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5296:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5316:46	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5347:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5470:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5506:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5507:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5508:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5537:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5538:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5539:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5561:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5561:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5592:29	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5597:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5605:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5611:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5618:49	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5626:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5634:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5637:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5662:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5669:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5672:56	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5720:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5749:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5786:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:5805:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6080:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6181:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6215:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6218:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6265:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6273:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6326:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6591:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6600:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6629:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6630:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6631:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6633:63	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6676:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6718:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6723:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6728:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6766:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:6789:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7011:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7107:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7129:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7145:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7270:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7652:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7670:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7747:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:7748:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8278:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8289:55	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8331:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8332:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8342:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8506:7	warn	@typescript-eslint/require-await [types]	Async method 'summon' has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8537:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8638:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8657:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:8922:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:9029:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:9031:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:9076:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:9140:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/04-screens/permissions.ts:9141:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/05-demo/helpers/runners.ts:95:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/05-demo/helpers/runners.ts:114:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/05-demo/helpers/seed.ts:295:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/05-demo/seeded-demo.ts:257:51	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/05-demo/seeded-demo.ts:843:26	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+examples/bun-jobs-ui/06-browser/accessibility.ts:149:45	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/accessibility.ts:210:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/add-flow.ts:131:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs-ui/06-browser/add-flow.ts:261:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/api-docs.ts:209:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/api-docs.ts:281:41	warn	@typescript-eslint/no-base-to-string [types]	'connection.description ?? ""' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs-ui/06-browser/api-docs.ts:316:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/helpers/mailer-replica.ts:31:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/helpers/remote-worker.ts:43:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/job-actions.ts:138:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/job-defaults-panel.ts:260:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/job-defaults-panel.ts:470:34	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/job-defaults-panel.ts:518:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/job-defaults-panel.ts:540:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/jobs-paging.ts:303:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:234:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:281:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:697:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:776:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:798:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:807:49	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:862:57	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/live-events.ts:970:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:215:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs-ui/06-browser/overview-range.ts:265:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:664:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:753:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:768:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:809:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:810:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:896:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1126:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1245:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1257:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1258:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1313:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1352:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1353:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1354:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1355:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1356:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1378:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1380:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1448:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1448:42	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1461:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1462:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1463:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1477:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1851:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/overview-range.ts:1852:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/pause-and-retry.ts:171:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/pause-and-retry.ts:199:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs-ui/06-browser/providers.ts:289:5	warn	@typescript-eslint/require-await [types]	Async method 'summon' has no 'await' expression.
+examples/bun-jobs-ui/06-browser/providers.ts:441:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/providers.ts:1097:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:535:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1470:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1571:66	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1694:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1694:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1703:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1751:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1751:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1794:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1794:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1887:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1887:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:1975:68	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:2001:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:2001:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/runner-and-job-tools.ts:2055:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:383:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:433:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:503:5	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs-ui/06-browser/workers.ts:664:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1030:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1031:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1031:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1032:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1818:19	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-jobs-ui/06-browser/workers.ts:1884:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1884:37	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1922:33	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1923:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1924:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1926:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1927:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:1945:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2001:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2002:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2032:42	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2048:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2079:45	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2437:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2815:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2825:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:2913:6	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:3049:34	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/06-browser/workers.ts:3082:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/run-all.ts:76:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/shared/check.ts:105:56	warn	@typescript-eslint/no-base-to-string [types]	'code' will use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs-ui/shared/shell.ts:63:24	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs-ui/shared/shell.ts:64:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.

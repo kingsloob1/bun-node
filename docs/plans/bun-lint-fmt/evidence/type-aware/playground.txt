@@ -1,0 +1,12 @@
+# playground: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 10 findings.
+playground/compute/units.ts:422:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/mailer.ts:37:8	warn	@typescript-eslint/require-await [types]	Async function 'startMailer' has no 'await' expression.
+playground/scheduling.ts:73:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/simulation.ts:55:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/summoning.ts:195:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/summoning.ts:559:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/summoning.ts:607:18	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+playground/summoning.ts:672:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/summoning.ts:691:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+playground/targets.ts:55:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.

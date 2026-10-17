@@ -133,3 +133,32 @@ line 1485): the generator already emits Prettier-stable text.
 
 `bun fmt --check` on the whole repository (2,256 files): 0.12 s wall,
 1.45 s CPU. See [`../perf/`](../perf/README.md) for the repeated runs.
+
+## The one-time reformat under the answered settings (2026-10-17)
+
+Develop `930dd664`, Bun 1.4.4-canary.1+5f5799ed1, in the scratch clone of
+[`../type-aware/`](../type-aware/README.md), with the answered root
+`bunfig.toml` ([`../rules/bunfig.answered.toml`](../rules/bunfig.answered.toml):
+`[fmt] singleAttributePerLine = true`, `ignorePatterns = ["**/*.md",
+"docs/**", "benchmarks/results/**"]`, no `sortImports`).
+
+- `bun fmt --list-files` from the root: **1,697 files** in scope (1,388 `.ts`,
+  210 `.tsx`, 65 `.json`, 21 `.css`, 9 `.html`/`.htm`, 2 `.mjs`, 1 `.js`, 1
+  `.toml`).
+- `bun fmt --check` from the root: exit 1, **89 files** need formatting
+  (0.08 to 0.10 s wall, about 1 s CPU, three runs):
+  [`answered-reformat-files.txt`](answered-reformat-files.txt). Formatted
+  (`bun fmt`), they change by **+371 −506**
+  ([`answered-reformat-numstat.txt`](answered-reformat-numstat.txt)); a second
+  `bun fmt --check` exits 0.
+- **By kind**: 82 TypeScript files (+228 −407; 79 in the lint scope, 3 in
+  `benchmarks/`, which has no ESLint config but is not in `[fmt]`'s ignore
+  list), 3 CSS (`packages/bun-jobs-ui/app/`), 3 HTML (bun-common's
+  playground and `examples/bun-common`) and `lerna.json`.
+- **By owner**: bun-common 19 (+149 −219), bun-jobs 40 (+74 −139),
+  bun-jobs-ui 15 (+68 −70), bun-nest 2 (+7 −10), `examples/*` 6, `benchmarks/`
+  3, `playground/` 1, `scripts/` 1, the template 1, the root 1.
+
+The 79 in the lint scope are the 78 of 2026-10-16 (the Prettier 3.9
+changes), all still there, plus `scripts/nest-matrix.ts`, which #400 added
+after `f9baf24a`.

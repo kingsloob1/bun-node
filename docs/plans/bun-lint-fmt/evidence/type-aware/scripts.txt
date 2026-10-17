@@ -1,0 +1,27 @@
+# scripts: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 25 findings.
+scripts/__tests__/heavy-run.test.ts:404:3	warn	@typescript-eslint/require-await [types]	Async method 'cleanup' has no 'await' expression.
+scripts/__tests__/heavy-run.test.ts:832:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:835:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:841:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1183:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1196:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1196:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1253:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1256:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1256:57	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/heavy-run.test.ts:1349:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/__tests__/setup-databases.test.ts:324:50	warn	@typescript-eslint/require-await [types]	Async arrow function 'runner' has no 'await' expression.
+scripts/__tests__/setup-databases.test.ts:629:7	warn	@typescript-eslint/require-await [types]	Async method 'runner' has no 'await' expression.
+scripts/__tests__/setup-databases.test.ts:633:7	warn	@typescript-eslint/require-await [types]	Async method 'execSuperuser' has no 'await' expression.
+scripts/__tests__/setup-databases.test.ts:637:7	warn	@typescript-eslint/require-await [types]	Async method 'waitReady' has no 'await' expression.
+scripts/__tests__/setup-databases.test.ts:641:7	warn	@typescript-eslint/require-await [types]	Async method 'readState' has no 'await' expression.
+scripts/__tests__/setup-databases.test.ts:677:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+scripts/consumer-check.ts:189:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/consumer-check.ts:342:68	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/consumer-check.ts:423:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/install-heavy-run.ts:135:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/nest-matrix.ts:130:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+scripts/setup-databases.ts:1827:5	warn	@typescript-eslint/require-await [types]	Async method 'configure' has no 'await' expression.
+scripts/setup-databases.ts:2041:5	warn	@typescript-eslint/require-await [types]	Async method 'configure' has no 'await' expression.
+scripts/setup-databases.ts:2071:5	warn	@typescript-eslint/require-await [types]	Async method 'configure' has no 'await' expression.

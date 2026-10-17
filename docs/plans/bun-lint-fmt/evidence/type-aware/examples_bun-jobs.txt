@@ -1,0 +1,938 @@
+# examples/bun-jobs: bun lint --type-aware -f json, the answered root bunfig.toml, develop 930dd664, Bun 1.4.4-canary.1+5f5799ed1, 2026-10-17
+# file:line:column, severity, rule ([types] = needs types, on only with --type-aware), message. 936 findings.
+examples/bun-jobs/02-queues/custom-provider.ts:292:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/custom-provider.ts:538:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/custom-provider.ts:549:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/custom-provider.ts:550:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/custom-provider.ts:551:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/demand.ts:245:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/demand.ts:251:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/02-queues/events.ts:94:68	error	@typescript-eslint/restrict-template-expressions [types]	Invalid type "RunProgress" of template literal expression.
+examples/bun-jobs/02-queues/events.ts:94:68	warn	@typescript-eslint/no-base-to-string [types]	'value' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs/02-queues/helpers/local-unit.ts:32:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/helpers/local-unit.ts:79:17	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/helpers/partial-unit-entry.ts:33:31	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/helpers/summon-group-member.ts:31:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/helpers/summon-inert.ts:23:3	warn	@typescript-eslint/require-await [types]	Async method 'summoner' has no 'await' expression.
+examples/bun-jobs/02-queues/helpers/summoned-group-entry.ts:33:3	warn	@typescript-eslint/require-await [types]	Async method 'emails' has no 'await' expression.
+examples/bun-jobs/02-queues/helpers/summoned-group-entry.ts:38:3	warn	@typescript-eslint/require-await [types]	Async method 'images' has no 'await' expression.
+examples/bun-jobs/02-queues/isolated-processors.ts:151:39	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/job-options.ts:68:15	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+examples/bun-jobs/02-queues/local-compute.ts:327:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:344:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:345:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:345:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:345:37	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:357:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:359:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:367:28	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:373:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:443:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:447:29	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:781:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:785:38	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:788:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:788:40	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:791:33	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:795:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/local-compute.ts:795:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/producer-and-worker.ts:108:33	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/searching-and-paging.ts:46:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-controller.ts:111:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-controller.ts:141:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-controller.ts:153:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-controller.ts:263:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-failures.ts:128:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-failures.ts:140:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-failures.ts:151:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:156:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:167:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:180:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:193:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:317:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:394:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:394:52	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:406:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-group-budget.ts:447:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-groups.ts:83:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-groups.ts:214:47	warn	@typescript-eslint/require-await [types]	Async arrow function 'platformDown' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-groups.ts:224:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-groups.ts:225:3	warn	@typescript-eslint/require-await [types]	Async method 'release' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-groups.ts:477:68	warn	@typescript-eslint/no-base-to-string [types]	'error' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs/02-queues/summon-groups.ts:628:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts:172:7	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts:275:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts:283:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts:476:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/02-queues/summon-shared-unit-coverage.ts:497:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:347:7	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:367:7	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:402:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:429:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:485:14	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:490:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:520:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:664:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:875:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:966:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:997:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1135:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1136:5	warn	@typescript-eslint/require-await [types]	Async method 'release' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1217:7	warn	@typescript-eslint/require-await [types]	Async method 'summon' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1287:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1323:5	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1452:51	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1458:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1853:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1952:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1981:1	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:1982:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:2116:49	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/02-queues/summon-shared-unit.ts:2198:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:169:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:267:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:366:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:390:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:437:38	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:525:3	error	unicorn/prefer-string-starts-ends-with	Prefer String#startsWith over a regex with a caret.
+examples/bun-jobs/02-queues/summoned-unit.ts:573:31	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:574:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-unit.ts:677:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/summoned-worker.ts:158:10	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/02-queues/summoned-worker.ts:340:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/workers-and-throughput.ts:58:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/02-queues/workers-and-throughput.ts:76:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/builder-with-options.ts:38:45	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/jobs-create.ts:49:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/process-every.ts:39:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/process-every.ts:113:49	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/send-to-another-queue.ts:68:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/send-to-another-queue.ts:298:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:122:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:136:39	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:143:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:156:38	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:236:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:239:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:242:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:245:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:248:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:314:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:321:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:355:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:402:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:405:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:408:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:410:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:416:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:427:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:486:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:568:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:571:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:574:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:621:41	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry-verbs.ts:778:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:154:37	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:162:41	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:169:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:172:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:175:39	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:175:42	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type error.
+examples/bun-jobs/03-job-registry/typed-registry.ts:286:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:289:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:292:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:442:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:445:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:448:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:451:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:554:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:558:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:561:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:564:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:630:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:643:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/03-job-registry/typed-registry.ts:684:61	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/03-job-registry/typed-registry.ts:685:38	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/04-scheduling/repeatable-jobs.ts:40:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/05-flow-control/debounce.ts:45:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/05-flow-control/throttle.ts:38:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/06-failures/dead-letter-queue.ts:45:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/06-failures/dead-letter-queue.ts:79:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/06-failures/retries-and-backoff.ts:49:50	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/06-failures/unrecoverable-errors.ts:34:20	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/07-runner/messages-progress-kill.ts:36:48	error	@typescript-eslint/restrict-template-expressions [types]	Invalid type "RunProgress" of template literal expression.
+examples/bun-jobs/07-runner/messages-progress-kill.ts:36:48	warn	@typescript-eslint/no-base-to-string [types]	'value' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs/07-runner/thread-deadline.ts:134:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/08-drivers/choosing-a-driver.ts:135:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/08-drivers/cross-process/consumer.ts:36:25	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+examples/bun-jobs/08-drivers/postgres-and-mysql.ts:76:18	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/08-drivers/redis.ts:45:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts:62:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/09-integrations/http-api.ts:119:26	error	@typescript-eslint/no-misused-promises [types]	Promise returned in function argument where a void return was expected.
+examples/bun-jobs/09-integrations/http-api.ts:130:39	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:144:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:144:59	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:145:26	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .state on an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:145:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .progress on an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:147:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .state on an `any` value.
+examples/bun-jobs/09-integrations/http-api.ts:149:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-jobs/09-integrations/live-dashboard.ts:95:53	warn	@typescript-eslint/no-base-to-string [types]	'event.payload.progress' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs/09-integrations/logging.ts:51:20	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/09-integrations/namespaces.ts:40:3	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/09-integrations/namespaces.ts:43:19	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:132:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:172:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:604:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:662:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:694:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1026:43	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .totals on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1029:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1029:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1032:11	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .end on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1032:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .to on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1032:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .interval on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1033:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1034:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .to on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1034:27	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .from on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1034:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .interval on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1035:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1035:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .from on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1041:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .totals on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1094:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobs on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1165:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1169:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1173:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .resolution on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1173:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .clamped on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1173:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .reason on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1179:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .resolution on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1179:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .clamped on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1184:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1188:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1191:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .resolution on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1191:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .clamped on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1191:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .reason on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1195:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1199:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1202:5	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `boolean`.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1202:12	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .clamped on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1203:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .reason on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1204:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .from on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1204:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .requested on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1214:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1215:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1216:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1230:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1231:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1232:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .range on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1255:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1267:29	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1295:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1460:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1485:37	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1518:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1519:25	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `string`.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1519:42	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1662:37	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1671:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1689:37	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/analytics-and-attribution.ts:1698:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/bunjobs-options.ts:350:22	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/bunjobs-options.ts:745:31	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .kind on an `any` value.
+examples/bun-jobs/10-options/bunjobs-options.ts:745:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .target on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:113:65	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/cross-process-control.ts:513:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:526:71	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/cross-process-control.ts:639:37	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:650:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:662:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:671:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .state on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:671:60	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .worker on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:683:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:687:44	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/cross-process-control.ts:707:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:842:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:921:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1061:42	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .config on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1164:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1165:43	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1167:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1203:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1203:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .executionMode on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1204:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1267:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .executionMode on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1268:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .lastRun on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1269:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .config on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1270:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .config on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1271:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .config on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1273:5	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/cross-process-control.ts:1273:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1327:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1327:56	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .executionMode on an `any` value.
+examples/bun-jobs/10-options/cross-process-control.ts:1328:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1348:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1373:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1378:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1384:53	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1387:36	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/cross-process-control.ts:1387:51	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:233:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:754:39	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1518:53	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1563:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1681:41	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1696:38	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1709:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1725:39	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1762:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1811:53	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1879:61	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1933:60	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:1961:45	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2027:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2047:42	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2138:46	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2143:45	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2211:45	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/draft-and-process-every.ts:2276:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/driver-options.ts:716:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/driver-options.ts:893:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/driver-options.ts:896:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [0] on an `any` value.
+examples/bun-jobs/10-options/driver-options.ts:910:62	warn	@typescript-eslint/require-await [types]	Async arrow function 'sqliteEvents' has no 'await' expression.
+examples/bun-jobs/10-options/driver-options.ts:1237:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/driver-options.ts:1238:71	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [0] on an `any` value.
+examples/bun-jobs/10-options/errors.ts:235:37	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/errors.ts:256:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/errors.ts:261:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/errors.ts:262:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/errors.ts:263:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/errors.ts:562:36	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/errors.ts:596:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/helpers/notifier-remote.ts:40:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/ids-and-keys.ts:224:37	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/ids-and-keys.ts:513:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/ids-and-keys.ts:656:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/job-defaults.ts:179:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:252:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/job-defaults.ts:299:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:388:29	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:389:29	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:642:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:816:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:816:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:994:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:1097:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:1122:51	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:1165:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:1325:33	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:1327:32	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:1331:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-defaults.ts:1342:40	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/job-defaults.ts:1390:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1426:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1426:59	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1429:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaults on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1429:37	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaultsApply on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1437:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1437:71	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1441:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaults on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1442:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaultsApply on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1455:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1455:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1459:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaults on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1460:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaultsApply on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1478:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1478:69	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1482:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaults on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1483:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaultsApply on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1490:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1513:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queue on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1514:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .codeSource on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1515:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .seq on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1516:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .override on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1517:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .overridden on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1521:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1524:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .pending on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1524:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .pending on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1527:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .propagationMs on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1531:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .opts on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1536:64	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .opts on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1543:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .opts on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1554:27	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .override on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1563:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .override on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1566:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1568:56	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1571:31	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1582:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .override on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1597:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1603:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1604:53	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1607:27	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .dryRun on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1607:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .rewritten on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1607:64	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .done on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1616:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1620:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .rewritten on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1621:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1621:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .next on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1622:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1622:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .done on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1643:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1649:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1655:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1664:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1674:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1674:73	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .seq on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1676:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1680:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1681:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1681:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .next on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1685:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1685:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1689:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1690:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1690:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .next on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1694:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .rewritten on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1694:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .rewritten on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1694:70	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .done on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1701:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .override on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1704:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .seq on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1704:68	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .seq on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1706:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1706:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .seq on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1712:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1713:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1750:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1755:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1760:29	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1763:74	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1766:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .examined on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1766:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .done on an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1782:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1788:74	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/job-defaults.ts:1792:69	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/job-methods.ts:887:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/job-options.ts:459:15	error	@typescript-eslint/prefer-promise-reject-errors [types]	Expected the Promise rejection reason to be an Error.
+examples/bun-jobs/10-options/job-options.ts:1748:48	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:143:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:207:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:478:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:478:61	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:479:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addedByState on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:487:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .summonStoredStatus on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:492:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .demand on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:497:43	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .providers on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:544:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:544:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:545:21	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:545:27	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .name on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:572:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:573:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:582:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:583:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:592:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:593:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:604:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .mode on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:609:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:635:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:643:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .readOnly on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:761:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:761:72	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:764:15	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:775:16	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:806:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:808:8	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:811:16	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:818:15	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:827:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:827:47	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:830:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["jobs.remove"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:833:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["jobs.list"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:838:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:838:61	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:841:15	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:841:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [feature] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:846:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaults on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:846:43	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .jobDefaultsApply on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:870:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:870:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:871:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .logs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:872:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .update on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:873:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .throughput on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:874:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .limits on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:877:62	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:907:15	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:912:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1017:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1026:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1026:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1026:43	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:1026:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .target on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1031:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1032:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1033:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1048:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1051:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1052:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .title on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1072:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1072:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1097:34	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1128:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1177:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1180:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1237:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1441:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1455:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1495:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1500:66	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1505:47	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1573:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1584:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1666:48	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1689:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .failedReason on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1690:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .failedReason on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1694:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .failedReason on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1705:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .failedReason on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1724:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .data on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1739:3	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `boolean`.
+examples/bun-jobs/10-options/jobs-api-options.ts:1739:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1739:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1740:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .host on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1740:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .pid on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1742:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1747:3	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `boolean`.
+examples/bun-jobs/10-options/jobs-api-options.ts:1747:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1747:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1747:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .host on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1748:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1783:61	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1792:63	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:1848:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:1950:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2045:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .docs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2065:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .docs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2081:45	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .docs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2132:47	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .publishing on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2142:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .publishing on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2175:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .csrf on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2180:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .csrf on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2185:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .csrf on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2197:45	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .limits on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2225:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addableNames on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2231:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addableNames on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2236:45	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addableNames on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2241:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addableNames on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2246:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .addableNames on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2253:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .runnerTriggerArgs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2258:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .runnerTriggerArgs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2264:50	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .runnerTriggerArgs on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2271:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2274:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2277:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2278:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2279:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2347:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2354:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .channel on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2395:13	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2396:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2396:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .allowed on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2396:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2396:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .status on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2396:66	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .key on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2430:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2432:8	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2440:4	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:2440:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-options.ts:2496:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2498:8	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2507:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2509:8	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2545:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an error typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2546:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2563:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2572:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .added on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2577:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2577:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2588:39	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2605:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2635:9	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2638:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2740:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2741:60	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2747:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2748:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2751:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2751:28	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2754:16	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe spread of an `any` value in an array.
+examples/bun-jobs/10-options/jobs-api-options.ts:2754:29	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2754:36	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe spread of an `any` value in an array.
+examples/bun-jobs/10-options/jobs-api-options.ts:2754:48	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2760:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2765:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2765:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2765:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2767:6	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .toSorted on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2814:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2817:12	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{ items: { name: string; }[]; }`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2817:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2822:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2825:12	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{ items: { name: string; }[]; }`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2825:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2825:68	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2844:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2848:12	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{ items: { name: string; }[]; }`.
+examples/bun-jobs/10-options/jobs-api-options.ts:2848:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2848:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2868:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2869:62	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2891:39	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2925:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2931:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .throughputSeries on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2932:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2932:27	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .throughputSeries on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2935:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .interval on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2935:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2935:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .to on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2935:65	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .from on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2940:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .completed on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2940:31	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .failed on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2942:7	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2942:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2946:7	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2946:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .buckets on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2962:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2991:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:2991:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3006:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3018:71	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3027:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3033:74	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3038:12	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3081:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3112:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3136:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3136:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3136:58	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3233:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3233:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3233:64	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3247:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3277:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3310:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3357:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3363:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3363:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-action"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3365:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3368:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3368:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3368:11	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .parameters on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3370:6	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .map on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3376:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-csrf"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3383:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .requestBody on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3384:17	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3384:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .requestBody on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3394:12	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-csrf"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3395:10	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3395:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .parameters on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3395:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .some on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3400:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3403:19	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-csrf"] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3403:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .requestBody on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3408:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3408:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3408:38	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .parameters on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3410:5	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .schema on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3467:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3507:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3524:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3524:66	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .responses on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3530:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .properties on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3531:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .properties on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3569:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3570:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3571:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3576:18	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe array destructuring of a tuple element with an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3576:24	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe array destructuring of a tuple element with an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3576:32	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe array destructuring of a tuple element with an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3581:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .length on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3582:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [0] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3583:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [0] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3584:15	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3584:21	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3586:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3586:19	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access [0] on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3632:18	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe array destructuring of a tuple element with an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3632:24	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe array destructuring of a tuple element with an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3633:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3679:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any[]`.
+examples/bun-jobs/10-options/jobs-api-options.ts:3681:17	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3682:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .issues on an `any` value.
+examples/bun-jobs/10-options/jobs-api-options.ts:3705:54	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .schedule on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:172:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:175:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:176:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:179:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:184:15	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:208:6	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:541:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:1561:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:1938:20	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:1987:33	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:1988:35	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/jobs-api-socket-options.ts:2029:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/notifier.ts:363:8	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/notifier.ts:893:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/notifier.ts:1050:23	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/notifier.ts:1056:5	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/notifier.ts:1104:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/notifier.ts:1283:55	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/processors/isolation-fail.ts:14:54	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/processors/worker-idle.ts:13:52	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/queue-options.ts:967:52	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:94:7	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/10-options/read-apis.ts:460:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:460:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:555:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:653:17	error	@typescript-eslint/unbound-method [types]	A method that is not declared with `this: void` may cause unintentional scoping of `this` when separated from its object.
+examples/bun-jobs/10-options/read-apis.ts:658:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:773:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:774:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:780:4	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:780:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:824:56	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:910:17	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:973:63	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:989:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:989:26	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:995:60	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:1015:43	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:1078:66	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:1184:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:1211:4	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:1218:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/read-apis.ts:1266:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/read-apis.ts:1346:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:120:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:322:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:334:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:339:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:352:53	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:578:40	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:584:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:649:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:710:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:721:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:728:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:853:32	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:862:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/run-logs-and-clears.ts:879:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/10-options/runner-options.ts:1591:27	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/runner-options.ts:1688:33	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/utilities.ts:595:30	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/utilities.ts:600:53	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/utilities.ts:612:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/utilities.ts:662:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/utilities.ts:662:23	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/utilities.ts:786:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since the receiver accepts the original type of the expression.
+examples/bun-jobs/10-options/utilities.ts:1249:7	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:150:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:740:14	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:907:55	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1215:58	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1230:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1237:3	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1273:12	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1313:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1313:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1314:5	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1314:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/10-options/worker-options.ts:1331:12	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1409:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1588:64	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-options.ts:1596:61	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-targets.ts:736:59	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-targets.ts:1120:43	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-targets.ts:1130:43	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/10-options/worker-targets.ts:1137:65	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/add-flow.ts:138:39	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:158:63	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:170:72	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:183:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:225:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:270:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:344:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .added on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:345:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .job on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:346:16	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .children on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:448:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:454:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:489:25	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:602:33	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:602:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:618:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:618:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:619:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:619:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .detail on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:623:31	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/add-flow.ts:623:49	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .context on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:109:17	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:109:17	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:132:11	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `QueueDemandDto`.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:150:11	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `QueueDemandDto`.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:156:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:157:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:158:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:159:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:171:35	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:176:32	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:176:41	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:185:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:188:4	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:188:4	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:188:8	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queues on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:188:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .sort on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:188:67	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .truncated on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:193:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:195:6	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queues on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:203:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:205:6	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queues on an `any` value.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:233:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:234:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/demand-for-a-scaler.ts:241:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/helpers/contract-client.ts:154:21	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/helpers/contract-client.ts:257:22	error	unicorn/prefer-regexp-test	Prefer `RegExp#test()` over `String#match()` and `RegExp#exec()`.
+examples/bun-jobs/11-management-api/helpers/discovered-queue.ts:36:71	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/helpers/summoned-api.ts:37:9	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:181:15	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:426:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:487:47	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:587:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:588:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:634:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/11-management-api/live-events-delivery.ts:635:1	error	@typescript-eslint/no-floating-promises [types]	Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:55:59	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:154:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:154:19	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:164:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:164:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .type on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:165:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:165:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:171:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:172:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .driver on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:173:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .features on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:174:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .websocket on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:176:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:180:18	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayLike<unknown> | { [s: string]: unknown; }`.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:180:30	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .actions on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:213:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:217:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:217:14	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .page on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:218:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:218:8	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:218:13	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:218:37	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:218:41	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .id on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:221:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:224:31	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:239:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:239:21	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .added on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:248:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:248:22	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:259:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:259:24	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .added on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:276:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:278:10	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:278:40	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:278:52	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .key on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:278:57	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:278:71	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .every on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:293:12	warn	@typescript-eslint/require-await [types]	Async arrow function has no 'await' expression.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:304:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:307:3	warn	@typescript-eslint/no-unsafe-call [types]	Unsafe call of an `any` typed value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:307:11	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .items on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:308:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:308:19	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .queue on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:309:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:309:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .concurrency on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:310:5	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:310:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .active on an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:324:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/mounting-and-auth.ts:324:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:53:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:53:16	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:55:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:55:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .operationId on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:56:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:56:19	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .summary on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:59:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:59:18	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-action"] on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:60:3	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:60:20	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-mutation"] on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:64:18	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `ArrayLike<unknown> | { [s: string]: unknown; }`.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:64:25	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .responses on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:65:55	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-codes"] on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:68:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:68:23	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access ["x-bun-jobs-codes"] on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:75:30	warn	@typescript-eslint/no-unsafe-argument [types]	Unsafe argument of type `any` assigned to a parameter of type `{}`.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:75:59	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .messages on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:102:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .docs on an `any` value.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:143:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/openapi-and-docs.ts:189:42	warn	@typescript-eslint/no-base-to-string [types]	'readOnly.asyncapi()' may use Object's default stringification format ('[object Object]') when stringified.
+examples/bun-jobs/11-management-api/provider-routes.ts:249:7	warn	@typescript-eslint/require-await [types]	Async method 'summon' has no 'await' expression.
+examples/bun-jobs/11-management-api/provider-routes.ts:309:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/11-management-api/provider-routes.ts:369:39	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:406:25	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:408:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/provider-routes.ts:410:34	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:441:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:552:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:555:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:583:25	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:661:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:684:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:688:53	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .ok on an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:697:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/provider-routes.ts:741:57	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:68:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:69:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:110:27	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:111:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:112:18	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:113:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:121:25	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:161:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:162:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:167:12	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:169:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:186:13	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:189:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:190:9	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:327:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:332:49	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/scaler-recipes.ts:380:11	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/11-management-api/summon-routes.ts:125:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/11-management-api/summon-routes.ts:139:3	warn	@typescript-eslint/require-await [types]	Async method 'invoke' has no 'await' expression.
+examples/bun-jobs/11-management-api/summon-routes.ts:209:39	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:257:27	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:258:36	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:297:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:434:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:463:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:472:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:504:3	warn	@typescript-eslint/no-unsafe-return [types]	Unsafe return of a value of type `any`.
+examples/bun-jobs/11-management-api/summon-routes.ts:513:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:538:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:582:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:604:23	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe object destructuring of a property with an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:605:51	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:642:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:650:11	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:722:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:783:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:841:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:884:44	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:904:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:936:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:955:46	warn	@typescript-eslint/no-unsafe-member-access [types]	Unsafe member access .code on an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:1067:9	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/summon-routes.ts:1089:7	warn	@typescript-eslint/no-unsafe-assignment [types]	Unsafe assignment of an `any` value.
+examples/bun-jobs/11-management-api/typed-client.ts:261:22	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/run-all.ts:110:15	warn	@typescript-eslint/no-unnecessary-type-assertion [types]	This assertion is unnecessary since it does not change the type of the expression.
+examples/bun-jobs/shared/check.ts:105:56	warn	@typescript-eslint/no-base-to-string [types]	'code' will use Object's default stringification format ('[object Object]') when stringified.
