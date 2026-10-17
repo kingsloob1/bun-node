@@ -342,13 +342,13 @@ Redis pub/sub, NATS or Postgres `LISTEN` fit in ~20 lines each.
 `@Sse()` returning `channelObservable(channel, { lastEventId, signal })` gives
 Nest subscribers the initial state, replay and live events, and unsubscribes
 when the client goes, on bun-nest and Express, Nest 11.1.27 to 12.1.3. Nest's
-own unsubscribe suffices; `@SseSignal()` (11.2.7+) is a second, earlier path,
+own unsubscribe suffices; `@SseSignal()` (Nest 11.2.0+) is a second, earlier path,
 used when present. Three limits, documented rather than worked around: Nest
 formats per subscriber (55–152× the byte path; `@Res()` +
 `channel.subscribe()` keeps encode-once on bun-nest); Nest numbers events
 without ids, so an initial-state id is Nest's (a reconnect with it is a miss,
 which is still correct); and the channel's heartbeat does not reach Nest
-subscribers on 11.1.27, which has no comment event (on 11.2.7+ the adapter
+subscribers on 11.1.x, which has no comment event (on 11.2.0+ the adapter
 could emit `{ comment: "" }`), so they rely on PR-sse1's idle exemption.
 
 ### Which §16 guarantees hold through the hub

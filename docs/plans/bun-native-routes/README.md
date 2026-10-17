@@ -1351,7 +1351,7 @@ start returning `false` past the high-water mark, as Node's does.
 | **PR-sse4** | **Docs and examples**: a change report to the examples session. `examples/bun-common/05-response/files-and-streams.ts` gains `res.sse()`. The stale line in `examples/bun-nest/02-http-adapter/controllers-and-routing.ts` ("`@Sse()` fails …") is wrong today [M] and must go. A new bun-nest `@Sse()` example | PR-sse2, PR-sse3 | 0.5 d here; the examples session's own time | examples only |
 | PR-sse5 | **bun-jobs** imports the parser (and, for its executor's `http-stream` writer, the encoder) from `@kingsleyweb/bun-common/sse` | PR-2a2, PR-sse2 | 0.5 d | Phase 2 session |
 | **PR-sse2b** | **Broadcast channels** (§16.14): `createSseChannel()`/`SseChannel` in `lib/sse/`, exported from the root and `./sse`; initial state, bounded replay keyed by `Last-Event-ID`, topics, `sendList`, one channel heartbeat, the transport interface and an in-memory bus for tests; the tests and controls of `channel-prototype.test.ts`; a fan-out benchmark guard cell with one stalled subscriber; README "Broadcast channels" | PR-sse2 (and the writer's shared promises, C2) | 2–2.5 d | bun-common; no dependency |
-| PR-sse3 (delta) | `channelObservable(channel, opts)` in bun-nest, for `@Sse()`, with `@SseSignal()` used when present (Nest ≥ 11.2); the heartbeat comment on Nest ≥ 11.2 (C8); tests on 11.1.27, 11.2.7 and 12.1.3 (the matrix), both adapters | PR-sse2b | +0.5–1 d | bun-nest, built under bun-node-15's review |
+| PR-sse3 (delta) | `channelObservable(channel, opts)` in bun-nest, for `@Sse()`, with `@SseSignal()` used when present (Nest ≥ 11.2.0); the heartbeat comment on Nest ≥ 11.2 (C8); tests on 11.1.27, 11.2.7 and 12.1.3 (the matrix), both adapters | PR-sse2b | +0.5–1 d | bun-nest, built under bun-node-15's review |
 
 **Total: ~8.5–12 d** (here, excluding the examples session and PR-sse5).
 PR-sse2b and the PR-sse3 delta were added on 2026-10-17 (§16.14).
@@ -1606,13 +1606,22 @@ subscribers may hold several.
 - **What Nest needs from the adapter for this**: its core listens for
   `'close'` on `request.socket ?? response` and reads `socket.destroyed`.
   bun-nest's socket shim satisfies both: `once` is a function, `destroyed` is
-  `false` before and `true` at close, and `'close'` fires [M]. PR-sse2 must keep
-  the Nest agent's permanent `@SseSignal()` tests (Nest 11.2.7 and 12) green,
-  as nestjs-12-parity §6.4 already requires.
+  `false` before and `true` at close, and `'close'` fires [M]; bun-node-15
+  confirmed it served and through `adapter.fetch()`, and that the
+  `@SseSignal()` abort fires on disconnect, completion and error on 11.2.7 and
+  12.1.3, as on Express. PR-sse2 must keep the Nest agent's permanent tests
+  green, as nestjs-12-parity §6.4 already requires:
+  `packages/bun-nest/__tests__/sseSignal.nest.test.ts` (gated on `typeof
+  common.SseSignal === "function"`) and `sseSocketContract.nest.test.ts`
+  (ungated: the socket's `'close'` and `destroyed` contract). They are on
+  branch `test/nest-sse-signal`, not merged yet, so **PR-sse2 waits for them
+  to land**.
 - **Three limits, documented rather than worked around**:
-  - `@SseSignal()` exists from Nest **11.2.7**, not in 11.1.27 (the repo's
-    floor); `channelObservable` takes it when given, and Nest's own
-    unsubscribe suffices without it.
+  - `@SseSignal()` exists from Nest **11.2.0** (it is in `@nestjs/common`
+    11.2.0 to 11.2.7, absent from 11.1.27; 11.2.7 is only the column the
+    matrix tests). On 11.1.x (bun-nest's floor is 11.1.20, its peer range
+    `^11.1.20 || ^12.0.0`; 11.1.27 is develop's lock until nestjs-12-parity
+    PR-3) `channelObservable` relies on Nest's own unsubscribe.
   - **Encode-once is lost on Nest's path**: Nest formats per subscriber,
     2.3–8.8 µs per event per subscriber against 25–161 ns on the byte path
     (55–152×, load-sensitive) [M]. Heavy broadcasters use `@Res()` +
@@ -1621,7 +1630,9 @@ subscribers may hold several.
     `id: 1`; a reconnect with that id is a miss and gets the initial state
     again, which is correct. The channel's heartbeat does not reach Nest
     subscribers; on Nest ≥ 11.2 `channelObservable` emits `{ comment: "" }`
-    (SC8), and on 11.1.x PR-sse1's idle exemption carries the connection.
+    (SC8), because `MessageEvent.comment` arrives with 11.2 (it is in 11.2.7's
+    and 12.1.3's `message-event.interface.d.ts` and absent from 11.1.27's);
+    on 11.1.x PR-sse1's idle exemption carries the connection.
 
 #### 16.14.5 Across processes
 
