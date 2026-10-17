@@ -1,6 +1,5 @@
 import type { SocketAddress } from "bun";
 import type { FieldInfo, FileInfo } from "busboy";
-import type { FileTypeResult } from "file-type";
 import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";
 import type { BunResponse } from "./BunResponse";
@@ -14,6 +13,7 @@ import type {
   BunRequestInterface,
   BunServer,
   DefaultRequestBody,
+  FileTypeResult,
   MultiPartFileRecord,
   MultiPartOptions,
   NextFunction,
@@ -3418,7 +3418,7 @@ export class BunRequest<
         ...(part.info as FileInfo),
         validatedMimeType: undefined,
         fieldname: name,
-        originalFilename: part.info.filename as string,
+        originalFilename: part.info.filename ?? "",
         file: part.data,
         type: "file",
       };
@@ -3668,7 +3668,7 @@ export class BunRequest<
             ...info,
             validatedMimeType: mimeTypeResp,
             fieldname: name,
-            originalFilename: info.filename,
+            originalFilename: info.filename ?? "",
             file: fileBuffer,
             type: "file",
           };

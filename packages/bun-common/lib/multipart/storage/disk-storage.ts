@@ -84,7 +84,7 @@ export class DiskStorage implements Storage<
       size: stream.bytesWritten,
       dest,
       filename,
-      originalFilename: file.filename,
+      originalFilename: file.originalFilename,
       path,
       mimetype,
       encoding,
@@ -123,7 +123,8 @@ export class DiskStorage implements Storage<
     obj?: DiskStorageOptionHandler,
   ): Promise<string> {
     return (
-      executeStorageHandler(file, req, obj) ?? getUniqueFilename(file.filename)
+      executeStorageHandler(file, req, obj) ??
+      getUniqueFilename(file.filename ?? "")
     );
   }
 
