@@ -34,7 +34,7 @@ with no socket at all.
 
 | File | Shows |
 |---|---|
-| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` and `markSocketFree` (no HEAD body, the wire's implicit text `Content-Type`) |
+| [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `query()` for HTTP `QUERY` (a JSON or text body beside `req.query`, a typed `:index`, the method matched in any case, no `GET`/`HEAD` fallback either way), `all`/`any`/`add`/`addRoute`, every param form, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` and `markSocketFree` (no HEAD body, the wire's implicit text `Content-Type`) |
 | [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout (an async handler that never settles included), errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off once what was written has gone out), `res.write()` then `next()`/a later `next(err)` moving on, an async handler that responds and keeps awaiting (its late rejection logged) |
 | [`sub-routers.ts`](./02-routing/sub-routers.ts) | mounting routers, typed mount params, a validator at the mount, compile-time mount mismatches, `group`, `domain` |
 | [`typed-routes.ts`](./02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator; `ExtractRouteParams`, `TypedRouteHandler` |
@@ -82,7 +82,7 @@ with no socket at all.
 
 | File | Shows |
 |---|---|
-| [`cors.ts`](./07-cors-and-static/cors.ts) | every `CorsOptions` field, preflight vs simple requests, a `CorsOptionsDelegate` |
+| [`cors.ts`](./07-cors-and-static/cors.ts) | every `CorsOptions` field, preflight vs simple requests, `QUERY` left out of the default `methods`, a `CorsOptionsDelegate` |
 | [`serve-static.ts`](./07-cors-and-static/serve-static.ts) | `createServeStaticHandler` with every option against a fixture folder, precompressed `.br`/`.gz` siblings and on-the-fly compression, byte ranges over a real socket |
 | [`compression.ts`](./07-cors-and-static/compression.ts) | `compression()`: `Accept-Encoding` negotiation with q-values and `*`, what is left alone, options, server-sent events flushed through the compressor, precompressed static files, `dcb`/`dcz` dictionaries |
 
