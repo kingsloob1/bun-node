@@ -1,0 +1,51 @@
+# bun test docs/plans/bun-native-routes/evidence/sse/channel-prototype.test.ts  (2026-10-17T19:47:03Z, bun 1.4.4-canary.1+5f5799ed1, worktree 56d6afde)
+bun test v1.4.4-canary.1 (5f5799ed1)
+
+ 15 pass
+ 0 fail
+ 49 expect() calls
+Ran 15 tests across 1 file. [388.00ms]
+
+# bun docs/plans/bun-native-routes/evidence/sse/channel-controls.ts
+base (file order)                        15 pass, 0 fail OK
+base --randomize --seed=1                15 pass, 0 fail OK
+base --randomize --seed=2                15 pass, 0 fail OK
+CHANNEL_MUTATE=no-unsubscribe            12 pass, 3 fail; tagged tests failing 2/2 OK
+    fails: [no-unsubscribe] a client disconnect unregisters its subscriber (waits on onClose)
+    fails: [no-unsubscribe] past maxQueuedBytes the stalled subscriber is closed and removed; the reader keeps going
+    fails: [unsubscribe-on-signal] served and router.fetch() parity: the same events, and both unregister on disconnect
+CHANNEL_MUTATE=initial-unheld            14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [initial-unheld] the initial state goes first, even when it is async and a send races it
+CHANNEL_MUTATE=replay-include-last       13 pass, 2 fail; tagged tests failing 1/1 OK
+    fails: [replay-include-last] Last-Event-ID inside the buffer replays exactly the later events, and no initial state
+    fails: [no-origin-check] a transport carries events across 'processes', once each, and replay works on the other side
+CHANNEL_MUTATE=miss-sends-buffer         14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [miss-sends-buffer] an id older than the buffer (or unknown) is a miss: the initial state, told it is a miss
+CHANNEL_MUTATE=plain-ids                 10 pass, 5 fail; tagged tests failing 1/1 OK
+    fails: [replay-include-last] Last-Event-ID inside the buffer replays exactly the later events, and no initial state
+    fails: [plain-ids] assigned ids carry a per-instance prefix, so a restarted process cannot replay the wrong events
+    fails: [sendlist-reverse] sendList sends one event per item, in order, as one chunk per subscriber
+    fails: [topics-leak] topics (index): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+    fails: [topics-leak] topics (scan): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+CHANNEL_MUTATE=sendlist-reverse          14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [sendlist-reverse] sendList sends one event per item, in order, as one chunk per subscriber
+CHANNEL_MUTATE=topics-leak               13 pass, 2 fail; tagged tests failing 2/1 OK
+    fails: [topics-leak] topics (index): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+    fails: [topics-leak] topics (scan): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+CHANNEL_MUTATE=close-no-end              14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [close-no-end] close() ends every subscriber, served and fetch(), and refuses new ones with 204
+CHANNEL_MUTATE=encode-per-sink           14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [encode-per-sink] encode once: one encoder call per send, the same bytes object on every subscriber
+CHANNEL_MUTATE=await-each                10 pass, 5 fail; tagged tests failing 1/1 OK
+    fails: [initial-unheld] the initial state goes first, even when it is async and a send races it
+    fails: [topics-leak] topics (index): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+    fails: [topics-leak] topics (scan): a topic reaches only its subscribers, a broadcast reaches all, replay respects topics
+    fails: [encode-per-sink] encode once: one encoder call per send, the same bytes object on every subscriber
+    fails: [await-each] a subscriber that never reads does not stall the others
+CHANNEL_MUTATE=unsubscribe-on-signal     13 pass, 2 fail; tagged tests failing 1/1 OK
+    fails: [no-unsubscribe] past maxQueuedBytes the stalled subscriber is closed and removed; the reader keeps going
+    fails: [unsubscribe-on-signal] served and router.fetch() parity: the same events, and both unregister on disconnect
+CHANNEL_MUTATE=no-origin-check           14 pass, 1 fail; tagged tests failing 1/1 OK
+    fails: [no-origin-check] a transport carries events across 'processes', once each, and replay works on the other side
+
+every control bites; the base passes
