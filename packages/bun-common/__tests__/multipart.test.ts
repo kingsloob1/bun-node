@@ -1112,3 +1112,43 @@ describe("multipart: detectFileType", () => {
     expect(config).toEqual({ detectFileType: false } as never);
   });
 });
+
+describe("multipart: a file part without a filename", () => {
+  // busboy treats an `application/octet-stream` part as a file even with no
+  // `filename`, and reports `filename: undefined` for it (what
+  // `@types/busboy` 1.5.5 declares).
+  const boundary = "XBOUNDARYX";
+  const body = `--${boundary}\r\nContent-Disposition: form-data; name="blob"\r\nContent-Type: application/octet-stream\r\n\r\nhello\r\n--${boundary}--\r\n`;
+  const noFilenameRequest = () =>
+    makeRequest({
+      method: "POST",
+      body,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+  for (const detectFileType of [true, false]) {
+    it(`records originalFilename "" in memory (detectFileType: ${detectFileType})`, async () => {
+      const req = await noFilenameRequest();
+      const { files } = await handleMultipartAnyFiles(
+        req,
+        transformUploadOptions({ storageType: "memory", detectFileType }),
+      );
+      expect(files).toHaveLength(1);
+      expect(files[0]!.originalFilename).toBe("");
+      expect(files[0]!.size).toBe(5);
+    });
+
+    it(`writes it to disk under a random name (detectFileType: ${detectFileType})`, async () => {
+      const dest = await freshDir("no-filename");
+      const req = await noFilenameRequest();
+      const { files } = await handleMultipartAnyFiles(
+        req,
+        transformUploadOptions({ storageType: "disk", dest, detectFileType }),
+      );
+      const file = files[0] as DiskStorageFile;
+      expect(file.originalFilename).toBe("");
+      expect(file.filename).toMatch(/^[0-9a-f]{32}$/);
+      expect(await Bun.file(file.path).text()).toBe("hello");
+    });
+  }
+});

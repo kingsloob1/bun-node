@@ -396,9 +396,17 @@ never the test suite's, so the two can never disturb each other.
 `bun.lock` and `node_modules`, and it is not in `workspaces`. It declares the
 XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
 package existed nothing declared them, and its typecheck passed only where an
-old install had left them in the root `node_modules`. Run `bun install` in each
-of the three bench directories, and in `templates/compute-provider/` (below),
-before `scripts/typecheck.ts`, or their projects fail on missing modules.
+old install had left them in the root `node_modules`. Run
+`bun install --frozen-lockfile` in each of the three bench directories, and in
+`templates/compute-provider/` (below), before `scripts/typecheck.ts`, or their
+projects fail on missing modules. **Frozen, not plain**: a plain `bun install`
+re-resolves against the registry and rewrites the lock, so the gate checks
+whatever was published that day. Measured 2026-10-17: on Bun 1.4.4-canary a
+plain install in the template pulled `@types/busboy` 1.5.5 and strtok3 10.6.0
+and turned `scripts/typecheck.ts` from 17/17 to 16/17; frozen stayed 17/17
+(the canary fixes oven-sh/bun#44299, so the template's lock, recorded without
+bun-common's dependencies, no longer matches). Change a lock on purpose, in
+its own commit.
 
 ### Nest versions
 
@@ -445,9 +453,12 @@ type check. It is a standalone package like the bench ones — its own
 - **Resolution.** It declares `@kingsleyweb/bun-jobs` as a published plugin
   would (a peer range, a dev dependency), and `overrides` points it and
   bun-common at `file:../../packages/…`, because neither is on a registry. Bun
-  materialises a `file:` directory as a tree of per-file symlinks, so an edit
-  to a package file is seen at once and a **new** file only after the next
-  `bun install` there. bun-common arrives through the override **without its
+  1.4.3 materialises a `file:` directory as a tree of per-file symlinks, so an
+  edit to a package file is seen at once and a **new** file only after the next
+  `bun install` there; 1.4.4-canary makes hardlinks instead, so an edit that
+  replaces a file (`git checkout`, most editors' save) reaches the template
+  only after the next install (measured 2026-10-17: a negative control passed
+  falsely until the reinstall). bun-common arrives through the override **without its
   own dependencies** (a Bun behaviour: a `file:` directory that replaces a
   transitive dependency is installed with none of its dependencies,
   oven-sh/bun#44299), so
@@ -476,7 +487,7 @@ type check. It is a standalone package like the bench ones — its own
 
   ```bash
   cd templates/compute-provider
-  bun install && bun run test && bun scripts/check-types.ts
+  bun install --frozen-lockfile && bun run test && bun scripts/check-types.ts
   CI=1 bunx eslint .
   ```
 

@@ -42,7 +42,7 @@ export class MemoryStorage implements Storage<
       encoding,
       mimetype,
       fieldname,
-      originalFilename: file.filename,
+      originalFilename: file.originalFilename,
       validatedMimeType,
     };
   }
