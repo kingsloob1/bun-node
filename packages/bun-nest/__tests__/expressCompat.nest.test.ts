@@ -11,7 +11,10 @@
  * differently). The Bun side is given `etag: "weak"`, Express's default.
  *
  * Express's behaviour here is measured, not assumed: whatever the Express
- * application answers is the expectation.
+ * application answers is the expectation. One exception: on Nest 12.0.0 and
+ * 12.0.1 the reference carries 12.0.2's fix for its prefix-scoped not-found
+ * router, which those releases mount where Express never matches
+ * (`expressCompat/reference.ts`), so the prefix rows still compare there.
  */
 import type { Booted, Side } from "./expressCompat/app";
 import type { ProbeGroup } from "./expressCompat/probes";

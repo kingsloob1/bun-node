@@ -1,6 +1,8 @@
 /**
  * Several Nest applications on one HTTP adapter, one with a global prefix and
- * one without, booted on `@nestjs/platform-express`'s `ExpressAdapter` and on
+ * one without, booted on `@nestjs/platform-express`'s `ExpressAdapter` (with
+ * 12.0.2's prefix fix carried back on 12.0.0 and 12.0.1: see
+ * `expressCompat/reference.ts`) and on
  * `BunHttpAdapter`, both registration orders, sent the same requests. Every
  * answer must be Express's, whatever Nest major is installed.
  *
@@ -23,14 +25,19 @@
  * `reflect-metadata` is imported last per the import-sort rule.
  */
 import type { INestApplication } from "@nestjs/common";
+import type { ExpressAdapter } from "@nestjs/platform-express";
 import type { Side } from "./expressCompat/app";
 import { Controller, Get, Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
-import { ExpressAdapter } from "@nestjs/platform-express";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { comparable, observe } from "./expressCompat/app";
+import {
+  BACKPORT_PREFIX_FIX,
+  expressReference,
+  unfixedExpressAdapter,
+} from "./expressCompat/reference";
 import "reflect-metadata";
 
 /** Nest 12 or later, by the capability the adapter reads (`mapException`). */
@@ -70,7 +77,7 @@ async function boot(
   prefix: string,
 ): Promise<{ apps: INestApplication[]; base: string }> {
   const adapter =
-    side === "express" ? new ExpressAdapter() : new BunHttpAdapter();
+    side === "express" ? expressReference() : new BunHttpAdapter();
   const api = await NestFactory.create(ApiModule, adapter, { logger: false });
   api.setGlobalPrefix(prefix);
   const root = await NestFactory.create(RootModule, adapter, {
@@ -163,3 +170,47 @@ for (const prefix of ["api", ":tenant"]) {
     });
   }
 }
+
+/**
+ * The guard on the backport in `expressCompat/reference.ts`: where it is
+ * applied (12.0.0, 12.0.1), the unfixed reference must really answer a miss
+ * under the prefix with Express's own page, and the fixed one with Nest's
+ * JSON 404. Should a release fix the bug without `normalizePrefix`, the first
+ * test fails, and the backport can go. Skipped where it is not applied.
+ */
+describe.if(BACKPORT_PREFIX_FIX)(
+  "the reference's prefix-scoped not-found on 12.0.0 and 12.0.1",
+  () => {
+    async function missUnderPrefix(adapter: ExpressAdapter) {
+      const app = await NestFactory.create(ApiModule, adapter, {
+        logger: false,
+      });
+      app.setGlobalPrefix("api");
+      await app.listen(0, "127.0.0.1");
+      try {
+        const { port } = (
+          app.getHttpServer() as { address: () => { port: number } }
+        ).address();
+        return comparable(
+          await observe(`http://127.0.0.1:${port}`, "/api/nope"),
+        );
+      } finally {
+        await app.close();
+      }
+    }
+
+    it("unfixed, a miss under the prefix falls through to Express's HTML page", async () => {
+      const res = await missUnderPrefix(unfixedExpressAdapter());
+      expect(res.status).toBe("404");
+      expect(res["content-type"]).toStartWith("text/html");
+      expect(res.body).toContain("Cannot GET /api/nope");
+    });
+
+    it("with 12.0.2's fix, it is Nest's JSON 404", async () => {
+      const res = await missUnderPrefix(expressReference());
+      expect(res.status).toBe("404");
+      expect(res["content-type"]).toStartWith("application/json");
+      expect(JSON.parse(res.body!)).toMatchObject({ statusCode: 404 });
+    });
+  },
+);

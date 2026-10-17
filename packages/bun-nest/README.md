@@ -22,9 +22,16 @@ Underneath, routing is
   (`main` is `lib/index.ts`), so there is no build step on your side; your
   type checker reads the built declarations in `dts/` (`types`), so your
   compiler options never apply to this package's source.
-- **NestJS 11**: the peers `@nestjs/common` and `@nestjs/core` (`^11.0.0`) and
-  `rxjs` (`^7.1.0`) are required; `@nestjs/websockets` (`^11.0.0`) is needed
-  only for gateways.
+- **NestJS 11.1.20 or later, or NestJS 12**: the peers `@nestjs/common` and
+  `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
+  `@nestjs/websockets` (the same range) is needed only for gateways. One
+  build serves both majors, and both are tested: the repo runs on Nest 12,
+  and its suites, examples and consumer type checks also run on the latest
+  11 and on the floors, 11.1.20 and 12.0.0. The floor is 11.1.20 because
+  older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
+  `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
+  adapter implements in 11.1.14, and before 11.1.20 an `@Sse()` observable
+  that errors before its first event answers `200` instead of `500`.
 - The usual NestJS compiler options: `experimentalDecorators` and
   `emitDecoratorMetadata`, with `reflect-metadata` loaded.
 
@@ -193,13 +200,13 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | `url`, `listeningHost`, `listeningPort`, `isListening`, `address()`, `getListenAddress()` | Server introspection. `getListenAddress()` resolves the URL once bound. |
 | `eventEmitter` | A Node `EventEmitter`: `listening` (with the server), `close`, and `error` (a bind failure, when a listener is attached). |
 | `webSocketAdapter` | The built-in `BunNestWebsocketAdapter`. Setting it also makes it the router's active WebSocket adapter. |
+| `getType()` | `"express"`, for libraries that branch on the platform. |
 
 `query` registers an HTTP `QUERY` route (RFC 10008), whose body is parsed as
 any other method's. Nest's `@QueryMethod()` and
 `forRoutes({ method: RequestMethod.QUERY })`, which arrived in Nest 11.2.0, go
 through it on 11.2 and 12; Nest 11.1 has neither, though `adapter.query()`
 itself works there too.
-| `getType()` | `"express"`, for libraries that branch on the platform. |
 
 `useStaticAssets` is not on Nest's `INestApplication` type, so call it on the
 adapter. `enableCors` is on both.

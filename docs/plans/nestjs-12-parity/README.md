@@ -39,11 +39,11 @@ first priority.
 | PR | State |
 |---|---|
 | PR-0 matrix tooling | merged, #400 (2026-10-17) |
-| PR-1 `BunRouter.query()` | built; reviewed and approved by the bun-common agent |
-| PR-2 the Nest 12 blockers | built without `QUERY` (which waits for PR-1); in review |
-| PR-3 versions (and PR-3b) | not started |
-| PR-4 routing differential | not started |
-| PR-5 routing parity | not started |
+| PR-1 `BunRouter.query()` | merged, #402 |
+| PR-2 the Nest 12 blockers | merged, #404 |
+| PR-3 versions (and PR-3b) | in review; PR-3b (bun-jobs-ui's devDeps) lands with it |
+| PR-4 routing differential | merged, #410 |
+| PR-5 routing parity | designed (measured; OQ1–OQ10 answered); built after the router benchmark guard |
 | PR-6a errors and security | not started |
 | PR-6b lifecycle | not started |
 | PR-6c responses and hooks | not started |
@@ -52,6 +52,8 @@ first priority.
 | PR-9 WS differential | not started |
 | PR-10 examples | not started |
 | PR-11 docs | not started |
+| `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
+| Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | in progress |
 
 Where the plan below names the "features agent", "5a", "4c" or "d6", read the
 owners listed here: those names date from before bun-nest and bun-common had
