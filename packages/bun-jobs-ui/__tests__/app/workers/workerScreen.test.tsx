@@ -15,15 +15,12 @@ import {
   rangeFixture,
 } from "../fixtures";
 import { renderApp } from "../renderApp";
-import { configResult, workerFixture } from "./fixtures";
+import { configResult, instancesFixture, workerFixture } from "./fixtures";
 
 setupDom();
 
 /** Two live instances of `api.emails`, on two hosts. */
-const INSTANCES: WorkerDto[] = [
-  workerFixture({ id: "api.emails.a1", host: "api-1", pid: 100 }),
-  workerFixture({ id: "api.emails.b2", host: "api-2", pid: 200 }),
-];
+const INSTANCES: WorkerDto[] = instancesFixture();
 
 /** `GET /queues/emails/analytics/workers/api.emails`: minute throughput, coarser busyness. */
 function workerAnalytics(): WorkerAnalyticsDto {

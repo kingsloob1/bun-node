@@ -754,6 +754,19 @@ modules across files, so order leaks are real:
   so `React.lazy` resolves in microtasks and fake-timer tests do not depend
   on which file ran first.
 - The suite must pass under `bun test --randomize`, not just in file order.
+- `__tests__/app/unmountLeaks.test.tsx` is the guard that replaced
+  `@eslint-react`'s dropped `web-api-no-leaked-*` rules: the real app under
+  StrictMode, live on, over a `HandleLedger` (`handleLedger.ts`) recording
+  every timer, frame, window/document listener, socket, observer and fetch,
+  with a negative control per kind (`cleanupPairs.test.ts` is only a static
+  tripwire). A new screen gets a case that asserts its **start** (its
+  TanStack interval, its channels in `socket.held`, for a live screen an
+  event and the 250 ms coalescing timeout open), then **Phase A** (navigate
+  to `/docs`: channels released, timers closed) and **Phase B** (`cleanup()`,
+  `nativeSleep(20)`, `queryClient.clear()`, `nativeSleep(20)`,
+  `assertNoneOpen()`; that order is measured). Await every `act`: one left
+  un-awaited, or a case cut off by the test timeout, breaks React's act scope
+  and every later test in the file records nothing.
 - Tests importing the bun-jobs package root (real-API integration,
   bundle-safety) live in `__tests__/app/pkg`, a DOM-free project typechecked
   by its own `typecheck.test.ts` and by `scripts/typecheck.ts`; they load the

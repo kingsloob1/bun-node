@@ -1,9 +1,4 @@
-import type {
-  SummonBudgetDto,
-  SummonListDto,
-  SummonListItemDto,
-  SummonOutcomeKind,
-} from "../../../app/api/types";
+import type { SummonOutcomeKind } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { summonInert } from "../../../app/screens/queues/panels/summonText";
@@ -12,6 +7,7 @@ import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
+import { summonListFixtures } from "./fixtures";
 
 setupDom();
 
@@ -28,40 +24,7 @@ setupDom();
  * an error view.
  */
 
-const NOW = Date.now();
-
-/** A budget that is on: 2 of 30 this hour, 10 of 300 today. */
-const BUDGET: SummonBudgetDto = {
-  hour: 2,
-  perHour: 30,
-  day: 10,
-  perDay: 300,
-  hourResetsAt: NOW + 23 * 60_000,
-  dayResetsAt: NOW + 9 * 3_600_000,
-};
-
-/** One controller as `GET /summon` lists it: ready, budget on, last attempt started. */
-function controller(
-  overrides: Partial<SummonListItemDto> = {},
-): SummonListItemDto {
-  return {
-    namespace: "shop",
-    queue: "emails",
-    local: true,
-    kind: "ecs",
-    readiness: "ready",
-    inert: false,
-    last: { id: "s-1", outcome: "started", at: NOW - 60_000 },
-    budget: BUDGET,
-    ...overrides,
-  };
-}
-
-/** `GET /summon` answering these controllers. */
-function list(controllers: SummonListItemDto[]): MockReply {
-  const body: SummonListDto = { controllers };
-  return { body };
-}
+const { NOW, BUDGET, controller, list } = summonListFixtures();
 
 /** Meta with `summonList` set to `value`. */
 function served(value: boolean) {

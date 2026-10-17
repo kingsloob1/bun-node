@@ -1,7 +1,6 @@
 import type {
   ApplyJobDefaultsBody,
   ApplyJobDefaultsResultDto,
-  JobDefaultsDto,
 } from "../../../app/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
@@ -22,9 +21,9 @@ import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
+  jobDefaultsFixture as defaultsFixture,
   findDialog,
   notifications,
-  NOW,
   openDialog,
   renderQueue,
 } from "./fixtures";
@@ -36,41 +35,6 @@ setupDom();
  * to pending jobs… action, against a mocked API: the routes are not served by
  * bun-jobs yet, so every answer here is the contract's shape, typed by it.
  */
-
-/** `GET /queues/emails/job-defaults`: attempts and timeout overridden, attempts LOWERED below the code's. */
-function defaultsFixture(
-  overrides: Partial<JobDefaultsDto> = {},
-): JobDefaultsDto {
-  const code: JobDefaultsDto["code"] = {
-    attempts: 5,
-    backoff: { type: "exponential", delay: 1_000 },
-    timeout: 0,
-    priority: 0,
-    removeOnComplete: false,
-    removeOnFail: { count: 100 },
-    keepLogs: 0,
-    keepStacktraces: 10,
-  };
-  return {
-    queue: "emails",
-    effective: { ...code, attempts: 3, timeout: 30_000 },
-    code,
-    codeSource: "api",
-    overridden: ["attempts", "timeout"],
-    override: { attempts: 3, timeout: 30_000 },
-    seq: 4,
-    updatedAt: NOW - 60_000,
-    propagationMs: 1_000,
-    pending: {
-      waiting: 1_200,
-      delayed: 10,
-      failed: 5,
-      "waiting-children": 0,
-      total: 1_215,
-    },
-    ...overrides,
-  };
-}
 
 /** One apply answer. */
 function batch(

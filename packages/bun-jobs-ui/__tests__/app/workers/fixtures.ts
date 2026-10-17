@@ -100,3 +100,15 @@ export function configResult(
     ...overrides,
   };
 }
+
+/**
+ * Two live instances of `api.emails`, on two hosts, reporting now: the
+ * worker page's default answer. A function, so each caller's clock is its
+ * own: a test file takes them once, when it loads.
+ */
+export function instancesFixture(): WorkerDto[] {
+  return [
+    workerFixture({ id: "api.emails.a1", host: "api-1", pid: 100 }),
+    workerFixture({ id: "api.emails.b2", host: "api-2", pid: 200 }),
+  ];
+}

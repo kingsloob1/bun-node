@@ -1,8 +1,4 @@
-import type {
-  ProviderDto,
-  ProviderListDto,
-  ProviderValidationDto,
-} from "../../../app/api/types";
+import type { ProviderValidationDto } from "../../../app/api/types";
 import type { MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { validationSummary } from "../../../app/screens/providers/providerText";
@@ -10,6 +6,7 @@ import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { renderApp } from "../renderApp";
+import { providerList as list, providerFixture as provider } from "./fixtures";
 
 setupDom();
 
@@ -24,30 +21,6 @@ setupDom();
  * provider with a preflight; a failed preflight is an answer saying whose
  * problem it is, not an error.
  */
-
-/** A provider as `GET /providers` lists it. */
-function provider(overrides: Partial<ProviderDto> = {}): ProviderDto {
-  return {
-    id: "@acme/bun-jobs-ecs@1.2.0~1",
-    provider: {
-      name: "@acme/bun-jobs-ecs",
-      version: "1.2.0",
-      kind: "ecs",
-      displayName: "Amazon ECS",
-      apiVersion: { core: "0.1", summon: "0.1" },
-    },
-    readiness: "ready",
-    facts: { cluster: "jobs-prod", region: "eu-west-1" },
-    preflight: true,
-    configSchema: true,
-    ...overrides,
-  };
-}
-
-/** `GET /providers` answering these providers. */
-function list(providers: ProviderDto[]): ProviderListDto {
-  return { api: { core: "0.1", summon: "0.1" }, providers };
-}
 
 /** The path of a provider's route, as the mock matches it. */
 function path(id: string, tail: string): string {
