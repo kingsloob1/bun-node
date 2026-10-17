@@ -150,7 +150,7 @@ describe("the run log on a history row", () => {
     await waitFor(() => expect(lines()).toHaveLength(3));
 
     expect(logCalls(calls)).toHaveLength(1);
-    expect(Object.fromEntries(logCalls(calls)[0]!.query.entries())).toEqual({
+    expect(Object.fromEntries(logCalls(calls)[0].query.entries())).toEqual({
       limit: "100",
       order: "asc",
     });
@@ -251,7 +251,7 @@ describe("where a run's log is hosted", () => {
     // run and the history, which includes the run in flight — so only the
     // history row hosts the log.
     const running = runningRunnerFixture();
-    const active = running.local!.activeRuns[0]!;
+    const active = running.local!.activeRuns[0];
     const inFlight = runFixture({
       runId: active.runId,
       status: "running",
@@ -394,14 +394,14 @@ describe("tailing a live run's log", () => {
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
     await advance(100, 10);
     expect(lines()).toEqual(["line 1"]);
-    expectAbsent(logCalls(calls)[0]!.query.get("since"));
+    expectAbsent(logCalls(calls)[0].query.get("since"));
 
     await tailFor(2_000);
-    expect(logCalls(calls)[1]!.query.get("since")).toBe("1");
+    expect(logCalls(calls)[1].query.get("since")).toBe("1");
     expect(lines()).toEqual(["line 1", "line 2"]);
 
     await tailFor(2_000);
-    expect(logCalls(calls)[2]!.query.get("since")).toBe("2");
+    expect(logCalls(calls)[2].query.get("since")).toBe("2");
     const settled = logCalls(calls).length;
 
     // The last page said the run had finished: no more polling.
@@ -431,7 +431,7 @@ describe("tailing a live run's log", () => {
     expect(logCalls(calls)).toHaveLength(2);
     // Not `since=2`: the first page stopped at its limit, so line 2 was
     // still to come.
-    expect(logCalls(calls)[1]!.query.get("since")).toBe("1");
+    expect(logCalls(calls)[1].query.get("since")).toBe("1");
     expect(lines()).toEqual(["line 1", "line 2"]);
   });
 });

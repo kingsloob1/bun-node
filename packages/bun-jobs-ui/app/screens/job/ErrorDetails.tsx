@@ -43,7 +43,7 @@ export function ErrorDetails({ error, label = "Error" }: ErrorDetailsProps) {
       role="group"
       aria-label={label}
     >
-      <ErrorLevel error={outer!} />
+      <ErrorLevel error={outer} />
       {causes.length > 0 && (
         <ol
           className="job-error-causes"

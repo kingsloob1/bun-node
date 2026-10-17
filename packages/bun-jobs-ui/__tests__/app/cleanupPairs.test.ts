@@ -96,7 +96,7 @@ export function codeOnly(source: string): string {
   let out = "";
   let index = 0;
   while (index < source.length) {
-    const char = source[index]!;
+    const char = source[index];
     const next = source[index + 1];
     let stop: number;
     if (char === "/" && next === "/") {
@@ -179,7 +179,7 @@ export function checkSource(file: string, source: string): PairProblem[] {
         file,
         message: `queryFn at line ${line} is not an inline arrow: its signal cannot be checked`,
       });
-    } else if (!/\bsignal\b/.test(params[1]!)) {
+    } else if (!/\bsignal\b/.test(params[1])) {
       problems.push({
         file,
         message: `queryFn at line ${line} does not take TanStack's signal, so unmounting cannot abort it`,

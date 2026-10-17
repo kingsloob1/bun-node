@@ -337,7 +337,7 @@ describe("the worker page's Summoned card", () => {
     ).toEqual(["api.emails.a1", "api.emails.c3"]);
     // An instance with no requested mode has an empty cell, not a default.
     const c3 = within(card).getByTestId("worker-summon-row-api.emails.c3");
-    expect(c3.children[3]!.textContent).toBe("");
+    expect(c3.children[3].textContent).toBe("");
     expect(within(card).getByTestId("worker-summon-others").textContent).toBe(
       "1 other instance of this key reports no summon.",
     );
@@ -353,7 +353,7 @@ describe("the worker page's Summoned card", () => {
     ]))!;
     expect(headers(card)).toEqual(["Instance", "Summon", "Runs as"]);
     const row = within(card).getByTestId("worker-summon-row-api.emails.a1");
-    expect(row.children[2]!.textContent).toBe("Run until stopped");
+    expect(row.children[2].textContent).toBe("Run until stopped");
     expect((row.children[2] as HTMLElement).title).toContain("actually runs");
   });
 
@@ -375,10 +375,10 @@ describe("the worker page's Summoned card", () => {
       "Unit of",
     ]);
     const a1 = within(card).getByTestId("worker-summon-row-api.emails.a1");
-    expect(a1.children[3]!.textContent).toBe("media");
+    expect(a1.children[3].textContent).toBe("media");
     expect((a1.children[3] as HTMLElement).title).toBe(MEDIA_UNIT_HINT);
     const b2 = within(card).getByTestId("worker-summon-row-api.emails.b2");
-    expect(b2.children[3]!.textContent).toBe("—");
+    expect(b2.children[3].textContent).toBe("—");
   });
 
   it("has no Unit of column when no instance names a summon group", async () => {

@@ -87,7 +87,7 @@ export function Tabs<V extends string>({
         return;
     }
     event.preventDefault();
-    const target = enabled[next]!;
+    const target = enabled[next];
     listRef.current?.ownerDocument.getElementById(tabId(target.index))?.focus();
     if (activation === "auto") {
       onChange(target.tab.value);

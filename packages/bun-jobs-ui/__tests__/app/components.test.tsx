@@ -208,7 +208,7 @@ describe("createLimiter", () => {
       throw new Error("no");
     });
     const next = limiter.run(async () => "ok");
-    expect(failed).rejects.toThrow("no");
+    await expect(failed).rejects.toThrow("no");
     expect(await next).toBe("ok");
   });
 });

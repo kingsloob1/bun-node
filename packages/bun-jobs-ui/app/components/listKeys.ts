@@ -17,13 +17,13 @@ export function arrowTarget<T extends Element>(
   const index = active ? items.indexOf(active as T) : -1;
   switch (key) {
     case "ArrowDown":
-      return items[index < 0 ? 0 : Math.min(index + 1, items.length - 1)]!;
+      return items[index < 0 ? 0 : Math.min(index + 1, items.length - 1)];
     case "ArrowUp":
-      return items[index <= 0 ? 0 : index - 1]!;
+      return items[index <= 0 ? 0 : index - 1];
     case "Home":
-      return items[0]!;
+      return items[0];
     case "End":
-      return items[items.length - 1]!;
+      return items[items.length - 1];
     default:
       return null;
   }

@@ -71,7 +71,7 @@ function granted(
     },
     "GET /queues/emails/summon":
       "status" in status && typeof status.status === "number"
-        ? (status as MockReply)
+        ? status
         : { body: status },
     ...extra,
   };

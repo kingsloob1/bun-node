@@ -88,7 +88,7 @@ function scan(text: string): void {
   const string = () => {
     index++; // opening quote
     while (index < text.length) {
-      const char = text[index]!;
+      const char = text[index];
       if (char === '"') {
         index++;
         return;

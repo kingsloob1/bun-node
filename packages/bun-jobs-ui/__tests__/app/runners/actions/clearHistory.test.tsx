@@ -116,7 +116,7 @@ describe("clear history: the request", () => {
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
     expect(invalidated).toEqual([["runner", "nightly"], ["runners"]]);
     // The runner prefix reaches its history, its run logs and its detail.
-    const prefix = invalidated[0]!;
+    const prefix = invalidated[0];
     expect(covers(prefix, runnerKeys.historyAll("nightly"))).toBe(true);
     expect(covers(prefix, runnerKeys.detail("nightly"))).toBe(true);
     expect(covers(prefix, runLogKeys.run("nightly", "run-1"))).toBe(true);

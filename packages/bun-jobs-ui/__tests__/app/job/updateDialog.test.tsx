@@ -72,7 +72,7 @@ describe("the update dialog", () => {
     await save(dialog);
     await waitFor(() => expectAbsent(page().queryByRole("dialog")));
     expect(patches()).toHaveLength(1);
-    const call = patches()[0]!;
+    const call = patches()[0];
     expect(call.path).toBe(jobApiPath());
     expect(JSON.parse(call.body!)).toEqual({ priority: 1 });
     expect(call.headers["content-type"]).toBe("application/json");
@@ -101,7 +101,7 @@ describe("the update dialog", () => {
     fireEvent.click(within(states).getByLabelText("Delayed"));
     await save(dialog);
     await waitFor(() => expect(patches()).toHaveLength(1));
-    expect(JSON.parse(patches()[0]!.body!)).toEqual({
+    expect(JSON.parse(patches()[0].body!)).toEqual({
       data: { to: "bob@example.com" },
       runAt: new Date("2026-10-01T09:30").getTime(),
       onlyIn: ["waiting", "delayed"],
@@ -131,7 +131,7 @@ describe("the update dialog", () => {
     expect(saveButton.disabled).toBe(false);
     await save(dialog);
     await waitFor(() => expect(patches()).toHaveLength(1));
-    expect(JSON.parse(patches()[0]!.body!)).toEqual({
+    expect(JSON.parse(patches()[0].body!)).toEqual({
       runAt: new Date("2026-10-01T09:30").getTime(),
     });
   });
@@ -160,7 +160,7 @@ describe("the update dialog", () => {
     });
     await save(dialog);
     await waitFor(() => expect(patches()).toHaveLength(1));
-    expect(JSON.parse(patches()[0]!.body!)).toEqual({ data: null });
+    expect(JSON.parse(patches()[0].body!)).toEqual({ data: null });
   });
 
   it("refuses invalid JSON, an empty state list, and data over maxJobDataBytes", async () => {

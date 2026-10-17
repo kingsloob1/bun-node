@@ -236,10 +236,7 @@ describe("the schedule editor: validation", () => {
   it("refuses an anchor or a one-off time outside the API's range, with Save disabled", async () => {
     const { calls } = await renderActions();
     const dialog = await openAction("Reschedule…");
-    const saveButton = dialogButton(
-      dialog,
-      "Save schedule",
-    ) as HTMLButtonElement;
+    const saveButton = dialogButton(dialog, "Save schedule");
     const fieldError = (label: string | RegExp) => {
       const field = within(dialog).getByLabelText(label).closest(".field");
       return field?.querySelector(".field-error")?.textContent ?? "";

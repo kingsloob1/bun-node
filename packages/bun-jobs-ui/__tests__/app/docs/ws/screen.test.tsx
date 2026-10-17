@@ -132,22 +132,22 @@ describe("WsDocsScreen", () => {
       [
         "from the connection channel (x-bun-jobs-subprotocol)",
         editedFixture((document) => {
-          delete document.servers.api!["x-bun-jobs-subprotocol"];
+          delete document.servers.api["x-bun-jobs-subprotocol"];
         }),
       ],
       [
         "from the connection channel's description",
         editedFixture((document) => {
-          delete document.servers.api!["x-bun-jobs-subprotocol"];
-          delete document.channels.connection!["x-bun-jobs-subprotocol"];
+          delete document.servers.api["x-bun-jobs-subprotocol"];
+          delete document.channels.connection["x-bun-jobs-subprotocol"];
         }),
       ],
       [
         "not stated; the client default",
         editedFixture((document) => {
-          delete document.servers.api!["x-bun-jobs-subprotocol"];
-          delete document.channels.connection!["x-bun-jobs-subprotocol"];
-          document.channels.connection!.description = "The socket.";
+          delete document.servers.api["x-bun-jobs-subprotocol"];
+          delete document.channels.connection["x-bun-jobs-subprotocol"];
+          document.channels.connection.description = "The socket.";
         }),
       ],
     ];
@@ -345,7 +345,7 @@ describe("WsDocsScreen", () => {
     const pane = page().getByTestId("ws-pane-message-queue.completed");
     const examples = within(pane).getAllByTestId("ws-example");
     expect(examples).toHaveLength(1);
-    const example = examples[0]!;
+    const example = examples[0];
     expect(within(example).getByTestId("ws-example-name").textContent).toBe(
       "queue.completed",
     );
@@ -408,7 +408,7 @@ describe("WsDocsScreen", () => {
           string,
           Record<string, { examples: { payload: unknown }[] }>
         >
-      ).messages!["queue.completed"]!.examples[0]!.payload;
+      ).messages["queue.completed"].examples[0].payload;
       const button = within(main()).getByRole("button", {
         name: "Copy example queue.completed as JSON",
       });
@@ -416,7 +416,7 @@ describe("WsDocsScreen", () => {
         fireEvent.click(button);
       });
       expect(writeText).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual(expected);
+      expect(JSON.parse(writeText.mock.calls[0][0])).toEqual(expected);
       expect(button.textContent).toBe("Copied");
     });
   });
@@ -428,11 +428,11 @@ describe("WsDocsScreen", () => {
         string,
         Record<string, Record<string, unknown>>
       >
-    ).messages!;
-    messages.hello!.examples = [
+    ).messages;
+    messages.hello.examples = [
       { summary: "On open", payload: { type: "hello", protocol: 1 } },
     ];
-    delete messages.ping!.examples;
+    delete messages.ping.examples;
     visit("/jobs/docs/ws/message-hello");
     renderApp({ handlers: { "GET /asyncapi.json": { body: document } } });
     const pane = await page().findByTestId("ws-pane-message-hello");
@@ -629,7 +629,7 @@ describe("WsDocsScreen try it", () => {
       string,
       { parameters: Record<string, Record<string, unknown>> }
     >;
-    channels.queue!.parameters.queue!["x-bun-jobs-schema"] = {
+    channels.queue.parameters.queue["x-bun-jobs-schema"] = {
       type: "string",
       pattern: "^[a-z]+$",
       maxLength: 10,

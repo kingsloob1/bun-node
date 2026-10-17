@@ -131,7 +131,7 @@ export function connectSources(options: ConnectSourcesOptions): string[] {
   const match = HOST.exec(options.host ?? "");
   const port = match?.[2] === undefined ? undefined : Number(match[2]);
   if (match && (port === undefined || (port >= 1 && port <= 65535))) {
-    const hostname = match[1]!.toLowerCase();
+    const hostname = match[1].toLowerCase();
     sources.push(
       `${socket}://${hostname}${port === undefined ? "" : `:${port}`}`,
     );

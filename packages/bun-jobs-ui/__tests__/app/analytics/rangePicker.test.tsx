@@ -69,7 +69,7 @@ describe("the range picker", () => {
     fireEvent.change(to, { target: { value: localValue(now) } });
     fireEvent.click(within(group).getByRole("button", { name: "Apply" }));
     expect(chosen).toHaveLength(1);
-    const range = chosen[0]!;
+    const range = chosen[0];
     expect(range.kind).toBe("custom");
     if (range.kind === "custom") {
       expect(range.from).toBeLessThan(range.to);

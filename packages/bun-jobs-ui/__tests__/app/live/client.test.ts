@@ -153,27 +153,27 @@ describe("subscriptions", () => {
     await settle();
     subscribes = socket.ops("subscribe");
     expect(subscribes).toHaveLength(2);
-    expectUndefined(subscribes[1]!.events);
+    expectUndefined(subscribes[1].events);
 
     // Its release narrows the filter again: a re-subscribe, not an unsubscribe.
     c.release();
     await settle();
     subscribes = socket.ops("subscribe");
     expect(subscribes).toHaveLength(3);
-    expect(subscribes[2]!.events).toEqual(["added", "completed"]);
+    expect(subscribes[2].events).toEqual(["added", "completed"]);
     expectNone(socket.ops("unsubscribe"));
 
     // Its release narrows the merged filter once more.
     a.release();
     await settle();
     expect(socket.ops("subscribe")).toHaveLength(4);
-    expect(socket.ops("subscribe")[3]!.events).toEqual(["added"]);
+    expect(socket.ops("subscribe")[3].events).toEqual(["added"]);
 
     b.release();
     await settle();
     const unsubscribes = socket.ops("unsubscribe");
     expect(unsubscribes).toHaveLength(1);
-    expect(unsubscribes[0]!.channels).toEqual([channel]);
+    expect(unsubscribes[0].channels).toEqual([channel]);
     expect(client.holdCounts().size).toBe(0);
   });
 
@@ -215,7 +215,7 @@ describe("subscriptions", () => {
     expectNone(socket.sent);
     socket.receive(hello());
     expect(socket.ops("subscribe")).toHaveLength(1);
-    expectUndefined(socket.ops("subscribe")[0]!.resume);
+    expectUndefined(socket.ops("subscribe")[0].resume);
   });
 
   it("routes ack rejections to the holders of those channels only, by the raw name", async () => {
@@ -228,7 +228,7 @@ describe("subscriptions", () => {
     const [frame] = socket.ops("subscribe");
     socket.receive({
       type: "ack",
-      id: frame!.id,
+      id: frame.id,
       op: "subscribe",
       channels: ["queues"],
       rejected: [
@@ -266,7 +266,7 @@ describe("subscriptions", () => {
     timers.advance(20_000);
     socket.receive({
       type: "ack",
-      id: frame!.id,
+      id: frame.id,
       op: "subscribe",
       channels: [],
       rejected: [{ channel: "queue/x", code: "FORBIDDEN", status: 403 }],
@@ -363,7 +363,7 @@ describe("events", () => {
     const [frame] = socket.ops("subscribe");
     socket.receive({
       type: "ack",
-      id: frame!.id,
+      id: frame.id,
       op: "subscribe",
       channels: ["queue/emails/job/a%20b"],
       seq: 0,
@@ -421,7 +421,7 @@ describe("reconnect and resume", () => {
     second.open();
     second.receive(hello({ sessionId: "s2", seq: 9 }));
     const [frame] = second.ops("subscribe");
-    expect(frame!.resume).toEqual({ epoch: "e1", afterSeq: 7 });
+    expect(frame.resume).toEqual({ epoch: "e1", afterSeq: 7 });
 
     // Replay: 8 is new; 7 was already delivered.
     second.receive(queueEvent(8, ["queue/emails"], "completed", { id: "8" }));
@@ -498,7 +498,7 @@ describe("reconnect and resume", () => {
     socket.ackAll();
     socket.receive(queueEvent(5, ["queue/a"], "completed", { id: "5" }));
     socket.drop(1006);
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     const next = FakeSocket.last;
     next.open();
     next.receive(hello({ sessionId: "s2", seq: 9 }));
@@ -522,14 +522,14 @@ describe("reconnect and resume", () => {
     next.receive(queueEvent(8, ["queue/a"], "completed", { id: "8" }));
     next.receive({
       type: "ack",
-      id: frames[0]!.id,
+      id: frames[0].id,
       op: "subscribe",
-      channels: frames[0]!.channels,
+      channels: frames[0].channels,
       resumed: true,
       seq: 9,
     });
     next.drop(1006);
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     const third = FakeSocket.last;
     third.open();
     third.receive(hello({ sessionId: "s3", seq: 9 }));
@@ -541,11 +541,11 @@ describe("reconnect and resume", () => {
     // Every resuming frame acked: the next resume advances to the highest seq.
     third.ackAll({ resumed: true, seq: 9 });
     third.drop(1006);
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     const fourth = FakeSocket.last;
     fourth.open();
     fourth.receive(hello({ sessionId: "s4", seq: 9 }));
-    expect(fourth.ops("subscribe")[0]!.resume).toEqual({
+    expect(fourth.ops("subscribe")[0].resume).toEqual({
       epoch: "e1",
       afterSeq: 8,
     });
@@ -567,15 +567,15 @@ describe("reconnect and resume", () => {
     next.sent.length = 0;
     next.receive({
       type: "ack",
-      id: frames[0]!.id,
+      id: frames[0].id,
       op: "subscribe",
-      channels: frames[0]!.channels,
+      channels: frames[0].channels,
       resumed: true,
       seq: 9,
     });
     next.receive({
       type: "error",
-      id: frames[1]!.id,
+      id: frames[1].id,
       code: "INTERNAL",
       status: 500,
       detail: "boom",
@@ -588,15 +588,15 @@ describe("reconnect and resume", () => {
       }),
     ]);
     // The retry goes without resume; the resume is settled, so it advances.
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     const retried = next.ops("subscribe");
     expect(retried).toHaveLength(1);
-    expectUndefined(retried[0]!.resume);
+    expectUndefined(retried[0].resume);
     next.drop(1006);
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     FakeSocket.last.open();
     FakeSocket.last.receive(hello({ sessionId: "s3", seq: 9 }));
-    expect(FakeSocket.last.ops("subscribe")[0]!.resume).toEqual({
+    expect(FakeSocket.last.ops("subscribe")[0].resume).toEqual({
       epoch: "e1",
       afterSeq: 8,
     });
@@ -653,7 +653,7 @@ describe("reconnect and resume", () => {
     expect(holder.gaps).toEqual([
       expect.objectContaining({ reason: "epoch-changed", epoch: "e2" }),
     ]);
-    expectUndefined(second.ops("subscribe")[0]!.resume);
+    expectUndefined(second.ops("subscribe")[0].resume);
     // seq 3 of the new epoch is a different event: not a duplicate.
     second.receive(
       queueEvent(3, ["queue/emails"], "completed", { epoch: "e2" }),
@@ -666,7 +666,7 @@ describe("reconnect and resume", () => {
     socket.drop(1006);
     const delays: number[] = [];
     for (let attempt = 0; attempt < 9; attempt++) {
-      const delay = timers.pending()[0]!;
+      const delay = timers.pending()[0];
       delays.push(delay);
       timers.advance(delay);
       FakeSocket.last.drop(1006);
@@ -674,7 +674,7 @@ describe("reconnect and resume", () => {
     expect(delays).toEqual(BACKOFF);
     expect(client.getSnapshot().state).toBe("reconnecting");
 
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     FakeSocket.last.open();
     FakeSocket.last.receive(hello());
     FakeSocket.last.drop(1006);
@@ -712,7 +712,7 @@ describe("heartbeat", () => {
     socket.receive(hello({ heartbeatMs: 0 }));
     timers.advance(1000);
     expect(socket.ops("ping")).toHaveLength(1);
-    socket.receive({ type: "pong", id: socket.ops("ping")[0]!.id, at: 0 });
+    socket.receive({ type: "pong", id: socket.ops("ping")[0].id, at: 0 });
     timers.advance(1000);
     expect(socket.ops("ping")).toHaveLength(2);
     timers.advance(6000);
@@ -736,7 +736,7 @@ describe("close codes", () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         FakeSocket.last.drop(code);
         expect(client.getSnapshot().state).toBe("reconnecting");
-        timers.advance(timers.pending()[0]!);
+        timers.advance(timers.pending()[0]);
         FakeSocket.last.open();
         FakeSocket.last.receive(hello());
       }
@@ -755,7 +755,7 @@ describe("close codes", () => {
       }
       FakeSocket.last.drop(1008);
       expect(client.getSnapshot().state).toBe("reconnecting");
-      timers.advance(timers.pending()[0]!);
+      timers.advance(timers.pending()[0]);
       FakeSocket.last.open();
       FakeSocket.last.receive(hello());
     }
@@ -799,7 +799,7 @@ describe("close codes", () => {
     const { client, socket } = await connected();
     socket.drop(1006);
     for (let attempt = 0; attempt < 6; attempt++) {
-      timers.advance(timers.pending()[0]!);
+      timers.advance(timers.pending()[0]);
       FakeSocket.last.drop(1006);
     }
     expect(client.getSnapshot().state).toBe("reconnecting");
@@ -815,7 +815,7 @@ describe("error frames", () => {
     socket.sent.length = 0;
     socket.receive({
       type: "error",
-      id: frame!.id,
+      id: frame.id,
       code: "RATE_LIMITED",
       status: 429,
       detail: "slow down",
@@ -837,14 +837,14 @@ describe("error frames", () => {
     socket.sent.length = 0;
     socket.receive({
       type: "error",
-      id: frame!.id,
+      id: frame.id,
       code: "EVENTS_UNAVAILABLE",
       status: 503,
       detail: "Live events are unavailable; retry later",
     });
     expect(client.getSnapshot().state).toBe("live");
     expect(client.getSnapshot().detail).toMatch(/unavailable/);
-    timers.advance(timers.pending()[0]!);
+    timers.advance(timers.pending()[0]);
     expect(socket.ops("subscribe")).toHaveLength(1);
     socket.ackAll();
     expectAbsent(client.getSnapshot().detail);

@@ -161,7 +161,7 @@ describe("the queue screens' pure helpers", () => {
   });
 
   it("formats schedules, id lists, windows and truncation", () => {
-    const series = repeatablesFixture.items[0]!;
+    const series = repeatablesFixture.items[0];
     expect(describeSchedule(series)).toBe("0 9 * * * (Europe/London)");
     expect(
       describeSchedule({

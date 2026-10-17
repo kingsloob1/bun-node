@@ -79,34 +79,34 @@ describe("createApiClient: request headers", () => {
       { fetch: mock.fetch },
     );
     await client.request("GET", "/meta");
-    expect(mock.calls[0]!.url).toBe("/jobs-api/meta");
-    expect(mock.calls[0]!.headers.accept).toBe("application/json");
-    expect(mock.calls[0]!.credentials).toBe("same-origin");
+    expect(mock.calls[0].url).toBe("/jobs-api/meta");
+    expect(mock.calls[0].headers.accept).toBe("application/json");
+    expect(mock.calls[0].credentials).toBe("same-origin");
   });
 
   it("sends Content-Type: application/json on a bodiless POST, and no body", async () => {
     const { client, calls } = clientWith({ body: { paused: true } });
     await client.request("POST", "/x");
-    expect(calls[0]!.headers["content-type"]).toBe("application/json");
-    expectUndefined(calls[0]!.body);
+    expect(calls[0].headers["content-type"]).toBe("application/json");
+    expectUndefined(calls[0].body);
   });
 
   it("sends Content-Type on PUT and PATCH, with the JSON body", async () => {
     const { client, calls } = clientWith({ body: {} });
     await client.request("PUT", "/x", { body: { a: 1 } });
     await client.request("PATCH", "/x", { body: null });
-    expect(calls[0]!.headers["content-type"]).toBe("application/json");
-    expect(calls[0]!.body).toBe('{"a":1}');
-    expect(calls[1]!.headers["content-type"]).toBe("application/json");
-    expect(calls[1]!.body).toBe("null");
+    expect(calls[0].headers["content-type"]).toBe("application/json");
+    expect(calls[0].body).toBe('{"a":1}');
+    expect(calls[1].headers["content-type"]).toBe("application/json");
+    expect(calls[1].body).toBe("null");
   });
 
   it("sends no Content-Type on GET or a bodiless DELETE", async () => {
     const { client, calls } = clientWith({ status: 204 });
     await client.request("GET", "/x");
     await client.request("DELETE", "/x");
-    expectUndefined(calls[0]!.headers["content-type"]);
-    expectUndefined(calls[1]!.headers["content-type"]);
+    expectUndefined(calls[0].headers["content-type"]);
+    expectUndefined(calls[1].headers["content-type"]);
   });
 
   it("adds the CSRF header on every mutation and never on a read", async () => {
@@ -129,7 +129,7 @@ describe("createApiClient: request headers", () => {
   it("sends no CSRF header when the config has none", async () => {
     const { client, calls } = clientWith({ status: 204 }, null);
     await client.request("POST", "/x");
-    expect(Object.keys(calls[0]!.headers).sort()).toEqual([
+    expect(Object.keys(calls[0].headers).sort()).toEqual([
       "accept",
       "content-type",
     ]);
@@ -250,16 +250,14 @@ describe("createApiClient: requestRaw", () => {
     const byMethod = Object.fromEntries(
       calls.map((call) => [call.method, call]),
     );
-    expectUndefined(byMethod.GET!.headers[CSRF]);
-    expectUndefined(byMethod.GET!.headers["content-type"]);
+    expectUndefined(byMethod.GET.headers[CSRF]);
+    expectUndefined(byMethod.GET.headers["content-type"]);
     for (const method of ["POST", "PUT", "PATCH"]) {
-      expect(byMethod[method]!.headers["content-type"]).toBe(
-        "application/json",
-      );
+      expect(byMethod[method].headers["content-type"]).toBe("application/json");
     }
-    expectUndefined(byMethod.DELETE!.headers["content-type"]);
+    expectUndefined(byMethod.DELETE.headers["content-type"]);
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-      expect(byMethod[method]!.headers[CSRF]).toBe(CSRF_HEADER_VALUE);
+      expect(byMethod[method].headers[CSRF]).toBe(CSRF_HEADER_VALUE);
     }
     for (const call of calls) {
       expect(call.headers.accept).toBe("application/json");
@@ -271,7 +269,7 @@ describe("createApiClient: requestRaw", () => {
   it("sends the JSON body", async () => {
     const { client, calls } = clientWith({ body: {} });
     await client.requestRaw("POST", "/x", { body: { name: "send" } });
-    expect(calls[0]!.body).toBe(JSON.stringify({ name: "send" }));
+    expect(calls[0].body).toBe(JSON.stringify({ name: "send" }));
   });
 
   it("returns the real status, status text, headers (lower-cased, sorted), parsed body and timing", async () => {
@@ -423,6 +421,6 @@ describe("createApiClient: endpoints", () => {
       { fetch: mock.fetch },
     );
     await client.getMeta();
-    expect(mock.calls[0]!.url).toBe("https://jobs.example.com/api/meta");
+    expect(mock.calls[0].url).toBe("https://jobs.example.com/api/meta");
   });
 });

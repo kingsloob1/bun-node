@@ -521,16 +521,16 @@ async function checkTile(
     // The real request: the tile's range (the last hour), as from/to only.
     const [added, ...more] = reads(target, "/overview/added", start);
     expect(more).toEqual([]);
-    expect([...added!.query.keys()]).toEqual(["from", "to"]);
-    const from = Number(added!.query.get("from"));
-    const to = Number(added!.query.get("to"));
+    expect([...added.query.keys()]).toEqual(["from", "to"]);
+    const from = Number(added.query.get("from"));
+    const to = Number(added.query.get("to"));
     expect(to - from).toBe(HOUR);
     expect(to).toBeGreaterThanOrEqual(before);
     expect(to).toBeLessThanOrEqual(after);
 
     // The real answer: that range, the seeded truth, the visible queues.
-    expect(added!.status).toBe(200);
-    const body = added!.json as AddedBody;
+    expect(added.status).toBe(200);
+    const body = added.json as AddedBody;
     expect(body.from).toBe(from);
     expect(body.to).toBe(to);
     expect(body.counts).toEqual(truth);
@@ -806,14 +806,14 @@ describe("added by state polls slowly: memory", () => {
         await until(
           () =>
             reads(all, "/overview", start).filter(
-              (exchange) => exchange.at > first!.at,
+              (exchange) => exchange.at > first.at,
             ).length >= 2,
           () => "the Overview never polled twice",
           2 * h.POLL_INTERVAL_MS + 10_000,
         );
-        const elapsed = Date.now() - first!.at;
+        const elapsed = Date.now() - first.at;
         const overviewPolls = reads(all, "/overview", start).filter(
-          (exchange) => exchange.at > first!.at,
+          (exchange) => exchange.at > first.at,
         );
         // Still inside the group's own interval, so it has not read again —
         // although the Overview, on its 5 s, has.

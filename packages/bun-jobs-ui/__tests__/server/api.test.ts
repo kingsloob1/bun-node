@@ -62,7 +62,7 @@ describe("beside createJobsApi on a BunHttpAdapter", () => {
     }
     const { shell } = await fetchShell(app, "/admin/jobs");
     expect((await app.fetch(shell.script.src)).status).toBe(200);
-    expect((await app.fetch(shell.styles[0]!.href)).status).toBe(200);
+    expect((await app.fetch(shell.styles[0].href)).status).toBe(200);
 
     // The config is what the API routes, not a guess.
     expect(api.websocket).toBeDefined();
@@ -147,7 +147,7 @@ describe("beside createJobsApi on a BunHttpAdapter", () => {
     const page = await fetch(`${origin}/jobs/queues`);
     expect(page.status).toBe(200);
     const html = await page.text();
-    const src = /<script type="module" src="([^"]+)"/.exec(html)![1]!;
+    const src = /<script type="module" src="([^"]+)"/.exec(html)![1];
     const asset = await fetch(`${origin}${src}`);
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toBe(

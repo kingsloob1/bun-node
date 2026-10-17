@@ -13,7 +13,7 @@ export function isTheme(value: unknown): value is UiTheme {
 
 /** The theme after `theme` in the toggle's cycle. */
 export function nextTheme(theme: UiTheme): UiTheme {
-  return THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]!;
+  return THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
 }
 
 /** The remembered theme, or `null`. Storage can be absent or throw (private mode, blocked site data). */

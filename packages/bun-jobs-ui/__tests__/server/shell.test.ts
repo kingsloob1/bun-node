@@ -71,10 +71,8 @@ describe("the shell", () => {
     expect(shell.script.src).toMatch(/^\/jobs\/assets\/entry-[\w-]+\.js$/);
     expect(shell.script.integrity).toMatch(/^sha384-[\w+/]+=*$/);
     expect(shell.styles).toHaveLength(1);
-    expect(shell.styles[0]!.href).toMatch(
-      /^\/jobs\/assets\/entry-[\w-]+\.css$/,
-    );
-    expect(shell.styles[0]!.integrity).toMatch(/^sha384-/);
+    expect(shell.styles[0].href).toMatch(/^\/jobs\/assets\/entry-[\w-]+\.css$/);
+    expect(shell.styles[0].integrity).toMatch(/^sha384-/);
   });
 
   it("injects the resolved configuration as parseable JSON", async () => {

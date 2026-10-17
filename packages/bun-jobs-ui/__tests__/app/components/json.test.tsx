@@ -66,7 +66,7 @@ describe("JsonView", () => {
     // Depth 1 is collapsed by default: the nested object shows a summary.
     const toggles = page().getAllByRole("button", { expanded: false });
     expect(toggles).toHaveLength(1);
-    expect(toggles[0]!.textContent).toContain("1 key");
+    expect(toggles[0].textContent).toContain("1 key");
     expect(tree.textContent).not.toContain("x: ");
   });
 
@@ -99,7 +99,7 @@ describe("JsonView", () => {
     );
     expect(text.textContent).toBe(`"${long}"`);
     fireEvent.click(page().getByRole("button", { name: "Show less" }));
-    expect(text.textContent!.length).toBe(53);
+    expect(text.textContent.length).toBe(53);
   });
 
   it("renders big arrays a batch at a time", () => {
@@ -132,7 +132,7 @@ describe("JsonView", () => {
     );
     const circular = document.querySelectorAll(".json-circular");
     expect(circular.length).toBe(2);
-    expect(circular[0]!.textContent).toBe("[Circular]");
+    expect(circular[0].textContent).toBe("[Circular]");
     expect(document.querySelector(".json-undefined")!.textContent).toBe(
       "undefined",
     );

@@ -258,7 +258,7 @@ describe("the add-flow dialog: building the tree", () => {
 
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    const call = posts()[0]!;
+    const call = posts()[0];
     expect(call.path).toBe("/queues/emails/flows");
     expect(call.headers["content-type"]).toBe("application/json");
     expect(JSON.parse(call.body!)).toEqual({
@@ -302,7 +302,7 @@ describe("the add-flow dialog: building the tree", () => {
     );
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!)).toEqual({ name: "a", data: {} });
+    expect(JSON.parse(posts()[0].body!)).toEqual({ name: "a", data: {} });
   });
 
   it("disables Add child at maxFlowNodes and at maxFlowDepth, saying why", async () => {

@@ -75,8 +75,8 @@ describe("a worker's lifecycle buttons", () => {
     );
     // `wait` is a query parameter, not a body field: in the body it is
     // ignored and every instruction reads as unacknowledged.
-    expect(recorded[0]!.query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
-    expectUndefined(recorded[0]!.body);
+    expect(recorded[0].query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
+    expectUndefined(recorded[0].body);
     expect(await page().findByText(/Paused api\.emails/)).toBeTruthy();
   });
 
@@ -145,7 +145,7 @@ describe("the Stop dialog", () => {
     );
     await waitFor(() => expect(recorded).toHaveLength(1));
     // No choice offered, so no `persist` is sent: the deployment decides.
-    expectUndefined(recorded[0]!.body);
+    expectUndefined(recorded[0].body);
   });
 
   it("offers both persistences when the deployment allows a choice, and sends it", async () => {
@@ -171,8 +171,8 @@ describe("the Stop dialog", () => {
     );
     await waitFor(() => expect(recorded).toHaveLength(1));
     // The choice travels in the body; the wait stays in the query.
-    expect(recorded[0]!.body).toEqual({ persist: "key" });
-    expect(recorded[0]!.query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
+    expect(recorded[0].body).toEqual({ persist: "key" });
+    expect(recorded[0].query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
     expect(
       await page().findByText(/every replica of it stays stopped/),
     ).toBeTruthy();
@@ -349,7 +349,7 @@ describe("the Settings dialog", () => {
     });
     fireEvent.click(save);
     await waitFor(() => expect(recorded).toHaveLength(1));
-    expect(recorded[0]!.body).toEqual({ concurrency: 5, expectedSeq: 4 });
+    expect(recorded[0].body).toEqual({ concurrency: 5, expectedSeq: 4 });
     expect(
       await page().findByText(/Saved the settings of api\.emails/),
     ).toBeTruthy();

@@ -493,7 +493,7 @@ describe("the Overview over real recorded analytics", () => {
         // Live and idle: a row of zeros.
         expect(row("idle")?.cells.slice(1, 4)).toEqual(["idle", "0", "0"]);
         // Ranked by completed.
-        expect(workersView.rows[0]!.id).toBe(`${SERVICE}.emails`);
+        expect(workersView.rows[0].id).toBe(`${SERVICE}.emails`);
         expect(workersView.figures["Worker keys"]).toBe("4");
         expect(workersView.text).toContain(
           "It is not a list of running workers",
@@ -529,13 +529,11 @@ describe("the Overview over real recorded analytics", () => {
         const runnerReads = reads(live, "/analytics/runners", start);
         expect(runnerReads.rollups).toHaveLength(1);
         expect(runnerReads.batches).toHaveLength(1);
-        expect(runnerReads.batches[0]!.query.getAll("ids")).toEqual([
-          "nightly",
-        ]);
+        expect(runnerReads.batches[0].query.getAll("ids")).toEqual(["nightly"]);
         const workerReads = reads(live, "/analytics/workers", start);
         expect(workerReads.rollups).toHaveLength(1);
         expect(workerReads.batches).toHaveLength(1);
-        expect(workerReads.batches[0]!.query.getAll("keys")).toHaveLength(4);
+        expect(workerReads.batches[0].query.getAll("keys")).toHaveLength(4);
         expect(reads(live, "/analytics/jobs", start).all).toHaveLength(1);
         // Every one of them answered 200: nothing here was a mocked shape.
         for (const exchange of live.exchanges.slice(start)) {
@@ -639,16 +637,16 @@ describe("the Workers section with more keys than a roll-up returns", () => {
         expect(view.figures["Worker keys"]).toBe(String(FLEET_KEYS));
         // One page on screen, the busiest first.
         expect(view.rows).toHaveLength(MAX_ANALYTICS_SERIES);
-        expect(view.rows[0]!.id).toBe(fleetKey(FLEET_KEYS - 1));
-        expect(view.rows[0]!.cells[2]).toBe(String(FLEET_KEYS));
+        expect(view.rows[0].id).toBe(fleetKey(FLEET_KEYS - 1));
+        expect(view.rows[0].cells[2]).toBe(String(FLEET_KEYS));
 
         const workerReads = reads(fleet, "/analytics/workers", start);
         expect(workerReads.rollups).toHaveLength(1);
         expect(workerReads.batches).toHaveLength(1);
-        expect(workerReads.batches[0]!.query.getAll("keys")).toEqual(
+        expect(workerReads.batches[0].query.getAll("keys")).toEqual(
           view.rows.map((row) => row.id),
         );
-        const rollup = workerReads.rollups[0]!.json as {
+        const rollup = workerReads.rollups[0].json as {
           rows: unknown[];
           truncated: boolean;
           totalRows: number;
