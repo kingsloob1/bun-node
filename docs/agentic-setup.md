@@ -268,10 +268,12 @@ short:
   user's decision, 2026-10-10). Check one project with a bare `bun --check`
   in its directory, not `bun check -p`: `bun check` runs the nearest
   `package.json`'s `check` script, and the root's runs the whole repo. In a
-  fresh worktree, first `bun install` in `packages/bun-common/bench`,
-  `packages/bun-jobs/bench`, `benchmarks/` and `templates/compute-provider/`:
-  without them those projects fail on missing modules, and that noise hides
-  real errors in the same projects.
+  fresh worktree, first `bun install --frozen-lockfile` in
+  `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/` and
+  `templates/compute-provider/`: without them those projects fail on missing
+  modules, and that noise hides real errors in the same projects. Frozen,
+  because a plain install re-resolves and rewrites the lock, so the gate would
+  check whatever the registry served that day (`CLAUDE.md`, "Dev workflow").
 - `CI=1 bunx eslint .` in each changed package or examples directory —
   0 errors.
 - `bun run test` in each changed package (it type-checks the tests first,

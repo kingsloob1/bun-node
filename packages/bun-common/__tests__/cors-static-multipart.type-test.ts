@@ -98,13 +98,13 @@ class BucketStorage implements Storage<BucketFile> {
   async handleFile(record: MultiPartFileRecord): Promise<BucketFile> {
     return {
       type: "custom",
-      key: record.filename,
+      key: record.originalFilename,
       file: record.file,
       size: record.file.length,
       mimetype: record.mimeType,
       encoding: record.encoding,
       fieldname: record.fieldname,
-      originalFilename: record.filename,
+      originalFilename: record.originalFilename,
       validatedMimeType: record.validatedMimeType,
     };
   }

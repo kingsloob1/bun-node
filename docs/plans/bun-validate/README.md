@@ -48,7 +48,7 @@ command.
 
 | Part | State |
 |---|---|
-| This plan | **revised to the user's 2026-10-17 scope**; nothing built. Open questions in §8 await the user |
+| This plan | **revised to the user's 2026-10-17 scope**; nothing built. The eight ★ questions in §8 are **answered** (2026-10-17, each as recommended); the rest are asked before the PR each gates. **Group 1 starts once the whole [nestjs-12-parity](../nestjs-12-parity/README.md) plan has merged** (the user's decision, 2026-10-17) |
 | The transport-agnostic core (§4.1) | spiked: [`evidence/contract-core/`](evidence/contract-core/README.md), with a UDP and an in-process broker adapter, 24 type controls shown to fire |
 | HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
 | NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
@@ -1629,7 +1629,8 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~40 d**. **Adopted** (estimated in AD, TC
 and NTR, not counted again): (b0), AD (a)/(b), AD (e), TC PR-M4, NTR PR-N5.
 
-**Order**: V0 → V1 → V2 → V3a → V3b, then group 2 (V6 → V7a → V7b, the last
+**Order**: group 1 starts once the whole nestjs-12-parity plan has merged
+(the user's decision, 2026-10-17). Then V0 → V1 → V2 → V3a → V3b, then group 2 (V6 → V7a → V7b, the last
 after nestjs-12-parity PR-6a and PR-6c). Group 3 may start once V1 merges where
 it depends on nothing else (V4, V5a, V8), but lands after group 2 unless the
 user reorders. Group 4's V12 can follow V3a.
@@ -1677,27 +1678,30 @@ every body kind; an undeclared status fails). The 400-vs-422 question raised
 during the revision is also gone: bun-jobs' API already answers 400
 (`bun-jobs/lib/api/errors.ts:92`).
 
-**Group 1 cannot start until the questions marked ★ are answered**; the rest
-can be settled before the PR they name.
+**The questions marked ★ blocked group 1. The user answered all eight on
+2026-10-17, each as recommended** (marked ✅ below), and decided that group 1
+**waits until the whole nestjs-12-parity plan has merged**, not only the Nest
+PRs that touch bun-common. The rest stay open, each to be asked before the PR
+it names.
 
 ### 8.1 Kept from the first version
 
 1. ★ **Is this the right home**: a main plan owning the core and the order,
    adopting AD's and TC's designs, rather than a sub-plan of AD? **Recommended:
-   yes** (§0).
+   yes** (§0). ✅ **Answered 2026-10-17: yes, as recommended.**
 2. ★ **Default for runtime response checks?** **Recommended: `"off"`**, with
-   the README recommending `"error"` in development and tests.
+   the README recommending `"error"` in development and tests. ✅ **Answered 2026-10-17: yes, as recommended.**
 3. ★ **Mode names `"off" | "warn" | "error"` (here) or AD's `"off" | "log" |
-   "throw"`?** **Recommended: here's**, now used by every transport.
+   "throw"`?** **Recommended: here's**, now used by every transport. ✅ **Answered 2026-10-17: yes, as recommended.**
 4. ★ **The server is held to the schema's input, falling back to its output
    when the input is `unknown`, field by field (`WireInput`, §4.1.4).**
    **Recommended: yes** (measured twice per part; per field from bun-node-99's
-   review, M1). A typed client's responses follow the same wire side.
+   review, M1). A typed client's responses follow the same wire side. ✅ **Answered 2026-10-17: yes, as recommended.**
 5. **A `"parse"` mode that sends the schema's output** (stripping unknown keys
    to stop leaking fields)? **Recommended: later, opt-in.** Check-only never
    changes a response.
 6. ★ **One shared runner named `validateStandard`** (NJD's name) instead of
-   NTR's `validateTarget`? **Recommended: yes.**
+   NTR's `validateTarget`? **Recommended: yes.** ✅ **Answered 2026-10-17: yes, as recommended.**
 7. **One `StandardSchemaPipe` at bun-nest's root**, replacing NTR's and NJD's
    two? **Recommended: yes.**
 8. **`SchemaDto` + `StandardValidationPipe` as the `ValidationPipe`
@@ -1716,7 +1720,7 @@ can be settled before the PR they name.
   receiver hand a handler raw values its types call parsed (C3, C4).
   **Recommended: receivers default to `"error"` and also accept `"warn"`/
   `"off"` only with the handler's input typed `unknown`**; senders take all
-  three.
+  three. ✅ **Answered 2026-10-17: yes, as recommended.**
 - **Q-C2** **Paths can carry user data** (an unknown key's name, a
   user-keyed record). **Recommended: keep paths; state the rule as "no received
   value"; add an opt-in `redactPaths`.**
@@ -1734,7 +1738,7 @@ can be settled before the PR they name.
   ~15 ns lookup for keys with no schema? **Recommended: yes, in V1.**
 - **Q-C7** ★ **Where the core lives**: bun-common's root **and** a
   browser-safe subpath `@kingsleyweb/bun-common/contract`? **Recommended:
-  yes.**
+  yes.** ✅ **Answered 2026-10-17: yes, as recommended.**
 - **Q-C8** **An in-process broker checks on publish and delivery.**
   **Recommended: keep both by default** (right across services); measure
   before optimising.
@@ -1781,7 +1785,7 @@ can be settled before the PR they name.
   into `send(response)` and is checked there.
 - **Q-H7** ★ **Widen bun-jobs' `ProblemIssueDto.target` in V2** (a management
   API contract change bun-jobs-ui reads)? **Recommended: yes, in the same
-  PR**, reviewed by bun-node-e9 and bun-node-99.
+  PR**, reviewed by bun-node-e9 and bun-node-99. ✅ **Answered 2026-10-17: yes, as recommended.**
 - **Q-H8** **Type `req.valid` under `replace: false`?** **Recommended:
   later** (it changes five existing type-test assertions).
 - **Q-H9** **Accept the lifted inline-validator limit** (five lines of an
