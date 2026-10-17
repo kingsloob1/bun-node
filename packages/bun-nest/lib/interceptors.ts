@@ -15,9 +15,10 @@ import type {
   NestInterceptor,
   Type,
 } from "@nestjs/common";
-// `@nestjs/*` has no `exports` map, so a deep path is resolved as a file: it
-// needs its extension (and a directory its `index.js`) for a `node16`
-// consumer, who reads this specifier verbatim in the shipped declaration.
+// A deep path names a file, with its `.js` extension (a directory its
+// `index.js`): Nest 11's `@nestjs/*` have no `exports` map (the path is
+// resolved as a file), Nest 12's serve it through their `./*.js` entry, and a
+// `node16` consumer reads this specifier verbatim in the shipped declaration.
 import type { HttpArgumentsHost } from "@nestjs/common/interfaces/index.js";
 import type { Observable } from "rxjs";
 import {

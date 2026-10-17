@@ -648,7 +648,14 @@ Errors reach one of three layers, depending on where they are raised.
 
 A request no route matched runs the `setNotFoundHandler` handlers in
 registration order, until one returns nothing. Nest adds its own at init
-(`Cannot GET /x`), and one added earlier runs first. An oversized body
+(`Cannot GET /x`), and one added earlier runs first. From Nest 12, as on
+`@nestjs/platform-express` 12, a handler registered with a global prefix
+answers only at or under that prefix (matched as Express's `use(prefix)`
+matches it, case-insensitively, a `:tenant` segment taking any segment) and
+on the paths of the routes excluded from it; anything else gets Express's own
+HTML `404` (`Cannot GET /x`), not Nest's JSON one, with the headers middleware
+had set (CORS, security headers, cookies). On Nest 11 the handlers answer
+every path. An oversized body
 (`request.parseBody.maxContentLength`) is answered `413` before any of this.
 
 For errors from raw middleware, an Express-style 4-argument error middleware
@@ -773,6 +780,20 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- Several Nest applications on one adapter: a not-found handler runs only
+  once no route matched, so one application's handler never shadows the
+  routes of an application initialised after it. On Express it does where it
+  covers the path: on Nest 11, where every handler is global, and on Nest 12
+  with a parameterised global prefix (`setGlobalPrefix(":tenant")`), which
+  covers every first segment.
+- Two Nest 12 behaviours read Nest's own code, in the copy bun-nest resolves:
+  the not-found scoping is turned on by `@nestjs/core`'s
+  `AbstractHttpAdapter.prototype.mapException`, and WebSocket exceptions keep
+  this adapter's packet format through a patch to `@nestjs/websockets`'
+  `BaseWsExceptionFilter.prototype.emitMessage`. With a second copy of either
+  package installed, the application's copy is not the one read: its
+  WebSocket exceptions then reach clients as platform-ws's `{ event, data }`
+  frame.
 
 See the last section of
 [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
@@ -1101,7 +1122,14 @@ Every client a gateway receives has an `emit`, which NestJS's default
 WebSocket exception handler calls. A thrown `WsException("nope")` therefore
 reaches the client as
 `EVENT ["exception", { status: "error", message: "nope", cause }]`, as with
-socket.io. An exception filter can replace that.
+socket.io, on Nest 11 and 12. (Nest 12's handler would send platform-ws's
+`{ event, data }` frame to a native socket; the adapter routes it through the
+client's `emit` instead, for its own clients only.) An exception filter can
+replace that.
+
+A reply that cannot be serialised (a cycle, a `BigInt`, a payload nested too
+deep for `JSON.stringify`) is logged through Nest's `Logger` and not sent, as
+on `@nestjs/platform-ws`; the connection stays open.
 
 ### The `websocket` option
 
@@ -1222,8 +1250,17 @@ It can be driven without NestJS as well. Each method is the one NestJS calls:
 - `create(port, options)` registers the upgrade route and returns the server.
 - `bindClientConnect(server, cb)` runs a callback per matching connection.
 - `bindMessageHandlers(client, handlers, transform?)` routes one client's packets.
-- `bindClientDisconnect(client, cb)` runs once when that client goes.
+- `bindClientDisconnect(client, cb)` runs `cb(code, reason)` once when that
+  client goes (see below).
 - `close(server)` closes it, and `dispose()` is the shutdown hook.
+
+`bindClientDisconnect` callbacks receive `(code, reason)`: the close code and
+reason, the arguments `@nestjs/platform-ws` passes on from `ws`'s `close`
+event. Direct callers used to get `(client, code, reason)`; they hold the
+client already. Like platform-ws, Nest 12 hands the first of them, the
+numeric close code, to the gateway as `handleDisconnect(client, reason)`'s
+second argument, although Nest types that argument `string`. Nest 11 calls
+`handleDisconnect(client)` alone.
 
 For a **custom adapter**, subclass `BunNestWebsocketAdapter` (or
 `BunWebSocketAdapter`) and override those methods. Keep the router's active

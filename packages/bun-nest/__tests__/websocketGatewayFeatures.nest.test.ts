@@ -1,7 +1,8 @@
 /**
  * NestJS gateway *feature* coverage for the bun-nest WebSocket adapter: a
  * custom-port gateway, a namespaced gateway, `@MessageBody("key")` property
- * extraction, and multiple gateways coexisting on one app. All run against a
+ * extraction, multiple gateways coexisting on one app, and the arguments of
+ * `handleDisconnect`. All run against a
  * real `NestFactory` app + real `WebSocket` connections.
  *
  * Notes on this adapter's behaviour (verified by these tests):
@@ -21,9 +22,11 @@
  */
 import type { WebSocketClient } from "@kingsleyweb/bun-common";
 import type { INestApplication } from "@nestjs/common";
+import type { OnGatewayDisconnect } from "@nestjs/websockets";
 import { getPort } from "@kingsleyweb/bun-common";
 import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import {
   ConnectedSocket,
   MessageBody,
@@ -78,8 +81,29 @@ class SharedDefaultGateway {
   }
 }
 
+/** Every `handleDisconnect(client, reason)` call the gateway below received. */
+const disconnects: { client: unknown; reason: unknown; arity: number }[] = [];
+
+/** Records its disconnect hook's arguments; reachable at `/bye`. */
+@WebSocketGateway({ namespace: "/bye" })
+class DisconnectGateway implements OnGatewayDisconnect {
+  @SubscribeMessage("hello")
+  hello(@ConnectedSocket() client: WebSocketClient) {
+    return { event: "hello", data: client.data.path };
+  }
+
+  handleDisconnect(client: WebSocketClient, ...rest: unknown[]) {
+    disconnects.push({ client, reason: rest[0], arity: rest.length + 1 });
+  }
+}
+
 @Module({
-  providers: [PortGateway, ChatNamespaceGateway, SharedDefaultGateway],
+  providers: [
+    PortGateway,
+    ChatNamespaceGateway,
+    SharedDefaultGateway,
+    DisconnectGateway,
+  ],
 })
 class AppModule {}
 
@@ -238,5 +262,38 @@ describe("NestJS gateway features: @MessageBody extraction", () => {
 
     expect(reply.data[1]).toEqual(payload);
     await client.close();
+  });
+});
+
+describe("NestJS gateway features: handleDisconnect(client, reason)", () => {
+  it("gets the client, and on Nest 12 the close code as `reason`, as on platform-ws", async () => {
+    const client = await connectWs(`${base}/bye`);
+    client.send({ type: EVENT, namespace: "/", data: ["hello", null] });
+    await client.waitFor((m) => m?.data?.[0] === "hello");
+    const closed = new Promise((resolve) =>
+      client.socket.addEventListener("close", resolve),
+    );
+    client.socket.close(4001, "leaving");
+    await closed;
+    const deadline = Date.now() + 2000;
+    while (disconnects.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(disconnects).toHaveLength(1);
+    const [seen] = disconnects;
+    expect((seen!.client as WebSocketClient).data.path).toBe("/bye");
+    // Nest 12 passes the adapter callback's first argument on as `reason`
+    // (nestjs/nest ad5b731cd); platform-ws's is the close code. Nest 12 is
+    // told by the capability it added with it (12.0.0), never a version.
+    const nest12 =
+      typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+        .mapException === "function";
+    if (nest12) {
+      expect([seen!.arity, seen!.reason]).toEqual([2, 4001]);
+    } else {
+      // Nest 11 calls `handleDisconnect(client)` alone.
+      expect(seen!.arity).toBe(1);
+    }
   });
 });

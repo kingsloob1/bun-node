@@ -144,8 +144,7 @@ ws.bindClientConnect(undefined, (client, _server) => {
   type _custom = Expect<Equal<typeof client.data.custom, Session>>;
   type _serverType = Expect<Equal<typeof _server, Server | undefined>>;
 
-  ws.bindClientDisconnect(client, (gone, code, _reason) => {
-    type _gone = Expect<Equal<typeof gone.data.custom, Session>>;
+  ws.bindClientDisconnect(client, (code, _reason) => {
     type _code = Expect<Equal<typeof code, number>>;
     type _reasonType = Expect<Equal<typeof _reason, string>>;
   });

@@ -593,6 +593,24 @@ export class SmallController {
 @Module({ controllers: [SmallController] })
 export class SmallModule {}
 
+/** Marks a response it saw with `X-Mw: ran`. */
+export function markResponse(
+  _req: unknown,
+  res: { setHeader: (name: string, value: string) => void },
+  next: () => void,
+) {
+  res.setHeader("x-mw", "ran");
+  next();
+}
+
+/** {@link SmallModule} with a wildcard middleware, `forRoutes("*")`. */
+@Module({ controllers: [SmallController] })
+export class WildcardMiddlewareModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(markResponse).forRoutes("*");
+  }
+}
+
 @Controller("ver")
 export class VersionedController {
   @Get()

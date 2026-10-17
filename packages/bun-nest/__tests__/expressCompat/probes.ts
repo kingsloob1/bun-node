@@ -6,14 +6,17 @@
 import type { NestApplicationOptions } from "@nestjs/common";
 import type { Configure } from "./app";
 import { RequestMethod, VersioningType } from "@nestjs/common";
+import { ExpressAdapter } from "@nestjs/platform-express";
 import {
   CompatModule,
   configureCompat,
+  markResponse,
   signCookie,
   SmallModule,
   VersionedModule,
   VIEWS,
   ViewsModule,
+  WildcardMiddlewareModule,
 } from "./app";
 
 /** One request: a name, a path and its `RequestInit`. */
@@ -33,6 +36,11 @@ export interface ProbeGroup {
 }
 
 const html = { headers: { accept: "text/html" } };
+
+/** A cross-origin request's init: `Origin` set, for CORS to answer. */
+function withOrigin(method = "GET"): RequestInit {
+  return { method, headers: { origin: "https://a.test" } };
+}
 const json = { headers: { accept: "application/json" } };
 
 /** `n` bytes of JSON: `{"pad":"xxx…"}`. */
@@ -389,6 +397,9 @@ export const GROUPS: ProbeGroup[] = [
       },
     ],
   },
+  // A miss outside the global prefix: Nest's JSON 404 on 11, Express's
+  // finalhandler page from 12 (nestjs/nest #16372, #17648, #17923), which
+  // scopes the not-found handler to the prefix and the excluded routes.
   {
     name: "prefix",
     module: SmallModule,
@@ -402,6 +413,119 @@ export const GROUPS: ProbeGroup[] = [
       { name: "unprefixed route", path: "/hello" },
       { name: "excluded route", path: "/health" },
       { name: "excluded route under prefix", path: "/api/health" },
+      { name: "outside, with a query", path: "/hello?x=1" },
+      { name: "outside, sharing the prefix's letters", path: "/apiary" },
+      { name: "outside, characters to escape", path: "/it's&x" },
+      { name: "outside, percent-encoded", path: "/caf%C3%A9" },
+      { name: "outside, POST", path: "/nope", init: { method: "POST" } },
+      { name: "outside, HEAD", path: "/hello", init: { method: "HEAD" } },
+      { name: "the bare prefix", path: "/api" },
+      { name: "the prefix with a slash", path: "/api/" },
+      { name: "a miss under the prefix", path: "/api/nope" },
+      { name: "a miss under the prefix, in capitals", path: "/API/nope" },
+      {
+        name: "excluded route, another method",
+        path: "/health",
+        init: { method: "POST" },
+      },
+      { name: "below an excluded route", path: "/health/x" },
+    ],
+  },
+  // A parameterised prefix: Express mounts it as `use("/:tenant")`, which
+  // takes any first segment, so every miss is under it (Nest's JSON 404).
+  {
+    name: "prefix-param",
+    module: SmallModule,
+    configure: (app) => {
+      app.setGlobalPrefix(":tenant", {
+        exclude: [{ path: "health", method: RequestMethod.GET }],
+      });
+    },
+    probes: [
+      { name: "a route under the prefix", path: "/t1/hello" },
+      { name: "a miss under the prefix", path: "/t1/missing" },
+      { name: "one segment, a miss", path: "/other" },
+      { name: "the root", path: "/" },
+      { name: "excluded route", path: "/health" },
+      {
+        name: "excluded route, another method",
+        path: "/health",
+        init: { method: "POST" },
+      },
+      {
+        name: "excluded route, HEAD",
+        path: "/health",
+        init: { method: "HEAD" },
+      },
+    ],
+  },
+  // finalhandler keeps the headers middleware already set (CORS, a custom
+  // one) on its page, less Content-Encoding/-Language/-Range.
+  {
+    name: "prefix-headers",
+    module: SmallModule,
+    configure: (app) => {
+      app.enableCors();
+      app.use(markResponse);
+      app.setGlobalPrefix("api");
+    },
+    probes: [
+      { name: "outside, GET", path: "/other", init: withOrigin() },
+      { name: "outside, HEAD", path: "/other", init: withOrigin("HEAD") },
+      {
+        name: "under the prefix, a miss",
+        path: "/api/nope",
+        init: withOrigin(),
+      },
+    ],
+  },
+  {
+    name: "prefix-trailing-slash",
+    module: SmallModule,
+    configure: (app) => {
+      app.setGlobalPrefix("/api/");
+    },
+    probes: [
+      { name: "prefixed route", path: "/api/hello" },
+      { name: "a miss under the prefix", path: "/api/nope" },
+      { name: "outside", path: "/hello" },
+    ],
+  },
+  {
+    name: "prefix-versioned-exclusion",
+    module: VersionedModule,
+    configure: (app) => {
+      app.setGlobalPrefix("api", {
+        exclude: [{ path: "ver", method: RequestMethod.GET }],
+      });
+      app.enableVersioning({ type: VersioningType.URI });
+    },
+    probes: [
+      { name: "excluded, v1", path: "/v1/ver" },
+      { name: "excluded, neutral", path: "/ver" },
+      {
+        name: "excluded, v1, another method",
+        path: "/v1/ver",
+        init: { method: "POST" },
+      },
+      { name: "an unknown version, outside", path: "/v9/ver" },
+      { name: "under the prefix", path: "/api/v1/ver" },
+    ],
+  },
+  // The core registers `/api$` beside `/api/{*path}` for `forRoutes("*")`
+  // (the `$` meaning "exactly"): Express honours it from 12.1.3 (#17942).
+  {
+    name: "prefix-wildcard-middleware",
+    module: WildcardMiddlewareModule,
+    configure: (app) => {
+      app.setGlobalPrefix("api");
+    },
+    probes: [
+      { name: "the bare prefix", path: "/api" },
+      { name: "the prefix with a slash", path: "/api/" },
+      { name: "a route under the prefix", path: "/api/hello" },
+      { name: "a miss under the prefix", path: "/api/nope" },
+      { name: "outside the prefix", path: "/hello" },
     ],
   },
   {
@@ -526,6 +650,18 @@ export interface KnownDifference {
   /** Why it differs; the README's "Known differences" says the same. */
   reason: string;
 }
+
+/**
+ * Whether the installed `@nestjs/platform-express` strips the core's `$`
+ * exact-match marker into an exact route (12.1.3, nestjs/nest #17942). No
+ * capability exposes it, so its `createMiddlewareFactory` is read (as Bun
+ * prints it: the quotes are its own). This
+ * adapter honours the marker on every version; where Express does not, the
+ * one probe it shows in is a known difference.
+ */
+const EXPRESS_HONOURS_EXACT_MARKER = /endsWith\(["']\$["']\)/.test(
+  ExpressAdapter.prototype.createMiddlewareFactory.toString(),
+);
 
 export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";
@@ -659,6 +795,37 @@ export const KNOWN: Record<string, KnownDifference> = {
   "cors-delegate/delegate refuses": { fields: ["vary"], reason: CORS_VARY },
   "cors-option-true/{cors: true} GET": { fields: ["vary"], reason: CORS_VARY },
   "prefix/excluded route": { fields: ["content-type"], reason: TEXT_DEFAULT },
+  "prefix-headers/outside, GET": { fields: ["vary"], reason: CORS_VARY },
+  "prefix-headers/outside, HEAD": { fields: ["vary"], reason: CORS_VARY },
+  "prefix-headers/under the prefix, a miss": {
+    fields: ["vary"],
+    reason: CORS_VARY,
+  },
+  "prefix-param/excluded route": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "prefix-param/excluded route, HEAD": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "prefix-versioned-exclusion/excluded, v1": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "prefix-versioned-exclusion/excluded, neutral": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  ...(EXPRESS_HONOURS_EXACT_MARKER
+    ? {}
+    : {
+        "prefix-wildcard-middleware/the bare prefix": {
+          fields: ["x-mw"],
+          reason:
+            "the core's `$` exact-match marker is honoured, as Express does only from 12.1.3",
+        },
+      }),
   "version-uri/URI v1": { fields: ["content-type"], reason: TEXT_DEFAULT },
   "version-uri/URI v3": { fields: ["content-type"], reason: TEXT_DEFAULT },
   "version-uri/URI neutral": { fields: ["content-type"], reason: TEXT_DEFAULT },
