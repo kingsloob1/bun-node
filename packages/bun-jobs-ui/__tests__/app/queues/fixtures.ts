@@ -1,10 +1,12 @@
 import type {
   JobCountsDto,
+  JobDefaultsDto,
   JobDto,
   JobPageDto,
   QueueDetailDto,
   QueueListDto,
   RepeatableListDto,
+  SummonStatusDto,
   WorkerListDto,
 } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
@@ -224,4 +226,96 @@ export async function findDialog(): Promise<HTMLElement> {
     }
   });
   return found!;
+}
+
+/**
+ * `GET /queues/emails/summon`: a local, working controller with one attempt
+ * on its way, its times relative to `now` (the calling file's, taken once
+ * when it loads, so every status it builds agrees).
+ */
+export function summonStatusFixture(
+  now: number,
+  overrides: Partial<SummonStatusDto> = {},
+): SummonStatusDto {
+  return {
+    queue: "emails",
+    local: true,
+    inert: false,
+    summoner: {
+      provider: {
+        name: "@acme/bun-jobs-ecs",
+        version: "1.2.0",
+        kind: "ecs",
+        displayName: "Amazon ECS",
+        apiVersion: { core: "0.1", summon: "0.1" },
+      },
+      providerId: "@acme/bun-jobs-ecs@1.2.0~1",
+      readiness: "ready",
+      capabilities: {
+        style: "launch",
+        dedupe: { kind: "none" },
+        passes: "argv",
+        bootBudgetMs: 180_000,
+        shutdown: { signal: "SIGTERM", graceMs: 10_000 },
+        maxLifetimeMs: null,
+        enforcesLifetime: false,
+      },
+      facts: { cluster: "jobs-prod", region: "eu-west-1" },
+    },
+    pending: [
+      {
+        id: "s-1",
+        at: now - 20_000,
+        until: now + 160_000,
+        count: 1,
+        kind: "ecs",
+      },
+    ],
+    failures: 0,
+    budget: {
+      hour: 3,
+      perHour: 30,
+      day: 12,
+      perDay: 300,
+      hourResetsAt: Date.UTC(2026, 0, 1, 1),
+      dayResetsAt: Date.UTC(2026, 0, 2),
+    },
+    last: { id: "s-1", outcome: "started", at: now - 20_000 },
+    ...overrides,
+  };
+}
+
+/** `GET /queues/emails/job-defaults`: attempts and timeout overridden, attempts LOWERED below the code's. */
+export function jobDefaultsFixture(
+  overrides: Partial<JobDefaultsDto> = {},
+): JobDefaultsDto {
+  const code: JobDefaultsDto["code"] = {
+    attempts: 5,
+    backoff: { type: "exponential", delay: 1_000 },
+    timeout: 0,
+    priority: 0,
+    removeOnComplete: false,
+    removeOnFail: { count: 100 },
+    keepLogs: 0,
+    keepStacktraces: 10,
+  };
+  return {
+    queue: "emails",
+    effective: { ...code, attempts: 3, timeout: 30_000 },
+    code,
+    codeSource: "api",
+    overridden: ["attempts", "timeout"],
+    override: { attempts: 3, timeout: 30_000 },
+    seq: 4,
+    updatedAt: NOW - 60_000,
+    propagationMs: 1_000,
+    pending: {
+      waiting: 1_200,
+      delayed: 10,
+      failed: 5,
+      "waiting-children": 0,
+      total: 1_215,
+    },
+    ...overrides,
+  };
 }

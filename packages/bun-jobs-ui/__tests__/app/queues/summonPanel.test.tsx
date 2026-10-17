@@ -30,6 +30,7 @@ import {
   findDialog,
   notifications,
   renderQueue,
+  summonStatusFixture,
 } from "./fixtures";
 import { policyFixture } from "./summonPolicyFixture";
 
@@ -52,56 +53,11 @@ const NOW = Date.now();
 const UNREADABLE_TEXT =
   "This queue's summon state cannot be read: it is not in a shape any version of bun-jobs writes, so its attempts, failures and budget are unknown here.";
 
-/** A summon status: a local, working controller with one attempt on its way. */
+/** A summon status at this file's {@link NOW} (see {@link summonStatusFixture}). */
 function statusFixture(
   overrides: Partial<SummonStatusDto> = {},
 ): SummonStatusDto {
-  return {
-    queue: "emails",
-    local: true,
-    inert: false,
-    summoner: {
-      provider: {
-        name: "@acme/bun-jobs-ecs",
-        version: "1.2.0",
-        kind: "ecs",
-        displayName: "Amazon ECS",
-        apiVersion: { core: "0.1", summon: "0.1" },
-      },
-      providerId: "@acme/bun-jobs-ecs@1.2.0~1",
-      readiness: "ready",
-      capabilities: {
-        style: "launch",
-        dedupe: { kind: "none" },
-        passes: "argv",
-        bootBudgetMs: 180_000,
-        shutdown: { signal: "SIGTERM", graceMs: 10_000 },
-        maxLifetimeMs: null,
-        enforcesLifetime: false,
-      },
-      facts: { cluster: "jobs-prod", region: "eu-west-1" },
-    },
-    pending: [
-      {
-        id: "s-1",
-        at: NOW - 20_000,
-        until: NOW + 160_000,
-        count: 1,
-        kind: "ecs",
-      },
-    ],
-    failures: 0,
-    budget: {
-      hour: 3,
-      perHour: 30,
-      day: 12,
-      perDay: 300,
-      hourResetsAt: Date.UTC(2026, 0, 1, 1),
-      dayResetsAt: Date.UTC(2026, 0, 2),
-    },
-    last: { id: "s-1", outcome: "started", at: NOW - 20_000 },
-    ...overrides,
-  };
+  return summonStatusFixture(NOW, overrides);
 }
 
 /** The grants and handlers a summon-capable caller has. */

@@ -1,9 +1,7 @@
 import type {
-  SummonBudgetDto,
   SummonGroupListDto,
   SummonGroupStatusDto,
   SummonListDto,
-  SummonListItemDto,
 } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
@@ -12,6 +10,7 @@ import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
+import { summonListFixtures } from "./fixtures";
 
 setupDom();
 
@@ -24,33 +23,10 @@ setupDom();
  * "Circuit open" badge.
  */
 
-const NOW = Date.now();
-
-/** A budget that is on: 4 of 20 this hour, 13 of 200 today. */
-const BUDGET: SummonBudgetDto = {
-  hour: 4,
-  perHour: 20,
-  day: 13,
-  perDay: 200,
-  hourResetsAt: NOW + 23 * 60_000,
-  dayResetsAt: NOW + 9 * 3_600_000,
-};
-
-/** One controller as `GET /summon` lists it. */
-function controller(
-  overrides: Partial<SummonListItemDto> = {},
-): SummonListItemDto {
-  return {
-    namespace: "shop",
-    queue: "emails",
-    local: true,
-    kind: "ecs",
-    readiness: "ready",
-    inert: false,
-    budget: BUDGET,
-    ...overrides,
-  };
-}
+const { NOW, BUDGET, controller } = summonListFixtures({
+  budget: { hour: 4, perHour: 20, day: 13, perDay: 200 },
+  last: false,
+});
 
 /** The group `gpu`: budget on, ECS circuit open by `reports`, K8s closed, two queues charged. */
 function gpu(
