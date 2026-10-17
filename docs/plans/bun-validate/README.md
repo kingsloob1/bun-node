@@ -173,7 +173,7 @@ which logs a mismatch and nothing more.
 |---|---|---|
 | Group 1 — core and HTTP completeness, bun-common (V0, V1, V2, V3a, V3b) | **~14–15 d** | bun-common agent (bun-node-11) |
 | Group 2 — NestJS (V6, V7a, V7b) | **~8–10 d** | bun-common agent builds in bun-nest; bun-node-15 reviews |
-| Group 3 — other transports: WebSocket (V8, V9), SSE (V11), jobs (V4, V5a, V5c, V5b), cache (V10) | **~16–19 d** | bun-common agent (WS, SSE); bun-node-e9 (jobs); BC's owner (cache) |
+| Group 3 — other transports: WebSocket (V8, V9), SSE (V11), jobs (V4, V5a, V5c, V5b), cache (V10) | **~17–20 d** | bun-common agent (WS, SSE); bun-node-e9 (jobs); BC's owner (cache) |
 | Group 4 — client and docs hooks (AD (b0), V12, AD (a)/(b)/(e) deltas) | **~3 d new** + AD's own estimates; bun-node-99 reviewed the shapes (§4.12) | bun-common agent |
 | Examples, per PR | **~5 d** | bun-node-74 |
 
@@ -624,17 +624,19 @@ function createSender<C, Sd>(contract: C, side: Sd, options?: GuardOptions): Gua
 
 ```ts
 type ReceiveOf<S> = StandardSchemaV1.InferOutput<S>;
-type SendOf<S> = unknown extends StandardSchemaV1.InferInput<S>
-  ? StandardSchemaV1.InferOutput<S>
-  : StandardSchemaV1.InferInput<S>;
+// Field by field: each field's input type, or its output where the input is
+// `unknown` (a coercion), with the input's optionality; deep through objects
+// and arrays. (The spike's `SendOf` applied this to the whole part; V1 replaces it.)
+type WireInput<S> = DeepWire<StandardSchemaV1.InferInput<S>, StandardSchemaV1.InferOutput<S>>;
 type Received<C, Sd>;   // the flat message: { [keyName]: K, ...each part's output }, a union over the keys
-type Sent<C, Sd>;       // the same, each part held to SendOf
+type Sent<C, Sd>;       // the same, each part held to WireInput
 type KeysOf<C, Sd>; type PartsOf<C, Sd, K, R>;
 type MediaValue<M, R> = { mediaType: K; value: … };   // a union over the media map
 ```
 
-- A **receiver** gets each part's **output**; a **sender** is held to the
-  schema's **input**, or its **output** when the input is `unknown`. This is
+- A **receiver** gets each part's **output**; a **sender** is held, **field
+  by field**, to each field's **input**, or its **output** where the input is
+  `unknown` (`WireInput`). This is
   the first version's rule (§4.4.4), now general: the spike checks it on HTTP,
   WebSocket, SSE, jobs, Kafka and gRPC (`types.probe.ts`).
 - **The rule applies per field, not per part** (bun-node-99's review, M1;
@@ -663,16 +665,30 @@ const CONTRACT: unique symbol;                    // the spike's Symbol.for("bun
 function attachContract<X extends object, C>(target: X, contract: C): X & Carries<C>;
 function getContract<C>(x: Carries<C>): C;
 function getContract(x: unknown): AnyContract | undefined;
-function describeContract(c: AnyContract): ContractEntry[];
-//   ContractEntry = { side, keyName?, key?, part, mediaType?, schema, vendor? }
+function describeContract(c: AnyContract): ContractDescription;
+interface ContractDescription {
+  // Every side and key the contract declares, even one with no parts (`202: {}`),
+  // and whether a side is declared at all ("nothing declared" ≠ "declared empty").
+  sides: { inbound?: { declared: true; keys?: string[] }; outbound?: { declared: true; keys?: string[] } };
+  entries: ContractEntry[];   // in canonical order (§4.12, m1)
+}
+interface ContractEntry {
+  side: "inbound" | "outbound"; keyName?: string; key?: string; part: string; mediaType?: string;
+  kind: "value" | "chunks" | "sse" | "opaque";        // §4.12 M4; an sse() expands into nested event rows
+  encoding: "path-string" | "querystring" | "header-string" | "cookie-string" | "signed-cookie" | "set-cookie" | "body";  // m3
+  origin?: string;                                    // the layer it came from, after mergeContracts (M3)
+  schema: StandardSchemaV1; vendor?: string;
+}
 ```
 
 - A validator middleware, a channel handler, an SSE endpoint, a job
   definition and a Nest route each **carry** their contract under one symbol,
   non-enumerable, so nothing changes for code that enumerates them [M C20: the
   handler has no enumerable keys].
-- `describeContract` flattens a contract into rows a generator walks: one per
-  `(side, key, part, mediaType)`. An OpenAPI or AsyncAPI generator, the route
+- `describeContract` flattens a contract into its declared sides and keys
+  plus rows a generator walks: one per `(side, key, part, mediaType)`, each
+  with its body `kind`, its wire `encoding` and its `origin` (§4.12, from
+  bun-node-99's review: B1, M3, M4, m3). An OpenAPI or AsyncAPI generator, the route
   model and bun-jobs' `/definitions` read **only this** (§4.11). The spike's
   seven-row HTTP contract took its JSON Schema from zod's
   `~standard.jsonSchema` (C20).
@@ -1090,13 +1106,18 @@ create(@Validated("body") body: Infer<typeof CreateUser>) { … }
   reads the route's argument metadata (`'__routeArguments__'`, from
   `@nestjs/common/constants`, on both majors; entries `"<paramtype>:<index>":
   { index, data?, pipes, schema? }`, `schema` on 12 only; paramtypes BODY 3,
-  QUERY 4, PARAM 5, RAW_BODY 12, COOKIES 14) and **skips a part only when that
+  QUERY 4, PARAM 5, RAW_BODY 12, and COOKIES 14 and SIGNED_COOKIES 15 on 12
+  only, since 11.1.27's enum ends at ACK 13) and **skips a part only when that
   parameter's `data` is undefined (it covers the whole part, not one property:
   `@Query('page', { schema })` covers `page` alone) and the pipe applies**.
   Otherwise it checks the part itself, and the README documents the overlap.
   It still records every schema in the route's contract, so documents see it.
   `@Headers`, `@Cookies` and `@SignedCookies` take no `schema` on 12, so
-  `@Validate` always owns those parts. Interceptors run **before** pipes, so an
+  `@Validate` always owns those parts. **RAW_BODY counts as a raw-body part,
+  never `body`**: Nest maps it to `'custom'`
+  (`@nestjs/core/pipes/params-token-factory.js`), which the pipe checks only
+  with `validateCustomDecorators: true`, and a `@RawBody({ schema })` checks
+  the `Buffer`, so it never makes `@Validate({ body })` skip. Interceptors run **before** pipes, so an
   in-place replacement by `@Validate` hands Nest's pipe an already-parsed value;
   the skip rule is what keeps one parse per part. On Nest 11 none of this
   exists and `@Validate` does all of it. Q-N1 asks the user to confirm compose
@@ -1169,7 +1190,9 @@ identical) [M `nest-interceptor/`]:
   `RouterExecutionContext.create` calls `setStatus` (the `@HttpCode` value, or
   201 for POST, 200 otherwise) and `setHeaders` **before**
   `interceptorsConsumer.intercept`, on both majors
-  (`@nestjs/core/router/router-execution-context.js:43-46`) [S, M]. So
+  (`@nestjs/core/router/router-execution-context.js`: `setStatus` and
+  `setHeaders` at `:43-46` and `intercept` after them on 11.1.27; `setStatus`
+  at `:52` and `intercept` at `:67` on 12.1.3) [S, M]. So
   `@Validate` reads the status from `res.statusCode` and the headers from the
   response object directly. What `map()` cannot see yet is applied later by
   `reply`: a redirect (taken from `REDIRECT_METADATA`, overridden by a returned
@@ -1304,10 +1327,17 @@ checks each emitted `MessageEvent` against its `type`'s schema in the
 interceptor's `map`, before Nest writes it [A]. Under `"error"`:
 
 - **A synchronous first event** (`of(...)`) fails before the headers are
-  committed, so Nest answers 500 through the filters [M `nest-interceptor/`].
+  committed, so Nest answers 500 through the filters [M
+  `nest-interceptor/out-sse.txt`: Nest 11.1.27 and 12.1.3, Express and
+  bun-nest adapters alike].
 - **After the commit**, Nest writes `event: error` with `data: err.message`
-  **verbatim** and logs nothing, so the message `@Validate` throws must already
-  be scrubbed (§4.1.6: no values), and `@Validate` logs the mismatch itself.
+  **verbatim** and logs nothing [M the same file: a planted `secret-value`
+  reached the client in the `error` event; S `router-response-controller.js`],
+  so the message `@Validate` throws must already be scrubbed (§4.1.6: no
+  values), and `@Validate` logs the mismatch itself.
+- A side observation from the same run: Nest 11 omits the `data:` line for a
+  falsy `data` (`0`), which 12 sends; the per-event check sees the value
+  either way.
 
 ### 4.8 bun-jobs: data, results and flows [D, A]
 
@@ -1471,7 +1501,7 @@ Every consumer reads **one runtime structure**: the contract a carrier holds
 | OpenAPI generator (AD (a), (b)) | the router's layers, each layer's contract via `getContract`, and `describeContract` rows | validator middleware, `@Validate` routes | `parameters` (params, query, headers, cookies), `requestBody.content`, `responses[status].headers`, `.content[mediaType]` |
 | AsyncAPI generator (AD (e)) | channel, SSE and broker contracts | `defineChannel` handlers, SSE endpoints, transports' handlers | `channels`, `messages` keyed by `type`/`event`/`topic`, `payload` |
 | The route model (TC PR-M1) | the same rows as OpenAPI, plus the path and method from the layer | router layers | `ModelRoute.request.{params, query, body, headers}`, plus **`cookies`** (new), and `responses[status]` with **headers and media types** (new) |
-| The typed client (TC) | types: `Received<C, "outbound">` per route, through a `wire` mapping (`Jsonify`, header strings) | the route model's types | a result union discriminated by `status` (spiked: `HttpResult<C>` in `transports.ts`) |
+| The typed client (TC) | types: `Jsonify<WireInput<…>>` per route and status, the wire side (§4.1.4, M2), and the schema's output only when the client parses with it (TC §5.4); inputs held to `WireInput` | the route model's types and rows' `encoding` | a result union discriminated by `status` (the spike's `HttpResult<C>` in `transports.ts` used the output and is corrected) |
 | bun-jobs `/definitions` (V5b) | each definition's contract | `define()` | each definition's data and result JSON Schema (`{}` and a warning when a vendor has none) |
 
 - **JSON Schema conversion stays AD's**: `~standard.jsonSchema` first (zod 4,
@@ -1501,16 +1531,16 @@ named; none changes a decision of §1.2 except V-D8's per-field rule (M1).
 |---|---|---|---|
 | B1 | **`describeContract` drops a key with no parts** (`202: {}` vanishes) and cannot tell "nothing declared" from "declared empty" (probes P3, P4; `contract-core/core.ts:781-792`) | V1 | it returns the declared keys per side with the entries (`{ sides: { inbound?: { declared, keys? }, outbound?: … }, entries }`), so a client can be strict where a contract declares and lenient where none does |
 | M1 | **The sender rule per part, not per field** (P1) | V1, V3a | the deep `WireInput<S>` (§4.1.4) |
-| M2 | **Client response types from the output disagree with the wire** (P2) | V12, TC | `Jsonify<WireInput<S>>` by default; the JSON Schema direction for responses pinned to the wire (input), against AD §4.3's output |
+| M2 | **Client response types from the output disagree with the wire** (P2) | V12, TC, AD | `Jsonify<WireInput<S>>` by default; the JSON Schema direction for responses pinned to the wire (input), against AD §4.3's output. AD §4.3 is corrected by this plan's lead (who also leads AD) in AD phase (b)'s converter PR, the same window as V12 |
 | M3 | **Layered contracts have no merge rule**; chained validators make the *first* the wire schema while the handler sees the last | V1 (`mergeContracts`), V12 (`effectiveContract(route)`) | Q-C11's rules; each row records its origin; `commonResponses` carried as a router-level contract, so TC's builder option is only an override |
 | M4 | **Rows cannot tell body kinds apart**; `sse()` hides its event map and gives a different row shape on the writer | V1, V3b | `kind: "value" \| "chunks" \| "sse" \| "opaque"` on `ContractEntry`; `sse()` expanded into nested rows (`keyName: "event"`, parts `data`, `id`), identical to the writer's; `chunks(S, { framing: "ndjson" })` |
 | M5 | **A wrapper drops the contract**: bun-jobs registers `deferred(validate(schemas))` (`bun-jobs/lib/api/routes/define.ts:484`, `:515`) and keeps responses in `respond(def)`, so a route listing finds a contract on none of its 84 routes | V1 (`forwardContract(wrapper, inner)`), V4 | `defineRoute` attaches a full HTTP contract (params, query, body, responses, alternate content as string bodies) to its terminal layer, so TC's bun-jobs pilot uses the generic route model |
 | M6 | **JSON-Schema-only parts have no place** (AD Decision 4's docs-only responses, NTR's swagger routes) | V1, V12 | `documented(json)` (Q-C12); AD Decision 4's merge restated in V12 |
-| M7 | **A WebSocket contract lacks what a channel model needs**: the upgrade request (where auth lives), the envelope and correlation id, reply and ack links, the implicit error frame, binary, subprotocol, topics, the SSE fallback; and `receives: { typing: null }` throws in the spike (P5) | V8 | a channel is the HTTP inbound side (the upgrade) plus the WebSocket sides, as SSE is (§4.7.1), plus channel meta `{ path, envelope, replies, binary, subprotocol, topics }`; a `null` message normalises to `{ data: null }`; the implicit `error` frame is a declared outbound key. TC's `ModelChannel` (proposed in the report) reads it |
-| m1 | row order | V1 | rows documented as unordered, emitted in a canonical order (sides, then keys as declared, then parts as the transport lists them) |
+| M7 | **A WebSocket contract lacks what a channel model needs**: the upgrade request (where auth lives), the envelope and correlation id, reply and ack links, the implicit error frame, binary, subprotocol, topics, the SSE fallback; and `receives: { typing: null }` throws in the spike (P5) | V8 | a channel is the HTTP inbound side (the upgrade) plus the WebSocket sides, as SSE is (§4.7.1), plus channel meta `{ path, envelope (with its correlation `idField`), replies, binary, subprotocol, topics, fallback }`, the `fallback` naming an SSE endpoint for the same messages; a `null` message normalises to `{ data: null }`; the implicit `error` frame is a declared outbound key. TC's `ModelChannel` (proposed in the report) reads it |
+| m1 | row order | V1 | rows documented as unordered, emitted in a canonical order: sides (inbound, outbound); then keys, numeric statuses ascending, then string keys lexically (JavaScript cannot give integer-like keys in declaration order); then parts as the transport lists them; then media types lexically |
 | m2 | media keys with parameters never match | V3a | Q-C14 |
 | m3 | the wire encoding must exist as **data** | V1 | each row carries its part's encoding (`path-string`, `querystring`, `header-string`, `cookie-string`, `signed-cookie`, `set-cookie`, or a media-typed body), and V12 agrees one `Jsonify` with TC (`Date` → string; `undefined` and functions dropped; `bigint` → never; `toJSON` honoured; `Map`/`Set` → `{}`) |
-| m4 | cookies are not browser client inputs | V12, TC | cookies are documented (`in: cookie`) and left out of browser call options; the signed-cookie encoding from m3 |
+| m4 | cookies are not browser client inputs | V12, TC | cookies are documented (`in: cookie`) and left out of browser call options, and a response's `Set-Cookie` is left out of browser client result types; the signed-cookie encoding from m3 |
 | m5 | implicit statuses | V2 | a validator with `onFailure: "respond"` attaches its own 400 shape to its contract, marked implicit; with `"next"` the 400 is a `commonResponses` matter |
 | m6 | the request body's default media type and required-ness | V12 | `application/json` by default; required unless the schema's input accepts `undefined` |
 | m7 | two homes for names (`ContractMeta.name` vs `.describe({ operationId })`) | V1 | for HTTP, `.describe()` wins |
@@ -1536,14 +1566,14 @@ mutant run, as both spikes do (`check-types.sh`, `run.sh` step c).
 | PR | Runtime tests | Type tests | Examples (bun-node-74) |
 |---|---|---|---|
 | V0 | `bunValidate.test.ts`: explicit `undefined` keeps 400 (base: 200, R2h); an unknown target throws `ConfigError` (base: passes, R5) | `validate.type-test.ts` unchanged | `examples/bun-common/12-options/validate-options.ts` |
-| V1 | new `__tests__/contract/*.test.ts` from `contract-core/run.ts`: sync vs Promise per vendor; receiver parses, sender returns the same object; policies; undeclared key/part/media; the no-value scrub against **each supported vendor** (C11); the no-schema path (C13–C15); `onIssues` (C16); `getContract`/`describeContract` (C20); declaration errors (C22); a UDP adapter test on port 0 (C1–C6); a bundle-safety test for the browser subpath; BunValidate's existing suite unchanged | `contract.type-test.ts` from `types.probe.ts` (24 controls) | "Writing a transport" with the UDP adapter |
+| V1 | new `__tests__/contract/*.test.ts` from `contract-core/run.ts`: sync vs Promise per vendor; receiver parses, sender returns the same object; policies; undeclared key/part/media; the no-value scrub against **each supported vendor** (C11); the no-schema path (C13–C15); `onIssues` (C16); `getContract`/`describeContract` (C20); declaration errors (C22); a UDP adapter test on port 0 (C1–C6); a bundle-safety test for the browser subpath; BunValidate's existing suite unchanged. **§4.12's, each with a negative control:** `describeContract`'s `sides` for `202: {}` and for an empty and an absent outbound (B1: the spike drops them); `mergeContracts` (outermost inbound wins, route over router outbound, `origin` on every row: M3); `forwardContract` through a wrapper (M5: `getContract` on the wrapper is `undefined` without it); `kind` rows and `sse()` expanded into event rows (M4); `documented(json)` documents and never checks (M6); each part's `encoding` (m3); the canonical row order (m1) | `contract.type-test.ts` from `types.probe.ts` (24 controls), plus a `WireInput` control: `{ page: "x" }` against `z.coerce.number()` must fail (M1; the spike's per-part `SendOf` lets it compile) | "Writing a transport" with the UDP adapter |
 | V2 | `bunValidate.test.ts`: cookies, signedCookies (genuine, forged, tampered: H49–H51), typed coerced header on `req.valid` with raw `req.headers` untouched and `accepts`/busboy working (H46), H47, H48; bun-jobs `ProblemIssueDto` round trip | `validate.type-test.ts`: `req.cookies`, `req.signedCookies`, `req.valid` types; a `string[]` wildcard param case; the lifted inline limit (5 lines of `verbTyping.type-test.ts`) | `06-validation/cookies-and-headers.ts` (new) |
 | V3a | new `bunValidate.responses.test.ts`: H1–H20, H25–H38, H41–H45 (buffered kinds × modes × zod/yup; status, headers, cookies, media type; exemptions); `commonResponses`; router- and adapter-level defaults | new `responses.type-test.ts` from `http-complete/types.probe.ts` (N1–N18, L1); `verbTyping`, `mountTyping` and `nestVerbTyping` response cases; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages (the `BunResponse` and `BunRequest` surfaces) | `06-validation/responses.ts` (new) |
 | V3b | streams, `write()`/`end()`, SSE per event, H21–H24, H39, H40; a cut-off stream reaches the client as an error | `chunks()`/`sse()`/`opaque()` types | `06-validation/streaming-responses.ts` (new) |
 | V6 | the pipe, the global pipe (with and without, `results-nest.txt`), the filter, through `adapter.fetch()`, on Nest 11 and 12 | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe |
 | V7a | `@Validate` request side: every part, `@Validated(part)`; the skip rule both ways (a `@Body({ schema })` with the pipe in effect is not checked twice; without the pipe, or with `@Query('page', { schema })`, `@Validate` still checks); on 11 and 12 | parameter and return types; a `string[]` wildcard | `examples/bun-nest/08-validate/` (AD) |
 | V7b | responses: the status and `@Header()` headers seen in `map()` (each row of §4.5.4's table), a thrown 409 checked in `catchError`, redirects and `StreamableFile` through the before-write hook, plain `@Res()` skipped without a throw, `@Sse` with a sync and an async first event, both serializer placements; `ResponseValidationInterceptor` | `reply()` per-status types | the same folder |
-| V8 | frames: valid, invalid → error frame, unknown type, order with an async vendor, `closeOnInvalid`, outgoing modes | handler `msg` types; `send` rejects an undeclared type | a WebSocket channel example |
+| V8 | frames: valid, invalid → error frame, unknown type, order with an async vendor, `closeOnInvalid`, outgoing modes; the upgrade request's parts checked before the upgrade (M7); `receives: { typing: null }` normalised to `{ data: null }` (P5 throws in the spike); the implicit `error` frame listed as a declared outbound key; the pure channel contract bundles browser-safe, its server binding does not (m12) | handler `msg` types; `send` rejects an undeclared type | a WebSocket channel example |
 | V9 | as NTR §9.1, plus `WsValidationFilter` | as NTR | `examples/bun-nest/04-websockets/` |
 | V11 | `SseWriter.send` refuses a bad event before encoding under `"error"`; Nest `@Sse` per event | `send({ event, data })` typed | an SSE example on each adapter |
 | V4 | bun-jobs `__tests__/api/*`: `validateResponses: "error"`; `s` `~standard.jsonSchema` equals `.json` | — | `examples/bun-jobs/10-options/jobs-api-options.ts` |
@@ -1551,7 +1581,7 @@ mutant run, as both spikes do (`check-types.sh`, `run.sh` step c).
 | V5c | flows: a bad child writes nothing for the whole flow; each node against its own definition; typed `getChildrenValues` | the parent's typed children | a flow example |
 | V5b | the API's add, update and flows routes answer 400 `VALIDATION` with issues even under `"off"` (a flow's at body paths); `/definitions` publishes JSON Schema | the `api/contract` DTOs; bun-jobs-ui's fixtures | — |
 | V10 (in BC) | as BC §13, plus issues target `"cache"` | `CacheSchemaFrom` | BC's |
-| V12 | the route listing reads contracts off router layers, mounted routers included; OpenAPI rows for cookies, response headers and media types | the `wire` mapping | — |
+| V12 | `listRoutes`/`effectiveContract` over mounted routers and wrapped middleware, with bun-jobs' 84 management routes visible (M5); OpenAPI rows for cookies, response headers and media types; m6's body defaults (`application/json`, required unless the input accepts `undefined`); the agreed `Jsonify` vector (m3) | `Jsonify<WireInput<…>>` response types (M2), with a transform control (`{ n: z.string().transform(s => s.length) }` types `n` as `string`); the `wire` mapping | — |
 
 ---
 
@@ -1573,9 +1603,9 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | **Group 1** | **Core and HTTP completeness, bun-common** | | | | |
 | 1 | **V0** BunValidate fixes | G3, G2 (§4.3.1) | — | 0.5 d | 11 |
 | 2 | **V1** the contract core | `lib/contract/`: `defineTransport`, contracts, `validateStandard`, `ValidationIssue<T>`, guards, policy, `onIssues`, `attachContract`/`getContract`/`describeContract`, the scrub; the browser-safe subpath; `validate()` rebuilt on it with no behaviour change; "Writing a transport" with the UDP adapter; and §4.12's B1, M1, M3–M6, m1, m3, m7, m10 (declared keys, `WireInput`, `mergeContracts`, `kind`, `forwardContract`, `documented()`, row encodings) | V0 | 4.5 d | 11 |
-| 3 | **V2** request completeness | `cookies`, `signedCookies`, typed headers, `req.valid`, the `BunRequest` type parameters, the new target order; bun-jobs `ProblemIssueDto` widened | V1; nestjs-12-parity PR-5 for the `string[]` wildcard test (or a follow-up line) | 2 d | 11; e9 and 99 review the DTO |
-| 4 | **V3a** responses, buffered | `ResponseSchemas`, the commit gate, every buffered kind, status/headers/cookies/media type, modes, router/adapter defaults, `ResponseValidationError`, `commonResponses`, response typing (`status`/`json`/`send`/`set`/`header`/`cookie`/`redirect`), the `#self` getter; consumer check for all four packages | V2 | 5 d | 11; 15 reviews the bun-nest type surface |
-| 5 | **V3b** responses, streamed | the chunk gate, `chunks()`, `sse()`, `opaque()`, `sendFile` reads, stream cut-off | V3a | 2.5 d | 11 |
+| 3 | **V2** request completeness | `cookies`, `signedCookies`, typed headers, `req.valid`, the `BunRequest` type parameters, the new target order; a validator with `onFailure: "respond"` attaching its own 400 to its contract, marked implicit (§4.12 m5); bun-jobs `ProblemIssueDto` widened | V1; nestjs-12-parity PR-5 for the `string[]` wildcard test (or a follow-up line) | 2 d | 11; e9 and 99 review the DTO |
+| 4 | **V3a** responses, buffered | `ResponseSchemas`, the commit gate, every buffered kind, status/headers/cookies/media type, modes, router/adapter defaults, `ResponseValidationError`, `commonResponses`, response typing (`status`/`json`/`send`/`set`/`header`/`cookie`/`redirect`) held to `WireInput` (§4.12 M1), media keys matched with parameters stripped on both sides (m2, Q-C14), the `#self` getter; consumer check for all four packages | V2 | 5 d | 11; 15 reviews the bun-nest type surface |
+| 5 | **V3b** responses, streamed | the chunk gate, `chunks(S, { framing })`, `sse()` with its events expanded into rows (§4.12 M4) and declared `data: "json" \| "text"` (m9, Q-C13), `opaque()`, `sendFile` reads, stream cut-off | V3a | 2.5 d | 11 |
 | **Group 2** | **NestJS** | | | | |
 | 6 | **V6** pipes | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`; replaces NTR PR-N3's pipe half and NJD's pipe | V1; nestjs-12-parity PR-2 (filter tests on both majors) and **PR-3** (bun-nest's devDependencies on Nest 12, so its tests run on 12) | 2.5 d | 11 in bun-nest; 15 reviews |
 | 7 | **V7a** `@Validate`, request side | every part, `@Validated(part)`, Nest 12 composition (the skip rule of §4.5.1), `SchemaDto` integration | V2, V6; nestjs-12-parity **PR-3** (tests on 12) and **PR-5** (the `string[]` wildcard test) | 3 d | 11 in bun-nest; 15 reviews |
@@ -1583,8 +1613,8 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | **Group 3** | **Other transports** | | | | |
 | 9 | **V8** WebSocket channels (= TC PR-M4) | `defineChannel` on the core, §4.6.1; §4.12's M7 (the upgrade side, channel meta, the implicit error frame) and m12 (a pure contract apart from its server binding) | V1 | ~5 d (TC) **+1 d** | 11; 99 reviews (TC) |
 | 10 | **V9** Nest gateways (= NTR PR-N5) | `@ValidateMessage`, `@Emits`, `WsValidationFilter` (an object `WsException`, §4.6.2) | V6, V8; nestjs-12-parity **PR-2** (Q4(a): the frame shape on 12) | ~4.5 d (NTR) **+0.5 d** | 11 in bun-nest; 15 reviews |
-| 11 | **V11** SSE on both adapters | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's); Nest `@Sse` per event | V3b, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
-| 12 | **V4** bun-jobs alignment | `s` `~standard.jsonSchema`; `validateResponses` modes; the flattening copies may adopt `validateStandard` | V1 | 1.5 d | e9; 11 reviews |
+| 11 | **V11** SSE on both adapters | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event | V3b, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
+| 12 | **V4** bun-jobs alignment | `s` `~standard.jsonSchema`, with defaulted keys optional on input and required in output (§4.12 m11); `validateResponses` modes; `defineRoute` attaching a full HTTP contract to its terminal layer through `forwardContract` (M5); the flattening copies may adopt `validateStandard` | V1 | 2.5 d | e9; 11 reviews |
 | 13 | **V5a** job data and results | §4.8.1–§4.8.4 except flows; checks in `BunQueue`; `JobMapFromSchemas`; the bench guard | V1 | 3.5 d | e9; 11 reviews |
 | 14 | **V5c** flows | the pre-write pass, per-node definitions, typed `getChildrenValues` | V5a | 1.5 d | e9; 11 reviews |
 | 15 | **V5b** job schemas in the API | add, update and flows routes always check; `/definitions` JSON Schema as **optional** fields (the UI reads only `items[].name`, so no UI source change; `DefinitionListSchema`'s `additionalProperties: false` widened and `api-contract.type-test.ts:312` updated in the same PR); **contract change** | V5a, V12's converter | 1.5 d | e9; 99 reviews the contract |
@@ -1595,8 +1625,8 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | 19 | **AD (e)** AsyncAPI | channels, SSE and broker contracts through `describeContract` | V8, V11, V12 | AD's estimate | 11 |
 
 **New in this plan**: V0 0.5 + V1 4.5 + V2 2 + V3a 5 + V3b 2.5 + V6 2.5 + V7a
-3 + V7b 3.5 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 1.5 + V5a 3.5 + V5c
-1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~39 d**. **Adopted** (estimated in AD, TC
+3 + V7b 3.5 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 2.5 + V5a 3.5 + V5c
+1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~40 d**. **Adopted** (estimated in AD, TC
 and NTR, not counted again): (b0), AD (a)/(b), AD (e), TC PR-M4, NTR PR-N5.
 
 **Order**: V0 → V1 → V2 → V3a → V3b, then group 2 (V6 → V7a → V7b, the last
@@ -1697,8 +1727,9 @@ can be settled before the PR they name.
   case ignored at runtime, no wildcards? **Recommended: yes; wildcards later,
   with most-specific-wins.**
 - **Q-C5** **What the wire changes** (`Jsonify`, header strings): a
-  per-transport `wire` mapping that client types apply, not the core's
-  `Received`? **Recommended: yes** (V12).
+  per-transport `wire` mapping, recorded as **data** on each row (`encoding`,
+  §4.12 m3) and applied by client types, not the core's `Received`?
+  **Recommended: yes** (V1 records it, V12 applies it).
 - **Q-C6** **A cached `checksKey(key)`** so a router or topic table skips the
   ~15 ns lookup for keys with no schema? **Recommended: yes, in V1.**
 - **Q-C7** ★ **Where the core lives**: bun-common's root **and** a
@@ -1839,4 +1870,4 @@ re-run each file and what passing means.
 | `nest-schema-dto.ts` → `results-nest.txt` | `SchemaDto` + a global pipe on bun-nest through Nest's real pipeline; no-pipe control; type controls |
 | **`contract-core/`** (2026-10-17) | the transport-agnostic core: eight transports declared; UDP and broker adapters; C1–C22 (sync/Promise per vendor, policies, the value scrub, the no-schema path, `onIssues`, `getContract`, flows, declaration errors); cost; 24 type controls, line-exact (`check-types.sh`) |
 | **`http-complete/`** (2026-10-17) | a patch on a copy of bun-common at `68023d36`: cookies and signed cookies, typed headers and `req.valid`, the commit and chunk gates, every body kind × mode × zod/yup (H1–H52), 18 type controls and the pinned limit, the unpatched base failing, overloads unchanged, cost per body kind |
-| **`nest-interceptor/`** (2026-10-17, bun-node-15) | what a Nest interceptor's `map()` sees (status, headers, sent) against the wire, on Nest 11.1.27 and 12.1.3, Express and bun-nest adapters; `@Body({ schema })` with and without the pipe; `@RawBody`; `@Sse` sync and async first events; the serializer's placement |
+| **`nest-interceptor/`** (2026-10-17, bun-node-15) | what a Nest interceptor's `map()` sees (status, headers, sent) against the wire, on Nest 11.1.27 and 12.1.3, Express and bun-nest adapters; `@Body({ schema })` with and without the pipe; `@RawBody`; `@Sse` sync and async first events; the serializer's placement ; `out-sse.txt`: the `@Sse` cases, re-run by bun-node-11 |

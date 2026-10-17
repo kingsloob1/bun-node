@@ -11,6 +11,7 @@ results.
 | `probe.ts` | an interceptor's view in `map()` (status, headers, `headersSent`) against what went on the wire, for GET, POST, `@HttpCode`, `@Header`, `@Redirect`, `@Res({ passthrough })`, plain `@Res()`, `StreamableFile` and `@Sse`; the interceptor → pipe → handler order; `@Body({ schema })` with and without `StandardSchemaValidationPipe`; `@RawBody({ schema })` with `validateCustomDecorators`; the serializer's placement |
 | `probe2.ts` | the `@Sse` cases: a synchronous first event against an asynchronous one |
 | `out11.json`, `out12.json` | the outputs on Nest 11.1.27 and 12.1.3 |
+| `out-sse.txt` | `probe2.ts`'s output on both majors and both adapters, re-run by bun-node-11 on 2026-10-17: a synchronous bad first event is a 500; a later one an `event: error` carrying the message verbatim |
 
 How to run, one directory per Nest major (Nest is never installed into
 them; each has a `node_modules` symlink). Bun reads decorator options from the
