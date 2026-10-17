@@ -111,7 +111,7 @@ interface SeenConnection {
 
 /** One call of a `bindClientDisconnect` callback. */
 interface SeenDisconnect {
-  /** The client it reported. */
+  /** The client the callback was bound to. */
   client: WebSocketClient;
   /** The close code. */
   code: number;
@@ -542,8 +542,8 @@ const handlers: WsMessageHandler<string>[] = [
 adapter.bindClientConnect(shared, (client, server) => {
   connections.push({ namespace: "/a", client, server });
   adapter.bindMessageHandlers(client, handlers);
-  adapter.bindClientDisconnect(client, (gone, code, reason) => {
-    disconnects.push({ client: gone, code, reason });
+  adapter.bindClientDisconnect(client, (code, reason) => {
+    disconnects.push({ client, code, reason });
   });
 });
 

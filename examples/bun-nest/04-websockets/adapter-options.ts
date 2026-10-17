@@ -461,7 +461,7 @@ raw.bindClientConnect(shared, (client, server) => {
   ];
   raw.bindMessageHandlers(client, handlers);
 
-  raw.bindClientDisconnect(client, (_client, code, reason) => {
+  raw.bindClientDisconnect(client, (code, reason) => {
     disconnects.push({ code, reason });
   });
 });
