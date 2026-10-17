@@ -150,8 +150,12 @@ Runnable version:
 so everything here applies to both.
 
 Verb methods cover every `@routejs/router` verb (`get`, `post`, `put`,
-`patch`, `delete`, `head`, `options`, and the WebDAV set). The rest of the
-registration API:
+`patch`, `delete`, `head`, `options`, and the WebDAV set), plus two it lacks:
+WebDAV's `proppatch`, and `query` for the HTTP `QUERY` method, a safe request
+that carries a body. `query(path, ...handlers)` is Express 5's `app.query`:
+the body is parsed as for `POST`, `req.query` is still the URL's query string,
+and a `QUERY` route answers `QUERY` only (no `HEAD` or `GET` fallback). Nest
+11.2+'s `@QueryMethod()` reaches it. The rest of the registration API:
 
 | Method | Registers |
 |---|---|
@@ -1289,7 +1293,7 @@ and defaults. It is available as `router.use(cors(...))` or
 | Option | Default | Meaning |
 |---|---|---|
 | `origin` | `"*"` | `true` reflects the request's origin, and `false` sends no `Allow-Origin`. A string is sent as it is. A RegExp or an array (of strings, RegExps and booleans) reflects the origin when an entry matches. A function `(origin, cb)` decides per request. |
-| `methods` | `"GET,HEAD,PUT,PATCH,POST,DELETE"` | `Access-Control-Allow-Methods` on a preflight. |
+| `methods` | `"GET,HEAD,PUT,PATCH,POST,DELETE"` | `Access-Control-Allow-Methods` on a preflight. The default leaves out `QUERY`, as the `cors` package's does, so a cross-origin `QUERY` needs `methods` to list it. |
 | `allowedHeaders` | reflects `Access-Control-Request-Headers` | `Access-Control-Allow-Headers` on a preflight. |
 | `exposedHeaders` | none | `Access-Control-Expose-Headers`. |
 | `credentials` | `false` | Sends `Access-Control-Allow-Credentials: true`. |

@@ -98,6 +98,7 @@ const END = "  /* --- END generated typed overloads:";
  * first, or pass the verb's type arguments explicitly — see `ResolvedHandler`.
  */
 function overloadsFor(
+  modifier: string,
   verb: string,
   mountPath: string,
   mountShape: string,
@@ -111,7 +112,7 @@ function overloadsFor(
     // it, so the handler type stays deferred. Naming `EmptyShape` directly
     // lets TypeScript partially resolve the type, and it then reports the
     // overload as incompatible with the wide implementation signature.
-    `  override ${verb}<TPath extends string, TShape = EmptyShape>(`,
+    `  ${modifier}${verb}<TPath extends string, TShape = EmptyShape>(`,
     `    path: TPath,`,
     `    handler: ${handlerType},`,
     `  ): this;`,
@@ -124,7 +125,7 @@ function overloadsFor(
     );
 
     lines.push(
-      `  override ${verb}<TPath extends string, TShape = EmptyShape>(`,
+      `  ${modifier}${verb}<TPath extends string, TShape = EmptyShape>(`,
       `    path: TPath,`,
       ...positions,
       `    validator: ValidatorMiddleware<TShape>,`,
@@ -139,8 +140,15 @@ function overloadsFor(
 
 /**
  * Inserts (or refreshes) each verb's block immediately above its first existing
- * overload, which is uniformly `override <verb>(path: string, ...callbacks:
- * RouterHandler[]): this;`.
+ * overload, `<verb>(path: string, ...callbacks: RouterHandler[]): this;`.
+ *
+ * That line carries `override` when the base class (`@routejs/router`, or
+ * Nest's `AbstractHttpAdapter`) declares the verb, and omits it when the base
+ * lacks it (`proppatch` and `query` on `BunRouter`: `override` there is
+ * TS4113). The block copies the anchor's modifier, so each generated overload
+ * agrees with its implementation either way. Any member with exactly that
+ * signature is treated as a verb, which is why the list of verbs found is
+ * printed: a stray non-verb shows up there, and goes in `EXCLUDED`.
  */
 function generate(
   source: string,
@@ -155,16 +163,19 @@ function generate(
   );
 
   const anchor =
-    /^ {2}override ([a-z]+)\(path: string, \.\.\.callbacks: RouterHandler\[\]\): this;$/gm;
+    /^ {2}(override )?([a-z]+)\(path: string, \.\.\.callbacks: RouterHandler\[\]\): this;$/gm;
 
   const verbs: string[] = [];
-  const output = cleaned.replace(anchor, (line, verb: string) => {
-    if (EXCLUDED.has(verb)) {
-      return line;
-    }
-    verbs.push(verb);
-    return `${overloadsFor(verb, mountPath, mountShape, host)}\n${line}`;
-  });
+  const output = cleaned.replace(
+    anchor,
+    (line, modifier: string | undefined, verb: string) => {
+      if (EXCLUDED.has(verb)) {
+        return line;
+      }
+      verbs.push(verb);
+      return `${overloadsFor(modifier ?? "", verb, mountPath, mountShape, host)}\n${line}`;
+    },
+  );
 
   return { output, verbs };
 }
@@ -190,7 +201,9 @@ for (const target of TARGETS) {
       );
       failed = true;
     } else {
-      console.log(`${label}: up to date (${verbs.length} verbs)`);
+      console.log(
+        `${label}: up to date (${verbs.length} verbs: ${verbs.join(" ")})`,
+      );
     }
     continue;
   }
@@ -198,7 +211,7 @@ for (const target of TARGETS) {
   await Bun.write(path, output);
   const perVerb = MAX_PRECEDING + 2;
   console.log(
-    `${label}: ${verbs.length * perVerb} overloads across ${verbs.length} verbs`,
+    `${label}: ${verbs.length * perVerb} overloads across ${verbs.length} verbs: ${verbs.join(" ")}`,
   );
 }
 

@@ -11,7 +11,8 @@ import type {
 
 /**
  * The name of every HTTP verb method `BunRouter` registers a route with —
- * `@routejs/router`'s verb set, WebDAV's included. `all`, `any` and `use` are
+ * `@routejs/router`'s verb set, WebDAV's included, plus `proppatch` and
+ * `query` (HTTP QUERY), which it lacks. `all`, `any` and `use` are
  * not verbs and are left out. An adapter may carry fewer (bun-nest's has no
  * `checkout`, say), so narrow with `Extract<RouterVerb, keyof TAdapter>` there.
  */
@@ -34,6 +35,7 @@ export type RouterVerb =
   | "proppatch"
   | "purge"
   | "put"
+  | "query"
   | "report"
   | "search"
   | "subscribe"

@@ -21,7 +21,7 @@ with one command.
 
 **Approved in full.** On 2026-10-17 the user answered Q1–Q8 with each
 recommendation (§12) and asked for the whole plan, PR-0 to PR-11, as their
-first priority. Nothing is built yet.
+first priority.
 
 **Who does what** (roles, as in [`docs/agentic-setup.md`](../../agentic-setup.md)):
 
@@ -38,9 +38,9 @@ first priority. Nothing is built yet.
 
 | PR | State |
 |---|---|
-| PR-0 matrix tooling | not started |
-| PR-1 `BunRouter.query()` | not started |
-| PR-2 the Nest 12 blockers | not started |
+| PR-0 matrix tooling | merged, #400 (2026-10-17) |
+| PR-1 `BunRouter.query()` | built; reviewed and approved by the bun-common agent |
+| PR-2 the Nest 12 blockers | built without `QUERY` (which waits for PR-1); in review |
 | PR-3 versions (and PR-3b) | not started |
 | PR-4 routing differential | not started |
 | PR-5 routing parity | not started |
