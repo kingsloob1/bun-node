@@ -17,6 +17,46 @@ Every measurement ran in a copy of the repo with Nest 12 installed into it
 [`evidence/`](evidence/README.md), and each measurement there can be re-run
 with one command.
 
+### Status (2026-10-17)
+
+**Approved in full.** On 2026-10-17 the user answered Q1–Q8 with each
+recommendation (§12) and asked for the whole plan, PR-0 to PR-11, as their
+first priority. Nothing is built yet.
+
+**Who does what** (roles, as in [`docs/agentic-setup.md`](../../agentic-setup.md)):
+
+- The **bun-nest agent** leads the plan, keeps this Status current, and builds
+  every PR except PR-3b and PR-10.
+- The **bun-common agent** reviews the PRs that land in bun-common: PR-1, the
+  router parts of PR-5, the multipart and request parts of PR-7, and PR-2's
+  `finalErrorResponse` message.
+- The **bun-jobs agent** reviews PR-1, PR-5 and PR-7 for effects on bun-jobs
+  (none are expected).
+- The **bun-jobs-ui agent** builds PR-3b.
+- The **examples agent** builds PR-10 and stacks the example fixes on each PR
+  that changes an example check.
+
+| PR | State |
+|---|---|
+| PR-0 matrix tooling | not started |
+| PR-1 `BunRouter.query()` | not started |
+| PR-2 the Nest 12 blockers | not started |
+| PR-3 versions (and PR-3b) | not started |
+| PR-4 routing differential | not started |
+| PR-5 routing parity | not started |
+| PR-6a errors and security | not started |
+| PR-6b lifecycle | not started |
+| PR-6c responses and hooks | not started |
+| PR-7 bun-common request and multipart | not started |
+| PR-8 bun-nest uploads | not started |
+| PR-9 WS differential | not started |
+| PR-10 examples | not started |
+| PR-11 docs | not started |
+
+Where the plan below names the "features agent", "5a", "4c" or "d6", read the
+owners listed here: those names date from before bun-nest and bun-common had
+agents of their own.
+
 ### Contents
 
 1. [Summary](#1-summary)
@@ -30,7 +70,7 @@ with one command.
 9. [Testing strategy](#9-testing-strategy)
 10. [PR slicing](#10-pr-slicing)
 11. [Risks](#11-risks)
-12. [Open questions for the user](#12-open-questions-for-the-user)
+12. [Questions for the user, answered](#12-questions-for-the-user-answered)
 13. [Evidence index](#13-evidence-index)
 
 ### How to read the markings
@@ -127,7 +167,7 @@ false** — the suite needs 11.1.20 [M] (§8.1).
 ### 1.3 What it costs, and the order
 
 About **19 working days** across fifteen PRs (§10), most of it the
-features agent's (bun-common and bun-nest have no owners of their own yet),
+bun-nest agent's (the bun-common parts under the bun-common agent's review),
 1.75 days the examples agent's and a quarter day the bun-jobs-ui agent's.
 In order: the version-matrix tooling (1.5 days); `BunRouter.query()` (0.5);
 the Nest 12 blockers in one bun-nest PR (2); the peer range, devDeps and
@@ -516,24 +556,29 @@ One change covers D3a–D3d, and it is mostly in bun-common:
    (`../bun-native-routes/README.md`), whose route index
    (`packages/bun-common/lib/utils/routeIndex.ts`, `routeTree.ts`) assumes
    routejs regexps. If the fuzz cannot be made to agree, fall back to (a).
-   This is open question **Q2**.
+   **Decided (Q2, 2026-10-17): (b)**, with (a) only as that fallback.
 3. **The breaking part:** wildcard params become `string[]`, for Nest routes
    and for direct `BunRouter` users, and `routeParams.ts` types change with
    them. The packages are unpublished (no users to migrate), but the repo's
    own examples and tests that read `params[0]` or `params.path` as a string
    change; the examples agent gets a CHANGE REPORT. Keeping the old syntax
    (`:x?`, `:x(\d+)`) for direct `BunRouter` users while Nest paths go
-   through `normalizePath`'s validation is possible: question **Q2**.
+   through `normalizePath`'s validation is possible. **Decided (Q2):** named
+   wildcards (`*name`, `{*name}`) are `string[]` everywhere, direct
+   `BunRouter` users included; bare `*` and the routejs-only forms are
+   unchanged.
 4. **D4 and D5** are small but behavioural: default `caseSensitive: false` in
    the adapter (Express's default; today's default is documented, so this is
-   a visible change: **Q3**), and `getRequestHostname` from the `Host`
-   header with its case kept.
+   a visible change; **decided, Q3: yes**, with `router: { caseSensitive:
+   true }` as the opt-in), and `getRequestHostname` from the `Host` header
+   with its case kept.
 5. **D6 and D7** are part of the Nest 12 blockers (PR-2): strip the core's
    `$` into an exact route, and scope not-found to the prefix and exclusions
    on Nest 12 (§8.2). D7 has a cost — users lose Nest's JSON 404 and their
    exception filters for paths outside the prefix — and matching Express is
    still the recommendation, because "same answers as platform-express" is
-   bun-nest's contract (`packages/bun-nest/README.md:15`): **Q5**.
+   bun-nest's contract (`packages/bun-nest/README.md:15`). **Decided (Q5):
+   match Express**, and document it.
 
 ### 5.6 The parity test: a routing differential [D]
 
@@ -752,20 +797,20 @@ must cover an instrumented error middleware.
 
 | Package | Changes | Owner |
 |---|---|---|
-| **bun-nest** (`packages/bun-nest/**`) | the Nest 12 blockers (§4: `mapException`, `QUERY`, prefix-scoped not-found, the `$` marker, `isRouteOrderSensitive`, WS exception frames, disconnect reason, WS serialisation guard); `normalizePath` and `getRequestHostname` (§5); `beforeClose`/503/drain/listen errors, `StreamableFile`, `reply` status, MEDIA_TYPE, request/response hooks, security-hook gaps (§6); `MULTER_MODULE_OPTIONS` and the new upload codes; peers `^11.1.20 \|\| ^12.0.0`, devDeps 12.1.3; the routing differential test; the README's requirements, a Nest 12 section and its known differences; the two stale "no `exports` map" comments (`BunHttpAdapter.ts:31-33`, `interceptors.ts:18-20`) | features agent (main), as long as no bun-nest agent runs (`docs/agentic-setup.md`, roster) |
-| **bun-common** (`packages/bun-common/**`) | `BunRouter.query()` and its generated overloads (`scripts/generate-verb-overloads.ts`), and the same verb on bun-common's own `BunHttpAdapter`; path-to-regexp 8 semantics for `*name`, `{*name}` and `{…}` groups, with `routeParams.ts` typing `*name` as `string[]` (bare `*`, `:x?` and `:x(\d+)` stay, for direct users such as `packages/bun-jobs-ui/lib/jobsUi.ts:668` and bun-jobs' `"/*"` WS namespaces); `next(plainObject)` kept as an object; request cookies left undefined when parsing is off, quotes stripped; multipart `fieldNestingDepth`/`fieldArrayIndexLimit` and three codes, a memory default for `storageType`, the multer 2.4 messages; `finalErrorResponse` taking a message | features agent (main) |
-| **bun-jobs** | **none**: it imports nothing from `@nestjs/*`. It depends on bun-common, so every bun-common PR runs bun-jobs' checks (CLAUDE.md), and the bun-jobs agent reviews the `BunRouter` params change, which its management API router sits on | 4c reviews PR-5 and PR-7 |
-| **bun-jobs-ui** | devDeps `@nestjs/common`/`core` to `^12.1.3` (`packages/bun-jobs-ui/package.json:78-79`) for `__tests__/server/nest.nest.test.ts` (2/2 on 12 already [M]); `jobsUi.ts:668`'s `"/*"` keeps working (bare `*` is unchanged) | d6 (its own file) |
+| **bun-nest** (`packages/bun-nest/**`) | the Nest 12 blockers (§4: `mapException`, `QUERY`, prefix-scoped not-found, the `$` marker, `isRouteOrderSensitive`, WS exception frames, disconnect reason, WS serialisation guard); `normalizePath` and `getRequestHostname` (§5); `beforeClose`/503/drain/listen errors, `StreamableFile`, `reply` status, MEDIA_TYPE, request/response hooks, security-hook gaps (§6); `MULTER_MODULE_OPTIONS` and the new upload codes; peers `^11.1.20 \|\| ^12.0.0`, devDeps 12.1.3; the routing differential test; the README's requirements, a Nest 12 section and its known differences; the two stale "no `exports` map" comments (`BunHttpAdapter.ts:31-33`, `interceptors.ts:18-20`) | bun-nest agent |
+| **bun-common** (`packages/bun-common/**`) | `BunRouter.query()` and its generated overloads (`scripts/generate-verb-overloads.ts`), and the same verb on bun-common's own `BunHttpAdapter`; path-to-regexp 8 semantics for `*name`, `{*name}` and `{…}` groups, with `routeParams.ts` typing `*name` as `string[]` (bare `*`, `:x?` and `:x(\d+)` stay, for direct users such as `packages/bun-jobs-ui/lib/jobsUi.ts:668` and bun-jobs' `"/*"` WS namespaces); `next(plainObject)` kept as an object; request cookies left undefined when parsing is off, quotes stripped; multipart `fieldNestingDepth`/`fieldArrayIndexLimit` and three codes, a memory default for `storageType`, the multer 2.4 messages; `finalErrorResponse` taking a message | built by the bun-nest agent, reviewed by the bun-common agent |
+| **bun-jobs** | **none**: it imports nothing from `@nestjs/*`. It depends on bun-common, so every bun-common PR runs bun-jobs' checks (CLAUDE.md), and the bun-jobs agent reviews the `BunRouter` params change, which its management API router sits on | the bun-jobs agent reviews PR-1, PR-5 and PR-7 |
+| **bun-jobs-ui** | devDeps `@nestjs/common`/`core` to `^12.1.3` (`packages/bun-jobs-ui/package.json:78-79`) for `__tests__/server/nest.nest.test.ts` (2/2 on 12 already [M]); `jobsUi.ts:668`'s `"/*"` keeps working (bare `*` is unchanged) | bun-jobs-ui agent (its own file) |
 | **playground** | none: no Nest code (`grep`) | — |
-| **examples** | `examples/bun-nest/**` on both majors; new examples for `@QueryMethod`, `routeResolutionStrategy`/`routeConflictPolicy`, `enableCsrfProtection`/`useSecurityHeaders`, cookies, `return503OnClosing`; the checks that change: `02-http-adapter/controllers-and-routing.ts:241` (`files/*path` params become an array), `02-http-adapter/views.ts:191`, `04-websockets/message-formats.ts` and `10-options/websocket-adapter-options.ts` (exception frames, after Q4), `02-http-adapter/undecodable-bodies.ts`, `express-parity.ts`, `10-options/jobs-api-module-options.ts` (they pass again once `mapException` lands); bun-common's `02-routing/typed-routes.ts:103-118`, `02-routing/verbs-and-params.ts:182-186`, `12-options/router-options.ts:547-548`, `06-validation/typed-handlers.ts:59` (named wildcards become arrays) | 5a |
-| **packaging** | `consumer-check` runs bun-nest against both majors (§9.4); `packages/bun-nest/__tests__/packaging.test.ts` unchanged (the `exports` shape does not move); no 12-only type (`@nestjs/common/internal`'s `RouteInfo`, `SecurityRequestHook`) in a shipped declaration (§8.3) | features agent |
-| **repo tooling** | `scripts/nest-matrix.ts` (§9.3) with tests under `scripts/__tests__/`; CLAUDE.md: the matrix, the Nest floor, the routing semantics | features agent; CLAUDE.md is shared: tell every agent |
+| **examples** | `examples/bun-nest/**` on both majors; new examples for `@QueryMethod`, `routeResolutionStrategy`/`routeConflictPolicy`, `enableCsrfProtection`/`useSecurityHeaders`, cookies, `return503OnClosing`; the checks that change: `02-http-adapter/controllers-and-routing.ts:241` (`files/*path` params become an array), `02-http-adapter/views.ts:191`, `04-websockets/message-formats.ts` and `10-options/websocket-adapter-options.ts` (exception frames, after Q4), `02-http-adapter/undecodable-bodies.ts`, `express-parity.ts`, `10-options/jobs-api-module-options.ts` (they pass again once `mapException` lands); bun-common's `02-routing/typed-routes.ts:103-118`, `02-routing/verbs-and-params.ts:182-186`, `12-options/router-options.ts:547-548`, `06-validation/typed-handlers.ts:59` (named wildcards become arrays) | examples agent |
+| **packaging** | `consumer-check` runs bun-nest against both majors (§9.4); `packages/bun-nest/__tests__/packaging.test.ts` unchanged (the `exports` shape does not move); no 12-only type (`@nestjs/common/internal`'s `RouteInfo`, `SecurityRequestHook`) in a shipped declaration (§8.3) | bun-nest agent |
+| **repo tooling** | `scripts/nest-matrix.ts` (§9.3) with tests under `scripts/__tests__/`; CLAUDE.md: the matrix, the Nest floor, the routing semantics | bun-nest agent; CLAUDE.md is shared: tell every agent, and the router section is the bun-common agent's to review |
 
 **CHANGE REPORTs** (docs/agentic-setup.md, "Talking to each other"): to the
-examples agent (5a) for PR-1, PR-2, PR-3, PR-5, PR-6a/b/c, PR-7 and PR-8,
-each naming the example checks it changes; to the bun-jobs agent (4c) for
+examples agent for PR-1, PR-2, PR-3, PR-5, PR-6a/b/c, PR-7 and PR-8,
+each naming the example checks it changes; to the bun-jobs agent for
 PR-1, PR-5 and PR-7 (bun-common changes under bun-jobs); to the bun-jobs-ui
-agent (d6) for PR-3 (its devDeps) and PR-5 (`jobsUi.ts`'s router).
+agent for PR-3 (its devDeps) and PR-5 (`jobsUi.ts`'s router).
 
 ---
 
@@ -823,8 +868,8 @@ whole suite (including both differentials), `bun --check` in bun-nest,
 conflicts, cookies, security, `beforeClose`).
 
 **The alternative**, 12 only (`^12.0.0`): no gate, one column, a simpler
-README. It saves about 2 days over the plan and drops 11. Open question
-**Q1**.
+README. It saves about 2 days over the plan and drops 11. **Decided (Q1,
+2026-10-17): both majors**, `^11.1.20 || ^12.0.0`, every PR tested on both.
 
 **Which major is the repo's default:** 12. develop's devDeps move to 12.1.3
 and the lockfile with them; 11 is the second column. The floor (11.1.20) and
@@ -957,23 +1002,23 @@ their checks.
 
 | PR | Scope | Tests | Days | Owner | Reports to |
 |---|---|---|---|---|---|
-| **PR-0** matrix tooling | `scripts/nest-matrix.ts` (§9.3), its tests; CLAUDE.md "Nest versions" section; no package code | `scripts/__tests__/nest-matrix.test.ts`; a run on 11.2.7 and 12.1.3 quoted in the PR | 1.5 | features (main) | all agents (CLAUDE.md is shared) |
-| **PR-1** `BunRouter.query()` | bun-common: the verb, the generator, bun-common's `BunHttpAdapter` | router tests, type tests, bun-nest and bun-jobs checks | 0.5 | features | 5a, 4c |
-| **PR-2** the Nest 12 blockers | bun-nest: `mapException`, `QUERY` mapping and verb, prefix-scoped not-found on 12 (bun-common's `finalErrorResponse` message), the `$` marker, `isRouteOrderSensitive(): true`, WS exception frames (after Q4), disconnect reason, WS serialisation guard, the `x-powered-by` warning, the two stale comments | §9.1 rows 1–4; the 7 failures green on 12, still green on 11 (matrix) | 2 | features | 5a (5 examples go green on 12; `message-formats` per Q4) |
-| **PR-3** versions | bun-nest peers `^11.1.20 \|\| ^12.0.0`, devDeps 12.1.3, lockfile; README requirements; (**PR-3b**, d6) bun-jobs-ui devDeps | full gates on 12; matrix 11.2.7 and 11.1.20; consumer-check both | 0.5 + 0.25 | features; d6 | 5a, d6 |
-| **PR-4** routing differential | `routingCompat.nest.test.ts` from the harness, every D-row as `KNOWN`; the `//` paths over a raw socket | itself; green on both majors | 1.5 | features | 5a |
-| **PR-5** routing parity | bun-common: path-to-regexp 8 semantics for `*name`, `{*name}`, `{…}` (Q2), named wildcards as `string[]` with `routeParams.ts`, the differential fuzz; bun-nest: `normalizePath` with Nest's `LegacyRouteConverter`, `getRequestHostname` from `Host`, `caseSensitive` default (Q3); removes D3–D5 from `KNOWN` | §9.1 router rows; bun-common bench guard (no regression); bun-jobs and bun-jobs-ui checks | 4.5 | features | 5a (bun-common and bun-nest examples with named wildcards), 4c, d6 |
-| **PR-6a** errors and security | carry the response through the error path (G5), defer the body when a security hook is registered (G6, Q7), `next(plainObject)` (G20), `StreamableFile.errorHandler` (G11) | `security.nest.test.ts`; expressCompat probes | 1.25 | features | 5a |
-| **PR-6b** lifecycle | `beforeClose`, `return503OnClosing` (G7), drain with a cap (G9, after a spike on `stop(false)`/`pendingRequests`, Q6), `listen` errors and socket paths (G8), the `9847b5443` probe | `shutdown.nest.test.ts`; port-release tests stay green | 1.25 | features | 5a |
-| **PR-6c** responses and hooks | early-disconnect `StreamableFile` (G10), status `0`, MEDIA_TYPE any parameter, `setOnRequestHook`/`setOnResponseHook` (G12), the `b59196c98` probe | expressCompat probes; `instrumentation.nest.test.ts` | 1 | features | 5a |
-| **PR-7** bun-common request and multipart | `fieldNestingDepth`, `fieldArrayIndexLimit`, three codes (G14), `storageType` default (G15), multer 2.4 messages (G16), cookies undefined when off and unquoted (G17, G18) | multipart and request tests; bun-jobs checks | 1.25 | features | 5a, 4c |
-| **PR-8** bun-nest uploads | module-level upload options and `limits` merge (G13), the new codes mapped | `interceptors.test.ts`; upload probes in `expressCompat` (module limits, the new codes) | 0.75 | features | 5a |
-| **PR-9** WS differential | `wsCompat.nest.test.ts` against `@nestjs/platform-ws` (Q8) | itself, both majors | 1 | features | — |
-| **PR-10** examples | Nest 12 examples (§7), every changed check, run-all on both majors | the examples themselves, with negative controls | 1.75 | 5a | — |
-| **PR-11** docs | bun-nest README: Nest 12 section, compatibility table (11 and 12), known differences updated; CLAUDE.md routing semantics | lint (`prettier` on long cells) | 0.5 | features | 5a (README tables it owns) |
+| **PR-0** matrix tooling | `scripts/nest-matrix.ts` (§9.3), its tests; CLAUDE.md "Nest versions" section; no package code | `scripts/__tests__/nest-matrix.test.ts`; a run on 11.2.7 and 12.1.3 quoted in the PR | 1.5 | bun-nest | all agents (CLAUDE.md is shared) |
+| **PR-1** `BunRouter.query()` | bun-common: the verb, the generator, bun-common's `BunHttpAdapter` | router tests, type tests, bun-nest and bun-jobs checks | 0.5 | bun-nest | examples, bun-jobs |
+| **PR-2** the Nest 12 blockers | bun-nest: `mapException`, `QUERY` mapping and verb, prefix-scoped not-found on 12 (bun-common's `finalErrorResponse` message), the `$` marker, `isRouteOrderSensitive(): true`, WS exception frames (after Q4), disconnect reason, WS serialisation guard, the `x-powered-by` warning, the two stale comments | §9.1 rows 1–4; the 7 failures green on 12, still green on 11 (matrix) | 2 | bun-nest | examples (5 examples go green on 12; `message-formats` per Q4) |
+| **PR-3** versions | bun-nest peers `^11.1.20 \|\| ^12.0.0`, devDeps 12.1.3, lockfile; README requirements; (**PR-3b**, the bun-jobs-ui agent) bun-jobs-ui devDeps | full gates on 12; matrix 11.2.7 and 11.1.20; consumer-check both | 0.5 + 0.25 | bun-nest; bun-jobs-ui (PR-3b) | examples, bun-jobs-ui |
+| **PR-4** routing differential | `routingCompat.nest.test.ts` from the harness, every D-row as `KNOWN`; the `//` paths over a raw socket | itself; green on both majors | 1.5 | bun-nest | examples |
+| **PR-5** routing parity | bun-common: path-to-regexp 8 semantics for `*name`, `{*name}`, `{…}` (Q2), named wildcards as `string[]` with `routeParams.ts`, the differential fuzz; bun-nest: `normalizePath` with Nest's `LegacyRouteConverter`, `getRequestHostname` from `Host`, `caseSensitive` default (Q3); removes D3–D5 from `KNOWN` | §9.1 router rows; bun-common bench guard (no regression); bun-jobs and bun-jobs-ui checks | 4.5 | bun-nest | examples (bun-common and bun-nest examples with named wildcards), bun-jobs, bun-jobs-ui |
+| **PR-6a** errors and security | carry the response through the error path (G5), defer the body when a security hook is registered (G6, Q7), `next(plainObject)` (G20), `StreamableFile.errorHandler` (G11) | `security.nest.test.ts`; expressCompat probes | 1.25 | bun-nest | examples |
+| **PR-6b** lifecycle | `beforeClose`, `return503OnClosing` (G7), drain with a cap (G9, after a spike on `stop(false)`/`pendingRequests`, Q6), `listen` errors and socket paths (G8), the `9847b5443` probe | `shutdown.nest.test.ts`; port-release tests stay green | 1.25 | bun-nest | examples |
+| **PR-6c** responses and hooks | early-disconnect `StreamableFile` (G10), status `0`, MEDIA_TYPE any parameter, `setOnRequestHook`/`setOnResponseHook` (G12), the `b59196c98` probe | expressCompat probes; `instrumentation.nest.test.ts` | 1 | bun-nest | examples |
+| **PR-7** bun-common request and multipart | `fieldNestingDepth`, `fieldArrayIndexLimit`, three codes (G14), `storageType` default (G15), multer 2.4 messages (G16), cookies undefined when off and unquoted (G17, G18) | multipart and request tests; bun-jobs checks | 1.25 | bun-nest | examples, bun-jobs |
+| **PR-8** bun-nest uploads | module-level upload options and `limits` merge (G13), the new codes mapped | `interceptors.test.ts`; upload probes in `expressCompat` (module limits, the new codes) | 0.75 | bun-nest | examples |
+| **PR-9** WS differential | `wsCompat.nest.test.ts` against `@nestjs/platform-ws` (Q8) | itself, both majors | 1 | bun-nest | — |
+| **PR-10** examples | Nest 12 examples (§7), every changed check, run-all on both majors | the examples themselves, with negative controls | 1.75 | examples | — |
+| **PR-11** docs | bun-nest README: Nest 12 section, compatibility table (11 and 12), known differences updated; CLAUDE.md routing semantics | lint (`prettier` on long cells) | 0.5 | bun-nest | examples (README tables it owns) |
 
-**Total: about 19 working days**: 17 for the features agent, 1.75 for the
-examples agent (5a) and 0.25 for the bun-jobs-ui agent (d6), some of it in
+**Total: about 19 working days**: 17 for the bun-nest agent, 1.75 for the
+examples agent and 0.25 for the bun-jobs-ui agent, some of it in
 parallel. **PR-0 to PR-3 (≈4.75 days) make
 bun-nest correct on Nest 12** with both majors tested; PR-4 to PR-11 are the
 full parity the user asked for. PR-6a/6b/6c, PR-7, PR-8 and PR-9 are
@@ -991,7 +1036,7 @@ code: `9847b5443` (PR-6b), `b59196c98` (PR-6c), `555c2ce23` (measured, §6.2).
 | # | Risk | Likelihood / impact | Mitigation [D] |
 |---|---|---|---|
 | R1 | PR-5's path-syntax work slows the router (the route index in `packages/bun-common/lib/utils/routeIndex.ts` and `routeTree.ts` assumes routejs regexps) | medium / high | translate at registration only, never per request; the bun-common bench and its `--compare` guard in the PR; the differential fuzz before any optimisation |
-| R2 | Named wildcards becoming `string[]` breaks code that reads a string, in this repo's examples and in anyone's direct `BunRouter` use | certain / medium | packages unpublished; bare `*` and `:x?`/`:x(\d+)` unchanged; CHANGE REPORT to 5a with every affected example (§7); the type change makes the compiler find the call sites |
+| R2 | Named wildcards becoming `string[]` breaks code that reads a string, in this repo's examples and in anyone's direct `BunRouter` use | certain / medium | packages unpublished; bare `*` and `:x?`/`:x(\d+)` unchanged; CHANGE REPORT to the examples agent with every affected example (§7); the type change makes the compiler find the call sites |
 | R3 | The WS exception fix (Q4 option a) patches `BaseWsExceptionFilter.prototype` globally; a second `@nestjs/websockets` copy, or a Nest refactor of `emitMessage`, silently undoes it | medium / medium | scope by a marker symbol, cover it in `wsCompat` on every matrix column, so a Nest change fails a test the day it ships; or choose option b |
 | R4 | The differentials' reference is Express **on Bun's `node:http`**, so a Bun quirk can hide on both sides (the `//` fetch bug was one) | medium / medium | raw sockets where the client matters; once per merge window, run the Express side of the routing differential on Node 24 [I: Nest 12 needs Node 20.19+/22.12+, which this machine's Node 24.2.0 meets] |
 | R5 | Nest 12 moves fast (the v12.1.3 release notes list 79 bug fixes) and 11.2.x backports land; a release can change Express's answers | high / medium | the differentials assert whatever Express answers, so they move with Nest; the matrix runs 11-latest on every PR and a new release before the lock moves |
@@ -1003,18 +1048,21 @@ code: `9847b5443` (PR-6b), `b59196c98` (PR-6c), `555c2ce23` (measured, §6.2).
 
 ---
 
-## 12. Open questions for the user
+## 12. Questions for the user, answered
 
-| # | Question | Recommendation |
-|---|---|---|
-| **Q1** | Support Nest 11 and 12 together (`^11.1.20 \|\| ^12.0.0`), or 12 only (`^12.0.0`)? | **Both.** The contract only grew, the declarations are identical, one capability gate covers the only behavioural fork, and 11 is still maintained and widely run. 12-only saves about 2 days. Either way, the 11 floor must become 11.1.20 if 11 stays (§8.1) |
-| **Q2** | Path-to-regexp 8 semantics in `BunRouter`: (a) adopt `path-to-regexp` 8 as a bun-common dependency, or (b) translate to routejs and prove it with a differential fuzz (devDependency only)? And do named wildcards become `string[]` for direct `BunRouter` users too? | **(b)**, falling back to (a) if the fuzz cannot be made to agree; **yes**, arrays for `*name`/`{*name}` everywhere (Express 5's semantics, which bun-common claims), with bare `*` and the routejs-only forms unchanged |
-| **Q3** | Default the adapter's router to `caseSensitive: false`, as Express, instead of today's documented `true`? | **Yes**: it is the last routing difference a default app would hit; keep `router: { caseSensitive: true }` as the opt-in |
-| **Q4** | WS exception frames on 12: (a) patch `BaseWsExceptionFilter.prototype.emitMessage`, scoped by a marker, to keep our wire format; (b) accept Nest 12's `{event, data}` frame as a documented change on 12; (c) ship an opt-in filter | **(a)**, as prototyped (green on both majors), guarded by `wsCompat` on every matrix column; (b) if a global patch is unacceptable |
-| **Q5** | On 12, answer unknown paths outside the global prefix with the adapter's bare HTML 404 (as Express 12), losing Nest's JSON 404 there? | **Yes**: bun-nest's contract is platform-express's answers; documented |
-| **Q6** | `close()` drains in-flight requests (as Express 12) with a cap, instead of always force-closing; what cap? | **Yes**, capped at 10 s by default, skipped with `forceCloseConnections: true`; spike first |
-| **Q7** | Defer body reading only when `enableCsrfProtection()`/`useSecurityHeaders()` is on (G6), rather than by default? | **Only then**: Express's order where it matters, today's fast path everywhere else |
-| **Q8** | Add `@nestjs/platform-ws` (and `ws`) as bun-nest **devDependencies** for the WS differential? | **Yes**: dev only, no runtime or consumer effect |
+The user answered all eight on 2026-10-17, each with the recommendation. The
+**Answer** column is what the PRs build to.
+
+| # | Question | Recommendation | Answer (2026-10-17) | Shapes |
+|---|---|---|---|---|
+| **Q1** | Support Nest 11 and 12 together (`^11.1.20 \|\| ^12.0.0`), or 12 only (`^12.0.0`)? | **Both.** The contract only grew, the declarations are identical, one capability gate covers the only behavioural fork, and 11 is still maintained and widely run. 12-only saves about 2 days. Either way, the 11 floor must become 11.1.20 if 11 stays (§8.1) | **Both majors.** Peers `^11.1.20 \|\| ^12.0.0`; every PR tested on both (the 12 column and 11-latest, §9.3) | PR-0, PR-3, every PR's gate |
+| **Q2** | Path-to-regexp 8 semantics in `BunRouter`: (a) adopt `path-to-regexp` 8 as a bun-common dependency, or (b) translate to routejs and prove it with a differential fuzz (devDependency only)? And do named wildcards become `string[]` for direct `BunRouter` users too? | **(b)**, falling back to (a) if the fuzz cannot be made to agree; **yes**, arrays for `*name`/`{*name}` everywhere (Express 5's semantics, which bun-common claims), with bare `*` and the routejs-only forms unchanged | **(b)**: translate in `BunRouter`, proven by a differential fuzz with `path-to-regexp` as a devDependency only; adopt it as a runtime dependency (a) only if the fuzz cannot be made to agree. **Named wildcards (`*name`, `{*name}`) become `string[]` everywhere**, direct `BunRouter` users included; bare `*` is unchanged | PR-5 |
+| **Q3** | Default the adapter's router to `caseSensitive: false`, as Express, instead of today's documented `true`? | **Yes**: it is the last routing difference a default app would hit; keep `router: { caseSensitive: true }` as the opt-in | **Yes**: the adapter's router defaults to `caseSensitive: false`; `router: { caseSensitive: true }` is the opt-in | PR-5 |
+| **Q4** | WS exception frames on 12: (a) patch `BaseWsExceptionFilter.prototype.emitMessage`, scoped by a marker, to keep our wire format; (b) accept Nest 12's `{event, data}` frame as a documented change on 12; (c) ship an opt-in filter | **(a)**, as prototyped (green on both majors), guarded by `wsCompat` on every matrix column; (b) if a global patch is unacceptable | **(a)**: the marker-scoped patch of `BaseWsExceptionFilter.prototype.emitMessage`, guarded by the `wsCompat` check on every matrix column | PR-2, PR-9 |
+| **Q5** | On 12, answer unknown paths outside the global prefix with the adapter's bare HTML 404 (as Express 12), losing Nest's JSON 404 there? | **Yes**: bun-nest's contract is platform-express's answers; documented | **Yes, match Express**: on 12, unknown paths outside the global prefix get the bare HTML 404; documented in bun-nest's README | PR-2, PR-11 |
+| **Q6** | `close()` drains in-flight requests (as Express 12) with a cap, instead of always force-closing; what cap? | **Yes**, capped at 10 s by default, skipped with `forceCloseConnections: true`; spike first | **Yes**: drain with a **10 s** cap, skipped with `forceCloseConnections: true`. **Spike first**, proving the `SO_REUSEPORT` stale-server hazard (CLAUDE.md, "Port-release pitfall") does not come back | PR-6b |
+| **Q7** | Defer body reading only when `enableCsrfProtection()`/`useSecurityHeaders()` is on (G6), rather than by default? | **Only then**: Express's order where it matters, today's fast path everywhere else | **Only then**: defer the body only when `enableCsrfProtection()` or `useSecurityHeaders()` is on | PR-6a |
+| **Q8** | Add `@nestjs/platform-ws` (and `ws`) as bun-nest **devDependencies** for the WS differential? | **Yes**: dev only, no runtime or consumer effect | **Yes**, as devDependencies of bun-nest | PR-9 |
 
 Not a question for the user: the Bun bug found on the way (`fetch()` drops
 the first `/` of a `//…` request target) is filed as

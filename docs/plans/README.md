@@ -181,7 +181,9 @@ file, check every link into and out of it, `#anchors` included.
 - **[`nestjs-12-parity/`](nestjs-12-parity/README.md)** — bun-nest and
   bun-common on NestJS 12 (12.1.3, released): every change from 11.1.27
   classified, the adapter contract, routing parity with platform-express,
-  supporting 11 and 12 together, the test matrix and the PRs.
+  supporting 11 and 12 together, the test matrix and the PRs. **Approved in
+  full on 2026-10-17** (Q1–Q8 answered, PR-0 to PR-11), led by the bun-nest
+  agent; its Status section tracks the PRs.
   - Evidence: [`nestjs-12-parity/evidence/`](nestjs-12-parity/evidence/README.md) —
     two changelog matrices (434 rows) and a coverage check: every commit in
     `v11.1.27..v12.1.3` touching a Nest package classified; the npm registry facts; the adapter contract diffed member by
