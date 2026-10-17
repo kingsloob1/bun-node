@@ -85,7 +85,7 @@ export function matchPath(
   const pathParts = path.split("/").filter(Boolean);
   const params: Record<string, string> = {};
   for (let index = 0; index < patternParts.length; index++) {
-    const part = patternParts[index]!;
+    const part = patternParts[index];
     if (part === "*" && index === patternParts.length - 1) {
       params["*"] = pathParts.slice(index).map(safeDecode).join("/");
       return params;

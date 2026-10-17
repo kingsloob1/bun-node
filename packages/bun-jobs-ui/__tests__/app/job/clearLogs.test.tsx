@@ -174,8 +174,8 @@ describe("clear logs: the request", () => {
     );
     const deletes = calls.filter((call) => call.method === "DELETE");
     expect(deletes).toHaveLength(1);
-    expect(deletes[0]!.path).toBe(LOGS);
-    expectUndefined(deletes[0]!.body);
+    expect(deletes[0].path).toBe(LOGS);
+    expectUndefined(deletes[0].body);
     const keys = invalidate.mock.calls.map(
       (args) => (args[0] as { queryKey: unknown }).queryKey,
     );

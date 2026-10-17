@@ -157,12 +157,12 @@ export async function renderActions(options: RenderActionsOptions = {}) {
   const queryClient = createQueryClient({ retry: false });
   const invalidated: QueryKey[] = [];
   const original = queryClient.invalidateQueries.bind(queryClient);
-  queryClient.invalidateQueries = ((filters, opts) => {
+  queryClient.invalidateQueries = (filters, opts) => {
     if (filters?.queryKey) {
       invalidated.push(filters.queryKey);
     }
     return original(filters, opts);
-  }) as typeof queryClient.invalidateQueries;
+  };
   const result = render(
     <AppProviders
       config={config}

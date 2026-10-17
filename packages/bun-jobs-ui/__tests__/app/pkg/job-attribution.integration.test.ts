@@ -264,7 +264,7 @@ function deploy(
   contexts: BunJobs[],
 ): Pick<Deployment, "label" | "contexts" | "fetch" | "exchanges"> {
   const api = createJobsApi({
-    jobs: contexts[0]!,
+    jobs: contexts[0],
     mode: "jobs",
     basePath: BASE,
     authorize: () => true,
@@ -549,7 +549,7 @@ async function checkDefaultView(
 
     const reads = jobReads(deployment, start);
     expect(reads.length).toBeGreaterThan(0);
-    const first = reads[0]!;
+    const first = reads[0];
     // The real request: this key, the last day of finishedOn, every state.
     expect(first.query.getAll("workerKey")).toEqual([key]);
     expect(first.query.has("state")).toBe(false);
@@ -731,7 +731,7 @@ for (const { title, pick } of ATTRIBUTED) {
           deployment,
           `/queues/${QUEUE}/jobs/${id}`,
         );
-        const worker = deployment.workers.api!;
+        const worker = deployment.workers.api;
         // The real stamp: this incarnation, its key, and where it ran.
         expect(job.processedBy).toEqual({
           id: worker.id,

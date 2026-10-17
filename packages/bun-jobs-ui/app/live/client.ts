@@ -1104,7 +1104,7 @@ export class LiveClient {
     const accepted = pending.channels.filter((raw) => !refused.has(raw));
     if (accepted.length === ack.channels.length) {
       accepted.forEach((raw, index) => {
-        const key = ack.channels[index]!;
+        const key = ack.channels[index];
         if (key !== raw) {
           let raws = this.#rawByKey.get(key);
           if (!raws) {

@@ -245,7 +245,7 @@ describe("Reset's Also clear budget usage", () => {
     );
     const posts = resets(calls);
     expect(posts.length).toBe(1);
-    expect(JSON.parse(posts[0]!.body!)).toEqual({ budget: true });
+    expect(JSON.parse(posts[0].body!)).toEqual({ budget: true });
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
   });
 
@@ -260,7 +260,7 @@ describe("Reset's Also clear budget usage", () => {
     );
     const posts = resets(calls);
     expect(posts.length).toBe(1);
-    expectUndefined(posts[0]!.body);
+    expectUndefined(posts[0].body);
   });
 
   it("starts unchecked each time the dialog opens", async () => {

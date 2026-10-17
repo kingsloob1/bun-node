@@ -214,19 +214,19 @@ describe("the analytics reads", () => {
     const { api, calls } = client();
     const rollup = await getRunnersAnalytics(api, request);
     expectUndefined(rollup.seriesByRunner);
-    expect(calls[0]!.query.getAll("ids")).toEqual([]);
+    expect(calls[0].query.getAll("ids")).toEqual([]);
     const batch = await getRunnersAnalytics(api, request, [
       "nightly",
       "hourly",
     ]);
-    expect(calls[1]!.query.getAll("ids")).toEqual(["nightly", "hourly"]);
+    expect(calls[1].query.getAll("ids")).toEqual(["nightly", "hourly"]);
     expect(batch.seriesByRunner?.map((entry) => entry.runner)).toEqual([
       "nightly",
       "hourly",
     ]);
     // An empty list is the same as none: no `ids=` at all.
     await getRunnersAnalytics(api, request, []);
-    expect(calls[2]!.query.has("ids")).toBe(false);
+    expect(calls[2].query.has("ids")).toBe(false);
   });
 
   it("reads the workers roll-up and its batch, keyed by the stable key", async () => {
@@ -236,7 +236,7 @@ describe("the analytics reads", () => {
       "emails-1",
       "reports-1",
     ]);
-    expect(calls[1]!.query.getAll("keys")).toEqual(["emails-1", "reports-1"]);
+    expect(calls[1].query.getAll("keys")).toEqual(["emails-1", "reports-1"]);
     expect(batch.seriesByKey?.map((entry) => entry.key)).toEqual([
       "emails-1",
       "reports-1",

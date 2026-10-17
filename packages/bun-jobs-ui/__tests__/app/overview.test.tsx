@@ -363,10 +363,10 @@ describe("the Overview screen", () => {
       "/queues/reports/analytics/jobs",
     ]);
     // `from`/`to`/`resolution`, never the deprecated `minutes`.
-    expect(reads[0]!.query.get("resolution")).toBe("60");
-    expectAbsent(reads[0]!.query.get("minutes"));
-    expect(Number(reads[0]!.query.get("to"))).toBeGreaterThan(
-      Number(reads[0]!.query.get("from")),
+    expect(reads[0].query.get("resolution")).toBe("60");
+    expectAbsent(reads[0].query.get("minutes"));
+    expect(Number(reads[0].query.get("to"))).toBeGreaterThan(
+      Number(reads[0].query.get("from")),
     );
   });
 

@@ -9,11 +9,15 @@ import type {
   WorkerEventName,
 } from "../../app/api/types";
 import type * as LiveModule from "../../app/live";
-import type { LiveStatus, LiveSubscription } from "../../app/live";
 import { useQueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, mock } from "bun:test";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { cleanup } from "./dom";
+
+/** `app/live`'s `LiveStatus`: what `useLiveStatus` returns. */
+type LiveStatus = LiveModule.LiveStatus;
+/** `app/live`'s `LiveSubscription`: one screen's interest in some channels. */
+type LiveSubscription = LiveModule.LiveSubscription;
 
 /**
  * A test double for the live module (`app/live`), so screens can be driven
@@ -306,7 +310,6 @@ function pick<F>(fake: F, actual: F): F {
   return liveFake.installed ? fake : actual;
 }
 
-/* eslint-disable react/no-unnecessary-use-prefix -- the live module's export names; each dispatches to a hook */
 void mock.module("../../app/live", () => ({
   ...real,
   useLiveStatus: () => pick(useFakeLiveStatus, real.useLiveStatus)(),
@@ -324,7 +327,7 @@ void mock.module("../../app/live", () => ({
       keys,
       options,
     ),
-})); /* eslint-enable react/no-unnecessary-use-prefix */
+}));
 
 /**
  * Installs the fake around each test of the calling file, with a status

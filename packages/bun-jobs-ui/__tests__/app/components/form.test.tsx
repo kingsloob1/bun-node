@@ -100,7 +100,7 @@ describe("Field", () => {
     );
     const area = page().getByLabelText("Notes");
     expect(area.tagName).toBe("TEXTAREA");
-    expect(document.getElementById(describedBy(area)[0]!)!.textContent).toBe(
+    expect(document.getElementById(describedBy(area)[0])!.textContent).toBe(
       "Optional.",
     );
   });
@@ -335,7 +335,7 @@ describe("Select and Checkbox", () => {
       />,
     );
     const box = page().getByRole("checkbox", { name: "Include delayed" });
-    expect(document.getElementById(describedBy(box)[0]!)!.textContent).toBe(
+    expect(document.getElementById(describedBy(box)[0])!.textContent).toBe(
       "Also removes scheduled jobs.",
     );
     fireEvent.click(box);

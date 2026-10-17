@@ -396,7 +396,7 @@ describe("a shared summon unit's row", () => {
     const row = await within(screen).findByTestId("summoning-row-renders");
     // The queue cell keeps its own link first.
     const head = within(row).getByRole("rowheader");
-    expect(within(head).getAllByRole("link")[0]!.getAttribute("href")).toBe(
+    expect(within(head).getAllByRole("link")[0].getAttribute("href")).toBe(
       `/jobs${summonTabPath("renders")}`,
     );
     const unit = within(row).getByTestId("summoning-unit-renders");

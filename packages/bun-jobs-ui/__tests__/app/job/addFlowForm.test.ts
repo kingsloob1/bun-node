@@ -113,15 +113,15 @@ describe("the flow tree", () => {
     const { root, a, b } = sampleTree();
     const c = node("c");
     const added = addFlowChild(root, a.key, c);
-    expect(added.children[0]!.children.map((n) => n.form.name)).toEqual([
+    expect(added.children[0].children.map((n) => n.form.name)).toEqual([
       "a1",
       "c",
     ]);
-    expect(root.children[0]!.children).toHaveLength(1);
+    expect(root.children[0].children).toHaveLength(1);
 
     const renamed = updateFlowNode(added, c.key, { queue: "audit" });
-    expect(renamed.children[0]!.children[1]!.queue).toBe("audit");
-    expect(added.children[0]!.children[1]!.queue).toBe("");
+    expect(renamed.children[0].children[1].queue).toBe("audit");
+    expect(added.children[0].children[1].queue).toBe("");
 
     const moved = moveFlowNode(root, b.key, -1);
     expect(moved.children.map((n) => n.form.name)).toEqual(["b", "a"]);
@@ -187,7 +187,7 @@ describe("validateFlow", () => {
       LIMITS,
     );
     expect(Object.keys(errors)).toEqual([a.key]);
-    expect(errors[a.key]!.queue).toContain("Letters, digits");
+    expect(errors[a.key].queue).toContain("Letters, digits");
   });
 
   it("refuses ignoreFailure on the top job only", () => {
@@ -236,10 +236,10 @@ describe("validateFlow", () => {
     const root = node("parent", { jobId: "top", children: [a, b] });
     const errors = validateFlow(root, TOP, LIMITS);
     expect(Object.keys(errors).sort()).toEqual([a.key, a1.key].sort());
-    expect(errors[a.key]!["opts.jobId"]).toBe(
+    expect(errors[a.key]["opts.jobId"]).toBe(
       "Another job of this flow has the same queue and id (reports:x).",
     );
-    expect(errors[a1.key]!["opts.jobId"]).toBe(errors[a.key]!["opts.jobId"]!);
+    expect(errors[a1.key]["opts.jobId"]).toBe(errors[a.key]["opts.jobId"]);
 
     // Negative control: a1 in a queue of its own, and the clash is gone.
     expect(
@@ -412,7 +412,7 @@ describe("flowProblemErrors", () => {
     );
     expect(placed.unplaced).toBe(false);
     expect(Object.keys(placed.errors)).toEqual([b.key]);
-    expect(placed.errors[b.key]!.name).toContain(
+    expect(placed.errors[b.key].name).toContain(
       "Jobs named “b” may not be added",
     );
     expectUndefined(placed.errors[a.key]);

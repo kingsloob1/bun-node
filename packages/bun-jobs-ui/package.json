@@ -71,7 +71,6 @@
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
-    "@eslint-react/eslint-plugin": "^5.6.0",
     "@happy-dom/global-registrator": "^20.0.0",
     "@kingsleyweb/bun-jobs": "^2.2.0",
     "@kingsleyweb/bun-nest": "^2.2.0",

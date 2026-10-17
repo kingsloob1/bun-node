@@ -81,7 +81,7 @@ export async function mountHistoryPages(
   const rendered = renderApp({ fetch });
   const views = [await settled()];
   for (let turn = 0; turn < turns; turn++) {
-    const before = views[views.length - 1]!;
+    const before = views[views.length - 1];
     const pager = page().getByRole("navigation", { name: "History pages" });
     fireEvent.click(within(pager).getByRole("button", { name: "Next" }));
     await waitFor(() => {

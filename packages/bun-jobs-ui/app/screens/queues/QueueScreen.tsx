@@ -313,8 +313,7 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   if (panels.length === 0) {
     return null;
   }
-  const current =
-    panels.find((panel) => panel.value === selected) ?? panels[0]!;
+  const current = panels.find((panel) => panel.value === selected) ?? panels[0];
   return (
     <Card
       title="Details"

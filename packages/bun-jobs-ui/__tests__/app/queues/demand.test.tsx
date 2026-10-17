@@ -81,10 +81,10 @@ describe("the Demand panel", () => {
 
   it("gives the URLs a scaler reads, JSON and Prometheus, on the API's base", async () => {
     const { panel } = await openPanel();
-    const json = within(panel).getByTestId("demand-url-json").textContent!;
+    const json = within(panel).getByTestId("demand-url-json").textContent;
     const prometheus = within(panel).getByTestId(
       "demand-url-prometheus",
-    ).textContent!;
+    ).textContent;
     expect(new URL(json).pathname).toBe("/jobs-api/queues/emails/demand");
     expect(new URL(prometheus).searchParams.get("format")).toBe("prometheus");
     expect(new URL(prometheus).pathname).toBe(new URL(json).pathname);
@@ -211,10 +211,10 @@ describe("the Overview queue table's Demand column", () => {
     const table = await queueTable();
     const reads = calls.filter((call) => call.path === "/demand");
     expect(reads.length).toBeGreaterThanOrEqual(1);
-    expect(reads[0]!.query.getAll("queues")).toEqual(
+    expect(reads[0].query.getAll("queues")).toEqual(
       queueListFixture().items.map((queue) => queue.name),
     );
-    expect(reads[0]!.query.get("format")).toBe("json");
+    expect(reads[0].query.get("format")).toBe("json");
     // No per-queue read for the table.
     expect(calls.some((call) => call.path === "/queues/emails/demand")).toBe(
       false,

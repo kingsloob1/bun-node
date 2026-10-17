@@ -365,7 +365,7 @@ export function describeRefused(config: RunnerConfigDto): string | null {
   }
   const labels = keys.map((key) => CONFIG_KEY_LABELS[key] ?? key);
   return labels.length === 1
-    ? labels[0]!
+    ? labels[0]
     : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)!}`;
 }
 

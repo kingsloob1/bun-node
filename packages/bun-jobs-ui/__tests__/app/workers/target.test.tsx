@@ -169,8 +169,8 @@ describe("the target badge in a worker table", () => {
     expect(row.querySelectorAll("td .badge")).toHaveLength(4);
     const states = within(row).getAllByTestId("worker-state");
     expect(states).toHaveLength(1);
-    expect(states[0]!.textContent).toBe("Paused");
-    expect(states[0]!.classList.contains("worker-target")).toBe(false);
+    expect(states[0].textContent).toBe("Paused");
+    expect(states[0].classList.contains("worker-target")).toBe(false);
   });
 
   it("appears in a worker page's Instances table too", async () => {
@@ -297,10 +297,10 @@ describe("the worker page's Target card", () => {
       workerFixture({ id: "api.emails.odd", target: target("worker-thread") }),
     ]);
     const [group] = within(card).getAllByTestId("worker-target-group");
-    expect(group!.textContent).toContain("7 instances:");
-    expect(group!.textContent).toContain("api.emails.n4");
-    expect(group!.textContent).not.toContain("api.emails.n5");
-    expect(group!.textContent).toContain("and 2 more");
+    expect(group.textContent).toContain("7 instances:");
+    expect(group.textContent).toContain("api.emails.n4");
+    expect(group.textContent).not.toContain("api.emails.n5");
+    expect(group.textContent).toContain("and 2 more");
   });
 
   it("waits for an instance when none is live", async () => {

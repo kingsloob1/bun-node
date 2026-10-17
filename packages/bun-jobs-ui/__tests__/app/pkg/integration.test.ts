@@ -131,7 +131,7 @@ describe("the app client against a real createJobsApi", () => {
     expect(request.headers.get(CSRF)).toBe("1");
 
     const listed = await client.listQueues("emails");
-    expect(listed.items[0]!.paused).toBe(true);
+    expect(listed.items[0].paused).toBe(true);
     expect(await client.resumeQueue("emails")).toEqual({ paused: false });
   });
 

@@ -155,7 +155,7 @@ describe("the ? shortcut", () => {
     for (const entry of SHORTCUT_HELP) {
       expect(list.textContent).toContain(entry.description);
     }
-    expect(within(list).getAllByText("/")[0]!.tagName).toBe("KBD");
+    expect(within(list).getAllByText("/")[0].tagName).toBe("KBD");
 
     // While it is open, / does not reach the page behind.
     fireEvent.keyDown(document.body, { key: "/" });
@@ -234,15 +234,15 @@ describe("the WebSocket docs sidebar", () => {
     const search = within(nav).getByRole("searchbox");
     search.focus();
     fireEvent.keyDown(search, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(links[0]!);
+    expect(document.activeElement).toBe(links[0]);
 
-    fireEvent.keyDown(links[0]!, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(links[1]!);
-    fireEvent.keyDown(links[1]!, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(links[0]!);
-    fireEvent.keyDown(links[0]!, { key: "End" });
-    expect(document.activeElement).toBe(links[links.length - 1]!);
-    fireEvent.keyDown(links[links.length - 1]!, { key: "Home" });
-    expect(document.activeElement).toBe(links[0]!);
+    fireEvent.keyDown(links[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(links[1]);
+    fireEvent.keyDown(links[1], { key: "ArrowUp" });
+    expect(document.activeElement).toBe(links[0]);
+    fireEvent.keyDown(links[0], { key: "End" });
+    expect(document.activeElement).toBe(links[links.length - 1]);
+    fireEvent.keyDown(links[links.length - 1], { key: "Home" });
+    expect(document.activeElement).toBe(links[0]);
   });
 });

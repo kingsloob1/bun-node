@@ -528,10 +528,10 @@ describe("a new worker's first start on the live-events socket", () => {
       );
       const [first] = statesOf(wire, worker.id);
       // One frame, sent for both channels.
-      expect([...first!.frame.subscriptions].sort()).toEqual(
+      expect([...first.frame.subscriptions].sort()).toEqual(
         [...channels].sort(),
       );
-      expect(first!.frame.event).toMatchObject({
+      expect(first.frame.event).toMatchObject({
         v: 1,
         kind: "worker",
         type: "state",
@@ -543,8 +543,8 @@ describe("a new worker's first start on the live-events socket", () => {
           state: "running",
         },
       });
-      expect(Object.hasOwn(first!.frame.event.payload, "previous")).toBe(false);
-      expect(first!.frame.event.payload.at).toBeNumber();
+      expect(Object.hasOwn(first.frame.event.payload, "previous")).toBe(false);
+      expect(first.frame.event.payload.at).toBeNumber();
       // And the app's client handed it on.
       await until(
         () => live.delivered.some((event) => event.id === worker.id),
@@ -556,7 +556,7 @@ describe("a new worker's first start on the live-events socket", () => {
         () => statesOf(wire, worker.id).length >= 2,
         () => "no state event after pause()",
       );
-      const second = statesOf(wire, worker.id)[1]!;
+      const second = statesOf(wire, worker.id)[1];
       expect([...second.frame.subscriptions].sort()).toEqual(
         [...channels].sort(),
       );
@@ -588,22 +588,22 @@ describe("a new worker's first start on the live-events socket", () => {
         () => "no state event after run()",
       );
       const [first] = statesOf(wire, worker.id);
-      expect([...first!.frame.subscriptions].sort()).toEqual(
+      expect([...first.frame.subscriptions].sort()).toEqual(
         [...channels].sort(),
       );
-      expect(first!.frame.event.payload).toMatchObject({
+      expect(first.frame.event.payload).toMatchObject({
         worker: worker.id,
         key: `${SERVICE}.${queue}`,
         state: "paused",
       });
-      expect(Object.hasOwn(first!.frame.event.payload, "previous")).toBe(false);
+      expect(Object.hasOwn(first.frame.event.payload, "previous")).toBe(false);
 
       worker.resume();
       await until(
         () => statesOf(wire, worker.id).length >= 2,
         () => "no state event after resume()",
       );
-      expect(statesOf(wire, worker.id)[1]!.frame.event.payload).toMatchObject({
+      expect(statesOf(wire, worker.id)[1].frame.event.payload).toMatchObject({
         state: "running",
         previous: "paused",
       });
@@ -664,16 +664,16 @@ describe("the worker screens pick a first start up from the socket", () => {
     const shownAt = Date.now();
 
     const [first] = statesOf(wire, worker.id);
-    expect(first!.dropped).toBe(false);
-    expect(first!.frame.event.payload.state).toBe("running");
-    expect(Object.hasOwn(first!.frame.event.payload, "previous")).toBe(false);
+    expect(first.dropped).toBe(false);
+    expect(first.frame.event.payload.state).toBe("running");
+    expect(Object.hasOwn(first.frame.event.payload, "previous")).toBe(false);
 
     // Every read since the page settled came after the event arrived — none
     // was a poll that happened to land — and one of them carried the worker.
     const reads = readsOf("/workers", from);
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.startedAt).toBeGreaterThanOrEqual(first!.at);
+      expect(read.startedAt).toBeGreaterThanOrEqual(first.at);
     }
     expect(reads.some((read) => lists(read.json, worker.id))).toBe(true);
     // Far inside the 5 s poll the page would otherwise wait for.
@@ -745,15 +745,15 @@ describe("the worker screens pick a first start up from the socket", () => {
     await ui.awaitRow(worker.id, "Running", 4_000);
 
     const [first] = statesOf(wire, worker.id);
-    expect(first!.frame.subscriptions).toContain(`queue/${queue}/workers`);
+    expect(first.frame.subscriptions).toContain(`queue/${queue}/workers`);
     // The page holds no `workers` subscription: the panel's channel carried it.
-    expect(first!.frame.subscriptions).not.toContain("workers");
-    expect(Object.hasOwn(first!.frame.event.payload, "previous")).toBe(false);
+    expect(first.frame.subscriptions).not.toContain("workers");
+    expect(Object.hasOwn(first.frame.event.payload, "previous")).toBe(false);
 
     const reads = readsOf(panelPath, from);
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.startedAt).toBeGreaterThanOrEqual(first!.at);
+      expect(read.startedAt).toBeGreaterThanOrEqual(first.at);
     }
     expect(reads.some((read) => lists(read.json, worker.id))).toBe(true);
     ui.unmount();
@@ -783,9 +783,9 @@ describe("the worker screens pick a first start up from the socket", () => {
     const shownAt = Date.now();
 
     const [first] = statesOf(wire, worker.id);
-    expect(first!.dropped).toBe(false);
-    expect(first!.frame.subscriptions).toEqual(["workers"]);
-    expect(first!.frame.event).toMatchObject({
+    expect(first.dropped).toBe(false);
+    expect(first.frame.subscriptions).toEqual(["workers"]);
+    expect(first.frame.event).toMatchObject({
       kind: "worker",
       type: "state",
       target: queue,
@@ -796,12 +796,12 @@ describe("the worker screens pick a first start up from the socket", () => {
         state: "running",
       },
     });
-    expect(Object.hasOwn(first!.frame.event.payload, "previous")).toBe(false);
+    expect(Object.hasOwn(first.frame.event.payload, "previous")).toBe(false);
 
     const reads = readsOf("/workers", from);
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.startedAt).toBeGreaterThanOrEqual(first!.at);
+      expect(read.startedAt).toBeGreaterThanOrEqual(first.at);
     }
     expect(reads.some((read) => lists(read.json, worker.id))).toBe(true);
     expect(shownAt - ranAt).toBeLessThan(WORKER_LIST_POLL_MS);
@@ -859,8 +859,8 @@ describe("the worker screens pick a first start up from the socket", () => {
 
     const gap = discoveryGaps(wire)[0];
     expect(gap).toBeDefined();
-    expect(gap!.dropped).toBe(false);
-    expect(gap!.frame).toMatchObject({
+    expect(gap.dropped).toBe(false);
+    expect(gap.frame).toMatchObject({
       type: "gap",
       reason: "queue-discovered",
       channels: ["workers"],
@@ -873,7 +873,7 @@ describe("the worker screens pick a first start up from the socket", () => {
     const reads = readsOf("/workers", from);
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.startedAt).toBeGreaterThanOrEqual(gap!.at);
+      expect(read.startedAt).toBeGreaterThanOrEqual(gap.at);
     }
     expect(reads.some((read) => lists(read.json, worker.id))).toBe(true);
     // One discovery pass, then the re-read: far inside the 60 s live poll.

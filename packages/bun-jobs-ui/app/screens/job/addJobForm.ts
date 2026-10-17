@@ -46,7 +46,7 @@ export function emptyAddForm({
   maxBytes,
 }: EmptyAddFormOptions): AddJobForm {
   return {
-    name: addableNames?.length === 1 ? addableNames[0]! : "",
+    name: addableNames?.length === 1 ? addableNames[0] : "",
     data: jsonEditorState("{}", { maxBytes }),
     jobId: "",
     priority: undefined,
