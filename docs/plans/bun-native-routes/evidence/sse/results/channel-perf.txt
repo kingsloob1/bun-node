@@ -1,0 +1,64 @@
+# HEAVY_TICKET=bun-node-11-sse-channel /tmp/claude-1000/bun-node-heavy-run.sh nice -n 10 timeout 1200 bun docs/plans/bun-native-routes/evidence/sse/channel-perf.ts 3
+# 2026-10-17, bun 1.4.4-canary.1+5f5799ed1, 16 cores, shared machine: the 1-minute load rose from 5.7 to 46 during the run (other sessions' jobs)
+bun-node-heavy-run: auto → slot (no history)
+r1 A 1000x1000                        proto    1673755 ev/s  idle 11.3 MiB  after 23.7 MiB  size after 1000  load 5.72 9.54 7.11
+r1 A 1000x1000 +slow                  proto    1488440 ev/s  idle 9.9 MiB  after 21.1 MiB  slow still connected  size after 1001  load 5.72 9.54 7.11
+r1 A 100x10000                        proto    1522755 ev/s  idle -0.4 MiB  after 9.5 MiB  size after 100  load 5.72 9.54 7.11
+r1 A 100x10000 +slow                  proto    1591455 ev/s  idle -1.2 MiB  after 10.3 MiB  slow still connected  size after 101  load 5.82 9.49 7.11
+r1 B 100+slow until dropped, 58 B     proto    1322238 ev/s  idle -1.2 MiB  after 15.2 MiB  dropped @14615 ms after 10.7 MiB offered, rss@drop +119.4 MiB  size after 100  load 5.82 9.49 7.11
+r1 B 1000+slow until dropped, 4 KiB   proto      54230 ev/s  idle 11.0 MiB  after 80.5 MiB  dropped @47928 ms after 10.5 MiB offered, rss@drop +143.3 MiB  size after 1000  load 6.63 9.49 7.15
+r1 A 1000x1000                        shared    206341 ev/s  idle 12.8 MiB  after 22.8 MiB  size after 1000  load 38.81 18.01 10.20
+r1 A 1000x1000 +slow                  shared    256880 ev/s  idle 12.6 MiB  after 22.3 MiB  slow still connected  size after 1001  load 41.95 19.01 10.57
+r1 A 100x10000                        shared    553750 ev/s  idle 0.3 MiB  after 6.7 MiB  size after 100  load 42.41 19.88 10.94
+r1 A 100x10000 +slow                  shared   1234969 ev/s  idle -0.4 MiB  after 8.5 MiB  slow still connected  size after 101  load 42.41 19.88 10.94
+r1 B 100+slow until dropped, 58 B     shared   1045717 ev/s  idle -2.1 MiB  after 8.6 MiB  dropped @18401 ms after 10.6 MiB offered, rss@drop +30.8 MiB  size after 100  load 39.41 19.63 10.91
+r1 B 1000+slow until dropped, 4 KiB   shared    328842 ev/s  idle 10.0 MiB  after 75.7 MiB  dropped @8153 ms after 10.5 MiB offered, rss@drop +83.9 MiB  size after 1000  load 36.94 20.10 11.20
+r1 micro {"round":1,"label":"micro","load":"35.00 20.21 11.33","send ns/event 1000 subs broadcast":27263,"send ns/event 1000 subs topic-index":3395,"send ns/event 1000 subs topic-scan":30893,"send ns/event 100 subs broadcast":3930,"send ns/event 100 subs topic-index":1248,"send ns/event 100 subs topic-scan":3666,"registry bytes/subscriber, no topics":404,"registry bytes/subscriber, 3 topics":786}
+r2 A 1000x1000                        proto    1056813 ev/s  idle 10.6 MiB  after 23.0 MiB  size after 1000  load 33.40 20.13 11.35
+r2 A 1000x1000 +slow                  proto    1001986 ev/s  idle 10.9 MiB  after 22.2 MiB  slow still connected  size after 1001  load 33.40 20.13 11.35
+r2 A 100x10000                        proto    1141971 ev/s  idle -0.6 MiB  after 7.2 MiB  size after 100  load 33.40 20.13 11.35
+r2 A 100x10000 +slow                  proto    1393201 ev/s  idle -0.8 MiB  after 10.6 MiB  slow still connected  size after 101  load 32.00 20.06 11.38
+r2 B 100+slow until dropped, 58 B     proto    1470760 ev/s  idle -0.5 MiB  after 14.7 MiB  dropped @13132 ms after 10.7 MiB offered, rss@drop +104.2 MiB  size after 100  load 32.00 20.06 11.38
+r2 B 1000+slow until dropped, 4 KiB   proto     325215 ev/s  idle 10.6 MiB  after 81.1 MiB  dropped @8359 ms after 10.5 MiB offered, rss@drop +138.6 MiB  size after 1000  load 26.75 19.48 11.33
+r2 A 1000x1000                        shared   1806271 ev/s  idle 9.7 MiB  after 18.2 MiB  size after 1000  load 24.01 19.14 11.30
+r2 A 1000x1000 +slow                  shared   1076235 ev/s  idle 9.7 MiB  after 19.1 MiB  slow still connected  size after 1001  load 24.01 19.14 11.30
+r2 A 100x10000                        shared    183273 ev/s  idle 1.6 MiB  after 7.9 MiB  size after 100  load 24.01 19.14 11.30
+r2 A 100x10000 +slow                  shared    286336 ev/s  idle 1.8 MiB  after 7.1 MiB  slow still connected  size after 101  load 29.96 20.58 11.86
+r2 B 100+slow until dropped, 58 B     shared    358589 ev/s  idle 1.6 MiB  after 11.5 MiB  dropped @53688 ms after 10.6 MiB offered, rss@drop +34.1 MiB  size after 100  load 30.69 20.89 12.00
+r2 B 1000+slow until dropped, 4 KiB   shared    455230 ev/s  idle 8.4 MiB  after 73.2 MiB  dropped @5883 ms after 10.5 MiB offered, rss@drop +86.1 MiB  size after 1000  load 43.09 26.37 14.41
+r2 micro {"round":2,"label":"micro","load":"40.04 26.01 14.36","send ns/event 1000 subs broadcast":22714,"send ns/event 1000 subs topic-index":3404,"send ns/event 1000 subs topic-scan":20808,"send ns/event 100 subs broadcast":2753,"send ns/event 100 subs topic-index":746,"send ns/event 100 subs topic-scan":2348,"registry bytes/subscriber, no topics":397,"registry bytes/subscriber, 3 topics":786}
+r3 A 1000x1000                        proto    1463709 ev/s  idle 10.7 MiB  after 22.1 MiB  size after 1000  load 37.39 25.69 14.32
+r3 A 1000x1000 +slow                  proto    1516764 ev/s  idle 10.6 MiB  after 24.2 MiB  slow still connected  size after 1001  load 37.39 25.69 14.32
+r3 A 100x10000                        proto    1927470 ev/s  idle -0.1 MiB  after 8.4 MiB  size after 100  load 37.39 25.69 14.32
+r3 A 100x10000 +slow                  proto    1637690 ev/s  idle 0.2 MiB  after 10.0 MiB  slow still connected  size after 101  load 37.39 25.69 14.32
+r3 B 100+slow until dropped, 58 B     proto     308537 ev/s  idle -0.4 MiB  after 15.2 MiB  dropped @62668 ms after 10.7 MiB offered, rss@drop +123.2 MiB  size after 100  load 34.96 25.38 14.28
+r3 B 1000+slow until dropped, 4 KiB   proto     436283 ev/s  idle 11.7 MiB  after 81.3 MiB  dropped @6181 ms after 10.5 MiB offered, rss@drop +129.2 MiB  size after 1000  load 46.19 30.18 16.61
+r3 A 1000x1000                        shared   1901484 ev/s  idle 9.9 MiB  after 20.5 MiB  size after 1000  load 39.85 29.35 16.49
+r3 A 1000x1000 +slow                  shared   1791453 ev/s  idle 10.3 MiB  after 21.6 MiB  slow still connected  size after 1001  load 39.85 29.35 16.49
+r3 A 100x10000                        shared   2794842 ev/s  idle 0.1 MiB  after 8.4 MiB  size after 100  load 39.85 29.35 16.49
+r3 A 100x10000 +slow                  shared   2811237 ev/s  idle -0.3 MiB  after 8.6 MiB  slow still connected  size after 101  load 39.85 29.35 16.49
+r3 B 100+slow until dropped, 58 B     shared   2645267 ev/s  idle -0.3 MiB  after 9.9 MiB  dropped @7299 ms after 10.7 MiB offered, rss@drop +32.7 MiB  size after 100  load 39.85 29.35 16.49
+r3 B 1000+slow until dropped, 4 KiB   shared    500964 ev/s  idle 9.9 MiB  after 74.9 MiB  dropped @5401 ms after 10.5 MiB offered, rss@drop +87.4 MiB  size after 1000  load 34.35 28.52 16.35
+r3 micro {"round":3,"label":"micro","load":"32.00 28.13 16.29","send ns/event 1000 subs broadcast":16349,"send ns/event 1000 subs topic-index":2256,"send ns/event 1000 subs topic-scan":16703,"send ns/event 100 subs broadcast":2336,"send ns/event 100 subs topic-index":855,"send ns/event 100 subs topic-scan":2221,"registry bytes/subscriber, no topics":397,"registry bytes/subscriber, 3 topics":778}
+
+median of 3 round(s); load at the end 30.24 27.83 16.26
+A 1000x1000                        proto    1463709 ev/s  idle 10.7 MiB
+A 1000x1000 +slow                  proto    1488440 ev/s  idle 10.6 MiB
+A 100x10000                        proto    1522755 ev/s  idle -0.4 MiB
+A 100x10000 +slow                  proto    1591455 ev/s  idle -0.8 MiB
+B 100+slow until dropped, 58 B     proto    1322238 ev/s  idle -0.5 MiB  dropped 3/3, @14615 ms, 10.7 MiB offered, rss@drop +119.4 MiB
+B 1000+slow until dropped, 4 KiB   proto     325215 ev/s  idle 11.0 MiB  dropped 3/3, @8359 ms, 10.5 MiB offered, rss@drop +138.6 MiB
+A 1000x1000                        shared   1806271 ev/s  idle 9.9 MiB
+A 1000x1000 +slow                  shared   1076235 ev/s  idle 10.3 MiB
+A 100x10000                        shared    553750 ev/s  idle 0.3 MiB
+A 100x10000 +slow                  shared   1234969 ev/s  idle -0.3 MiB
+B 100+slow until dropped, 58 B     shared   1045717 ev/s  idle -0.3 MiB  dropped 3/3, @18401 ms, 10.6 MiB offered, rss@drop +32.7 MiB
+B 1000+slow until dropped, 4 KiB   shared    455230 ev/s  idle 9.9 MiB  dropped 3/3, @5883 ms, 10.5 MiB offered, rss@drop +86.1 MiB
+send ns/event 1000 subs broadcast                22714
+send ns/event 1000 subs topic-index              3395
+send ns/event 1000 subs topic-scan               20808
+send ns/event 100 subs broadcast                 2753
+send ns/event 100 subs topic-index               855
+send ns/event 100 subs topic-scan                2348
+registry bytes/subscriber, no topics             397
+registry bytes/subscriber, 3 topics              786

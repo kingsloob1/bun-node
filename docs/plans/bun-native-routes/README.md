@@ -957,6 +957,7 @@ correctness at the edges, plus an API that makes the right thing the default.
 | 2 | **Add `res.sse()` and a standalone `sseResponse()` to bun-common (PR-sse2).** | They open the stream with a first chunk, exempt it from `idleTimeout`, send heartbeats, honour backpressure, bound a slow client's queue and stop on disconnect. Getting any of these wrong by hand fails silently (§16.2). |
 | 3 | **For bun-nest, `@Sse()` is the API; ship no new decorator (PR-sse3).** | It works today. After PR-sse1 it also survives errors and silence [T]. `@Res() res.sse()` covers imperative use for free, because `@Res()` is a `BunResponse`. |
 | 4 | **Put the wire format in a dependency-free `@kingsleyweb/bun-common/sse` entry, and later lift bun-jobs' parser into it.** | That gives one implementation of the framing rules, which bun-jobs can import (it already depends on bun-common), and a browser-safe entry. |
+| 5 | **Add a broadcast channel, `createSseChannel()` (PR-sse2b, added 2026-10-17, §16.14)**: express-sse's conveniences (initial state, `send` to every subscriber, `serialize` as `sendList`) plus a bounded `Last-Event-ID` replay, topics and a cross-process transport interface, on both adapters, and `channelObservable` for Nest's `@Sse()` with `@SseSignal()`. | The user's request. One encode per event and one stalled client never stalls the others, measured; express-sse's faults (initial state re-sent to everyone, per-connection ids, no bound) avoided. |
 
 ### 16.2 What works today, and what does not
 
@@ -1114,8 +1115,9 @@ a test. `encodeSseEvent`/`formatSseEvent` are the framing alone.
   the writer carries it (S6).
 - A generator-returning-handler convention like Elysia's: our handlers return
   nothing, and `res.send(sseResponse(gen()))` says the same thing explicitly.
-- Retrying or replaying missed events: resumption is the application's (it owns
-  the ids). The helper only surfaces `Last-Event-ID` and can send `retry`.
+- Retrying or replaying missed events **on the writer**: a single writer only
+  surfaces `Last-Event-ID` and can send `retry`. Replay, initial state and
+  broadcast are the channel's (§16.14, added 2026-10-17).
 
 ### 16.4 Proposed API: bun-nest
 
@@ -1335,7 +1337,8 @@ start returning `false` past the high-water mark, as Node's does.
 | Express 5.2.1 [B][M] | no helper: `res.write` by hand; errors after headers reach error handlers, then finalhandler destroys the socket | the error semantics (fix 4) |
 | Hono 4.12.21 `streamSSE(c, cb, onError)` [B] | a `TransformStream`; `writeSSE` awaits the writer (backpressure); splits data on CR/LF/CRLF; throws on CR/LF in `event`/`id`/`retry`; `onAbort`; an error calls `onError`, then sends `event: error` and closes | awaited writes, the field validation, `onError` |
 | Elysia 1.4.28 `sse()` [B] | a generator handler; yielded values framed as `data:`; sets `transfer-encoding: chunked`, `cache-control: no-cache`, `connection: keep-alive` | the async-iterable source (`sseResponse(gen())`) |
-| better-sse [U, not read] | sessions and channels (broadcast), keep-alive pings, `Last-Event-ID` | channels are out of scope; `encodeSseEvent` is the broadcast primitive |
+| better-sse [U, not read] | sessions and channels (broadcast), keep-alive pings, `Last-Event-ID` | channels, now in scope (§16.14) |
+| express-sse 1.0.0 [B, read, not run] | `new SSE(initial)`, `sse.init` as a route handler, `send(data, event, id)`, `updateInit`/`dropInit`, `serialize(list)` | every convenience, as `createSseChannel()` (§16.14); **not** its faults: it re-sends the initial state to every client when anyone connects, numbers ids per connection (so `Last-Event-ID` means nothing), has no backpressure, bound or heartbeat, JSON-quotes string data, and sets `Content-Encoding: deflate` without compressing |
 | Fastify [U, not read] | writes to `reply.raw`, or uses a plugin | nothing |
 
 ### 16.11 PR slicing
@@ -1347,8 +1350,11 @@ start returning `false` past the high-water mark, as Node's does.
 | **PR-sse3** | **bun-nest.** README section: `@Sse()` is supported, with its edges (Nest's encoder drops falsy `data`; the idle exemption; `app.close()` cuts streams); `@Res() res.sse()` for imperative use; the backpressure caveat | PR-sse1 (PR-sse2 for the `res.sse()` docs) | 0.5–1 d | bun-nest docs and tests only |
 | **PR-sse4** | **Docs and examples**: a change report to the examples session. `examples/bun-common/05-response/files-and-streams.ts` gains `res.sse()`. The stale line in `examples/bun-nest/02-http-adapter/controllers-and-routing.ts` ("`@Sse()` fails …") is wrong today [M] and must go. A new bun-nest `@Sse()` example | PR-sse2, PR-sse3 | 0.5 d here; the examples session's own time | examples only |
 | PR-sse5 | **bun-jobs** imports the parser (and, for its executor's `http-stream` writer, the encoder) from `@kingsleyweb/bun-common/sse` | PR-2a2, PR-sse2 | 0.5 d | Phase 2 session |
+| **PR-sse2b** | **Broadcast channels** (§16.14): `createSseChannel()`/`SseChannel` in `lib/sse/`, exported from the root and `./sse`; initial state, bounded replay keyed by `Last-Event-ID`, topics, `sendList`, one channel heartbeat, the transport interface and an in-memory bus for tests; the tests and controls of `channel-prototype.test.ts`; a fan-out benchmark guard cell with one stalled subscriber; README "Broadcast channels" | PR-sse2 (and the writer's shared promises, C2) | 2–2.5 d | bun-common; no dependency |
+| PR-sse3 (delta) | `channelObservable(channel, opts)` in bun-nest, for `@Sse()`, with `@SseSignal()` used when present (Nest ≥ 11.2); the heartbeat comment on Nest ≥ 11.2 (C8); tests on 11.1.27, 11.2.7 and 12.1.3 (the matrix), both adapters | PR-sse2b | +0.5–1 d | bun-nest, built under bun-node-15's review |
 
-**Total: ~6–8.5 d** (here, excluding the examples session and PR-sse5).
+**Total: ~8.5–12 d** (here, excluding the examples session and PR-sse5).
+PR-sse2b and the PR-sse3 delta were added on 2026-10-17 (§16.14).
 PR-sse1 alone makes `@Sse()` production-safe.
 
 - **Reviewers.** The maintainer, for every PR. The examples session reviews
@@ -1400,6 +1406,42 @@ confirmed again with each PR.
 | `@kingsleyweb/bun-common/sse` | entry | packaging | root only |
 | `res.writableEnded` | getter | `BunResponse` | none (Node's name) |
 
+**Broadcast channels (§16.14), added 2026-10-17 — open, each with the
+recommended answer** (the full table, with evidence, is in
+`evidence/sse/channel-README.md`):
+
+| # | Question | Recommended |
+|---|---|---|
+| SC1 | Where does the channel live? | bun-common `lib/sse/`, exported from the root and `./sse` (it needs only the writer, so the entry stays dependency-free); `channelObservable` in bun-nest |
+| SC2 | Shared promises in the writer's `send()` (one resolved constant under the high-water mark, one drain promise per backed-up period)? | Yes, in PR-sse2: no API change; at a stalled client's drop, +32.7 MiB RSS instead of +119.4 MiB with 100 readers, and about half the cost per send |
+| SC3 | Replay default? | Off (`replay: 0`); ids are assigned only when replay is on |
+| SC4 | On a replay miss, a marker event by default? | No: the initial state, with `ctx.replay === "miss"` so the app can mark it |
+| SC5 | A subscriber with no topics? | Broadcasts only; no wildcard in v1 |
+| SC6 | A byte bound on the replay buffer? | Not in v1: count only, documented |
+| SC7 | Ship a cross-process transport (Redis)? | No: the interface, and the in-memory bus as a test helper; bun-jobs' drivers can offer one later |
+| SC8 | Heartbeats for Nest subscribers? | `channelObservable` emits `{ comment: "" }` on Nest ≥ 11.2; on 11.1.x the idle exemption (PR-sse1 fix 2) carries it |
+| SC9 | express-sse's positional `send(data, event, id)`? | No: `send(message)`; the migration is one line, documented |
+| SC10 | A graceful `close()`? | Not in v1, as S9: `close()` ends streams, and later requests get 204 |
+| SC11 | Absolute fan-out figures | The spike's run was loaded (load 5.7 → 46); PR-sse2b's guard re-measures on a quiet machine before any absolute events/s is quoted |
+
+**Names needing approval (channels):**
+
+| Proposed | Kind | Where | Alternatives |
+|---|---|---|---|
+| `createSseChannel(options?)`, `SseChannel`, `SseChannelOptions` | function, class, type | `bun-common/sse` | `SseHub`, `SseBroadcaster` |
+| `initial`, `setInitial()`, `clearInitial()` | option, methods | `SseChannel` | express-sse's `updateInit`/`dropInit`; `snapshot` |
+| `replay` (event count) | option | `SseChannelOptions` | `history`, `bufferSize` |
+| `subscribe(req, res, opts?)`, `handler(opts?)`, `response(request, init?)` | methods | `SseChannel` | `connect`, `route()`, `toResponse()` |
+| `attach(writer, opts?)`, `listen(fn, opts?)` | methods | `SseChannel` | `add`, `onMessage` |
+| `send(message, { topic })`, `sendList(items, opts)` | methods | `SseChannel` | `broadcast`, `publish`; express-sse's `serialize` |
+| `size`, `closed`, `close()` | members | `SseChannel` | `count` |
+| `SseSubscription` (`replay`: `"none"` / `"hit"` / `"current"` / `"miss"`, `replayed`, `ready`, `unsubscribe()`) | type | `bun-common/sse` | `resumed: boolean` |
+| `SseInitialContext` | type | `bun-common/sse` | — |
+| `topics` / `topic` | options | `subscribe`, `handler`, `send` | `rooms` |
+| `SseChannelTransport`, `SseTransportEnvelope` | types | `bun-common/sse` | `SseBridge` |
+| `idPrefix` | option | `SseChannelOptions` | `idEpoch` |
+| `channelObservable(channel, opts?)` | function | bun-nest | `fromSseChannel` |
+
 **Risks:**
 
 | Risk | Mitigation |
@@ -1432,6 +1474,227 @@ run from the repository root after `bun install` (and `bun install` in
 | `h2.ts` | SSE over HTTP/2 (needs `openssl`, `curl`) | `h2.txt` |
 | `cors.ts` | `cors()` headers on a stream | `cors.txt` |
 | `lib.ts` | the timestamped event reader the probes share | — |
+| `channel-prototype.ts`, `channel-writer.ts` | the broadcast channel (§16.14) over the prototype writer; the writer variant with shared promises | — |
+| `channel-prototype.test.ts`, `channel-controls.ts` | 15 tests, and 12 planted bugs (`CHANNEL_MUTATE`) each shown to fail its tagged tests | `channel-test.txt` |
+| `channel-perf.ts` | fan-out: 1,000 and 100 readers, with and without one stalled subscriber; `send()` cost; registry memory (heavy: run through the wrapper) | `channel-perf.txt`, `channel-perf.json` |
+| `channel-nest.ts` | `@Sse()` with `channelObservable`, and `@SseSignal()`, on Nest 11.1.27, 11.2.7 and 12.1.3, bun-nest and Express adapters | `channel-nest.txt` |
+| `channel-README.md` | how to run each, express-sse 1.0.0 read, and the design conclusions | — |
+
+### 16.14 Broadcast channels: express-sse's conveniences (added 2026-10-17)
+
+The user asked on 2026-10-17 to "add the new convenience of express-sse to the
+plan intend for sse", and that "nest js @Sse helper works perfectly with the
+SseSignal from nest common". §16.3's writer serves one client; it leaves the
+subscriber list, initial state and replay to the application. This section
+adds them as a **channel** on top of the writer, keeping every guarantee §16
+already makes. **Plan only.** Spiked in [`evidence/sse/`](evidence/sse/)
+(`channel-*.ts`, `channel-README.md` for the full design and the run commands)
+on develop `56d6afde`, Bun 1.4.4-canary.
+
+#### 16.14.1 The API
+
+```ts
+import { createSseChannel } from "@kingsleyweb/bun-common/sse"; // also from the root
+
+const prices = createSseChannel({
+  initial: async (ctx) => [{ event: "snapshot", data: await book.snapshot() }], // or SseMessage[]
+  replay: 100,                                   // the last 100 events, for Last-Event-ID; default 0 (off)
+  heartbeatMs: 15_000,                           // one timer for the channel; 0 disables
+  writer: { maxQueuedBytes: 8 * 1024 * 1024 },   // per subscriber (SseWriterOptions)
+  transport,                                     // optional, cross-process; default process-local
+});
+
+app.get("/prices", prices.handler());                                         // express-sse's `sse.init`
+app.get("/rooms/:id", prices.handler({ topics: (req) => [`room:${req.params.id}`] }));
+app.get("/custom", (req, res) => { prices.subscribe(req, res, { topics: ["a"] }); });
+Bun.serve({ routes: { "/raw": (req, server) => prices.response(req, { server }) } });
+
+prices.send({ event: "tick", data: { p: 101.5 } });   // returns the number of subscribers reached
+prices.send({ data: "hi" }, { topic: "room:7" });
+prices.sendList(rows, { event: "row" });              // one event per item: express-sse's `serialize`
+prices.setInitial([/* … */]); prices.clearInitial();  // express-sse's `updateInit` / `dropInit`
+prices.size; prices.closed; prices.close();
+```
+
+| express-sse 1.0.0 | Here |
+|---|---|
+| `new SSE(initial, { initialEvent })` | `createSseChannel({ initial })` (messages, or a function, possibly async) |
+| `sse.init` (a route handler) | `channel.handler(opts?)`, or `channel.subscribe(req, res, opts?)`, or `channel.response(request)` on a native route |
+| `sse.send(data, event?, id?)` | `channel.send({ event, id, data }, { topic? })` (one `SseMessage`, as the writer takes) |
+| `sse.serialize(list)` | `channel.sendList(items, { event?, topic? })` |
+| `sse.updateInit(data)` / `sse.dropInit()` | `channel.setInitial(…)` / `channel.clearInitial()` |
+| — | `replay` + `Last-Event-ID`, `topics`, `size`, `close()`, a transport |
+
+The full signatures (`SseChannel`, `SseChannelOptions`, `SseSubscription`,
+`SseInitialContext`, `attach`, `listen`) are in `channel-README.md`, "The
+API". Four choices the spike made on measurement or by test [M, T]:
+
+- **`send()` never awaits.** It encodes **once** and hands the same bytes to
+  every writer (one encoder call, one shared object across 50 subscribers;
+  control `encode-per-sink`). A hub that awaited each writer stalled everyone
+  behind one stalled client (control `await-each`).
+- **One heartbeat timer per channel**, not one per subscriber: the writers open
+  with `heartbeatMs: 0` and the channel writes one pre-encoded `:` to all.
+- **An async `initial` holds live events** for that subscriber until the
+  snapshot is queued, so a new client always sees the snapshot first (control
+  `initial-unheld`). A rejected `initial()` goes to `onError`, and the held
+  events still go out.
+- **A closed channel answers `204`**, which tells `EventSource` to stop
+  reconnecting (WHATWG HTML §9.2).
+
+The writer the channel uses should return **shared promises** from `send()`
+(one resolved constant under the high-water mark, one drain promise per
+backed-up period). It is a §16.3 change with no API effect, measured below
+(SC2).
+
+#### 16.14.2 Initial state and replay
+
+On subscribe, with a `Last-Event-ID` [T]:
+
+1. **Found, with later events (`"hit"`)**: send the later events (filtered by
+   the subscriber's topics), and **not** the initial state.
+2. **Found, and the newest (`"current"`)**: send nothing.
+3. **Not found (`"miss"`)**: older than the buffer, from another process
+   instance, from Nest's own numbering, or garbage. Treat the client as new:
+   send the initial state, and tell `initial` it is a miss (`ctx.replay ===
+   "miss"`, `ctx.lastEventId`), so the app can prepend a `reset` event or a
+   fuller snapshot. **Never part of the buffer**, which would hide a gap
+   (control `miss-sends-buffer`).
+
+Ids match by exact string, never by numeric order. Assigned ids (only when
+`replay` is on) carry a per-instance prefix, so a restarted process cannot
+match an old id to a new event (control `plain-ids`). express-sse numbers ids
+per connection, so its `Last-Event-ID` means nothing; and it re-sends the
+initial state to every connected client whenever anyone connects, which the
+channel does not.
+
+#### 16.14.3 Topics
+
+A `Map<topic, Set<subscriber>>` index, not a per-subscriber predicate: a
+topic send costs in proportion to its recipients (3.4 µs to reach 100 of
+1,000 subscribers), where a predicate scan costs as much as a broadcast
+(20.8 µs) whatever it reaches, for ~130 bytes per membership [M]. A send
+without a topic reaches everyone; with one, only that topic's subscribers; a
+subscriber with no topics gets broadcasts only (SC5). One topic per event;
+subscribers may hold several.
+
+#### 16.14.4 Both adapters, and NestJS's `@Sse()` with `@SseSignal()`
+
+- **bun-common**: `handler()` / `subscribe()` open `res.sse()` (§16.3);
+  `response()` serves a native route or `Bun.serve`; served and
+  `router.fetch()` behave the same (control `unsubscribe-on-signal`).
+- **bun-nest, imperative**: `@Res() res` + `channel.subscribe(req, res)` keeps
+  encode-once, served and through `adapter.fetch()` [M].
+- **bun-nest, `@Sse()`**: `channelObservable(channel, { lastEventId, topics,
+  signal })` (in bun-nest, since rxjs is Nest's dependency) returns an
+  `Observable<MessageEvent>` fed by `channel.listen()`.
+  ```ts
+  @Sse("prices")
+  prices(@Headers("last-event-id") lastEventId?: string, @SseSignal() signal?: AbortSignal) {
+    return channelObservable(prices, { lastEventId, signal });
+  }
+  ```
+  Measured on Nest 11.1.27, 11.2.7 and 12.1.3, on bun-nest's `BunHttpAdapter`
+  and on `ExpressAdapter`, identical results [M `channel-nest.txt`]: the
+  initial state then live events; replay after `Last-Event-ID` with no
+  initial state; on disconnect, teardown in 1–15 ms and `size` back to 0 (on
+  11.2.7 and 12.1.3 the `@SseSignal()` abort fires first, then Nest
+  unsubscribes); `channel.close()` ends Nest's stream. The negative control
+  (both unsubscribe paths removed) leaves `size` at 1.
+- **What Nest needs from the adapter for this**: its core listens for
+  `'close'` on `request.socket ?? response` and reads `socket.destroyed`.
+  bun-nest's socket shim satisfies both: `once` is a function, `destroyed` is
+  `false` before and `true` at close, and `'close'` fires [M]. PR-sse2 must keep
+  the Nest agent's permanent `@SseSignal()` tests (Nest 11.2.7 and 12) green,
+  as nestjs-12-parity §6.4 already requires.
+- **Three limits, documented rather than worked around**:
+  - `@SseSignal()` exists from Nest **11.2.7**, not in 11.1.27 (the repo's
+    floor); `channelObservable` takes it when given, and Nest's own
+    unsubscribe suffices without it.
+  - **Encode-once is lost on Nest's path**: Nest formats per subscriber,
+    2.3–8.8 µs per event per subscriber against 25–161 ns on the byte path
+    (55–152×, load-sensitive) [M]. Heavy broadcasters use `@Res()` +
+    `subscribe()`.
+  - Nest numbers events that carry no id, so an initial-state event arrives as
+    `id: 1`; a reconnect with that id is a miss and gets the initial state
+    again, which is correct. The channel's heartbeat does not reach Nest
+    subscribers; on Nest ≥ 11.2 `channelObservable` emits `{ comment: "" }`
+    (SC8), and on 11.1.x PR-sse1's idle exemption carries the connection.
+
+#### 16.14.5 Across processes
+
+**Process-local by design**, with a small pluggable transport:
+
+```ts
+interface SseTransportEnvelope { origin: string; message: SseMessage /* id assigned */; topic?: string }
+interface SseChannelTransport {
+  publish(envelope: SseTransportEnvelope): void | Promise<void>;
+  subscribe(listener: (envelope: SseTransportEnvelope) => void): () => void;
+}
+```
+
+Why: a broadcast's delivery to its own subscribers must never wait on a
+network hop, and the right bus (Redis pub/sub, Postgres `LISTEN`, NATS,
+bun-jobs' drivers) is the deployment's choice. With a transport, the channel
+delivers each local send at once, publishes it, ignores its own echo
+(`origin`), and delivers and buffers each remote one; ids are assigned by the
+sender, so replay works on any process that saw the event (test: two channels
+on the in-memory bus; control `no-origin-check`). Ordering is each receiver's
+arrival order, which the transport defines. The envelope is JSON-serialisable
+(the in-memory bus round-trips it through JSON). No adapter ships in v1
+(SC7); the in-memory bus is a test helper. bun-common cannot import bun-jobs
+(the dependency runs the other way), so a driver-backed transport would live
+in bun-jobs.
+
+#### 16.14.6 The §16 guarantees, through the channel
+
+| Guarantee | Through the channel [M, T] |
+|---|---|
+| Backpressure | **Becomes the bound.** A broadcast cannot wait for its slowest reader without stalling the others, so the channel never awaits; the awaitable `send()` stays for one-writer code |
+| Bounded queue (`maxQueuedBytes`) | **Holds**: the stalled client was dropped at 10.5–10.7 MiB offered (the 8 MiB bound plus ~2.5 MiB in socket buffers) in 12 of 12 cells, and unregistered; the channel's `size` was then the reader count |
+| A slow client does not stall the others | **Holds**: with one stalled client, the readers got 0.85–1.22× the same round's events/s without it (the stock writer) |
+| Heartbeat | **Holds**, with one timer per channel. Not for Nest's `listen()` subscribers (above) |
+| `idleTimeout` exemption | **Holds**: `subscribe()` opens `res.sse()`, `response()` passes `server`. Nest relies on PR-sse1 fix 2 |
+| Stop on disconnect | **Holds**, served and `fetch()`, through the writer's `onClose`. **Not** through `req.signal`: the socket-free `fetch()`'s request signal never aborts when the response body is cancelled, so Node's and express-sse's `req.on("close")` idiom would leak a `fetch()` subscriber. That is a bun-common `fetch()` parity gap, recorded for a fix of its own |
+| Encode once | **Holds** on the byte path; lost on Nest's `@Sse()` path by Nest's design |
+
+#### 16.14.7 Cost
+
+Bun 1.4.4-canary, 16 cores, medians of 3, 58-byte events. **The machine was
+loaded during the run (1-minute load 5.7 → 46, other sessions' jobs)**, and
+absolute events/s varied up to 10× between rounds of one cell, so only
+same-round ratios and the memory figures are claims (SC11) [M
+`channel-perf.txt`]:
+
+- **Memory at a stalled client's drop**: +119.4 MiB RSS with the stock writer
+  against +32.7 MiB with shared promises (100 readers); +138.6 against +86.1
+  MiB (1,000 readers, 4 KiB events). The difference is the stock writer's
+  promise per `send()` (plus a waiter closure past the high-water mark): on one
+  unread writer, 145,762 sends cost 13.8 MiB of heap and 1,112 ns each, against
+  ~0 and 514 ns with shared promises (SC2).
+- **`send()`**: 22.7 µs to 1,000 subscribers (~23 ns each), 2.8 µs to 100;
+  a topic of 100 within 1,000: 3.4 µs indexed, 20.8 µs scanned.
+- **Idle**: ~10.5 KiB per subscriber over a fresh adapter (the writer and
+  stream wrappers); the registry itself 397 B per subscriber, 786 B with three
+  topics.
+
+#### 16.14.8 Tests (PR-sse2b, PR-sse3's delta)
+
+From `channel-prototype.test.ts` [T]: **15 tests, passing in file order and
+under `--randomize` (seeds 1, 2), each with a planted bug that
+`channel-controls.ts` shows failing it (12 of 12)**: disconnect unregisters
+(waiting on `onClose`); initial state first, async and raced; replay inside
+the buffer; the miss rule; restart-safe ids; `sendList` order; topics, index
+and scan; `close()` ends everyone, then 204; encode once; a non-reader does
+not stall the others; the drop at `maxQueuedBytes`; served versus
+`router.fetch()`; the transport, once each, replay across processes; the
+shared heartbeat. PR-sse3's delta adds `channelObservable` on the Nest matrix
+(11.1.27, 11.2.7, 12.1.3) × both adapters, with `@SseSignal()` where it
+exists. PR-sse2b's benchmark guard adds a stalled-subscriber cell, measured on
+a quiet machine. A channel can also take an SSE **contract** (bun-validate
+§4.7): `send()` then runs the sender guard before encoding, so a bad event is
+refused to the caller, never broadcast; that lands with bun-validate's V11.
+
 
 ## 17. Implementation and results
 

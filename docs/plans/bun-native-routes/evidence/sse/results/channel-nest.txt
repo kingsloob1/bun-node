@@ -1,0 +1,82 @@
+# bun channel-nest.ts, from scratch dirs nest-<v>/ (copies of channel-nest.ts, channel-prototype.ts, prototype-sse.ts, lib.ts;
+# decorator tsconfig; node_modules -> the worktree's (11.1.27) or ~/bun-node-nest-matrix/<v>/node_modules). 2026-10-17.
+# Matrix copies: bun-nest/lib identical to develop 56d6afde; bun-common/lib differs only in multipart and router-query files (#401, #402).
+# One channel serves every pass in a run, so ids continue (e4 is the Express pass's live-1). C8 is load-sensitive: across 4 runs Nest 2.3-8.8 us, bytes 25-161 ns.
+Nest 11.1.27; @SseSignal NOT exported; bun 5f5799ed16568240de19fef364bd4c9bf22ca1c7
+11.1.27 bun     C1 new client: initial, then live          ["event: init\nid: 1\ndata: snapshot" "id: e1\ndata: live-1"] end=max 2@5ms
+11.1.27 bun     C1 subscribers while open                  1
+11.1.27 bun     C2 client disconnect                       unsubscribed by Nest @10ms; size 0; SseSignal aborts 0; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.1.27 bun     C5 two open: channel.size, GET /size       2 {"size":2}
+11.1.27 bun     C3 Last-Event-ID e1 (live-1, in buffer): replay ["id: e2\ndata: live-2" "id: e3\ndata: live-3"] end=max 2@0ms
+11.1.27 bun     C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+11.1.27 bun     C6 after both cancelled and app.close()    size 0
+11.1.27 express C1 new client: initial, then live          ["event: init\nid: 1\ndata: snapshot" "id: e4\ndata: live-1"] end=max 2@0ms
+11.1.27 express C1 subscribers while open                  1
+11.1.27 express C2 client disconnect                       unsubscribed by Nest @5ms; size 0; SseSignal aborts 0; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.1.27 express C5 two open: channel.size, GET /size       2 {"size":2}
+11.1.27 express C3 Last-Event-ID e4 (live-1, in buffer): replay ["id: e5\ndata: live-2" "id: e6\ndata: live-3"] end=max 2@0ms
+11.1.27 express C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+11.1.27 express C6 after both cancelled and app.close()    size 0
+11.1.27 bun     C9 @Res() channel.subscribe, served        [": ok" "event: init\ndata: snapshot" "id: e7\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+11.1.27 bun     C9 @Res() channel.subscribe, adapter.fetch() [": ok" "event: init\ndata: snapshot" "id: e8\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+11.1.27 bun     C7 channel.close() with a Nest subscriber  end=done size 0
+11.1.27 C8 per event per subscriber, K=100                 Nest pipeline 8769 ns, channel bytes 117 ns (75x)
+11.1.27 C8 per event per subscriber, K=1000                Nest pipeline 6942 ns, channel bytes 32 ns (215x)
+exit 0
+Nest 11.2.7; @SseSignal exported; bun 5f5799ed16568240de19fef364bd4c9bf22ca1c7
+11.2.7 bun     C1 new client: initial, then live           ["event: init\nid: 1\ndata: snapshot" "id: e1\ndata: live-1"] end=max 2@1ms
+11.2.7 bun     C1 subscribers while open                   1
+11.2.7 bun     C2 client disconnect                        SseSignal abort @5ms; size 0; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.2.7 bun     C5 two open: channel.size, GET /size        2 {"size":2}
+11.2.7 bun     C3 Last-Event-ID e1 (live-1, in buffer): replay ["id: e2\ndata: live-2" "id: e3\ndata: live-3"] end=max 2@0ms
+11.2.7 bun     C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+11.2.7 bun     C6 after both cancelled and app.close()     size 0
+11.2.7 express C1 new client: initial, then live           ["event: init\nid: 1\ndata: snapshot" "id: e4\ndata: live-1"] end=max 2@0ms
+11.2.7 express C1 subscribers while open                   1
+11.2.7 express C2 client disconnect                        SseSignal abort @2ms; size 0; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.2.7 express C5 two open: channel.size, GET /size        2 {"size":2}
+11.2.7 express C3 Last-Event-ID e4 (live-1, in buffer): replay ["id: e5\ndata: live-2" "id: e6\ndata: live-3"] end=max 2@0ms
+11.2.7 express C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+11.2.7 express C6 after both cancelled and app.close()     size 0
+11.2.7 bun     C9 @Res() channel.subscribe, served         [": ok" "event: init\ndata: snapshot" "id: e7\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+11.2.7 bun     C9 @Res() channel.subscribe, adapter.fetch() [": ok" "event: init\ndata: snapshot" "id: e8\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+11.2.7 bun     C7 channel.close() with a Nest subscriber   end=done size 0
+11.2.7 C8 per event per subscriber, K=100                  Nest pipeline 2984 ns, channel bytes 37 ns (81x)
+11.2.7 C8 per event per subscriber, K=1000                 Nest pipeline 4031 ns, channel bytes 33 ns (122x)
+exit 0
+Nest 12.1.3; @SseSignal exported; bun 5f5799ed16568240de19fef364bd4c9bf22ca1c7
+12.1.3 bun     C1 new client: initial, then live           ["event: init\nid: 1\ndata: snapshot" "id: e1\ndata: live-1"] end=max 2@1ms
+12.1.3 bun     C1 subscribers while open                   1
+12.1.3 bun     C2 client disconnect                        SseSignal abort @5ms; size 0; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+12.1.3 bun     C5 two open: channel.size, GET /size        2 {"size":2}
+12.1.3 bun     C3 Last-Event-ID e1 (live-1, in buffer): replay ["id: e2\ndata: live-2" "id: e3\ndata: live-3"] end=max 2@0ms
+12.1.3 bun     C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+12.1.3 bun     C6 after both cancelled and app.close()     size 0
+12.1.3 express C1 new client: initial, then live           ["event: init\nid: 1\ndata: snapshot" "id: e4\ndata: live-1"] end=max 2@0ms
+12.1.3 express C1 subscribers while open                   1
+12.1.3 express C2 client disconnect                        SseSignal abort @2ms; size 0; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+12.1.3 express C5 two open: channel.size, GET /size        2 {"size":2}
+12.1.3 express C3 Last-Event-ID e4 (live-1, in buffer): replay ["id: e5\ndata: live-2" "id: e6\ndata: live-3"] end=max 2@0ms
+12.1.3 express C4 Last-Event-ID "1" (Nest's own auto id): miss ["event: init\nid: 1\ndata: snapshot"] end=max 1@0ms
+12.1.3 express C6 after both cancelled and app.close()     size 0
+12.1.3 bun     C9 @Res() channel.subscribe, served         [": ok" "event: init\ndata: snapshot" "id: e7\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+12.1.3 bun     C9 @Res() channel.subscribe, adapter.fetch() [": ok" "event: init\ndata: snapshot" "id: e8\ndata: bytes-1"] end=max 3@0ms size open 1, after cancel 0 (writer closed)
+12.1.3 bun     C7 channel.close() with a Nest subscriber   end=done size 0
+12.1.3 C8 per event per subscriber, K=100                  Nest pipeline 3192 ns, channel bytes 41 ns (77x)
+12.1.3 C8 per event per subscriber, K=1000                 Nest pipeline 3070 ns, channel bytes 25 ns (121x)
+exit 0
+
+# Negative control: CHANNEL_NEST_CONTROL=leak bun channel-nest.ts (both unsubscribe paths removed): C2 must report size >= 1.
+# (sizes accumulate across passes because nothing unsubscribes)
+Nest 11.1.27; @SseSignal NOT exported; bun 5f5799ed16568240de19fef364bd4c9bf22ca1c7; CONTROL: both unsubscribe paths removed
+11.1.27 bun     C2 client disconnect                       unsubscribed by Nest @15ms; size 1; SseSignal aborts 0; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.1.27 express C2 client disconnect                       unsubscribed by Nest @3ms; size 4; SseSignal aborts 0; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+11.1.27 bun     C7 channel.close() with a Nest subscriber  end=done size 0
+11.1.27 C8 per event per subscriber, K=100                 Nest pipeline 8181 ns, channel bytes 96 ns (85x)
+11.1.27 C8 per event per subscriber, K=1000                Nest pipeline 9074 ns, channel bytes 74 ns (123x)
+Nest 12.1.3; @SseSignal exported; bun 5f5799ed16568240de19fef364bd4c9bf22ca1c7; CONTROL: both unsubscribe paths removed
+12.1.3 bun     C2 client disconnect                        SseSignal abort @11ms; size 1; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+12.1.3 express C2 client disconnect                        SseSignal abort @3ms; size 4; SseSignal aborts 1; socket once:function destroyed-before:false close-fired destroyed-at-close:true
+12.1.3 bun     C7 channel.close() with a Nest subscriber   end=done size 0
+12.1.3 C8 per event per subscriber, K=100                  Nest pipeline 8084 ns, channel bytes 119 ns (68x)
+12.1.3 C8 per event per subscriber, K=1000                 Nest pipeline 8275 ns, channel bytes 97 ns (85x)

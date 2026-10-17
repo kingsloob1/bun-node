@@ -92,8 +92,10 @@ file, check every link into and out of it, `#anchors` included.
     packages' own suites against them; minimal Bun reproductions; and, in
     `sse/`, server-sent events through both adapters (NestJS `@Sse()`,
     `idleTimeout`, errors after headers, backpressure, a fan-out benchmark)
-    with a prototype of the proposed helpers. Indexed in the plan's §15 and
-    §16.13.
+    with a prototype of the proposed helpers, and (2026-10-17) a prototype of
+    the broadcast channel, `createSseChannel()` (express-sse's conveniences,
+    replay, topics, NestJS `@Sse()`/`@SseSignal()`), §16.14. Indexed in the
+    plan's §15 and §16.13.
     [`elysia2-performance/`](bun-native-routes/evidence/elysia2-performance/README.md),
     Elysia 2 (2.0.0-beta.21) read end to end and measured **in process**
     beside bun-common and bun-nest at `ae1a7cc` (a pinned snapshot, via
