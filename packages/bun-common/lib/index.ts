@@ -443,6 +443,7 @@ export {
   type BunServeUnixNormalOptions,
   type Constructor,
   type DefaultRequestBody,
+  type FileTypeResult,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
   type MultiPartOptions,

@@ -1,6 +1,5 @@
 import type { Server as BunServerType, Serve as BunServeType } from "bun";
 import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
-import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { Stats } from "node:fs";
 import type { IncomingMessage } from "node:http";
@@ -26,6 +25,21 @@ import type {
   ContentEncodingAllowlist,
   JsonValue,
 } from "../utils/native";
+
+/**
+ * What `file-type` detected from a file's leading bytes, as
+ * `validatedMimeType` carries it. The same shape as `file-type`'s own
+ * `FileTypeResult`, declared here so the shipped declarations never import
+ * `file-type`: its declarations load `strtok3`'s, and strtok3 10.6.0's name
+ * DOM-only globals, which fail a consumer's check with `skipLibCheck` off and
+ * no `dom` lib.
+ */
+export interface FileTypeResult {
+  /** The detected extension, without a dot (`"png"`). */
+  readonly ext: string;
+  /** The detected MIME type (`"image/png"`). */
+  readonly mime: string;
+}
 
 export type MultiPartOptions = BusboyConfig & {
   /**
@@ -561,6 +575,10 @@ export type BodyParserType = "json" | "urlencoded" | "text" | "raw";
 export type MultiPartFileRecord = FileInfo & {
   fieldname: string;
   validatedMimeType: FileTypeResult | undefined;
+  /**
+   * The file name the client sent, or `""` when it sent none. `filename`
+   * (from busboy's `FileInfo`) is `undefined` then.
+   */
   originalFilename: string;
   file: Buffer;
   type: "file";

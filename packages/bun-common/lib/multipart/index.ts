@@ -1,8 +1,11 @@
 import type { BusboyConfig, FileInfo } from "busboy";
-import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { BunRequest } from "../BunRequest";
-import type { MultiPartFileRecord, MultiPartOptions } from "../types/general";
+import type {
+  FileTypeResult,
+  MultiPartFileRecord,
+  MultiPartOptions,
+} from "../types/general";
 import type { DiskStorageOptions, MemoryStorageOptions } from "./storage";
 import { isString, omit } from "../utils/native";
 import { UploadError } from "./errors";
@@ -20,6 +23,10 @@ export interface StorageFile {
   mimetype: string;
   encoding: string;
   fieldname: string;
+  /**
+   * The file name the client sent, or `""` when it sent none (a part that is
+   * a file only because its type is `application/octet-stream`).
+   */
   originalFilename: string;
   validatedMimeType: FileTypeResult | undefined;
 }
