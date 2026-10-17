@@ -28,8 +28,9 @@ import type {
   ViewEngine,
 } from "@kingsleyweb/bun-common";
 import type { NestApplicationOptions } from "@nestjs/common";
-// `@nestjs/*` has no `exports` map, so a deep path is resolved as a file: it
-// needs its extension for a `node16` consumer, who reads this specifier
+// A deep path names a file, with its `.js` extension: Nest 11's `@nestjs/*`
+// have no `exports` map (the path is resolved as a file), Nest 12's serve it
+// through their `./*.js` entry, and a `node16` consumer reads this specifier
 // verbatim in the shipped declaration.
 import type {
   CorsOptions,
@@ -53,6 +54,7 @@ import {
   createServeStaticHandler,
   defineHidden,
   each,
+  encodeUrl,
   FETCH_STUB_SERVER,
   finalErrorResponse,
   get,
@@ -67,6 +69,7 @@ import {
   normalizeEtagOption,
   omit,
   RequestPipelineOptions,
+  RouteClass,
   set,
   toFetchResponse,
   toNativeRequest,
@@ -74,6 +77,7 @@ import {
   waitUntil,
 } from "@kingsleyweb/bun-common";
 import {
+  BadRequestException,
   InternalServerErrorException,
   Logger,
   RequestMethod,
@@ -129,6 +133,171 @@ type ApplyVersionFilterParameters = Parameters<
 >;
 
 /**
+ * Whether the installed `@nestjs/core` scopes the not-found handler to the
+ * global prefix, as `@nestjs/platform-express` does from Nest 12 (nestjs/nest
+ * #16372). Read from a capability, never a version string:
+ * `AbstractHttpAdapter.prototype.mapException`, which 12.0.0 added with that
+ * scoping (#15075). `excludedRoutes` cannot be the signal: the core passes it
+ * only from 12.1.3.
+ */
+function coreScopesNotFoundToPrefix(): boolean {
+  return (
+    typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+      .mapException === "function"
+  );
+}
+
+/**
+ * `RequestMethod.QUERY` when the installed `@nestjs/common` has it (11.2.0
+ * and 12), else `undefined`: read from the enum object, never from a version
+ * string, and never named in a type, which Nest 11.1's declarations lack.
+ */
+function queryRequestMethod(): RequestMethod | undefined {
+  return (RequestMethod as unknown as Record<string, RequestMethod | undefined>)
+    .QUERY;
+}
+
+/** One not-found handler Nest registered, with the prefix it is scoped to. */
+interface NotFoundEntry {
+  /** Nest's not-found proxy: throws `NotFoundException` into its filters. */
+  handler: RouterMiddlewareHandler;
+  /**
+   * The normalised global prefix (`/api`, `/:tenant`) it answers under, or
+   * `undefined` when it answers outside every prefix: an application without
+   * one, or any application on Nest 11, where the handler is global.
+   * Compared as written by the skip for other applications' prefixes.
+   */
+  prefix: string | undefined;
+  /**
+   * {@link prefix} compiled once, as a `use()` mount matches it: a prefix
+   * match on whole segments, case-insensitive, its parameters matching any
+   * segment (see {@link prefixMatcher}). `undefined` with no prefix.
+   */
+  matcher: RegExp | undefined;
+}
+
+/**
+ * A global prefix as `@nestjs/platform-express` 12 normalises it
+ * (`stripEndSlash(addLeadingSlash(prefix))`): a leading slash added unless it
+ * starts with `/` or `{/`, and one trailing slash removed (`api/` → `/api`).
+ * Empty, `/`, or anything but a string is no prefix (`undefined`): Nest hands
+ * an array from `setGlobalPrefix(["api", "v1"])` over as it is (the array
+ * form is in v12.1.0's release notes but was reverted before any release),
+ * and Express's `addLeadingSlash` reads a non-string as `""`.
+ */
+function normalizePrefix(prefix: unknown): string | undefined {
+  if (!prefix || typeof prefix !== "string") {
+    return undefined;
+  }
+  const withSlash =
+    prefix.startsWith("/") || prefix.startsWith("{/") ? prefix : `/${prefix}`;
+  return (
+    (withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash) || undefined
+  );
+}
+
+/**
+ * A normalised prefix compiled as Express's `use(prefix, router)` matches
+ * it: at the prefix or below it, on whole segments (`/apiary` is not under
+ * `/api`), case-insensitively, a `:param` matching any one segment
+ * (`/:tenant` covers `/t1/x`). Compiled by the same routejs `Route` that
+ * bun-common's router compiles a `use()` group with; the prefix regex it
+ * builds carries no flags, so `i` is added here.
+ */
+function prefixMatcher(prefix: string): RegExp {
+  const route = new RouteClass({ group: prefix, callbacks: [] }) as unknown as {
+    pathRegexp: RegExp;
+  };
+  return new RegExp(route.pathRegexp.source, "i");
+}
+
+/**
+ * Whether `pathname` is `prefix` or below it, comparing the prefix as
+ * written, on whole segments: `@nestjs/platform-express` 12's skip, in an
+ * unprefixed application's handler, for paths under another application's
+ * prefix.
+ */
+function isUnderLiteralPrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+/** The five characters `escape-html` replaces, and their entities. */
+const HTML_ESCAPES: Record<string, string> = {
+  '"': "&quot;",
+  "&": "&amp;",
+  "'": "&#39;",
+  "<": "&lt;",
+  ">": "&gt;",
+};
+
+/** `escape-html`'s escaping, which `finalhandler` applies to its page. */
+function escapeHtml(text: string): string {
+  return text.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char]!);
+}
+
+/** bun-common's 404 page split around its message, read once (see below). */
+let notFoundPage: Promise<[before: string, after: string]> | undefined;
+
+/** The headers `finalhandler` removes from a response before its page. */
+const FINALHANDLER_REMOVED_HEADERS = [
+  "content-encoding",
+  "content-language",
+  "content-range",
+];
+
+/**
+ * The page Express's `finalhandler` sends when nothing answered a request
+ * (no error at all): `404` with `<pre>Cannot GET /path</pre>`, the path being
+ * the request's, without its query, URL-encoded and HTML-escaped.
+ *
+ * Built from bun-common's {@link finalErrorResponse} 404 — its status, its
+ * headers (`Content-Type`, `Content-Security-Policy`, `nosniff`) and its
+ * HTML, with the status message replaced by finalhandler's text — so the
+ * template is defined in one place. As finalhandler, it keeps the headers
+ * middleware already set on the response (CORS, security headers, cookies),
+ * less `Content-Encoding`, `Content-Language` and `Content-Range`, and sets
+ * its own over them.
+ */
+async function cannotRouteResponse(
+  method: string,
+  pathname: string,
+  responseHeaders: Record<string, string | string[] | number | undefined>,
+): Promise<Response> {
+  const base = finalErrorResponse({ status: 404 }, { method: "GET" });
+  notFoundPage ??= base
+    .clone()
+    .text()
+    .then((html) => {
+      const [before = "", after = ""] = html.split(
+        `<pre>${base.statusText}</pre>`,
+      );
+      return [before, after];
+    });
+  const [before, after] = await notFoundPage;
+  const message = escapeHtml(`Cannot ${method} ${encodeUrl(pathname)}`);
+  // A HEAD request too: the transport drops the body (Bun on the wire,
+  // `toFetchResponse` for `fetch()`) and keeps its length, as finalhandler
+  // sends `Content-Length` without the body.
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(responseHeaders)) {
+    if (value === undefined || FINALHANDLER_REMOVED_HEADERS.includes(name)) {
+      continue;
+    }
+    for (const one of Array.isArray(value) ? value : [value]) {
+      headers.append(name, String(one));
+    }
+  }
+  base.headers.forEach((value, name) => {
+    headers.set(name, value);
+  });
+  return new Response(`${before}<pre>${message}</pre>${after}`, {
+    status: base.status,
+    statusText: base.statusText,
+    headers,
+  });
+}
+
+/**
  * `error` with the request riding on it, for `handleRequestError`, which
  * needs it to run the error handlers; a thrown primitive is wrapped to carry
  * it. A pipeline parked past the request timeout is passed on as is: it is
@@ -180,8 +349,15 @@ export class BunHttpAdapter<
       >
     | undefined = undefined;
 
-  private _notFoundHandlers: RouterMiddlewareHandler[] = [];
+  /** Nest's not-found handlers, each with its prefix; see {@link setNotFoundHandler}. */
+  private _notFoundHandlers: NotFoundEntry[] = [];
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
+  /**
+   * Whether not-found handlers are scoped to their global prefix, as
+   * `@nestjs/platform-express` 12 scopes them: read once, here, from the
+   * installed `@nestjs/core` (see {@link setNotFoundHandler}).
+   */
+  readonly #scopeNotFoundToPrefix = coreScopesNotFoundToPrefix();
   /**
    * Body parsers already registered, keyed by path prefix and parser kind
    * (`"*"` for the untyped `registerParserMiddleware`), so each kind is added
@@ -521,17 +697,50 @@ export class BunHttpAdapter<
           statusText: "Not Found",
         });
       }
-      return this.#runNotFoundHandlers(req, res).then(() =>
+      const pathname = req.originalUrl.split(/[?#]/)[0] ?? req.path;
+      const handlers = this.#notFoundHandlersFor(pathname);
+      if (!handlers.length) {
+        // Outside every application's prefix (Nest 12): no Nest handler
+        // answers, so Express's finalhandler does, with its HTML page.
+        return cannotRouteResponse(req.method, pathname, res.getHeaders());
+      }
+      return this.#runNotFoundHandlers(req, res, handlers).then(() =>
         this.#produceResponse(res, nativeRequest, server),
       );
     }
     return this.#produceResponse(res, nativeRequest, server);
   }
 
+  /**
+   * The not-found handlers that answer a miss at `pathname`, in registration
+   * order, as `@nestjs/platform-express` 12 mounts them: one scoped to a
+   * prefix answers at or under it, matched as Express's `use(prefix)`
+   * matches (case-insensitively, `:param` segments included); an unscoped
+   * one answers unless `pathname` is under some application's prefix as
+   * written (several applications on one adapter). On Nest 11 every handler
+   * is unscoped, so every one applies.
+   */
+  #notFoundHandlersFor(pathname: string): RouterMiddlewareHandler[] {
+    const entries = this._notFoundHandlers;
+    const underSomePrefix = entries.some(
+      (entry) =>
+        entry.prefix !== undefined &&
+        isUnderLiteralPrefix(pathname, entry.prefix),
+    );
+    return entries
+      .filter((entry) =>
+        entry.matcher === undefined
+          ? !underSomePrefix
+          : entry.matcher.test(pathname),
+      )
+      .map((entry) => entry.handler);
+  }
+
   /** Runs the not-found handlers, as when no route answered the request. */
   async #runNotFoundHandlers(
     req: BunRequest,
     res: BunResponse<customWebsocketDataType>,
+    handlers: RouterMiddlewareHandler[],
   ): Promise<void> {
     let continueProcessingHandlers = true;
     const next: NextFunction = (err) => {
@@ -540,7 +749,7 @@ export class BunHttpAdapter<
       }
     };
 
-    for await (const handler of this._notFoundHandlers) {
+    for await (const handler of handlers) {
       if (!continueProcessingHandlers) {
         break;
       }
@@ -1290,8 +1499,41 @@ export class BunHttpAdapter<
     response.setHeader(name, value);
   }
 
+  /**
+   * Maps an error raised outside a route's own exception zone (a body the
+   * adapter refused, a path parameter that cannot be decoded, a middleware's
+   * `next(err)`) before Nest's exception filters see it, as
+   * `@nestjs/platform-express` does: a `SyntaxError` (unparsable JSON) or a
+   * `URIError` (bad percent-encoding) becomes a `BadRequestException` with
+   * its message; anything else is returned as it is.
+   *
+   * Nest 12 calls it from the exception layer it registers through
+   * {@link setErrorHandler} (nestjs/nest #15075 moved the mapping out of the
+   * core into each adapter). Nest 11 never calls it: its core maps the same
+   * two errors itself. Declared without `override`, since Nest 11's
+   * `AbstractHttpAdapter` has no such member.
+   */
+  public mapException(error: unknown): unknown {
+    if (error instanceof SyntaxError || error instanceof URIError) {
+      return new BadRequestException(error.message);
+    }
+    return error;
+  }
+
+  /**
+   * `true`: routes match in registration order, as on Express. Nest 12's
+   * core reads it (`HttpServer.isRouteOrderSensitive`) to decide whether the
+   * `specificity` route-resolution strategy must sort routes before
+   * registering them; `false` would also tell it this router rejects
+   * duplicate routes itself, which it does not. Nest 11 never calls it.
+   */
+  public isRouteOrderSensitive(): boolean {
+    return true;
+  }
+
   // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these
-  // handlers are applied globally as a final fallback (see `listen`).
+  // handlers are applied globally as a final fallback (see `listen`), which
+  // is what Express 12's prefix mount plus its root mount amount to.
   public setErrorHandler(
     handler: RouterErrorMiddlewareHandler,
     _prefix?: string,
@@ -1299,11 +1541,52 @@ export class BunHttpAdapter<
     this._errorHandlers.push(handler);
   }
 
+  /**
+   * Registers Nest's not-found handler, which answers a request no route
+   * took (it throws `NotFoundException` into the exception filters).
+   *
+   * On Nest 11 it is global, whatever `prefix` says, as on
+   * `@nestjs/platform-express` 11. From Nest 12 it is scoped as
+   * platform-express 12 scopes it (nestjs/nest #16372, #17648, #17923): with
+   * a global `prefix`, it answers only at or under the prefix, and on each of
+   * `excludedRoutes`' paths for every method (so `POST /health` beside
+   * `GET /health` is Nest's 404); without one, it answers everywhere outside
+   * other applications' prefixes (several applications on one adapter). A
+   * request no handler covers gets `finalhandler`'s HTML
+   * `Cannot GET /path` 404, as on Express.
+   */
   public setNotFoundHandler(
     handler: RouterMiddlewareHandler,
-    _prefix?: string,
+    prefix?: string,
+    /**
+     * The routes excluded from `prefix`, at the paths they are served at
+     * (`/v1/health` under URI versioning). Nest passes them from 12.1.3;
+     * structurally Nest's `RouteInfo`.
+     */
+    excludedRoutes?: {
+      /** The path the excluded route is served at, without the prefix. */
+      path: string;
+      /** Its method; the handler is mounted there for every method regardless. */
+      method?: RequestMethod;
+    }[],
   ) {
-    this._notFoundHandlers.push(handler);
+    const scoped = this.#scopeNotFoundToPrefix
+      ? normalizePrefix(prefix)
+      : undefined;
+    this._notFoundHandlers.push({
+      handler,
+      prefix: scoped,
+      matcher: scoped === undefined ? undefined : prefixMatcher(scoped),
+    });
+    if (!scoped) {
+      return;
+    }
+    // As Express 12: mounted on each excluded path, for every method, after
+    // the application's routes, so it answers only a miss there.
+    for (const route of excludedRoutes ?? []) {
+      const path = route.path.startsWith("/") ? route.path : `/${route.path}`;
+      this.instance.all(path, handler);
+    }
   }
 
   /**
@@ -1600,7 +1883,8 @@ export class BunHttpAdapter<
       | "unlock"
       | "all"
       | "search"
-      | "options",
+      | "options"
+      | "query",
     path: string | RouterHandler | undefined,
     callbacks: RouterHandler[],
   ): this {
@@ -3093,6 +3377,103 @@ export class BunHttpAdapter<
     return this.registerVerb("search", p, c);
   }
 
+  // HTTP `QUERY` (RFC 10008): NestJS's `@QueryMethod()` (11.2.0, 12) calls
+  // it. No `override`: Nest 11.1's `AbstractHttpAdapter` has no `query`.
+  // Its body is parsed as any other method's.
+  /* --- BEGIN generated typed overloads: query --- */
+  // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  query<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    handler8: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+  ): this;
+  /* --- END generated typed overloads: query --- */
+  query(path: string, ...callbacks: RouterHandler[]): this;
+  query(...callbacks: RouterHandler[]): this;
+  query(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("query", p, c);
+  }
+
   /* --- BEGIN generated typed overloads: options --- */
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override options<TPath extends string, TShape = EmptyShape>(
@@ -3230,10 +3611,16 @@ export class BunHttpAdapter<
   /**
    * Sets an Express application setting (`app.set()` on a Nest app). The
    * view settings apply: `views`, `view engine`, `view cache` and
-   * `view options`. Any other is accepted and has no effect on this adapter,
-   * which logs a warning naming it once.
+   * `view options`. Turning `x-powered-by` off is accepted silently, since
+   * this adapter never sends that header (Nest 12's `useSecurityHeaders()`
+   * calls `disable("x-powered-by")`). Any other setting, or `x-powered-by`
+   * on, is accepted and has no effect on this adapter, which logs a warning
+   * naming it once.
    */
   public set(setting: string, value: unknown) {
+    if (setting === "x-powered-by" && !value) {
+      return this;
+    }
     // `BunViews.set` holds the view settings, shared with bun-common's
     // adapter so the two cannot drift.
     if (
@@ -3353,6 +3740,12 @@ export class BunHttpAdapter<
       return "all";
     }
 
+    // `RequestMethod.QUERY` exists from Nest 11.2.0, so it is read from the
+    // enum at run time (Nest 11.1's types, and its enum, lack it).
+    if (requestMethod === queryRequestMethod()) {
+      return "query";
+    }
+
     throw new InternalServerErrorException(
       `An invalid request method was encountered with value ${requestMethod}`,
     );
@@ -3367,14 +3760,44 @@ export class BunHttpAdapter<
       // so it keeps registration order and is excluded from route
       // specificity ordering. `RequestMethod.ALL` maps to method-agnostic.
       const method = this.getRequestMethodStr(requestMethod);
-      this.instance.useMethod(
-        method,
-        path,
-        // NestJS's `Function` is its `(req, res, next)` middleware.
-        callback as RouterHandler,
-      );
+      // NestJS's `Function` is its `(req, res, next)` middleware.
+      const middleware = callback as RouterHandler;
+      if (path.endsWith("$")) {
+        this.useExactMiddleware(method, path.slice(0, -1), middleware);
+        return this;
+      }
+      this.instance.useMethod(method, path, middleware);
       return this;
     };
+  }
+
+  /**
+   * Registers `middleware` for `path` exactly (not as a prefix), for one
+   * method or every one (`"all"`), still as middleware rather than a route
+   * handler, so a request it alone matches remains a miss.
+   *
+   * For the core's exact-match marker: for a wildcard `forRoutes('*')` under
+   * a global prefix it registers `/<prefix>$` beside `/<prefix>/{*path}`,
+   * the `$` meaning "exactly this path". As `@nestjs/platform-express` 12.1.3
+   * (nestjs/nest #17942), the `$` is stripped and a request ending in `/` is
+   * skipped, since the wildcard entry beside it already matches `/api/` and
+   * the middleware must not run twice.
+   */
+  private useExactMiddleware(
+    method: string,
+    path: string,
+    middleware: RouterHandler,
+  ): void {
+    const normalized = method.toUpperCase();
+    const handler: RouterHandler = (req, res, next) =>
+      req.path.endsWith("/") ? next() : middleware(req, res, next);
+    // `setRoute` with a `path` compiles an exact match; it is not an endpoint
+    // (`useMethod` and `use` register through it the same way, with `group`).
+    this.instance.setRoute({
+      method: normalized === "ALL" ? undefined : normalized,
+      path,
+      callbacks: [handler],
+    });
   }
 
   public applyVersionFilter(

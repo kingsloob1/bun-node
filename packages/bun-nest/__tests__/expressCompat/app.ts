@@ -52,6 +52,7 @@ import {
   Version,
   VERSION_NEUTRAL,
 } from "@nestjs/common";
+import * as nestCommon from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
@@ -592,6 +593,55 @@ export class SmallController {
 
 @Module({ controllers: [SmallController] })
 export class SmallModule {}
+
+/** `@QueryMethod(path?)`, when the installed Nest has it (11.2.0+). */
+const NestQueryMethod = (
+  nestCommon as unknown as {
+    QueryMethod?: (path?: string) => MethodDecorator;
+  }
+).QueryMethod;
+
+/** Whether this Nest has HTTP `QUERY` (`@QueryMethod`, 11.2.0+). */
+export const HAS_QUERY_METHOD = NestQueryMethod !== undefined;
+
+/** `@QueryMethod`, or a no-op where Nest lacks it (the group is then skipped). */
+const QueryMethod: (path?: string) => MethodDecorator =
+  NestQueryMethod ?? (() => () => undefined);
+
+/** HTTP `QUERY` routes: one with a body, and an `@All()` beside it. */
+@Controller("q")
+export class QueryController {
+  @QueryMethod()
+  query(@Body() body: unknown) {
+    return { body: body ?? null };
+  }
+
+  @nestCommon.All("any")
+  any(@Req() req: CompatRequest & { method?: string }) {
+    return { method: req.method };
+  }
+}
+
+@Module({ controllers: [QueryController] })
+export class QueryModule {}
+
+/** Marks a response it saw with `X-Mw: ran`. */
+export function markResponse(
+  _req: unknown,
+  res: { setHeader: (name: string, value: string) => void },
+  next: () => void,
+) {
+  res.setHeader("x-mw", "ran");
+  next();
+}
+
+/** {@link SmallModule} with a wildcard middleware, `forRoutes("*")`. */
+@Module({ controllers: [SmallController] })
+export class WildcardMiddlewareModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(markResponse).forRoutes("*");
+  }
+}
 
 @Controller("ver")
 export class VersionedController {

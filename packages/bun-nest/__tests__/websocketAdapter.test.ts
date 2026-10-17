@@ -9,7 +9,9 @@ import type {
 } from "../lib/BunWebSocketAdapter";
 import { Buffer } from "node:buffer";
 import { BunRouter, getPort } from "@kingsleyweb/bun-common";
-import { afterEach, describe, expect, it } from "bun:test";
+import { Logger } from "@nestjs/common";
+import { BaseWsExceptionFilter, WsException } from "@nestjs/websockets";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { from, isObservable, mergeAll, of } from "rxjs";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import {
@@ -359,6 +361,22 @@ describe("BunWebSocketAdapter: client binding", () => {
     });
     adapter.emit("disconnect", client, 1000 as never, "bye" as never);
     expect(disconnected).toBe(true);
+  });
+
+  it("passes the close code and reason, as platform-ws passes ws's `close` arguments", () => {
+    // Nest 12 reads the first argument as `handleDisconnect`'s `reason`, so it
+    // must not be the client (nestjs/nest ad5b731cd).
+    const adapter = new BunNestWebsocketAdapter({
+      httpAdapter: new BunHttpAdapter(10000),
+    });
+    const client = {} as never;
+    const calls: unknown[][] = [];
+    adapter.bindClientDisconnect(client, (...args) => {
+      calls.push(args);
+    });
+    adapter.emit("disconnect", client, 4001 as never, "leaving" as never);
+    adapter.emit("disconnect", client, 4002 as never, "again" as never);
+    expect(calls).toEqual([[4001, "leaving"]]);
   });
 });
 
@@ -1044,5 +1062,145 @@ describe("BunWebSocketAdapter: acks and isAckHandledManually", () => {
       { id: 15, data: ["count", null] },
     );
     expect(frames).toEqual([ackOf(15, ["own"])]);
+  });
+});
+
+describe("BunWebSocketAdapter: a packet that cannot be serialised", () => {
+  const newAdapter = () =>
+    new BunNestWebsocketAdapter({ httpAdapter: new BunHttpAdapter(10000) });
+
+  /** Lets the rxjs pipeline and any rethrown subscriber error run. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  /** A value `JSON.stringify` refuses: a cycle. */
+  function circular() {
+    const value: { self?: unknown } = {};
+    value.self = value;
+    return value;
+  }
+
+  it("is logged and dropped, as on platform-ws, for a WsResponse, an ack, an emit and an echoed ACK", async () => {
+    const errors = spyOn(Logger.prototype, "error").mockImplementation(
+      () => {},
+    );
+    try {
+      const adapter = newAdapter();
+      const { client, parsed } = makeFakeClient();
+      adapter.bindMessageHandlers(
+        client,
+        [
+          wsHandler("big", () => ({ event: "big", data: 10n })),
+          wsHandler("loop", (_data, ack) => ack(circular()), true),
+          wsHandler("ok", () => ({ event: "ok", data: 1 })),
+        ],
+        nestTransform as Parameters<
+          BunNestWebsocketAdapter["bindMessageHandlers"]
+        >[2],
+      );
+      const send = (packet: Record<string, unknown>) =>
+        adapter.emit(
+          "message",
+          client,
+          JSON.stringify({ namespace: "/", ...packet }) as never,
+        );
+      send({ type: MessageEventTypes.EVENT, data: ["big", null] });
+      send({ type: MessageEventTypes.EVENT, id: 1, data: ["loop", null] });
+      // An ACK is echoed back as it came: a payload nested deeper than
+      // `JSON.stringify` recurses, which `JSON.parse` accepted.
+      const depth = 200_000;
+      adapter.emit(
+        "message",
+        client,
+        `{"type":3,"namespace":"/","id":2,"data":${"[".repeat(depth)}${"]".repeat(depth)}}` as never,
+      );
+      const emitted = (client as BunNestWebSocketClient).emit("x", 1n);
+      send({ type: MessageEventTypes.EVENT, data: ["ok", null] });
+      await settle();
+
+      // Only the good reply went out; the client was never handed a frame.
+      expect(parsed()).toEqual([
+        { type: MessageEventTypes.EVENT, namespace: "/", data: ["ok", 1] },
+      ]);
+      expect(emitted).toBe(false);
+      expect(errors).toHaveBeenCalledTimes(4);
+      for (const [error] of errors.mock.calls) {
+        expect(error).toBeInstanceOf(Error);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+describe("BunWebSocketAdapter: Nest's WsException frames", () => {
+  /**
+   * A client as Bun hands it to a gateway (numeric `readyState`, a `send`),
+   * through the adapter so it carries the adapter's `emit`.
+   */
+  function adapterClient() {
+    const adapter = new BunNestWebsocketAdapter({
+      httpAdapter: new BunHttpAdapter(10000),
+    });
+    const { client, parsed } = makeFakeClient();
+    (client as { readyState?: number }).readyState = 1;
+    adapter.bindMessageHandlers(client, []);
+    // `bindMessageHandlers` installed the adapter's `emit` on it.
+    return { client: client as BunNestWebSocketClient, parsed };
+  }
+
+  /** What the message that failed was: Nest copies it into the payload. */
+  const CAUSE = { pattern: "save", data: 1 };
+
+  const exceptionPacket = {
+    type: MessageEventTypes.EVENT,
+    namespace: "/",
+    data: ["exception", { status: "error", message: "nope", cause: CAUSE }],
+  };
+
+  it("reach an adapter client as an EVENT packet, through its emit, on Nest 11 and 12", () => {
+    const { client, parsed } = adapterClient();
+    new BaseWsExceptionFilter().handleError(
+      client,
+      new WsException("nope"),
+      CAUSE,
+    );
+    expect(parsed()).toEqual([exceptionPacket]);
+  });
+
+  it("go through a subclass filter's handleError too", () => {
+    class AuditFilter extends BaseWsExceptionFilter {}
+    const { client, parsed } = adapterClient();
+    new AuditFilter().handleError(client, new WsException("nope"), CAUSE);
+    expect(parsed()).toEqual([exceptionPacket]);
+  });
+
+  it("leave any other client to Nest: a native socket without the adapter's emit", () => {
+    // Patched by the adapter above (once per process); only clients whose
+    // `emit` carries its marker are diverted.
+    adapterClient();
+    const sent: string[] = [];
+    const emitted: unknown[][] = [];
+    const native = {
+      readyState: 1,
+      send: (frame: string) => sent.push(frame),
+      emit: (...args: unknown[]) => emitted.push(args),
+    };
+    new BaseWsExceptionFilter().handleError(
+      native,
+      new WsException("nope"),
+      CAUSE,
+    );
+    const payload = { status: "error", message: "nope", cause: CAUSE };
+    if ("emitMessage" in BaseWsExceptionFilter.prototype) {
+      // Nest 12: platform-ws's frame, untouched.
+      expect(sent.map((frame) => JSON.parse(frame))).toEqual([
+        { event: "exception", data: payload },
+      ]);
+      expect(emitted).toEqual([]);
+    } else {
+      // Nest 11: `emit`, as it always did.
+      expect(emitted).toEqual([["exception", payload]]);
+      expect(sent).toEqual([]);
+    }
   });
 });

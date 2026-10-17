@@ -1,3 +1,4 @@
+import type { RouterMiddlewareHandler } from "@kingsleyweb/bun-common";
 import type { App } from "supertest/types";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -6,11 +7,18 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
   BunRouter,
+  finalErrorResponse,
   mergeBunRequestOptions,
   signCookie,
 } from "@kingsleyweb/bun-common";
-import { StreamableFile } from "@nestjs/common";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+  BadRequestException,
+  Logger,
+  RequestMethod,
+  StreamableFile,
+} from "@nestjs/common";
+import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import * as httpAdapterModule from "../lib/BunHttpAdapter";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
@@ -86,7 +94,8 @@ beforeAll(async () => {
     res.status(404).json({ message: "Route not found" });
   });
 
-  await httpAdapter.listen(10000);
+  // Port 0: the OS assigns one, so two runs of this suite never clash.
+  await httpAdapter.listen(0);
 
   app = httpAdapter as unknown as App;
 });
@@ -1157,5 +1166,333 @@ describe("BunHttpAdapter: one BunViews for the adapter and its router", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Whether the installed `@nestjs/core` is 12 or later, by the capability the
+ * adapter reads (`mapException`, added in 12.0.0), never a version string.
+ */
+const NEST_12 =
+  typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+    .mapException === "function";
+
+describe("BunHttpAdapter.mapException (Nest 12's exception layer calls it)", () => {
+  const adapter = new BunHttpAdapter();
+
+  it("maps a SyntaxError or URIError to a BadRequestException with its message, as Express", () => {
+    for (const error of [
+      new SyntaxError("Unexpected end of JSON input"),
+      new URIError("Failed to decode param '%FF'"),
+    ]) {
+      const mapped = adapter.mapException(error);
+      expect(mapped).toBeInstanceOf(BadRequestException);
+      expect((mapped as BadRequestException).getStatus()).toBe(400);
+      expect((mapped as BadRequestException).getResponse()).toEqual({
+        message: error.message,
+        error: "Bad Request",
+        statusCode: 400,
+      });
+    }
+  });
+
+  it("returns anything else as it is", () => {
+    const typeError = new TypeError("nope");
+    const plain = { statusCode: 409, message: "conflict" };
+    expect(adapter.mapException(typeError)).toBe(typeError);
+    expect(adapter.mapException(plain)).toBe(plain);
+    expect(adapter.mapException("text")).toBe("text");
+    expect(adapter.mapException(undefined)).toBeUndefined();
+  });
+});
+
+describe("BunHttpAdapter.isRouteOrderSensitive", () => {
+  it("is true: routes match in registration order, as on Express", () => {
+    expect(new BunHttpAdapter().isRouteOrderSensitive()).toBe(true);
+  });
+});
+
+describe("BunHttpAdapter.set: x-powered-by", () => {
+  /** An adapter whose logger's `warn` is recorded. */
+  function withWarnings() {
+    const logger = new Logger("test");
+    const warn = spyOn(logger, "warn").mockImplementation(() => {});
+    return { adapter: new BunHttpAdapter(0, { logger }), warn };
+  }
+
+  it("turning it off is silent: the adapter never sends the header (Nest 12's useSecurityHeaders)", () => {
+    const { adapter, warn } = withWarnings();
+    adapter.disable("x-powered-by");
+    adapter.set("x-powered-by", false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("turning it on, or any other setting, still warns once", () => {
+    const { adapter, warn } = withWarnings();
+    adapter.enable("x-powered-by");
+    adapter.enable("x-powered-by");
+    adapter.set("trust proxy", true);
+    expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
+      expect.stringContaining('app.set("x-powered-by")'),
+      expect.stringContaining('app.set("trust proxy")'),
+    ]);
+  });
+});
+
+describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", () => {
+  /** An adapter with routes under `/api`, and the middleware calls it saw. */
+  function withMiddleware(method: RequestMethod, path: string) {
+    const adapter = new BunHttpAdapter();
+    const seen: string[] = [];
+    adapter.createMiddlewareFactory(method)(
+      path,
+      (
+        req: { method: string; path: string },
+        res: { setHeader: (name: string, value: string) => void },
+        next: () => void,
+      ) => {
+        seen.push(`${req.method} ${req.path}`);
+        res.setHeader("x-mw", "ran");
+        next();
+      },
+    );
+    adapter.get("/api/x", (_req, res) => {
+      res.send("x");
+    });
+    adapter.post("/api", (_req, res) => {
+      res.send("posted");
+    });
+    return { adapter, seen };
+  }
+
+  it("runs on exactly that path, not below it, not with a trailing slash, as Express 12.1.3", async () => {
+    const { adapter, seen } = withMiddleware(RequestMethod.ALL, "/api$");
+    // The middleware runs, and alone does not make a route: still a miss.
+    expect((await adapter.fetch("/api")).status).toBe(404);
+    expect(seen).toEqual(["GET /api"]);
+    expect((await adapter.fetch("/api/")).headers.get("x-mw")).toBeNull();
+    expect((await adapter.fetch("/api/x")).headers.get("x-mw")).toBeNull();
+    expect((await adapter.fetch("/apix")).headers.get("x-mw")).toBeNull();
+    expect((await adapter.fetch("/api$")).headers.get("x-mw")).toBeNull();
+    const posted = await adapter.fetch("/api", { method: "POST" });
+    expect([await posted.text(), posted.headers.get("x-mw")]).toEqual([
+      "posted",
+      "ran",
+    ]);
+    expect(seen).toEqual(["GET /api", "POST /api"]);
+  });
+
+  it("keeps a method: GET middleware skips a POST", async () => {
+    const { adapter, seen } = withMiddleware(RequestMethod.GET, "/api$");
+    await adapter.fetch("/api", { method: "POST" });
+    await adapter.fetch("/api");
+    expect(seen).toEqual(["GET /api"]);
+  });
+
+  it("control: a path without the marker is still a prefix", async () => {
+    const { adapter, seen } = withMiddleware(RequestMethod.ALL, "/api");
+    await adapter.fetch("/api/x");
+    await adapter.fetch("/api");
+    expect(seen).toEqual(["GET /api/x", "GET /api"]);
+  });
+});
+
+describe("BunHttpAdapter.setNotFoundHandler: scoped to the global prefix on Nest 12", () => {
+  /** A not-found handler like Nest's, answering JSON with its name. */
+  function notFound(name: string): RouterMiddlewareHandler {
+    return (req, res) => {
+      res.status(404).json({ by: name, path: req.path });
+    };
+  }
+
+  /** Status, `by` (which handler answered, `"html"` for the page) and body. */
+  async function answer(adapter: BunHttpAdapter, path: string, init = {}) {
+    const res = await adapter.fetch(path, init);
+    const text = await res.text();
+    const type = res.headers.get("content-type") ?? "";
+    return {
+      status: res.status,
+      by: type.startsWith("text/html")
+        ? "html"
+        : (JSON.parse(text) as { by: string }).by,
+      text,
+    };
+  }
+
+  it("answers outside the prefix with finalhandler's page on 12, its handler on 11", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.get("/api/hello", (_req, res) => {
+      res.send("hi");
+    });
+    adapter.setNotFoundHandler(notFound("api"), "api/");
+
+    const inside = await answer(adapter, "/api/nope");
+    expect([inside.status, inside.by]).toEqual([404, "api"]);
+    // On whole segments, case-insensitively, as Express's `use("/api")`.
+    expect((await answer(adapter, "/api")).by).toBe("api");
+    expect((await answer(adapter, "/API/nope")).by).toBe("api");
+
+    const outside = await answer(adapter, "/apiary?x=1");
+    if (NEST_12) {
+      expect([outside.status, outside.by]).toEqual([404, "html"]);
+      expect(outside.text).toContain("<pre>Cannot GET /apiary</pre>");
+    } else {
+      expect([outside.status, outside.by]).toEqual([404, "api"]);
+    }
+  });
+
+  it("builds the page from bun-common's 404, with finalhandler's text, escaped", async () => {
+    if (!NEST_12) {
+      return;
+    }
+    const adapter = new BunHttpAdapter();
+    adapter.setNotFoundHandler(notFound("api"), "/api");
+    const res = await adapter.fetch("/it's&<odd>?q=1", { method: "DELETE" });
+    const base = finalErrorResponse({ status: 404 }, { method: "GET" });
+    expect(res.status).toBe(404);
+    expect(Object.fromEntries(res.headers)).toEqual(
+      Object.fromEntries(base.headers),
+    );
+    expect(await res.text()).toBe(
+      (await base.text()).replace(
+        "<pre>Not Found</pre>",
+        "<pre>Cannot DELETE /it&#39;s&amp;%3Codd%3E</pre>",
+      ),
+    );
+
+    const head = await adapter.fetch("/nope", { method: "HEAD" });
+    expect([head.status, await head.text()]).toEqual([404, ""]);
+    expect(head.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("keeps the headers middleware set, less the three finalhandler removes", async () => {
+    if (!NEST_12) {
+      return;
+    }
+    const adapter = new BunHttpAdapter();
+    adapter.use((_req, res, next) => {
+      res.setHeader("x-custom", "kept");
+      res.setHeader("content-language", "fr");
+      res.setHeader("content-encoding", "gzip");
+      res.setHeader("content-range", "bytes 0-1/2");
+      res.setHeader("content-type", "application/json");
+      res.append("set-cookie", "a=1");
+      res.append("set-cookie", "b=2");
+      next();
+    });
+    adapter.setNotFoundHandler(notFound("api"), "api");
+    const res = await adapter.fetch("/other");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-custom")).toBe("kept");
+    expect(res.headers.getSetCookie()).toEqual(["a=1", "b=2"]);
+    for (const removed of [
+      "content-language",
+      "content-encoding",
+      "content-range",
+    ]) {
+      expect(res.headers.get(removed)).toBeNull();
+    }
+    // The page's own headers win over what middleware set.
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await res.text()).toContain("<pre>Cannot GET /other</pre>");
+  });
+
+  it("matches a parameterised prefix as Express's use() does: any first segment", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.setNotFoundHandler(notFound("tenant"), ":tenant");
+    for (const path of ["/t1/missing", "/other", "/T2"]) {
+      expect((await answer(adapter, path)).by).toBe("tenant");
+    }
+    expect((await answer(adapter, "/")).by).toBe(NEST_12 ? "html" : "tenant");
+  });
+
+  it("answers every method on an excluded route's path, as Express 12.1.3", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.get("/health", (_req, res) => {
+      res.send("healthy");
+    });
+    adapter.setNotFoundHandler(notFound("api"), "api", [
+      { path: "health", method: RequestMethod.GET },
+    ]);
+    expect(await (await adapter.fetch("/health")).text()).toBe("healthy");
+    const post = await answer(adapter, "/health", { method: "POST" });
+    expect([post.status, post.by]).toEqual([404, "api"]);
+    const below = await answer(adapter, "/health/x");
+    expect(below.by).toBe(NEST_12 ? "html" : "api");
+  });
+
+  it("several applications on one adapter: an unprefixed handler leaves other prefixes alone", async () => {
+    const adapter = new BunHttpAdapter();
+    // Registered first, as when the unprefixed application initialises first.
+    adapter.setNotFoundHandler(notFound("root"));
+    adapter.setNotFoundHandler(notFound("api"), "api");
+    adapter.setNotFoundHandler(notFound("admin"), "/admin/");
+
+    const by = async (path: string) => (await answer(adapter, path)).by;
+    if (NEST_12) {
+      expect(await by("/api/x")).toBe("api");
+      expect(await by("/admin")).toBe("admin");
+      expect(await by("/elsewhere")).toBe("root");
+      expect(await by("/apiary")).toBe("root");
+    } else {
+      // Nest 11: every handler is global; the first registered answers.
+      for (const path of ["/api/x", "/admin", "/elsewhere"]) {
+        expect(await by(path)).toBe("root");
+      }
+    }
+  });
+
+  it("reads a non-string prefix (an array from setGlobalPrefix) as none, as Express", async () => {
+    const adapter = new BunHttpAdapter();
+    // Nest hands `setGlobalPrefix(["api", "v1"])`'s array over as it is.
+    adapter.setNotFoundHandler(notFound("root"), [
+      "api",
+      "v1",
+    ] as unknown as string);
+    for (const path of ["/api/x", "/v1", "/elsewhere"]) {
+      expect((await answer(adapter, path)).by).toBe("root");
+    }
+  });
+
+  it("without a prefix answers everywhere, on 11 and 12", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.setNotFoundHandler(notFound("root"), "");
+    expect((await answer(adapter, "/anything")).by).toBe("root");
+    expect((await answer(adapter, "/")).by).toBe("root");
+  });
+});
+
+describe("BunHttpAdapter.query (HTTP QUERY, RFC 10008), on every Nest version", () => {
+  it("registers a QUERY route that reads the body; GET and HEAD are not it", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.query("/search", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+    const res = await adapter.fetch("/search", {
+      method: "QUERY",
+      headers: { "content-type": "application/json" },
+      body: '{"q":"bun"}',
+    });
+    expect([res.status, await res.json()]).toEqual([
+      200,
+      { method: "QUERY", body: { q: "bun" } },
+    ]);
+    for (const method of ["GET", "HEAD"]) {
+      expect((await adapter.fetch("/search", { method })).status).toBe(404);
+    }
+  });
+
+  it("maps RequestMethod.QUERY where Nest has it (11.2+), and refuses it nowhere else", () => {
+    const adapter = new BunHttpAdapter();
+    const query = (
+      RequestMethod as unknown as Record<string, RequestMethod | undefined>
+    ).QUERY;
+    if (query !== undefined) {
+      expect(adapter.getRequestMethodStr(query)).toBe("query");
+    }
+    // An unknown value still fails, as before.
+    expect(() => adapter.getRequestMethodStr(999 as RequestMethod)).toThrow(
+      "An invalid request method was encountered with value 999",
+    );
   });
 });

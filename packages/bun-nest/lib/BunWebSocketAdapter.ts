@@ -12,6 +12,7 @@ import type { Observable } from "rxjs";
 import { Buffer } from "node:buffer";
 import {
   BunWebSocket,
+  defineHidden,
   isArray,
   isFunction,
   isNull,
@@ -19,6 +20,92 @@ import {
   isString,
   isUndefined,
 } from "@kingsleyweb/bun-common";
+import { Logger } from "@nestjs/common";
+
+/**
+ * Marks the `emit` this adapter installs on a client (see `installEmit`), and
+ * Nest's `BaseWsExceptionFilter.prototype` once it is patched. Registered
+ * (`Symbol.for`), so two copies of this package agree on it.
+ */
+const ADAPTER_EMIT = Symbol.for("@kingsleyweb/bun-nest/ws-emit");
+
+/** What carries the {@link ADAPTER_EMIT} marker. */
+interface AdapterEmitMarked {
+  /** Present (`true`) on this adapter's `emit`, and on a patched prototype. */
+  [ADAPTER_EMIT]?: true;
+}
+
+/** The part of Nest 12's `BaseWsExceptionFilter.prototype` patched below. */
+interface WsExceptionFilterPrototype extends AdapterEmitMarked {
+  /**
+   * Nest 12: sends an `exception` to a client, through `client.send` for a
+   * native WebSocket, else `client.emit`. Absent on Nest 11.
+   */
+  emitMessage?: (client: unknown, event: string, payload: unknown) => void;
+}
+
+/**
+ * Where a packet that cannot be serialised is reported (see
+ * `BunWebSocketAdapter.sendPacket`). A Nest `Logger`, so the application's
+ * logger settings (`logger: false` included) apply.
+ */
+const wsLogger = new Logger("BunWebSocketAdapter");
+
+/** Set once {@link routeWsExceptionsThroughEmit} has run. */
+let wsExceptionsRouted = false;
+
+/**
+ * Keeps a thrown `WsException` reaching this adapter's clients as an `EVENT`
+ * packet through their `emit`, on Nest 12 as on Nest 11 (the user's decision,
+ * 2026-10-17: Q4 (a) of the Nest 12 parity plan).
+ *
+ * Nest 12's `BaseWsExceptionFilter.emitMessage` (nestjs/nest #16366) writes
+ * `client.send(JSON.stringify({ event, data }))`, `@nestjs/platform-ws`'s
+ * frame, to any client with a numeric `readyState` and a `send`, which Bun's
+ * `ServerWebSocket` has, and calls `emit` only otherwise. So `emitMessage` is
+ * wrapped, once per process: a client whose `emit` carries
+ * {@link ADAPTER_EMIT} gets it called; every other client, an `emitMessage`
+ * a filter overrides, and Nest 11 (no `emitMessage`) are left alone.
+ *
+ * `@nestjs/websockets` is an optional peer, hence the guarded `require`
+ * rather than an import; it patches the copy this package resolves.
+ */
+function routeWsExceptionsThroughEmit(): void {
+  if (wsExceptionsRouted) {
+    return;
+  }
+  wsExceptionsRouted = true;
+  let proto: WsExceptionFilterPrototype | undefined;
+  try {
+    // eslint-disable-next-line ts/no-require-imports
+    const websockets = require("@nestjs/websockets") as {
+      BaseWsExceptionFilter?: { prototype: WsExceptionFilterPrototype };
+    };
+    proto = websockets.BaseWsExceptionFilter?.prototype;
+  } catch {
+    return;
+  }
+  const original = proto?.emitMessage;
+  if (!proto || !isFunction(original) || proto[ADAPTER_EMIT]) {
+    return;
+  }
+  proto.emitMessage = function emitMessage(
+    this: unknown,
+    client: unknown,
+    event: string,
+    payload: unknown,
+  ) {
+    const emit: unknown = isObject(client)
+      ? (client as { emit?: unknown }).emit
+      : undefined;
+    if (isFunction(emit) && (emit as AdapterEmitMarked)[ADAPTER_EMIT]) {
+      emit.call(client, event, payload);
+      return;
+    }
+    original.call(this, client, event, payload);
+  };
+  defineHidden(proto, ADAPTER_EMIT, true);
+}
 
 /**
  * The shape a NestJS gateway handler may return to push a message back to the
@@ -455,7 +542,14 @@ function argsToPayload(args: unknown[]): unknown {
  *   `emit(event, ...args)` ({@link BunNestWebSocketClient}), which NestJS's
  *   default exception handler calls: a thrown `WsException("nope")` arrives as
  *   an `EVENT` packet `["exception", { status: "error", message: "nope",
- *   cause }]`, as with socket.io. An exception filter can replace that.
+ *   cause }]`, as with socket.io. On Nest 12, whose handler would write
+ *   platform-ws's `{ event, data }` frame instead, the adapter routes it
+ *   through `emit` (see `routeWsExceptionsThroughEmit`). An exception filter
+ *   can replace that.
+ * - **A reply that cannot be serialised is logged, not sent.** A circular
+ *   value, a `BigInt`, or a client payload nested too deep for
+ *   `JSON.stringify` is logged through Nest's `Logger` and dropped, as on
+ *   platform-ws; the connection stays open.
  * - **Acks follow `@nestjs/platform-socket.io`.** For a packet with an ack
  *   `id`, a handler declaring `@Ack()` (`isAckHandledManually`) acks only by
  *   calling it; any other handler's non-`WsResponse`, non-nullish return (each
@@ -632,19 +726,42 @@ export class BunWebSocketAdapter<
   private installEmit(
     client: WebSocketClient<customWebsocketDataType>,
   ): BunNestWebSocketClient<customWebsocketDataType> {
+    routeWsExceptionsThroughEmit();
     const target = client as BunNestWebSocketClient<customWebsocketDataType>;
     if (isFunction(target.emit)) {
       return target;
     }
-    target.emit = (event, ...args) => {
-      target.send(
-        JSON.stringify(
-          this.eventPacket(client?.data?.path ?? "/", String(event), args),
-        ),
+    const emit: WsEmitFunction = (event, ...args) =>
+      this.sendPacket(
+        target,
+        this.eventPacket(client?.data?.path ?? "/", String(event), args),
       );
-      return true;
-    };
+    defineHidden(emit, ADAPTER_EMIT, true);
+    target.emit = emit;
     return target;
+  }
+
+  /**
+   * Sends `packet` to `client` as JSON, returning whether it was sent. A
+   * packet `JSON.stringify` cannot write — a circular value, a `BigInt`, or a
+   * client payload nested deep enough to overflow its recursion (`JSON.parse`
+   * accepts any depth) — is logged and not sent, as `@nestjs/platform-ws`
+   * does: thrown from inside an rxjs subscriber, the error would be rethrown
+   * asynchronously and end the process.
+   */
+  private sendPacket(
+    client: WebSocketClient<customWebsocketDataType>,
+    packet: unknown,
+  ): boolean {
+    let json: string;
+    try {
+      json = JSON.stringify(packet);
+    } catch (error) {
+      wsLogger.error(error);
+      return false;
+    }
+    client.send(json);
+    return true;
   }
 
   create(
@@ -740,12 +857,14 @@ export class BunWebSocketAdapter<
 
   bindClientDisconnect(
     client: WebSocketClient<customWebsocketDataType>,
-    /** Called once, when `client` disconnects, with the close code and reason. */
-    callback: (
-      client: WebSocketClient<customWebsocketDataType>,
-      code: number,
-      reason: string,
-    ) => void,
+    /**
+     * Called once, when `client` disconnects, with the close code and reason
+     * — the arguments `@nestjs/platform-ws` passes on (`ws`'s `close` event).
+     * Nest 12 hands the first to the gateway's `handleDisconnect(client,
+     * reason)`, so a gateway sees the close code there, as on platform-ws;
+     * Nest 11 passes nothing.
+     */
+    callback: (code: number, reason: string) => void,
   ) {
     // `disconnect` is a shared event; only react to *this* client's disconnect
     // (NestJS binds the hook per connection), then detach to avoid leaking a
@@ -758,7 +877,7 @@ export class BunWebSocketAdapter<
       if (sentWsClient && sentWsClient !== client) {
         return;
       }
-      callback(sentWsClient || client, code, reason);
+      callback(code, reason);
       this.off("disconnect", onDisconnect);
     };
     this.on("disconnect", onDisconnect);
@@ -833,8 +952,9 @@ export class BunWebSocketAdapter<
     // is an ack value rather than an event.
     if (isObject(response) && (response as Partial<WsResponse>).event) {
       const { event, data } = response as WsResponse;
-      client.send(
-        JSON.stringify(this.eventPacket(namespace, String(event), [data])),
+      this.sendPacket(
+        client,
+        this.eventPacket(namespace, String(event), [data]),
       );
       return;
     }
@@ -853,7 +973,7 @@ export class BunWebSocketAdapter<
       namespace,
       data: error instanceof Error ? error.message : String(error),
     };
-    client.send(JSON.stringify(packet));
+    this.sendPacket(client, packet);
   }
 
   /**
@@ -969,7 +1089,7 @@ export class BunWebSocketAdapter<
         switch (type) {
           case MessageEventTypes.ACK:
           case MessageEventTypes.BINARY_ACK: {
-            wsClient.send(JSON.stringify(parsedData));
+            this.sendPacket(wsClient, parsedData);
             break;
           }
 
@@ -1009,8 +1129,9 @@ export class BunWebSocketAdapter<
                   if (ackSent) {
                     return;
                   }
-                  wsClient.send(
-                    JSON.stringify(this.ackPacket(namespace, ackId, ackData)),
+                  this.sendPacket(
+                    wsClient,
+                    this.ackPacket(namespace, ackId, ackData),
                   );
                   ackSent = true;
                 };
