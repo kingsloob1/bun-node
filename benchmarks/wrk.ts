@@ -25,12 +25,12 @@
  * Needs `wrk` on the PATH. The hyper-express targets need
  * `npm run setup` in `hyper-express/` (they are skipped otherwise).
  */
-import { spawn, spawnSync } from "bun";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
+import { spawn, spawnSync } from "bun";
 
 const ALL_TARGETS = [
   "bun-common",
