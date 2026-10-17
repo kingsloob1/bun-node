@@ -91,7 +91,7 @@ with no socket at all.
 | File | Shows |
 |---|---|
 | [`single-and-multiple.ts`](./08-multipart/single-and-multiple.ts) | the single, multiple, fields, any and no-files handlers; `uploadFieldsToMap`; nested and repeated fields |
-| [`storage.ts`](./08-multipart/storage.ts) | memory storage, disk storage with every option, a custom `Storage`, `removeStorageFiles` |
+| [`storage.ts`](./08-multipart/storage.ts) | memory storage, disk storage with every option, a file part sent with no filename, a custom `Storage`, `removeStorageFiles` |
 | [`limits-and-filters.ts`](./08-multipart/limits-and-filters.ts) | `DEFAULT_UPLOAD_OPTIONS`, `transformUploadOptions`, `getBusBoyConfig`, filters, size and count limits, 413s, `UploadError` codes |
 
 ### 09 — WebSockets

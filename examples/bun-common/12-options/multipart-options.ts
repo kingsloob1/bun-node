@@ -148,7 +148,7 @@ class SpyStorage implements Storage {
       mimetype: record.mimeType,
       encoding: record.encoding,
       fieldname: record.fieldname,
-      originalFilename: record.filename,
+      originalFilename: record.originalFilename,
       validatedMimeType: record.validatedMimeType,
     };
     this.stored.push(file);

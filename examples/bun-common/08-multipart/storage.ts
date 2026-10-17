@@ -23,6 +23,11 @@
  *   `force` is passed — so `removeAll()` on a plain disk upload keeps the files.
  *   A rejected upload, or a file the filter leaves out, is always removed with
  *   `force`. `MemoryStorage` takes `removeAfter` too, defaulting to `true`.
+ * - A file part sent with no `filename` (busboy counts an
+ *   `application/octet-stream` part as a file regardless) has
+ *   `originalFilename: ""`, and `DiskStorage` gives it a random name with no
+ *   extension. Its record's own `filename`, busboy's, is `undefined`: a custom
+ *   storage reads `originalFilename`, which is always a string.
  * - Everything is written under a fresh directory in `os.tmpdir()`, removed at
  *   the end.
  */
@@ -46,6 +51,7 @@ import {
   removeStorageFiles,
   transformUploadOptions,
 } from "@kingsleyweb/bun-common";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("Upload storage");
@@ -139,8 +145,10 @@ const perUserOptions = transformUploadOptions({
   // Called per file with the raw record and the request.
   dest: (file, req) =>
     join(root, "users", req.params.userId ?? "anon", file.fieldname),
+  // `file` is the raw part, whose `filename` is undefined when the client
+  // sent none — the `?? ""` keeps such a file extensionless.
   filename: (file) =>
-    `${String(++sequence).padStart(3, "0")}${extname(file.filename)}`,
+    `${String(++sequence).padStart(3, "0")}${extname(file.filename ?? "")}`,
   // removeFile — and so removeAll() — deletes without needing force.
   removeAfter: true,
 });
@@ -187,6 +195,155 @@ show(
 );
 
 /* ------------------------------------------------------------------ */
+step('A file part with no filename: originalFilename is ""');
+
+// busboy counts an `application/octet-stream` part as a file even when its
+// Content-Disposition names no `filename`, and reports `filename: undefined`.
+// FormData always names a file part, so this body is written by hand.
+const BOUNDARY = "no-filename-boundary";
+
+/** POSTs `bytes` as an octet-stream part named `blob`, with no `filename`. */
+async function sendWithoutFilename(
+  path: string,
+  bytes: string,
+): Promise<number> {
+  const body = [
+    `--${BOUNDARY}`,
+    'Content-Disposition: form-data; name="blob"',
+    "Content-Type: application/octet-stream",
+    "",
+    bytes,
+    `--${BOUNDARY}--`,
+    "",
+  ].join("\r\n");
+  const response = await router.fetch(path, {
+    method: "POST",
+    body,
+    headers: { "content-type": `multipart/form-data; boundary=${BOUNDARY}` },
+  });
+  return response.status;
+}
+
+/** A `MemoryStorage` that also keeps each record it is handed. */
+class PeekingMemoryStorage extends MemoryStorage {
+  /** The records `handleFile` received, as busboy and bun-common built them. */
+  readonly records: MultiPartFileRecord[] = [];
+
+  override async handleFile(record: MultiPartFileRecord) {
+    this.records.push(record);
+    return super.handleFile(record);
+  }
+}
+
+const peeking = new PeekingMemoryStorage();
+const peekingOptions = transformUploadOptions({
+  storageType: "custom",
+  storage: peeking,
+});
+
+router.post("/no-filename/memory", (async (req, res) => {
+  const upload = await handleMultipartAnyFiles(req, peekingOptions);
+  stored = upload.files;
+  res.json({ count: upload.files.length });
+}) satisfies RouterHandler);
+
+stored = [];
+checkEqual(
+  "memory: the upload is answered 200",
+  await sendWithoutFilename("/no-filename/memory", "nameless bytes"),
+  200,
+);
+const nameless = peeking.records[0];
+show("the record a storage receives", {
+  filename: nameless?.filename,
+  originalFilename: nameless?.originalFilename,
+  mimeType: nameless?.mimeType,
+});
+checkEqual(
+  "memory: the record's filename (busboy's) is undefined",
+  nameless?.filename,
+  undefined,
+);
+checkEqual(
+  'memory: the record\'s originalFilename is ""',
+  nameless?.originalFilename,
+  "",
+);
+const namelessInMemory = stored[0] as
+  | (StorageFile & { buffer?: Uint8Array })
+  | undefined;
+checkEqual(
+  'memory: the stored file\'s originalFilename is ""',
+  namelessInMemory?.originalFilename,
+  "",
+);
+checkEqual(
+  "memory: the bytes arrive",
+  namelessInMemory?.buffer && new TextDecoder().decode(namelessInMemory.buffer),
+  "nameless bytes",
+);
+
+const namelessDisk = transformUploadOptions({
+  storageType: "disk",
+  dest: join(root, "nameless"),
+});
+
+router.post("/no-filename/disk", (async (req, res) => {
+  try {
+    const upload = await handleMultipartAnyFiles(req, namelessDisk);
+    stored = upload.files;
+    res.json({ count: upload.files.length });
+  } catch (error) {
+    // Answered rather than rethrown, so a failure here is reported by the
+    // checks below instead of ending the example.
+    show("the disk upload failed", {
+      code: (error as Error & { code?: unknown }).code,
+      message: (error as Error).message,
+    });
+    res.status(500).json({ error: (error as Error).message });
+  }
+}) satisfies RouterHandler);
+
+stored = [];
+checkEqual(
+  "disk: the upload is answered 200",
+  await sendWithoutFilename("/no-filename/disk", "nameless on disk"),
+  200,
+);
+const namelessOnDisk = stored[0] as DiskStorageFile | undefined;
+show("file", {
+  filename: namelessOnDisk?.filename,
+  originalFilename: namelessOnDisk?.originalFilename,
+});
+checkEqual(
+  'disk: originalFilename is ""',
+  namelessOnDisk?.originalFilename,
+  "",
+);
+// DiskStorage's random name: 16 random bytes in hex, then the extension of
+// the client's name, which here is none.
+check(
+  "disk: named 32 random hex characters, with no extension",
+  /^[0-9a-f]{32}$/.test(namelessOnDisk?.filename ?? ""),
+  { filename: namelessOnDisk?.filename },
+);
+checkEqual(
+  "disk: the file exists, holding the bytes",
+  namelessOnDisk && (await Bun.file(namelessOnDisk.path).exists())
+    ? await Bun.file(namelessOnDisk.path).text()
+    : undefined,
+  "nameless on disk",
+);
+if (namelessOnDisk) {
+  await namelessDisk.storage.removeFile(namelessOnDisk, true);
+}
+checkEqual(
+  "disk: removeFile(file, true) deletes it",
+  namelessOnDisk && (await Bun.file(namelessOnDisk.path).exists()),
+  false,
+);
+
+/* ------------------------------------------------------------------ */
 step("A custom Storage: an in-process object store");
 
 /** Options this storage is constructed with. */
@@ -218,7 +375,7 @@ class BucketStorage implements Storage<BucketFile, BucketOptions> {
     record: MultiPartFileRecord,
     req: BunRequest,
   ): Promise<BucketFile> {
-    const key = `${this.options.bucket}/${req.path.slice(1)}/${crypto.randomUUID()}${extname(record.filename)}`;
+    const key = `${this.options.bucket}/${req.path.slice(1)}/${crypto.randomUUID()}${extname(record.originalFilename)}`;
     this.objects.set(key, record.file);
     return {
       type: "custom",
@@ -228,7 +385,7 @@ class BucketStorage implements Storage<BucketFile, BucketOptions> {
       mimetype: record.mimeType,
       encoding: record.encoding,
       fieldname: record.fieldname,
-      originalFilename: record.filename,
+      originalFilename: record.originalFilename,
       validatedMimeType: record.validatedMimeType,
     };
   }
@@ -295,3 +452,5 @@ step("Cleaning up");
 
 await rm(root, { recursive: true, force: true });
 show("removed", root);
+
+summary();
