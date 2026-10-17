@@ -1406,9 +1406,11 @@ confirmed again with each PR.
 | `@kingsleyweb/bun-common/sse` | entry | packaging | root only |
 | `res.writableEnded` | getter | `BunResponse` | none (Node's name) |
 
-**Broadcast channels (§16.14), added 2026-10-17 — open, each with the
-recommended answer** (the full table, with evidence, is in
-`evidence/sse/channel-README.md`):
+**Broadcast channels (§16.14), added 2026-10-17. Decided by the user on
+2026-10-17: every recommendation below was accepted** (SC3: replay off by
+default, ids assigned only when replay is on; SC7: the transport interface
+only in v1, with the in-memory bus as a test helper and no Redis transport).
+The full table, with evidence, is in `evidence/sse/channel-README.md`:
 
 | # | Question | Recommended |
 |---|---|---|
@@ -1424,7 +1426,7 @@ recommended answer** (the full table, with evidence, is in
 | SC10 | A graceful `close()`? | Not in v1, as S9: `close()` ends streams, and later requests get 204 |
 | SC11 | Absolute fan-out figures | The spike's run was loaded (load 5.7 → 46); PR-sse2b's guard re-measures on a quiet machine before any absolute events/s is quoted |
 
-**Names needing approval (channels):**
+**Names (channels), approved by the user on 2026-10-17 as proposed** (the alternatives are kept for the record):
 
 | Proposed | Kind | Where | Alternatives |
 |---|---|---|---|
