@@ -107,6 +107,17 @@ is what proves it.
 with the user's answers of 2026-10-17 applied (Q2 to Q6, Q8, Q11), as listed
 in [`../type-aware/README.md`](../type-aware/README.md), "How it was run". It
 was formatted by `bun fmt` in the scratch clone, which is why its arrays are
-one item per line. It is what was measured, not yet the reviewed file: the
-`no-useless-escape` question in [`../type-aware/`](../type-aware/README.md)
-and the template's own copy are still open.
+one item per line. It is what was measured, not the reviewed file; the
+`no-useless-escape` question it left open is answered (Q13, below).
+
+## The final config (2026-10-17)
+
+[`bunfig.final.toml`](bunfig.final.toml) is `bunfig.answered.toml` with Q12
+to Q14 applied:
+- Q12 adds one override turning the five `no-unsafe-*`, `require-await` and
+  `await-thenable` off in tests.
+- Q13 and Q14 change no line: core `no-useless-escape` is Bun's default, and
+  there is no `[install]` section.
+
+PR A ships it as the root `bunfig.toml`, and each owner's PR B measures
+against it. The template's own copy is still PR A's to settle.

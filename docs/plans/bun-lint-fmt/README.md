@@ -119,7 +119,8 @@ recommendation: **keep all 24 rules on; the 8 error rules stay errors and are
 fixed before the flip; the automatic fixes are applied; `no-unsafe-*`,
 `require-await` and `await-thenable` start off in test files (3,456
 warnings); the remaining 1,341 warnings stay warnings, which do not fail the
-gate, and each owner clears them after the flip.**
+gate, and each owner clears them after the flip.** The user chose it on
+2026-10-17.
 
 ### Q1's catch: no `eslint` package needs `peer = false`
 
@@ -131,7 +132,7 @@ packages, `eslint` 10.13.0 among them. Only with **`[install] peer = false`**
 in `bunfig.toml` did it install 9 packages and no `eslint`. That setting
 would change peer installation for every package in the monorepo. Q14 (§9),
 recommended: accept `eslint` installed as the plugin's peer and never run,
-and keep the default peer installs.
+and keep the default peer installs. The user accepted that on 2026-10-17.
 
 **What we lose.** 172 of the 384 rules we run have no native counterpart
 (`regexp` 60, kept as a JavaScript plugin; `jsonc` 38, `@eslint-react` 21,
@@ -147,10 +148,12 @@ everywhere while ESLint stays the gate; one findings PR per owner; the UI
 leak test; the editor extension; the flip, with the reformat, in a quiet
 window; and the removal of ESLint and Prettier one merge window later.
 
-**New questions the measurements raise** (§9): what to do with the 7,328
-type-aware warnings before the flip (Q12), the doubled `no-useless-escape`
-(Q13), and whether "no `eslint` package" means turning peer installs off
-(Q14).
+**The questions the measurements raised** (§9), answered on 2026-10-17:
+what to do with the 7,328 type-aware warnings before the flip (Q12: the
+recommendation), the doubled `no-useless-escape` (Q13: keep both, fix the
+5), and whether "no `eslint` package" means turning peer installs off (Q14:
+no, `eslint` stays as the plugin's peer). The config with all three applied is
+[`evidence/rules/bunfig.final.toml`](evidence/rules/bunfig.final.toml).
 
 ## 2. What we run today
 
@@ -405,7 +408,7 @@ plugins = [{ name = "regexp", specifier = "eslint-plugin-regexp" }]   # Q1 (a)
 "bun/format" = "off"                       # Q6: bun fmt --check is its own step
 # Q5: Bun's default bug rules stay on (valid-expect, no-useless-assignment,
 # preserve-caught-error, no-unused-private-class-members, no-disabled-tests).
-# Q13: "no-useless-escape" = "off", or fix its 5 findings.
+# Q13: core no-useless-escape stays on, beside regexp's; its 5 findings are fixed.
 "regexp/no-super-linear-backtracking" = "error"   # … and the other 59 regexp rules
 
 [[lint.overrides]]                         # tests (antfu's GLOB_TESTS)
@@ -617,8 +620,8 @@ A ──┬── B-common, B-nest, B-jobs, B-tooling ──┐
   unchanged.
 - **The config**: the root `bunfig.toml` of §4, `[lint]` and `[fmt]`,
   reviewed rule by rule from
-  [`evidence/rules/bunfig.answered.toml`](evidence/rules/bunfig.answered.toml)
-  with Q13 and Q14 settled; `templates/compute-provider/bunfig.toml`, the
+  [`evidence/rules/bunfig.final.toml`](evidence/rules/bunfig.final.toml)
+  (the answered config with Q12 to Q14 applied); `templates/compute-provider/bunfig.toml`, the
   template's own copy (which needs `eslint-plugin-regexp` among the
   template's devDependencies, or leaves the plugin out: settled here).
 - **ESLint stays the gate, renamed.** The 11 `eslint.config.mjs` become
@@ -693,7 +696,7 @@ A ──┬── B-common, B-nest, B-jobs, B-tooling ──┐
 **Owner** each owner, for their directories. **Reviewer** Tooling (the rule
 choices), and Main for nothing unless a fix needs a shared file.
 **Depends on** A; B-ui also on C. **Effort**: the errors and default rules
-below, plus the warnings once Q12 is answered (2,517 of the 2,657
+below, plus the automatic fixes Q12 chose (2,517 of the 2,657
 `no-unnecessary-type-assertion` warnings carry an automatic fix; run
 `bun run check` after `bun lint --fix`, because some of those assertions are
 in type tests).
@@ -843,7 +846,7 @@ window later.
 Q1 to Q11 were asked on 2026-10-16 and **answered by the user on
 2026-10-17**. Each keeps its original options and recommendation, then the
 answer and what the measurement of 2026-10-17 adds. Q12 to Q14 are new: the
-measurements raised them.
+measurements raised them, and the user answered them on 2026-10-17 too.
 
 1. **How native?** (a) native rules plus `eslint-plugin-regexp` only, no
    `eslint` package (**recommended**); (b) also keep perfectionist, jsdoc,
@@ -960,12 +963,21 @@ measurements raised them.
     (d) the high-volume warning rules (`no-unnecessary-type-assertion`,
     `no-unsafe-member-access`, `require-await`, `no-unsafe-assignment`) off
     everywhere until a later plan.
+    **Answer (2026-10-17): (b).** In
+    [`evidence/rules/bunfig.final.toml`](evidence/rules/bunfig.final.toml) that
+    is one override for `**/__tests__/**`, `**/*.spec.*` and `**/*.test.*`.
+    Measured at 930dd664 on the same canary, it removes exactly those 7 rules'
+    findings in tests and nothing else: bun-common 380 → 238, bun-jobs-ui
+    785 → 644, bun-jobs 4,906 → 1,978, with the errors (41, 6, 161) and the 7
+    rules' findings outside tests (68, 6, 190) unchanged.
 13. **`no-useless-escape` is on twice.** Bun's default core rule (which our
     ESLint config never enabled) and `regexp/no-useless-escape` both check
     regular expressions, and disagree on `\-` in a character class: all 5
     core findings are that, in bun-jobs' redaction patterns. (a)
     **recommended**: turn the core rule off, leaving regular expressions to
     `regexp`, as our ESLint config does today; (b) keep it and fix the 5.
+    **Answer (2026-10-17): (b)**, keep it on and fix every flagged escape once.
+    No config line: it is Bun's default.
 14. **"No `eslint` package"** (Q1): the plugin runs without `eslint`, but
     keeping it out of `node_modules` needs `[install] peer = false` (§1,
     "Q1's catch"). (a) **recommended**: accept `eslint` installed as
@@ -973,3 +985,4 @@ measurements raised them.
     `[install] peer = false` at the root so it is not installed, which changes
     peer installation for every package in the monorepo and needs its own
     measurement before it is proposed.
+    **Answer (2026-10-17): (a).** No `[install]` setting.
