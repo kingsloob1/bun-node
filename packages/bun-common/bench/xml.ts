@@ -1,4 +1,4 @@
-/* eslint-disable antfu/no-top-level-await */
+/* eslint-disable antfu/no-top-level-await, n/no-top-level-await */
 import { Buffer } from "node:buffer";
 /**
  * XML parser micro-benchmark.

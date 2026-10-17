@@ -26,7 +26,8 @@ published packages under `packages/`:
   [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
-typecheck (`bun run check`), ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
+typecheck (`bun run check`), ESLint via `@antfu/eslint-config` (`eslint.legacy.config.mjs`, the
+lint gate until the [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md) flip) beside `bun lint`. Bun runs the shipped `.ts`
 source directly (`main` is `lib/index.ts`; no JS is emitted). All four
 packages also ship built declarations in `dts/` and point `types` at them —
 see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
@@ -37,16 +38,25 @@ each declares an optional `@types/bun >=1.4.2` peer so a consumer on older
 types is warned instead of hitting opaque type errors. That floor matters
 because bun-jobs' Redis and SQL drivers use `RedisClient.eval`/`xadd`/… and
 `sql.listen`, which 1.4.2 is the first `bun-types` release to declare.
-**Developing** the repo needs **Bun ≥ 1.4.3**, the first stable release with
-`bun check` (released 2026-10-10), which every type check here runs (see
-[Typechecking](#typechecking)): the root `package.json` has
-`packageManager: bun@1.4.3` and `engines.bun >=1.4.3`, the packages'
-`bun-types` devDeps are `^1.4.3`, and `scripts/typecheck.ts` refuses an older
-Bun. The `@types/bun` devDeps stay `^1.4.2`, because `@types/bun` 1.4.3 is not
+**Developing** the repo needs **Bun ≥ 1.4.4** (the user's decision,
+2026-10-17), for `bun lint` and `bun fmt`; until 1.4.4 is stable that is the
+canary, **`bun upgrade --canary`** (plain `bun upgrade` after). 1.4.3 was the
+first stable release with `bun check` (2026-10-10), which every type check
+here runs (see [Typechecking](#typechecking)). The root `package.json` has
+`packageManager: bun@1.4.4` and `engines.bun >=1.4.4`, and
+`scripts/typecheck.ts` refuses an older Bun. Every 1.4.4 canary reports
+`Bun.version` "1.4.4", so the floor cannot tell them apart: the lint and
+format setup was verified on **1.4.4-canary.1+5f5799ed1** (`bun --revision`),
+and the plan's figures are as old as that build. **A later canary can change
+rule or format output**: a new finding or a reformatted file after
+`bun upgrade --canary` is the canary's, and goes to the bun-lint-fmt plan's
+lead with both revisions rather than being fixed in passing. Using the
+packages still needs only 1.4.2. The packages' `bun-types` devDeps stay
+`^1.4.3` (there are no stable 1.4.4 types). The `@types/bun` devDeps stay `^1.4.2`, because `@types/bun` 1.4.3 is not
 on npm yet; the range takes it when it lands. Until then `@types/bun` 1.4.2
 pins `bun-types` 1.4.2 exactly, so the checks still read the 1.4.2
 declarations, and `bun.lock` holds both copies. On Bun 1.4.2, a package's
-`"check": "bun check"` script runs itself forever (measured): `bun upgrade`.
+`"check": "bun check"` script runs itself forever (measured): `bun upgrade --canary`.
 
 bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
@@ -64,15 +74,32 @@ management API and the bun-jobs-ui app on one adapter at
 `http://localhost:4000/jobs`, with a simulation that keeps every screen
 moving (`playground/README.md`). It is a project of its own, like
 `benchmarks/`: typechecked by `scripts/typecheck.ts`, linted with
-`cd playground && bunx eslint .`, and outside the workspaces.
+`cd playground && bun run lint:eslint`, and outside the workspaces.
 
 Then, in each affected package directory:
 
 ```bash
 bun run check              # bun check on the package's projects
-bunx eslint .              # lint — must have 0 errors
+bun run lint:eslint        # ESLint, the lint gate until PR E — must have 0 errors
+bun run lint               # bun lint: runs, reports what PR B fixes, gates nothing yet
 bun run test               # type-check the tests, then run them in parallel — must all pass
 ```
+
+**Lint, between PR A and PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
+§7.** ESLint is still the gate: each linted directory's config is
+`eslint.legacy.config.mjs`, a name ESLint does not discover, so run it as
+`bun run lint:eslint` (`eslint -c eslint.legacy.config.mjs .`); a bare
+`bunx eslint .` finds no config. `bun run lint` (in a `lint` script, `bun lint`
+is the linter) reads the root `bunfig.toml`, type-aware, and exits 1 until each
+owner's findings are fixed. A disable directive names the rule's canonical
+name (`@typescript-eslint/…`, `n/…`; the ESLint configs `renamePlugins` to
+match), and both tools read it. For a rule only `bun lint` runs (the
+type-aware ones), ESLint does not call the directive unused, nor delete it on
+`--fix` (`eslint.legacy.directives.mjs`); where ESLint runs the same check under
+another name, list both (`no-throw-literal, @typescript-eslint/only-throw-error`).
+There is no `format` script yet: Prettier, through
+ESLint, still formats, and it and `bun fmt` disagree on 78 files, so do
+not run `bun fmt` on a whole directory before PR E.
 
 **Tests run in parallel.** Each test suite's `test` script is
 `bun test --check --parallel --timings=bun-timings.json` (`--check`: see
@@ -191,7 +218,7 @@ So plain `bun test` is still the one-process run, as is
   - **Heavy:** full suites, every bun-jobs-ui test (they drive the DOM and
     Chrome), the bun-jobs and bun-jobs-ui `run-all.ts`, `check-types.ts`,
     benches, and repeat, concurrent-copy and load loops.
-  - **Not heavy, run directly:** lint in any directory,
+  - **Not heavy, run directly:** lint in any directory (ESLint or `bun lint`),
     `bun scripts/typecheck.ts`, `bun scripts/consumer-check.ts`, and every
     **targeted** test run in any package except bun-jobs-ui — named files,
     directories or filters, with or without database URLs
@@ -320,11 +347,12 @@ The repo's own tooling in the root `scripts/` (`typecheck.ts`,
 `setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, and the heavy-run
 wrapper `heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to
 no package, so it has its own lint config and its own tests; after touching one,
-check it from there:
+check it, from the root:
 
 ```bash
-cd scripts && bunx eslint .   # 0 errors, and 0 warnings
-bun run test:scripts          # scripts/__tests__/, from the root
+bun run lint:eslint:scripts   # cd scripts && eslint -c eslint.legacy.config.mjs . — 0 errors, and 0 warnings
+bun run lint:scripts          # cd scripts && bun lint — reports, gates nothing until PR E
+bun run test:scripts          # scripts/__tests__/
 ```
 
 It is the packages' config except that `no-console` and
@@ -376,7 +404,7 @@ the script prints the restart command and restarts only with
 `--restart-postgres`.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
-depend on bun-common). The `eslint.config.mjs` `TS2742`/`TS2883` portability
+depend on bun-common). The `eslint.legacy.config.mjs` `TS2742`/`TS2883` portability
 hint is pre-existing noise — `scripts/typecheck.ts` filters it. There may be a
 couple of intentional `no-console` ESLint *warnings* (error logging in catch
 blocks with no logger in scope); warnings do not fail lint.
@@ -386,8 +414,8 @@ blocks with no logger in scope); warnings do not fail lint.
 `benchmarks/`, and excluded from the root `workspaces` list). It holds the
 third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
 graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
-published package's dependency tree. `scripts/typecheck.ts` and `bunx eslint .`
-both cover it.
+published package's dependency tree. `scripts/typecheck.ts` and
+`bun run lint:eslint` both cover it.
 
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
@@ -479,16 +507,21 @@ type check. It is a standalone package like the bench ones — its own
   emits the declarations with tsc. The template's own tests do not take
   `bun test --check` and it has no `check` script: inside the repo its
   author's config reaches bun-jobs' source, and fails there.
-- **Lint.** `templates/eslint.config.mjs` (the packages' config, plus the
-  `scripts/` exemption for the template's own `scripts/`), outside the
-  template so a copy carries none of the repo's lint dependencies.
+- **Lint.** `templates/eslint.legacy.config.mjs` (the packages' config, plus
+  the `scripts/` exemption for the template's own `scripts/`), outside the
+  template so a copy carries none of the repo's lint dependencies; the
+  template's `lint:eslint` names it (`-c ../eslint.legacy.config.mjs`) until
+  PR E removes ESLint. `bun lint` reads the template's own
+  `templates/compute-provider/bunfig.toml` (the root's rules without
+  `eslint-plugin-regexp`, so it needs no dependency), found from the working
+  directory up, so it wins when run from the template.
 - **Gate**, for any change to the provider API (`lib/provider/**`, the
   summon types it re-exports) or to the template:
 
   ```bash
   cd templates/compute-provider
   bun install --frozen-lockfile && bun run test && bun scripts/check-types.ts
-  CI=1 bunx eslint .
+  CI=1 bun run lint:eslint
   ```
 
   plus `bun scripts/typecheck.ts` from the root. The test is the conformance
@@ -781,7 +814,7 @@ it to the examples session before merging.
 through `Bun.WebView`, against a real `createJobsApi`; they skip visibly when
 no Chrome is found (`BUN_CHROME_PATH` points at one).
 
-**Pre-merge gate:** `bun scripts/typecheck.ts`; `CI=1 bunx eslint .` in the
+**Pre-merge gate:** `bun scripts/typecheck.ts`; `CI=1 bun run lint:eslint` in the
 package; `bun run test` plus `bun test --randomize` with a couple of seeds
 (serial — the only check left for order leaks, since `--parallel` isolates
 files); and

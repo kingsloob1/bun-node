@@ -203,7 +203,7 @@ export const routeModulePath = path.join(
   "./src/route.mjs",
 );
 
-// eslint-disable-next-line ts/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const RouteModule = require(routeModulePath) as {
   default: {
     new (options: RouteConstructorOption): Route;

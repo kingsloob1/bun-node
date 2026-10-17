@@ -480,7 +480,7 @@ export function toFetchResponse(response: Response, method: string): Response {
  * `http.ServerResponse`. Declared as a `type` (not an `interface`) so it
  * satisfies `TypedEmitter`'s `Record<string, …>` constraint.
  */
-// eslint-disable-next-line ts/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type BunResponseEvents = {
   /** The response body has been fully produced. */
   finish: () => void;

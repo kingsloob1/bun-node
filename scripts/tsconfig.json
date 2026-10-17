@@ -10,5 +10,5 @@
     // run under Bun, and `bun` brings in `node` with it.
     "types": ["bun"]
   },
-  "include": ["./**/*.ts", "eslint.config.mjs"]
+  "include": ["./**/*.ts", "eslint.legacy.config.mjs"]
 }
