@@ -50,18 +50,18 @@ function bump(req: { hits?: number }): void {
   req.hits = (req.hits ?? 0) + 1;
 }
 
-type Req = {
+interface Req {
   params: Record<string, string>;
   body: { n: number };
   hits?: number;
-};
-type Res = {
+}
+interface Res {
   send: (body: string) => unknown;
   json: (body: unknown) => unknown;
   set: (name: string, value: string) => Res;
-};
+}
 type Next = () => void;
-type ExpressStyle = {
+interface ExpressStyle {
   get: (
     path: string,
     ...handlers: ((req: Req, res: Res, next: Next) => unknown)[]
@@ -74,7 +74,7 @@ type ExpressStyle = {
     path: string,
     ...handlers: ((req: Req, res: Res, next: Next) => unknown)[]
   ) => unknown;
-};
+}
 
 /**
  * The shared route set on an Express-style API (bun-common, Express).
@@ -123,8 +123,12 @@ async function start(target: string | undefined): Promise<number> {
       });
       registerExpressStyle(adapter as unknown as ExpressStyle);
       const uploads = lib.transformUploadOptions({ storageType: "memory" });
-      type BodyReq = { body: unknown };
-      type JsonRes = { json: (body: unknown) => unknown };
+      interface BodyReq {
+        body: unknown;
+      }
+      interface JsonRes {
+        json: (body: unknown) => unknown;
+      }
       adapter.post("/form", (req, res) => {
         res.json((req as BodyReq).body as Record<string, string>);
       });
@@ -135,7 +139,9 @@ async function start(target: string | undefined): Promise<number> {
         res.json({ length: ((req as BodyReq).body as string).length });
       });
       adapter.post("/xml", (req, res) => {
-        res.json({ n: ((req as BodyReq).body as { root: { n: unknown } }).root.n });
+        res.json({
+          n: ((req as BodyReq).body as { root: { n: unknown } }).root.n,
+        });
       });
       adapter.post("/upload", async (req, res) => {
         const { body, file } = await lib.handleMultipartSingleFile(
@@ -193,7 +199,9 @@ async function start(target: string | undefined): Promise<number> {
 
     case "hono": {
       const { Hono } = await import("hono");
-      type Env = { Variables: { hits: number } };
+      interface Env {
+        Variables: { hits: number };
+      }
       const app = new Hono<Env>();
       for (let i = 0; i < 3; i++) {
         app.use("/mw/*", async (c, next) => {

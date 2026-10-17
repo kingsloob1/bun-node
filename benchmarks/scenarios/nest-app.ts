@@ -6,6 +6,11 @@
  */
 import type { MiddlewareConsumer, NestMiddleware } from "@nestjs/common";
 import {
+  BunHttpAdapter,
+  FileInterceptor,
+  UploadedFile,
+} from "@kingsleyweb/bun-nest";
+import {
   Body,
   Controller,
   Get,
@@ -18,13 +23,8 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import {
-  BunHttpAdapter,
-  FileInterceptor,
-  UploadedFile,
-} from "@kingsleyweb/bun-nest";
-import "reflect-metadata";
 import { BENCH_PARSE_BODY } from "./parse-body";
+import "reflect-metadata";
 
 class Bump implements NestMiddleware {
   use(req: { hits?: number }, _res: unknown, next: () => void) {

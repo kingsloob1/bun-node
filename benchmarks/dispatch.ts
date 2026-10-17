@@ -109,16 +109,16 @@ interface MicroResult {
 
 /** Concrete URL each scenario hits. */
 const HIT_PATH: Record<Exclude<ScenarioName, "mixed">, string> = {
-  "static": "/ping",
-  "param": "/user/42",
-  "deep": "/api/v1/users/7/books/99",
+  static: "/ping",
+  param: "/user/42",
+  deep: "/api/v1/users/7/books/99",
   "optional-present": "/search/books/2",
   "optional-absent": "/search/books",
-  "wildcard": "/assets/css/site/app.css",
-  "notfound": "/no/such/route/exists",
+  wildcard: "/assets/css/site/app.css",
+  notfound: "/no/such/route/exists",
   // Representative single path; the scenario actually rotates over
   // `CARDINALITY_PATHS` so the router's per-path cache is stressed.
-  "cardinality": "/user/<0..N>",
+  cardinality: "/user/<0..N>",
 };
 
 const ALL_SCENARIOS: ScenarioName[] = [
@@ -157,6 +157,7 @@ let cardinalityPathsCache: string[] | undefined;
 /** Builds (once) the rotation of distinct `/user/:id` paths. */
 function cardinalityPaths(): string[] {
   cardinalityPathsCache ??= Array.from(
+    // eslint-disable-next-line ts/no-use-before-define -- called only once `config` is set
     { length: config.cardinality },
     (_unused, index) => `/user/${index}`,
   );
@@ -771,14 +772,14 @@ const EXPECTED: Record<
   Exclude<ScenarioName, "mixed">,
   { status: number; body: string }
 > = {
-  "static": { status: 200, body: "ok" },
-  "param": { status: 200, body: "42" },
-  "deep": { status: 200, body: "7/99" },
+  static: { status: 200, body: "ok" },
+  param: { status: 200, body: "42" },
+  deep: { status: 200, body: "7/99" },
   "optional-present": { status: 200, body: "books/2" },
   "optional-absent": { status: 200, body: "books/-" },
-  "wildcard": { status: 200, body: "css/site/app.css" },
-  "notfound": { status: 404, body: "" },
-  "cardinality": { status: 200, body: "0" },
+  wildcard: { status: 200, body: "css/site/app.css" },
+  notfound: { status: 404, body: "" },
+  cardinality: { status: 200, body: "0" },
 };
 
 /**
@@ -804,7 +805,9 @@ async function runVerify(targets: Strategy[]): Promise<boolean> {
         const expected = EXPECTED[scenario];
         // `cardinality` has no single hit path — check the first of its rotation.
         const path =
-          scenario === "cardinality" ? cardinalityPaths()[0] : HIT_PATH[scenario];
+          scenario === "cardinality"
+            ? cardinalityPaths()[0]
+            : HIT_PATH[scenario];
         const response = await fetch(`${server.url}${path}`, {
           method: config.method,
         });
@@ -815,9 +818,7 @@ async function runVerify(targets: Strategy[]): Promise<boolean> {
             `${path}: status ${response.status}, expected ${expected.status}`,
           );
         } else if (expected.status === 200 && body !== expected.body) {
-          failures.push(
-            `${path}: body "${body}", expected "${expected.body}"`,
-          );
+          failures.push(`${path}: body "${body}", expected "${expected.body}"`);
         }
       }
     } finally {
@@ -1092,14 +1093,11 @@ function renderRow(
   columns: { title: string; width: number }[],
   cells: string[],
 ): string {
-  return (
-    "  " +
-    cells
-      .map((cell, i) =>
-        i === 0 ? cell.padEnd(columns[i].width) : cell.padStart(columns[i].width),
-      )
-      .join(COLUMN_GAP)
-  );
+  return `  ${cells
+    .map((cell, i) =>
+      i === 0 ? cell.padEnd(columns[i].width) : cell.padStart(columns[i].width),
+    )
+    .join(COLUMN_GAP)}`;
 }
 
 function printHeader(
@@ -1107,7 +1105,10 @@ function printHeader(
   title: string,
 ): void {
   console.log(`\n  ${title}`);
-  const header = renderRow(columns, columns.map((c) => c.title));
+  const header = renderRow(
+    columns,
+    columns.map((c) => c.title),
+  );
   const rule = `  ${"-".repeat(header.length - 2)}`;
   console.log(rule);
   console.log(header);
@@ -1142,7 +1143,9 @@ function printHttpTable(scenario: ScenarioName, rows: BenchResult[]): void {
       `${row.throughputMB.toFixed(2)} MB/s`,
       ratio <= 1.001 ? "1.00x (best)" : `${ratio.toFixed(2)}x`,
     ]);
-    console.log(flags.length ? `${line}${COLUMN_GAP}${flags.join(", ")}` : line);
+    console.log(
+      flags.length ? `${line}${COLUMN_GAP}${flags.join(", ")}` : line,
+    );
   }
 }
 

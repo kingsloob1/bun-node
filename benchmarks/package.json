@@ -1,8 +1,8 @@
 {
   "name": "bun-node-benchmarks",
+  "type": "module",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
   "description": "Router throughput benchmarks: BunRouter vs Express 5 vs Bun.serve vs Elysia vs Hono",
   "scripts": {
     "bench": "bun bench.ts"
