@@ -31,7 +31,7 @@ prefer Bun and native APIs over third-party dependencies.
 | Package | npm | Description |
 |---|---|---|
 | [bun-common](packages/bun-common/README.md) | `@kingsleyweb/bun-common` | An Express-like HTTP layer for `Bun.serve`: `BunRouter` with Express 5 semantics, `BunRequest`, `BunResponse`, `BunHttpAdapter`, validation with any Standard Schema, CORS, static files, compression, multipart uploads, WebSockets and structured logging. |
-| [bun-nest](packages/bun-nest/README.md) | `@kingsleyweb/bun-nest` | Run NestJS 11 on Bun: `BunHttpAdapter` in place of `@nestjs/platform-express`, multer-style file upload interceptors, and `BunWebSocketAdapter` for gateways over Bun's native WebSockets. |
+| [bun-nest](packages/bun-nest/README.md) | `@kingsleyweb/bun-nest` | Run NestJS 11 or 12 on Bun: `BunHttpAdapter` in place of `@nestjs/platform-express`, multer-style file upload interceptors, and `BunWebSocketAdapter` for gateways over Bun's native WebSockets. |
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
 
 bun-nest and bun-jobs both depend on bun-common.
@@ -66,8 +66,8 @@ example follows.
 - **Bun ≥ 1.4.3** to develop the repository, the first stable release with
   `bun check`, which runs every type check here. The root `package.json`
   declares it in `engines.bun` and pins `bun@1.4.3` as its package manager.
-- **NestJS 11** (`@nestjs/common`, `@nestjs/core`, `rxjs`; `@nestjs/websockets`
-  for gateways) for bun-nest.
+- **NestJS 11.1.20 or later, or NestJS 12** (`@nestjs/common`, `@nestjs/core`,
+  `rxjs`; `@nestjs/websockets` for gateways) for bun-nest.
 
 ## Installation
 
