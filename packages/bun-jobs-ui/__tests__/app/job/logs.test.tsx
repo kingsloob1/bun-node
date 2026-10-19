@@ -62,7 +62,7 @@ describe("the job logs", () => {
   it("loads the first page at min(100, maxLogPage), oldest first, and pages forward and back", async () => {
     const { logCalls } = await renderLogs();
     await page().findByRole("list", { name: "Log lines" });
-    expect(query(logCalls()[0]!)).toEqual({
+    expect(query(logCalls()[0])).toEqual({
       offset: "0",
       limit: "100",
       order: "asc",
@@ -106,7 +106,7 @@ describe("the job logs", () => {
   it("starts at maxLogPage when it is under 100", async () => {
     const { logCalls } = await renderLogs("completed", 30);
     await page().findByRole("list", { name: "Log lines" });
-    expect(query(logCalls()[0]!).limit).toBe("30");
+    expect(query(logCalls()[0]).limit).toBe("30");
   });
 
   it("switches to newest first from the start, numbering lines by their place in the log", async () => {

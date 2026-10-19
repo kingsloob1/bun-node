@@ -99,7 +99,7 @@ function originOf(stack: string): string {
     }
     const app = /bun-jobs-ui\/(app\/[^:)]+:\d+)/.exec(frame);
     if (app) {
-      return app[1]!;
+      return app[1];
     }
     const test = /bun-jobs-ui\/(__tests__\/[^:)]+:\d+)/.exec(frame);
     if (test) {

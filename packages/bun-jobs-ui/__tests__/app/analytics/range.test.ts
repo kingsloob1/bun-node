@@ -39,7 +39,7 @@ describe("a rolling preset", () => {
 describe("a custom range", () => {
   it("round-trips its instants", () => {
     const range = { kind: "custom", from: NOW - 3_600_000, to: NOW } as const;
-    expect(readRange(writeRange(range)!)).toEqual(range);
+    expect(readRange(writeRange(range))).toEqual(range);
     expect(rangeBounds(range, NOW + 999_999)).toEqual({
       from: range.from,
       to: range.to,

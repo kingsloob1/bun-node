@@ -7,6 +7,8 @@
   "scripts": {
     "all": "bun run-all.ts",
     "quick-start": "bun 01-quick-start/index.ts",
-    "demo": "bun 05-demo/seeded-demo.ts --serve"
+    "demo": "bun 05-demo/seeded-demo.ts --serve",
+    "lint": "bun lint",
+    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
   }
 }

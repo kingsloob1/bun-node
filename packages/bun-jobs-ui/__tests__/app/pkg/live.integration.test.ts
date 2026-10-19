@@ -255,8 +255,8 @@ describe("LiveClient against a real API socket", () => {
     await until(() => client.getSnapshot().state === "live");
     const resumed = sentOps(wire, "subscribe", sentBefore);
     expect(resumed.length).toBeGreaterThan(0);
-    expect(resumed[0]!.resume?.epoch).toBeString();
-    expect(resumed[0]!.resume?.afterSeq).toBeGreaterThan(0);
+    expect(resumed[0].resume?.epoch).toBeString();
+    expect(resumed[0].resume?.afterSeq).toBeGreaterThan(0);
 
     await until(
       () =>
@@ -286,7 +286,7 @@ describe("LiveClient against a real API socket", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     const unsubscribes = sentOps(wire, "unsubscribe", from);
     expect(unsubscribes).toHaveLength(1);
-    expect(unsubscribes[0]!.channels).toEqual([channel]);
+    expect(unsubscribes[0].channels).toEqual([channel]);
     expect(sentOps(wire, "subscribe", from)).toHaveLength(1);
   });
 });

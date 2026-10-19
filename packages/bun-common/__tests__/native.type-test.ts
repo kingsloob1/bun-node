@@ -14,7 +14,7 @@
  * Values below exist only so `typeof` can inspect them, which the unused-vars
  * rule cannot see.
  */
-/* eslint-disable unused-imports/no-unused-vars */
+/* eslint-disable unused-imports/no-unused-vars, @typescript-eslint/no-unused-vars */
 import type { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";

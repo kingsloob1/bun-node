@@ -64,7 +64,7 @@ export function formatRelativeTime(
   const seconds = ahead > 0 && ahead <= FUTURE_TOLERANCE_S ? 0 : ahead;
   const abs = Math.abs(seconds);
   for (let i = 0; i < UNITS.length; i++) {
-    const [unit, span] = UNITS[i]!;
+    const [unit, span] = UNITS[i];
     const limit = THRESHOLDS[unit];
     if (limit === undefined || abs / span < limit) {
       return formatter(locale).format(Math.round(seconds / span), unit);

@@ -528,7 +528,7 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
       const address = str(channel.address) ?? key;
       const declared = isObject(channel.parameters) ? channel.parameters : {};
       const inTemplate = [...address.matchAll(/\{([^}]+)\}/g)].map(
-        (match) => match[1]!,
+        (match) => match[1],
       );
       const names = [
         ...inTemplate,

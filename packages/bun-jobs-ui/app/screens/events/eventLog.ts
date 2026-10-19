@@ -224,23 +224,23 @@ function readChannel(raw: string): ChannelChoice | null {
   // Before the one-queue pattern: `queue/<queue>/workers` is its own channel.
   const queueWorkers = /^queue\/([^/]+)\/workers$/.exec(raw);
   if (queueWorkers) {
-    return { scope: "queueWorkers", queue: queueWorkers[1]! };
+    return { scope: "queueWorkers", queue: queueWorkers[1] };
   }
   const job = /^queue\/([^/]+)\/job\/(.+)$/.exec(raw);
   if (job) {
     try {
-      return { scope: "job", queue: job[1]!, id: decodeJobId(job[2]!) };
+      return { scope: "job", queue: job[1], id: decodeJobId(job[2]) };
     } catch {
       return null;
     }
   }
   const queue = /^queue\/([^/]+)$/.exec(raw);
   if (queue) {
-    return { scope: "queue", queue: queue[1]! };
+    return { scope: "queue", queue: queue[1] };
   }
   const runner = /^runner\/([^/]+)$/.exec(raw);
   if (runner) {
-    return { scope: "runner", runner: runner[1]! };
+    return { scope: "runner", runner: runner[1] };
   }
   return null;
 }
@@ -323,7 +323,7 @@ export function readTypes(
     const prefixed = /^(queue|runner)\.(.+)$/.exec(name);
     if (prefixed) {
       const family = FAMILY_TYPES[prefixed[1] as "queue" | "runner"];
-      const bare = prefixed[2]!;
+      const bare = prefixed[2];
       if (!family.includes(bare)) {
         ignored.push({ name, reason: "unknown" });
       } else if (family.every((type) => allowedSet.has(type))) {

@@ -373,7 +373,7 @@ export function planPatch(defaults: JobDefaultsDto, draft: Draft): PatchPlan {
       }
       continue;
     }
-    const parsed = parseKey(key, edited as DraftOf<JobDefaultKey>);
+    const parsed = parseKey(key, edited);
     if ("error" in parsed) {
       errors[key] = parsed.error;
       continue;
@@ -430,10 +430,10 @@ export function describeValue(key: JobDefaultKey, value: unknown): string {
   }
   switch (key) {
     case "backoff":
-      return describeBackoff(value as JobDefaultsValues["backoff"]);
+      return describeBackoff(value);
     case "removeOnComplete":
     case "removeOnFail":
-      return describeRetention(value as RetentionDto);
+      return describeRetention(value);
     case "timeout":
       return value === 0 ? "none" : formatMs(value as number);
     case "keepLogs":

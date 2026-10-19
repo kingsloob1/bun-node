@@ -89,7 +89,9 @@
     "test": "bun test --check --parallel --timings=bun-timings.json",
     "test:serial": "bun test --check",
     "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
-    "check": "bun check"
+    "check": "bun check",
+    "lint": "bun lint",
+    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
   },
   "peerDependencies": {
     "@types/bun": ">=1.4.2",

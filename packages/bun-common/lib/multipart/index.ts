@@ -81,7 +81,7 @@ export interface Storage<T extends StorageFile = StorageFile, K = unknown> {
    */
   removeFile: {
     // A method signature on purpose: only methods compare bivariantly.
-    // eslint-disable-next-line ts/method-signature-style
+    // eslint-disable-next-line @typescript-eslint/method-signature-style
     bivarianceHack(file: NoInfer<T>, force?: boolean): Promise<void> | void;
   }["bivarianceHack"];
   /** Options the storage was built with, when it keeps them. */

@@ -231,7 +231,7 @@ export function moveFlowNode(
   }
   const children = [...root.children];
   const [moved] = children.splice(index, 1);
-  children.splice(target, 0, moved!);
+  children.splice(target, 0, moved);
   return { ...root, children };
 }
 

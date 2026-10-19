@@ -22,7 +22,7 @@ export interface StandardSchemaV1<Input = unknown, Output = Input> {
  * as the spec documents. Flattening them into standalone exports would rename
  * every one of them and break that correspondence, so the namespace stays.
  */
-// eslint-disable-next-line ts/no-namespace
+// eslint-disable-next-line @typescript-eslint/no-namespace
 export declare namespace StandardSchemaV1 {
   /** The properties a Standard Schema exposes. */
   export interface Props<Input = unknown, Output = Input> {

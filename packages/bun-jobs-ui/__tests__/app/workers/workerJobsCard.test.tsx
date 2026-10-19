@@ -120,19 +120,19 @@ describe("the worker page's jobs section", () => {
     await within(card).findByTestId("job-row-job-1");
     const after = Date.now();
     const [read] = jobReads(calls);
-    expect([...read!.query.keys()]).toEqual([
+    expect([...read.query.keys()]).toEqual([
       "limit",
       "order",
       "workerKey",
       "finishedFrom",
     ]);
-    expect(read!.query.get("order")).toBe("desc");
-    expect(read!.query.getAll("workerKey")).toEqual(["api.emails"]);
-    const from = Number(read!.query.get("finishedFrom"));
+    expect(read.query.get("order")).toBe("desc");
+    expect(read.query.getAll("workerKey")).toEqual(["api.emails"]);
+    const from = Number(read.query.get("finishedFrom"));
     expect(from).toBeGreaterThanOrEqual(before - DAY);
     expect(from).toBeLessThanOrEqual(after - DAY);
-    expect(read!.query.has("total")).toBe(false);
-    expect(read!.query.has("finishedTo")).toBe(false);
+    expect(read.query.has("total")).toBe(false);
+    expect(read.query.has("finishedTo")).toBe(false);
 
     // Honest about what is recorded, and rows lead to the job screen.
     expect(
@@ -208,9 +208,9 @@ describe("the worker page's jobs section", () => {
     });
     await page().findByTestId("job-row-job-1");
     const [read] = jobReads(calls);
-    expect(read!.query.get("state")).toBe("dead");
-    expect(read!.query.get("finishedFrom")).toBe("1000");
-    expect(read!.query.get("finishedTo")).toBe("2000");
+    expect(read.query.get("state")).toBe("dead");
+    expect(read.query.get("finishedFrom")).toBe("1000");
+    expect(read.query.get("finishedTo")).toBe("2000");
   });
 
   it("pages with the pager, without a total", async () => {

@@ -1,7 +1,15 @@
+// The starter templates' lint config, kept here rather than in a template so
+// a copied template carries nothing that points into this repo. It is the
+// packages' config (keep it identical to `packages/*/eslint.legacy.config.mjs`),
+// plus the scripts' exemption for a template's `scripts/`, marked below. Run
+// it from the template: `cd compute-provider && bun run lint:eslint`, which is
+// `eslint -c ../eslint.legacy.config.mjs .` (ESLint does not discover a config
+// by this name, so it is named; `bun lint` reads the template's bunfig.toml).
 import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import { keepBunLintDirectives } from "../eslint.legacy.directives.mjs";
 
 export default antfu({
   lessOpinionated: true,
@@ -17,7 +25,17 @@ export default antfu({
   yaml: true,
   toml: true,
   test: true,
+  // The template's own `bunfig.toml` is `bun lint`'s config, laid out as the
+  // root one is; antfu's TOML style rules are not its gate (until PR E of
+  // docs/plans/bun-lint-fmt/ removes ESLint).
+  ignores: ["**/bunfig.toml"],
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",
@@ -86,8 +104,27 @@ export default antfu({
         varsIgnorePattern: "^_",
       },
     ],
-    "no-console": "warn",
     "no-labels": "off",
     "no-restricted-syntax": "off",
     "no-async-promise-executor": "off",
-  });
+  })
+  .append(
+    {
+      // The packages set this in `overrideRules`, which is applied after every
+      // block and would undo the exemption below, so it is a block here.
+      rules: { "no-console": "warn" },
+    },
+    {
+      // The one departure from the packages' config, as in `scripts/`: a
+      // template's `scripts/` are command-line entry points, whose output is
+      // their product and which nothing imports. Both spellings: patterns are
+      // relative to this file's directory when ESLint finds it (the editor's
+      // working directory, `templates/`), and to the working directory under
+      // `-c` (`lint:eslint`, run from the template).
+      files: ["*/scripts/**/*.ts", "scripts/**/*.ts"],
+      rules: {
+        "no-console": "off",
+        "antfu/no-top-level-await": "off",
+      },
+    },
+  );

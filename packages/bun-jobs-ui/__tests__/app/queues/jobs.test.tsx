@@ -119,7 +119,7 @@ describe("the jobs table", () => {
     });
     const table = await jobsTable();
     const cell = table.querySelector<HTMLElement>(".job-failure")!;
-    expect(cell.textContent!.length).toBe(80);
+    expect(cell.textContent.length).toBe(80);
     expect(cell.getAttribute("title")).toBe(message);
   });
 

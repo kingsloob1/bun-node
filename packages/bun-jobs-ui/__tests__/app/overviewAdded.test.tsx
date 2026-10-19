@@ -103,9 +103,9 @@ describe("the Over the range tile's added-by-state group", () => {
 
     // Over the page's range (the last hour by default), as from/to only.
     const [read] = addedReads(calls);
-    expect([...read!.query.keys()]).toEqual(["from", "to"]);
-    const from = Number(read!.query.get("from"));
-    const to = Number(read!.query.get("to"));
+    expect([...read.query.keys()]).toEqual(["from", "to"]);
+    const from = Number(read.query.get("from"));
+    const to = Number(read.query.get("to"));
     expect(to - from).toBe(3_600_000);
     expect(to).toBeGreaterThanOrEqual(before);
     expect(to).toBeLessThanOrEqual(after);
@@ -183,8 +183,8 @@ describe("the Over the range tile's added-by-state group", () => {
     await page().findByTestId("range-stat-added");
     await waitFor(() => expect(addedReads(calls).length).toBeGreaterThan(0));
     const [read] = addedReads(calls);
-    expect(
-      Number(read!.query.get("to")) - Number(read!.query.get("from")),
-    ).toBe(600_000);
+    expect(Number(read.query.get("to")) - Number(read.query.get("from"))).toBe(
+      600_000,
+    );
   });
 });

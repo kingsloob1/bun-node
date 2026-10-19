@@ -126,7 +126,7 @@ describe("the HTTP reference", () => {
         "pauseRunner",
       ]),
     );
-    expect(links()[0]!.getAttribute("href")).toBe(
+    expect(links()[0].getAttribute("href")).toBe(
       "/jobs/docs/http/pauseQueue?q=post%20pause",
     );
     const search = within(nav).getByRole("searchbox", {
@@ -135,11 +135,11 @@ describe("the HTTP reference", () => {
     expect((search as HTMLInputElement).value).toBe("post pause");
 
     fireEvent.keyDown(search, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(links()[0]!);
-    fireEvent.keyDown(links()[0]!, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(links()[1]!);
-    fireEvent.keyDown(links()[1]!, { key: "Home" });
-    expect(document.activeElement).toBe(links()[0]!);
+    expect(document.activeElement).toBe(links()[0]);
+    fireEvent.keyDown(links()[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(links()[1]);
+    fireEvent.keyDown(links()[1], { key: "Home" });
+    expect(document.activeElement).toBe(links()[0]);
 
     fireEvent.change(search, { target: { value: "killrunner" } });
     await waitFor(() => expect(window.location.search).toBe("?q=killrunner"));

@@ -650,7 +650,7 @@ function expectChained(calls: Exchange[], dryRun: boolean, seq: number) {
     if (index === 0) {
       expectUndefined(body.cursor);
     } else {
-      expect(body.cursor).toBe((calls[index - 1]!.json as ApplyDto).next ?? "");
+      expect(body.cursor).toBe((calls[index - 1].json as ApplyDto).next ?? "");
     }
     const last = index === calls.length - 1;
     expect(answer.done).toBe(last);
@@ -754,14 +754,14 @@ for (const label of ["memory", "SQLite"]) {
 
         const puts = uiCalls(deploy, queue.name, "PUT");
         expect(puts).toHaveLength(1);
-        expect(puts[0]!.body).toEqual({
+        expect(puts[0].body).toEqual({
           attempts: 5,
           timeout: 30_000,
           expectedSeq: initial.seq,
         });
-        expect(puts[0]!.csrf).toBe("1");
-        expect(puts[0]!.status).toBe(200);
-        const saved = puts[0]!.json as DefaultsDto;
+        expect(puts[0].csrf).toBe("1");
+        expect(puts[0].status).toBe(200);
+        const saved = puts[0].json as DefaultsDto;
         expect(saved.overridden).toEqual(["attempts", "timeout"]);
         expect(saved.effective).toMatchObject({
           attempts: 5,
@@ -823,7 +823,7 @@ for (const label of ["memory", "SQLite"]) {
         await ui.click("Use code value", "attempts");
         await ui.click("Save defaults");
         await ui.awaitToast("Saved the job defaults of");
-        const second = uiCalls(deploy, queue.name, "PUT")[1]!;
+        const second = uiCalls(deploy, queue.name, "PUT")[1];
         expect(second.body).toEqual({
           attempts: null,
           expectedSeq: saved.seq,
@@ -853,7 +853,7 @@ for (const label of ["memory", "SQLite"]) {
           body: undefined,
           status: 200,
         });
-        const reset = deletes[0]!.json as DefaultsDto;
+        const reset = deletes[0].json as DefaultsDto;
         expect(reset.overridden).toEqual([]);
         expect(reset.override).toEqual({});
         expect(reset.effective).toMatchObject({
@@ -864,7 +864,7 @@ for (const label of ["memory", "SQLite"]) {
         const restored = await ui.awaitView(
           (one) => one.rows.timeout?.override === "code value",
         );
-        expect(restored.rows.timeout!.gets).toBe("1m");
+        expect(restored.rows.timeout.gets).toBe("1m");
         ui.unmount();
 
         await queue.add("plain", {}, { jobId: "reset" });
@@ -1039,7 +1039,7 @@ for (const label of ["memory", "SQLite"]) {
         expect(refused.alert).toContain("changed since you opened them");
         expect(refused.alert).toContain("Nothing was saved");
         expect(refused.buttons).toContain("Re-read the defaults");
-        const put = uiCalls(deploy, queue.name, "PUT")[0]!;
+        const put = uiCalls(deploy, queue.name, "PUT")[0];
         expect(put.body).toEqual({ attempts: 5, expectedSeq: first.seq });
         expect(put.status).toBe(409);
         expect(put.json).toMatchObject({ code: "CONTROL_CONTENDED" });
@@ -1058,7 +1058,7 @@ for (const label of ["memory", "SQLite"]) {
         const third = await queue.setJobDefaults({ priority: 11 });
         await ui.click("Reset to code values");
         await ui.awaitDialog((one) => one.alert !== null);
-        const del = uiCalls(deploy, queue.name, "DELETE")[0]!;
+        const del = uiCalls(deploy, queue.name, "DELETE")[0];
         expect(del.query).toBe(`expectedSeq=${other.seq}`);
         expect(del.status).toBe(409);
         expect(del.json).toMatchObject({ code: "CONTROL_CONTENDED" });
@@ -1070,7 +1070,7 @@ for (const label of ["memory", "SQLite"]) {
         await ui.awaitDialog((one) => one.text.includes("Now: 11"));
         await ui.click("Reset to code values");
         await ui.awaitToast("Reset the job defaults of");
-        const reset = uiCalls(deploy, queue.name, "DELETE")[1]!;
+        const reset = uiCalls(deploy, queue.name, "DELETE")[1];
         expect(reset.query).toBe(`expectedSeq=${third.seq}`);
         expect(reset.status).toBe(200);
         expect((await queue.getJobDefaults()).override).toEqual({});
@@ -1115,9 +1115,9 @@ for (const label of ["memory", "SQLite"]) {
           previews,
         );
         expect(refused).toHaveLength(1);
-        expect(refused[0]!.status).toBe(409);
-        expect((refused[0]!.body as ApplyBody).seq).toBe(confirmed.seq);
-        expect(refused[0]!.json).toMatchObject({
+        expect(refused[0].status).toBe(409);
+        expect((refused[0].body as ApplyBody).seq).toBe(confirmed.seq);
+        expect(refused[0].json).toMatchObject({
           code: "DEFAULTS_CHANGED",
           context: {
             queue: queue.name,
@@ -1161,8 +1161,8 @@ for (const label of ["memory", "SQLite"]) {
           before,
         );
         expect(walk.map((one) => one.status)).toEqual([200, 409]);
-        expect((walk[0]!.json as ApplyDto).rewritten).toBe(BATCH);
-        expect(walk[1]!.json).toMatchObject({ code: "DEFAULTS_CHANGED" });
+        expect((walk[0].json as ApplyDto).rewritten).toBe(BATCH);
+        expect(walk[1].json).toMatchObject({ code: "DEFAULTS_CHANGED" });
         ui.unmount();
         const attempts = await Promise.all(
           ids.map(async (id) => (await optsOf(queue, id)).attempts),

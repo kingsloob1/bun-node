@@ -164,7 +164,7 @@ for (const [name, tokens] of [
         const bg = tokens[pair.bg];
         expect(fg).toBeString();
         expect(bg).toBeString();
-        const ratio = contrastRatio(fg!, bg!);
+        const ratio = contrastRatio(fg, bg);
         if (ratio < pair.min) {
           throw new Error(
             `${name}: --${pair.fg} ${fg} on --${pair.bg} ${bg} is ${ratio.toFixed(2)}:1, below ${pair.min}:1 (${pair.use})`,

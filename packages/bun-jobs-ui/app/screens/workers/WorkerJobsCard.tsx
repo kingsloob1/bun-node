@@ -43,7 +43,7 @@ const PAGING_PARAMS = [WORKER_JOB_PARAMS.offset] as const;
 const TABS = [
   { value: ALL_STATES as StateTab, label: "All" },
   ...JOB_STATES.map((state) => ({
-    value: state as StateTab,
+    value: state,
     label: STATE_LABELS[state],
     title: STATE_HINTS[state],
   })),

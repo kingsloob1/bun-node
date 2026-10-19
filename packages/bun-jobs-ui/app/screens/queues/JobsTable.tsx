@@ -109,7 +109,7 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
         : undefined,
     },
     ...JOB_STATES.map((state) => ({
-      value: state as StateTab,
+      value: state,
       label: STATE_LABELS[state],
       title: STATE_HINTS[state],
       count: counts?.[state],

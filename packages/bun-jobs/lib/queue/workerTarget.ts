@@ -355,7 +355,7 @@ interface ProcessorDefinition {
    * then checked both ways, so a handler typed for its own data fits, and an
    * inline one is still handed a `Job` rather than `never`.
    */
-  // eslint-disable-next-line ts/method-signature-style
+  // eslint-disable-next-line @typescript-eslint/method-signature-style
   handler(job: Job<unknown, unknown>, ctx: ProcessorContext): unknown;
 }
 

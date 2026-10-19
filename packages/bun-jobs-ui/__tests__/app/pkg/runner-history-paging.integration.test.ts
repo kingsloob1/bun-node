@@ -179,19 +179,19 @@ describe("the runner history against a real API", () => {
       2,
     );
 
-    expect(first!.runIds).toHaveLength(PAGE);
-    expect(second!.runIds).toHaveLength(PAGE);
-    expect(third!.runIds).toHaveLength(RUNS - 2 * PAGE);
+    expect(first.runIds).toHaveLength(PAGE);
+    expect(second.runIds).toHaveLength(PAGE);
+    expect(third.runIds).toHaveLength(RUNS - 2 * PAGE);
     // Page two holds runs page one never had: the rows were read, not sliced.
-    expectNone(first!.runIds.filter((id) => second!.runIds.includes(id)));
+    expectNone(first.runIds.filter((id) => second.runIds.includes(id)));
     expect(
-      new Set([...first!.runIds, ...second!.runIds, ...third!.runIds]).size,
+      new Set([...first.runIds, ...second.runIds, ...third.runIds]).size,
     ).toBe(RUNS);
 
     // The total is the whole history, not the page.
-    expect(first!.range).toBe(`1–${PAGE} of ${RUNS}`);
-    expect(second!.range).toBe(`${PAGE + 1}–${2 * PAGE} of ${RUNS}`);
-    expect(third!.range).toBe(`${2 * PAGE + 1}–${RUNS} of ${RUNS}`);
+    expect(first.range).toBe(`1–${PAGE} of ${RUNS}`);
+    expect(second.range).toBe(`${PAGE + 1}–${2 * PAGE} of ${RUNS}`);
+    expect(third.range).toBe(`${2 * PAGE + 1}–${RUNS} of ${RUNS}`);
 
     // Every page is a request, and each carries the window it asked for.
     const offsets = historyQueries.map((search) =>
@@ -209,8 +209,8 @@ describe("the runner history against a real API", () => {
     // And the order the route promises: newest first, which is the last run
     // this test triggered.
     const stored = await runner.history();
-    expect(first!.runIds[0]).toBe(stored[0]!.runId);
-    expect(third!.runIds.at(-1)).toBe(stored.at(-1)!.runId);
+    expect(first.runIds[0]).toBe(stored[0].runId);
+    expect(third.runIds.at(-1)).toBe(stored.at(-1)!.runId);
   });
 
   it("answers an offset past the end with an empty page, not an empty history", async () => {
@@ -223,13 +223,13 @@ describe("the runner history against a real API", () => {
       `?history=${PAGE}&offset=${RUNS * 10}`,
       0,
     );
-    expectNone(only!.runIds);
-    expect(only!.emptyPage).toBe(true);
+    expectNone(only.runIds);
+    expect(only.emptyPage).toBe(true);
     // The runner has run: the card must not say otherwise, and Clear
     // history… must not go dead on a page that happens to hold nothing.
-    expect(only!.neverRan).toBe(false);
-    expect(only!.clearDisabled).toBe(false);
-    expect(only!.range).toBe(`0 of ${RUNS}`);
+    expect(only.neverRan).toBe(false);
+    expect(only.clearDisabled).toBe(false);
+    expect(only.range).toBe(`0 of ${RUNS}`);
   });
 
   it("reaches a run past `limits.maxHistory` with a deep offset", async () => {
@@ -245,7 +245,7 @@ describe("the runner history against a real API", () => {
       `?history=${PAGE}&offset=${RUNS - 1}`,
       0,
     );
-    expect(deep!.runIds).toEqual([stored.at(-1)!.runId]);
-    expect(deep!.range).toBe(`${RUNS}–${RUNS} of ${RUNS}`);
+    expect(deep.runIds).toEqual([stored.at(-1)!.runId]);
+    expect(deep.range).toBe(`${RUNS}–${RUNS} of ${RUNS}`);
   });
 });

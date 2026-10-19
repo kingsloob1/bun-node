@@ -1,4 +1,4 @@
-/* eslint-disable ts/no-unsafe-function-type */
+/* eslint-disable @typescript-eslint/no-unsafe-function-type */
 
 import type {
   BodyParserOptions,

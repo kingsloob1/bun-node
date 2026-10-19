@@ -1963,7 +1963,7 @@ monorepo.
 ```bash
 bun scripts/typecheck.ts        # from the repo root: every project
 cd packages/bun-common
-bunx eslint .                   # lint the whole package
+bun run lint:eslint             # lint the whole package
 bun test                        # tests
 ```
 

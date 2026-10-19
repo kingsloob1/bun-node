@@ -288,7 +288,7 @@ export function createJobsApiWebSocket(
     // lookup to request time is what keeps both orders legal, and passing it
     // directly is a real `ReferenceError`, not a style question. The rule
     // cannot see that the call happens per request, long after both exist.
-    // eslint-disable-next-line ts/no-use-before-define -- deferred to request time; see above
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define -- deferred to request time; see above
     upgradeOnly((req, res, next) => upgradeHere(req, res, next)),
     refuse,
   ];

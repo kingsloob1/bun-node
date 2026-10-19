@@ -168,7 +168,7 @@ export function ThroughputChart({ data, label }: ThroughputChartProps) {
           className="throughput-axis"
           aria-hidden="true"
         >
-          <span>{formatMinute(buckets[0]!.at)}</span>
+          <span>{formatMinute(buckets[0].at)}</span>
           <span>{formatMinute(buckets.at(-1)!.at)}</span>
         </figcaption>
       )}

@@ -208,10 +208,10 @@ describe("the WebSocket reference against a real API", () => {
       "channel-runners",
       "channel-runner",
     ]);
-    expect(view.channels[0]!.hint).toBe(`${BASE}/ws`);
-    expect(view.channels[4]!.hint).toBe("queue/{queue}/job/{jobId}");
+    expect(view.channels[0].hint).toBe(`${BASE}/ws`);
+    expect(view.channels[4].hint).toBe("queue/{queue}/job/{jobId}");
     // Worker events travel on their own channels, off `all` and `queues`.
-    expect(view.channels[6]!.hint).toBe("queue/{queue}/workers");
+    expect(view.channels[6].hint).toBe("queue/{queue}/workers");
     expect(view.eventMessages).toContain("queue.completed");
     expect(view.eventMessages).toContain("runner.succeeded");
     // The served document names the request's own host.

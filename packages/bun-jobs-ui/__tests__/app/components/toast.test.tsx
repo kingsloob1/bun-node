@@ -93,7 +93,7 @@ describe("toasts", () => {
     expect(regions().polite.textContent).toContain("Sticky");
     act(() => {
       fireEvent.click(
-        page().getAllByRole("button", { name: "Dismiss notification" })[0]!,
+        page().getAllByRole("button", { name: "Dismiss notification" })[0],
       );
     });
     expect(regions().polite.children).toHaveLength(1);
@@ -120,7 +120,7 @@ describe("toasts", () => {
       api.info("two");
       api.info("three");
     });
-    const text = regions().polite.textContent!;
+    const text = regions().polite.textContent;
     expect(text).not.toContain("one");
     expect(text).toContain("two");
     expect(text).toContain("three");

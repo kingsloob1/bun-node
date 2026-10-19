@@ -162,7 +162,7 @@ describe("following a live run's log by its hint", () => {
       expect(lines()).toEqual(["line 1", "line 2", "line 3"]),
     );
     expect(logCalls(calls)).toHaveLength(2);
-    expect(logCalls(calls)[1]!.query.get("since")).toBe("1");
+    expect(logCalls(calls)[1].query.get("since")).toBe("1");
   });
 
   it("reads nothing for a hint about another run, or one it has already caught up with", async () => {
@@ -185,8 +185,8 @@ describe("following a live run's log by its hint", () => {
     await waitFor(() => expect(lines()).toEqual(["line 1"]));
     const query = queryClient
       .getQueryCache()
-      .findAll({ queryKey: ["runner", "nightly", "run", "run-3"] })[0]!;
-    const option = query.observers[0]!.options.refetchInterval;
+      .findAll({ queryKey: ["runner", "nightly", "run", "run-3"] })[0];
+    const option = query.observers[0].options.refetchInterval;
     const interval =
       typeof option === "function" ? option(query as never) : option;
     expect(interval).toBe(RUN_LOG_POLL_MS * LIVE_SLOWDOWN);
@@ -213,7 +213,7 @@ describe("with live updates off", () => {
     written = 2;
     await advance(RUN_LOG_POLL_MS);
     await advance(30, 10);
-    expect(logCalls(calls)[1]!.query.get("since")).toBe("1");
+    expect(logCalls(calls)[1].query.get("since")).toBe("1");
     expect(lines()).toEqual(["line 1", "line 2"]);
     expect(page().getByTestId("run-log-notes").textContent).toContain(
       `re-read every ${RUN_LOG_POLL_MS / 1000} s`,

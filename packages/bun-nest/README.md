@@ -1504,7 +1504,7 @@ This package lives in the
 bun install                  # at the repo root
 bun scripts/typecheck.ts     # every project in the repo
 cd packages/bun-nest
-bunx eslint .                # lint
+bun run lint:eslint          # lint
 bun test                     # tests
 ```
 

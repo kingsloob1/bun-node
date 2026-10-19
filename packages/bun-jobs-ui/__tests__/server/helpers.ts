@@ -97,9 +97,9 @@ export function parseShell(html: string): ParsedShell {
   const metaTag = /<meta property="csp-nonce"[^>]*>/.exec(html)?.[0] ?? "";
   return {
     title: /<title>([\s\S]*?)<\/title>/.exec(html)?.[1] ?? "",
-    configText: configMatch[2]!,
-    config: JSON.parse(configMatch[2]!) as UiConfig,
-    configNonce: attribute(configMatch[1]!, "nonce"),
+    configText: configMatch[2],
+    config: JSON.parse(configMatch[2]) as UiConfig,
+    configNonce: attribute(configMatch[1], "nonce"),
     script: {
       src: attribute(scriptTag, "src"),
       integrity: attribute(scriptTag, "integrity"),

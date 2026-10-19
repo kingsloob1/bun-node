@@ -123,7 +123,7 @@ describe("the run log tail", () => {
     const many = seqs.map((seq) => line(seq));
     const tail = mergeRunLogPage(undefined, pageOf(many));
     expect(tail.lines).toHaveLength(RUN_LOG_TAIL_MAX);
-    expect(tail.lines[0]!.seq).toBe(6);
+    expect(tail.lines[0].seq).toBe(6);
     expect(tail.trimmed).toBe(5);
   });
 });

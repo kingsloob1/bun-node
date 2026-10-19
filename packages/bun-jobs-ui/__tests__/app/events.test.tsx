@@ -339,27 +339,27 @@ describe("the Events console", () => {
       }),
     );
     const [runner, queue] = rows();
-    expect(runner!.dataset.type).toBe("started");
-    expect(runner!.textContent).toContain("runner");
+    expect(runner.dataset.type).toBe("started");
+    expect(runner.textContent).toContain("runner");
     expect(
-      within(runner!)
+      within(runner)
         .getByRole("link", { name: "nightly" })
         .getAttribute("href"),
     ).toBe("/jobs/runners/nightly");
-    expect(runner!.textContent).toContain("run-7");
+    expect(runner.textContent).toContain("run-7");
 
-    expect(queue!.textContent).toContain("queue");
-    expect(queue!.textContent).toContain("completed");
+    expect(queue.textContent).toContain("queue");
+    expect(queue.textContent).toContain("completed");
     expect(
-      within(queue!).getByRole("link", { name: "emails" }).getAttribute("href"),
+      within(queue).getByRole("link", { name: "emails" }).getAttribute("href"),
     ).toBe("/jobs/queues/emails");
     expect(
-      within(queue!).getByRole("link", { name: "a/1" }).getAttribute("href"),
+      within(queue).getByRole("link", { name: "a/1" }).getAttribute("href"),
     ).toBe("/jobs/queues/emails/jobs/a%2F1");
     expect(
-      queue!.querySelector('[aria-label^="Payload of completed"]'),
+      queue.querySelector('[aria-label^="Payload of completed"]'),
     ).toBeTruthy();
-    expect(queue!.querySelector("time")!.getAttribute("dateTime")).toMatch(
+    expect(queue.querySelector("time")!.getAttribute("dateTime")).toMatch(
       /^\d{4}-\d\d-\d\dT/,
     );
   });
@@ -381,15 +381,15 @@ describe("the Events console", () => {
       }),
     );
     const [summon, job] = rows();
-    expect(summon!.dataset.type).toBe("summon");
-    expect(
-      within(summon!).getByTestId("event-summon-summary").textContent,
-    ).toBe("Started 1 worker (ecs), because a job was added");
+    expect(summon.dataset.type).toBe("summon");
+    expect(within(summon).getByTestId("event-summon-summary").textContent).toBe(
+      "Started 1 worker (ecs), because a job was added",
+    );
     // The payload is still there beneath it.
     expect(
-      summon!.querySelector('[aria-label^="Payload of summon"]'),
+      summon.querySelector('[aria-label^="Payload of summon"]'),
     ).toBeTruthy();
-    expectAbsent(within(job!).queryByTestId("event-summon-summary"));
+    expectAbsent(within(job).queryByTestId("event-summon-summary"));
   });
 
   it("shows a shared unit's event once, naming its queues and the ones it missed", async () => {
@@ -408,7 +408,7 @@ describe("the Events console", () => {
     const shown = rows();
     expect(shown).toHaveLength(1);
     expect(
-      within(shown[0]!).getByTestId("event-summon-summary").textContent,
+      within(shown[0]).getByTestId("event-summon-summary").textContent,
     ).toBe(
       "Registered 1 worker (ecs), for renders, thumbs, previews; missing previews",
     );
@@ -435,7 +435,7 @@ describe("the Events console", () => {
     expect(rows().filter((row) => row.dataset.type === "summon")).toHaveLength(
       0,
     );
-    expect(rows()[0]!.textContent).toContain(`j-${MAX_ROWS - 1}`);
+    expect(rows()[0].textContent).toContain(`j-${MAX_ROWS - 1}`);
   });
 
   it("drops a copy that arrives while paused, of an event already held", async () => {
@@ -465,18 +465,18 @@ describe("the Events console", () => {
       }),
     );
     const [worker] = rows();
-    expect(worker!.dataset.type).toBe("state");
+    expect(worker.dataset.type).toBe("state");
     // A worker event's target is the QUEUE the worker consumes.
     expect(
-      within(worker!).getByRole("link", { name: "mail" }).getAttribute("href"),
+      within(worker).getByRole("link", { name: "mail" }).getAttribute("href"),
     ).toBe("/jobs/queues/mail");
-    const kind = worker!.querySelector(".events-kind .badge")!;
+    const kind = worker.querySelector(".events-kind .badge")!;
     expect(kind.textContent).toBe("worker");
     // Its own tone: neither the queue's (info) nor the runner's (accent).
     expect(kind.className).toContain("badge-neutral");
     expect(kind.className).not.toContain("badge-accent");
     expect(kind.className).not.toContain("badge-info");
-    expect(worker!.textContent).toContain("api.mail.4f2a");
+    expect(worker.textContent).toContain("api.mail.4f2a");
   });
 
   it("opens on `queues` in mode jobs", async () => {
@@ -539,7 +539,7 @@ describe("the Events console", () => {
     // A wider filter held by another screen on the same channel reaches the
     // callback too: the console filters again.
     await act(async () => {
-      live.activeSubscriptions()[0]!.onEvent!(
+      live.activeSubscriptions()[0].onEvent!(
         queueEvent({ type: "progress", target: "emails", id: "x" }),
       );
     });
@@ -609,7 +609,7 @@ describe("the Events console", () => {
     await emit(...completedMany("j", MAX_ROWS + 5));
     const shown = rows();
     expect(shown).toHaveLength(MAX_ROWS);
-    expect(shown[0]!.textContent).toContain(`j-${MAX_ROWS + 4}`);
+    expect(shown[0].textContent).toContain(`j-${MAX_ROWS + 4}`);
     expect(shown.at(-1)!.textContent).toContain("j-5");
     expect(page().getByTestId("events-count").textContent).toContain(
       "500 rows",
@@ -645,7 +645,7 @@ describe("the Events console", () => {
     );
     fireEvent.click(page().getByRole("button", { name: "Resume" }));
     expect(rows()).toHaveLength(MAX_PAUSED);
-    expect(rows()[0]!.textContent).toContain(`h-${MAX_PAUSED - 1}`);
+    expect(rows()[0].textContent).toContain(`h-${MAX_PAUSED - 1}`);
   });
 
   it("clears the log", async () => {
@@ -671,9 +671,9 @@ describe("the Events console", () => {
       }),
     );
     const [gap] = rows();
-    expect(gap!.dataset.type).toBe("gap");
-    expect(gap!.textContent).toContain("gap: slow-consumer");
-    expect(gap!.textContent).toContain("events 10–42 may be missing on all");
+    expect(gap.dataset.type).toBe("gap");
+    expect(gap.textContent).toContain("gap: slow-consumer");
+    expect(gap.textContent).toContain("events 10–42 may be missing on all");
   });
 
   it("leaves out the range of a gap that covers no sequenced event", async () => {
@@ -692,9 +692,9 @@ describe("the Events console", () => {
       }),
     );
     const [gap] = rows();
-    expect(gap!.textContent).toContain("gap: queue-discovered");
-    expect(gap!.textContent).toContain("events may be missing on workers");
-    expect(gap!.textContent).not.toContain("0–0");
+    expect(gap.textContent).toContain("gap: queue-discovered");
+    expect(gap.textContent).toContain("events may be missing on workers");
+    expect(gap.textContent).not.toContain("0–0");
   });
 
   it("shows the server's rejection of a channel, with the reason", async () => {

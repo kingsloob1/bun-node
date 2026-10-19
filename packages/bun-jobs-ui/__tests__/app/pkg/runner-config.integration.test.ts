@@ -665,7 +665,7 @@ for (const label of ["memory", "SQLite"]) {
         // Exactly one write: the merge patch, and nothing else.
         const writes = uiConfigWrites(deploy, id);
         expect(writes).toHaveLength(1);
-        const put = writes[0]!;
+        const put = writes[0];
         expect(put.method).toBe("PUT");
         expect(put.csrf).toBe("1");
         expect(JSON.parse(put.body!)).toEqual({
@@ -786,8 +786,8 @@ for (const label of ["memory", "SQLite"]) {
           csrf: "1",
           status: 200,
         });
-        expect(JSON.parse(writes[0]!.body!)).toEqual({ concurrency: null });
-        const afterNull = writes[0]!.json as ConfigDto;
+        expect(JSON.parse(writes[0].body!)).toEqual({ concurrency: null });
+        const afterNull = writes[0].json as ConfigDto;
         expect(afterNull.overridden).toEqual(["executionMode"]);
         expect(afterNull.effective).toEqual({
           executionMode: "worker-thread",
@@ -816,7 +816,7 @@ for (const label of ["memory", "SQLite"]) {
           body: undefined,
           status: 200,
         });
-        const afterReset = both[1]!.json as ConfigDto;
+        const afterReset = both[1].json as ConfigDto;
         expect(afterReset.overridden).toEqual([]);
         expect(afterReset.effective).toEqual(code);
         expect(afterReset.seq).toBeGreaterThan(afterNull.seq);
@@ -920,7 +920,7 @@ for (const label of ["memory", "SQLite"]) {
         );
         const writes = uiConfigWrites(deploy, narrowed);
         expect(writes).toHaveLength(1);
-        expect(JSON.parse(writes[0]!.body!)).toEqual({
+        expect(JSON.parse(writes[0].body!)).toEqual({
           executionMode: "child-process",
         });
         expect(writes[0]).toMatchObject({
@@ -1108,11 +1108,11 @@ for (const label of ["memory", "SQLite"]) {
         expect(saved.closed).toBe(true);
         const writes = uiConfigWrites(deploy, id);
         expect(writes).toHaveLength(1);
-        expect(JSON.parse(writes[0]!.body!)).toEqual({
+        expect(JSON.parse(writes[0].body!)).toEqual({
           concurrency: { runMode: "parallel", maxConcurrency: 2 },
         });
-        const answer = writes[0]!.json as ConfigDto;
-        expect(writes[0]!.status).toBe(200);
+        const answer = writes[0].json as ConfigDto;
+        expect(writes[0].status).toBe(200);
         expect(answer.overridden).toEqual(["runMode", "maxConcurrency"]);
         // The toast matches what the answer said about adoption.
         expect(saved.toast).toContain(

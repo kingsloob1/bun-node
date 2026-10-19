@@ -334,7 +334,7 @@ describe("the repeatables panel", () => {
 
   /** The `emails` queue's repeatables panel with `count` series. */
   async function open(count: number) {
-    const one = repeatablesFixture.items[0]!;
+    const one = repeatablesFixture.items[0];
     const items: RepeatableDto[] = Array.from(
       { length: count },
       (_unused, index) => ({

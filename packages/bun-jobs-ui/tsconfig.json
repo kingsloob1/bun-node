@@ -13,6 +13,6 @@
     "./scripts/**/*",
     "./__tests__/server/**/*",
     "./__tests__/e2e/**/*",
-    "eslint.config.mjs"
+    "eslint.legacy.config.mjs"
   ]
 }

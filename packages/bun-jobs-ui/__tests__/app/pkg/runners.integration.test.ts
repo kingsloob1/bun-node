@@ -145,13 +145,13 @@ describe("the runner screens against a real API", () => {
     );
     const rows = await screens.mountRunnerList(fetchShim);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.id).toBe("nightly");
-    expect(rows[0]!.text).toContain("Nightly report");
-    expect(rows[0]!.text).toContain("Local");
+    expect(rows[0].id).toBe("nightly");
+    expect(rows[0].text).toContain("Nightly report");
+    expect(rows[0].text).toContain("Local");
     // Started: the instance's status is `running` (its schedule is armed).
     expect(runner.status).toBe("running");
-    expect(rows[0]!.text).toContain("Running");
-    expect(rows[0]!.href).toBe("/jobs/runners/nightly");
+    expect(rows[0].text).toContain("Running");
+    expect(rows[0].href).toBe("/jobs/runners/nightly");
   });
 
   it("show the runner's real name, status, schedule, stats and the run it made", async () => {
@@ -169,6 +169,6 @@ describe("the runner screens against a real API", () => {
     expect(view.history[0]).toContain("Success");
     expect(view.history[0]).toContain("Manual");
     const [run] = await runner.history();
-    expect(view.history[0]).toContain(run!.runId);
+    expect(view.history[0]).toContain(run.runId);
   });
 });

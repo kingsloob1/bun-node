@@ -1988,7 +1988,7 @@ checkEqual(
 
 const thrownValue = await retry(
   () => {
-    throw "a string"; // eslint-disable-line no-throw-literal
+    throw "a string"; // eslint-disable-line no-throw-literal, @typescript-eslint/only-throw-error
   },
   { attempts: 2, backoff: 1 },
 ).catch((error: unknown) => error);

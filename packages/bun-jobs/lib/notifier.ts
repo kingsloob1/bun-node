@@ -65,7 +65,7 @@ export interface JobsNotifierOptions {
 export type NotifierFollowSource = "discovery" | "follow";
 
 /** What a {@link JobsNotifier} emits. */
-// eslint-disable-next-line ts/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type JobsNotifierEvents = {
   /** An event, from any queue or runner being followed. */
   event: (event: DriverEvent) => void;

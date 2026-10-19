@@ -103,7 +103,7 @@ export async function mountQueueForFlow(
         {},
         { timeout: STEP_TIMEOUT_MS },
       );
-      const link = within(result).getAllByRole("link")[0]!;
+      const link = within(result).getAllByRole("link")[0];
       return {
         text: result.textContent ?? "",
         topHref: link.getAttribute("href") ?? "",

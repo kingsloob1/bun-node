@@ -94,7 +94,7 @@ describe("readWsDoc on a real document (mode both)", () => {
       "queue",
       "jobId",
     ]);
-    expect(job.parameters[1]!.description).toContain("encodeURIComponent");
+    expect(job.parameters[1].description).toContain("encodeURIComponent");
     // The worker family: one namespace-wide channel and one per queue,
     // both carrying exactly the worker event messages.
     expect(channel(both, "workers").parameters).toEqual([]);
@@ -178,7 +178,7 @@ describe("readWsDoc on a real document (mode both)", () => {
         RUNNER_EVENT_TYPES.length +
         WORKER_EVENT_TYPES.length,
     );
-    expect(both.messages.indexOf(events[0]!)).toBe(control.length);
+    expect(both.messages.indexOf(events[0])).toBe(control.length);
     expect(message(both, "queue.completed")).toMatchObject({
       name: "queue.completed",
       title: "Queue completed",
@@ -300,14 +300,14 @@ describe("readWsDoc on other configurations", () => {
       type: "http",
       detail: "bearer, JWT",
     });
-    expect(schemes.bearer!.note).toContain(
+    expect(schemes.bearer.note).toContain(
       "cannot send an Authorization header",
     );
     expect(schemes.apiKey).toMatchObject({
       type: "httpApiKey",
       detail: "header X-Api-Key",
     });
-    expect(schemes.apiKey!.note).toContain("X-Api-Key");
+    expect(schemes.apiKey.note).toContain("X-Api-Key");
     expect(schemes.session).toMatchObject({
       type: "httpApiKey",
       detail: "cookie sid",
@@ -319,8 +319,8 @@ describe("readWsDoc on other configurations", () => {
   it("the in-process document: the host is a template with a default", () => {
     const document = wsFixture("both");
     const servers = document.servers as Record<string, Record<string, unknown>>;
-    servers.api!.host = "{host}";
-    servers.api!.variables = { host: { default: "localhost:4000" } };
+    servers.api.host = "{host}";
+    servers.api.variables = { host: { default: "localhost:4000" } };
     const read = readWsDoc(document);
     expect(read.server).toMatchObject({
       host: "{host}",
@@ -333,7 +333,7 @@ describe("readWsDoc on other configurations", () => {
   it("without x-bun-jobs-security, reads the native list", () => {
     const document = wsFixture("jobs-secured");
     const servers = document.servers as Record<string, Record<string, unknown>>;
-    delete servers.api!["x-bun-jobs-security"];
+    delete servers.api["x-bun-jobs-security"];
     const read = readWsDoc(document);
     expect(read.requirements).toEqual([[{ scheme: "session", scopes: [] }]]);
     expect(read.conjunctive).toBe(false);
@@ -365,17 +365,17 @@ describe("the sidebar", () => {
       "Control messages",
       "Event messages",
     ]);
-    expect(groups[0]!.items.map((item) => item.slug)).toEqual([
+    expect(groups[0].items.map((item) => item.slug)).toEqual([
       "limits",
       "close-codes",
       "upgrade-refusals",
     ]);
-    expect(groups[1]!.items[4]).toMatchObject({
+    expect(groups[1].items[4]).toMatchObject({
       slug: "channel-job",
       label: "Job",
       hint: "queue/{queue}/job/{jobId}",
     });
-    expect(groups[4]!.items.map((item) => item.slug)).toContain(
+    expect(groups[4].items.map((item) => item.slug)).toContain(
       "message-queue.completed",
     );
   });
@@ -567,8 +567,8 @@ function raw(document: ReturnType<typeof wsFixture>) {
 describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract)", () => {
   it("prefers servers.api's extension over the connection channel's", () => {
     const document = wsFixture("both");
-    raw(document).servers.api!["x-bun-jobs-subprotocol"] = "from-server.v9";
-    raw(document).channels.connection!["x-bun-jobs-subprotocol"] =
+    raw(document).servers.api["x-bun-jobs-subprotocol"] = "from-server.v9";
+    raw(document).channels.connection["x-bun-jobs-subprotocol"] =
       "from-channel.v9";
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-server.v9",
@@ -579,10 +579,10 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
 
   it("reads the connection channel's extension when the server has none", () => {
     const document = wsFixture("both");
-    delete raw(document).servers.api!["x-bun-jobs-subprotocol"];
-    raw(document).channels.connection!["x-bun-jobs-subprotocol"] =
+    delete raw(document).servers.api["x-bun-jobs-subprotocol"];
+    raw(document).channels.connection["x-bun-jobs-subprotocol"] =
       "from-channel.v9";
-    raw(document).channels.connection!.description =
+    raw(document).channels.connection.description =
       "Uses the subprotocol `from-prose.v9`.";
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-channel.v9",
@@ -593,9 +593,9 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
 
   it("falls back to the connection channel's prose for an older API", () => {
     const document = wsFixture("both");
-    delete raw(document).servers.api!["x-bun-jobs-subprotocol"];
-    delete raw(document).channels.connection!["x-bun-jobs-subprotocol"];
-    raw(document).channels.connection!.description =
+    delete raw(document).servers.api["x-bun-jobs-subprotocol"];
+    delete raw(document).channels.connection["x-bun-jobs-subprotocol"];
+    raw(document).channels.connection.description =
       "The socket. Offer the subprotocol `from-prose.v9`, or none.";
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-prose.v9",
@@ -606,9 +606,9 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
 
   it("falls back to the contract's constant when the document says nothing", () => {
     const document = wsFixture("both");
-    delete raw(document).servers.api!["x-bun-jobs-subprotocol"];
-    delete raw(document).channels.connection!["x-bun-jobs-subprotocol"];
-    raw(document).channels.connection!.description = "The socket.";
+    delete raw(document).servers.api["x-bun-jobs-subprotocol"];
+    delete raw(document).channels.connection["x-bun-jobs-subprotocol"];
+    raw(document).channels.connection.description = "The socket.";
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "bun-jobs.v1",
       fromDocument: false,
@@ -618,8 +618,8 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
 
   it("ignores a non-string extension", () => {
     const document = wsFixture("both");
-    raw(document).servers.api!["x-bun-jobs-subprotocol"] = 1;
-    raw(document).channels.connection!["x-bun-jobs-subprotocol"] = null;
+    raw(document).servers.api["x-bun-jobs-subprotocol"] = 1;
+    raw(document).channels.connection["x-bun-jobs-subprotocol"] = null;
     expect(readWsDoc(document).subprotocol.source).toBe("connection-prose");
   });
 
@@ -632,26 +632,26 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
     expect(words(() => {})).toBe("from servers.api (x-bun-jobs-subprotocol)");
     expect(
       words((document) => {
-        delete document.servers.api!["x-bun-jobs-subprotocol"];
+        delete document.servers.api["x-bun-jobs-subprotocol"];
       }),
     ).toBe("from the connection channel (x-bun-jobs-subprotocol)");
     expect(
       words((document) => {
-        delete document.servers.api!["x-bun-jobs-subprotocol"];
-        delete document.channels.connection!["x-bun-jobs-subprotocol"];
+        delete document.servers.api["x-bun-jobs-subprotocol"];
+        delete document.channels.connection["x-bun-jobs-subprotocol"];
       }),
     ).toBe("from the connection channel's description");
     expect(
       words((document) => {
-        delete document.servers.api!["x-bun-jobs-subprotocol"];
-        delete document.channels.connection!["x-bun-jobs-subprotocol"];
-        document.channels.connection!.description = "The socket.";
+        delete document.servers.api["x-bun-jobs-subprotocol"];
+        delete document.channels.connection["x-bun-jobs-subprotocol"];
+        document.channels.connection.description = "The socket.";
       }),
     ).toBe("not stated; the client default");
     // A server under another key is named by its own key.
     expect(
       words((document) => {
-        document.servers = { edge: document.servers.api! };
+        document.servers = { edge: document.servers.api };
       }),
     ).toBe("from servers.edge (x-bun-jobs-subprotocol)");
   });
@@ -660,17 +660,17 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
 describe("parameter schemas (x-bun-jobs-schema)", () => {
   it("reads the queue and runner schemas, and none for a job id", () => {
     const [queue, jobId] = channel(both, "job").parameters;
-    expect(queue!.schema).toEqual({
+    expect(queue.schema).toEqual({
       type: "string",
       pattern: "^(?!\\.\\.?$)[\\w.-]+$",
       maxLength: 200,
     });
-    expectUndefined(jobId!.schema);
-    expect(channel(both, "runner").parameters[0]!.schema).toMatchObject({
+    expectUndefined(jobId.schema);
+    expect(channel(both, "runner").parameters[0].schema).toMatchObject({
       maxLength: 200,
     });
     expect(parameterSchemas(channel(both, "job").parameters)).toEqual({
-      queue: queue!.schema,
+      queue: queue.schema,
       jobId: undefined,
     });
   });
@@ -697,7 +697,7 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
   });
 
   it("the real schema refuses what the server refuses", () => {
-    const schema = channel(both, "queue").parameters[0]!.schema;
+    const schema = channel(both, "queue").parameters[0].schema;
     expectAbsent(parameterProblem("queue", "mail.v2-x_1", schema));
     for (const bad of [".", "..", "a/b", "has space", "ümlaut"]) {
       expect(parameterProblem("queue", bad, schema)).toContain(
@@ -729,11 +729,11 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
 
   it("try-it follows a document that tightens the rule, and says why", () => {
     const document = wsFixture("both");
-    const parameters = raw(document).channels.queue!.parameters as Record<
+    const parameters = raw(document).channels.queue.parameters as Record<
       string,
       Record<string, unknown>
     >;
-    parameters.queue!["x-bun-jobs-schema"] = {
+    parameters.queue["x-bun-jobs-schema"] = {
       type: "string",
       pattern: "^[a-z]+$",
       maxLength: 3,
@@ -752,13 +752,13 @@ describe("parameter schemas (x-bun-jobs-schema)", () => {
 
   it("an older API without the extension keeps the contract's rule", () => {
     const document = wsFixture("both");
-    const parameters = raw(document).channels.queue!.parameters as Record<
+    const parameters = raw(document).channels.queue.parameters as Record<
       string,
       Record<string, unknown>
     >;
-    delete parameters.queue!["x-bun-jobs-schema"];
+    delete parameters.queue["x-bun-jobs-schema"];
     const queue = channel(readWsDoc(document), "queue");
-    expectUndefined(queue.parameters[0]!.schema);
+    expectUndefined(queue.parameters[0].schema);
     expect(tryProblems(queue, { queue: "x".repeat(201) })[0]).toContain(
       "Letters, digits",
     );
@@ -789,10 +789,10 @@ describe("message examples", () => {
     );
     for (const entry of both.messages) {
       expect(entry.examples).toHaveLength(1);
-      expect(entry.examples[0]!.name).toBe(entry.key);
-      expect(entry.examples[0]!.summary).toBeTruthy();
+      expect(entry.examples[0].name).toBe(entry.key);
+      expect(entry.examples[0].summary).toBeTruthy();
     }
-    const completed = message(both, "queue.completed").examples[0]!;
+    const completed = message(both, "queue.completed").examples[0];
     expect(completed.payload).toMatchObject({
       type: "event",
       event: { kind: "queue", type: "completed" },
@@ -800,13 +800,13 @@ describe("message examples", () => {
   });
 
   it("finds an event example's event.payload", () => {
-    const completed = message(both, "queue.completed").examples[0]!;
+    const completed = message(both, "queue.completed").examples[0];
     expect(exampleEventPayload(completed.payload)).toMatchObject({
       id: "welcome:ada@example.com",
       returnValue: {},
     });
     expectUndefined(
-      exampleEventPayload(message(both, "subscribe").examples[0]!.payload),
+      exampleEventPayload(message(both, "subscribe").examples[0].payload),
     );
     expectUndefined(exampleEventPayload(null));
     expectUndefined(exampleEventPayload({ event: 3 }));
@@ -814,7 +814,7 @@ describe("message examples", () => {
 
   it("drops malformed examples rather than throwing", () => {
     const document = wsFixture("both");
-    raw(document).components.messages.hello!.examples = [
+    raw(document).components.messages.hello.examples = [
       null,
       "x",
       { name: 3, payload: { type: "hello" } },
