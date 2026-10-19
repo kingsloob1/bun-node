@@ -1,0 +1,1503 @@
+{
+  "recordedAt": "2026-10-17T23:23:30.374Z",
+  "bun": "1.4.4",
+  "bunRevision": "5f5799ed16568240de19fef364bd4c9bf22ca1c7",
+  "platform": "linux-x64",
+  "cpu": "11th Gen Intel(R) Core(TM) i9-11900H @ 2.50GHz (16 logical cores)",
+  "gitSha": "cc64c50a4d486fd8bea25aeb9d6005ba28d3071a",
+  "gitDirty": false,
+  "nest": "11.1.27",
+  "routerOptions": {
+    "bun-common": {
+      "routeCacheMax": 50000,
+      "caseSensitive": true,
+      "routeSpecificity": false
+    },
+    "bun-nest": {
+      "routeCacheMax": 50000,
+      "caseSensitive": true,
+      "routeSpecificity": false
+    }
+  },
+  "method": {
+    "rounds": 5,
+    "batches": 9,
+    "batchMs": 80,
+    "warmupMs": 400
+  },
+  "tolerance": 0.15,
+  "entries": {
+    "bun-common/match/static": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "static",
+      "nsPerOp": 39.29226474741964,
+      "median": 41.29931569098302,
+      "spread": 0.05899561448040327,
+      "rounds": [
+        39.29226474741964,
+        41.348860515476915,
+        41.29931569098302,
+        41.09258892929516,
+        41.610336050520345
+      ]
+    },
+    "bun-common/route/static": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "static",
+      "nsPerOp": 259.7312214493355,
+      "median": 273.32126174606645,
+      "spread": 0.11516683860223959,
+      "rounds": [
+        289.6436451099537,
+        279.2057686941964,
+        266.0383118090986,
+        259.7312214493355,
+        273.32126174606645
+      ]
+    },
+    "bun-common/fetch/static": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "static",
+      "nsPerOp": 1595.4840054484666,
+      "median": 1608.0442612054999,
+      "spread": 0.019387620678435417,
+      "rounds": [
+        1608.0442612054999,
+        1595.4840054484666,
+        1626.4166441446123,
+        1610.0379078405783,
+        1606.4242032817324
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 917.132929188411
+      }
+    },
+    "bun-common/served/static": {
+      "target": "bun-common",
+      "level": "served",
+      "scenario": "static",
+      "nsPerOp": 31309.52644327816,
+      "median": 31786.73777961889,
+      "spread": 0.020224975569767382,
+      "rounds": [
+        31309.52644327816,
+        31882.95090759076,
+        31457.94835298902,
+        31786.73777961889,
+        31942.760850694445
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 31208.646788990827
+      }
+    },
+    "hono/fetch/static": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "static",
+      "nsPerOp": 917.132929188411,
+      "median": 941.8767399158917,
+      "spread": 0.04901458956456866,
+      "rounds": [
+        962.0858232887316,
+        917.132929188411,
+        944.9848872216381,
+        924.7073410993895,
+        941.8767399158917
+      ]
+    },
+    "hono/served/static": {
+      "target": "hono",
+      "level": "served",
+      "scenario": "static",
+      "nsPerOp": 31208.646788990827,
+      "median": 31646.93503857085,
+      "spread": 0.021366223300557374,
+      "rounds": [
+        31646.93503857085,
+        31875.457705192628,
+        31662.455511811022,
+        31352.898694103682,
+        31208.646788990827
+      ]
+    },
+    "bun-nest/route/static": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "static",
+      "nsPerOp": 1640.5645141601562,
+      "median": 1700.746730638587,
+      "spread": 0.11252494465104722,
+      "rounds": [
+        1825.1689453125,
+        1700.746730638587,
+        1720.4969004755435,
+        1640.5645141601562,
+        1664.9662358710107
+      ]
+    },
+    "bun-nest/fetch/static": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "static",
+      "nsPerOp": 3030.2460365977913,
+      "median": 3054.8519497964153,
+      "spread": 0.0793500508248024,
+      "rounds": [
+        3270.696213613482,
+        3054.8519497964153,
+        3124.839280545793,
+        3030.2460365977913,
+        3047.080378538646
+      ]
+    },
+    "bun-nest/served/static": {
+      "target": "bun-nest",
+      "level": "served",
+      "scenario": "static",
+      "nsPerOp": 35203.861829944544,
+      "median": 35922.975164011244,
+      "spread": 0.04774566201553077,
+      "rounds": [
+        36757.97568238214,
+        36884.69351851852,
+        35203.861829944544,
+        35922.975164011244,
+        35472.517094017094
+      ]
+    },
+    "bun-common/match/param": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "param",
+      "nsPerOp": 39.756593868488174,
+      "median": 41.185003866606536,
+      "spread": 0.050530640500506055,
+      "rounds": [
+        41.76552002078137,
+        41.185003866606536,
+        40.61388520693133,
+        39.756593868488174,
+        41.57496687753564
+      ]
+    },
+    "bun-common/route/param": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "param",
+      "nsPerOp": 271.32854546440973,
+      "median": 274.92115542763156,
+      "spread": 0.0218323512450915,
+      "rounds": [
+        271.32854546440973,
+        277.2522855718085,
+        274.92115542763156,
+        276.5209874668728,
+        272.68501265788325
+      ]
+    },
+    "bun-common/fetch/param": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "param",
+      "nsPerOp": 1585.0319323592184,
+      "median": 1607.713945613135,
+      "spread": 0.03632313482098488,
+      "rounds": [
+        1631.1398200640867,
+        1607.713945613135,
+        1599.47243898905,
+        1642.6052609338685,
+        1585.0319323592184
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 5571.693155784651
+      }
+    },
+    "bun-common/served/param": {
+      "target": "bun-common",
+      "level": "served",
+      "scenario": "param",
+      "nsPerOp": 31590.362895927603,
+      "median": 31875.37837837838,
+      "spread": 0.03994115938708043,
+      "rounds": [
+        31875.37837837838,
+        32852.11861544956,
+        32325.197541703248,
+        31689.240831295843,
+        31590.362895927603
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 36234.34949103247
+      }
+    },
+    "hono/fetch/param": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "param",
+      "nsPerOp": 5571.693155784651,
+      "median": 5724.9677351328555,
+      "spread": 0.02919678537565011,
+      "rounds": [
+        5734.368685033074,
+        5571.693155784651,
+        5662.964605123541,
+        5725.906429804373,
+        5724.9677351328555
+      ]
+    },
+    "hono/served/param": {
+      "target": "hono",
+      "level": "served",
+      "scenario": "param",
+      "nsPerOp": 36234.34949103247,
+      "median": 36880.07183908046,
+      "spread": 0.024912758558110062,
+      "rounds": [
+        37047.36697674418,
+        36880.07183908046,
+        37137.04709141274,
+        36724.52192164179,
+        36234.34949103247
+      ]
+    },
+    "bun-nest/route/param": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "param",
+      "nsPerOp": 2344.4831686580883,
+      "median": 2406.1656901041665,
+      "spread": 0.04688290615119586,
+      "rounds": [
+        2401.3746152935605,
+        2344.4831686580883,
+        2454.3993530273438,
+        2406.1656901041665,
+        2409.546786221591
+      ]
+    },
+    "bun-nest/fetch/param": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "param",
+      "nsPerOp": 3809.374881964117,
+      "median": 3917.376892264475,
+      "spread": 0.08591560233038867,
+      "rounds": [
+        3877.3427968851397,
+        3809.374881964117,
+        3990.350517699355,
+        4136.659619450317,
+        3917.376892264475
+      ]
+    },
+    "bun-nest/served/param": {
+      "target": "bun-nest",
+      "level": "served",
+      "scenario": "param",
+      "nsPerOp": 37153.061907139294,
+      "median": 37409.977261731976,
+      "spread": 0.01890600957062308,
+      "rounds": [
+        37153.061907139294,
+        37855.47805113362,
+        37409.977261731976,
+        37616.082796232025,
+        37405.31188375714
+      ]
+    },
+    "bun-common/match/deep": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "deep",
+      "nsPerOp": 39.26633575631272,
+      "median": 40.089433672429735,
+      "spread": 0.048221712539056,
+      "rounds": [
+        41.15982571161569,
+        39.67041079775179,
+        40.73246358763919,
+        40.089433672429735,
+        39.26633575631272
+      ]
+    },
+    "bun-common/route/deep": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "deep",
+      "nsPerOp": 318.357894277185,
+      "median": 327.4274074921548,
+      "spread": 0.051808534059860196,
+      "rounds": [
+        327.4274074921548,
+        334.8515500860699,
+        322.06980613425924,
+        331.38406630693856,
+        318.357894277185
+      ]
+    },
+    "bun-common/fetch/deep": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "deep",
+      "nsPerOp": 1656.418970555181,
+      "median": 1668.8133582335495,
+      "spread": 0.030295930696102206,
+      "rounds": [
+        1706.6017248908297,
+        1656.418970555181,
+        1661.286054436629,
+        1668.8133582335495,
+        1683.987126861662
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 4612.684552063931
+      }
+    },
+    "hono/fetch/deep": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "deep",
+      "nsPerOp": 4612.684552063931,
+      "median": 4677.229909930986,
+      "spread": 0.03024365724122041,
+      "rounds": [
+        4612.684552063931,
+        4752.189002618425,
+        4677.229909930986,
+        4648.356537494886,
+        4690.052142085683
+      ]
+    },
+    "bun-common/match/wildcard": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "wildcard",
+      "nsPerOp": 39.450269111513,
+      "median": 40.2453863171254,
+      "spread": 0.05494888006151562,
+      "rounds": [
+        40.722877781444126,
+        39.450269111513,
+        40.02469590800857,
+        41.618017217316044,
+        40.2453863171254
+      ]
+    },
+    "bun-common/route/wildcard": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "wildcard",
+      "nsPerOp": 270.4200097318339,
+      "median": 273.33070640297206,
+      "spread": 0.023561263988359765,
+      "rounds": [
+        276.27692275839223,
+        276.79144696886044,
+        270.4200097318339,
+        272.21348949259584,
+        273.33070640297206
+      ]
+    },
+    "bun-common/fetch/wildcard": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "wildcard",
+      "nsPerOp": 1597.6946169135879,
+      "median": 1612.5007821546837,
+      "spread": 0.02706198629251596,
+      "rounds": [
+        1610.3379917184266,
+        1622.6732040816325,
+        1597.6946169135879,
+        1640.93140673613,
+        1612.5007821546837
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 4443.258990784446
+      }
+    },
+    "hono/fetch/wildcard": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "wildcard",
+      "nsPerOp": 4443.258990784446,
+      "median": 4486.308177841758,
+      "spread": 0.013353748761966886,
+      "rounds": [
+        4443.258990784446,
+        4502.593155031732,
+        4490.0107195866085,
+        4486.308177841758,
+        4470.596793518572
+      ]
+    },
+    "bun-nest/route/wildcard": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "wildcard",
+      "nsPerOp": 1684.185193650266,
+      "median": 1698.3571309840424,
+      "spread": 0.021739785909145777,
+      "rounds": [
+        1720.799019191576,
+        1684.185193650266,
+        1707.2048233695652,
+        1686.8355634973404,
+        1698.3571309840424
+      ]
+    },
+    "bun-nest/fetch/wildcard": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "wildcard",
+      "nsPerOp": 3071.372753034725,
+      "median": 3143.1853780374227,
+      "spread": 0.03053103106647233,
+      "rounds": [
+        3124.295400016547,
+        3071.372753034725,
+        3148.076831951261,
+        3143.1853780374227,
+        3165.144929974345
+      ]
+    },
+    "bun-common/match/wildcard-named": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "wildcard-named",
+      "nsPerOp": 38.454213428237054,
+      "median": 39.96010692568257,
+      "spread": 0.04046048299593811,
+      "rounds": [
+        38.669404302495224,
+        38.454213428237054,
+        39.96250253200059,
+        39.96010692568257,
+        40.010089476772414
+      ]
+    },
+    "bun-common/route/wildcard-named": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "wildcard-named",
+      "nsPerOp": 265.13060116525423,
+      "median": 272.3589292519599,
+      "spread": 0.04974155519658668,
+      "rounds": [
+        278.31860959741994,
+        272.3589292519599,
+        275.8591583681778,
+        265.13060116525423,
+        269.7225619612069
+      ]
+    },
+    "bun-common/fetch/wildcard-named": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "wildcard-named",
+      "nsPerOp": 1573.2437618397735,
+      "median": 1610.822312703583,
+      "spread": 0.04485313251710863,
+      "rounds": [
+        1615.3511952062886,
+        1573.2437618397735,
+        1610.822312703583,
+        1597.1730764948225,
+        1643.8086727712873
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 4445.689240365337
+      }
+    },
+    "hono/fetch/wildcard-named": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "wildcard-named",
+      "nsPerOp": 4445.689240365337,
+      "median": 4484.832803090558,
+      "spread": 0.012139465231162529,
+      "rounds": [
+        4445.689240365337,
+        4448.919733729438,
+        4499.657530327306,
+        4484.832803090558,
+        4485.203913961317
+      ]
+    },
+    "bun-common/match/routes-1000": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "routes-1000",
+      "nsPerOp": 39.056950145664196,
+      "median": 40.684378993577845,
+      "spread": 0.05007369350322627,
+      "rounds": [
+        39.56562110446739,
+        40.684378993577845,
+        40.995858168756534,
+        41.01267589642897,
+        39.056950145664196
+      ]
+    },
+    "bun-common/route/routes-1000": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "routes-1000",
+      "nsPerOp": 353.31597515484236,
+      "median": 354.13746111425337,
+      "spread": 0.0375079963453282,
+      "rounds": [
+        353.31597515484236,
+        354.13746111425337,
+        366.56814945969626,
+        355.71982865767046,
+        354.0033538956448
+      ]
+    },
+    "bun-common/fetch/routes-1000": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "routes-1000",
+      "nsPerOp": 1656.5428963017,
+      "median": 1674.784051829336,
+      "spread": 0.03145208058213362,
+      "rounds": [
+        1656.5428963017,
+        1708.644616963942,
+        1700.7237425797741,
+        1670.6802031558614,
+        1674.784051829336
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 5680.997551383839
+      }
+    },
+    "hono/fetch/routes-1000": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "routes-1000",
+      "nsPerOp": 5680.997551383839,
+      "median": 5726.7776005799205,
+      "spread": 0.027082037200491522,
+      "rounds": [
+        5834.850538406317,
+        5695.157525230365,
+        5680.997551383839,
+        5814.476817702845,
+        5726.7776005799205
+      ]
+    },
+    "bun-nest/route/routes-1000": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "routes-1000",
+      "nsPerOp": 2456.5778198242188,
+      "median": 2484.7313537597656,
+      "spread": 0.05565196579958555,
+      "rounds": [
+        2483.2003173828125,
+        2456.5778198242188,
+        2593.2912046370966,
+        2563.1530682963707,
+        2484.7313537597656
+      ]
+    },
+    "bun-nest/fetch/routes-1000": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "routes-1000",
+      "nsPerOp": 3967.419692700303,
+      "median": 4029.513582837822,
+      "spread": 0.026933638322727174,
+      "rounds": [
+        3967.419692700303,
+        3975.8015188500135,
+        4074.2767397779585,
+        4044.445437885267,
+        4029.513582837822
+      ]
+    },
+    "bun-common/match/routes-1000-specificity": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "routes-1000-specificity",
+      "nsPerOp": 39.47413042511827,
+      "median": 41.0330346610745,
+      "spread": 0.048340545619220285,
+      "rounds": [
+        40.141880685504645,
+        41.0330346610745,
+        39.47413042511827,
+        41.101398516420815,
+        41.38233142771275
+      ],
+      "options": {
+        "routeCacheMax": 50000,
+        "caseSensitive": true,
+        "routeSpecificity": true
+      }
+    },
+    "bun-common/route/routes-1000-specificity": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "routes-1000-specificity",
+      "nsPerOp": 344.32833149779736,
+      "median": 354.1282787754525,
+      "spread": 0.04875089211060049,
+      "rounds": [
+        349.65234375,
+        361.11464483726957,
+        344.32833149779736,
+        354.1282787754525,
+        354.2810069640837
+      ],
+      "options": {
+        "routeCacheMax": 50000,
+        "caseSensitive": true,
+        "routeSpecificity": true
+      }
+    },
+    "bun-common/fetch/routes-1000-specificity": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "routes-1000-specificity",
+      "nsPerOp": 1674.3212224928147,
+      "median": 1678.9959843669474,
+      "spread": 0.009715302248946666,
+      "rounds": [
+        1678.9959843669474,
+        1674.3212224928147,
+        1687.4152134760038,
+        1675.1523995368186,
+        1690.5877592311583
+      ],
+      "options": {
+        "routeCacheMax": 50000,
+        "caseSensitive": true,
+        "routeSpecificity": true
+      }
+    },
+    "bun-nest/route/routes-1000-specificity": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "routes-1000-specificity",
+      "nsPerOp": 2437.914092092803,
+      "median": 2504.6756286621094,
+      "spread": 0.039314157857523076,
+      "rounds": [
+        2437.914092092803,
+        2504.7342224121094,
+        2504.6756286621094,
+        2533.7586315524195,
+        2455.1265563964844
+      ],
+      "options": {
+        "routeCacheMax": 50000,
+        "caseSensitive": true,
+        "routeSpecificity": true
+      }
+    },
+    "bun-nest/fetch/routes-1000-specificity": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "routes-1000-specificity",
+      "nsPerOp": 3922.1166640390984,
+      "median": 3999.866713151684,
+      "spread": 0.03514690457572564,
+      "rounds": [
+        3999.866713151684,
+        3922.1166640390984,
+        4028.7269368624206,
+        4059.966924164944,
+        3934.937610942884
+      ],
+      "options": {
+        "routeCacheMax": 50000,
+        "caseSensitive": true,
+        "routeSpecificity": true
+      }
+    },
+    "bun-common/match/routes-1000-cold": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 356.76768507764444,
+      "median": 370.74776186331144,
+      "spread": 0.08067572012612378,
+      "rounds": [
+        370.74776186331144,
+        356.76768507764444,
+        373.0396124664893,
+        385.55017498901356,
+        369.88406890894174
+      ]
+    },
+    "bun-common/route/routes-1000-cold": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 858.8733902815934,
+      "median": 879.447967872191,
+      "spread": 0.05505265892302437,
+      "rounds": [
+        906.1566540948276,
+        858.8733902815934,
+        873.9277777777778,
+        879.447967872191,
+        889.4615190484551
+      ]
+    },
+    "bun-common/fetch/routes-1000-cold": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 2331.0834372334143,
+      "median": 2360.4408347469835,
+      "spread": 0.055409771605136465,
+      "rounds": [
+        2363.942315137437,
+        2360.4408347469835,
+        2331.0834372334143,
+        2460.2482380830343,
+        2331.341985076547
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 6419.199579668405
+      }
+    },
+    "hono/fetch/routes-1000-cold": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 6419.199579668405,
+      "median": 6486.952841781874,
+      "spread": 0.04503166637299738,
+      "rounds": [
+        6443.469125475285,
+        6708.266833521718,
+        6606.604013168208,
+        6486.952841781874,
+        6419.199579668405
+      ]
+    },
+    "bun-nest/route/routes-1000-cold": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 3255.9742431640625,
+      "median": 3299.849161783854,
+      "spread": 0.017672554368863936,
+      "rounds": [
+        3299.849161783854,
+        3255.9742431640625,
+        3304.67626953125,
+        3313.515625,
+        3257.258015950521
+      ]
+    },
+    "bun-nest/fetch/routes-1000-cold": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "routes-1000-cold",
+      "nsPerOp": 4632.954195459032,
+      "median": 4712.786241098677,
+      "spread": 0.03664968136833097,
+      "rounds": [
+        4802.750490516678,
+        4712.786241098677,
+        4632.954195459032,
+        4793.949639326744,
+        4709.358435493286
+      ]
+    },
+    "bun-common/match/param-cold": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "param-cold",
+      "nsPerOp": 344.1962120885284,
+      "median": 347.41489670942985,
+      "spread": 0.014001751427100915,
+      "rounds": [
+        349.0155618923417,
+        344.1962120885284,
+        347.41489670942985,
+        348.4628136889212,
+        344.8845596028337
+      ]
+    },
+    "bun-common/route/param-cold": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "param-cold",
+      "nsPerOp": 805.6204997583762,
+      "median": 823.1066097861842,
+      "spread": 0.033619705333002146,
+      "rounds": [
+        819.8831075032552,
+        823.9151007401316,
+        832.7052235704788,
+        823.1066097861842,
+        805.6204997583762
+      ]
+    },
+    "bun-common/fetch/param-cold": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "param-cold",
+      "nsPerOp": 2270.212870352897,
+      "median": 2366.073208910295,
+      "spread": 0.07018448517204243,
+      "rounds": [
+        2270.212870352897,
+        2429.5465918895597,
+        2368.9678882438316,
+        2287.496110994324,
+        2366.073208910295
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 6063.026699401566
+      }
+    },
+    "hono/fetch/param-cold": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "param-cold",
+      "nsPerOp": 6063.026699401566,
+      "median": 6243.775454399228,
+      "spread": 0.041040103590614246,
+      "rounds": [
+        6231.641387972994,
+        6063.026699401566,
+        6311.853943217666,
+        6243.775454399228,
+        6306.040908742037
+      ]
+    },
+    "bun-common/match/head": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "head",
+      "nsPerOp": 39.65441426995705,
+      "median": 40.4450511076371,
+      "spread": 0.06172521346990583,
+      "rounds": [
+        39.65441426995705,
+        39.875638818532536,
+        42.10209145579423,
+        40.4450511076371,
+        40.51370848286185
+      ]
+    },
+    "bun-common/route/head": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "head",
+      "nsPerOp": 798.232571348852,
+      "median": 814.8647257486979,
+      "spread": 0.08486568397173622,
+      "rounds": [
+        798.232571348852,
+        827.8767372532894,
+        865.9751244848901,
+        812.5147893846649,
+        814.8647257486979
+      ]
+    },
+    "bun-common/fetch/head": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "head",
+      "nsPerOp": 2565.6252410759603,
+      "median": 2604.5088712197494,
+      "spread": 0.02735437066567381,
+      "rounds": [
+        2596.9512812510834,
+        2605.8298374586902,
+        2604.5088712197494,
+        2635.806304909561,
+        2565.6252410759603
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 5875.706305226899
+      }
+    },
+    "hono/fetch/head": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "head",
+      "nsPerOp": 5875.706305226899,
+      "median": 5979.0481387352365,
+      "spread": 0.02707088073446701,
+      "rounds": [
+        5875.706305226899,
+        5976.477132075472,
+        6018.070488790886,
+        5979.0481387352365,
+        6034.766849846452
+      ]
+    },
+    "bun-nest/route/head": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "head",
+      "nsPerOp": 2778.4144329202586,
+      "median": 2801.3402273995534,
+      "spread": 0.04406804768500284,
+      "rounds": [
+        2804.272774832589,
+        2801.3402273995534,
+        2788.9702990301726,
+        2900.8537326388887,
+        2778.4144329202586
+      ]
+    },
+    "bun-nest/fetch/head": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "head",
+      "nsPerOp": 4703.799273956312,
+      "median": 4853.087827426811,
+      "spread": 0.048298205579142134,
+      "rounds": [
+        4837.5511221945135,
+        4906.917137476459,
+        4853.087827426811,
+        4930.984338292874,
+        4703.799273956312
+      ]
+    },
+    "bun-common/match/host": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "host",
+      "nsPerOp": 93.23680455139205,
+      "median": 93.82295857065388,
+      "spread": 0.024887460469370938,
+      "rounds": [
+        93.82295857065388,
+        93.60712565038526,
+        95.55723183895529,
+        94.156270447618,
+        93.23680455139205
+      ]
+    },
+    "bun-common/route/host": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "host",
+      "nsPerOp": 406.221431751943,
+      "median": 407.5805206298828,
+      "spread": 0.02584021896496691,
+      "rounds": [
+        416.71828249667556,
+        406.221431751943,
+        407.5805206298828,
+        407.4823710123698,
+        415.10960751488096
+      ]
+    },
+    "bun-common/fetch/host": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "host",
+      "nsPerOp": 1752.8723295322318,
+      "median": 1778.0842572062083,
+      "spread": 0.0435962663673741,
+      "rounds": [
+        1766.369775291289,
+        1829.2910185185185,
+        1780.3506584130557,
+        1752.8723295322318,
+        1778.0842572062083
+      ]
+    },
+    "bun-nest/route/host": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "host",
+      "nsPerOp": 2914.1262297453704,
+      "median": 2918.686161747685,
+      "spread": 0.04987426061519582,
+      "rounds": [
+        3006.173828125,
+        2918.686161747685,
+        2914.1262297453704,
+        2917.4817708333335,
+        3059.466120793269
+      ]
+    },
+    "bun-nest/fetch/host": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "host",
+      "nsPerOp": 4612.392547822295,
+      "median": 4613.902705296623,
+      "spread": 0.006134881666586655,
+      "rounds": [
+        4613.6569682151585,
+        4640.68903030303,
+        4629.678019683865,
+        4613.902705296623,
+        4612.392547822295
+      ]
+    },
+    "bun-common/match/validate": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "validate",
+      "nsPerOp": 40.88241854712997,
+      "median": 41.99159391009452,
+      "spread": 0.058792758852489184,
+      "rounds": [
+        42.63029382231527,
+        41.99159391009452,
+        41.85393837433956,
+        43.286008722077916,
+        40.88241854712997
+      ]
+    },
+    "bun-common/route/validate": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "validate",
+      "nsPerOp": 983.5013549804687,
+      "median": 1023.972757711039,
+      "spread": 0.10318013519140927,
+      "rounds": [
+        1044.1967447916666,
+        983.5013549804687,
+        1023.972757711039,
+        1007.1553610777244,
+        1084.9791577482877
+      ]
+    },
+    "bun-common/fetch/validate": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "validate",
+      "nsPerOp": 2278.4461403349383,
+      "median": 2334.75731257173,
+      "spread": 0.044261449088347,
+      "rounds": [
+        2355.317277614116,
+        2334.75731257173,
+        2311.2938002194087,
+        2278.4461403349383,
+        2379.293468175914
+      ]
+    },
+    "bun-common/match/notfound": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "notfound",
+      "nsPerOp": 30.70547221191042,
+      "median": 31.65652946644662,
+      "spread": 0.05941353104859671,
+      "rounds": [
+        31.65652946644662,
+        30.7963090362736,
+        32.52979273853458,
+        30.70547221191042,
+        31.78899985898927
+      ]
+    },
+    "bun-common/route/notfound": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "notfound",
+      "nsPerOp": 54.31411651971855,
+      "median": 55.52883739783227,
+      "spread": 0.0481691301810884,
+      "rounds": [
+        55.56006241115849,
+        55.52883739783227,
+        55.49968927556818,
+        54.31411651971855,
+        56.93038026902768
+      ]
+    },
+    "bun-common/fetch/notfound": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "notfound",
+      "nsPerOp": 1229.7118987576775,
+      "median": 1235.3376643980137,
+      "spread": 0.038388035195849955,
+      "rounds": [
+        1276.9181224079427,
+        1230.5742094695054,
+        1229.7118987576775,
+        1235.3376643980137,
+        1240.4348853121335
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 2282.427421314862
+      }
+    },
+    "bun-common/served/notfound": {
+      "target": "bun-common",
+      "level": "served",
+      "scenario": "notfound",
+      "nsPerOp": 31569.68887980376,
+      "median": 31646.804119547658,
+      "spread": 0.014354272113012935,
+      "rounds": [
+        31636.11195521791,
+        31748.527078891257,
+        32022.848784507623,
+        31569.68887980376,
+        31646.804119547658
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 33997.45118000925
+      }
+    },
+    "hono/fetch/notfound": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "notfound",
+      "nsPerOp": 2282.427421314862,
+      "median": 2299.7978097318287,
+      "spread": 0.02011744932822095,
+      "rounds": [
+        2282.427421314862,
+        2299.7978097318287,
+        2302.7375144834964,
+        2295.6832837666734,
+        2328.3440393085057
+      ]
+    },
+    "hono/served/notfound": {
+      "target": "hono",
+      "level": "served",
+      "scenario": "notfound",
+      "nsPerOp": 33997.45118000925,
+      "median": 34551.509425493714,
+      "spread": 0.04162079309593179,
+      "rounds": [
+        35412.45206136146,
+        34643.689101172386,
+        34281.97860262009,
+        34551.509425493714,
+        33997.45118000925
+      ]
+    },
+    "bun-nest/route/notfound": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "notfound",
+      "nsPerOp": 287.8799043543199,
+      "median": 292.8334137991573,
+      "spread": 0.026132602572743007,
+      "rounds": [
+        292.8100713951311,
+        287.8799043543199,
+        295.4029554834906,
+        295.1751142393868,
+        292.8334137991573
+      ]
+    },
+    "bun-nest/fetch/notfound": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "notfound",
+      "nsPerOp": 4527.289950273191,
+      "median": 4548.720630636158,
+      "spread": 0.03582634586343248,
+      "rounds": [
+        4689.48620585572,
+        4571.00797321972,
+        4548.720630636158,
+        4527.289950273191,
+        4543.75885233551
+      ]
+    },
+    "bun-nest/served/notfound": {
+      "target": "bun-nest",
+      "level": "served",
+      "scenario": "notfound",
+      "nsPerOp": 40701.45046923879,
+      "median": 40854.276185513285,
+      "spread": 0.017648176994085937,
+      "rounds": [
+        40805.72654155496,
+        41402.798679867985,
+        40701.45046923879,
+        41419.75687103594,
+        40854.276185513285
+      ]
+    },
+    "bun-common/match/middleware": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "middleware",
+      "nsPerOp": 39.41659351333118,
+      "median": 40.346504047196944,
+      "spread": 0.049807438765550355,
+      "rounds": [
+        40.346504047196944,
+        40.61093324337724,
+        39.41659351333118,
+        41.37983308109301,
+        39.4967388066705
+      ]
+    },
+    "bun-common/route/middleware": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "middleware",
+      "nsPerOp": 437.49834693610336,
+      "median": 457.28559910973837,
+      "spread": 0.07742992620199679,
+      "rounds": [
+        457.28559910973837,
+        437.49834693610336,
+        471.37381165286143,
+        444.5349232066761,
+        459.5688534007353
+      ]
+    },
+    "bun-common/fetch/middleware": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "middleware",
+      "nsPerOp": 1805.0760085617235,
+      "median": 1828.6264319984334,
+      "spread": 0.03652270835803124,
+      "rounds": [
+        1805.0760085617235,
+        1828.6264319984334,
+        1871.0022731865024,
+        1829.3587139648073,
+        1814.8999473407057
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 2130.5437732545415
+      }
+    },
+    "hono/fetch/middleware": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "middleware",
+      "nsPerOp": 2130.5437732545415,
+      "median": 2143.1656197083084,
+      "spread": 0.012211955947003335,
+      "rounds": [
+        2147.2181630143114,
+        2143.1656197083084,
+        2132.40415946505,
+        2130.5437732545415,
+        2156.5618799566882
+      ]
+    },
+    "bun-nest/route/middleware": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "middleware",
+      "nsPerOp": 2810.847237723214,
+      "median": 2832.1778390066966,
+      "spread": 0.011552113486531564,
+      "rounds": [
+        2843.3184640066966,
+        2810.847237723214,
+        2843.1269880022323,
+        2832.1778390066966,
+        2826.477225167411
+      ]
+    },
+    "bun-nest/fetch/middleware": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "middleware",
+      "nsPerOp": 4510.332267977873,
+      "median": 4550.381682680463,
+      "spread": 0.020304802300164872,
+      "rounds": [
+        4534.957662787819,
+        4510.332267977873,
+        4601.913672987218,
+        4592.801454104817,
+        4550.381682680463
+      ]
+    },
+    "bun-common/match/mounted": {
+      "target": "bun-common",
+      "level": "match",
+      "scenario": "mounted",
+      "nsPerOp": 39.28526801040168,
+      "median": 40.81925869060415,
+      "spread": 0.07053738946150943,
+      "rounds": [
+        42.05634826015116,
+        40.81925869060415,
+        39.28526801040168,
+        39.888453861028374,
+        41.37179573032603
+      ]
+    },
+    "bun-common/route/mounted": {
+      "target": "bun-common",
+      "level": "route",
+      "scenario": "mounted",
+      "nsPerOp": 267.92029979130996,
+      "median": 274.604218064693,
+      "spread": 0.03623176583711976,
+      "rounds": [
+        277.6275253563596,
+        272.4881553516986,
+        274.7652480811403,
+        267.92029979130996,
+        274.604218064693
+      ]
+    },
+    "bun-common/fetch/mounted": {
+      "target": "bun-common",
+      "level": "fetch",
+      "scenario": "mounted",
+      "nsPerOp": 1579.796025410624,
+      "median": 1611.176368691189,
+      "spread": 0.042916271094400986,
+      "rounds": [
+        1647.5949799110035,
+        1598.7980605135824,
+        1579.796025410624,
+        1611.176368691189,
+        1616.7393334145252
+      ],
+      "rival": {
+        "contender": "hono",
+        "nsPerOp": 4496.820041878552
+      }
+    },
+    "hono/fetch/mounted": {
+      "target": "hono",
+      "level": "fetch",
+      "scenario": "mounted",
+      "nsPerOp": 4496.820041878552,
+      "median": 4612.174693545576,
+      "spread": 0.04529828349125903,
+      "rounds": [
+        4619.21159847926,
+        4496.820041878552,
+        4612.174693545576,
+        4700.518270944742,
+        4541.62457438065
+      ]
+    },
+    "bun-nest/route/prefix-param": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "prefix-param",
+      "nsPerOp": 2022.68984375,
+      "median": 2058.918585526316,
+      "spread": 0.02830614083639156,
+      "rounds": [
+        2025.0382612179487,
+        2074.5096885279604,
+        2022.68984375,
+        2058.918585526316,
+        2079.9443873355262
+      ]
+    },
+    "bun-nest/fetch/prefix-param": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "prefix-param",
+      "nsPerOp": 3563.208173509495,
+      "median": 3664.7690930210047,
+      "spread": 0.041778965483679494,
+      "rounds": [
+        3664.7690930210047,
+        3567.309372114497,
+        3563.208173509495,
+        3712.0753248017127,
+        3681.826562425056
+      ]
+    },
+    "bun-nest/route/prefix-notfound-inside": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "prefix-notfound-inside",
+      "nsPerOp": 52.38780723755865,
+      "median": 52.40700976693494,
+      "spread": 0.041873757859516934,
+      "rounds": [
+        54.581481592615226,
+        52.40700976693494,
+        52.38780723755865,
+        53.464823711097814,
+        52.39552548487768
+      ]
+    },
+    "bun-nest/fetch/prefix-notfound-inside": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "prefix-notfound-inside",
+      "nsPerOp": 4208.825396825397,
+      "median": 4250.358908879861,
+      "spread": 0.020784094326069407,
+      "rounds": [
+        4290.371226281507,
+        4296.302020874972,
+        4210.984023828865,
+        4250.358908879861,
+        4208.825396825397
+      ]
+    },
+    "bun-nest/route/prefix-notfound-outside": {
+      "target": "bun-nest",
+      "level": "route",
+      "scenario": "prefix-notfound-outside",
+      "nsPerOp": 51.521777279375414,
+      "median": 53.049061492277666,
+      "spread": 0.042808639878560865,
+      "rounds": [
+        53.16138525722789,
+        53.727354488831615,
+        51.84568562852522,
+        53.049061492277666,
+        51.521777279375414
+      ]
+    },
+    "bun-nest/fetch/prefix-notfound-outside": {
+      "target": "bun-nest",
+      "level": "fetch",
+      "scenario": "prefix-notfound-outside",
+      "nsPerOp": 4153.590098797251,
+      "median": 4244.649610189964,
+      "spread": 0.035429075260841617,
+      "rounds": [
+        4221.472243681713,
+        4244.649610189964,
+        4300.747955010225,
+        4266.817832050853,
+        4153.590098797251
+      ]
+    }
+  },
+  "loads": [
+    3.14,
+    2.62,
+    2.81,
+    2.83,
+    2.47
+  ]
+}

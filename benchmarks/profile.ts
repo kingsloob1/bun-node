@@ -10,9 +10,9 @@
  */
 import { EventEmitter } from "node:events";
 import process from "node:process";
-import { BunHttpAdapter } from "../packages/bun-common/lib/index";
 import { BunRequest } from "../packages/bun-common/lib/BunRequest";
 import { BunResponse } from "../packages/bun-common/lib/BunResponse";
+import { BunHttpAdapter } from "../packages/bun-common/lib/index";
 import { etag } from "../packages/bun-common/lib/utils/native";
 
 const SYNC_ITERS = 300_000;
@@ -76,8 +76,10 @@ async function main(): Promise<void> {
     new BunRequest(makeNativeRequest(), server as never, requestOpts);
 
   console.log("Profiling the BunRouter request pipeline");
-  console.log(`  Bun ${Bun.version}  ·  sync x${SYNC_ITERS.toLocaleString()}` +
-    `  ·  async x${ASYNC_ITERS.toLocaleString()}\n`);
+  console.log(
+    `  Bun ${Bun.version}  ·  sync x${SYNC_ITERS.toLocaleString()}` +
+      `  ·  async x${ASYNC_ITERS.toLocaleString()}\n`,
+  );
 
   /* --- primitives (baseline) ----------------------------------------- */
   benchSync("new URL()", "primitive", () => new URL(URL_STR));
@@ -111,9 +113,13 @@ async function main(): Promise<void> {
   // `new URL()` — and share its cached result. Each figure below builds a fresh
   // request per iteration, so it includes construction (~73ns) plus one cold
   // scan; the second getter on the same request is effectively free.
-  benchSync("req.host (fresh request: construct + url scan)", "BunRequest", () => {
-    sink = makeBunRequest().host;
-  });
+  benchSync(
+    "req.host (fresh request: construct + url scan)",
+    "BunRequest",
+    () => {
+      sink = makeBunRequest().host;
+    },
+  );
   benchSync(
     "req.originalUrl (fresh request: construct + url scan)",
     "BunRequest",
@@ -222,7 +228,11 @@ async function main(): Promise<void> {
   // Attribute the deltas.
   const tSend = tInitRespSend - tInitResp;
   const tHandle = tInitRespHandle - tInitResp;
-  record("BunResponse.send (etag + new Response + headers)", "attributed", tSend);
+  record(
+    "BunResponse.send (etag + new Response + headers)",
+    "attributed",
+    tSend,
+  );
   record(
     "BunRouter.handle total (getMatchedLayers + walk + send)",
     "attributed",
