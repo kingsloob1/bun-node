@@ -6,6 +6,11 @@
   "private": true,
   "description": "bun lint diagnostics and quick fixes, and bun fmt formatting, for the bun-node repository",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kingsloob1/bun-node.git",
+    "directory": "tools/vscode-bun-lint"
+  },
   "categories": [
     "Linters",
     "Formatters"
@@ -99,7 +104,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
-    "package": "bun scripts/build.ts && bunx @vscode/vsce@4.0.0 package --no-dependencies --allow-missing-repository --skip-license --out dist/vscode-bun-lint.vsix",
+    "package": "bun scripts/build.ts && bunx @vscode/vsce@4.0.0 package --no-dependencies --skip-license --baseContentUrl https://github.com/kingsloob1/bun-node/blob/develop/tools/vscode-bun-lint/ --baseImagesUrl https://github.com/kingsloob1/bun-node/raw/develop/tools/vscode-bun-lint/ --out dist/vscode-bun-lint.vsix",
     "test": "bun test --check",
     "lint": "bun lint",
     "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."

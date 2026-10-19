@@ -1,4 +1,10 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -14,6 +20,8 @@ import {
   parseVersion,
   runBun,
 } from "../src/core/bun";
+import { ReportError } from "../src/core/report";
+import { lintText } from "../src/core/service";
 
 const scratch = mkdtempSync(join(tmpdir(), "vscode-bun-lint-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -178,5 +186,24 @@ describe("runBun", () => {
       { cwd: scratch, timeoutMs: 100 },
     );
     expect(result.killed).toBe(true);
+  });
+});
+
+describe("a package whose lint script is not exactly bun lint", () => {
+  test("is a ReportError that names the script", async () => {
+    const dir = join(scratch, "composite");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({
+        name: "composite",
+        scripts: { lint: "bun lint && echo done" },
+      }),
+    );
+    const error = await lintText(join(dir, "a.ts"), "export const a = 1;\n", {
+      bunPath: process.execPath,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReportError);
+    expect((error as ReportError).message).toContain('exactly "bun lint"');
   });
 });

@@ -54,6 +54,15 @@ export interface LintFileResult {
   messages: LintMessage[];
 }
 
+/**
+ * What usually breaks the report: `bun lint` runs the nearest `package.json`'s
+ * `lint` script when there is one, with our flags appended, so the extension
+ * relies on that script being exactly `bun lint`. A composite script
+ * (`bun lint && tsc`, `eslint .`) prints something else, or nothing.
+ */
+export const SCRIPT_HINT =
+  'Is the nearest package.json\'s "lint" script exactly "bun lint"? The extension relies on it.';
+
 /** The report was not the JSON array `-f json` prints. */
 export class ReportError extends Error {
   /**
@@ -83,7 +92,7 @@ export function parseLintReport(stdout: string, stderr = ""): LintFileResult[] {
   if (text === "") {
     const hint = /Script not found "lint"/.test(stderr)
       ? " This Bun has no `bun lint` (it needs 1.4.4 or later)."
-      : "";
+      : ` ${SCRIPT_HINT}`;
     throw new ReportError(`bun lint printed no report.${hint}`, stderr);
   }
   let parsed: unknown;
@@ -91,7 +100,7 @@ export function parseLintReport(stdout: string, stderr = ""): LintFileResult[] {
     parsed = JSON.parse(text);
   } catch {
     throw new ReportError(
-      `bun lint printed something other than a JSON report: ${text.slice(0, 200)}`,
+      `bun lint printed something other than a JSON report. ${SCRIPT_HINT} It printed: ${text.slice(0, 200)}`,
       stderr,
     );
   }

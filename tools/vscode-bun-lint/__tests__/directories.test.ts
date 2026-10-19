@@ -40,7 +40,12 @@ interface Case {
   console: boolean;
   /** Whether the root config's regexp plugin applies (not in the template). */
   regexp: boolean;
-  /** Whether the React rules apply (a `.tsx` file in bun-jobs-ui). */
+  /**
+   * Whether to plant JSX and a DOM-typed line: a `.tsx` component file under
+   * the React override (`packages/bun-jobs-ui/**`; `examples/bun-jobs-ui/**`
+   * has no `.tsx`). The hooks rules, which also fire in `.ts`, and the test
+   * override are planted separately below.
+   */
   react: boolean;
 }
 
@@ -172,15 +177,17 @@ function plant(
       "error",
     ]);
   if (c.react) {
+    // Two more lines: a list without keys (react/jsx-key) and the DOM line,
+    // which app/tsconfig.json's DOM lib types, so it reports nothing (under a
+    // DOM-free project it is three no-unsafe-* findings: the control below).
     lines.push(
       "export const __probeList = [1].map((n) => <i>{n}</i>);",
-      // Typed by app/tsconfig.json's DOM lib: clean. Under a DOM-free
-      // project it is three no-unsafe-* findings (the control below).
       DOM_LINE,
     );
     expected.push(["react/jsx-key", firstLine + 4, "error"]);
     // A component file that exports something other than components: the
-    // React Refresh rule, on each planted export.
+    // React Refresh rule, on each planted export (lines 2, 4, 5 and 6 of the
+    // plant; `debugger;` and `console.info` export nothing).
     for (const offset of [1, 3, 4, 5])
       expected.push([
         "react/only-export-components",
@@ -248,4 +255,109 @@ test("control: the DOM line is not clean in a DOM-free project, so the bun-jobs-
     "@typescript-eslint/no-unsafe-call",
     "@typescript-eslint/no-unsafe-member-access",
   ]);
+});
+
+/**
+ * The problems of a virtual file (standard input only), as findings.
+ * @param file The file, relative to the repository.
+ * @param text Its content.
+ * @returns Its findings, sorted.
+ */
+async function lintVirtual(file: string, text: string): Promise<Finding[]> {
+  return findings(await lintText(join(REPO, file), text, { bunPath }));
+}
+
+describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () => {
+  // A hook in a `.ts` file: a conditional hook call (line 5) and an effect
+  // that reads `n` without listing it (line 10).
+  const HOOK = [
+    'import { useEffect, useState } from "react";',
+    "",
+    "export function useProbe(flag: boolean, n: number): number {",
+    "  if (flag) {",
+    "    useEffect(() => {}, []);",
+    "  }",
+    "  const [v] = useState(0);",
+    "  useEffect(() => {",
+    "    document.title = String(n);",
+    "  }, []);",
+    "  return v;",
+    "}",
+    "",
+  ].join("\n");
+
+  // A test file: `document.title as string` is an unnecessary assertion only
+  // where the DOM lib types `document` (line 3); the `any` lines (4, 5) are
+  // no-unsafe-* outside tests, off inside them (Q12's override).
+  const DOM_TEST = [
+    'import { expect, test } from "bun:test";',
+    "",
+    "const title = document.title as string;",
+    'const anyValue: any = JSON.parse("{}");',
+    "const n: number = anyValue.foo.bar;",
+    'test("probe", () => {',
+    "  expect(title + String(n)).toBeDefined();",
+    "});",
+    "",
+  ].join("\n");
+
+  test("app/hooks/*.ts: rules-of-hooks (error) and exhaustive-deps (warning)", async () => {
+    expect(
+      await lintVirtual("packages/bun-jobs-ui/app/hooks/__probe__.ts", HOOK),
+    ).toEqual([
+      ["react-hooks/rules-of-hooks", 5, "error"],
+      ["react-hooks/exhaustive-deps", 10, "warning"],
+    ]);
+  });
+
+  test("lib/*.ts and examples/bun-jobs-ui: the same hooks rules (no DOM in lib, so line 9 is unsafe)", async () => {
+    const expected: Finding[] = [
+      ["react-hooks/rules-of-hooks", 5, "error"],
+      ["@typescript-eslint/no-unsafe-member-access", 9, "warning"],
+      ["react-hooks/exhaustive-deps", 10, "warning"],
+    ];
+    expect(
+      await lintVirtual("packages/bun-jobs-ui/lib/__probe__.ts", HOOK),
+    ).toEqual(expected);
+    expect(
+      await lintVirtual("examples/bun-jobs-ui/__probe__.ts", HOOK),
+    ).toEqual(expected);
+  });
+
+  test("control: outside the React override the hooks plant reports no hooks rule", async () => {
+    expect(
+      await lintVirtual("packages/bun-common/lib/__probe__.ts", HOOK),
+    ).toEqual([["@typescript-eslint/no-unsafe-member-access", 9, "warning"]]);
+  });
+
+  test("__tests__/app/**: the DOM-typed assertion is reported, the no-unsafe-* lines are not", async () => {
+    expect(
+      await lintVirtual(
+        "packages/bun-jobs-ui/__tests__/app/__probe__.test.ts",
+        DOM_TEST,
+      ),
+    ).toEqual([
+      ["@typescript-eslint/no-unnecessary-type-assertion", 3, "warning"],
+    ]);
+  });
+
+  test("control: without the DOM lib the assertion is not reported", async () => {
+    expect(
+      await lintVirtual(
+        "packages/bun-jobs-ui/__tests__/server/__probe__.test.ts",
+        DOM_TEST,
+      ),
+    ).toEqual([]);
+  });
+
+  test("control: outside a test file the no-unsafe-* lines are reported", async () => {
+    expect(
+      await lintVirtual("packages/bun-jobs-ui/app/__probe__.ts", DOM_TEST),
+    ).toEqual([
+      ["@typescript-eslint/no-unnecessary-type-assertion", 3, "warning"],
+      ["@typescript-eslint/no-unsafe-assignment", 4, "warning"],
+      ["@typescript-eslint/no-unsafe-assignment", 5, "warning"],
+      ["@typescript-eslint/no-unsafe-member-access", 5, "warning"],
+    ]);
+  });
 });

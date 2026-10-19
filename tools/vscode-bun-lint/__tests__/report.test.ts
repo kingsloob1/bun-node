@@ -134,6 +134,9 @@ describe("parseLintReport", () => {
     expect(() => parseLintReport("<agent>…</agent>")).toThrow(
       /other than a JSON report/,
     );
+    // The usual cause: a `lint` script that is not exactly `bun lint`.
+    expect(() => parseLintReport("[]\ndone")).toThrow(/exactly "bun lint"/);
+    expect(() => parseLintReport("", "")).toThrow(/exactly "bun lint"/);
     expect(() => parseLintReport('{"a":1}')).toThrow(/not an array/);
   });
 });

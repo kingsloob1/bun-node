@@ -58,6 +58,10 @@ export async function lintText(
   text: string,
   options: CallOptions,
 ): Promise<Problem[]> {
+  // In a package whose `package.json` has a `lint` script, `bun lint` runs
+  // that script with these arguments appended, from the package directory:
+  // this relies on the script being exactly `bun lint` (all eleven are). A
+  // composite one surfaces as a ReportError naming it (SCRIPT_HINT).
   const result = await runBun(options.bunPath, lintArgs(filePath), {
     cwd: workingDirectory(filePath),
     input: text,

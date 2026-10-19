@@ -26,7 +26,10 @@ code --install-extension dist/vscode-bun-lint.vsix
 `bun run package` bundles `src/extension.ts` with `Bun.build`
 (`scripts/build.ts`: one CommonJS file, `dist/extension.js`, with `vscode`
 left to the host) and packs it with `bunx @vscode/vsce`, which is not a
-dependency. Reinstall the same way after pulling a change here. To remove it:
+dependency. vsce joins a relative README link onto `--baseContentUrl`
+(this folder on GitHub's `develop`) by plain concatenation, which a browser
+normalises to the right file; the `repository` field alone would give
+`blob/HEAD/../../…`, which leaves the repository. Reinstall the same way after pulling a change here. To remove it:
 `code --uninstall-extension kingsleyweb.vscode-bun-lint`.
 
 To work on the extension itself, `bun run build` and start VS Code with
@@ -97,9 +100,13 @@ two disagree on 78 files (plan §7, PR A).
   working directory, so every directory of the repository gets the root one
   and `templates/compute-provider/` its own. In a directory whose
   `package.json` has a `lint` script, `bun lint` runs that script ("your
-  script wins"), from the package's directory; all eleven are `bun lint`, so
-  the result is the gate's. That is why the file name is passed absolute: a
-  relative one would be resolved from the package directory.
+  script wins"), from the package's directory, with the extension's flags
+  appended. **The extension relies on that script being exactly
+  `bun lint`**, as all eleven are, which makes the result the gate's. A
+  composite script (`bun lint && …`, `eslint .`) shows up as a notification
+  that the report is not JSON, naming the script. The file name is passed
+  absolute because a relative one would be resolved from the package
+  directory.
 - **Without `AGENT`, `CLAUDECODE` and `REPL_ID`** in the child's
   environment: they switch Bun's output to the format meant for AI agents.
 - **With `-f json`, `--no-warn-ignored` and `--no-color`**: the machine
@@ -148,8 +155,17 @@ environment, the floor check, the report mapping, the edits), and
   findings, by rule, line and severity, and the same problems as the CLI run
   from that directory. The plants show each directory gets its own config:
   `regexp/*` everywhere but the template, `no-console` off in `scripts/`,
-  `playground/` and `examples/`, the React rules in bun-jobs-ui's `.tsx`, the
-  type-aware `no-floating-promises` everywhere.
+  `playground/` and `examples/`, the type-aware `no-floating-promises`
+  everywhere, and the React rules under their override
+  (`packages/bun-jobs-ui/**` and `examples/bun-jobs-ui/**`): `jsx-key` and
+  `only-export-components` in a `.tsx` component, `rules-of-hooks` (error)
+  and `exhaustive-deps` (warning) in a `.ts` hook in `app/` and `lib/`, and
+  none of them in bun-common. In `__tests__/app/**`, the DOM-typed
+  `no-unnecessary-type-assertion` is reported and the `no-unsafe-*` rules are
+  off (the test override); each has a control where it does not hold.
+- `package`: `bun run package` as written exits 0, packs five files, and
+  every README link resolves to a file in the repository. It needs the
+  network once, for `bunx @vscode/vsce`, and `unzip`.
 - `extension`: `activate()` against a fake `vscode` module with the real
   `bun` behind it: the diagnostics, the quick fixes, "Fix all", the
   formatters, the explain page and the single notification for an old Bun.
