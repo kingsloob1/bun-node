@@ -425,8 +425,9 @@ never the test suite's, so the two can never disturb each other.
 XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
 package existed nothing declared them, and its typecheck passed only where an
 old install had left them in the root `node_modules`. Run
-`bun install --frozen-lockfile` in each of the three bench directories, and in
-`templates/compute-provider/` (below), before `scripts/typecheck.ts`, or their
+`bun install --frozen-lockfile` in each of the three bench directories, in
+`templates/compute-provider/` (below) and in `tools/vscode-bun-lint/` (the
+editor extension, for `@types/vscode`), before `scripts/typecheck.ts`, or their
 projects fail on missing modules. **Frozen, not plain**: a plain `bun install`
 re-resolves against the registry and rewrites the lock, so the gate checks
 whatever was published that day. Measured 2026-10-17: on Bun 1.4.4-canary a
@@ -568,8 +569,10 @@ the only projects. There are also `packages/bun-common/bench`,
 `packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
 `benchmarks/`, each a nested project with its own config because it resolves
 third-party comparators from its own `node_modules`; the examples; the
-compute-provider template (`templates/tsconfig.json`); and the root `scripts/`
-(`scripts/tsconfig.json`).
+compute-provider template (`templates/tsconfig.json`); the root `scripts/`
+(`scripts/tsconfig.json`); and the VS Code extension for `bun lint` and
+`bun fmt` (`tools/vscode-bun-lint/`, opt-in until PR E of
+`docs/plans/bun-lint-fmt/`; its README says how to install it).
 
 The root `scripts/` were the last files no project claimed. The root
 `tsconfig.json` includes nothing, so an editor put them in an inferred project,

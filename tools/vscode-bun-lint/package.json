@@ -1,0 +1,116 @@
+{
+  "publisher": "kingsleyweb",
+  "name": "vscode-bun-lint",
+  "displayName": "Bun Lint (bun-node)",
+  "version": "0.1.0",
+  "private": true,
+  "description": "bun lint diagnostics and quick fixes, and bun fmt formatting, for the bun-node repository",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kingsloob1/bun-node.git",
+    "directory": "tools/vscode-bun-lint"
+  },
+  "categories": [
+    "Linters",
+    "Formatters"
+  ],
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:json",
+    "onLanguage:jsonc",
+    "onLanguage:json5",
+    "onLanguage:css",
+    "onLanguage:scss",
+    "onLanguage:less",
+    "onLanguage:html",
+    "onLanguage:yaml",
+    "onLanguage:toml",
+    "onLanguage:vue",
+    "onLanguage:graphql",
+    "onLanguage:svelte"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Runs the bun binary on the workspace's files."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "bunLint.fixAll",
+        "title": "Fix all auto-fixable problems in this file",
+        "category": "Bun Lint"
+      },
+      {
+        "command": "bunLint.lintActive",
+        "title": "Lint this file again",
+        "category": "Bun Lint"
+      },
+      {
+        "command": "bunLint.showOutput",
+        "title": "Show output",
+        "category": "Bun Lint"
+      }
+    ],
+    "configuration": {
+      "title": "Bun Lint",
+      "properties": {
+        "bunLint.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show `bun lint` diagnostics and quick fixes."
+        },
+        "bunLint.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer `bun fmt` as a formatter (Format Document, Format Selection, format on save). Pick it with `editor.defaultFormatter`: `kingsleyweb.vscode-bun-lint`."
+        },
+        "bunLint.bunPath": {
+          "type": "string",
+          "default": "bun",
+          "description": "The `bun` binary to run: a name on PATH or an absolute path. It needs Bun 1.4.4 or later (the canary until 1.4.4 is stable)."
+        },
+        "bunLint.run": {
+          "type": "string",
+          "enum": [
+            "onType",
+            "onSave"
+          ],
+          "default": "onType",
+          "description": "When to lint: on open and save, and also on a debounced change (`onType`), or on open and save only (`onSave`)."
+        },
+        "bunLint.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "description": "How long to wait after the last change before linting, in milliseconds (`bunLint.run: onType`)."
+        },
+        "bunLint.requireConfig": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only lint (format) a file whose nearest `bunfig.toml` has a `[lint]` (`[fmt]`) section, so the extension stays out of other projects."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "package": "bun scripts/build.ts && bunx @vscode/vsce@4.0.0 package --no-dependencies --skip-license --baseContentUrl https://github.com/kingsloob1/bun-node/blob/develop/tools/vscode-bun-lint/ --baseImagesUrl https://github.com/kingsloob1/bun-node/raw/develop/tools/vscode-bun-lint/ --out dist/vscode-bun-lint.vsix",
+    "test": "bun test --check",
+    "lint": "bun lint",
+    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/vscode": "~1.100.0"
+  }
+}
