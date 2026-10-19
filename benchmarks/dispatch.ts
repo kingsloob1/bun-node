@@ -157,7 +157,7 @@ let cardinalityPathsCache: string[] | undefined;
 /** Builds (once) the rotation of distinct `/user/:id` paths. */
 function cardinalityPaths(): string[] {
   cardinalityPathsCache ??= Array.from(
-    // eslint-disable-next-line ts/no-use-before-define -- called only once `config` is set
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define -- called only once `config` is set
     { length: config.cardinality },
     (_unused, index) => `/user/${index}`,
   );

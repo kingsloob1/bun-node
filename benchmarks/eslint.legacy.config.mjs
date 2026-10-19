@@ -1,13 +1,14 @@
 // `benchmarks/` is a standalone project (its own package.json and lockfile)
-// that belongs to no package, so no package's config reached it and
-// `bunx eslint .` here failed outright for want of a config. This is the root
-// scripts' config (the packages' config, with the two rules a CLI entry point
-// is exempt from), plus the ignores below. Run it from here:
-// `cd benchmarks && bunx eslint .`.
+// that belongs to no package, so no package's config reached it. This is the
+// root scripts' config (the packages' config, with the two rules a CLI entry
+// point is exempt from), plus the ignores and the one rule marked below. Run
+// it with `bun run lint:eslint` from here (`CI=1 eslint -c
+// eslint.legacy.config.mjs .`).
 import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import { keepBunLintDirectives } from "../eslint.legacy.directives.mjs";
 
 export default antfu({
   // Recorded output, written by the benchmarks themselves (`results/`), and
@@ -27,6 +28,12 @@ export default antfu({
   toml: true,
   test: true,
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",

@@ -53,8 +53,23 @@ import { Hono } from "hono";
 /** What is being timed. */
 type TargetId = "bun-common" | "bun-nest" | "hono";
 
-/** How much of the request path is timed. */
-type Level = "fetch" | "match";
+/**
+ * How much of the request path is timed, each level judged against its own
+ * baseline cells, so a change to one stage lands on its own cells:
+ *
+ * - `match`: `getMatchedLayers()` alone, the matcher.
+ * - `route`: the route walk, `router.dispatch()` on a `BunRequest` and
+ *   `BunResponse` built before the clock starts: matching, every layer and the
+ *   handler's `res.send`, without `fetch()`'s entry or the `Response`.
+ * - `fetch`: `adapter.fetch(new Request(...))`, socket-free: the request
+ *   built from a `Request`, the walk, the `Response`.
+ * - `served`: a real `Bun.serve` on port 0, a `fetch()` round trip over
+ *   loopback, one request at a time.
+ */
+type Level = "match" | "route" | "fetch" | "served";
+
+/** Build-time additions a scenario needs, made only in its own process. */
+type Variant = "prefix" | "host" | "specificity" | "validate";
 
 /** One scenario: the request (or rotation of requests) and its answer. */
 interface Scenario {
@@ -66,6 +81,10 @@ interface Scenario {
   targets: TargetId[];
   /** The path of request `i`; a fixed path ignores `i`. */
   path: (i: number) => string;
+  /** The request method (default GET). */
+  method?: string;
+  /** The request's host (default `localhost`). */
+  host?: string;
   /** The expected status of request `i`. */
   status: number;
   /** The expected body of request `i`, or a substring it must contain. */
@@ -75,6 +94,14 @@ interface Scenario {
    * every request is a cache miss: the cold matching path.
    */
   rotation?: number;
+  /** Also timed over a real socket (the `served` level). */
+  served?: boolean;
+  /**
+   * What the build adds for this scenario alone. A host-scoped route changes
+   * every cache key of its router, and route specificity every pipeline's
+   * order, so neither may leak into another scenario's process.
+   */
+  variant?: Variant;
 }
 
 /** Routes registered on every target, as the wrk scenarios do. */
@@ -84,6 +111,7 @@ const COLD_ROTATION = 120_000;
 
 const ALL: TargetId[] = ["bun-common", "hono"];
 const ALL_AND_NEST: TargetId[] = ["bun-common", "hono", "bun-nest"];
+const OURS: TargetId[] = ["bun-common", "bun-nest"];
 
 const SCENARIOS: Scenario[] = [
   {
@@ -93,6 +121,7 @@ const SCENARIOS: Scenario[] = [
     path: () => "/static",
     status: 200,
     body: () => "ok",
+    served: true,
   },
   {
     id: "param",
@@ -101,6 +130,7 @@ const SCENARIOS: Scenario[] = [
     path: () => "/user/42",
     status: 200,
     body: () => "42",
+    served: true,
   },
   {
     id: "deep",
@@ -135,6 +165,15 @@ const SCENARIOS: Scenario[] = [
     body: () => `r${ROUTES - 1}:42`,
   },
   {
+    id: "routes-1000-specificity",
+    what: "routes-1000 with routeSpecificity: true (matched layers re-ordered)",
+    targets: OURS,
+    path: () => `/r${ROUTES - 1}/42`,
+    status: 200,
+    body: () => `r${ROUTES - 1}:42`,
+    variant: "specificity",
+  },
+  {
     id: "routes-1000-cold",
     what: `/r999/<id>, ${COLD_ROTATION} ids: every request a cache miss`,
     targets: ALL_AND_NEST,
@@ -153,12 +192,41 @@ const SCENARIOS: Scenario[] = [
     rotation: COLD_ROTATION,
   },
   {
+    id: "head",
+    what: "HEAD /user/42, answered by the GET route",
+    targets: ALL_AND_NEST,
+    path: () => "/user/42",
+    method: "HEAD",
+    status: 200,
+    body: () => ({ includes: "" }),
+  },
+  {
+    id: "host",
+    what: "GET acme.example.com/tenant/users/7, a domain(':tenant.example.com') route",
+    targets: OURS,
+    path: () => "/tenant/users/7",
+    host: "acme.example.com",
+    status: 200,
+    body: () => "acme/7",
+    variant: "host",
+  },
+  {
+    id: "validate",
+    what: "GET /validated/42 behind validate({ params }) (a Standard Schema)",
+    targets: ["bun-common"],
+    path: () => "/validated/42",
+    status: 200,
+    body: () => "number:42",
+    variant: "validate",
+  },
+  {
     id: "notfound",
     what: "GET /no/such/route/exists, a 404",
     targets: ALL_AND_NEST,
     path: () => "/no/such/route/exists",
     status: 404,
     body: () => ({ includes: "" }),
+    served: true,
   },
   {
     id: "middleware",
@@ -183,6 +251,7 @@ const SCENARIOS: Scenario[] = [
     path: () => "/v1/user/42",
     status: 200,
     body: () => "42",
+    variant: "prefix",
   },
   {
     id: "prefix-notfound-inside",
@@ -191,6 +260,7 @@ const SCENARIOS: Scenario[] = [
     path: () => "/v1/no/such",
     status: 404,
     body: () => ({ includes: "Cannot GET" }),
+    variant: "prefix",
   },
   {
     id: "prefix-notfound-outside",
@@ -199,15 +269,23 @@ const SCENARIOS: Scenario[] = [
     path: () => "/no/such",
     status: 404,
     body: () => ({ includes: "Cannot GET" }),
+    variant: "prefix",
   },
 ];
 
-/** The levels a target is timed at. */
+/** The levels a target is timed at (`served` only for `served` scenarios). */
 const LEVELS: Record<TargetId, Level[]> = {
-  "bun-common": ["match", "fetch"],
-  "bun-nest": ["fetch"],
-  hono: ["fetch"],
+  "bun-common": ["match", "route", "fetch", "served"],
+  "bun-nest": ["route", "fetch", "served"],
+  hono: ["fetch", "served"],
 };
+
+/** The levels `target` is timed at on `scenario`. */
+function levelsOf(target: TargetId, scenario: Scenario): Level[] {
+  return LEVELS[target].filter(
+    (level) => level !== "served" || scenario.served,
+  );
+}
 
 /** Which contender is the rival a figure of ours is recorded against. */
 const RIVAL_OF: Partial<Record<TargetId, TargetId>> = { "bun-common": "hono" };
@@ -226,17 +304,11 @@ const DEFAULT_BASELINE = new URL("baselines/router.json", import.meta.url)
 
 /**
  * How far a figure may fall behind its baseline before it counts as a
- * regression: the cell's ns per request may grow by at most this fraction.
+ * regression: the cell's ns per request may grow by at most this fraction,
+ * net of the machine's drift.
  *
- * Calibrated to measured noise, not chosen (README, "Router regression
- * guard"): one unchanged build, three full runs of five rounds (one of them
- * starting at a load of 16-18), 43 cells each: the worst cell's best-of-rounds
- * differed by 8.4% between runs, the 90th percentile by 6.9%, the median by
- * 2.4%. 15% sits clear of the worst. It is far tighter than bun-jobs' 35%,
- * because nothing here crosses a process boundary or touches a database.
- * Measured against it: a regex compiled per request, and a 1.2 µs spin (2x),
- * fail every bun-common cell; a 250 ns spin fails every matcher cell and 9 of
- * the 11 fetch cells.
+ * Calibrated to measured noise, not chosen; README, "Router regression
+ * guard", has the figures per level and the controls measured against it.
  */
 export const TOLERANCE = 0.15;
 
@@ -257,6 +329,7 @@ Usage: bun router-guard.ts [options]
   --rounds <n>          Rounds, interleaved     (default: 5)
   --targets <list>      bun-common,bun-nest,hono (default: all)
   --scenarios <list>    Scenario ids or 'all'   (default: all)
+  --levels <list>       match,route,fetch,served (default: all)
   --batches <n>         Timed batches per process; the best is kept (default: 9)
   --batch-ms <n>        Length of one batch     (default: 80)
   --warmup-ms <n>       Warm-up per level       (default: 400)
@@ -286,6 +359,7 @@ const { values } = parseArgs({
     rounds: { type: "string" },
     targets: { type: "string" },
     scenarios: { type: "string" },
+    levels: { type: "string" },
     batches: { type: "string" },
     "batch-ms": { type: "string" },
     "warmup-ms": { type: "string" },
@@ -315,24 +389,66 @@ const config = {
   maxLoad: Number(values["max-load"] ?? cpus().length / 4),
   maxWaitS: int(values["max-wait"], 300),
   baseline: resolve(values.baseline ?? DEFAULT_BASELINE),
+  levels: values.levels
+    ? (values.levels.split(",") as Level[])
+    : (["match", "route", "fetch", "served"] as Level[]),
 };
 
 /* ------------------------------------------------------------------ *
  * Building each target (in the child process)
  * ------------------------------------------------------------------ */
 
+/** The router options a target ran with, recorded in the baseline. */
+export interface RouterOptions {
+  /** The route cache's capacity (`routeCacheMax`); 0 is off. */
+  routeCacheMax: number | null;
+  /** Whether paths match case-sensitively (`caseSensitive`). */
+  caseSensitive: boolean;
+  /** `routeSpecificity`, as this script configured it (not readable back). */
+  routeSpecificity: boolean;
+}
+
+/** The route walk of a target, without `fetch()`'s entry. */
+interface RouteEntry {
+  /** Builds the pipeline options for one request (before the clock starts). */
+  prepare: (request: Request) => PipelineLike;
+  /** Runs the walk: `router.dispatch(options)`. */
+  run: (options: PipelineLike) => unknown;
+}
+
+/** What {@link RouteEntry} hands between its two halves. */
+interface PipelineLike {
+  /** The response the layers wrote to. */
+  response: { getNativeResponse: (timeout?: number) => Promise<Response> };
+}
+
+/** A live server for the `served` level. */
+interface Served {
+  /** Base URL, scheme to port. */
+  url: string;
+  /** Closes it, force-closing keep-alive sockets (`stop(true)`). */
+  close: () => Promise<void> | void;
+}
+
 /** A built target: how to send it a request, and how to match one. */
 interface Built {
   /** Sends a request through the target's whole socket-free path. */
   fetch: (request: Request) => Promise<Response> | Response;
   /** The matcher alone, where the target exposes one. */
-  match?: (path: string) => number;
+  match?: (path: string, host: string, method: string) => number;
+  /** The route walk, where the target exposes one. */
+  route?: RouteEntry;
+  /** Starts a real server on port 0. */
+  listen: () => Promise<Served>;
+  /** The router options, for the baseline. */
+  options?: RouterOptions;
 }
 
 type BunCommon = typeof import("../packages/bun-common/lib/index");
 type BunNest = typeof import("../packages/bun-nest/lib/index");
 type NestCommon = typeof import("@nestjs/common");
 type NestCore = typeof import("@nestjs/core");
+type BunRouterLike = InstanceType<BunCommon["BunRouter"]>;
 
 /** Loads a package's entry from the measured checkout, not from this one. */
 async function fromRoot<T>(
@@ -342,6 +458,11 @@ async function fromRoot<T>(
   return (await import(
     Bun.resolveSync(specifier, join(config.root, from))
   )) as T;
+}
+
+/** bun-common from the measured checkout (the copy bun-nest resolves too). */
+async function bunCommonLib(): Promise<BunCommon> {
+  return fromRoot<BunCommon>("@kingsleyweb/bun-common");
 }
 
 /** One `/mw` middleware's work: count itself on the request. */
@@ -359,7 +480,67 @@ interface Res {
 }
 type Handler = (req: Req, res: Res, next: () => void) => unknown;
 
-async function buildBunCommon(): Promise<Built> {
+/**
+ * A Standard Schema written by hand (no dependency): `{ id }` with `id` a
+ * string of digits, output as a number.
+ */
+const ID_PARAMS = {
+  "~standard": {
+    version: 1 as const,
+    vendor: "router-guard",
+    validate(value: unknown) {
+      const id = (value as { id?: unknown } | null)?.id;
+      return typeof id === "string" && /^\d+$/.test(id)
+        ? { value: { id: Number(id) } }
+        : { issues: [{ message: "id must be digits", path: ["id"] }] };
+    },
+  },
+};
+
+/** The router options of a bun-common router, read back where readable. */
+function optionsOf(router: BunRouterLike, specificity: boolean): RouterOptions {
+  const internal = router as unknown as {
+    routeCacheMax?: number;
+    localOptions?: { caseSensitive?: boolean };
+  };
+  return {
+    routeCacheMax: internal.routeCacheMax ?? null,
+    caseSensitive: internal.localOptions?.caseSensitive ?? false,
+    routeSpecificity: specificity,
+  };
+}
+
+/** The route walk of `router`, on requests built as `adapter` builds them. */
+function routeEntry(
+  lib: BunCommon,
+  router: BunRouterLike,
+  requestOpts: unknown,
+): RouteEntry {
+  const server = lib.FETCH_STUB_SERVER;
+  type Init = Parameters<BunCommon["BunRequest"]["init"]>;
+  return {
+    prepare(request) {
+      const req = lib.BunRequest.init(request, server, requestOpts as Init[2]);
+      if (!(req instanceof lib.BunRequest)) {
+        throw new TypeError("a bodiless request should build synchronously");
+      }
+      const res = new lib.BunResponse(req, {});
+      return new lib.RequestPipelineOptions(
+        req,
+        res,
+        req.method,
+        req.path,
+        undefined,
+      ) as unknown as PipelineLike;
+    },
+    run: (options) =>
+      router.dispatch(
+        options as unknown as Parameters<BunRouterLike["dispatch"]>[0],
+      ),
+  };
+}
+
+async function buildBunCommon(scenario: Scenario): Promise<Built> {
   const lib = (await import(
     join(config.root, "packages/bun-common/lib/index.ts")
   )) as BunCommon;
@@ -368,13 +549,14 @@ async function buildBunCommon(): Promise<Built> {
   const adapter = new lib.BunHttpAdapter(0, {
     request: { parseBody: false, parseCookies: false, parseQuery: false },
   });
+  const router = adapter.instance;
   const app = adapter as unknown as Record<
     "get" | "use",
     (path: string, ...handlers: Handler[]) => unknown
   >;
   const ok: Handler = (_req, res) => res.send("ok");
   app.get("/static", ok);
-  app.get("/user/:id", (req, res) => res.send(req.params.id!));
+  app.get("/user/:id", (req, res) => res.send(String(req.params.id)));
   const deep: Handler = (req, res) =>
     res.send(`${req.params.userId}/${req.params.bookId}`);
   app.get("/api/v1/users/:userId/books/:bookId", deep);
@@ -391,17 +573,47 @@ async function buildBunCommon(): Promise<Built> {
   }
   app.get("/mw/hit", (req, res) => res.send(`mw:${req.hits}`));
   const sub = new lib.BunRouter() as unknown as typeof app;
-  sub.get("/items/:id", (req, res) => res.send(req.params.id!));
+  sub.get("/items/:id", (req, res) => res.send(String(req.params.id)));
   app.use("/api/v2/:org", sub as unknown as Handler);
+
+  if (scenario.variant === "host") {
+    const domain = (
+      adapter as unknown as {
+        domain: (host: string, define: (r: typeof app) => void) => unknown;
+      }
+    ).domain.bind(adapter);
+    domain(":tenant.example.com", (tenant) => {
+      tenant.get("/tenant/users/:id", (req, res) =>
+        res.send(`${req.params.tenant}/${req.params.id}`),
+      );
+    });
+  }
+  if (scenario.variant === "validate") {
+    const validator = lib.validate({ params: ID_PARAMS });
+    app.get("/validated/:id", validator as unknown as Handler, (req, res) =>
+      res.send(`${typeof req.params.id}:${req.params.id}`),
+    );
+  }
+  const specificity = scenario.variant === "specificity";
+  if (specificity) router.setRouteSpecificity(true);
 
   return {
     fetch: (request) => adapter.fetch(request),
-    match: (path) =>
+    match: (path, host, method) =>
       adapter.getMatchedLayers({
-        requestHost: "localhost",
-        requestMethod: "GET",
+        requestHost: host,
+        requestMethod: method,
         requestUrl: path,
       }).length,
+    route: routeEntry(lib, router, adapter.requestOpts),
+    async listen() {
+      await adapter.listen(0);
+      return {
+        url: `http://127.0.0.1:${adapter.listeningPort}`,
+        close: () => adapter.close(),
+      };
+    },
+    options: optionsOf(router, specificity),
   };
 }
 
@@ -432,7 +644,20 @@ function buildHono(): Built {
   const sub = new Hono();
   sub.get("/items/:id", (c) => c.text(c.req.param("id")));
   app.route("/api/v2/:org", sub);
-  return { fetch: (request) => app.fetch(request) };
+  return {
+    fetch: (request) => app.fetch(request),
+    async listen() {
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => app.fetch(request),
+      });
+      return {
+        url: `http://127.0.0.1:${server.port}`,
+        close: () => server.stop(true),
+      };
+    },
+  };
 }
 
 /**
@@ -442,14 +667,22 @@ function buildHono(): Built {
  * reads the working directory's, not the file's: a param decorator can be
  * dropped silently).
  */
-async function buildNest(globalPrefix: string | undefined): Promise<Built> {
+async function buildNest(scenario: Scenario): Promise<Built> {
   await fromRoot<unknown>("reflect-metadata");
   const common = await fromRoot<NestCommon>("@nestjs/common");
   const core = await fromRoot<NestCore>("@nestjs/core");
   const bunNest = (await import(
     join(config.root, "packages/bun-nest/lib/index.ts")
   )) as BunNest;
-  const { Controller, Get, Module, Param, Req: ReqDecorator } = common;
+  const lib = await bunCommonLib();
+  const {
+    Controller,
+    Get,
+    HostParam,
+    Module,
+    Param,
+    Req: ReqDecorator,
+  } = common;
 
   /** Applies a method decorator to `cls.prototype[name]`. */
   function route(cls: { prototype: object }, name: string, path: string): void {
@@ -495,6 +728,21 @@ async function buildNest(globalPrefix: string | undefined): Promise<Built> {
     controllers.push(RouteController);
   }
 
+  if (scenario.variant === "host") {
+    class TenantController {
+      user(tenant: string, id: string) {
+        return `${tenant}/${id}`;
+      }
+    }
+    HostParam("tenant")(TenantController.prototype, "user", 0);
+    Param("id")(TenantController.prototype, "user", 1);
+    route(TenantController, "user", "users/:id");
+    Controller({ host: ":tenant.example.com", path: "tenant" })(
+      TenantController,
+    );
+    controllers.push(TenantController);
+  }
+
   class Bump {
     use(req: { hits?: number }, _res: unknown, next: () => void) {
       bump(req);
@@ -519,21 +767,35 @@ async function buildNest(globalPrefix: string | undefined): Promise<Built> {
   const app = await core.NestFactory.create(AppModule, adapter, {
     logger: false,
   });
-  if (globalPrefix) {
-    app.setGlobalPrefix(globalPrefix);
+  if (scenario.variant === "prefix") {
+    app.setGlobalPrefix("v1");
   }
   await app.init();
-  return { fetch: (request) => adapter.fetch(request) };
+  const router = adapter.instance as unknown as BunRouterLike;
+  const specificity = scenario.variant === "specificity";
+  if (specificity) router.setRouteSpecificity(true);
+  return {
+    fetch: (request) => adapter.fetch(request),
+    route: routeEntry(lib, router, adapter.requestOpts),
+    async listen() {
+      await app.listen(0, "127.0.0.1");
+      return {
+        url: `http://127.0.0.1:${adapter.listeningPort}`,
+        close: () => app.close(),
+      };
+    },
+    options: optionsOf(router, specificity),
+  };
 }
 
 async function build(target: TargetId, scenario: Scenario): Promise<Built> {
   switch (target) {
     case "bun-common":
-      return buildBunCommon();
+      return buildBunCommon(scenario);
     case "hono":
       return buildHono();
     case "bun-nest":
-      return buildNest(scenario.id.startsWith("prefix-") ? "v1" : undefined);
+      return buildNest(scenario);
   }
 }
 
@@ -591,7 +853,7 @@ async function timeAsync(
     for (let k = 0; k < 64; k++) sink = await run(i++);
   }
   const perOp = (Bun.nanoseconds() - started) / i;
-  const batch = Math.max(500, Math.round((config.batchMs * 1e6) / perOp));
+  const batch = Math.max(200, Math.round((config.batchMs * 1e6) / perOp));
   const samples: number[] = [];
   for (let b = 0; b < config.batches; b++) {
     Bun.gc(true);
@@ -602,25 +864,125 @@ async function timeAsync(
   return { best: Math.min(...samples), median: median(samples) };
 }
 
-/** Checks request `i`'s answer; returns a problem, or undefined. */
-async function check(
-  built: Built,
+/** How many requests the `route` level builds before each timed stretch. */
+const ROUTE_CHUNK = 1024;
+
+/**
+ * Times the route walk alone: each stretch of {@link ROUTE_CHUNK} requests is
+ * built (`BunRequest`, `BunResponse`, pipeline options) before the clock
+ * starts, and only `run` is timed, awaited only when it returns a promise. A
+ * batch adds stretches until it has `--batch-ms` of walking.
+ */
+async function timeRoute(
+  route: RouteEntry,
+  request: (i: number) => Request,
+): Promise<LevelFigures> {
+  let i = 0;
+  const prepare = (): PipelineLike[] => {
+    const out: PipelineLike[] = [];
+    for (let k = 0; k < ROUTE_CHUNK; k++) out.push(route.prepare(request(i++)));
+    return out;
+  };
+  const walk = async (chunk: PipelineLike[]): Promise<number> => {
+    const t0 = Bun.nanoseconds();
+    for (const options of chunk) {
+      const result = route.run(options);
+      sink =
+        result && typeof (result as Promise<unknown>).then === "function"
+          ? await result
+          : result;
+    }
+    return Bun.nanoseconds() - t0;
+  };
+  const warmupEnd = Date.now() + config.warmupMs;
+  while (Date.now() < warmupEnd) await walk(prepare());
+  const samples: number[] = [];
+  for (let b = 0; b < config.batches; b++) {
+    Bun.gc(true);
+    let spent = 0;
+    let count = 0;
+    while (spent < config.batchMs * 1e6) {
+      const chunk = prepare();
+      spent += await walk(chunk);
+      count += chunk.length;
+    }
+    samples.push(spent / count);
+  }
+  return { best: Math.min(...samples), median: median(samples) };
+}
+
+/** Whether a status and body are the scenario's answer to request `i`. */
+function answerProblem(
   scenario: Scenario,
   i: number,
-): Promise<string | undefined> {
-  const path = scenario.path(i);
-  const response = await built.fetch(new Request(`http://localhost${path}`));
-  const text = await response.text();
+  where: string,
+  status: number,
+  text: string,
+): string | undefined {
   const want = scenario.body(i);
-  if (response.status !== scenario.status) {
-    return `${path}: status ${response.status}, want ${scenario.status} (${text.slice(0, 80)})`;
+  if (status !== scenario.status) {
+    return `${where}: status ${status}, want ${scenario.status} (${text.slice(0, 80)})`;
   }
   const bodyOk =
     typeof want === "string" ? text === want : text.includes(want.includes);
   if (!bodyOk) {
-    return `${path}: body ${JSON.stringify(text.slice(0, 80))}, want ${JSON.stringify(want)}`;
+    return `${where}: body ${JSON.stringify(text.slice(0, 80))}, want ${JSON.stringify(want)}`;
   }
   return undefined;
+}
+
+/** The URL of request `i` against `origin` (default: the scenario's host). */
+function urlOf(scenario: Scenario, i: number, origin?: string): string {
+  return `${origin ?? `http://${scenario.host ?? "localhost"}`}${scenario.path(i)}`;
+}
+
+/** Checks request `i`'s answer at every level it is timed at. */
+async function check(
+  built: Built,
+  scenario: Scenario,
+  i: number,
+  levels: Level[],
+): Promise<string[]> {
+  const method = scenario.method ?? "GET";
+  const path = scenario.path(i);
+  const problems: string[] = [];
+  const response = await built.fetch(
+    new Request(urlOf(scenario, i), { method }),
+  );
+  const problem = answerProblem(
+    scenario,
+    i,
+    `fetch ${path}`,
+    response.status,
+    await response.text(),
+  );
+  if (problem) problems.push(problem);
+
+  if (levels.includes("route") && built.route) {
+    const options = built.route.prepare(
+      new Request(urlOf(scenario, i), { method }),
+    );
+    const outcome = await built.route.run(options);
+    if (scenario.status === 404) {
+      // A 404 is a walk no route answered: the not-found handlers run after
+      // it, in the adapter, outside this level.
+      if (outcome) problems.push(`route ${path}: a route answered a 404 path`);
+    } else if (!outcome) {
+      problems.push(`route ${path}: no route answered`);
+    } else {
+      const native = await options.response.getNativeResponse(1000);
+      const text = method === "HEAD" ? "" : await native.text();
+      const routeProblem = answerProblem(
+        scenario,
+        i,
+        `route ${path}`,
+        native.status,
+        text,
+      );
+      if (routeProblem) problems.push(routeProblem);
+    }
+  }
+  return problems;
 }
 
 /** What a child prints, as one JSON line. */
@@ -631,48 +993,83 @@ interface ChildResult {
   problems: string[];
   /** Figures per level; absent under --verify or when verification failed. */
   levels: Partial<Record<Level, LevelFigures>>;
+  /** The router options it ran with. */
+  options?: RouterOptions;
 }
 
 async function runChild(target: TargetId, scenarioId: string): Promise<void> {
   const scenario = SCENARIOS.find((s) => s.id === scenarioId)!;
+  const levels = levelsOf(target, scenario).filter((l) =>
+    config.levels.includes(l),
+  );
   const built = await build(target, scenario);
   const result: ChildResult = {
     target,
     scenario: scenarioId,
     problems: [],
     levels: {},
+    options: built.options,
   };
+  const method = scenario.method ?? "GET";
 
   // A fixed path once; a rotation at a spread of its ids, the last included.
   const samples = scenario.rotation
     ? [0, 1, 7, scenario.rotation - 1, scenario.rotation + 3]
     : [0];
   for (const i of samples) {
-    const problem = await check(built, scenario, i);
-    if (problem) result.problems.push(problem);
+    result.problems.push(...(await check(built, scenario, i, levels)));
   }
 
-  if (!values.verify && result.problems.length === 0) {
-    const urls = scenario.rotation
-      ? Array.from(
-          { length: scenario.rotation },
-          (_unused, i) => `http://localhost${scenario.path(i)}`,
-        )
-      : [`http://localhost${scenario.path(0)}`];
-    const paths = urls.map((url) => url.slice("http://localhost".length));
-    const count = urls.length;
+  const timing = !values.verify && result.problems.length === 0;
+  const count = scenario.rotation ?? 1;
+  const urls = Array.from({ length: count }, (_unused, i) =>
+    urlOf(scenario, i),
+  );
+  const paths = Array.from({ length: count }, (_unused, i) => scenario.path(i));
+  const host = scenario.host ?? "localhost";
 
-    for (const level of LEVELS[target]) {
-      if (level === "match" && built.match) {
-        const match = built.match;
-        result.levels.match = timeSync((i) => match(paths[i % count]!));
-      }
-      if (level === "fetch") {
-        const fetch = built.fetch;
-        result.levels.fetch = await timeAsync((i) =>
-          fetch(new Request(urls[i % count]!)),
+  if (timing && levels.includes("match") && built.match) {
+    const match = built.match;
+    result.levels.match = timeSync((i) =>
+      match(paths[i % count]!, host, method),
+    );
+  }
+  if (timing && levels.includes("route") && built.route) {
+    result.levels.route = await timeRoute(
+      built.route,
+      (i) => new Request(urls[i % count]!, { method }),
+    );
+  }
+  if (timing && levels.includes("fetch")) {
+    const fetchIt = built.fetch;
+    result.levels.fetch = await timeAsync((i) =>
+      fetchIt(new Request(urls[i % count]!, { method })),
+    );
+  }
+  if (levels.includes("served") && result.problems.length === 0) {
+    const served = await built.listen();
+    try {
+      const target0 = urlOf(scenario, 0, served.url);
+      const first = await fetch(target0, { method });
+      const problem = answerProblem(
+        scenario,
+        0,
+        `served ${scenario.path(0)}`,
+        first.status,
+        await first.text(),
+      );
+      if (problem) result.problems.push(problem);
+      else if (timing) {
+        const servedUrls = urls.map((_url, i) =>
+          urlOf(scenario, i, served.url),
         );
+        result.levels.served = await timeAsync(async (i) => {
+          const response = await fetch(servedUrls[i % count]!, { method });
+          return response.arrayBuffer();
+        });
       }
+    } finally {
+      await served.close();
     }
   }
 
@@ -693,6 +1090,8 @@ interface Cell {
   scenario: string;
   /** Each round's per-process figure (best batch), ns per request. */
   rounds: number[];
+  /** The router options the cell ran with. */
+  options?: RouterOptions;
 }
 
 /** A baseline entry: one cell, reduced. */
@@ -710,6 +1109,8 @@ export interface BaselineEntry {
   rounds: number[];
   /** The rival's figure on the same scenario, when the target has one. */
   rival?: { contender: TargetId; nsPerOp: number };
+  /** Router options, only where they differ from the target's `routerOptions`. */
+  options?: RouterOptions;
 }
 
 /** The committed baseline, with what is needed to know when it applies. */
@@ -729,6 +1130,12 @@ export interface Baseline {
   gitDirty: boolean;
   /** `@nestjs/core`'s version in the measured checkout. */
   nest: string;
+  /**
+   * Each target's router options (`routeCacheMax`, `caseSensitive`,
+   * `routeSpecificity`), as most of its cells ran; a cell that ran with
+   * others (`routes-1000-specificity`) records its own.
+   */
+  routerOptions?: Partial<Record<TargetId, RouterOptions>>;
   /** How it was measured. */
   method: {
     rounds: number;
@@ -791,6 +1198,26 @@ function toBaseline(cells: Cell[], root: string): Baseline {
       rounds: cell.rounds,
     };
   }
+  // A target's options are what its plain cells ran with (`static`, else the
+  // first cell); a cell that differs keeps its own.
+  const routerOptions: Partial<Record<TargetId, RouterOptions>> = {};
+  for (const cell of cells) {
+    if (!cell.options) continue;
+    if (cell.scenario === "static" || !routerOptions[cell.target]) {
+      routerOptions[cell.target] = cell.options;
+    }
+  }
+  for (const cell of cells) {
+    const usual = routerOptions[cell.target];
+    const entry = entries[cell.key];
+    if (
+      entry &&
+      cell.options &&
+      JSON.stringify(cell.options) !== JSON.stringify(usual)
+    ) {
+      entry.options = cell.options;
+    }
+  }
   for (const entry of Object.values(entries)) {
     const rival = RIVAL_OF[entry.target];
     const theirs =
@@ -807,6 +1234,7 @@ function toBaseline(cells: Cell[], root: string): Baseline {
     gitSha: git(root, ["rev-parse", "HEAD"]) ?? "unknown",
     gitDirty: Boolean(git(root, ["status", "--porcelain", "--", "packages"])),
     nest: nestVersion(root),
+    routerOptions,
     method: {
       rounds: config.rounds,
       batches: config.batches,
@@ -841,16 +1269,19 @@ function compare(
   baseline: Baseline,
   current: Baseline,
   attempted: Set<string>,
-): { regressions: Regression[]; drift: number; rivals: number } {
+): { regressions: Regression[]; drifts: LevelDrift[] } {
   const regressions: Regression[] = [];
-  const { drift, rivals } = machineDrift(baseline, current);
-  if (drift > 1 + TOLERANCE || drift < 1 / (1 + TOLERANCE)) {
-    regressions.push({
-      key: "(machine)",
-      kind: "drift",
-      was: "the rival's figures",
-      now: `moved ${pct(drift - 1)} with no change to their code: too busy (or too different) a machine to judge; re-run on a quiet one`,
-    });
+  const drifts = machineDrift(baseline, current);
+  const driftOf = new Map(drifts.map((d) => [d.level, d.drift]));
+  for (const { level, drift, rivals } of drifts) {
+    if (rivals && (drift > 1 + TOLERANCE || drift < 1 / (1 + TOLERANCE))) {
+      regressions.push({
+        key: `(machine, ${level})`,
+        kind: "drift",
+        was: "the rival's figures",
+        now: `moved ${pct(drift - 1)} with no change to their code: too busy (or too different) a machine to judge; re-run on a quiet one`,
+      });
+    }
   }
   for (const [key, was] of Object.entries(baseline.entries)) {
     const now = current.entries[key];
@@ -869,6 +1300,7 @@ function compare(
     // it), so its cells measure the machine, not a regression: they set the
     // drift and are never failed themselves.
     if (RIVALS.has(was.target)) continue;
+    const drift = driftOf.get(was.level) ?? 1;
     const grew = now.nsPerOp / was.nsPerOp / drift - 1;
     if (grew > TOLERANCE) {
       regressions.push({
@@ -893,27 +1325,54 @@ function compare(
       });
     }
   }
-  return { regressions, drift, rivals };
+  return { regressions, drifts };
+}
+
+/** One level's drift: how the rival cells it was taken from moved. */
+interface LevelDrift {
+  level: Level;
+  /** Median now / was over the rival cells used (1 with none). */
+  drift: number;
+  /** How many rival cells it was taken from. */
+  rivals: number;
+  /** Where they came from: this level's own rival cells, or every level's. */
+  source: "own" | "all";
 }
 
 /**
- * How much the machine moved between the baseline and this run: the median
- * of now / was over the rival's cells (1 when the run measured none). Our
- * cells are judged net of it, so a uniformly slower machine does not read as
- * a regression. Measured: a run at a 1-minute load of about 4, against a
+ * How much the machine moved between the baseline and this run, per level:
+ * the median of now / was over that level's rival cells, or over every rival
+ * cell for a level with none (1 when the run measured no rival). Our cells
+ * are judged net of their level's drift, so a uniformly slower machine does
+ * not read as a regression. Measured: a run at a 1-minute load of about 4, against a
  * baseline recorded at 2.5-3, moved every Hono cell by +2% to +24% (median
  * +7.9%), and failed Hono's own `routes-1000` at +24% before this existed.
  */
-function machineDrift(
-  baseline: Baseline,
-  current: Baseline,
-): { drift: number; rivals: number } {
-  const ratios: number[] = [];
+function machineDrift(baseline: Baseline, current: Baseline): LevelDrift[] {
+  const ratios = new Map<Level | "all", number[]>([["all", []]]);
+  const levels = new Set<Level>();
   for (const [key, was] of Object.entries(baseline.entries)) {
     const now = current.entries[key];
-    if (now && RIVALS.has(was.target)) ratios.push(now.nsPerOp / was.nsPerOp);
+    if (!now) continue;
+    levels.add(was.level);
+    if (!RIVALS.has(was.target)) continue;
+    const ratio = now.nsPerOp / was.nsPerOp;
+    ratios.get("all")!.push(ratio);
+    ratios.set(was.level, [...(ratios.get(was.level) ?? []), ratio]);
   }
-  return { drift: ratios.length ? median(ratios) : 1, rivals: ratios.length };
+  const all = ratios.get("all")!;
+  return [...levels].map((level) => {
+    const own = ratios.get(level);
+    // A level with no rival of its own (match, route: Hono has neither) takes
+    // the machine's drift from every rival cell measured.
+    const used = own?.length ? own : all;
+    return {
+      level,
+      drift: used.length ? median(used) : 1,
+      rivals: used.length,
+      source: own?.length ? ("own" as const) : ("all" as const),
+    };
+  });
 }
 
 /** A signed percentage. */
@@ -1009,6 +1468,8 @@ async function runCell(
     String(config.batchMs),
     "--warmup-ms",
     String(config.warmupMs),
+    "--levels",
+    config.levels.join(","),
   ];
   if (values.verify) args.push("--verify");
   const proc = Bun.spawn(args, {
@@ -1088,8 +1549,13 @@ async function measure(): Promise<{
     if (!values.verify) roundLoads.push(await waitForQuiet());
     const order = round % 2 ? runs.toReversed() : runs;
     for (const { target, scenario } of plan) {
-      for (const level of LEVELS[target])
+      const levels = levelsOf(
+        target,
+        SCENARIOS.find((s) => s.id === scenario)!,
+      ).filter((level) => config.levels.includes(level));
+      for (const level of levels) {
         attempted.add(cellKey(target, level, scenario));
+      }
       for (const run of order) {
         const result = await runCell(run.dir, target, scenario);
         const where = `${runs.length > 1 ? `${run.label} ` : ""}${target}/${scenario}`;
@@ -1111,6 +1577,7 @@ async function measure(): Promise<{
             rounds: [],
           };
           cell.rounds.push(figures.best);
+          cell.options ??= result.options;
           run.cells.set(key, cell);
         }
       }
@@ -1190,15 +1657,17 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    const { regressions, drift, rivals } = compare(base, current, attempted);
+    const { regressions, drifts } = compare(base, current, attempted);
     console.log(
       `\nCompared against ${base.gitSha.slice(0, 8)}, recorded ${base.recordedAt.slice(0, 10)} on ${base.cpu}, Bun ${base.bun}.`,
     );
-    console.log(
-      rivals
-        ? `  machine drift ${pct(drift - 1)} (median of ${rivals} rival cells); our cells are judged net of it`
-        : `  no rival cells measured: no drift correction`,
-    );
+    for (const d of drifts) {
+      console.log(
+        d.rivals
+          ? `  ${d.level.padEnd(6)} drift ${pct(d.drift - 1)} (median of ${d.rivals} rival cells${d.source === "all" ? ", every level's" : ""}); its cells are judged net of it`
+          : `  ${d.level.padEnd(6)} no rival cells measured: no drift correction`,
+      );
+    }
     if (regressions.length === 0) {
       console.log(
         `  ok    no cell grew more than ${(TOLERANCE * 100).toFixed(0)}% net of drift, and every lead held.`,

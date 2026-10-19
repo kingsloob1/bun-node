@@ -42,7 +42,7 @@ bun router-guard.ts --roots before=../../wt-a,after=../../wt-b   # A/B two check
 bun router-guard.ts --help              # every option and scenario
 ```
 
-It is a heavy run (about 8 minutes for every cell, 16 for an A/B): run it
+It is a heavy run (about 16 minutes for every cell, twice that for an A/B): run it
 through the heavy-run wrapper as exclusive, in the background, never polled:
 
 ```bash
@@ -51,18 +51,24 @@ HEAVY_EXCLUSIVE=1 HEAVY_TICKET=<session>-router-guard \
   bun router-guard.ts --compare > ~/.cache/<session>/router-guard.log 2>&1
 ```
 
-**What it times.** No sockets: `adapter.fetch(new Request(url))` runs the
-same `handleNativeRequest` that `Bun.serve` calls, so a cell is the router and
-its pipeline (request and response wrappers, matching, the handler, the
-`Response`), not the network. Three targets, each with 1,000 `/r<i>/:id`
-routes registered beside the scenario routes:
+**What it times.** Four levels, each judged against its own baseline cells,
+so a change to one stage lands on its own cells: a change to `fetch()`'s
+entry (rebuilding the caller's `Request`, say) moves `fetch` and leaves
+`route` and `match` alone, and a routing change moves `match` or `route`
+first.
 
-| Target | Level | What |
+| Level | Timed | Targets |
 |---|---|---|
-| `bun-common` | `match` | `getMatchedLayers()` alone: the matcher, where a 2x matching regression is not diluted by the ~1.2 µs of wrappers around it |
-| `bun-common` | `fetch` | bun-common's `BunHttpAdapter`, body/cookie/query parsing off |
-| `bun-nest` | `fetch` | a Nest app (`NestFactory.create`, `app.init()`, no `listen`) on bun-nest's adapter |
-| `hono` | `fetch` | Hono's `app.fetch` on the same routes: the rival each bun-common figure records |
+| `match` | `getMatchedLayers()` alone: the matcher, where a 2x matching regression is not diluted by the wrappers around it | bun-common |
+| `route` | the route walk: `router.dispatch()` on pipeline options over a `BunRequest` and `BunResponse` built (1,024 at a time) before the clock starts, as `serveNativeRequest` builds them. Matching, every layer, the handler's `res.send`; not `fetch()`'s entry, not the `Response` | bun-common, bun-nest |
+| `fetch` | `adapter.fetch(new Request(url))`, socket-free: the same `handleNativeRequest` `Bun.serve` calls, plus `fetch()`'s entry and the `Response` | all three |
+| `served` | a real `Bun.serve` on port 0, closed with `stop(true)`: a `fetch()` round trip over loopback, one at a time (`static`, `param`, `notfound` only) | all three |
+
+The targets, each with 1,000 `/r<i>/:id` routes registered beside the
+scenario routes: `bun-common` (its `BunHttpAdapter`, body/cookie/query
+parsing off), `bun-nest` (a Nest app on bun-nest's adapter, `app.init()`,
+listening only for `served`), and `hono` (`app.fetch` on the same routes,
+the rival each bun-common figure records).
 
 | Scenario | Request |
 |---|---|
@@ -74,6 +80,21 @@ routes registered beside the scenario routes:
 | `middleware` | `/mw/hit` behind three `/mw` middleware (Nest: `MiddlewareConsumer`) |
 | `mounted` | `/api/v2/acme/items/5`, a sub-router mounted at `/api/v2/:org` |
 | `prefix-param`, `prefix-notfound-inside`, `prefix-notfound-outside` | Nest only, `setGlobalPrefix("v1")`: `/v1/user/42`, `/v1/no/such`, `/no/such` (the 404s exercise the prefix-scoped not-found handler) |
+| `routes-1000-specificity` | `routes-1000` with `routeSpecificity: true`, which re-orders the matched layers (bun-common, bun-nest) |
+| `head` | `HEAD /user/42`, answered by the GET route (the HEAD branch of `matchRoute`) |
+| `host` | `acme.example.com/tenant/users/7` on `domain(":tenant.example.com")` (Nest: `@Controller({ host })` with `@HostParam`) |
+| `validate` | `/validated/42` behind `validate({ params })` with a hand-written Standard Schema (bun-common) |
+
+A scenario that changes the router as a whole is built only in its own
+process: a host-scoped route puts the host into every cache key, and route
+specificity re-orders every pipeline, so neither may reach another cell.
+At the `route` level a 404 is the walk alone: the not-found handlers run
+after it, in the adapter, so they are timed at `fetch` and `served`.
+
+**Router options** are recorded per target in the baseline
+(`routerOptions`): the route cache's size (`routeCacheMax`, 50,000),
+`caseSensitive` (`true`, the adapters' default) and `routeSpecificity`; a
+cell that ran with other options (`routes-1000-specificity`) records its own.
 
 **Method.** One fresh process per (target, scenario, round), so one
 scenario's shapes cannot make another's call sites polymorphic. Rounds are
@@ -94,16 +115,27 @@ minutes; a median keeps half of them.
 
 **The tolerance is 15%** (`TOLERANCE`), calibrated, not chosen. One unchanged
 build, three full runs on the i9-11900H (16 threads) that recorded the
-baseline, 43 cells each: the worst cell's figure differed by **8.4%** between
-runs (`bun-common/fetch/static`), the 90th percentile by 6.9%, the median by
-2.4%, before any drift correction. 15% sits clear of the worst. It is far
-tighter than bun-jobs' 35% because nothing here crosses a process boundary or
-touches a database. What it is for is a factor: the controls below.
+baseline (92 cells, load 2.5-4), spread of each cell's figure across the
+three, before any drift correction:
+
+| Level | Cells | Median | 90th percentile | Worst |
+|---|---:|---:|---:|---:|
+| `match` | 15 | 2.6% | 4.9% | 5.3% (`head`) |
+| `route` | 28 | 2.3% | 6.3% | 7.7% (`bun-common/route/wildcard`) |
+| `fetch` | 40 | 2.2% | 7.0% | 8.6% (`bun-common/fetch/wildcard`) |
+| `served` | 9 | 3.3% | 5.3% | 5.3% (`bun-common/served/param`) |
+
+15% sits clear of the worst on every level (the first version, `fetch` and
+`match` only, measured 8.4% worst over 43 cells). It is far tighter than
+bun-jobs' 35% because nothing here crosses a process boundary or touches a
+database. What it is for is a factor: the controls below.
 
 **Machine drift.** Hono's code never changes here (this directory's lockfile
 pins it), so its cells measure the machine. Their median now/was is the
-run's drift, our cells are judged net of it, and Hono's cells are never
-failed themselves. Measured: a run at a load of about 4, against a baseline
+run's drift, per level: `fetch` and `served` take it from Hono's cells at
+their own level, and `match` and `route`, where Hono has no cell, from all of
+them. Our cells are judged net of their level's drift, and Hono's cells are
+never failed themselves. Measured: a run at a load of about 4, against a baseline
 recorded at 2.5-3, moved every Hono cell by +2% to +24% (median +7.9%), and
 before this correction failed Hono's own `routes-1000` at +24%. A drift past
 the tolerance either way fails the run as **drift**: the machine was too busy
@@ -124,21 +156,25 @@ baseline records it. A baseline holds only on the machine that recorded it:
 `baselines/router.json` names the CPU, the Bun version and revision, the git
 SHA and the Nest version. On other hardware, re-record rather than chase it.
 
-**Controls**, measured 2026-10-17 against the committed baseline, each in a
-scratch copy of bun-common with the slowdown at the top of
-`getMatchedLayers()`:
+**Controls**, measured 2026-10-17/18 against the committed baseline, each in
+a scratch copy of bun-common with the slowdown at the top of
+`getMatchedLayers()` (so inside `dispatch()`, and under every level):
 
 | Change | Result |
 |---|---|
-| none (the same build again, two runs) | **passes** both: drift +6.0% and -2.2%, ours at most +1.6% and +7.0% net of it |
-| none, on a busy machine (load 42 at the start, about 4 after) | **refuses to judge**: drift +16.3% fails the run as `drift`, and no cell of ours is blamed |
-| a `new RegExp` compiled per request | **fails**, 30 regressions: `match` cells 30-40 ns to ~2.9 µs, `fetch` cells +206% to +385% |
-| a 1,200 ns spin per request (about 2x) | **fails** all 22 bun-common cells and 2 Hono leads: `fetch` +71% to +151% |
-| a 250 ns spin (it measured about +300 ns) | **fails** all 11 `match` cells and 9 of 11 `fetch` cells (+16% to +28% net); `param-cold` and `middleware` pass at +14% net |
+| none (the same build, two more runs) | **passes** both: drift at most 2.4% on any level, ours at most +4.8% raw |
+| none, on a busy machine (load 42 at the start; first version) | **refuses to judge**: drift +16.3% fails the run as `drift`, and no cell of ours is blamed |
+| a `new RegExp` compiled per request | **fails** all 48 bun-common cells: `match` 30-90 ns to 3.0-3.6 µs, `route` +356% to +5,995%, `fetch` +160% to +301%, `served` +19% to +22% |
+| a 1,200 ns spin per request (about 2x on `fetch`) | **fails** all 45 `match`, `route` and `fetch` cells (`route` +129% to +2,318%, `fetch` +50% to +107%); the 3 `served` cells pass at +2% to +7% |
+| a 250 ns spin (it measured about +300 ns) | **fails** all 15 `match` and all 15 `route` cells (+30% to +553%) and 12 of 15 `fetch` cells (+15% to +27%); `fetch` on the two cold rotations and `head` pass at +7% to +11% |
 
-The last row is the threshold doing its job: a third of a microsecond on a
-~1.2 µs request is about where 15% sits, and the matcher-only cells, where it
-is a factor of eight, catch it regardless.
+The last row is why the `route` level exists: a third of a microsecond is
+about where 15% sits on a whole `fetch()` (1.2-2.6 µs), so a routing change
+of that size can pass there, while the walk alone (0.05-1 µs) shows it as a
+factor. The `served` cells are the opposite: a loopback round trip is about
+31 µs, so 15% there is ~4.7 µs, and they exist to catch a change to the
+socket path (`Bun.serve`'s entry, the `Response` on the wire), not to resolve
+routing.
 
 **Checking a change.** For a change to routing, run an A/B of the base and
 the branch in two worktrees (`--roots base=<dir>,pr=<dir>`): it alternates
