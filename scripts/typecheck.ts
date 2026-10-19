@@ -59,6 +59,9 @@ export const PROJECTS = [
   // plugin author's (no source condition). Needs `bun install` there first.
   "templates/tsconfig.json",
   "scripts/tsconfig.json",
+  // The VS Code extension (docs/plans/bun-lint-fmt/ §5). Needs
+  // `bun install --frozen-lockfile` there first, for `@types/vscode`.
+  "tools/vscode-bun-lint/tsconfig.json",
 ] as const;
 
 /**

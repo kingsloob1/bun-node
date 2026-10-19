@@ -273,8 +273,8 @@ short:
   in its directory, not `bun check -p`: `bun check` runs the nearest
   `package.json`'s `check` script, and the root's runs the whole repo. In a
   fresh worktree, first `bun install --frozen-lockfile` in
-  `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/` and
-  `templates/compute-provider/`: without them those projects fail on missing
+  `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/`,
+  `templates/compute-provider/` and `tools/vscode-bun-lint/`: without them those projects fail on missing
   modules, and that noise hides real errors in the same projects. Frozen,
   because a plain install re-resolves and rewrites the lock, so the gate would
   check whatever the registry served that day (`CLAUDE.md`, "Dev workflow").
