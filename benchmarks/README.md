@@ -36,7 +36,7 @@ counterpart of bun-jobs' guard (`packages/bun-jobs/bench`, CLAUDE.md
 
 ```bash
 bun router-guard.ts --verify            # every scenario answers right; times nothing
-bun router-guard.ts --compare           # fails (exit 1) if a cell regressed
+bun router-guard.ts --compare           # fails (exit 1) if a cell regressed; exit 3: options changed
 bun router-guard.ts --save-baseline     # re-record, after a deliberate change
 bun router-guard.ts --roots before=../../wt-a,after=../../wt-b   # A/B two checkouts
 bun router-guard.ts --help              # every option and scenario
@@ -95,6 +95,7 @@ after it, in the adapter, so they are timed at `fetch` and `served`.
 (`routerOptions`): the route cache's size (`routeCacheMax`, 50,000),
 `caseSensitive` (`true`, the adapters' default) and `routeSpecificity`; a
 cell that ran with other options (`routes-1000-specificity`) records its own.
+`--compare` checks them too: see **options changed** below.
 
 **Method.** One fresh process per (target, scenario, round), so one
 scenario's shapes cannot make another's call sites polymorphic. Rounds are
@@ -151,6 +152,28 @@ A comparison fails on:
   figure (a scenario that stopped answering correctly fails `--verify` the
   same way).
 
+**Options changed.** A cell whose router options (its own, else its
+target's) differ from the baseline's measures another configuration, so it is
+neither passed nor failed. The comparison prints, per target, every differing
+key and how many cells it covers, then each such cell with its figures and
+`not judged`, and marks its row in the table `options changed`:
+
+```text
+  OPTS  bun-common: router options differ from the baseline: caseSensitive true → false (48 cells)
+  OPTS  bun-common/fetch/static                    options changed  1595ns  ->  1617ns (+1.3%, +0.9% net of drift); not judged
+  ...
+verdict: options changed (exit 3). 48 cell(s) ran with other router options than the baseline, ...
+```
+
+When nothing else regressed, the run ends with that verdict line and **exits
+3** (`EXIT_OPTIONS_CHANGED`), not 0: a PR that changes a default (say
+`caseSensitive` to `false`) is due a `--save-baseline` in the same PR, not a
+fix, and a pass would leave those cells unjudged against a stale baseline from
+then on. A real regression in any other cell still exits 1, and its summary
+says how many cells went unjudged. The cells whose options match are judged
+as before, and a file that recorded no options (Hono's cells, a run from
+before them) is compared on figures alone. Exit 2 stays a usage error.
+
 An improvement never fails it, and a new scenario fails nothing until a
 baseline records it. A baseline holds only on the machine that recorded it:
 `baselines/router.json` names the CPU, the Bun version and revision, the git
@@ -182,7 +205,9 @@ every cell between the two, so it is the sharper comparison, and it needs no
 baseline. Then `--compare` on the branch against the committed baseline. A
 change that is meant to move a figure re-records the baseline
 (`--save-baseline`) in the same PR, with the A/B table in its description.
-`--from <file>` judges a run saved with `--json` again, without measuring.
+`--from <file>` judges a run saved with `--json` again, without measuring,
+options included. A PR that changes router options on purpose: exit 3 from
+`--compare`, then `--save-baseline` in the same PR.
 
 **`--root` and `--roots`.** bun-common, bun-nest and the `@nestjs/*` packages
 are loaded from the checkout named, so this one copy of the script measures
