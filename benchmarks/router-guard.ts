@@ -312,13 +312,24 @@ const DEFAULT_BASELINE = new URL("baselines/router.json", import.meta.url)
  */
 export const TOLERANCE = 0.15;
 
+/**
+ * `--compare`'s exit status when nothing regressed but some cells ran with
+ * other router options than the baseline recorded (a changed default, say):
+ * those cells were not judged, so the baseline is due a `--save-baseline`,
+ * not the code a fix. A regression elsewhere wins, with exit 1; 2 is a usage
+ * error.
+ */
+export const EXIT_OPTIONS_CHANGED = 3;
+
 function printHelp(): void {
   console.log(`
 Router regression guard (Bun ${Bun.version})
 
 Usage: bun router-guard.ts [options]
 
-  --compare             Fail (exit 1) if a figure regressed against the baseline
+  --compare             Fail (exit 1) if a figure regressed against the baseline;
+                        exit ${EXIT_OPTIONS_CHANGED} if nothing did but some cells ran with other router
+                        options than it recorded (re-record it with --save-baseline)
   --save-baseline       Record this run as the baseline
   --baseline <file>     Baseline file           (default: baselines/router.json)
   --verify              Check every scenario's responses; time nothing
@@ -1246,6 +1257,45 @@ function toBaseline(cells: Cell[], root: string): Baseline {
   };
 }
 
+/** The router options compared between a run and its baseline. */
+const OPTION_KEYS = [
+  "routeCacheMax",
+  "caseSensitive",
+  "routeSpecificity",
+] as const satisfies readonly (keyof RouterOptions)[];
+
+/**
+ * The router options a cell of `run` ran with: its own, else its target's;
+ * `undefined` where none were recorded (Hono, a file from before them).
+ */
+function cellOptions(run: Baseline, key: string): RouterOptions | undefined {
+  const entry = run.entries[key];
+  return entry && (entry.options ?? run.routerOptions?.[entry.target]);
+}
+
+/**
+ * Each option that differs, as `caseSensitive true → false`; none when either
+ * side is unknown, so a file without options is judged as before.
+ */
+function optionChanges(was?: RouterOptions, now?: RouterOptions): string[] {
+  if (!was || !now) return [];
+  return OPTION_KEYS.filter((k) => was[k] !== now[k]).map(
+    (k) => `${k} ${String(was[k])} → ${String(now[k])}`,
+  );
+}
+
+/** A cell that ran with other router options than its baseline: not judged. */
+interface OptionsChanged {
+  key: string;
+  target: TargetId;
+  /** Each differing option, `caseSensitive true → false`. */
+  changes: string[];
+  /** The baseline's figure. */
+  was: string;
+  /** This run's figure, with its delta raw and net of drift. */
+  now: string;
+}
+
 /** One way a run differs from its baseline. */
 interface Regression {
   key: string;
@@ -1263,14 +1313,22 @@ function ns(value: number): string {
 /**
  * Compares a run with a baseline. Only cells the baseline has are checked, so
  * a new scenario fails nothing before a baseline records it; a cell the
- * baseline has and this run attempted but could not measure is a failure.
+ * baseline has and this run attempted but could not measure is a failure. A
+ * cell that ran with other router options than the baseline's is reported in
+ * `optionsChanged` and neither passed nor failed: its figure measures a
+ * different configuration.
  */
 function compare(
   baseline: Baseline,
   current: Baseline,
   attempted: Set<string>,
-): { regressions: Regression[]; drifts: LevelDrift[] } {
+): {
+  regressions: Regression[];
+  optionsChanged: OptionsChanged[];
+  drifts: LevelDrift[];
+} {
   const regressions: Regression[] = [];
+  const optionsChanged: OptionsChanged[] = [];
   const drifts = machineDrift(baseline, current);
   const driftOf = new Map(drifts.map((d) => [d.level, d.drift]));
   for (const { level, drift, rivals } of drifts) {
@@ -1302,6 +1360,20 @@ function compare(
     if (RIVALS.has(was.target)) continue;
     const drift = driftOf.get(was.level) ?? 1;
     const grew = now.nsPerOp / was.nsPerOp / drift - 1;
+    const changes = optionChanges(
+      cellOptions(baseline, key),
+      cellOptions(current, key),
+    );
+    if (changes.length) {
+      optionsChanged.push({
+        key,
+        target: was.target,
+        changes,
+        was: ns(was.nsPerOp),
+        now: `${ns(now.nsPerOp)} (${pct(now.nsPerOp / was.nsPerOp - 1)}, ${pct(grew)} net of drift)`,
+      });
+      continue;
+    }
     if (grew > TOLERANCE) {
       regressions.push({
         key,
@@ -1325,7 +1397,7 @@ function compare(
       });
     }
   }
-  return { regressions, drifts };
+  return { regressions, optionsChanged, drifts };
 }
 
 /** One level's drift: how the rival cells it was taken from moved. */
@@ -1398,10 +1470,14 @@ function printTable(
     const delta = was
       ? `${((entry.nsPerOp / was.nsPerOp - 1) * 100).toFixed(1)}%`
       : "";
+    const changed =
+      base &&
+      optionChanges(cellOptions(base, key), cellOptions(current, key)).length;
     console.log(
       `${key.padEnd(42)} ${ns(entry.nsPerOp).padStart(9)} ${`${(entry.spread * 100).toFixed(1)}%`.padStart(7)}` +
         `${base ? `${(was ? ns(was.nsPerOp) : "-").padStart(10)} ${delta.padStart(7)}` : ""}` +
-        ` ${(entry.rival ? ns(entry.rival.nsPerOp) : "").padStart(9)}`,
+        ` ${(entry.rival ? ns(entry.rival.nsPerOp) : "").padStart(9)}` +
+        `${changed ? "  options changed" : ""}`,
     );
   }
 }
@@ -1639,6 +1715,7 @@ async function main(): Promise<void> {
   printTable(current, values.label, values.compare ? base : undefined);
 
   let failed = problems.length > 0;
+  let optionsChangedCount = 0;
   if (values["save-baseline"]) {
     if (failed) {
       console.log(`\nNot recording a baseline from a run with problems.`);
@@ -1657,7 +1734,12 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    const { regressions, drifts } = compare(base, current, attempted);
+    const { regressions, optionsChanged, drifts } = compare(
+      base,
+      current,
+      attempted,
+    );
+    optionsChangedCount = optionsChanged.length;
     console.log(
       `\nCompared against ${base.gitSha.slice(0, 8)}, recorded ${base.recordedAt.slice(0, 10)} on ${base.cpu}, Bun ${base.bun}.`,
     );
@@ -1668,9 +1750,29 @@ async function main(): Promise<void> {
           : `  ${d.level.padEnd(6)} no rival cells measured: no drift correction`,
       );
     }
+    // Per target, each distinct set of differing options and how many cells
+    // it covers; then every such cell, with its figures, unjudged.
+    const byTarget = Map.groupBy(
+      optionsChanged,
+      (c) =>
+        `${c.target}: router options differ from the baseline: ${c.changes.join(", ")}`,
+    );
+    for (const [line, cells] of byTarget) {
+      console.log(
+        `  OPTS  ${line} (${cells.length} cell${cells.length === 1 ? "" : "s"})`,
+      );
+    }
+    for (const c of optionsChanged) {
+      console.log(
+        `  OPTS  ${c.key.padEnd(42)} options changed  ${c.was}  ->  ${c.now}; not judged`,
+      );
+    }
+    const unjudged = optionsChanged.length
+      ? ` (${optionsChanged.length} cell(s) with changed options not judged)`
+      : "";
     if (regressions.length === 0) {
       console.log(
-        `  ok    no cell grew more than ${(TOLERANCE * 100).toFixed(0)}% net of drift, and every lead held.`,
+        `  ok    no ${optionsChanged.length ? "judged " : ""}cell grew more than ${(TOLERANCE * 100).toFixed(0)}% net of drift, and every lead held${unjudged}.`,
       );
     } else {
       for (const r of regressions) {
@@ -1679,11 +1781,20 @@ async function main(): Promise<void> {
         );
       }
       console.log(
-        `\n${regressions.length} regression(s). A baseline only means anything on the machine ` +
+        `\n${regressions.length} regression(s)${unjudged}. A baseline only means anything on the machine ` +
           `that recorded it: on different hardware, re-record rather than chase it.`,
       );
       failed = true;
     }
+  }
+  if (!failed && optionsChangedCount) {
+    console.log(
+      `\nverdict: options changed (exit ${EXIT_OPTIONS_CHANGED}). ${optionsChangedCount} cell(s) ran with other router ` +
+        `options than the baseline, so their figures measure another configuration and were not judged; ` +
+        `every other cell passed. If the change is deliberate, re-record the baseline with --save-baseline ` +
+        `in the same PR: this is not a regression to fix.`,
+    );
+    process.exit(EXIT_OPTIONS_CHANGED);
   }
   process.exit(failed ? 1 : 0);
 }
