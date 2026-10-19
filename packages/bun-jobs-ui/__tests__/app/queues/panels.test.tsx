@@ -89,7 +89,7 @@ describe("the limits editor", () => {
         "Saved the limits of emails",
       ),
     );
-    const put = callsTo(calls, "PUT", "/queues/emails/limits")[0]!;
+    const put = callsTo(calls, "PUT", "/queues/emails/limits")[0];
     expect(put.headers["content-type"]).toBe("application/json");
     expect(JSON.parse(put.body!)).toEqual({
       rate: { max: 10, duration: "1 minute" },
@@ -167,9 +167,7 @@ describe("the limits editor", () => {
         "Removed the limits of emails",
       ),
     );
-    expect(callsTo(calls, "PUT", "/queues/emails/limits")[0]!.body).toBe(
-      "null",
-    );
+    expect(callsTo(calls, "PUT", "/queues/emails/limits")[0].body).toBe("null");
     await waitFor(() => expectAbsent(openDialog()));
   });
 
@@ -292,7 +290,7 @@ describe("the other panels", () => {
     ).not.toContain("Memory");
     expect(table.textContent).not.toContain("MiB");
     // The heartbeat's round trip is a tooltip, not a column, so it is here.
-    expect(row.querySelectorAll("time")[1]!.getAttribute("title")).toContain(
+    expect(row.querySelectorAll("time")[1].getAttribute("title")).toContain(
       "Last write took 12 ms",
     );
   });
@@ -314,7 +312,7 @@ describe("the other panels", () => {
       handlers: {
         "GET /queues/emails/workers": {
           body: {
-            items: [{ ...workersFixture.items[0]!, sweeps: false }],
+            items: [{ ...workersFixture.items[0], sweeps: false }],
           },
         },
       },
@@ -338,8 +336,8 @@ describe("the other panels", () => {
         "GET /queues/emails/workers": {
           body: {
             items: [
-              { ...workersFixture.items[0]!, id: "w-1", sweeps: false },
-              { ...workersFixture.items[0]!, id: "w-2" },
+              { ...workersFixture.items[0], id: "w-1", sweeps: false },
+              { ...workersFixture.items[0], id: "w-2" },
             ],
           },
         },
@@ -359,8 +357,8 @@ describe("the other panels", () => {
         "GET /queues/emails/workers": {
           body: {
             items: [
-              { ...workersFixture.items[0]!, id: "w-1", sweeps: false },
-              { ...workersFixture.items[0]!, id: "w-2", sweeps: true },
+              { ...workersFixture.items[0], id: "w-1", sweeps: false },
+              { ...workersFixture.items[0], id: "w-2", sweeps: true },
             ],
           },
         },
@@ -422,7 +420,7 @@ describe("the other panels", () => {
       within(row).getByRole("button", { name: /Data of digest:cron/ }),
     ).toBeTruthy();
     expect(
-      callsTo(calls, "GET", "/queues/emails/repeatables")[0]!.query.getAll(
+      callsTo(calls, "GET", "/queues/emails/repeatables")[0].query.getAll(
         "include",
       ),
     ).toEqual(["data"]);
@@ -442,7 +440,7 @@ describe("the other panels", () => {
       calls,
       "DELETE",
       "/queues/emails/repeatables/digest%3Acron",
-    )[0]!;
+    )[0];
     expect(call.url).toContain("/repeatables/digest%3Acron");
   });
 
@@ -562,7 +560,7 @@ describe("repeatables, disable and enable", () => {
     return {
       items: [
         {
-          ...repeatablesFixture.items[0]!,
+          ...repeatablesFixture.items[0],
           disabled: true,
           nextRunAt: null,
           nextJobId: null,
@@ -612,7 +610,7 @@ describe("repeatables, disable and enable", () => {
       calls,
       "POST",
       "/queues/emails/repeatables/digest%3Acron/disable",
-    )[0]!;
+    )[0];
     expectUndefined(call.body);
     await waitFor(() =>
       expect(

@@ -343,9 +343,9 @@ export function jobsSeriesFixture(
 function runnerBuckets(range: AnalyticsRangeDto) {
   return [range.from, range.from + range.interval, range.to].map((at, i) => ({
     at,
-    started: [2, 3, 1][i]!,
-    succeeded: [2, 2, 1][i]!,
-    failed: [0, 1, 0][i]!,
+    started: [2, 3, 1][i],
+    succeeded: [2, 2, 1][i],
+    failed: [0, 1, 0][i],
     timeout: 0,
     killed: 0,
     skipped: 0,
@@ -414,8 +414,8 @@ export function runnersAnalyticsFixture(
 function workerBuckets(range: AnalyticsRangeDto) {
   return [range.from, range.from + range.interval, range.to].map((at, i) => ({
     at,
-    completed: [4, 6, 2][i]!,
-    failed: [0, 1, 0][i]!,
+    completed: [4, 6, 2][i],
+    failed: [0, 1, 0][i],
   }));
 }
 

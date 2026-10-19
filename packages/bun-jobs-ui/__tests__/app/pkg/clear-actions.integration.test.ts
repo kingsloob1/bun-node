@@ -621,7 +621,7 @@ for (const label of ["memory", "file", "SQLite"]) {
         expect(after.lines).toEqual([]);
         expect(after.button).toBe("disabled");
         expect(after.reason).toBe(EMPTY_REASON);
-        const deleteAt = deploy.exchanges.indexOf(deletes[0]!);
+        const deleteAt = deploy.exchanges.indexOf(deletes[0]);
         const reread = deploy.exchanges
           .slice(deleteAt + 1)
           .find(
@@ -855,8 +855,8 @@ async function expectClear(
   { isLocal }: { isLocal: boolean },
 ) {
   const path = `/runners/${id}/history`;
-  const finished = deploy.finished[id]!;
-  const holding = deploy.holding[id]!;
+  const finished = deploy.finished[id];
+  const holding = deploy.holding[id];
   expect(
     (await read<{ isLocal: boolean }>(deploy, `/runners/${id}`)).isLocal,
   ).toBe(isLocal);

@@ -208,7 +208,7 @@ describe("the Workers page's filters", () => {
       await within(screen).findByText("No workers match these filters"),
     ).toBeTruthy();
     fireEvent.click(
-      within(screen).getAllByRole("button", { name: "Clear filters" })[0]!,
+      within(screen).getAllByRole("button", { name: "Clear filters" })[0],
     );
     await within(screen).findByTestId("worker-row-api.emails.a1");
   });

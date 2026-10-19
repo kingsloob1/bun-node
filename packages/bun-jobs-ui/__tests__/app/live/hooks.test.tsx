@@ -191,8 +191,8 @@ describe("LiveProvider", () => {
     });
     expect(openSockets()).toHaveLength(1);
     act(() => {
-      openSockets()[0]!.open();
-      openSockets()[0]!.receive(hello());
+      openSockets()[0].open();
+      openSockets()[0].receive(hello());
     });
     await waitFor(() => expect(status(container).state).toBe("live"));
     unmount();
@@ -241,7 +241,7 @@ describe("useLiveSubscription", () => {
       socket.receive(hello());
     });
     await waitFor(() => expect(socket.ops("subscribe")).toHaveLength(1));
-    act(() => getAllByText("rerender")[0]!.click());
+    act(() => getAllByText("rerender")[0].click());
     await act(async () => {
       await Promise.resolve();
     });
@@ -304,7 +304,7 @@ describe("useLiveSubscription", () => {
     act(() =>
       socket.receive({
         type: "ack",
-        id: socket.ops("subscribe")[0]!.id,
+        id: socket.ops("subscribe")[0].id,
         op: "subscribe",
         channels: [],
         rejected: [
@@ -393,7 +393,7 @@ describe("useLiveInvalidation", () => {
       socket.receive(hello());
     });
     await waitFor(() => expect(socket.ops("subscribe")).toHaveLength(1));
-    expect(socket.ops("subscribe")[0]!.events).toEqual(["added"]);
+    expect(socket.ops("subscribe")[0].events).toEqual(["added"]);
     act(() => socket.receive(queueEvent(1, ["queue/emails"], "completed")));
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(invalidate).not.toHaveBeenCalled();

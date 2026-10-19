@@ -1271,7 +1271,7 @@ export class BunHttpAdapter<
       this.isServerListening = false;
     }
 
-    // eslint-disable-next-line ts/no-this-alias
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const that = this;
     let serverInstance: BunServer<WebSocketClientData<customWebsocketDataType>>;
     try {

@@ -13,6 +13,6 @@
     "./lib/**/*",
     "./__tests__/**/*",
     "./scripts/**/*",
-    "eslint.config.mjs"
+    "eslint.legacy.config.mjs"
   ]
 }

@@ -1,4 +1,4 @@
-import config from "../../packages/bun-common/eslint.config.mjs";
+import config from "../../packages/bun-common/eslint.legacy.config.mjs";
 
 /**
  * The package's own lint rules, with the two that fight what an example is.

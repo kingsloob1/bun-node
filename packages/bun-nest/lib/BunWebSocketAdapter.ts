@@ -77,7 +77,7 @@ function routeWsExceptionsThroughEmit(): void {
   wsExceptionsRouted = true;
   let proto: WsExceptionFilterPrototype | undefined;
   try {
-    // eslint-disable-next-line ts/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const websockets = require("@nestjs/websockets") as {
       BaseWsExceptionFilter?: { prototype: WsExceptionFilterPrototype };
     };

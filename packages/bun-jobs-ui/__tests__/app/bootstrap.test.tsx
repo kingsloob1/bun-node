@@ -125,7 +125,7 @@ describe("boot", () => {
       await page().findByTestId("app-ready");
       expect(document.documentElement.dataset.theme).toBe("dark");
       expect(document.title).toBe("Ops jobs");
-      expect(api.calls[0]!.url).toBe("/jobs-api/meta");
+      expect(api.calls[0].url).toBe("/jobs-api/meta");
 
       // The header's toggle cycles and remembers the theme.
       fireEvent.click(page().getByRole("button", { name: /^Theme: Dark/ }));

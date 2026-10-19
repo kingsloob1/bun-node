@@ -21,7 +21,7 @@ export interface ThemeTokens {
 function declarations(body: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [, name, value] of body.matchAll(/--([\w-]+)\s*:([^;]+);/g)) {
-    out[name!] = value!.trim();
+    out[name] = value.trim();
   }
   return out;
 }
@@ -67,9 +67,9 @@ export function parseHex(hex: string): [number, number, number] {
     throw new Error(`not a hex colour: ${hex}`);
   }
   const digits =
-    match[1]!.length === 3
-      ? [...match[1]!].map((digit) => digit + digit).join("")
-      : match[1]!;
+    match[1].length === 3
+      ? [...match[1]].map((digit) => digit + digit).join("")
+      : match[1];
   return [0, 2, 4].map((at) =>
     Number.parseInt(digits.slice(at, at + 2), 16),
   ) as [number, number, number];

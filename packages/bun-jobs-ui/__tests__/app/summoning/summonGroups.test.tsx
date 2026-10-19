@@ -186,7 +186,7 @@ describe("the Summoning screen's summon groups", () => {
       "emails 3",
     ]);
     expect(
-      within(members[1]!)
+      within(members[1])
         .getByRole("link", { name: "emails" })
         .getAttribute("href"),
     ).toBe("/jobs/queues/emails?panel=summon");

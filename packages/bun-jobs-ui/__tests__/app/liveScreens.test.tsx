@@ -98,12 +98,12 @@ describe("live Overview", () => {
 
     const before = [gets(calls, "/overview"), gets(calls, "/queues")];
     await emit(queueEvent({ type: "completed", target: "emails", id: "1" }));
-    await waitFor(() => expect(gets(calls, "/overview")).toBe(before[0]! + 1));
-    expect(gets(calls, "/queues")).toBe(before[1]! + 1);
+    await waitFor(() => expect(gets(calls, "/overview")).toBe(before[0] + 1));
+    expect(gets(calls, "/queues")).toBe(before[1] + 1);
 
     // Progress changes no count.
     await emit(queueEvent({ type: "progress", target: "emails", id: "1" }));
-    expect(gets(calls, "/overview")).toBe(before[0]! + 1);
+    expect(gets(calls, "/overview")).toBe(before[0] + 1);
   });
 
   it("polls at the base interval while not live", async () => {
@@ -131,7 +131,7 @@ describe("live Queues list", () => {
       .getQueryCache()
       .findAll({ queryKey: queueKeys.pages })
       .map((query) => query.queryKey);
-    expect(intervalOf(queryClient, pageKey!)).toBe(
+    expect(intervalOf(queryClient, pageKey)).toBe(
       POLL_INTERVAL_MS * LIVE_SLOWDOWN,
     );
   });

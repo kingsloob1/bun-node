@@ -271,7 +271,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
 
     // The same route, the same parameters and the same draining schedule,
     // paged by offset instead — the arm the cursor replaces.
-    const first = ours[0]!.query;
+    const first = ours[0].query;
     const offsetQuery = (offset: number) => {
       const query = new URLSearchParams(first);
       query.delete("cursor");
@@ -324,7 +324,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
     // The memory driver counts what precedes a walked page for free, so the
     // range stays numbered — and says where the seek landed in the list as
     // it is now, not where the walk started: "6–15" after five jobs went.
-    expect(views[1]!.range).toBe(`${PAGE - DRAIN + 1}–${2 * PAGE - DRAIN}`);
+    expect(views[1].range).toBe(`${PAGE - DRAIN + 1}–${2 * PAGE - DRAIN}`);
 
     // And the offset arm announced none of it: no repeat, no error, no gap in
     // any field of the response — which is why the losses went unseen.
@@ -345,17 +345,17 @@ describe("the jobs table's cursor navigation against a real API", () => {
     );
 
     // The jump: page two by offset, as a page number always has been.
-    expect(views[0]!.ids).toEqual(ids.slice(PAGE, 2 * PAGE));
-    expect(views[0]!.range).toBe(`${PAGE + 1}–${2 * PAGE}`);
+    expect(views[0].ids).toEqual(ids.slice(PAGE, 2 * PAGE));
+    expect(views[0].range).toBe(`${PAGE + 1}–${2 * PAGE}`);
     // Then the walk, which continues from that page rather than from the top:
     // the API mints a cursor on an offset page too, which is what lets a
     // reader jump to where they want to be and walk on without losing a row.
-    expect(views[1]!.ids).toEqual(ids.slice(2 * PAGE, 3 * PAGE));
-    expect(views[1]!.canPrev).toBe(true);
+    expect(views[1].ids).toEqual(ids.slice(2 * PAGE, 3 * PAGE));
+    expect(views[1].canPrev).toBe(true);
 
     const ours = jobsCalls.filter((call) => call.queue === "jump-me");
-    expect(ours[0]!.query.get("offset")).toBe(String(PAGE));
-    expect(ours[0]!.query.has("cursor")).toBe(false);
+    expect(ours[0].query.get("offset")).toBe(String(PAGE));
+    expect(ours[0].query.has("cursor")).toBe(false);
     const walkedCall = ours.find((call) => call.query.has("cursor"))!;
     expect(walkedCall.query.has("offset")).toBe(false);
     expect(walkedCall.status).toBe(200);
@@ -400,12 +400,16 @@ describe("the jobs table's cursor navigation against a real API", () => {
     // what minted it, so the order is the only difference.
     const reversed = new URLSearchParams(walkedCall.query);
     reversed.set("order", "desc");
-    const refused = await apiGet(`/queues/stale-me/jobs?${reversed}`);
+    const refused = await apiGet(
+      `/queues/stale-me/jobs?${reversed.toString()}`,
+    );
     expect(refused.status).toBe(400);
     expect(refused.body.detail ?? "").toMatch(/order|walk|issued/i);
     // The walk it does belong to still takes it, which is what makes the
     // refusal above about the walk rather than about the cursor.
-    const accepted = await apiGet(`/queues/stale-me/jobs?${walkedCall.query}`);
+    const accepted = await apiGet(
+      `/queues/stale-me/jobs?${walkedCall.query.toString()}`,
+    );
     expect(accepted.status).toBe(200);
     expect(accepted.body.page?.next).not.toBeUndefined();
     expect(cursor.length).toBeLessThanOrEqual(2048);
@@ -499,7 +503,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
       expect(views).toHaveLength(2);
 
       const ours = jobsCalls.filter((call) => call.queue === QUEUE);
-      const first = ours[0]!;
+      const first = ours[0];
       expect(first.query.getAll("state")).toEqual(["active"]);
       expect(first.query.get("sort")).toBe("createdAt");
       expect(first.query.has("total")).toBe(false);
@@ -521,12 +525,12 @@ describe("the jobs table's cursor navigation against a real API", () => {
       // table's default): page one the ten newest held, page two the five
       // before them — disjoint, and together every job held.
       const newestFirst = [...held].reverse();
-      expect(views[0]!.ids).toEqual(newestFirst.slice(0, PAGE));
-      expect(views[1]!.ids).toEqual(newestFirst.slice(PAGE));
-      expect(views[1]!.ids.filter((id) => views[0]!.ids.includes(id))).toEqual(
+      expect(views[0].ids).toEqual(newestFirst.slice(0, PAGE));
+      expect(views[1].ids).toEqual(newestFirst.slice(PAGE));
+      expect(views[1].ids.filter((id) => views[0].ids.includes(id))).toEqual(
         [],
       );
-      expect(views[1]!.canPrev).toBe(true);
+      expect(views[1].canPrev).toBe(true);
     }, 30_000);
 
     it("pages the Active tab by offset with Count total on, which keeps lock-expiry order", async () => {
@@ -543,7 +547,7 @@ describe("the jobs table's cursor navigation against a real API", () => {
       expect(views).toHaveLength(2);
 
       const ours = jobsCalls.filter((call) => call.queue === QUEUE);
-      const first = ours[0]!;
+      const first = ours[0];
       expect(first.query.getAll("state")).toEqual(["active"]);
       expect(first.query.get("total")).toBe("true");
       // Counting drops the sort, so the page is in `lockExpiresAt` order —
@@ -561,10 +565,10 @@ describe("the jobs table's cursor navigation against a real API", () => {
       expect(ours.some((call) => call.query.has("cursor"))).toBe(false);
 
       // Counted, which is what Count total is for; and page two by offset.
-      expect(views[0]!.range).toBe(`1–${PAGE} of ${HELD}`);
-      expect(views[1]!.range).toBe(`${PAGE + 1}–${HELD} of ${HELD}`);
-      expect(views[1]!.ids).toHaveLength(HELD - PAGE);
-      expect(views[1]!.ids.filter((id) => views[0]!.ids.includes(id))).toEqual(
+      expect(views[0].range).toBe(`1–${PAGE} of ${HELD}`);
+      expect(views[1].range).toBe(`${PAGE + 1}–${HELD} of ${HELD}`);
+      expect(views[1].ids).toHaveLength(HELD - PAGE);
+      expect(views[1].ids.filter((id) => views[0].ids.includes(id))).toEqual(
         [],
       );
     }, 30_000);

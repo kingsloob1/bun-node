@@ -355,8 +355,8 @@ describe("a worker's row against a real API", () => {
       (one) => one.method === "PUT",
     );
     expect(put).toHaveLength(1);
-    expect(put[0]!.status).toBe(200);
-    expect(JSON.parse(put[0]!.body!)).toEqual({
+    expect(put[0].status).toBe(200);
+    expect(JSON.parse(put[0].body!)).toEqual({
       concurrency: 5,
       expectedSeq: 0,
     });

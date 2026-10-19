@@ -1,11 +1,14 @@
-// The manual playground belongs to no package, so no package's config
-// reaches it. This is the root scripts' config (the packages' config, with
-// console output allowed, since printing is the point of a CLI entry point).
-// Run it from here: `cd playground && bunx eslint .`.
+// The repo's tooling scripts belong to no package, so no package's config
+// reached them and nothing linted them. This is the packages' config (keep it
+// identical to `packages/*/eslint.legacy.config.mjs`) except for the two rules a CLI
+// entry point is exempt from, marked below. Run it with
+// `bun run lint:eslint:scripts` from the root (the same as
+// `cd scripts && bunx eslint -c eslint.legacy.config.mjs .`).
 import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import { keepBunLintDirectives } from "../eslint.legacy.directives.mjs";
 
 export default antfu({
   lessOpinionated: true,
@@ -22,6 +25,12 @@ export default antfu({
   toml: true,
   test: true,
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",

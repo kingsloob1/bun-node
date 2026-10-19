@@ -739,7 +739,7 @@ describe("BunHttpAdapter: no error handler (finalhandler fallback)", () => {
       });
     });
     adapter.get("/primitive", () => {
-      // eslint-disable-next-line no-throw-literal
+      // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error
       throw "a bare string";
     });
     adapter.post("/json", (_req, res) => res.send("parsed"));

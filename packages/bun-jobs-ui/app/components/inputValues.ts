@@ -106,12 +106,12 @@ export function readDateTimeLocal(
   }
   const [, year, month, day, hours, minutes, seconds] = match.map(Number);
   if (
-    month! < 1 ||
-    month! > 12 ||
-    day! < 1 ||
-    day! > daysInMonth(year!, month!) ||
-    hours! > 23 ||
-    minutes! > 59 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hours > 23 ||
+    minutes > 59 ||
     (seconds ?? 0) > 59
   ) {
     return { kind: "problem", problem: DATE_TIME_UNREADABLE };

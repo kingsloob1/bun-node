@@ -204,9 +204,7 @@ export interface JobsApiInfoLike {
 /** `api.info`, when this API version has it. */
 function infoOf(api: JobsApi): JobsApiInfoLike | undefined {
   const info = (api as { info?: unknown }).info;
-  return typeof info === "object" && info !== null
-    ? (info as JobsApiInfoLike)
-    : undefined;
+  return typeof info === "object" && info !== null ? info : undefined;
 }
 
 /** The CSRF header the API reports (`api.info.csrf.header`), when it reports one. */
@@ -649,23 +647,18 @@ export function createJobsUi(
 
   const router = new BunRouter();
   for (const verb of ["get", "head"] as const) {
-    const register = router[verb] as unknown as (
+    const register = router[verb].bind(router) as unknown as (
       path: string,
       ...callbacks: RouterHandler[]
     ) => unknown;
     // `:file` is one segment; anything deeper under the assets path is a 404,
     // never the shell. (A named `*file` would lose its name when the router is
     // mounted — bun-common flattens it to a positional wildcard.)
-    register.call(
-      router,
-      `${ASSETS_SUBPATH}/:file`,
-      ...guards(true),
-      serveAsset,
-    );
-    register.call(router, ASSETS_SUBPATH, ...guards(true), notFound);
-    register.call(router, `${ASSETS_SUBPATH}/*`, ...guards(true), notFound);
-    register.call(router, "/", ...guards(false), serveShell);
-    register.call(router, "/*", ...guards(false), serveShell);
+    register(`${ASSETS_SUBPATH}/:file`, ...guards(true), serveAsset);
+    register(ASSETS_SUBPATH, ...guards(true), notFound);
+    register(`${ASSETS_SUBPATH}/*`, ...guards(true), notFound);
+    register("/", ...guards(false), serveShell);
+    register("/*", ...guards(false), serveShell);
   }
 
   return Object.freeze({ router, basePath, config });

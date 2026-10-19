@@ -74,7 +74,7 @@ describe("reading a real generated document", () => {
       (response) => response.status === "404",
     )!;
     expect(notFound.codes).toContain("QUEUE_NOT_FOUND");
-    expect(notFound.content[0]!.contentType).toBe("application/problem+json");
+    expect(notFound.content[0].contentType).toBe("application/problem+json");
     // `default` is a $ref to components.responses.Problem, resolved.
     const fallback = list.responses.find(
       (response) => response.status === "default",
@@ -101,10 +101,10 @@ describe("reading a real generated document", () => {
       // their own at the end of the document's list.
       "Analytics",
     ]);
-    expect(groups[0]!.operations.map((operation) => operation.id)).toContain(
+    expect(groups[0].operations.map((operation) => operation.id)).toContain(
       "getMeta",
     );
-    expect(groups[0]!.description).toBeTruthy();
+    expect(groups[0].description).toBeTruthy();
     // Every operation lands in exactly one group.
     expect(
       groups.reduce((sum, group) => sum + group.operations.length, 0),

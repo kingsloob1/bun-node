@@ -106,7 +106,7 @@ export interface RemoteContext {
  */
 export type RemoteJobHandler<TData = unknown, TResult = unknown> = {
   /** The handler. */
-  // eslint-disable-next-line ts/method-signature-style -- the method form is what makes the parameter bivariant
+  // eslint-disable-next-line @typescript-eslint/method-signature-style -- the method form is what makes the parameter bivariant
   handle(job: RemoteJob<TData>, ctx: RemoteContext): TResult | Promise<TResult>;
 }["handle"];
 

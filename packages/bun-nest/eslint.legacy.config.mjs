@@ -2,6 +2,7 @@ import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import { keepBunLintDirectives } from "../../eslint.legacy.directives.mjs";
 
 export default antfu({
   lessOpinionated: true,
@@ -18,6 +19,12 @@ export default antfu({
   toml: true,
   test: true,
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",

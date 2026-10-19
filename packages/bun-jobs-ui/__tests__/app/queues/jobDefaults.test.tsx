@@ -328,7 +328,7 @@ describe("the job defaults editor", () => {
         "Saved the job defaults of emails. Producers pick this up within about 1s.",
       ),
     );
-    const put = callsTo(calls, "PUT", "/queues/emails/job-defaults")[0]!;
+    const put = callsTo(calls, "PUT", "/queues/emails/job-defaults")[0];
     expect(JSON.parse(put.body!)).toEqual({
       timeout: null,
       priority: 7,
@@ -365,9 +365,7 @@ describe("the job defaults editor", () => {
       ),
     );
     expect(
-      JSON.parse(
-        callsTo(calls, "PUT", "/queues/emails/job-defaults")[0]!.body!,
-      ),
+      JSON.parse(callsTo(calls, "PUT", "/queues/emails/job-defaults")[0].body!),
     ).toEqual({
       backoff: { type: "fixed", delay: 2000, max: 8000 },
       removeOnComplete: { count: 50 },
@@ -615,7 +613,7 @@ describe("applying the defaults to pending jobs", () => {
       }),
     );
     await waitFor(() => expect(applyBodies(calls)).toHaveLength(3));
-    expect(applyBodies(calls)[2]!.cursor).toBe("c2");
+    expect(applyBodies(calls)[2].cursor).toBe("c2");
     await within(dialog).findByText(
       "Applied to every pending job in the chosen states.",
     );
@@ -650,7 +648,7 @@ describe("applying the defaults to pending jobs", () => {
     expect(preview.textContent).toContain("nothing was written");
     expect(preview.textContent).toContain("Would be rewritten900");
     expect(preview.textContent).toContain("2 jobs would get one final attempt");
-    expect(applyBodies(calls)[0]!.dryRun).toBe(true);
+    expect(applyBodies(calls)[0].dryRun).toBe(true);
     // Still on the confirmation, with the real action offered.
     fireEvent.click(
       within(dialog).getByRole("button", {
@@ -658,7 +656,7 @@ describe("applying the defaults to pending jobs", () => {
       }),
     );
     await within(dialog).findByTestId("apply-result");
-    expect(applyBodies(calls)[1]!.dryRun).toBe(false);
+    expect(applyBodies(calls)[1].dryRun).toBe(false);
   });
 
   it("sends only the ticked states, and includeUnmarked when ticked", async () => {
@@ -756,8 +754,8 @@ describe("applying the defaults to pending jobs", () => {
     fireEvent.click(again);
     await within(dialog).findByTestId("apply-result");
     const bodies = applyBodies(calls);
-    expect(bodies[0]!.seq).toBe(4);
-    expect(bodies[2]!.seq).toBe(6);
-    expectUndefined(bodies[2]!.cursor);
+    expect(bodies[0].seq).toBe(4);
+    expect(bodies[2].seq).toBe(6);
+    expectUndefined(bodies[2].cursor);
   });
 });

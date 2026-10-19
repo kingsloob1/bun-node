@@ -99,7 +99,7 @@ export async function mountJobPages(
   const views = [await settled()];
   for (let turn = 0; turn < turns; turn++) {
     await beforeTurn?.(turn);
-    const before = views[views.length - 1]!;
+    const before = views[views.length - 1];
     const nav = page().getByRole("navigation", { name: "Job pages" });
     fireEvent.click(within(nav).getByRole("button", { name: "Next" }));
     await waitFor(() => {
@@ -111,7 +111,7 @@ export async function mountJobPages(
     views.push(await settled());
   }
   if (thenOrder !== undefined) {
-    const before = views[views.length - 1]!;
+    const before = views[views.length - 1];
     fireEvent.change(page().getByLabelText("Order"), {
       target: { value: thenOrder },
     });

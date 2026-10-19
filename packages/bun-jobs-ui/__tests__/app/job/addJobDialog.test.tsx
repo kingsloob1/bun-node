@@ -112,11 +112,11 @@ describe("the add-job dialog: names", () => {
     const select = within(dialog).getByLabelText(
       labelled("Name"),
     ) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: select.options[3]!.value } });
+    fireEvent.change(select, { target: { value: select.options[3].value } });
     type(dialog, "Another name", "one-off");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!).name).toBe("one-off");
+    expect(JSON.parse(posts()[0].body!).name).toBe("one-off");
   });
 
   it("with addableNames null and a defined name picked, sends it", async () => {
@@ -127,7 +127,7 @@ describe("the add-job dialog: names", () => {
     type(dialog, "Name", "send-digest");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!)).toEqual({
+    expect(JSON.parse(posts()[0].body!)).toEqual({
       name: "send-digest",
       data: {},
     });
@@ -194,7 +194,7 @@ describe("the add-job dialog: data and options", () => {
     type(dialog, "Timeout (ms)", "0");
     await submit(dialog);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    const call = posts()[0]!;
+    const call = posts()[0];
     expect(call.path).toBe("/queues/emails/jobs");
     expect(call.headers["content-type"]).toBe("application/json");
     expect(JSON.parse(call.body!)).toEqual({
@@ -220,7 +220,7 @@ describe("the add-job dialog: data and options", () => {
     type(dialog, "Data", "null");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!)).toEqual({ name: "a", data: null });
+    expect(JSON.parse(posts()[0].body!)).toEqual({ name: "a", data: null });
   });
 
   it("limits the job id to MAX_JOB_ID_LENGTH characters", async () => {
@@ -253,7 +253,7 @@ describe("the add-job dialog: data and options", () => {
     type(dialog, "Run at", "2026-10-01T09:30");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!).opts).toEqual({
+    expect(JSON.parse(posts()[0].body!).opts).toEqual({
       runAt: new Date("2026-10-01T09:30").getTime(),
     });
   });
@@ -283,7 +283,7 @@ describe("the add-job dialog: data and options", () => {
     expect(addButton.disabled).toBe(false);
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expectUndefined(JSON.parse(posts()[0]!.body!).opts);
+    expectUndefined(JSON.parse(posts()[0].body!).opts);
   });
 
   it("sends only the delay when a delay is chosen", async () => {
@@ -300,7 +300,7 @@ describe("the add-job dialog: data and options", () => {
     type(dialog, "Delay (ms)", "500");
     await submit(dialog);
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(JSON.parse(posts()[0]!.body!).opts).toEqual({ delay: 500 });
+    expect(JSON.parse(posts()[0].body!).opts).toEqual({ delay: 500 });
   });
 
   it("checks attempts ≥ 1 and backoff/timeout ≥ 0 before sending", async () => {

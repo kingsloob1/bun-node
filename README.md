@@ -105,7 +105,7 @@ Then, in each affected package directory:
 
 ```bash
 bun run check                     # bun check on the package's projects
-bunx eslint .                     # the whole package, READMEs included; 0 errors
+bun run lint:eslint               # the whole package, READMEs included; 0 errors
 bun run test                      # type-checks the tests, then runs them; every test must pass
 ```
 

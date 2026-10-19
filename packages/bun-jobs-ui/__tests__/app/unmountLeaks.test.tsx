@@ -630,7 +630,7 @@ const CASES: ScreenCase[] = [
       ...completed("emails", AWKWARD_ID),
       type: "active",
       payload: { id: AWKWARD_ID },
-    } as Omit<EventWire, "v" | "at">,
+    },
     clock: true,
   },
 ];
@@ -691,7 +691,7 @@ describe("screens leave nothing behind when they unmount", () => {
       await eventually(() => assertStarted(screen, socket));
       if (screen.event) {
         await act(async () =>
-          socket.receive(eventFrame(1, [screen.channels[0]!], screen.event!)),
+          socket.receive(eventFrame(1, [screen.channels[0]], screen.event!)),
         );
         if (screen.onEvent) {
           await eventually(screen.onEvent);
@@ -839,7 +839,6 @@ describe("transient UI leaves nothing behind when unmounted mid-way", () => {
  * must name it. StrictMode runs each effect twice, so at least one.
  * ------------------------------------------------------------------ */
 
-/* eslint-disable react/web-api-no-leaked-interval, react/web-api-no-leaked-timeout, react/web-api-no-leaked-event-listener, react/web-api-no-leaked-resize-observer, react/web-api-no-leaked-intersection-observer -- the planted leaks */
 /** A component that opens one handle of `kind` and never closes it. */
 function Leaky({ kind }: { kind: string }) {
   useEffect(() => {
@@ -886,8 +885,6 @@ function Leaky({ kind }: { kind: string }) {
   }, [kind]);
   return null;
 }
-
-/* eslint-enable react/web-api-no-leaked-interval, react/web-api-no-leaked-timeout, react/web-api-no-leaked-event-listener, react/web-api-no-leaked-resize-observer, react/web-api-no-leaked-intersection-observer */
 
 /** A component reading through the API client with no signal, so nothing can abort it. */
 function LeakyFetch() {

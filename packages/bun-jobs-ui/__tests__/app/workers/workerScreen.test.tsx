@@ -179,7 +179,7 @@ describe("the worker page", () => {
     const headers = within(table).getAllByRole("columnheader");
     const memory = headers.findIndex((cell) => cell.textContent === "Memory");
     expect(memory).toBeGreaterThan(-1);
-    expect(headers[memory]!.getAttribute("title")).toContain(
+    expect(headers[memory].getAttribute("title")).toContain(
       "do not add these up",
     );
     const cellAt = (id: string) => {
@@ -205,7 +205,7 @@ describe("the worker page", () => {
     const heartbeatTitle = (id: string) =>
       within(instances)
         .getByTestId(`worker-row-${id}`)
-        .querySelectorAll("time")[1]!
+        .querySelectorAll("time")[1]
         .getAttribute("title") ?? "";
     expect(heartbeatTitle("api.emails.a1")).toContain(
       "Last write took 12 ms (the previous report's round trip to the driver, not a network ping).",
@@ -271,13 +271,13 @@ describe("the worker page", () => {
       within(dialog).getByRole("button", { name: "Save settings" }),
     );
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(JSON.parse(writes[0]!)).toEqual({ concurrency: 5, expectedSeq: 4 });
+    expect(JSON.parse(writes[0])).toEqual({ concurrency: 5, expectedSeq: 4 });
   });
 
   it("shows Change pending while an instance has not taken a change up", async () => {
     open({
       items: [
-        INSTANCES[0]!,
+        INSTANCES[0],
         workerFixture({
           id: "api.emails.b2",
           control: { ...workerFixture().control!, pending: true },
@@ -295,7 +295,7 @@ describe("the worker page", () => {
       ...other.config!,
       effective: { ...other.config!.effective, concurrency: 7 },
     };
-    open({ items: [INSTANCES[0]!, other] });
+    open({ items: [INSTANCES[0], other] });
     expect(await page().findByTestId("worker-config-differs")).toBeTruthy();
   });
 

@@ -1,7 +1,12 @@
+// The manual playground belongs to no package, so no package's config
+// reaches it. This is the root scripts' config (the packages' config, with
+// console output allowed, since printing is the point of a CLI entry point).
+// Run it from here: `cd playground && bun run lint:eslint`.
 import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
+import { keepBunLintDirectives } from "../eslint.legacy.directives.mjs";
 
 export default antfu({
   lessOpinionated: true,
@@ -18,6 +23,12 @@ export default antfu({
   toml: true,
   test: true,
 })
+  // The plugins' own names, which `bun lint` reads, so one directive
+  // (a disable comment naming `@typescript-eslint/…`) means the same rule to
+  // both tools (docs/plans/bun-lint-fmt/ §7, PR A).
+  .renamePlugins({ ts: "@typescript-eslint", node: "n" })
+  // A directive for a rule only `bun lint` runs is not "unused" to ESLint.
+  .onResolved(keepBunLintDirectives)
   .override("antfu/stylistic/rules", {
     rules: {
       "style/operator-linebreak": "off",
@@ -86,7 +97,16 @@ export default antfu({
         varsIgnorePattern: "^_",
       },
     ],
-    "no-console": "warn",
+    // The one departure from the packages' config. Every file here is a
+    // command-line entry point run with `bun`, never a module anyone imports,
+    // so two rules written for library code do not apply: printing is the
+    // product (the benchmarks' per-file `no-console` disables say the same),
+    // and a top-level `await main()` blocks only importers, of which an entry
+    // point has none. They are set here rather than in an appended block
+    // because `overrideRules` is applied after every block and would put
+    // `no-console: "warn"` back.
+    "no-console": "off",
+    "antfu/no-top-level-await": "off",
     "no-labels": "off",
     "no-restricted-syntax": "off",
     "no-async-promise-executor": "off",

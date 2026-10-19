@@ -355,12 +355,12 @@ export function loadDistAssets(dir: string = DEFAULT_DIST_DIR): UiAssets {
     }
     files.set(name, asset);
   }
-  for (const name of [js, ...(cssList as string[])]) {
+  for (const name of [js, ...cssList]) {
     if (!files.has(name)) {
       throw corrupt(`the entry file ${name} is not in the manifest`);
     }
   }
-  return { entry: { js, css: cssList as string[] }, files, source: "dist" };
+  return { entry: { js, css: cssList }, files, source: "dist" };
 }
 
 /** In-memory builds, by entry path: each entry is built at most once per process. */

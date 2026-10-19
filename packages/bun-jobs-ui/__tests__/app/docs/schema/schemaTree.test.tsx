@@ -75,7 +75,7 @@ describe("SchemaTree", () => {
   it("marks additionalProperties: false as no other fields", () => {
     const root = tree();
     expect(
-      within(root).getAllByTestId("schema-closed")[0]!.textContent,
+      within(root).getAllByTestId("schema-closed")[0].textContent,
     ).toContain("No other fields");
   });
 
@@ -130,7 +130,7 @@ describe("SchemaTree", () => {
   it("makes ref names buttons calling onRef when given", () => {
     const onRef = mock((_ref: string, _name: string) => {});
     const root = tree({ onRef });
-    fireEvent.click(within(root).getAllByRole("button", { name: "Node" })[0]!);
+    fireEvent.click(within(root).getAllByRole("button", { name: "Node" })[0]);
     expect(onRef).toHaveBeenCalledWith("#/components/schemas/Node", "Node");
   });
 

@@ -54,8 +54,8 @@ describe("the Overview's Workers section", () => {
     // One roll-up (no `keys`) and one batch for the visible page. That is the
     // whole cost: a series per worker would be 214 requests.
     expect(reads).toHaveLength(2);
-    expect(reads[0]!.query.has("keys")).toBe(false);
-    const batch = reads[1]!.query.getAll("keys");
+    expect(reads[0].query.has("keys")).toBe(false);
+    const batch = reads[1].query.getAll("keys");
     expect(batch).toHaveLength(MAX_ANALYTICS_SERIES);
     expect(batch).toEqual(keys.slice(0, MAX_ANALYTICS_SERIES));
     // And the page is bounded: only the batch's rows are on screen.
@@ -78,10 +78,10 @@ describe("the Overview's Workers section", () => {
     const [key, queue] = within(row).getAllByRole("link");
     // The key's page is addressed by queue and key: a key is unique only
     // within its queue.
-    expect(key!.getAttribute("href")).toContain("/workers/emails/emails-1");
-    expect(key!.textContent).toBe("emails-1");
-    expect(queue!.getAttribute("href")).toContain("/queues/emails");
-    expect(queue!.textContent).toBe("emails");
+    expect(key.getAttribute("href")).toContain("/workers/emails/emails-1");
+    expect(key.textContent).toBe("emails-1");
+    expect(queue.getAttribute("href")).toContain("/queues/emails");
+    expect(queue.textContent).toBe("emails");
   });
 
   it("leaves the key as text where the worker pages are not routed", async () => {
@@ -98,7 +98,7 @@ describe("the Overview's Workers section", () => {
     const links = within(row).getAllByRole("link");
     // Only the queue is still linked.
     expect(links).toHaveLength(1);
-    expect(links[0]!.getAttribute("href")).toContain("/queues/emails");
+    expect(links[0].getAttribute("href")).toContain("/queues/emails");
   });
 
   it("leaves the queue as text without `queues.list`", async () => {
@@ -325,7 +325,7 @@ describe("the Overview's Runners section", () => {
     await page().findByTestId("runner-analytics-row-nightly");
     const reads = calls.filter((call) => call.path === "/analytics/runners");
     expect(reads).toHaveLength(2);
-    expect(reads[1]!.query.getAll("ids")).toEqual(["nightly", "hourly"]);
+    expect(reads[1].query.getAll("ids")).toEqual(["nightly", "hourly"]);
     // "Running now" is a scalar from the locks, not a bucket.
     const totals = page().getByLabelText("Runner totals").textContent ?? "";
     expect(totals).toContain("Running now");

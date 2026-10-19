@@ -50,7 +50,7 @@ describe("groupByServer", () => {
       "api-1:100",
       "api-2:7",
     ]);
-    expect(servers[1]!.workers.map((item) => item.id)).toEqual([
+    expect(servers[1].workers.map((item) => item.id)).toEqual([
       "w-emails",
       "w-hooks",
     ]);
@@ -96,7 +96,7 @@ describe("the workers screen", () => {
 
   it("has no Completed/Failed columns when no worker reports its counts", async () => {
     const screen = await open();
-    const table = (await within(screen).findAllByRole("table"))[0]!;
+    const table = (await within(screen).findAllByRole("table"))[0];
     const headers = within(table)
       .getAllByRole("columnheader")
       .map((cell) => cell.textContent);
@@ -133,7 +133,7 @@ describe("the workers screen", () => {
 
   it("has no Memory column when no worker reports its process memory", async () => {
     const screen = await open();
-    const table = (await within(screen).findAllByRole("table"))[0]!;
+    const table = (await within(screen).findAllByRole("table"))[0];
     const headers = within(table)
       .getAllByRole("columnheader")
       .map((cell) => cell.textContent);
@@ -152,7 +152,7 @@ describe("the workers screen", () => {
     const memory = headers.findIndex((cell) => cell.textContent === "Memory");
     expect(memory).toBeGreaterThan(-1);
     // The header says whose memory it is and that the rows do not add up.
-    const hint = headers[memory]!.getAttribute("title") ?? "";
+    const hint = headers[memory].getAttribute("title") ?? "";
     expect(hint).toContain("process this worker runs in");
     expect(hint).toContain("do not add these up");
     const cells = (id: string) =>
@@ -201,7 +201,7 @@ describe("the workers screen", () => {
         .querySelectorAll("time");
       // Started, then Heartbeat.
       expect(times).toHaveLength(2);
-      return times[1]!.getAttribute("title") ?? "";
+      return times[1].getAttribute("title") ?? "";
     };
     expect(heartbeatTitle("w-rtt")).toContain(
       "Last write took 12 ms (the previous report's round trip to the driver, not a network ping).",

@@ -53,13 +53,13 @@ describe("Tabs", () => {
       "false",
     ]);
     expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1]);
-    expect(tabs[0]!.textContent).toBe("Waiting3");
-    expect(tabs[2]!.querySelector(".tab-count")!.getAttribute("title")).toBe(
+    expect(tabs[0].textContent).toBe("Waiting3");
+    expect(tabs[2].querySelector(".tab-count")!.getAttribute("title")).toBe(
       "1234",
     );
     const panel = page().getByRole("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0]!.id);
-    expect(tabs[0]!.getAttribute("aria-controls")).toBe(panel.id);
+    expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0].id);
+    expect(tabs[0].getAttribute("aria-controls")).toBe(panel.id);
     expect(panel.textContent).toBe("Panel for waiting");
   });
 
@@ -106,11 +106,11 @@ describe("Tabs", () => {
       />,
     );
     const [waiting, active] = page().getAllByRole("tab");
-    waiting!.focus();
-    fireEvent.keyDown(waiting!, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(active!);
+    waiting.focus();
+    fireEvent.keyDown(waiting, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(active);
     expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(active!);
+    fireEvent.click(active);
     expect(onChange).toHaveBeenCalledWith("active");
     // No children: no panel.
     expectAbsent(page().queryByRole("tabpanel"));

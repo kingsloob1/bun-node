@@ -249,10 +249,10 @@ describe("the run log against a real API", () => {
     );
     // `ctx.log`'s fields are rendered into the text at capture; there is
     // nothing structured left for the view to unpack.
-    expect(view.lines[0]!.text).toBe("step 1 step=1 of=4");
-    expect(view.lines[0]!.level).toBe("info");
-    expect(view.lines[3]!.text).toBe("step 4 step=4 of=4");
-    expect(view.lines[3]!.level).toBe("warn");
+    expect(view.lines[0].text).toBe("step 1 step=1 of=4");
+    expect(view.lines[0].level).toBe("info");
+    expect(view.lines[3].text).toBe("step 4 step=4 of=4");
+    expect(view.lines[3].level).toBe("warn");
     // Nothing was dropped and the run has finished: no notes at all.
     expect(view.notes).toBe("");
     expect(view.text).toContain("is not captured here");
@@ -267,7 +267,7 @@ describe("the run log against a real API", () => {
     const view = await mounted.awaitLines(4);
     expect(view.lines).toHaveLength(4);
     const sent = logRequests(runId, from);
-    const first = sent[0]!;
+    const first = sent[0];
     expect(first.query).toContain("limit=");
     expect(first.query).toContain("order=asc");
     expect(first.query).toContain("stream=log");
@@ -296,7 +296,7 @@ describe("the run log against a real API", () => {
     const view = await mounted.awaitLines(TRIMMED_KEEPS);
     expect(view.lines).toHaveLength(TRIMMED_KEEPS);
     // The numbering survives the trim, so the gap is where the lines went.
-    expect(view.lines[0]!.seq).toBe(String(dropped + 1));
+    expect(view.lines[0].seq).toBe(String(dropped + 1));
     expect(view.notes).toContain(`${dropped} earlier lines dropped`);
     // `capped` is the present tense, and this run has finished.
     expect(view.notes).not.toContain("A cap is trimming this log now");
@@ -331,7 +331,7 @@ describe("the run log against a real API", () => {
     ]);
     const sent = logRequests(runId, from);
     expect(sent.length).toBeGreaterThan(1);
-    expect(sent[0]!.query).not.toContain("since=");
+    expect(sent[0].query).not.toContain("since=");
     expect(sent.some((one) => one.query.includes("since="))).toBe(true);
     // Every line once: the cursor never re-reads a line it already had.
     const seqs = later.lines.map((line) => line.seq);

@@ -246,7 +246,7 @@ export function WorkerTargetCard({
           <>
             <p className="muted worker-target-note">{TARGET_FIXED_NOTE}</p>
             {groups.length === 1 ? (
-              <TargetFacts target={groups[0]!.target} />
+              <TargetFacts target={groups[0].target} />
             ) : (
               <MixedTargets
                 workerKey={workerKey}

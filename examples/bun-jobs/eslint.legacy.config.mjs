@@ -1,4 +1,4 @@
-import config from "../../packages/bun-nest/eslint.config.mjs";
+import config from "../../packages/bun-jobs/eslint.legacy.config.mjs";
 
 /**
  * The package's own lint rules, with the two that fight what an example is.
@@ -6,8 +6,9 @@ import config from "../../packages/bun-nest/eslint.config.mjs";
  * An example is a script: it prints what it is doing, and it awaits at the top
  * level because that is how a script reads from top to bottom.
  *
- * `overrideRules` rather than `append`: a later `overrideRules` is the only
- * thing that wins over one the package config already applies.
+ * `overrideRules` rather than `append`: the package config ends with its own
+ * `overrideRules`, which is applied to every config — an appended one included
+ * — so only a later `overrideRules` wins.
  */
 export default config.overrideRules({
   "no-console": "off",

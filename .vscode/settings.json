@@ -1,4 +1,5 @@
 {
+  "eslint.options": { "overrideConfigFile": "eslint.legacy.config.mjs" },
   "eslint.workingDirectories": [
     "./packages/bun-common",
     "./packages/bun-nest",

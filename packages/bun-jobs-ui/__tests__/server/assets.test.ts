@@ -56,7 +56,7 @@ describe("buildAssets", () => {
     // entry's stylesheet already carries its rules.
     expect(names.some((name) => /^lazy-[a-z0-9]+\.css$/.test(name))).toBe(true);
     const entryCss = new TextDecoder().decode(
-      assets.files.get(assets.entry.css[0]!)!.body,
+      assets.files.get(assets.entry.css[0])!.body,
     );
     expect(entryCss).toContain(".fixture-lazy");
 
@@ -239,7 +239,7 @@ describe("the in-memory fallback", () => {
     expect(a).toBe(c);
     const notices = events.filter((event) => /in memory/.test(event.message));
     expect(notices).toHaveLength(1);
-    expect(notices[0]!.level).toBe("info");
+    expect(notices[0].level).toBe("info");
   });
 
   it("answers 500 when the build fails, logs it, and tries again next time", async () => {
@@ -271,7 +271,7 @@ describe("serving assets", () => {
     return {
       ui,
       js: shell.script.src.replace("/jobs", ""),
-      css: shell.styles[0]!.href.replace("/jobs", ""),
+      css: shell.styles[0].href.replace("/jobs", ""),
       shell,
     };
   }

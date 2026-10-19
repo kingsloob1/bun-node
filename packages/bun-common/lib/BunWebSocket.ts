@@ -389,7 +389,7 @@ export type BunWebSocketOptions<
  * `interface`) so it satisfies `TypedEmitter`'s `Record<string, …>` constraint
  * — interfaces are open to augmentation and so lack an implicit index sig.
  */
-// eslint-disable-next-line ts/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type BunWebSocketEvents<TCustom = unknown> = {
   /** A client connected: `(ws)`. Emitted together with, and before, `open`. */
   connect: NonNullable<BunWebSocketHandlerType<TCustom>["open"]>;

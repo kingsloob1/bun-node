@@ -5,6 +5,8 @@
   "private": true,
   "scripts": {
     "check": "bun scripts/typecheck.ts",
+    "lint:eslint:scripts": "cd scripts && CI=1 eslint -c eslint.legacy.config.mjs .",
+    "lint:scripts": "cd scripts && bun lint",
     "test:scripts": "cd scripts && bun test --check --parallel --timings=bun-timings.json",
     "test:scripts:timings": "cd scripts && rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
     "typecheck": "bun scripts/typecheck.ts"
@@ -30,9 +32,9 @@
     "nx": "23.2.1",
     "typescript": "^6.0.3"
   },
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.4",
   "engines": {
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   },
   "dependencies": {}
 }
