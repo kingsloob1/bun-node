@@ -151,7 +151,7 @@ export async function connectJobsClient(
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    const payload = (await response.json()) as unknown;
+    const payload = await response.json();
     if (!response.ok) {
       throw new JobsApiProblem(payload as ProblemDto);
     }
@@ -254,6 +254,7 @@ export async function connectJobsClient(
         const frame = JSON.parse(String(event.data)) as JobsApiServerMessage;
         frames.push(frame);
         for (const waiter of [...waiters]) {
+          // eslint-disable-next-line unicorn/prefer-regexp-test -- `waiter.match` is the waiter's own predicate, not String#match
           if (waiter.match(frame)) {
             waiters.splice(waiters.indexOf(waiter), 1);
             waiter.resolve(frame);

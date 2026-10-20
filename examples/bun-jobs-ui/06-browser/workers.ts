@@ -380,7 +380,7 @@ let workerReadGate: PromiseWithResolvers<void> | null = null;
 
 /** Whether `url` is a worker listing: `GET /workers` or a queue's workers. */
 function isWorkerRead(url: string): boolean {
-  const path = url.split("?")[0]!;
+  const path = url.split("?")[0];
   return /^\/jobs-api\/(?:workers|queues\/[^/]+\/workers)$/.test(path);
 }
 
@@ -430,7 +430,7 @@ async function serveHost(options: {
   api.websocket?.attach(app);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   // Build the bundle before the browser asks.
   await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
   return {
@@ -500,7 +500,7 @@ async function shutdown(view?: Bun.WebView): Promise<void> {
     await host.close();
   }
   if (replica !== undefined) {
-    replica.stdin.end();
+    await replica.stdin.end();
     await replica.exited;
   }
   await remote?.close();
@@ -661,7 +661,7 @@ const replicaId = await (async () => {
     text += new TextDecoder().decode(value);
   }
   reader.releaseLock();
-  return /ready (\S+)/.exec(text)![1]!;
+  return /ready (\S+)/.exec(text)![1];
 })();
 await waitFor(
   "the replica to register",
@@ -1027,9 +1027,9 @@ try {
   check(
     "api on this process alone; mailer on this one and the replica's",
     grouping.length === 2 &&
-      grouping[0]![1].length === 1 &&
-      grouping[0]![1][0]![0] === HERE &&
-      grouping[1]![1].length === 2,
+      grouping[0][1].length === 1 &&
+      grouping[0][1][0][0] === HERE &&
+      grouping[1][1].length === 2,
     grouping,
   );
   checkEqual(
@@ -1815,6 +1815,7 @@ try {
   // as long as it looks, and puts it back afterwards. Nothing below is
   // asserted from that constant: every expectation is built from what the API
   // reports for the row in question.
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- kept only to put it back on process.memoryUsage, never called unbound
   const realRss = process.memoryUsage.rss;
   /** A resident size that lands mid-unit, so the formatter's one decimal shows: 393.75 MiB. */
   const PINNED_RSS = 412_876_800;
@@ -1881,7 +1882,7 @@ try {
   check(
     "and the replica, another process, reports its own",
     otherWorkers.length === 1 &&
-      otherWorkers[0]!.rssBytes !== hereWorkers[0]!.rssBytes,
+      otherWorkers[0].rssBytes !== hereWorkers[0].rssBytes,
     otherWorkers.map((worker) => [worker.id, worker.pid, worker.rssBytes]),
   );
   const memoryTables = await view.evaluate<[number, number]>(
@@ -1919,12 +1920,12 @@ try {
   );
   check(
     "the replica's row shows a figure of its own, in the same units (live, so only its shape can be pinned down)",
-    BYTE_FIGURE.test(memoryRows[otherWorkers[0]!.id]?.Memory ?? "") &&
-      memoryRows[otherWorkers[0]!.id]?.Memory !==
-        memoryRows[hereWorkers[0]!.id]?.Memory,
+    BYTE_FIGURE.test(memoryRows[otherWorkers[0].id]?.Memory ?? "") &&
+      memoryRows[otherWorkers[0].id]?.Memory !==
+        memoryRows[hereWorkers[0].id]?.Memory,
     [
-      memoryRows[otherWorkers[0]!.id]?.Memory,
-      memoryRows[hereWorkers[0]!.id]?.Memory,
+      memoryRows[otherWorkers[0].id]?.Memory,
+      memoryRows[hereWorkers[0].id]?.Memory,
     ],
   );
   check(
@@ -1942,7 +1943,7 @@ try {
     formatBytes(
       memoryList.reduce((total, worker) => total + worker.rssBytes!, 0),
     ),
-    formatBytes(hereWorkers[0]!.rssBytes! * 2),
+    formatBytes(hereWorkers[0].rssBytes! * 2),
   ];
   const tableText = plainFigure(
     await view.evaluate<string>(
@@ -1998,8 +1999,8 @@ try {
   check(
     "it keeps the ISO instant and adds the round trip on a line of its own, worded as a driver round trip rather than a ping or an average",
     beatLines.length === 2 &&
-      !Number.isNaN(Date.parse(beatLines[0]!)) &&
-      RTT_HINT.test(beatLines[1]!),
+      !Number.isNaN(Date.parse(beatLines[0])) &&
+      RTT_HINT.test(beatLines[1]),
     beatLines,
   );
 
@@ -2029,7 +2030,7 @@ try {
         await view.evaluate<string>(
           `document.querySelector('[data-testid="worker-instances"]').textContent`,
         ),
-      ).includes(plainFigure(formatBytes(hereWorkers[0]!.rssBytes! * 2))),
+      ).includes(plainFigure(formatBytes(hereWorkers[0].rssBytes! * 2))),
     [
       instanceRows[ids.mailer]?.Memory,
       instanceRows[twin.id]?.Memory,
@@ -2045,7 +2046,7 @@ try {
   ).split("\n");
   check(
     "and the same round-trip tooltip on the instances' Heartbeat cells",
-    instanceBeat.length === 2 && RTT_HINT.test(instanceBeat[1]!),
+    instanceBeat.length === 2 && RTT_HINT.test(instanceBeat[1]),
     instanceBeat,
   );
 
@@ -2076,7 +2077,7 @@ try {
   ).split("\n");
   check(
     "but the heartbeat's round trip is still there, in the tooltip",
-    panelBeat.length === 2 && RTT_HINT.test(panelBeat[1]!),
+    panelBeat.length === 2 && RTT_HINT.test(panelBeat[1]),
     panelBeat,
   );
 
@@ -2434,7 +2435,7 @@ try {
     ),
   );
   const firstHeaders = await view.evaluate<string[] | null>(
-    headersOf(firstIds[0]!),
+    headersOf(firstIds[0]),
   );
   const firstCells = Object.fromEntries(
     await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
@@ -2812,7 +2813,7 @@ try {
     /^GET \/jobs-api\/queues\/emails\/jobs\?.*workerKey=api\.emails\.send/,
   );
   show("sent", defaultRead);
-  const defaultQuery = new URL(defaultRead.split(" ")[1]!, "http://x")
+  const defaultQuery = new URL(defaultRead.split(" ")[1], "http://x")
     .searchParams;
   const from = Number(defaultQuery.get("finishedFrom"));
   check(
@@ -2822,7 +2823,7 @@ try {
     Object.fromEntries(defaultQuery),
   );
   const newestFirst = await jobIds(
-    defaultRead.split(" ")[1]!.slice(main.api.length),
+    defaultRead.split(" ")[1].slice(main.api.length),
   );
   checkEqual(
     "the API answers api.emails.send's four jobs, none of the mailer's",
@@ -2910,7 +2911,7 @@ try {
   // usable — which is why it is checked here rather than assumed.
   const uncounted = await read<{
     page: { offset: number; limit: number; hasMore: boolean; total?: number };
-  }>(sent.split(" ")[1]!.slice(main.api.length));
+  }>(sent.split(" ")[1].slice(main.api.length));
   show("the page info the card is built from", uncounted.page);
   checkEqual(
     "the read carries hasMore and no total at all: the card never asks for a count",
@@ -3046,7 +3047,7 @@ try {
     /^GET \/jobs-api\/queues\/emails\/analytics\/workers\/api\.emails\.send\?/,
   );
   show("sent", analyticsRead);
-  const analyticsQuery = new URL(analyticsRead.split(" ")[1]!, "http://x")
+  const analyticsQuery = new URL(analyticsRead.split(" ")[1], "http://x")
     .searchParams;
   // A rolling preset starts at the first whole bucket inside its window, so
   // the span falls short of five minutes by more than nothing and at most one
@@ -3079,7 +3080,7 @@ try {
     busyness?: { totals: { samples: number } };
   }
   const series = await read<WorkerAnalytics>(
-    analyticsRead.split(" ")[1]!.slice(main.api.length),
+    analyticsRead.split(" ")[1].slice(main.api.length),
   );
   checkEqual(
     "the API counts api.emails.send's 3 completed and 1 failed attempt in the range",

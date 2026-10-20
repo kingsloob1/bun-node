@@ -260,7 +260,7 @@ await waitFor(
   { ...WAIT, interval: 100 },
 );
 show("summon events", emailEvents);
-const attempt = emailEvents[0]!;
+const attempt = emailEvents[0];
 checkEqual(
   "one attempt: started by the add, then registered once its worker reported",
   [

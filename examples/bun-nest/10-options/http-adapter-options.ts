@@ -1745,6 +1745,7 @@ step("applyVersionFilter(handler, version, versioningOptions)");
   await checkRejects(
     "an unknown versioning type throws",
     () => {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: 99 is no VersioningType (TS2322 without it), and the runtime check is the point
       return adapter.applyVersionFilter(handler, "1", {
         type: 99,
       } as unknown as VersioningOptions);
@@ -1778,6 +1779,7 @@ step("verb methods: get, post, … all, use");
   for (const verb of verbs) {
     // A union of overloaded (generated) methods has no callable signature, but
     // it assigns, uncast, to the one signature every verb shares.
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- a false positive on a union-keyed element access (oven-sh/bun#45784); typescript-eslint does not report it
     const register: RouterVerbMethod<BunHttpAdapter> = adapter[verb];
     const result = register.call(adapter, `/verbs/${verb}`, (req, res) => {
       return res.json({ method: req.method });

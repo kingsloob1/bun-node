@@ -300,7 +300,7 @@ async function serveHost(label: string, driver: DriverConfig): Promise<Host> {
   app.use(API_BASE, api.router);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   const meta = (await (
     await fetch(`${origin}${API_BASE}/meta`)
   ).json()) as MetaDto;

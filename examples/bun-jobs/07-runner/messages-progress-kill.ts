@@ -33,7 +33,7 @@ const runner = new BunRunner<LongTaskArgs, string>({
 });
 
 runner.on("progress", (run, value) => {
-  show(`[${run.runId.slice(-6)}] progress`, `${value}%`);
+  show(`[${run.runId.slice(-6)}] progress`, `${JSON.stringify(value)}%`);
 });
 runner.on("message", (run, data) => {
   show(`[${run.runId.slice(-6)}] message from the child`, data);

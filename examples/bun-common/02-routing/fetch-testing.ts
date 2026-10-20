@@ -182,7 +182,7 @@ const rawAnswer = await new Promise<string>((resolve, reject) => {
   const socket = net.connect(slashesServer.port!, "127.0.0.1");
   let data = "";
   socket.on("data", (chunk) => {
-    data += chunk;
+    data += chunk.toString();
   });
   socket.on("close", () => resolve(data));
   socket.on("error", reject);

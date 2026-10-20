@@ -128,7 +128,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   };
   let target: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     const [name, inline] =
       arg.startsWith("--") && arg.includes("=")
         ? [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)]

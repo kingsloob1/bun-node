@@ -74,7 +74,7 @@ for (const layer of layers(router, "/users/42?tab=posts")) {
 }
 
 // `matchedRoute` is the match record every layer carries.
-const match: matchedRoute = layers(router, "/users/42")[1]!.matched;
+const match: matchedRoute = layers(router, "/users/42")[1].matched;
 show("matchedRoute", {
   path: match.path,
   method: match.method,
@@ -289,12 +289,12 @@ const last = layers(indexed, "/r999/abc");
 checkEqual("one layer for /r999/abc", last.length, 1);
 checkEqual(
   "routeIndex is the route's position in routes()",
-  last[0]!.routeIndex,
+  last[0].routeIndex,
   999,
 );
 checkEqual(
   "…so routes()[routeIndex] is the route that matched",
-  indexed.routes()[last[0]!.routeIndex]!.path,
+  indexed.routes()[last[0].routeIndex].path,
   "/r999/:id",
 );
 

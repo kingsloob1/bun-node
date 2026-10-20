@@ -258,7 +258,7 @@ const built = await Bun.build({
   target: "browser",
 });
 check("Bun.build with target: browser succeeds", built.success, built.logs);
-const bundle = await built.outputs[0]!.text();
+const bundle = await built.outputs[0].text();
 check(
   "and nothing of the server came with it",
   !/bun-common|node:|bun:|drivers\//.test(bundle),

@@ -280,7 +280,7 @@ const SCREEN_URLS = [
   "/jobs/docs/ws?q=close",
 ];
 
-const first = await fetchShell(app, SCREEN_URLS[0]!);
+const first = await fetchShell(app, SCREEN_URLS[0]);
 const expectedConfig = JSON.parse(JSON.stringify(ui.config)) as unknown;
 show("the config every screen boots with", first.shell.config);
 
@@ -352,11 +352,11 @@ async function documentedParams(): Promise<DocumentedParam[]> {
   const rows: DocumentedParam[] = [];
   // Skip the header and the |---| separator; stop at the first non-row.
   for (let index = start + 2; lines[index]?.startsWith("|"); index++) {
-    const cells = lines[index]!.split("|").map((cell) => cell.trim());
-    for (const match of cells[2]!.matchAll(/`([^`]+)`/g)) {
+    const cells = lines[index].split("|").map((cell) => cell.trim());
+    for (const match of cells[2].matchAll(/`([^`]+)`/g)) {
       rows.push({
-        screen: cells[1]!.replace(/`/g, ""),
-        parameter: match[1]!,
+        screen: cells[1].replace(/`/g, ""),
+        parameter: match[1],
         // A meaning holding a `|` of its own is rejoined, as the split broke it.
         meaning: cells.slice(3, -1).join("|"),
       });
@@ -390,7 +390,7 @@ function linkedParams(match: (screen: string) => boolean): string[] {
     ...new Set(
       SCREEN_URLS.flatMap((url) => {
         const [path, query] = url.split("?");
-        const screen = path!.slice(ui.basePath.length) || "/";
+        const screen = path.slice(ui.basePath.length) || "/";
         return match(screen) ? [...new URLSearchParams(query).keys()] : [];
       }),
     ),
@@ -470,7 +470,7 @@ checkEqual(
 const assetsPath = first.shell.config.assetsPath;
 check(
   "both live under assetsPath",
-  [first.shell.script.src, first.shell.styles[0]!.href].every((href) =>
+  [first.shell.script.src, first.shell.styles[0].href].every((href) =>
     href.startsWith(`${assetsPath}/`),
   ),
 );
@@ -481,7 +481,7 @@ const entry = await (await app.fetch(first.shell.script.src)).text();
 const chunks = [
   ...new Set(
     [...entry.matchAll(/import\(\s*["']\.\/([\w.-]+\.js)["']\s*\)/g)].map(
-      (match) => match[1]!,
+      (match) => match[1],
     ),
   ),
 ];

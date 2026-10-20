@@ -65,8 +65,8 @@ const section = (() => {
 /** Every fenced block in the section, with its language and the heading above it. */
 const blocks = [...section.matchAll(/```(\w*)\n([\s\S]*?)```/g)].map(
   (match) => ({
-    lang: match[1]!,
-    body: match[2]!,
+    lang: match[1],
+    body: match[2],
     heading:
       [...section.slice(0, match.index).matchAll(/^#{3,4} (.+)$/gm)]
         .at(-1)?.[1]
@@ -107,10 +107,10 @@ const documentedRoutes = (() => {
   }
   const paths: string[] = [];
   let perQueue: string | undefined;
-  for (const [, token] of sentence[2]!.matchAll(/`([^`]+)`/g)) {
-    if (token!.startsWith("/")) {
-      paths.push(token!);
-      if (token!.includes(":queue")) {
+  for (const [, token] of sentence[2].matchAll(/`([^`]+)`/g)) {
+    if (token.startsWith("/")) {
+      paths.push(token);
+      if (token.includes(":queue")) {
         perQueue = token!;
       }
     } else if (perQueue) {
@@ -118,7 +118,7 @@ const documentedRoutes = (() => {
     }
   }
   const words: Record<string, number> = { six: 6, seven: 7, eight: 8, nine: 9 };
-  return { count: words[sentence[1]!] ?? Number(sentence[1]), paths };
+  return { count: words[sentence[1]] ?? Number(sentence[1]), paths };
 })();
 
 /** One `metrics-api` trigger, from YAML or from the ACA command. */
@@ -158,15 +158,15 @@ for (const block of blocks) {
   } else if (block.lang === "bash" && block.body.includes("metrics-api")) {
     const meta = Object.fromEntries(
       [...block.body.matchAll(/"(\w+)=([^"]+)"/g)].map((match) => [
-        match[1]!,
-        match[2]!,
+        match[1],
+        match[2],
       ]),
     );
     triggers.push({
       from: block.heading,
-      url: meta.url!,
+      url: meta.url,
       format: meta.format ?? "json",
-      valueLocation: meta.valueLocation!,
+      valueLocation: meta.valueLocation,
       authMode: meta.authMode,
     });
   }
@@ -183,11 +183,11 @@ const scrapes = blocks
 /** Every metric the recipes query, alert on or name, with its selector. */
 const referenced = [...section.matchAll(/(bunjobs_\w+)(?:\{([^}]*)\})?/g)].map(
   (match) => ({
-    family: match[1]!,
+    family: match[1],
     labels: Object.fromEntries(
       [...(match[2] ?? "").matchAll(/(\w+)="([^"]*)"/g)].map((label) => [
-        label[1]!,
-        label[2]!,
+        label[1],
+        label[2],
       ]),
     ),
   }),
@@ -324,12 +324,12 @@ function promValue(text: string, selector: string): number | undefined {
       continue;
     }
     const labels = Object.fromEntries(
-      [...sample[2]!.matchAll(/(\w+)="([^"]*)"/g)].map((label) => [
+      [...sample[2].matchAll(/(\w+)="([^"]*)"/g)].map((label) => [
         label[1],
         label[2],
       ]),
     );
-    if (wanted.every(([, key, value]) => labels[key!] === value)) {
+    if (wanted.every(([, key, value]) => labels[key] === value)) {
       return Number(sample[3]);
     }
   }
@@ -377,7 +377,7 @@ for (const target of scrapes) {
   );
   const labelsOf = new Set(
     [...answer.text.matchAll(/^\w+\{([^}]*)\}/gm)].flatMap((match) =>
-      [...match[1]!.matchAll(/(\w+)="/g)].map((label) => label[1]),
+      [...match[1].matchAll(/(\w+)="/g)].map((label) => label[1]),
     ),
   );
   checkEqual(

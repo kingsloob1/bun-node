@@ -254,7 +254,7 @@ if (meta.features.addedByState) {
   check(
     "mail, every state, ?order=desc&sort=createdAt: newest added first",
     created.length > 1 &&
-      created.every((at, index) => index === 0 || created[index - 1]! >= at),
+      created.every((at, index) => index === 0 || created[index - 1] >= at),
     created,
   );
 }
@@ -840,7 +840,7 @@ if (serve) {
   console.log(`  the Events console: ${base}/events`);
 
   const stopTrickle = demo.trickle(3_000);
-  process.once("SIGINT", async () => {
+  const stop = async () => {
     stopTrickle();
     await runners.stop();
     await demo.stop();
@@ -851,7 +851,10 @@ if (serve) {
     }
     await jobs.close();
     process.exit();
-  });
+  };
+  // `void`: a listener's returned promise is ignored; `stop()` ends the
+  // process itself.
+  process.once("SIGINT", () => void stop());
 } else {
   await runners.stop();
   await demo.stop();

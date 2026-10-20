@@ -1072,7 +1072,7 @@ checkEqual(
   parseCookie(
     cookieParts(
       serializeCookie("a", "x y;z", { encode: (value) => value.toUpperCase() }),
-    )[0]!,
+    )[0],
   ),
   { a: "x y;z" },
 );
@@ -1546,8 +1546,7 @@ const timeoutError = await checkRejects(
 );
 check(
   "TimeoutError: instanceof, with ms",
-  timeoutError instanceof TimeoutError &&
-    (timeoutError as TimeoutError).ms === 30,
+  timeoutError instanceof TimeoutError && timeoutError.ms === 30,
 );
 checkEqual("withTimeout onTimeout: called once, before the rejection", events, [
   "onTimeout",
@@ -2585,11 +2584,11 @@ const names = [
 ];
 check(
   "getUniqueFilename: 32 hex characters plus the last extension, unique",
-  /^[0-9a-f]{32}\.png$/.test(names[0]!) &&
+  /^[0-9a-f]{32}\.png$/.test(names[0]) &&
     names[0] !== names[1] &&
-    /^[0-9a-f]{32}\.gz$/.test(names[2]!) &&
-    /^[0-9a-f]{32}$/.test(names[3]!) &&
-    /^[0-9a-f]{32}$/.test(names[4]!),
+    /^[0-9a-f]{32}\.gz$/.test(names[2]) &&
+    /^[0-9a-f]{32}$/.test(names[3]) &&
+    /^[0-9a-f]{32}$/.test(names[4]),
   names,
 );
 

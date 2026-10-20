@@ -151,12 +151,15 @@ summary();
 
 if (serve) {
   show("serving until Ctrl+C", `${app.url}${ui.basePath}`);
-  process.once("SIGINT", async () => {
+  const stop = async () => {
     await app.close();
     await api.close();
     await jobs.close();
     process.exit();
-  });
+  };
+  // `void`: a listener's returned promise is ignored; `stop()` ends the
+  // process itself.
+  process.once("SIGINT", () => void stop());
 } else {
   await app.close();
   await api.close();

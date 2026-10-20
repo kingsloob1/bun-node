@@ -319,7 +319,7 @@ const unsubscribers = await Promise.all(
     async (id) =>
       await driver.subscribe(namespace, "runner", id, (event) => {
         if (event.type === "logs") {
-          hints[id]!.push(event.payload);
+          hints[id].push(event.payload);
         }
       }),
   ),
@@ -331,12 +331,12 @@ const hinted = await runToEnd(hinting, { tag: "hint", lines: 25, lineGap: 60 });
 await runToEnd(quiet, { tag: "quiet", lines: 3 });
 await waitFor(
   "the final hint, carrying the run's last line",
-  () => hints[hinting.id]!.some((hint) => hint.lastSeq === hinted.logLines),
+  () => hints[hinting.id].some((hint) => hint.lastSeq === hinted.logLines),
   WAIT,
 );
 show("hints heard", hints[hinting.id]);
 
-const heard = hints[hinting.id]!;
+const heard = hints[hinting.id];
 check(
   "each hint names the run and a position, and carries no text",
   heard.every(
@@ -349,7 +349,7 @@ check(
 check(
   "lastSeq only moves forward",
   heard.every(
-    (hint, index) => index === 0 || hint.lastSeq >= heard[index - 1]!.lastSeq,
+    (hint, index) => index === 0 || hint.lastSeq >= heard[index - 1].lastSeq,
   ),
   heard,
 );

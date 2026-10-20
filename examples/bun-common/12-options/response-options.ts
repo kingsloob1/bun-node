@@ -520,6 +520,7 @@ const objectEnd = await makeRes();
 await checkRejects(
   "end(object) throws, as Node's end(chunk): text or bytes only",
   // `Reflect.apply`: plain JS can pass what the types rule out.
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `objectEnd` as `this`
   () => Reflect.apply(objectEnd.end, objectEnd, [{ a: 1 }]),
   { name: "TypeError", code: "ERR_INVALID_ARG_TYPE" },
 );

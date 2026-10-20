@@ -272,7 +272,7 @@ checkEqual(
 step("2. Coverage on the attempt in flight: pending, then registered");
 
 const first = await unit.check();
-const request = unitSummoner.calls[0]!;
+const request = unitSummoner.calls[0];
 checkEqual(
   "one attempt for the three queues",
   [said(first), unitSummoner.calls.length, request.queues],
@@ -280,7 +280,7 @@ checkEqual(
 );
 // The platform has not started the unit yet: nothing holds a claim.
 const before = await unit.status();
-const attempt = before.pending[0]!;
+const attempt = before.pending[0];
 show("status().pending[0]", {
   id: attempt.id,
   until: attempt.until,
@@ -494,7 +494,7 @@ const blindWarnings = failingLog.events.filter(
 );
 show("with claim reads failing", {
   statuses: blind.map((answer) => answer.status),
-  pending: blind[0]!.body.pending,
+  pending: blind[0].body.pending,
   warnings: blindWarnings.map((event) => event.message),
 });
 checkEqual(

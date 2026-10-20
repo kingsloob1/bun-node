@@ -33,7 +33,8 @@ worker.on("error", (error, context) => {
   console.error(`[${id}] worker error during ${context}:`, error);
 });
 
-process.once("SIGTERM", async () => {
+/** Reports what this consumer did, after closing, then exits. */
+async function stop(): Promise<void> {
   // Stop claiming, let jobs in flight finish (up to 5s), close the backend.
   // `close()` holds the process open until it has fully settled. Whatever it
   // does, the process reports before it exits: a failed close goes in the
@@ -49,7 +50,10 @@ process.once("SIGTERM", async () => {
   }
   await Bun.write(Bun.stdout, `${JSON.stringify({ id, processed, error })}\n`);
   process.exit(error === undefined ? 0 : 1);
-});
+}
+// `void`: a listener's returned promise is ignored, and `stop()` catches its
+// own failure and ends the process itself.
+process.once("SIGTERM", () => void stop());
 
 // A running worker keeps the process alive (`waitToExit`, on by default), so
 // this service stays up while the queue is idle until it is told to stop.

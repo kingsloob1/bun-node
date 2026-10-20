@@ -52,7 +52,7 @@ const WEDGE = new URL("./processors/wedge.ts", import.meta.url);
 
 /** A random element. */
 function pick<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)]!;
+  return items[Math.floor(Math.random() * items.length)];
 }
 
 const ARCHIVES = ["catalogue.tar.gz", "orders-2026-09.zip", "legacy-crm.7z"];

@@ -1227,14 +1227,14 @@ void eager.run();
 await waitFor("the first drained", () => drainedAt.length === 1, LONG);
 check(
   "the first drained comes 500ms after the worker found the queue empty",
-  drainedAt[0]! - drainReadyAt >= 490,
+  drainedAt[0] - drainReadyAt >= 490,
   { readyAt: drainReadyAt, drainedAt },
 );
 await drainQueue.add("job", {});
 await waitFor("drained after the job", () => drainedAt.length === 2, LONG);
 check(
   "…and again 500ms after the job ended",
-  drainedAt[1]! - processorEndedAt >= 490,
+  drainedAt[1] - processorEndedAt >= 490,
   { processorEndedAt, drainedAt },
 );
 await quietWindow(1_500);
@@ -1310,8 +1310,8 @@ checkEqual(
 check(
   "each retry waited at least the strategy's delay (150ms, then 300ms)",
   startedAt.length === 3 &&
-    startedAt[1]! - startedAt[0]! >= 150 &&
-    startedAt[2]! - startedAt[1]! >= 300,
+    startedAt[1] - startedAt[0] >= 150 &&
+    startedAt[2] - startedAt[1] >= 300,
   startedAt,
 );
 checkEqual(

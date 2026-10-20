@@ -258,7 +258,7 @@ for (const ui of Object.values(uis)) {
   app.use(ui.basePath, ui.router);
 }
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 
 /** Winds everything down; safe to call more than once. */
 async function shutdown(view?: Bun.WebView): Promise<void> {

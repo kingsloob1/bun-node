@@ -155,7 +155,7 @@ async function recordOf(queue: string) {
     async () => (await jobs.queue(queue).listWorkers()).length === 1,
     WAIT,
   );
-  return (await jobs.queue(queue).listWorkers())[0]!;
+  return (await jobs.queue(queue).listWorkers())[0];
 }
 
 /* ------------------------------------------------------------------ */

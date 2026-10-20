@@ -70,7 +70,7 @@ let jobs = Number(process.env.EXAMPLE_JOBS ?? DEFAULT_JOBS);
 let widthWasAsked = process.env.EXAMPLE_JOBS !== undefined;
 
 for (let index = 0; index < args.length; index++) {
-  const arg = args[index]!;
+  const arg = args[index];
   if (arg === "--serial") {
     jobs = 1;
     widthWasAsked = true;

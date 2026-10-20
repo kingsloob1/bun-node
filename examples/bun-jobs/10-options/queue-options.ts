@@ -964,7 +964,7 @@ const firstMailbox = await failing.retryAll("dead", {
 });
 check(
   "limit: stops after that many",
-  firstMailbox.length === 1 && [r3a, r3b].includes(firstMailbox[0]!),
+  firstMailbox.length === 1 && [r3a, r3b].includes(firstMailbox[0]),
   firstMailbox,
 );
 checkEqual(

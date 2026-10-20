@@ -91,7 +91,9 @@ const worker = new BunQueueWorker<Payment, string>(
 let settled = 0;
 worker.on("ready", () => show("worker: ready"));
 worker.on("active", (job) => show(`worker: active ${job.id}`));
-worker.on("progress", (job, value) => show(`worker: ${job.id} at ${value}%`));
+worker.on("progress", (job, value) => {
+  show(`worker: ${job.id} at ${JSON.stringify(value)}%`);
+});
 worker.on("completed", (job, result) => {
   settled++;
   show(`worker: completed ${job.id}`, result);

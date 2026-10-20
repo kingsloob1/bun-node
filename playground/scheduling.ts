@@ -70,7 +70,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /** A random element. */
 function pick<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)]!;
+  return items[Math.floor(Math.random() * items.length)];
 }
 
 const CHANNELS = ["push", "sms", "in-app", "slack"];

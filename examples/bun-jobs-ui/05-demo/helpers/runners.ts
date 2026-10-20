@@ -111,7 +111,7 @@ export async function seedRunners(jobs: BunJobs): Promise<SeededRunners> {
       (await exporter.history())[0]?.status === "success" &&
       exporter.activeRuns.size === 0,
   );
-  const loggedRunId = (await exporter.history())[0]!.runId;
+  const loggedRunId = (await exporter.history())[0].runId;
 
   // Another process, as far as the API can tell: the same driver and
   // namespace, a runner this context never registers.

@@ -116,11 +116,14 @@ if (process.argv.includes("--listen")) {
   );
   console.log(`  curl localhost:${port}/exports/<id>`);
 
-  process.once("SIGINT", async () => {
+  const stop = async () => {
     await adapter.close();
     await jobs.close();
     process.exit(0);
-  });
+  };
+  // `void`: a listener's returned promise is ignored; `stop()` ends the
+  // process itself.
+  process.once("SIGINT", () => void stop());
 } else {
   title("HTTP API over a queue");
 

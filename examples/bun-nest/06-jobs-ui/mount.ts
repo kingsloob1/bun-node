@@ -123,7 +123,7 @@ checkEqual(
 );
 check("titled Operations", html.includes("<title>Operations</title>"));
 
-const src = /<script type="module" src="([^"]+)"/.exec(html)![1]!;
+const src = /<script type="module" src="([^"]+)"/.exec(html)![1];
 const bundle = await fetch(`${url}${src}`);
 await bundle.arrayBuffer();
 checkEqual(

@@ -556,7 +556,7 @@ const transform: Transform = (result) => {
 adapter.create(0, { namespace: "/b", transport: [] });
 adapter.bindClientConnect(undefined, (client, server) => {
   connections.push({ namespace: "/b", client, server });
-  adapter.bindMessageHandlers(client, [handlers[0]!], transform);
+  adapter.bindMessageHandlers(client, [handlers[0]], transform);
 });
 
 const alice = await connect(wireUrl("/a"));
@@ -932,12 +932,12 @@ await alice.close(4001, "bye");
 await waitFor("the disconnect callback", () => disconnects.length === 1);
 checkEqual(
   "reports the code and reason",
-  { code: disconnects[0]!.code, reason: disconnects[0]!.reason },
+  { code: disconnects[0].code, reason: disconnects[0].reason },
   { code: 4001, reason: "bye" },
 );
 check(
   "… for its own client only",
-  disconnects[0]!.client === connections[0]!.client,
+  disconnects[0].client === connections[0].client,
 );
 checkEqual(
   "the message listener detaches",
@@ -1315,7 +1315,7 @@ const dana = await connect(nestUrl("/?token=ok&room=den"));
 await waitFor("handleConnection", () => lobby.connected.length === 1);
 check(
   "handleConnection(client, server) gets the live server",
-  lobby.connected[0]!.server === http.getBunServer(),
+  lobby.connected[0].server === http.getBunServer(),
 );
 checkEqual("onUpgrade gets the request and response", upgrades.at(-1), {
   path: "/",
@@ -1500,11 +1500,11 @@ checkEqual(
 
 await dana.close();
 await waitFor("handleDisconnect", () => {
-  return lobby.disconnected.includes(lobby.connected[0]!.client);
+  return lobby.disconnected.includes(lobby.connected[0].client);
 });
 check(
   "handleDisconnect(client) gets the connected client",
-  lobby.disconnected.includes(lobby.connected[0]!.client),
+  lobby.disconnected.includes(lobby.connected[0].client),
 );
 
 await roomsClient.close();

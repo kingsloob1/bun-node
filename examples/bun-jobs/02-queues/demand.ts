@@ -32,7 +32,7 @@
  *   right as a trigger and approximate as a count, and says so with
  *   `exact: false`.
  */
-import type { JobsDriver, QueueDemand } from "@kingsleyweb/bun-jobs";
+import type { QueueDemand } from "@kingsleyweb/bun-jobs";
 import { BunQueue, BunQueueWorker, createDriver } from "@kingsleyweb/bun-jobs";
 import { readDemand } from "@kingsleyweb/bun-jobs/lib/drivers";
 import { exampleDriver, exampleNamespace } from "../shared/backend";
@@ -250,7 +250,7 @@ const withoutCountDemand = new Proxy(driver, {
     const value: unknown = Reflect.get(target, property, target);
     return typeof value === "function" ? value.bind(target) : value;
   },
-}) as JobsDriver;
+});
 
 checkEqual(
   "the native read and getDemand() agree",
