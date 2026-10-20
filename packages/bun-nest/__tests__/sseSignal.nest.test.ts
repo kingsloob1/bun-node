@@ -447,8 +447,8 @@ async function differential<T>(
   for (const client of CLIENTS) {
     outcomes[client] = await scenario(client);
   }
-  expect(outcomes["bun served"]).toEqual(outcomes.express!);
-  expect(outcomes["bun adapter.fetch()"]).toEqual(outcomes.express!);
+  expect(outcomes["bun served"]).toEqual(outcomes.express);
+  expect(outcomes["bun adapter.fetch()"]).toEqual(outcomes.express);
   return outcomes.express!;
 }
 

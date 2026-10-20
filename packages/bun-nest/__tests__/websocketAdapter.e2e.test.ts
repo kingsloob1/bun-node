@@ -64,9 +64,9 @@ async function startServer(handlers: Record<string, GatewayHandler>) {
     // an Observable/Promise; the adapter tolerates any return, so we cast.)
     const bound = Object.entries(handlers).map(([message, fn]) => ({
       message,
-      callback: (fn as GatewayHandler).bind(null, client as WebSocketClient),
+      callback: fn.bind(null, client as WebSocketClient),
     })) as unknown as WsMessageHandler<string>[];
-    wsAdapter.bindMessageHandlers(client as WebSocketClient, bound, transform);
+    wsAdapter.bindMessageHandlers(client, bound, transform);
   });
 
   const base = `ws://127.0.0.1:${httpAdapter.listeningPort}`;

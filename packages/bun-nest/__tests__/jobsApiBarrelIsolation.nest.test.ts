@@ -96,7 +96,7 @@ async function importInIsolation(
     }
     return line[1] === "ok"
       ? { ok: true, message: "" }
-      : { ok: false, message: line[1]!.slice("fail:".length) };
+      : { ok: false, message: line[1].slice("fail:".length) };
   } finally {
     await rm(probe, { force: true });
   }

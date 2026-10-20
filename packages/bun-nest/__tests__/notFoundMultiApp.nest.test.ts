@@ -210,7 +210,7 @@ describe.if(BACKPORT_PREFIX_FIX)(
       const res = await missUnderPrefix(expressReference());
       expect(res.status).toBe("404");
       expect(res["content-type"]).toStartWith("application/json");
-      expect(JSON.parse(res.body!)).toMatchObject({ statusCode: 404 });
+      expect(JSON.parse(res.body)).toMatchObject({ statusCode: 404 });
     });
   },
 );

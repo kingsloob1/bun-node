@@ -194,12 +194,12 @@ describe("Http Adapter Routing - Complex Paths", () => {
     expect(response.body).toEqual({ message: "File: image.jpg" });
   });
 
-  it("gET /api/v1/files/:filename - Invalid filename", async () => {
+  it("gET /api/v1/files/:filename - Invalid filename with a nested path", async () => {
     const response = await request(app).get("/api/v1/files/men/image.jpg");
     expect(response.status).toBe(404);
   });
 
-  it("gET /api/v1/files/:filename - Invalid filename", async () => {
+  it("gET /api/v1/files/:filename - Invalid filename with an unlisted extension", async () => {
     const response = await request(app).get("/api/v1/files/image.pdf");
     expect(response.status).toBe(404);
   });
@@ -1493,7 +1493,7 @@ describe("BunHttpAdapter.setNotFoundHandler: scoped to the global prefix on Nest
     ];
     for (const path of paths) {
       const expected =
-        NEST_12 && !regexp.test(path.split("?")[0]!) ? "html" : "api";
+        NEST_12 && !regexp.test(path.split("?")[0]) ? "html" : "api";
       expect([path, (await answer(adapter, path)).by]).toEqual([
         path,
         expected,

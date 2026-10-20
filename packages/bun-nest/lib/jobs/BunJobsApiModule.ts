@@ -96,7 +96,7 @@ function requireBunAdapter(host: HttpAdapterHost | undefined): BunHttpAdapter {
   const got =
     adapter === undefined || adapter === null
       ? "no HTTP adapter (the application was not created with one)"
-      : ((adapter as object).constructor?.name ?? typeof adapter);
+      : (adapter.constructor?.name ?? typeof adapter);
   throw new TypeError(
     `BunJobsApiModule requires @kingsleyweb/bun-nest's BunHttpAdapter: expected BunHttpAdapter, got ${got}. Create the application with \`NestFactory.create(AppModule, new BunHttpAdapter())\`.`,
   );

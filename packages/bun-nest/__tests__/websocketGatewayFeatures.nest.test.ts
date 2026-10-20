@@ -282,7 +282,7 @@ describe("NestJS gateway features: handleDisconnect(client, reason)", () => {
 
     expect(disconnects).toHaveLength(1);
     const [seen] = disconnects;
-    expect((seen!.client as WebSocketClient).data.path).toBe("/bye");
+    expect((seen.client as WebSocketClient).data.path).toBe("/bye");
     // Nest 12 passes the adapter callback's first argument on as `reason`
     // (nestjs/nest ad5b731cd); platform-ws's is the close code. Nest 12 is
     // told by the capability it added with it (12.0.0), never a version.
@@ -290,10 +290,10 @@ describe("NestJS gateway features: handleDisconnect(client, reason)", () => {
       typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
         .mapException === "function";
     if (nest12) {
-      expect([seen!.arity, seen!.reason]).toEqual([2, 4001]);
+      expect([seen.arity, seen.reason]).toEqual([2, 4001]);
     } else {
       // Nest 11 calls `handleDisconnect(client)` alone.
-      expect(seen!.arity).toBe(1);
+      expect(seen.arity).toBe(1);
     }
   });
 });

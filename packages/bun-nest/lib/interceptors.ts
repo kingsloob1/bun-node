@@ -38,6 +38,7 @@ import {
 import {
   BadRequestException,
   HttpException,
+  Logger,
   mixin,
   PayloadTooLargeException,
 } from "@nestjs/common";
@@ -119,9 +120,9 @@ export interface UploadExceptionBody {
  * {@link UploadExceptionBody} and the error is kept as `cause`.
  */
 export function transformUploadException(
-  error: HttpException | UploadError | PayloadTooLargeError,
+  exception: HttpException | UploadError | PayloadTooLargeError,
 ): HttpException;
-export function transformUploadException(error: unknown): unknown;
+export function transformUploadException(exception: unknown): unknown;
 export function transformUploadException(error: unknown): unknown {
   if (error instanceof HttpException) {
     return error;
@@ -171,6 +172,29 @@ export function transformUploadException(error: unknown): unknown {
   return error;
 }
 
+/**
+ * Where a failed removal of an upload's stored files is reported. A Nest
+ * `Logger`, so the application's logger receives it.
+ */
+const uploadLogger = new Logger("BunFileInterceptor");
+
+/**
+ * The `tap` callback that removes an upload's stored files once the handler
+ * emits. The removal is not awaited, so it never holds the response; a
+ * storage whose `removeFile` rejects is logged rather than left as an
+ * unhandled rejection, which ends a Bun process.
+ */
+function removeUploadedFiles(removeAll: () => Promise<void>): () => void {
+  return () => {
+    removeAll().catch((error: unknown) => {
+      uploadLogger.error(
+        "Removing an upload's stored files failed",
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
+  };
+}
+
 /** Runs an upload handler, rethrowing its error as {@link transformUploadException} maps it. */
 async function readUpload<T>(read: () => Promise<T>): Promise<T> {
   try {
@@ -204,7 +228,7 @@ export function AnyFilesInterceptor(
       req.body = body;
       req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(removeAll));
+      return next.handle().pipe(tap(removeUploadedFiles(removeAll)));
     }
   }
 
@@ -241,7 +265,7 @@ export function FileFieldsInterceptor(
       req.body = body;
       req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(removeAll));
+      return next.handle().pipe(tap(removeUploadedFiles(removeAll)));
     }
   }
 
@@ -275,7 +299,7 @@ export function FileInterceptor(
       req.body = body;
       file && req.setStorageFiles([file]);
 
-      return next.handle().pipe(tap(removeAll));
+      return next.handle().pipe(tap(removeUploadedFiles(removeAll)));
     }
   }
 
@@ -310,7 +334,7 @@ export function FilesInterceptor(
       req.body = body;
       req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(removeAll));
+      return next.handle().pipe(tap(removeUploadedFiles(removeAll)));
     }
   }
 
@@ -342,7 +366,7 @@ export function NoFilesInterceptor(
 
       req.body = body;
 
-      return next.handle().pipe(tap(removeAll));
+      return next.handle().pipe(tap(removeUploadedFiles(removeAll)));
     }
   }
 

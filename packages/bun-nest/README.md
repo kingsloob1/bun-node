@@ -851,7 +851,10 @@ export class AvatarsController {
 - After the handler's result is emitted, the storage's `removeAll()` runs. For
   memory storage (`removeAfter` defaults to `true`) that releases the file
   buffers, so read a buffer inside the handler. Disk files are kept unless
-  `removeAfter: true`.
+  `removeAfter: true`. The removal is not awaited, so it never holds the
+  response; if it fails (a custom storage's `removeFile` rejects), the error
+  is logged through a Nest `Logger` named `BunFileInterceptor` rather than
+  left as an unhandled rejection, which would end a Bun process.
 
 An uploaded file is a bun-common `StorageFile`:
 

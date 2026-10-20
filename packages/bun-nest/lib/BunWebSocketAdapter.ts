@@ -1266,7 +1266,10 @@ export class BunWebSocketAdapter<
     }
 
     try {
-      target.stop(true);
+      // Not awaited: `close()` returns the adapter synchronously. The promise
+      // reports the force-closed connections finishing, and resolves on a
+      // server already stopped too.
+      void target.stop(true);
     } catch {
       // Already stopped.
     }
@@ -1337,7 +1340,7 @@ function resolveAdapterOptions<
     } satisfies BunWebSocketCreateServerOptions<
       customWebsocketDataType,
       routesType
-    > as BunWebSocketOptions<customWebsocketDataType>;
+    >;
   }
 
   if (local?.newInstance === false && isFunction(local.getServer)) {
