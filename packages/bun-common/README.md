@@ -181,7 +181,6 @@ Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
 | `/opt{/:x}` | `/opt` and `/opt/1` | `{}` and `{ x: "1" }` |
 | `/:a-:b` | `/x-y-z` | `{ a: "x-y", b: "z" }` (greedy first, as Express) |
 | `/:"user id"` | `/7` | `{ "user id": "7" }` |
-| `/*` | anything | `{ "0": "…" }` |
 
 - **A named wildcard is a `string[]`**: the matched path split on `/`, then
   each segment decoded, so `a%2Fb/c` gives `["a/b", "c"]` and `a//b` gives
@@ -195,9 +194,14 @@ Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
   the adapters answer **400**.
 - Trailing slashes in a route path are ignored (`/users/` registers
   `/users`), and a request's trailing slash still matches.
-- **Older routejs forms keep working**: `:x?`, `:x(\d+)` and `+`, mixed with a
-  named wildcard too (`/files/:bucket/:version?/*key`, where `key` is a
-  `string[]`).
+- **Older routejs forms keep working on a `BunRouter`**: `:x?`, `:x(\d+)`,
+  `+`, `(…)?` groups (`/reports(/archived)?`) and a bare `*` (`/assets/*`,
+  which sets `{ "0": "css/site.css" }`; Express 5 itself rejects a bare `*`),
+  mixed with a named wildcard too (`/files/:bucket/:version?/*key`, where
+  `key` is a `string[]`). **bun-nest's adapter is stricter**: it validates
+  Nest route paths as Express 5 does, so a routejs-only form such as
+  `:year(\d{4})/:month?` fails `app.init()` with a `PathSyntaxError` (see
+  bun-nest's README).
 - **A malformed path throws at registration**, as Express does: a
   `PathSyntaxError` (a `TypeError`; its class name, `constructor.name`, is
   `"PathError"`, as in path-to-regexp) with path-to-regexp's message. That covers characters with
