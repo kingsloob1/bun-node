@@ -36,6 +36,7 @@ function describeGroup(group: ProbeGroup) {
     afterAll(async () => {
       await apps?.express.app.close();
       await apps?.bun.app.close();
+      group.cleanup?.();
     });
 
     for (const probe of group.probes) {

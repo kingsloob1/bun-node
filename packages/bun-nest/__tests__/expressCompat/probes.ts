@@ -4,7 +4,7 @@
  * Bun application; the test compares what comes back.
  */
 import type { NestApplicationOptions } from "@nestjs/common";
-import type { Configure } from "./app";
+import type { Configure, Side } from "./app";
 import { RequestMethod, VersioningType } from "@nestjs/common";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import {
@@ -24,6 +24,7 @@ import {
   ViewsModule,
   WildcardMiddlewareModule,
 } from "./app";
+import { UPLOAD_GROUPS, UPLOAD_KNOWN } from "./uploads";
 
 /** One request: a name, a path and its `RequestInit`. */
 export interface Probe {
@@ -35,7 +36,10 @@ export interface Probe {
 /** An application to boot on both sides, and the requests to send it. */
 export interface ProbeGroup {
   name: string;
-  module: new () => object;
+  /** The application, or one per side when the two need different code (uploads). */
+  module: (new () => object) | Record<Side, new () => object>;
+  /** Removes what the group's application left behind, after both sides close. */
+  cleanup?: () => void;
   configure?: Configure;
   options?: NestApplicationOptions;
   probes: Probe[];
@@ -802,6 +806,7 @@ export const GROUPS: ProbeGroup[] = [
       },
     ],
   },
+  ...UPLOAD_GROUPS,
 ];
 
 /** What a known difference covers: the fields that differ, and why. */
@@ -1034,4 +1039,5 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: BODY_CHANGES,
     reason: "the 413's message names the limit and the size received",
   },
+  ...UPLOAD_KNOWN,
 };

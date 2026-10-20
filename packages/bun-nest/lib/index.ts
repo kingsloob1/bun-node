@@ -47,10 +47,18 @@ export {
   FileInterceptor,
   FilesInterceptor,
   getMultipartRequest,
+  mergeUploadOptions,
   NoFilesInterceptor,
   transformUploadException,
   type UploadExceptionBody,
 } from "./interceptors";
+export {
+  MULTER_MODULE_OPTIONS,
+  MulterModule,
+  type MulterModuleAsyncOptions,
+  type MulterModuleOptions,
+  type MulterOptionsFactory,
+} from "./MulterModule";
 // bun-common's per-route parsing middleware, for `consumer.apply(...)`.
 export {
   requestParsing,
