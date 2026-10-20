@@ -22,9 +22,18 @@
  *   reaching it. `maxContentLength` refuses the whole body, as 413, before
  *   parsing.
  * - A handler rejects with an `UploadError`: multer's `code`, the `field` it
- *   concerns and an HTTP `status`, keeping the readable message. Files it had
- *   already stored are removed with `force`. A file the filter leaves out is
- *   removed too.
+ *   concerns and an HTTP `status`, keeping the readable message. Every
+ *   unexpected file — a foreign field, one over `maxCount`, a field not in
+ *   the map, any file for `handleNoFiles` — is `LIMIT_UNEXPECTED_FILE` with
+ *   multer 2.4's "Unexpected file field". Files it had already stored are
+ *   removed with `force`. A file the filter leaves out is removed too.
+ * - multer 2.4's field-name limits, `limits.fieldNestingDepth` (default 32)
+ *   and `limits.fieldArrayIndexLimit` (default 1000), refuse a name nesting
+ *   too deep (`LIMIT_FIELD_NESTING`) or holding too large an array index
+ *   (`LIMIT_FIELD_ARRAY_INDEX`), each a 400; `Infinity` turns one off. A
+ *   `fieldInflator` that throws refuses with `INVALID_FIELD_NAME`.
+ * - As in multer, options without a `storageType` keep files in memory, and
+ *   `{ dest }` alone writes them to disk at `dest`.
  * - Disk writes go to a fresh directory under `os.tmpdir()`, removed at the end.
  */
 import type {
@@ -46,6 +55,7 @@ import { join } from "node:path";
 import {
   BunHttpAdapter,
   BunRequest,
+  DEFAULT_FIELD_NAME_LIMITS,
   DEFAULT_UPLOAD_OPTIONS,
   DiskStorage,
   FETCH_STUB_SERVER,
@@ -249,6 +259,68 @@ check(
   "every storageType answers a storage",
   [defaults, memory, disk].every((options) => options.storage !== undefined),
 );
+const destDir = join(scratch, "dest-only");
+const destOnly = transformUploadOptions({ dest: destDir });
+checkEqual(
+  "{ dest } alone, no storageType: a DiskStorage at dest, as multer's { dest }",
+  [
+    destOnly.storage instanceof DiskStorage,
+    destOnly.storageType,
+    destOnly.storage.options?.dest,
+  ],
+  [true, "disk", destDir],
+);
+const destUpload = await handleMultipartSingleFile(
+  await formRequest((form) => form.set("avatar", gif("on-disk.gif"))),
+  "avatar",
+  destOnly,
+);
+const destFile = destUpload.file as DiskStorageFile | undefined;
+checkEqual(
+  "…an upload through it is written under dest",
+  [
+    destFile?.type,
+    destFile?.dest,
+    destFile ? await Bun.file(destFile.path).exists() : false,
+  ],
+  ["disk", destDir, true],
+);
+if (destFile) {
+  await destOnly.storage.removeFile(destFile, true);
+}
+checkEqual(
+  "…and removed again, forced",
+  destFile ? await Bun.file(destFile.path).exists() : true,
+  false,
+);
+const untyped = transformUploadOptions({ limits: { files: 1 } });
+checkEqual(
+  "no storageType (multer-style { limits }): a MemoryStorage, storageType left unset",
+  [untyped.storage instanceof MemoryStorage, untyped.storageType],
+  [true, undefined],
+);
+const untypedUpload = await handleMultipartSingleFile(
+  await formRequest((form) => form.set("avatar", gif("in-memory.gif"))),
+  "avatar",
+  untyped,
+);
+checkEqual(
+  "…an upload through it is kept in memory",
+  [untypedUpload.file?.type, untypedUpload.file?.size],
+  ["memory", GIF_BYTES.length],
+);
+await checkRejects(
+  'a storage without storageType: "custom" (a multer storage engine): a TypeError',
+  () =>
+    transformUploadOptions({
+      storage: new MemoryStorage(),
+    } as unknown as UploadOptions),
+  {
+    name: "TypeError",
+    message:
+      /^Upload options with a storage need storageType "custom" \(and a storage implementing handleFile\/removeFile\)$/,
+  },
+);
 const keepFilter = () => true;
 const carried = transformUploadOptions({
   storageType: "memory",
@@ -367,7 +439,7 @@ const singleForeign = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Only Field avatar accept one file$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual(
@@ -390,7 +462,7 @@ const singleTwice = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Only Field avatar accept one file$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual("…field names the handler's own field", uploadDetails(singleTwice), [
@@ -434,7 +506,7 @@ const overCount = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Field photos accepts max 2 files$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual(
@@ -462,7 +534,7 @@ const multipleForeign = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Only Field photos accept files$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual("…field names the foreign field", uploadDetails(multipleForeign), [
@@ -503,7 +575,7 @@ const unmapped = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Field resume doesn't accept files$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual("…on that field", uploadDetails(unmapped), [
@@ -525,7 +597,7 @@ const fieldOverCount = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^Field avatar accepts max 1 files$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual("…on that field", uploadDetails(fieldOverCount), [
@@ -569,7 +641,7 @@ const noneWithFile = await checkRejects(
   {
     name: "UploadError",
     code: "LIMIT_UNEXPECTED_FILE",
-    message: /^File upload is not accepted$/,
+    message: /^Unexpected file field$/,
   },
 );
 checkEqual("…naming the file's field", uploadDetails(noneWithFile), [
@@ -760,7 +832,7 @@ checkEqual(
 checkEqual(
   "UPLOAD_ERROR_MESSAGES holds those defaults",
   UPLOAD_ERROR_MESSAGES.LIMIT_UNEXPECTED_FILE,
-  "Unexpected field",
+  "Unexpected file field",
 );
 
 /* ------------------------------------------------------------------ */
@@ -1141,6 +1213,119 @@ checkEqual(
   "preservePath: false (default) keeps the base name; true keeps the path",
   [plainPath.files[0]?.originalFilename, keptPath.files[0]?.originalFilename],
   ["a.txt", "dir/sub/a.txt"],
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "Field-name limits: fieldNestingDepth, fieldArrayIndexLimit, INVALID_FIELD_NAME",
+);
+
+checkEqual("DEFAULT_FIELD_NAME_LIMITS", DEFAULT_FIELD_NAME_LIMITS, {
+  fieldNestingDepth: 32,
+  fieldArrayIndexLimit: 1000,
+});
+
+/** A field name nesting `levels` deep: `a[b][b]…`. */
+function nested(levels: number): string {
+  return `a${"[b]".repeat(levels)}`;
+}
+
+/** The fields of a form with one text field `name`, parsed with `multipart`. */
+async function oneField(
+  name: string,
+  multipart: MultiPartOptions = {},
+): Promise<Record<string, unknown>> {
+  return (await parsedWith(multipart, (form) => form.set(name, "x"))).body;
+}
+
+checkEqual(
+  "fieldNestingDepth (default 32): a name 32 deep parses",
+  Object.keys(await oneField(nested(32))),
+  ["a"],
+);
+const tooDeep = await checkRejects(
+  "…33 deep is refused: LIMIT_FIELD_NESTING, multer 2.4's message",
+  () => oneField(nested(33)),
+  {
+    name: "UploadError",
+    code: "LIMIT_FIELD_NESTING",
+    message: /^Field name nesting too deep$/,
+  },
+);
+checkEqual("…naming the field, with status 400", uploadErrorDetails(tooDeep), {
+  field: nested(33),
+  status: 400,
+});
+checkEqual(
+  "limits.fieldNestingDepth: 1 — a[b] parses",
+  await oneField("a[b]", { limits: { fieldNestingDepth: 1 } }),
+  { a: { b: "x" } },
+);
+await checkRejects(
+  "…a[b][c] is refused",
+  () => oneField("a[b][c]", { limits: { fieldNestingDepth: 1 } }),
+  { name: "UploadError", code: "LIMIT_FIELD_NESTING" },
+);
+await checkRejects(
+  "…and a '.' nests a level too, with the default inflator (a.b.c)",
+  () => oneField("a.b.c", { limits: { fieldNestingDepth: 1 } }),
+  { name: "UploadError", code: "LIMIT_FIELD_NESTING" },
+);
+checkEqual(
+  "fieldNestingDepth: Infinity turns the check off — 40 deep parses",
+  Object.keys(
+    await oneField(nested(40), { limits: { fieldNestingDepth: Infinity } }),
+  ),
+  ["a"],
+);
+
+const atLimit = (
+  await oneField("arr[5]", { limits: { fieldArrayIndexLimit: 5 } })
+).arr;
+checkEqual(
+  "limits.fieldArrayIndexLimit: 5 — arr[5] parses, a 6-slot (sparse) array",
+  Array.isArray(atLimit) ? [atLimit.length, atLimit[5]] : atLimit,
+  [6, "x"],
+);
+const indexTooLarge = await checkRejects(
+  "…arr[6] is refused: LIMIT_FIELD_ARRAY_INDEX, multer 2.4's message",
+  () => oneField("arr[6]", { limits: { fieldArrayIndexLimit: 5 } }),
+  {
+    name: "UploadError",
+    code: "LIMIT_FIELD_ARRAY_INDEX",
+    message: /^Field name array index too large$/,
+  },
+);
+checkEqual(
+  "…naming the field, with status 400",
+  uploadErrorDetails(indexTooLarge),
+  { field: "arr[6]", status: 400 },
+);
+await checkRejects(
+  "fieldArrayIndexLimit (default 1000): arr[4294967294] is refused, not built",
+  () => oneField("arr[4294967294]"),
+  { name: "UploadError", code: "LIMIT_FIELD_ARRAY_INDEX" },
+);
+
+const inflatorFailure = new Error("cannot place this name");
+const invalidName = await checkRejects(
+  "a fieldInflator that throws: INVALID_FIELD_NAME, multer's message",
+  () =>
+    oneField("bad name", {
+      fieldInflator: () => {
+        throw inflatorFailure;
+      },
+    }),
+  {
+    name: "UploadError",
+    code: "INVALID_FIELD_NAME",
+    message: /^Invalid field name$/,
+  },
+);
+checkEqual(
+  "…naming the field, with status 400 and the thrown error as cause",
+  [uploadErrorDetails(invalidName), invalidName?.cause === inflatorFailure],
+  [{ field: "bad name", status: 400 }, true],
 );
 
 /* ------------------------------------------------------------------ */

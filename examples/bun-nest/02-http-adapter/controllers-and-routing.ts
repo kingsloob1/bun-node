@@ -34,7 +34,8 @@
  * - A quiet `@Sse()` stream is not cut by `Bun.serve`'s `idleTimeout` (the
  *   adapter's `server.idleTimeout`): Nest calls `req.socket.setTimeout(0)`,
  *   which exempts the request. A stream sent through `@Res()` without that
- *   call is cut once it has been quiet for the idle timeout.
+ *   call is cut once it has been quiet for the idle timeout, at Bun's next
+ *   4s sweep: the client's read fails with `ECONNRESET`.
  * - `@Render(view)` renders `view` with the view engine, as on
  *   `@nestjs/platform-express`: here a small `{{name}}` engine registered for
  *   `.html` with `adapter.engine()`, the handler's return value being the
@@ -107,7 +108,7 @@ import {
   takeUntil,
   throwError,
 } from "rxjs";
-import { check, checkEqual, summary } from "../shared/check";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
@@ -450,6 +451,24 @@ class QuietController {
       new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+        },
+      }),
+    );
+  }
+
+  /**
+   * The control: the same first event, then the stream ends by itself, so
+   * the client reads a clean end rather than a cut connection.
+   */
+  @Get("ends")
+  ends(@Res() res: BunResponse): void {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.send(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+          await Bun.sleep(50);
+          controller.close();
         },
       }),
     );
@@ -857,8 +876,12 @@ for (const path of ["/events/broken", "/events/throws"]) {
 step("idleTimeout: a quiet @Sse() stream stays open");
 
 // A second app whose server cuts idle connections. `idleTimeout` is in
-// seconds and 1 is the least Bun accepts; Bun sweeps idle connections every
-// few seconds, so a quiet connection is cut about 4s in.
+// seconds and 1 is the least Bun accepts. Bun sweeps idle connections on a
+// fixed 4s tick, whose phase is set by the process's earlier connections, so
+// a quiet stream is cut at the next tick: anywhere from a few milliseconds to
+// about 4s after it opens. How long it lasted therefore says nothing; how it
+// ended does: a cut connection makes the read fail (ECONNRESET), a stream
+// that ends by itself is read to a clean end.
 const quietAdapter = new BunHttpAdapter(0, { server: { idleTimeout: 1 } });
 const quietApp = await NestFactory.create(QuietModule, quietAdapter, {
   logger: false,
@@ -866,12 +889,19 @@ const quietApp = await NestFactory.create(QuietModule, quietAdapter, {
 await quietApp.listen(0);
 const quietUrl = await quietApp.getUrl();
 
-/** A quiet stream being watched, and when it was seen to close. */
+/** A quiet stream being watched, and when and how it was seen to close. */
 interface Watched {
   /** Cancels the response body, once the watch is over. */
   cancel: () => Promise<void>;
+  /** Whether its first event arrived before it closed. */
+  firstEvent: boolean;
   /** Milliseconds from the start until the stream ended or errored, if it did. */
   closedAfter?: number;
+  /**
+   * How it closed, if it did: `"reset"` when the read failed (the server cut
+   * the connection), `"done"` when the stream ended by itself.
+   */
+  ended?: "reset" | "done";
 }
 
 const quietFrom = performance.now();
@@ -879,32 +909,52 @@ const quietFrom = performance.now();
 async function watchQuiet(path: string): Promise<Watched> {
   const response = await fetch(`${quietUrl}${path}`);
   const reader = response.body!.getReader();
-  const watched: Watched = { cancel: async () => reader.cancel() };
+  const watched: Watched = {
+    cancel: async () => reader.cancel(),
+    firstEvent: false,
+  };
   const decoder = new TextDecoder();
   let body = "";
   while (!body.includes("data: first\n\n")) {
     const chunk = await reader.read();
     if (chunk.done) {
       watched.closedAfter = performance.now() - quietFrom;
+      watched.ended = "done";
       return watched;
     }
     body += decoder.decode(chunk.value, { stream: true });
   }
-  const closed = () => {
+  watched.firstEvent = true;
+  const closed = (ended: "reset" | "done") => {
     watched.closedAfter = performance.now() - quietFrom;
+    watched.ended = ended;
   };
-  reader.read().then(closed, closed);
+  /** Reads on to the end, which a quiet stream reaches only when it is cut. */
+  const readToEnd = async (): Promise<void> => {
+    try {
+      while (!(await reader.read()).done) {
+        // Nothing else is sent; any further chunk is read past.
+      }
+      closed("done");
+    } catch {
+      closed("reset");
+    }
+  };
+  void readToEnd();
   return watched;
 }
 
-const [quietSse, quietSent] = await Promise.all([
+const [quietSse, quietSent, quietEnds] = await Promise.all([
   watchQuiet("/quiet/sse"),
   watchQuiet("/quiet/sent"),
+  watchQuiet("/quiet/ends"),
 ]);
+// The cut comes at the next 4s tick; the deadline leaves a starved run
+// several ticks more.
 await waitFor(
   "Bun to cut the stream nothing exempted",
   () => quietSent.closedAfter !== undefined,
-  { timeout: 15_000 },
+  { timeout: 30_000 },
 ).catch(() => {});
 // The two opened together, so a stream that is not exempt is cut in the same
 // sweep. Give the @Sse() one a whole further sweep before looking.
@@ -913,22 +963,28 @@ await Bun.sleep(5000);
 const standing = (watched: Watched): string =>
   watched.closedAfter === undefined
     ? "still open"
-    : `cut at ${watched.closedAfter.toFixed(0)}ms`;
-show("the two quiet streams", {
+    : `${watched.ended === "reset" ? "cut" : "ended"} at ${watched.closedAfter.toFixed(0)}ms`;
+show("the quiet streams", {
   "@Sse()": standing(quietSse),
   "@Res() send(ReadableStream)": standing(quietSent),
+  "@Res(), ending by itself": standing(quietEnds),
 });
-check(
-  "a ReadableStream sent through @Res() going quiet is cut by idleTimeout",
-  quietSent.closedAfter !== undefined && quietSent.closedAfter >= 1000,
-  quietSent.closedAfter,
+checkEqual(
+  "a ReadableStream sent through @Res() going quiet is cut by idleTimeout: its first event, then the connection reset",
+  [quietSent.firstEvent, quietSent.ended],
+  [true, "reset"],
+);
+checkEqual(
+  "…where a stream that ends by itself is read to a clean end (the control)",
+  [quietEnds.firstEvent, quietEnds.ended],
+  [true, "done"],
 );
 checkEqual(
   "…while the quiet @Sse() stream is still open",
-  quietSse.closedAfter,
-  undefined,
+  [quietSse.firstEvent, quietSse.closedAfter],
+  [true, undefined],
 );
-for (const watched of [quietSse, quietSent]) {
+for (const watched of [quietSse, quietSent, quietEnds]) {
   await watched.cancel().catch(() => {});
 }
 await quietApp.close();
