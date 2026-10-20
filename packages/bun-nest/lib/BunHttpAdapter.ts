@@ -407,6 +407,25 @@ function buildCannotRoute(
   });
 }
 
+/** `close()`'s default drain cap, in milliseconds. */
+const DEFAULT_CLOSE_DRAIN_TIMEOUT = 10_000;
+
+/**
+ * The `closeDrainTimeout` adapter option, checked: `undefined` is the
+ * default; anything but a finite number of milliseconds `>= 0` throws.
+ */
+function validateCloseDrainTimeout(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_CLOSE_DRAIN_TIMEOUT;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `closeDrainTimeout must be a finite number of milliseconds >= 0, got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
 /**
  * `page` with the headers a response had set before it, as `finalhandler`
  * writes its page on that response: `responseHeaders` less the ones it
@@ -558,7 +577,37 @@ export class BunHttpAdapter<
 
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
+  /**
+   * The unix socket path the server listens on, when `listen()` was given
+   * one; `undefined` while it listens on a TCP port (or not at all).
+   */
+  private _listeningSocketPath: string | undefined = undefined;
   protected isServerListening = false;
+
+  /**
+   * Whether the application is shutting down: set by {@link beforeClose}
+   * (which Nest 12 calls before the shutdown hooks run) and by {@link close},
+   * cleared by a successful {@link listen}. While it is set, the
+   * `return503OnClosing` middleware answers every request `503`.
+   */
+  #isShuttingDown = false;
+
+  /**
+   * The `forceCloseConnections` application option, read in
+   * {@link initHttpServer}: `close()` then cuts in-flight requests at once
+   * instead of draining them. Default `false`.
+   */
+  #forceCloseConnections = false;
+
+  /** Whether the `return503OnClosing` middleware is registered (once per adapter). */
+  #closingGuardRegistered = false;
+
+  /**
+   * The longest {@link close} waits for in-flight requests to finish before
+   * cutting them, in milliseconds: the constructor's `closeDrainTimeout`
+   * option, default `10_000`.
+   */
+  readonly #closeDrainTimeout: number;
   private serverOptions:
     | BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -675,6 +724,15 @@ export class BunHttpAdapter<
        */
       routeCacheMax?: number;
       /**
+       * The longest `close()` (and so `app.close()`) waits for in-flight
+       * requests to finish before cutting them, in milliseconds. Defaults to
+       * `10_000`. `0` waits for nothing: in-flight requests are cut at once,
+       * as with the `forceCloseConnections` application option, which skips
+       * the wait whatever this says. A negative or non-finite value throws a
+       * `RangeError` here, at construction.
+       */
+      closeDrainTimeout?: number;
+      /**
        * Base `Bun.serve` options merged into the server created in `listen()`
        * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
        * are managed by the adapter and override anything set here.
@@ -705,6 +763,11 @@ export class BunHttpAdapter<
 
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
+
+    // Checked here, so a bad value fails at startup, not on the first close.
+    this.#closeDrainTimeout = validateCloseDrainTimeout(
+      options?.closeDrainTimeout,
+    );
 
     // Checked here, so a bad value fails at startup, not on every request.
     this.etagEnabled = normalizeEtagOption(options?.etag);
@@ -1233,7 +1296,8 @@ export class BunHttpAdapter<
         | undefined;
     }
 
-    if (address) {
+    // On a unix socket Bun's `address` is the path, a string: see `address()`.
+    if (isObject(address)) {
       return address;
     }
 
@@ -1244,11 +1308,24 @@ export class BunHttpAdapter<
     };
   }
 
-  address() {
+  /**
+   * The listening address, as `net.Server.address()` gives it: the socket
+   * path while listening on a unix socket, `{ address, family, port }`
+   * otherwise. Nest's `app.listen()` and `app.getUrl()` read it.
+   */
+  address(): AddressInfo | string {
+    if (this._listeningSocketPath !== undefined && this.isServerListening) {
+      return this._listeningSocketPath;
+    }
     return this.serverAddress;
   }
 
   get url() {
+    // A unix socket's URL (`unix:///path`) has no origin; requests to it are
+    // addressed to `localhost`, as Bun's `fetch(url, { unix })` sends them.
+    if (this._listeningSocketPath !== undefined && this.isServerListening) {
+      return "http://localhost";
+    }
     return (
       this.server?.url?.origin ||
       `http://${this.listeningHost}:${this.listeningPort}`
@@ -1474,12 +1551,20 @@ export class BunHttpAdapter<
    * Binds `Bun.serve` on `port` (at 127.0.0.1) and resolves the server, after
    * calling `callback` with it. NestJS's `app.listen()` uses this form.
    *
-   * A bind failure (a busy port, say) rejects — unless an `error` listener is
-   * attached to the HTTP server, as `app.listen()` attaches one. Then, as with
+   * A string that is not a port number is a unix socket path, as with
+   * `node:http`'s `listen(path)`: the server listens there (`hostname` is
+   * ignored), {@link address} returns the path, and Nest's `app.getUrl()`
+   * gives `http+unix://<encoded path>`. Bun removes the socket file when the
+   * server stops; an existing file at the path is `EADDRINUSE`, as on Node.
+   *
+   * A bind failure (a busy port or socket path, say) or a port outside
+   * 0–65535 rejects — unless an `error` listener is attached to the HTTP
+   * server, as `app.listen()` attaches one. Then, as with
    * `@nestjs/platform-express` (whose `listen` hands off to `node:http`,
-   * which reports the failure only through `error`), the listener receives
+   * which reports a bind failure only through `error`), the listener receives
    * the error, the callback is not called, and this resolves `undefined`:
-   * rejecting too would leave a rejection `app.listen()` never observes.
+   * rejecting too would leave a rejection `app.listen()` never observes. So
+   * `app.listen()` rejects with the error either way.
    */
   public async listen(
     port: string | number,
@@ -1506,22 +1591,38 @@ export class BunHttpAdapter<
         ? callback
         : () => undefined;
 
+    // A string that is not a port number names a unix socket, as `node:http`
+    // reads `listen(path)` (its `isPipeName`: `Number(port) >= 0` fails). A
+    // hostname is then ignored, as there.
+    const socketPath =
+      isString(port) && !(Number(port) >= 0) ? port : undefined;
+
     // Anything `Bun.serve` accepts — an IP literal, `"localhost"`, a name —
     // is bound as given; only an absent hostname defaults to 127.0.0.1.
     const host = isString(hostname) && hostname ? hostname : "127.0.0.1";
 
-    const portNumber = Number(port);
+    const portNumber = socketPath === undefined ? Number(port) : 0;
     if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) {
-      throw new RangeError(
-        `listen(): port must be an integer from 0 to 65535, got ${port}`,
+      // `node:http` throws this before binding, which `app.listen()` turns
+      // into its rejection. Thrown from this async method, it would be a
+      // rejection nobody observes, and `app.listen()` would never settle; so
+      // it takes the bind-failure path below.
+      return this.#reportListenError(
+        new RangeError(
+          `listen(): port must be an integer from 0 to 65535, got ${port}`,
+        ),
       );
     }
 
     if (this._serverInstance && this.isServerListening) {
       // Port `0` asks for "any port", which the running server satisfies.
       const sameAddress =
-        this._listeningHost === host &&
-        (portNumber === 0 || Number(this._serverInstance.port) === portNumber);
+        socketPath !== undefined
+          ? this._listeningSocketPath === socketPath
+          : this._listeningSocketPath === undefined &&
+            this._listeningHost === host &&
+            (portNumber === 0 ||
+              Number(this._serverInstance.port) === portNumber);
 
       if (sameAddress) {
         await done(this._serverInstance);
@@ -1531,6 +1632,7 @@ export class BunHttpAdapter<
       // A different address: move there.
       await this._serverInstance.stop(true);
       this._serverInstance = undefined;
+      this._listeningSocketPath = undefined;
       this.isServerListening = false;
     }
 
@@ -1541,8 +1643,15 @@ export class BunHttpAdapter<
         routesType
       >({
         ...(this.serverOptions || {}),
-        port: portNumber,
-        hostname: host,
+        // `Bun.serve` refuses a hostname beside `unix`. Typed as the TCP
+        // shape: the `server` option's type is, and `unix` is the one key
+        // this adds to it.
+        ...((socketPath !== undefined
+          ? { unix: socketPath }
+          : { port: portNumber, hostname: host }) as {
+          port: number;
+          hostname: string;
+        }),
         development: Bun.env.NODE_ENV !== "production",
         fetch: (nativeRequest: Request, server) => {
           // The synchronous path, unless a subclass replaced the handler.
@@ -1562,27 +1671,42 @@ export class BunHttpAdapter<
       // somewhere else. NestJS's `app.listen()` listens for the HTTP server's
       // `error` event and rejects with it; a direct caller gets the rejection.
       this.logger.error(
-        `Error while binding to ${host}:${portNumber}`,
+        `Error while binding to ${socketPath ?? `${host}:${portNumber}`}`,
         error instanceof Error ? error.stack : String(error),
       );
-      if (this.eventEmitter.listenerCount("error") > 0) {
-        this.eventEmitter.emit("error", error);
-        return undefined;
-      }
-      throw error;
+      return this.#reportListenError(error);
     }
 
     this._serverInstance = httpServer;
-    this._listeningHost = host;
-    this._listeningPort = httpServer.port ?? portNumber;
+    this._listeningSocketPath = socketPath;
+    if (socketPath === undefined) {
+      this._listeningHost = host;
+      this._listeningPort = httpServer.port ?? portNumber;
+    }
     await this.getListenAddress();
 
     this.isServerListening = true;
+    // Listening again after a close: no longer shutting down.
+    this.#isShuttingDown = false;
     this.eventEmitter.emit("listening", this._serverInstance);
 
     await done(this._serverInstance);
 
     return this._serverInstance;
+  }
+
+  /**
+   * How {@link listen} reports a failure to listen: to the HTTP server's
+   * `error` listeners when it has any, resolving `undefined` (`app.listen()`
+   * attaches one and rejects with what it receives, as `node:http` reports a
+   * bind failure only through `error`); otherwise as `listen()`'s rejection.
+   */
+  #reportListenError(error: unknown): undefined {
+    if (this.eventEmitter.listenerCount("error") > 0) {
+      this.eventEmitter.emit("error", error);
+      return undefined;
+    }
+    throw error;
   }
 
   /**
@@ -2149,12 +2273,40 @@ export class BunHttpAdapter<
     return this;
   }
 
+  /**
+   * Puts the adapter into its "shutting down" state, as
+   * `@nestjs/platform-express` 12 does: from now on, with the
+   * `return503OnClosing` application option, every request is answered `503
+   * Service Unavailable` with `Connection: close`. Nest 12's `app.close()`
+   * calls it before any shutdown hook runs, while the server still accepts
+   * requests; Nest 11 never calls it ({@link close} sets the same state).
+   * Declared without `override`: Nest 11's `AbstractHttpAdapter` has no such
+   * member.
+   */
+  public beforeClose(): void {
+    this.#isShuttingDown = true;
+  }
+
+  /**
+   * Stops the server, as `@nestjs/platform-express` 12 does: it stops
+   * accepting connections and lets the requests in flight finish, then
+   * resolves. Unlike Express, which waits for them indefinitely (an open
+   * `@Sse()` stream holds `app.close()` forever), the wait is capped by the
+   * constructor's `closeDrainTimeout` option (10 s by default; `0` waits for
+   * nothing); whatever is still open then — a stream, a hung handler — is
+   * cut. With the `forceCloseConnections` application option nothing waits:
+   * in-flight requests are cut at once.
+   *
+   * WebSocket connections are not waited for; they are closed when the
+   * server stops. Nothing of the stopped server outlives the returned
+   * promise, so a server bound on the same port next can never be answered
+   * by this one (the port-release rule in CLAUDE.md).
+   */
   public async close() {
+    this.#isShuttingDown = true;
     try {
       if (this._serverInstance && this.isServerListening) {
-        // Force-close active (keep-alive) connections so the port is fully
-        // released; a graceful stop can leave the listener lingering.
-        await this._serverInstance.stop(true);
+        await this.#stopServer(this._serverInstance);
       }
     } catch (err) {
       this.logger.error(
@@ -2164,10 +2316,38 @@ export class BunHttpAdapter<
     }
     this.eventEmitter.emit("close");
     this._serverInstance = undefined;
+    this._listeningSocketPath = undefined;
     this.isServerListening = false;
     // Error and not-found handlers are configuration, like routes: they stay,
     // so a closed adapter that listens again (or is driven through `fetch()`)
     // behaves exactly as before.
+  }
+
+  /**
+   * {@link close}'s stop: drain, then force. `stop(false)` stops accepting:
+   * Bun closes the listener and every idle keep-alive connection at once, and
+   * each busy connection as soon as its response completes (measured on Bun
+   * 1.4.2 to 1.4.4). The wait is on `pendingRequests`, not on that call's
+   * promise, which also waits for every WebSocket. `stop(true)` then always
+   * runs: a graceful stop alone leaves a long-lived response (an SSE stream)
+   * and WebSockets served by this server after `close()` resolves, even
+   * once another server is bound on the same port (measured, PR-6b's spike).
+   */
+  async #stopServer(
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Promise<void> {
+    if (
+      !this.#forceCloseConnections &&
+      this.#closeDrainTimeout > 0 &&
+      server.pendingRequests > 0
+    ) {
+      server.stop(false).catch(() => undefined);
+      const deadline = Date.now() + this.#closeDrainTimeout;
+      while (server.pendingRequests > 0 && Date.now() < deadline) {
+        await Bun.sleep(10);
+      }
+    }
+    await server.stop(true);
   }
 
   public getType(): string {
@@ -2324,11 +2504,47 @@ export class BunHttpAdapter<
     this.defineHttpServer();
   }
 
-  // `options` is accepted for `AbstractHttpAdapter` signature parity; the Bun
-  // server is configured via the constructor's `server` option / setListenOptions.
-  public async initHttpServer(_options?: NestApplicationOptions) {
+  /**
+   * Called by Nest once, synchronously, as the application is constructed.
+   * Of `options` it honours, as `@nestjs/platform-express` does,
+   * `forceCloseConnections` (see {@link close}) and `return503OnClosing`
+   * (see {@link beforeClose}); the Bun server itself is configured through
+   * the constructor's `server` option and {@link setListenOptions}.
+   */
+  public async initHttpServer(options?: NestApplicationOptions) {
+    // Before the first `await`: Nest does not await this, and the 503 guard
+    // must be registered ahead of every route, as Express's is.
+    this.#applyApplicationOptions(options);
     await this.init();
     return this.httpServer;
+  }
+
+  /**
+   * Applies {@link initHttpServer}'s lifecycle options. `return503OnClosing`
+   * is read by name: Nest 11's `NestApplicationOptions` has no such key.
+   */
+  #applyApplicationOptions(options: NestApplicationOptions | undefined): void {
+    if (options?.forceCloseConnections) {
+      this.#forceCloseConnections = true;
+    }
+    const return503OnClosing =
+      Reflect.get(options ?? {}, "return503OnClosing") === true;
+    if (return503OnClosing && !this.#closingGuardRegistered) {
+      this.#closingGuardRegistered = true;
+      // A middleware only when asked for, as Express registers it: the
+      // default request path carries no shutdown check at all.
+      this.instance.use((_req, res, next) => {
+        if (this.#isShuttingDown) {
+          // Express's answer, its `text/html` included (a string body is
+          // `text/plain` here otherwise).
+          res.set("Connection", "close");
+          res.set("Content-Type", "text/html; charset=utf-8");
+          res.status(503).send("Service Unavailable");
+          return;
+        }
+        next();
+      });
+    }
   }
 
   /**
