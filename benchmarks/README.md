@@ -29,26 +29,36 @@ bun bench.ts --route all --json > results.json # machine-readable output
 ## Router regression guard (`router-guard.ts`)
 
 The routing speed claims are an assertion, not a table someone has to
-remember to read: `baselines/router.json` records what each cell measured on
-this machine, and `--compare` fails when one regressed. It is the router's
-counterpart of bun-jobs' guard (`packages/bun-jobs/bench`, CLAUDE.md
-"Benchmark regression guard").
+remember to read. Routing speed must stay the same or improve (the user's
+rule, 2026-10-17), and two checks hold it to that:
+
+- **The PR gate is the A/B against the PR's base** (`--roots base=…,pr=…`):
+  both checkouts measured in one session, every cell alternating between
+  them, judged at **5%**. See **The PR gate** below.
+- **`--compare` is the cross-day sanity check**: one checkout against
+  `baselines/router.json`, a run recorded on another day, judged at **15%**
+  net of the machine's drift.
+
+It is the router's counterpart of bun-jobs' guard (`packages/bun-jobs/bench`,
+CLAUDE.md "Benchmark regression guard").
 
 ```bash
 bun router-guard.ts --verify            # every scenario answers right; times nothing
-bun router-guard.ts --compare           # fails (exit 1) if a cell regressed; exit 3: options changed
+bun router-guard.ts --roots base=../../wt-base,pr=../../wt-pr   # the PR gate: exit 1 regressed, 3 options changed
+bun router-guard.ts --compare           # the cross-day check against the baseline; exit 1 / 3 the same
 bun router-guard.ts --save-baseline     # re-record, after a deliberate change
-bun router-guard.ts --roots before=../../wt-a,after=../../wt-b   # A/B two checkouts
 bun router-guard.ts --help              # every option and scenario
 ```
 
-It is a heavy run (about 16 minutes for every cell, twice that for an A/B): run it
-through the heavy-run wrapper as exclusive, in the background, never polled:
+It is a heavy run (about 16 minutes for every cell, under half an hour for an
+A/B): run it through the heavy-run wrapper as exclusive, in the background,
+never polled:
 
 ```bash
 HEAVY_EXCLUSIVE=1 HEAVY_TICKET=<session>-router-guard \
-  /tmp/claude-1000/bun-node-heavy-run.sh nice -n 10 timeout 1800 \
-  bun router-guard.ts --compare > ~/.cache/<session>/router-guard.log 2>&1
+  /tmp/claude-1000/bun-node-heavy-run.sh nice -n 10 timeout 2400 \
+  bun router-guard.ts --roots base=<base worktree>,pr=<PR worktree> --max-wait 60 \
+  --json ~/.cache/<session>/router-ab.json > ~/.cache/<session>/router-ab.log 2>&1
 ```
 
 **What it times.** Four levels, each judged against its own baseline cells,
@@ -114,7 +124,7 @@ slower than the last two (load 2.6), and the two sides of the A/B agreed
 within a few percent only in the quiet rounds. A minimum discounts the busy
 minutes; a median keeps half of them.
 
-**The tolerance is 15%** (`TOLERANCE`), calibrated, not chosen. One unchanged
+**`--compare`'s tolerance is 15%** (`TOLERANCE`), calibrated, not chosen. One unchanged
 build, three full runs on the i9-11900H (16 threads) that recorded the
 baseline (92 cells, load 2.5-4), spread of each cell's figure across the
 three, before any drift correction:
@@ -179,7 +189,33 @@ baseline records it. A baseline holds only on the machine that recorded it:
 `baselines/router.json` names the CPU, the Bun version and revision, the git
 SHA and the Nest version. On other hardware, re-record rather than chase it.
 
-**Controls**, measured 2026-10-17/18 against the committed baseline, each in
+**The committed baseline** was recorded on Bun **1.4.4-canary.1+6bb5dc195**
+(develop 7241eeea, 2026-10-20), when the machine moved there from
++5f5799ed1. Every 1.4.4 canary reports `Bun.version` "1.4.4", so the file's
+`bunRevision` is what tells them apart; after a Bun upgrade, re-record. A
+canary can move a cell: `bun-common/match/notfound` is bimodal per process,
+about 31 ns or about 39 ns. On +5f5799ed1 nearly every process took the fast
+mode (the earlier baseline: 30.7-32.5 ns); on +6bb5dc195, 2 rounds in 50.
+A best of 5 rounds that catches the fast mode makes a baseline that every
+later run of the build fails on that cell (+22%), and one recorded in a busy
+stretch fails them on drift. Both `--save-baseline` runs on +6bb5dc195 were
+unusable, one each way. The baseline committed is a full run of the same
+commit and build, recorded as the base side of a same-build A/B; all seven
+other same-build runs pass `--compare` against it. So before committing a
+re-recorded baseline, judge other runs of the same build against it, each
+saved with `--json`: `bun router-guard.ts --from <run.json> --compare
+--baseline <new file>` must exit 0 for every one.
+
+**Could `--compare` be tighter?** Not on this data. Same build, growth net of
+drift: three runs one evening (+5f5799ed1) reached +6.8%; seven runs over
+four hours (+6bb5dc195) against the committed baseline reached `match`
++11.5%, `route` +10.9%, `fetch` +8.4%, `served` +3.4%; and the same bun-nest
+code measured two days apart (bun-nest only, so no rival to correct by)
+moved up to +12.0%. 15% stays. `--compare` spans days and machines; the A/B,
+both sides in one session, is what can be tight.
+
+**Controls**, measured 2026-10-17/18 against the baseline committed then
+(Bun +5f5799ed1), each in
 a scratch copy of bun-common with the slowdown at the top of
 `getMatchedLayers()` (so inside `dispatch()`, and under every level):
 
@@ -199,15 +235,78 @@ factor. The `served` cells are the opposite: a loopback round trip is about
 socket path (`Bun.serve`'s entry, the `Response` on the wire), not to resolve
 routing.
 
-**Checking a change.** For a change to routing, run an A/B of the base and
-the branch in two worktrees (`--roots base=<dir>,pr=<dir>`): it alternates
-every cell between the two, so it is the sharper comparison, and it needs no
-baseline. Then `--compare` on the branch against the committed baseline. A
-change that is meant to move a figure re-records the baseline
-(`--save-baseline`) in the same PR, with the A/B table in its description.
-`--from <file>` judges a run saved with `--json` again, without measuring,
-options included. A PR that changes router options on purpose: exit 3 from
-`--compare`, then `--save-baseline` in the same PR.
+**The PR gate: the A/B against the PR's base.** A PR that touches the
+request path (bun-common, bun-nest) runs an A/B of the commit it targets and
+its branch: a detached worktree of the base (`git worktree add --detach
+<dir> origin/develop`, then `bun install --frozen-lockfile` in it) and the
+PR's worktree, **base first** (`--roots base=<dir>,pr=<dir>`, the command
+above). Both are measured in one session, every cell alternating between them
+(A B, then B A), so the comparison needs no baseline and the machine's drift
+lands on both sides. The first root is the base, printed as `base <label>`;
+every other root is a side judged against it.
+
+Each cell gives two estimates of a side's change: **best**, its best of the
+rounds against the base's, and **paired**, the median over the rounds of each
+round's side / base ratio (round *r* of the two sides ran seconds apart, so
+drift cancels in the ratio). A cell fails as **slower** only when **both**
+grew past **5%** (`AB_TOLERANCE`, per level; 5% on all four): noise moves one
+of them at a time (a lucky best, a busy round), and a change in the code moves
+both. The table shows both columns and flags the failing cells. The run also
+fails on a **missing** cell (the base has it, the side does not) and on
+**noise**: Hono's code is the same on both sides, so its cells are an A = A
+pair inside every A/B, and one that moved past 5% either way means the
+session was too noisy to judge (the A/B's counterpart of `--compare`'s
+**drift**). A cell whose router options differ between the sides is not
+judged. Exit codes match `--compare`'s:
+
+| Exit | Verdict |
+|---|---|
+| 0 | `verdict: pass`: no cell of ours grew past 5% |
+| 1 | `verdict: regression`: a cell **slower**, **missing** or **noise**, or a problem (a wrong answer; a child that ran on another Bun build than the parent, e.g. Bun upgraded mid-run) |
+| 3 | `verdict: options changed`: nothing regressed, but some cells ran with other router options than the base (`routerOptions`, as above) and were not judged |
+| 2 | a usage error |
+
+**How 5% was set.** Three same-build A/Bs, the same develop checkout
+(7241eeea) given as both roots, every target, 5 rounds, exclusive, Bun
+1.4.4-canary.1+6bb5dc195, loads 3.4-5.3. Worst cell per run, in the figure
+judged (the smaller of the two estimates when both grew):
+
+| Run | Worst cell of ours | Hono's worst (either way) | Verdict |
+|---|---|---:|---|
+| 1 | +4.0% `bun-common/fetch/param-cold` | 2.4% | pass |
+| 2 | +2.9% `bun-common/match/mounted` | 0.8% | pass |
+| 3 | +3.1% `bun-common/route/mounted` | 1.9% | pass |
+
+Per level over the three (276 cells), worst slower / faster: `match`
++2.9% / -3.0%, `route` +3.1% / -4.7%, `fetch` +4.0% / -2.8%, `served`
++1.9% / -1.2%. The levels are close enough for one figure; `served` is the
+quietest, but its 30-40 µs round trip shows a routing change least anyway.
+Either estimate alone is wider: `paired` up to +6.1% on a cell whose `best`
+moved -0.7% (`bun-common/route/routes-1000-cold`), and `best` once -19% from
+a single fast round of `bun-common/match/notfound` (below). A rule on `paired`
+alone at 4% failed an A = A run on a Hono cell (+4.1% paired, +0.9% best), and
+on both estimates at 4% another A = A run failed at +4.0%: hence 5%, a point
+over the worst A = A cell.
+
+**Controls**, measured with the gate as it stands:
+
+| Change | Result |
+|---|---|
+| none: the three A = A runs above, and one more on Bun 1.4.4-canary.1+5f5799ed1 | **pass** all four (worst +4.0%) |
+| the 404 negative control: the bun-nest not-found fast path with PR-2's per-request `split` and `some`/`filter`/`map` put back (base: develop + the fast path; side: the same plus the control) | **fails exactly the three 404 cells** at `fetch`: `notfound` +7.6% (best +7.6%, paired +7.6%), `prefix-notfound-inside` +8.1% (+8.1%, +8.7%), `prefix-notfound-outside` +7.9% (+9.2%, +7.9%); every other cell passes (`served/notfound` +2.3%) |
+| the same control's earlier A/B (Bun +5f5799ed1, judged with `--from`) | **fails** the same three: +6.8%, +6.6%, +6.2% |
+| a side with `caseSensitive` changed (a saved run, doctored) | **exit 3**: 45 cells not judged, 32 pass; with +8% on one other cell too, **exit 1** |
+| Bun replaced mid-run (the parent on one build, the children on another) | **exit 1**, a problem per cell: `ran on Bun 6bb5dc195, but the run started on 5f5799ed1` |
+
+The same 404 control **passes** `--compare`: 6-8% is inside 15%. That is why
+the A/B, not `--compare`, is the gate.
+
+A change meant to move a figure says so with the A/B table in its
+description, and re-records the baseline (`--save-baseline`) in the same PR;
+one that changes router options on purpose gets exit 3 from both checks, and
+re-records too. `--from <file>` judges a run saved with `--json` again
+without measuring: an A/B file as an A/B (its first root the base), a single
+run with `--compare`.
 
 **`--root` and `--roots`.** bun-common, bun-nest and the `@nestjs/*` packages
 are loaded from the checkout named, so this one copy of the script measures

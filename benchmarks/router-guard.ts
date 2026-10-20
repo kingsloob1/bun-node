@@ -35,8 +35,11 @@
  *
  * `--root <dir>` measures another checkout (a worktree, a Nest matrix copy):
  * bun-common, bun-nest and the Nest packages are all loaded from that tree, so
- * one copy of this script benchmarks any revision. See `README.md`, "Router
- * regression guard", for the tolerance and how it was calibrated.
+ * one copy of this script benchmarks any revision. `--roots base=<dir>,pr=<dir>`
+ * is the PR gate: an A/B of two checkouts in one session, every cell
+ * alternating between them, judged against the first (`AB_TOLERANCE`, on
+ * the best of the rounds and the median of the per-round ratios together). See `README.md`, "Router regression guard",
+ * for both tolerances and how they were calibrated.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -321,6 +324,29 @@ export const TOLERANCE = 0.15;
  */
 export const EXIT_OPTIONS_CHANGED = 3;
 
+/**
+ * How far a cell of an A/B side may fall behind the base side (the first of
+ * `--roots`) before it counts as a regression, per level. A cell fails when
+ * both of two estimates grew past it: its best of the rounds against the
+ * base's, and the median, over the rounds, of each round's side / base ratio.
+ * Noise moves one of them at a time (a lucky best, a busy round); a change in
+ * the code moves both.
+ *
+ * Far tighter than {@link TOLERANCE}, because both sides run in the same
+ * session, alternating per cell, so a round's two figures were measured a few
+ * seconds apart and drift cancels in their ratio. Calibrated to measured
+ * same-build A/Bs (one checkout given twice): over 368 cells on one Bun build
+ * nothing moved more than 4.7% either way, and the 404 negative control moved
+ * its three cells 7.6-8.1%. README, "The PR gate", has the figures. The same
+ * figure on every level: four runs did not separate them.
+ */
+export const AB_TOLERANCE: Record<Level, number> = {
+  match: 0.05,
+  route: 0.05,
+  fetch: 0.05,
+  served: 0.05,
+};
+
 function printHelp(): void {
   console.log(`
 Router regression guard (Bun ${Bun.version})
@@ -334,9 +360,12 @@ Usage: bun router-guard.ts [options]
   --baseline <file>     Baseline file           (default: baselines/router.json)
   --verify              Check every scenario's responses; time nothing
   --root <dir>          Checkout to measure     (default: this script's repo)
-  --roots a=<dir>,b=<dir>
-                        A/B: the same cells on each checkout, alternating per
-                        cell (A B, then B A), and a table of the deltas
+  --roots base=<dir>,pr=<dir>
+                        A/B, the PR gate: the same cells on each checkout,
+                        alternating per cell (A B, then B A). The first root is
+                        the base; a side fails (exit 1) when both a cell's best and
+                        its median per-round ratio to the base grew past ${(AB_TOLERANCE.fetch * 100).toFixed(0)}%, and
+                        exits ${EXIT_OPTIONS_CHANGED} when nothing did but router options differ
   --rounds <n>          Rounds, interleaved     (default: 5)
   --targets <list>      bun-common,bun-nest,hono (default: all)
   --scenarios <list>    Scenario ids or 'all'   (default: all)
@@ -349,8 +378,9 @@ Usage: bun router-guard.ts [options]
   --max-wait <s>        ...for at most this long (default: 300)
   --json <file>         Write every round's figures to a file
   --label <text>        A name for the run, shown in the table and the JSON
-  --from <file>         Judge a run saved with --json instead of measuring
-                        (with --compare; its first root is the run judged)
+  --from <file>         Judge a run saved with --json instead of measuring:
+                        an A/B file is judged as an A/B (its first root the
+                        base); a single run with --compare
   -h, --help            This text
 
 Scenarios:
@@ -1006,6 +1036,12 @@ interface ChildResult {
   levels: Partial<Record<Level, LevelFigures>>;
   /** The router options it ran with. */
   options?: RouterOptions;
+  /**
+   * The child's `Bun.revision`. The parent spawns `process.execPath`, so a Bun
+   * upgraded mid-run puts the later cells on another build than the earlier
+   * ones (seen 2026-10-20); the parent refuses such a run.
+   */
+  bunRevision?: string;
 }
 
 async function runChild(target: TargetId, scenarioId: string): Promise<void> {
@@ -1020,6 +1056,7 @@ async function runChild(target: TargetId, scenarioId: string): Promise<void> {
     problems: [],
     levels: {},
     options: built.options,
+    bunRevision: Bun.revision,
   };
   const method = scenario.method ?? "GET";
 
@@ -1299,7 +1336,7 @@ interface OptionsChanged {
 /** One way a run differs from its baseline. */
 interface Regression {
   key: string;
-  kind: "slower" | "overtaken" | "missing" | "drift";
+  kind: "slower" | "overtaken" | "missing" | "drift" | "noise";
   was: string;
   now: string;
 }
@@ -1498,32 +1535,243 @@ async function loadSaved(file: string): Promise<{
   };
 }
 
-/** The A/B table: each root's median, its spread, and the delta from the first. */
-function printAB(measured: (Baseline & { label: string })[]): void {
+/** One cell of an A/B side, against the base side. */
+interface ABCell {
+  key: string;
+  level: Level;
+  /** Best over the rounds, side / base - 1. */
+  best: number;
+  /**
+   * Median over the rounds of each round's side / base - 1. Round `r` of both
+   * sides ran back to back, so drift cancels in the ratio, where best-vs-best
+   * compares figures from different minutes.
+   */
+  paired: number;
+  /** Whether the rounds could be paired (equal counts); else `paired` is `best`. */
+  pairedRounds: boolean;
+  /**
+   * The judged figure: the move `best` and `paired` agree on, the one nearer
+   * zero when they point the same way, else 0. Noise moves one of them at a
+   * time; a real change moves both.
+   */
+  agreed: number;
+}
+
+/** The move two estimates agree on: the smaller when both point one way, else 0. */
+function agreedMove(a: number, b: number): number {
+  if (a > 0 && b > 0) return Math.min(a, b);
+  if (a < 0 && b < 0) return Math.max(a, b);
+  return 0;
+}
+
+/** An A/B side judged against the base side. */
+interface ABVerdict {
+  /** The side judged. */
+  label: string;
+  cells: ABCell[];
+  regressions: Regression[];
+  optionsChanged: OptionsChanged[];
+}
+
+/**
+ * Judges `side` against `base`, both measured in one A/B session. A cell of
+ * ours fails as **slower** when both its best-of-rounds and the median of its
+ * per-round ratios to the base grew past its level's {@link AB_TOLERANCE}
+ * (`agreed`); a cell the base has and the side
+ * lacks fails as **missing**; a cell whose router options differ is neither
+ * passed nor failed (`optionsChanged`). Hono's code is the same on both sides
+ * (this directory's copy), so its cells are an A = A pair inside every A/B: one
+ * that moved past the tolerance either way fails the run as **noise**, as
+ * `--compare`'s drift does, since our cells were measured no better.
+ */
+function judgeAB(
+  base: Baseline,
+  side: Baseline & { label: string },
+): ABVerdict {
+  const cells: ABCell[] = [];
+  const regressions: Regression[] = [];
+  const optionsChanged: OptionsChanged[] = [];
+  for (const [key, was] of Object.entries(base.entries)) {
+    const now = side.entries[key];
+    if (!now) {
+      regressions.push({
+        key,
+        kind: "missing",
+        was: ns(was.nsPerOp),
+        now: "not measured",
+      });
+      continue;
+    }
+    const best = now.nsPerOp / was.nsPerOp - 1;
+    const pairedRounds =
+      was.rounds.length > 0 && was.rounds.length === now.rounds.length;
+    const paired = pairedRounds
+      ? median(was.rounds.map((w, r) => now.rounds[r]! / w)) - 1
+      : best;
+    const agreed = agreedMove(paired, best);
+    cells.push({ key, level: was.level, best, paired, pairedRounds, agreed });
+    const tolerance = AB_TOLERANCE[was.level];
+    const figures = `${ns(now.nsPerOp)} (${pct(best)} best, ${pct(paired)} paired)`;
+    if (RIVALS.has(was.target)) {
+      if (Math.abs(agreed) > tolerance) {
+        regressions.push({
+          key,
+          kind: "noise",
+          was: ns(was.nsPerOp),
+          now: `${figures}: the same code on both sides moved past ${pct(tolerance)}; too noisy a session to judge, re-run on a quiet machine`,
+        });
+      }
+      continue;
+    }
+    const changes = optionChanges(
+      cellOptions(base, key),
+      cellOptions(side, key),
+    );
+    if (changes.length) {
+      optionsChanged.push({
+        key,
+        target: was.target,
+        changes,
+        was: ns(was.nsPerOp),
+        now: figures,
+      });
+      continue;
+    }
+    if (agreed > tolerance) {
+      regressions.push({
+        key,
+        kind: "slower",
+        was: ns(was.nsPerOp),
+        now: figures,
+      });
+    }
+  }
+  return { label: side.label, cells, regressions, optionsChanged };
+}
+
+/**
+ * The A/B table: the base's best and spread, then for each other side its
+ * best, spread, best-vs-best delta and paired delta, flagged when judged.
+ */
+function printAB(
+  measured: (Baseline & { label: string })[],
+  verdicts: ABVerdict[],
+): void {
   const [first, ...rest] = measured;
-  for (const run of measured) {
+  for (const [i, run] of measured.entries()) {
     console.log(
-      `\n${run.label}: ${run.gitSha.slice(0, 8)}${run.gitDirty ? " (dirty)" : ""}, Nest ${run.nest}, Bun ${run.bun}`,
+      `${i ? "" : "\n"}${i ? "side" : "base"} ${run.label}: ${run.gitSha.slice(0, 8)}${run.gitDirty ? " (dirty)" : ""}, Nest ${run.nest}, Bun ${run.bun}`,
     );
   }
   console.log(
     `\n${"cell".padEnd(42)} ${first!.label.padStart(9)} ${"spread".padStart(7)}${rest
       .map(
         (r) =>
-          ` ${r.label.padStart(9)} ${"spread".padStart(7)} ${"delta".padStart(7)}`,
+          ` ${r.label.padStart(9)} ${"spread".padStart(7)} ${"best".padStart(7)} ${"paired".padStart(7)}`,
       )
       .join("")}`,
   );
+  const flagOf = new Map<string, string>();
+  for (const v of verdicts) {
+    for (const r of v.regressions) flagOf.set(`${v.label} ${r.key}`, r.kind);
+    for (const c of v.optionsChanged)
+      flagOf.set(`${v.label} ${c.key}`, "options");
+  }
   for (const [key, entry] of Object.entries(first!.entries)) {
     let line = `${key.padEnd(42)} ${ns(entry.nsPerOp).padStart(9)} ${`${(entry.spread * 100).toFixed(1)}%`.padStart(7)}`;
-    for (const run of rest) {
+    const flags: string[] = [];
+    for (const [i, run] of rest.entries()) {
       const other = run.entries[key];
-      line += other
-        ? ` ${ns(other.nsPerOp).padStart(9)} ${`${(other.spread * 100).toFixed(1)}%`.padStart(7)} ${`${((other.nsPerOp / entry.nsPerOp - 1) * 100).toFixed(1)}%`.padStart(7)}`
-        : ` ${"-".padStart(9)}`;
+      const cell = verdicts[i]!.cells.find((c) => c.key === key);
+      line +=
+        other && cell
+          ? ` ${ns(other.nsPerOp).padStart(9)} ${`${(other.spread * 100).toFixed(1)}%`.padStart(7)} ${pct(cell.best).padStart(7)} ${`${pct(cell.paired)}${cell.pairedRounds ? "" : "*"}`.padStart(7)}`
+          : ` ${"-".padStart(9)}`;
+      const flag = flagOf.get(`${run.label} ${key}`);
+      if (flag) flags.push(rest.length > 1 ? `${run.label}: ${flag}` : flag);
     }
-    console.log(line);
+    console.log(`${line}${flags.length ? `  ${flags.join(", ")}` : ""}`);
   }
+}
+
+/**
+ * Prints each side's verdict against the base and returns the exit status:
+ * 1 when any side regressed (or the run had problems), else
+ * {@link EXIT_OPTIONS_CHANGED} when some cell ran with other router options
+ * than the base, else 0.
+ */
+function reportAB(
+  measured: (Baseline & { label: string })[],
+  problems: string[],
+): number {
+  const [base, ...sides] = measured;
+  const verdicts = sides.map((side) => judgeAB(base!, side));
+  printAB(measured, verdicts);
+  const tolerances = [...new Set(Object.values(AB_TOLERANCE))];
+  const tol =
+    tolerances.length === 1
+      ? pct(tolerances[0]!).slice(1)
+      : Object.entries(AB_TOLERANCE)
+          .map(([level, t]) => `${level} ${pct(t).slice(1)}`)
+          .join(", ");
+  console.log(
+    `\nA/B verdict, base ${base!.label} (the first of --roots); a cell fails when its best and the median of its per-round ratios to the base both grew past ${tol}:`,
+  );
+  let regressed = problems.length > 0;
+  let optionsChanged = 0;
+  for (const v of verdicts) {
+    const ours = v.cells.filter(
+      (c) => !RIVALS.has(base!.entries[c.key]!.target),
+    );
+    const worst = ours.reduce<ABCell | undefined>(
+      (w, c) => (w && w.agreed >= c.agreed ? w : c),
+      undefined,
+    );
+    const noise = v.cells
+      .filter((c) => RIVALS.has(base!.entries[c.key]!.target))
+      .reduce((m, c) => Math.max(m, Math.abs(c.agreed)), 0);
+    const noiseNote =
+      v.cells.length > ours.length
+        ? `; the rival's cells (the same code on both sides) moved at most ${pct(noise).slice(1)}`
+        : "";
+    for (const c of v.optionsChanged) {
+      console.log(
+        `  OPTS  ${v.label} ${c.key.padEnd(42)} ${c.changes.join(", ")}  ${c.was}  ->  ${c.now}; not judged`,
+      );
+    }
+    for (const r of v.regressions) {
+      console.log(
+        `  FAIL  ${v.label} ${r.key.padEnd(42)} ${r.kind.padEnd(7)} ${r.was}  ->  ${r.now}`,
+      );
+    }
+    if (v.regressions.length === 0) {
+      console.log(
+        `  ok    ${v.label}: no ${v.optionsChanged.length ? "judged " : ""}cell of ${ours.length - v.optionsChanged.length} grew past the tolerance` +
+          `${worst ? ` (worst ${worst.key}, ${pct(worst.agreed)} agreed)` : ""}${noiseNote}.`,
+      );
+    } else {
+      regressed = true;
+      console.log(
+        `  ${v.label}: ${v.regressions.length} failing cell(s) against ${base!.label}${noiseNote}.`,
+      );
+    }
+    optionsChanged += v.optionsChanged.length;
+  }
+  if (regressed) {
+    console.log(
+      `\nverdict: regression (exit 1)${problems.length ? `; ${problems.length} problem(s) above` : ""}${optionsChanged ? `; ${optionsChanged} cell(s) with changed options not judged` : ""}.`,
+    );
+    return 1;
+  }
+  if (optionsChanged) {
+    console.log(
+      `\nverdict: options changed (exit ${EXIT_OPTIONS_CHANGED}). ${optionsChanged} cell(s) ran with other router options ` +
+        `than the base, so they measure another configuration and were not judged; every other cell passed.`,
+    );
+    return EXIT_OPTIONS_CHANGED;
+  }
+  console.log(`\nverdict: pass (exit 0).`);
+  return 0;
 }
 
 async function runCell(
@@ -1617,7 +1865,7 @@ async function measure(): Promise<{
   const rounds = values.verify ? 1 : config.rounds;
 
   console.log(
-    `router-guard: ${plan.length} cells x ${rounds} round(s) x ${runs.length} root(s), load ${(await loadAvg()).toFixed(2)}`,
+    `router-guard: ${plan.length} cells x ${rounds} round(s) x ${runs.length} root(s), Bun ${Bun.version} (${Bun.revision.slice(0, 9)}), load ${(await loadAvg()).toFixed(2)}`,
   );
   for (const run of runs) console.log(`  ${run.label}: ${run.dir}`);
   const roundLoads: number[] = [];
@@ -1640,6 +1888,12 @@ async function measure(): Promise<{
           continue;
         }
         problems.push(...result.problems.map((p) => `${where}: ${p}`));
+        if (result.bunRevision && result.bunRevision !== Bun.revision) {
+          problems.push(
+            `${where}: ran on Bun ${result.bunRevision.slice(0, 9)}, but the run started on ${Bun.revision.slice(0, 9)}: ` +
+              `Bun changed mid-run, so its figures mix two builds; re-run`,
+          );
+        }
         for (const [level, figures] of Object.entries(result.levels) as [
           Level,
           LevelFigures,
@@ -1703,8 +1957,7 @@ async function main(): Promise<void> {
     await Bun.write(values.json, `${JSON.stringify(measured, null, 2)}\n`);
   }
   if (measured.length > 1) {
-    printAB(measured);
-    process.exit(problems.length ? 1 : 0);
+    process.exit(reportAB(measured, problems));
   }
 
   const current = measured[0]!;
