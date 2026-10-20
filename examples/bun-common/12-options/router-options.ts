@@ -552,10 +552,14 @@ params.get("/s/*", (req, res) => res.json({ params: req.params }));
 /** The params `path` produced. */
 async function paramsOf(
   path: string,
-): Promise<Record<string, string> | number> {
+): Promise<Record<string, string | string[]> | number> {
   const response = await params.fetch(path);
   return response.status === 200
-    ? ((await response.json()) as { params: Record<string, string> }).params
+    ? (
+        (await response.json()) as {
+          params: Record<string, string | string[]>;
+        }
+      ).params
     : response.status;
 }
 
@@ -571,14 +575,23 @@ checkEqual("a regexp constraint that matches", await paramsOf("/n/42"), {
   id: "42",
 });
 checkEqual("…and one that does not", await paramsOf("/n/abc"), 404);
-checkEqual("*name: named and positional", await paramsOf("/w/a/b.css"), {
-  0: "a/b.css",
-  rest: "a/b.css",
+// A named wildcard is Express 5's: an array of the segments it matched, each
+// decoded, under its name only — no positional key. Bare `*` keeps `0`.
+checkEqual(
+  "*name: an array of segments, named only",
+  await paramsOf("/w/a/b.css"),
+  {
+    rest: ["a", "b.css"],
+  },
+);
+checkEqual("{*name}: the same", await paramsOf("/b/a/b.css"), {
+  rest: ["a", "b.css"],
 });
-checkEqual("{*name}", await paramsOf("/b/a/b.css"), {
-  0: "a/b.css",
-  rest: "a/b.css",
-});
+checkEqual(
+  "{*name} matching nothing: the key is absent",
+  await paramsOf("/b/"),
+  {},
+);
 checkEqual("bare *: positional only", await paramsOf("/s/a/b"), { 0: "a/b" });
 
 /* ------------------------------------------------------------------ */

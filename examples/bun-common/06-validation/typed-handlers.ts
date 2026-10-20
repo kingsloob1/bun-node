@@ -57,9 +57,12 @@ router.get("/users/:id/:tab?", (req, res) => {
 });
 
 router.get("/files/*path", (req, res) => {
-  // A named wildcard gives both the positional key and the name.
-  const path: string = req.params.path;
-  res.json({ path, positional: req.params[0] });
+  // A named wildcard is the array of segments it matched, under its name
+  // only: there is no positional key.
+  const path: string[] = req.params.path;
+  // @ts-expect-error — a named wildcard publishes no `params[0]`.
+  const _positional = req.params[0];
+  res.json({ path, joined: path.join("/") });
 });
 
 show("GET /users/7/settings", await getJson("/users/7/settings"));

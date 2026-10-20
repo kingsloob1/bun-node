@@ -252,7 +252,12 @@ params.get(
     req.params = { id: req.params.id === "me" ? "42" : req.params.id };
     next();
   },
-  (req, res) => res.send(`user ${req.params.id}`),
+  (req, res) => {
+    // Two callbacks leave `req.params` untyped: a `string` per key, a
+    // `string[]` for a wildcard. `:id` is a plain param.
+    const { id } = req.params;
+    res.send(`user ${typeof id === "string" ? id : id.join("/")}`);
+  },
 );
 show("GET /users/me", await call(params, "/users/me"));
 show("GET /users/7", await call(params, "/users/7"));

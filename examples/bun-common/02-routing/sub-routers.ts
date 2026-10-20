@@ -17,6 +17,7 @@
  *   sub-router's handlers see its parsed output.
  */
 import type {
+  ParamsDictionary,
   RouterErrorMiddlewareHandler,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
@@ -100,7 +101,9 @@ accounts.get("/invoices/:invoiceId", (req, res) => {
   res.json({ accountId, invoiceId });
 });
 
-const seenByMountMiddleware: Record<string, string>[] = [];
+// `ParamsDictionary` is an untyped `req.params`: a string per key, a
+// `string[]` for a wildcard.
+const seenByMountMiddleware: ParamsDictionary[] = [];
 const billing = new BunRouter();
 billing.use("/accounts/:accountId", (req, _res, next) => {
   seenByMountMiddleware.push({ ...req.params });
