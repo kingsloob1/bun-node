@@ -1005,7 +1005,7 @@ describe("fetch: the caller leaving is a disconnect, as served", () => {
     app.get("/pending", async (req, res) => {
       const seen = observe(req, res);
       await seen.aborted;
-      res.status(204).end();
+      void res.status(204).end();
     });
     app.get("/ping", (_req, res) => {
       res.send("pong");
@@ -1015,7 +1015,7 @@ describe("fetch: the caller leaving is a disconnect, as served", () => {
       const held = Promise.withResolvers<void>();
       holds.push(held.resolve);
       await held.promise;
-      res.status(204).end();
+      void res.status(204).end();
     });
   }
 

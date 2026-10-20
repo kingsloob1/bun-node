@@ -625,7 +625,8 @@ export class SocketFreeExchange {
   preflight(): Promise<never> | undefined {
     const caller = this.#caller;
     return caller !== UNREAD && caller?.aborted === true
-      ? Promise.reject(caller.reason)
+      ? // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the caller's own abort reason, unchanged, as a served fetch() rejects with it
+        Promise.reject(caller.reason)
       : undefined;
   }
 
@@ -659,6 +660,7 @@ export class SocketFreeExchange {
     }
     if (this.#callerGone) {
       pending.then(late, lateError);
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the caller's own abort reason, unchanged, as a served fetch() rejects with it
       return Promise.reject(this.#callerReason);
     }
     if (
@@ -686,6 +688,7 @@ export class SocketFreeExchange {
             return;
           }
           this.#settled();
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the pending step's own error, passed on unchanged
           reject(error);
         },
       );
