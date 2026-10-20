@@ -1,0 +1,5 @@
+# Only the bundle, the manifest and the README go into the .vsix.
+**
+!dist/extension.js
+!package.json
+!README.md

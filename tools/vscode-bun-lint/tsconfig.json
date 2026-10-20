@@ -1,0 +1,15 @@
+{
+  // The bun-node VS Code extension (docs/plans/bun-lint-fmt/ §5). Its own
+  // project, listed in `scripts/typecheck.ts`; run `bun install
+  // --frozen-lockfile` here first, for `@types/vscode`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The base's `typeRoots` are the root's `node_modules/@types`, which has no
+    // `vscode`; this package's own come first.
+    "typeRoots": ["./node_modules/@types", "../../node_modules/@types"],
+    // `bun` for the tests and the build script; `vscode` for the extension.
+    "types": ["bun", "vscode"]
+  },
+  "include": ["./**/*.ts", "eslint.legacy.config.mjs"],
+  "exclude": ["./node_modules", "./dist"]
+}

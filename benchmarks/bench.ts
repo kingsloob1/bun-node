@@ -613,16 +613,11 @@ const COLUMNS: { title: string; width: number }[] = [
 const COLUMN_GAP = "  ";
 
 function renderRow(cells: string[]): string {
-  return (
-    "  " +
-    cells
-      .map((cell, i) =>
-        i === 0
-          ? cell.padEnd(COLUMNS[i].width)
-          : cell.padStart(COLUMNS[i].width),
-      )
-      .join(COLUMN_GAP)
-  );
+  return `  ${cells
+    .map((cell, i) =>
+      i === 0 ? cell.padEnd(COLUMNS[i].width) : cell.padStart(COLUMNS[i].width),
+    )
+    .join(COLUMN_GAP)}`;
 }
 
 function printScenarioTable(scenario: ScenarioName, rows: BenchResult[]): void {
