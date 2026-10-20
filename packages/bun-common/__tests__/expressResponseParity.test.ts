@@ -2,9 +2,14 @@
  * Express 5 behaviours of `BunResponse` / `BunRequest` that bun-nest's
  * differential test against `@nestjs/platform-express` measured, pinned here
  * at the unit level: the view system (`BunViews`, `res.render`),
- * `res.redirect`, `res.clearCookie`, and the error a malformed JSON body
- * raises. Each expected value is what Express 5.2 produced for the same
- * input.
+ * `res.redirect`, `res.clearCookie`, the error a malformed JSON body raises,
+ * and the `Content-Disposition` of `res.attachment` / `res.download`. Each
+ * expected value is what Express produced for the same input: 5.2 where 5.2
+ * and 5.3 agree, and 5.3.0 for the redirect's HTML body and
+ * `Content-Disposition`, where they differ (the user's decision,
+ * 2026-10-20). The 5.3.0 values were taken from `express@5.3.0`'s
+ * `lib/response.js` and `content-disposition@2.0.1`'s `create()` run on the
+ * same names.
  */
 import type { RenderCallback, ViewEngine } from "../lib/views";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -279,7 +284,10 @@ describe("BunResponse.redirect (Express 5 res.redirect)", () => {
       headers: { accept: "text/html" },
     });
     expect(html.type).toBe("text/html; charset=utf-8");
-    expect(html.body).toBe("<p>Found. Redirecting to /a?b=1&amp;c=%3Cx%3E</p>");
+    expect(html.body).toBe(
+      "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /a?b=1&amp;c=%3Cx%3E</p></body>",
+    );
+    expect(html.length).toBe("110");
 
     const none = await redirected((res) => res.redirect("/x"), {
       headers: { accept: "application/json" },
@@ -308,6 +316,47 @@ describe("BunResponse.redirect (Express 5 res.redirect)", () => {
       method: "HEAD",
     });
     expect([head.status, head.length, head.body]).toEqual([302, "29", ""]);
+  });
+
+  it("titles the HTML document with the status message (Express 5.3.0)", async () => {
+    const moved = await redirected((res) => res.redirect(301, "/r"), {
+      headers: { accept: "text/html" },
+    });
+    expect([moved.status, moved.type, moved.length, moved.body]).toEqual([
+      301,
+      "text/html; charset=utf-8",
+      "116",
+      "<!DOCTYPE html><head><title>Moved Permanently</title></head><body><p>Moved Permanently. Redirecting to /r</p></body>",
+    ]);
+  });
+
+  it("sends the body platform-express 12.2.0 (Express 5.3.0) sent for the same redirect", async () => {
+    // Measured by bun-nest's differential run against @nestjs/platform-express
+    // 12.2.0 on 2026-10-20 (expressCompat.common.test.ts, GET /redir).
+    const html = await redirected((res) => res.redirect(302, "/a b/ü?q=1 2"), {
+      headers: { accept: "text/html" },
+    });
+    expect([html.location, html.length, html.body]).toEqual([
+      "/a%20b/%C3%BC?q=1%202",
+      "111",
+      "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /a%20b/%C3%BC?q=1%202</p></body>",
+    ]);
+  });
+
+  it("gives HEAD the HTML document's length and no body", async () => {
+    const head = await redirected((res) => res.redirect("/target"), {
+      method: "HEAD",
+      headers: { accept: "text/html" },
+    });
+    // "<!DOCTYPE html><head><title>Found</title></head><body><p>Found.
+    // Redirecting to /target</p></body>" is 97 bytes; Express 5.2's "<p>…</p>"
+    // was 36.
+    expect([head.status, head.type, head.length, head.body]).toEqual([
+      302,
+      "text/html; charset=utf-8",
+      "97",
+      "",
+    ]);
   });
 
   it("appends to an existing Vary", async () => {
@@ -350,5 +399,97 @@ describe("a malformed JSON body", () => {
       statusCode: 400,
       type: "entity.parse.failed",
     });
+  });
+});
+
+describe("Content-Disposition (Express 5.3.0, content-disposition 2.x)", () => {
+  let dir = "";
+  let file = "";
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "bun-common-disposition-"));
+    file = join(dir, "report.csv");
+    await writeFile(file, "a,b\n1,2\n");
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** `res.attachment(name)`'s `Content-Disposition` and `Content-Type`. */
+  async function attached(name?: string) {
+    const res = await makeResponse();
+    res.attachment(name);
+    return [
+      res.getHeader("Content-Disposition"),
+      res.getHeader("Content-Type"),
+    ];
+  }
+
+  /** `res.download(file, name)`'s `Content-Disposition`. */
+  async function downloaded(name?: string) {
+    const res = await makeResponse();
+    await res.download(file, name);
+    return res.getHeader("Content-Disposition");
+  }
+
+  it("leaves a token filename unquoted, and quotes one that is not a token", async () => {
+    expect(await attached("/var/data/report.csv")).toEqual([
+      "attachment; filename=report.csv",
+      "text/csv",
+    ]);
+    expect(await attached("x.tar.gz")).toEqual([
+      "attachment; filename=x.tar.gz",
+      "application/gzip",
+    ]);
+    // A space, a quote and a backslash are not token characters: quoted, with
+    // `"` and `\` escaped, as before.
+    expect((await attached("Q1 report.csv"))[0]).toBe(
+      'attachment; filename="Q1 report.csv"',
+    );
+    expect((await attached('say "hi".txt'))[0]).toBe(
+      'attachment; filename="say \\"hi\\".txt"',
+    );
+  });
+
+  it("gives a non-ASCII name an ASCII fallback and filename*", async () => {
+    // ISO-8859-1 is no longer kept in the fallback: content-disposition 1.x
+    // sent `filename="café.txt"` alone.
+    expect(await attached("café.txt")).toEqual([
+      "attachment; filename=\"caf?.txt\"; filename*=UTF-8''caf%C3%A9.txt",
+      "text/plain",
+    ]);
+    expect((await attached("l'été (1).txt"))[0]).toBe(
+      "attachment; filename=\"l'?t? (1).txt\"; filename*=UTF-8''l%27%C3%A9t%C3%A9%20%281%29.txt",
+    );
+    // A percent escape in an ASCII name also takes filename*; the fallback
+    // is a token, so it is bare.
+    expect((await attached("100%25.txt"))[0]).toBe(
+      "attachment; filename=100%25.txt; filename*=UTF-8''100%2525.txt",
+    );
+  });
+
+  it("is plain attachment without a name", async () => {
+    expect(await attached()).toEqual(["attachment", null]);
+  });
+
+  it("download() names the file's basename, or the given name's", async () => {
+    expect(await downloaded()).toBe("attachment; filename=report.csv");
+    expect(await downloaded("sales.csv")).toBe(
+      "attachment; filename=sales.csv",
+    );
+    expect(await downloaded("exports/2026/sales.csv")).toBe(
+      "attachment; filename=sales.csv",
+    );
+    expect(await downloaded("Q1 sales.csv")).toBe(
+      'attachment; filename="Q1 sales.csv"',
+    );
+    expect(await downloaded("résumé€.pdf")).toBe(
+      "attachment; filename=\"r?sum??.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9%E2%82%AC.pdf",
+    );
+  });
+
+  it("download() with an empty name falls back to the file's, as Express's `name || path`", async () => {
+    expect(await downloaded("")).toBe("attachment; filename=report.csv");
   });
 });

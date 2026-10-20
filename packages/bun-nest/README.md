@@ -964,6 +964,12 @@ listed here answers the same status, headers and body.
   (a rejection before `done()` is `done(error)`, `done` counts once, a
   response hook's error is logged), where platform-express 11 leaves the
   source open and those rejections and errors unhandled.
+- bun-common copies **Express 5.3.0**'s `res.redirect` body and
+  `Content-Disposition`: an HTML redirect is a small `<!DOCTYPE html>`
+  document, and a download's filename is bare when it is a token
+  (`filename=report.csv`). On Express 5.2.1, which Nest 11 and Nest 12.0–12.1.3
+  install, Express answers `<p>Found. Redirecting to …</p>` and always quotes
+  the filename; Nest 12.2.0's Express 5.3.0 answers as bun-common does.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.
