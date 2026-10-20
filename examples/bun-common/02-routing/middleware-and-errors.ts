@@ -12,6 +12,9 @@
  *   inline one needs `satisfies RouterErrorMiddlewareHandler` for its types.
  * - A throw, a rejected promise or `next(err)` switches to *error mode*: only
  *   error handlers run until one responds, or calls `next()` to clear it.
+ * - `next(err)` hands an object to the error handlers as given, an `Error` or
+ *   not, as Express does: `next({ statusCode: 422, message })` arrives as that
+ *   same object. A string or number is wrapped in an `Error`.
  * - `next("route")` skips the rest of the current route's callbacks;
  *   `next("router")` leaves a mounted sub-router, or abandons the pipeline
  *   when called from the router's own routes.
@@ -156,6 +159,54 @@ for (const path of [
 ]) {
   show(path, await call(failing, path));
 }
+
+/* ------------------------------------------------------------------ */
+step("next(value): an object arrives as given, a primitive is wrapped");
+
+// Express passes whatever `next()` was given to the error handlers, so an
+// error object such as `{ statusCode, message }` keeps its fields — no
+// `new Error(String(value))` in between. A string (other than "route" and
+// "router") or a number is still wrapped in an `Error`. `NextFunction` types
+// its argument `string | Error`, hence the cast.
+const sentObject = { statusCode: 422, message: "x" };
+let receivedError: unknown;
+const passing = new BunRouter();
+passing.get("/object", (_req, _res, next) => {
+  next(sentObject as unknown as Error);
+});
+passing.get("/text", (_req, _res, next) => next("text"));
+passing.use(((error, _req, res, _next) => {
+  receivedError = error;
+  const { statusCode, message } = error as {
+    statusCode?: number;
+    message?: string;
+  };
+  res.status(statusCode ?? 500).send(`handled: ${message}`);
+}) satisfies RouterErrorMiddlewareHandler);
+
+const objectAnswer = await call(passing, "/object");
+show('GET /object — next({ statusCode: 422, message: "x" })', objectAnswer);
+checkEqual(
+  "next(object) reaches the error handler as that same object",
+  {
+    answer: objectAnswer,
+    same: receivedError === sentObject,
+    isError: receivedError instanceof Error,
+  },
+  { answer: "422 handled: x", same: true, isError: false },
+);
+
+const textAnswer = await call(passing, "/text");
+show('GET /text — next("text")', textAnswer);
+checkEqual(
+  'next("text") is still wrapped in an Error',
+  {
+    answer: textAnswer,
+    isError: receivedError instanceof Error,
+    message: (receivedError as Error).message,
+  },
+  { answer: "500 handled: text", isError: true, message: "text" },
+);
 
 /* ------------------------------------------------------------------ */
 step("While an error is active, regular middleware is skipped");
