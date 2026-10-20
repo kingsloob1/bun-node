@@ -191,7 +191,7 @@ describe("Redis add scripts: the positional wire format", () => {
     // Nothing rewrites a hash in place, so an upgraded deployment's jobs still
     // have `name`, `maxAttempts`, `data` and `opts` as four separate fields.
     // They have to read back exactly as a `blob` record does.
-    const client = new Bun.RedisClient(URL!);
+    const client = new Bun.RedisClient(URL);
 
     try {
       const key = `${new RedisKeys({}).queue(q).jobPrefix}legacy-1`;

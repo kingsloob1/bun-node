@@ -399,7 +399,7 @@ describe("a claim's token", () => {
       return at;
     };
     for (let at = 1; at < uuids.length; at++) {
-      expect(shared(uuids[at - 1]!, uuids[at]!)).toBeLessThan(8);
+      expect(shared(uuids[at - 1], uuids[at])).toBeLessThan(8);
     }
   });
 

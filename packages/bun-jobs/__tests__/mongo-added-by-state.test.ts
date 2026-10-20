@@ -1,6 +1,5 @@
 import type { CommandStartedEvent, Document, MongoClient } from "mongodb";
 import type { JobQuery, JobRecord, JobState } from "../lib/drivers/driver";
-import type { MongoClientLike } from "../lib/drivers/mongo/mongo-driver";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { sortByCreated } from "../lib/drivers/added";
@@ -105,7 +104,7 @@ async function makeRecorder(name: string): Promise<Recorder> {
 
   const driver = new MongoDriver({
     url: URL,
-    client: shared as unknown as MongoClientLike,
+    client: shared,
     collectionPrefix: prefix,
   });
   drivers.push(driver);
@@ -268,7 +267,7 @@ describe.skipIf(!URL)("MongoDB driver: reads by creation time", () => {
       },
     });
     expect(reads().map((event) => event.commandName)).toEqual(["aggregate"]);
-    expect(reads()[0]!.command.pipeline).toEqual([
+    expect(reads()[0].command.pipeline).toEqual([
       { $match: { ns, createdAt: { $gte: T, $lt: T + 10 } } },
       {
         $group: {
@@ -280,7 +279,7 @@ describe.skipIf(!URL)("MongoDB driver: reads by creation time", () => {
 
     reset();
     await driver.countAddedJobs(ns, { from: T, to: T + 10 }, "orders");
-    expect(reads()[0]!.command.pipeline[0]).toEqual({
+    expect(reads()[0].command.pipeline[0]).toEqual({
       $match: { ns, createdAt: { $gte: T, $lt: T + 10 }, queue: "orders" },
     });
 
@@ -328,7 +327,7 @@ describe.skipIf(!URL)("MongoDB driver: reads by creation time", () => {
     const states = ["waiting", "completed", "dead"] as const;
     const all: JobRecord[] = [];
     for (let i = 0; i < 600; i++) {
-      all.push(created(states[i % 3]!, T + i));
+      all.push(created(states[i % 3], T + i));
     }
     await driver.addJobs({ ns, queue: "a" }, all.slice(0, 300));
     await driver.addJobs({ ns, queue: "b" }, all.slice(300));
@@ -345,7 +344,7 @@ describe.skipIf(!URL)("MongoDB driver: reads by creation time", () => {
       ),
     ).toBe(30);
 
-    const plan = await explain(reads()[0]!);
+    const plan = await explain(reads()[0]);
     expect(plan.indexes).toEqual([CLAIM_INDEX_NAME]);
     expect(plan.stages).toContain("PROJECTION_COVERED");
     expect(plan.docsExamined).toBe(0);

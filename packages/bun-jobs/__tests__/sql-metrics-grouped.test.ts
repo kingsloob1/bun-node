@@ -100,7 +100,7 @@ function recordingClient(real: SQL): { sql: SQL; statements: string[] } {
       const value = Reflect.get(target, property, receiver) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as SQL;
+  });
   return { sql, statements };
 }
 
@@ -277,8 +277,8 @@ function engineCases(
         [ns, "orders:idle", MINUTE_BUCKET_MS] as never,
       )) as Record<string, unknown>[];
       expect(stored).toHaveLength(1);
-      expect(Number(stored[0]!.completed)).toBe(0);
-      expect(Number(stored[0]!.samples)).toBe(1);
+      expect(Number(stored[0].completed)).toBe(0);
+      expect(Number(stored[0].samples)).toBe(1);
 
       const range = oneMinute(minute);
       const plain = await driver.getWorkerMetricsTotals(ns, range);
@@ -375,26 +375,26 @@ function engineCases(
       });
 
       const figures = [
-        ...Object.values(runner!.runs),
-        runner!.durations!.count,
-        runner!.durations!.sumMs,
-        runner!.durations!.minMs,
-        runner!.durations!.maxMs,
-        ...runner!.durations!.histogram,
-        ...Object.values(worker!.jobs),
-        ...Object.values(worker!.busyness!),
+        ...Object.values(runner.runs),
+        runner.durations!.count,
+        runner.durations!.sumMs,
+        runner.durations!.minMs,
+        runner.durations!.maxMs,
+        ...runner.durations!.histogram,
+        ...Object.values(worker.jobs),
+        ...Object.values(worker.busyness!),
       ];
       for (const figure of figures) {
         expect(typeof figure).toBe("number");
       }
-      expect(runner!.durations).toMatchObject({
+      expect(runner.durations).toMatchObject({
         count: 2,
         sumMs: 1_000,
         minMs: 250,
         maxMs: 750,
       });
-      expect(runner!.runs.succeeded).toBe(2);
-      expect(worker!.jobs.completed).toBe(3);
+      expect(runner.runs.succeeded).toBe(2);
+      expect(worker.jobs.completed).toBe(3);
     }, 60_000);
 
     it("splits a worker key holding colons back whole, and filters queues exactly", async () => {

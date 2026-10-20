@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunQueue, DriverError, FileDriver, MemoryDriver } from "../lib/index";
@@ -75,7 +76,6 @@ describe("debounce under contention", () => {
    */
   it("fails the add, and keeps one job, when the pending job's marker stays held", async () => {
     const { mkdir, readdir, rename } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const tmp = await makeTmpDir("bun-jobs-debounce-held");
     cleanups.push(tmp.cleanup);
 
@@ -98,7 +98,7 @@ describe("debounce under contention", () => {
     // The queue's only job, so its only marker; the name encodes the id.
     const markers = await readdir(index);
     expect(markers).toHaveLength(1);
-    const marker = markers[0]!;
+    const marker = markers[0];
     const held = join(dir, "held", `${Date.now() + 60_000}.delayed.${marker}`);
     await mkdir(join(dir, "held"), { recursive: true });
     await rename(join(index, marker), held);

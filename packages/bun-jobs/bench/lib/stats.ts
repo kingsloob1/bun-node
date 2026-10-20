@@ -27,7 +27,7 @@ function percentile(sorted: number[], fraction: number): number {
     sorted.length - 1,
     Math.max(0, Math.ceil(fraction * sorted.length) - 1),
   );
-  return sorted[index]!;
+  return sorted[index];
 }
 
 /** Summarises a latency sample. The input is copied, not sorted in place. */
@@ -43,7 +43,7 @@ export function summarise(samples: number[]): LatencySummary {
     p50: percentile(sorted, 0.5),
     p90: percentile(sorted, 0.9),
     p99: percentile(sorted, 0.99),
-    max: sorted[sorted.length - 1]!,
+    max: sorted[sorted.length - 1],
     mean: total / sorted.length,
   };
 }

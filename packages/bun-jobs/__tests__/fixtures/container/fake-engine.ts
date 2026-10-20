@@ -263,7 +263,7 @@ async function run(argv: string[]): Promise<void> {
   let name = `fake-${Math.random().toString(16).slice(2)}`;
   let index = 0;
   for (; index < argv.length; index++) {
-    const arg = argv[index]!;
+    const arg = argv[index];
     if (!arg.startsWith("-")) {
       break;
     }

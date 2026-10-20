@@ -96,10 +96,11 @@ describe("the container channel's frames", () => {
 
     // What the decoder asks for: no more than a few times what it was sent.
     const spied = ["alloc", "allocUnsafe", "allocUnsafeSlow"] as const;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
     const originals = spied.map((name) => Buffer[name]);
     let allocated = 0;
     for (const [i, name] of spied.entries()) {
-      const original = originals[i]!;
+      const original = originals[i];
       (Buffer as unknown as Record<string, unknown>)[name] = (
         size: number,
         ...rest: unknown[]
@@ -154,7 +155,7 @@ describe("the container channel's frames", () => {
     const json = JSON.stringify({ s: "x".repeat(100_000) });
     const frames = [...encodeFrames(PREFIX, 1, json)];
     const decoder = new FrameDecoder(PREFIX, 10_000);
-    expect(decoder.push(frames[0]!.trim())).toMatchObject({
+    expect(decoder.push(frames[0].trim())).toMatchObject({
       tooLarge: expect.any(Number),
     });
   });
@@ -165,8 +166,8 @@ describe("the container channel's frames", () => {
     ];
     const second = [...encodeFrames(PREFIX, 2, JSON.stringify({ b: 1 }))];
     const decoder = new FrameDecoder(PREFIX, 1024 * 1024);
-    expect(decoder.push(first[0]!.trim())).toBeUndefined();
-    expect(decoder.push(second[0]!.trim())).toEqual({
+    expect(decoder.push(first[0].trim())).toBeUndefined();
+    expect(decoder.push(second[0].trim())).toEqual({
       message: '{"b":1}',
       cutOff: true,
     });
@@ -194,22 +195,22 @@ describe("the container channel's frames", () => {
     expect(first).toHaveLength(2);
     expect(second).toHaveLength(2);
     const decoder = new FrameDecoder(PREFIX, 1024 * 1024);
-    expect(decoder.push(first[0]!)).toBeUndefined();
+    expect(decoder.push(first[0])).toBeUndefined();
     // Same count, the next index: only the id says it is not this message's.
-    expect(decoder.push(second[1]!)).toEqual({ broken: true });
-    expect(decoder.push(first[1]!)).toEqual({ broken: true });
+    expect(decoder.push(second[1])).toEqual({ broken: true });
+    expect(decoder.push(first[1])).toEqual({ broken: true });
   });
 
   it("drops a message whose frames arrive out of order (the index)", () => {
     const frames = lines(1, 3);
     expect(frames).toHaveLength(3);
     const decoder = new FrameDecoder(PREFIX, 1024 * 1024);
-    expect(decoder.push(frames[0]!)).toBeUndefined();
-    expect(decoder.push(frames[2]!)).toEqual({ broken: true });
+    expect(decoder.push(frames[0])).toBeUndefined();
+    expect(decoder.push(frames[2])).toEqual({ broken: true });
     // Dropped already: its later frames are not reported again.
-    expect(decoder.push(frames[1]!)).toBeUndefined();
+    expect(decoder.push(frames[1])).toBeUndefined();
     // The next whole message is read.
-    expect(decoder.push(lines(2, 1)[0]!)).toMatchObject({
+    expect(decoder.push(lines(2, 1)[0])).toMatchObject({
       message: expect.any(String),
     });
   });
@@ -218,31 +219,31 @@ describe("the container channel's frames", () => {
     const decoder = new FrameDecoder(PREFIX, 1024 * 1024);
     // Frames of a message whose first never arrived: one report.
     const stray = lines(1, 4);
-    expect(decoder.push(stray[1]!)).toEqual({ broken: true });
-    expect(decoder.push(stray[2]!)).toBeUndefined();
-    expect(decoder.push(stray[3]!)).toBeUndefined();
+    expect(decoder.push(stray[1])).toEqual({ broken: true });
+    expect(decoder.push(stray[2])).toBeUndefined();
+    expect(decoder.push(stray[3])).toBeUndefined();
     // The same id with another count is another message: reported.
-    expect(decoder.push(lines(1, 5)[2]!)).toEqual({ broken: true });
+    expect(decoder.push(lines(1, 5)[2])).toEqual({ broken: true });
     // A message cut off by the next: one report, and its later frames are
     // passed over while the next is assembled and read.
     const cut = lines(2, 3);
     const next = lines(3, 2);
-    expect(decoder.push(cut[0]!)).toBeUndefined();
-    expect(decoder.push(next[0]!)).toEqual({ broken: true });
-    expect(decoder.push(cut[1]!)).toBeUndefined();
+    expect(decoder.push(cut[0])).toBeUndefined();
+    expect(decoder.push(next[0])).toEqual({ broken: true });
+    expect(decoder.push(cut[1])).toBeUndefined();
     // Read, and the cut was reported already, by its first frame.
-    expect(decoder.push(next[1]!)).toEqual({ message: expect.any(String) });
-    expect(decoder.push(cut[2]!)).toBeUndefined();
+    expect(decoder.push(next[1])).toEqual({ message: expect.any(String) });
+    expect(decoder.push(cut[2])).toBeUndefined();
   });
 
   it("reports a message too large once, and passes over its later frames", () => {
     const decoder = new FrameDecoder(PREFIX, 4 * FRAME_PAYLOAD);
     const big = lines(1, 8);
-    expect(decoder.push(big[0]!)).toEqual({ tooLarge: 8 * FRAME_PAYLOAD });
+    expect(decoder.push(big[0])).toEqual({ tooLarge: 8 * FRAME_PAYLOAD });
     for (const frame of big.slice(1)) {
       expect(decoder.push(frame)).toBeUndefined();
     }
-    expect(decoder.push(lines(2, 1)[0]!)).toMatchObject({
+    expect(decoder.push(lines(2, 1)[0])).toMatchObject({
       message: expect.any(String),
     });
   });
@@ -266,7 +267,7 @@ describe("the container channel's frames", () => {
     expect(
       decoder.push(`${PREFIX} zz 0 2 ${"a".repeat(most)}`),
     ).toBeUndefined();
-    expect(decoder.push(lines(3, 1)[0]!)).toMatchObject({
+    expect(decoder.push(lines(3, 1)[0])).toMatchObject({
       message: expect.any(String),
     });
   });

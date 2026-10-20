@@ -77,7 +77,7 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
         ? false
         : Reflect.has(target, key);
     },
-  }) as JobsDriver;
+  });
 }
 
 /** The analytics reads a driver was asked for, by method. */
@@ -149,13 +149,13 @@ function counting(
       }
       if ((COUNTED as readonly unknown[]).includes(key)) {
         return (...args: unknown[]) => {
-          reads[key as string]! += 1;
+          reads[key as string] += 1;
           return value.apply(target, args);
         };
       }
       return value.bind(target);
     },
-  }) as JobsDriver;
+  });
   return { driver: proxy, reads, reset };
 }
 
@@ -225,7 +225,7 @@ function qs(params: Record<string, string | number | string[]>): string {
       search.append(key, String(one));
     }
   }
-  return `?${search}`;
+  return `?${search.toString()}`;
 }
 
 /** The start of the minute `n` minutes before the current one. */
@@ -598,7 +598,7 @@ for (const path of PATHS) {
       const { h, m, range } = await runners(
         path,
         ["b", "a", "c", "idle"],
-        (i) => [2, 2, 5, 0][i]!,
+        (i) => [2, 2, 5, 0][i],
       );
       const res = await h.call("GET", `/analytics/runners${qs(range)}`);
       expect(res.status).toBe(200);
@@ -651,7 +651,7 @@ for (const path of PATHS) {
       const { h, range } = await runners(
         path,
         ["a", "b", "c", "idle"],
-        (i) => [1, 2, 3, 0][i]!,
+        (i) => [1, 2, 3, 0][i],
       );
       const res = await h.call(
         "GET",
@@ -747,8 +747,8 @@ for (const path of PATHS) {
           expect(res.body.totalRows).toBe(n);
           reads.push({ ...counted.reads });
         }
-        const { getLock: few, ...fewMetrics } = reads[0]!;
-        const { getLock: many, ...manyMetrics } = reads[1]!;
+        const { getLock: few, ...fewMetrics } = reads[0];
+        const { getLock: many, ...manyMetrics } = reads[1];
         expect(manyMetrics).toEqual(fewMetrics);
         expect(few).toBe(5);
         expect(many).toBe(MAX_ANALYTICS_ROWS);
@@ -996,7 +996,7 @@ for (const path of PATHS) {
           ["mail", "mail.a"],
           ["orders", "orders.x"],
         ],
-        (i) => [2, 2, 9][i]!,
+        (i) => [2, 2, 9][i],
       );
       const res = await h.call("GET", `/analytics/workers${qs(range)}`);
       expect(res.status).toBe(200);
@@ -1240,7 +1240,7 @@ for (const path of PATHS) {
           expect(res.body.totalRows).toBe(n);
           reads.push({ ...counted.reads });
         }
-        expect(reads[1]).toEqual(reads[0]!);
+        expect(reads[1]).toEqual(reads[0]);
         expect(reads[0]).toEqual(
           onlyReads({ getWorkerMetricsTotals: 1, getNamespaceMetrics: 1 }),
         );
@@ -1419,8 +1419,8 @@ describe("/overview", () => {
       expect(res.body.analytics.runners.totalRows).toBe(n);
       reads.push({ ...counted.reads });
     }
-    const { getLock: few, ...fewMetrics } = reads[0]!;
-    const { getLock: many, ...manyMetrics } = reads[1]!;
+    const { getLock: few, ...fewMetrics } = reads[0];
+    const { getLock: many, ...manyMetrics } = reads[1];
     expect(manyMetrics).toEqual(fewMetrics);
     const fewWithoutLocks: ReadCounts = { ...fewMetrics, getLock: 0 };
     expect(fewWithoutLocks).toEqual(
@@ -1580,7 +1580,7 @@ describe("meta, pruning and authorization", () => {
       const res = await h.call("GET", path);
       expect({ path, status: res.status }).toEqual({ path, status: 200 });
       expect(h.calls).toHaveLength(1);
-      const { route: _route, ...call } = h.calls[0]!;
+      const { route: _route, ...call } = h.calls[0];
       expect(call).toEqual({
         action: "metrics.read",
         mutation: false,
@@ -1671,7 +1671,7 @@ describe("the document", () => {
       "/analytics/workers",
       "/queues/{queue}/analytics/workers/{key}",
     ]) {
-      const operation = doc.paths[path]!.get;
+      const operation = doc.paths[path].get;
       expect({
         path,
         says: operation.description.includes("`to` is exclusive"),

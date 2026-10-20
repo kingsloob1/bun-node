@@ -688,7 +688,9 @@ export class Session implements HubSubscriber {
         return;
       }
       if (source === "follow") {
-        this.#holdWorkers(channel, queue);
+        // Not awaited, so the subscription is answered at once; the hold logs
+        // its own failure.
+        void this.#holdWorkers(channel, queue);
         void this.#queueAllowed(channel, queue).then((allowed) => {
           if (!allowed) {
             this.#dropWorkers(channel, queue);
@@ -1361,7 +1363,7 @@ export class Session implements HubSubscriber {
   /** Sends what the outbox can, in order, stopping at the first event still waiting. */
   #flushOutbox(): void {
     while (this.#outbox.length > 0 && !this.#ended) {
-      const head = this.#outbox[0]!;
+      const head = this.#outbox[0];
       // Re-matched: the client may have left a channel while it waited.
       const keys = this.#match(head.stamped, head.keys);
       if (keys.length > 0 && this.#awaitsTarget(head.stamped, keys)) {

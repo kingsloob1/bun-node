@@ -205,7 +205,7 @@ async function completed(
             return `${id}: ${job?.state ?? "missing"} after ${job?.attemptsMade ?? 0} attempt(s), processedBy ${job?.processedBy?.key ?? "none"}`;
           }),
         );
-        return `jobs ${names} completed; ${states.join("; ")}`;
+        return `jobs ${names.join(",")} completed; ${states.join("; ")}`;
       },
     },
   );

@@ -76,7 +76,7 @@ describe("MetricsBuffer.count fast path (memory unit)", () => {
     await buffer.flush();
 
     expect(batches).toHaveLength(1);
-    expect(sorted(batches[0]!)).toEqual(
+    expect(sorted(batches[0])).toEqual(
       sorted([
         row("q", SECOND_BUCKET_MS, T, 2, 2),
         row("q", MINUTE_BUCKET_MS, minute, 2, 2),
@@ -119,7 +119,7 @@ describe("MetricsBuffer.count fast path (memory unit)", () => {
     buffer.count("n", "q", T + 1, { completed: 1 });
     await buffer.flush();
 
-    expect(sorted(batches[0]!)).toEqual(
+    expect(sorted(batches[0])).toEqual(
       sorted([
         row("q", SECOND_BUCKET_MS, T, 1, 0),
         row("q", MINUTE_BUCKET_MS, minute, 1, 0),
@@ -140,7 +140,7 @@ describe("MetricsBuffer.count fast path (memory unit)", () => {
     await buffer.flush();
 
     expect(batches).toHaveLength(1);
-    expect(sorted(batches[0]!)).toEqual(
+    expect(sorted(batches[0])).toEqual(
       sorted([
         row("q", SECOND_BUCKET_MS, T, 2, 0),
         row("q", MINUTE_BUCKET_MS, minute, 2, 0),
@@ -158,7 +158,7 @@ describe("MetricsBuffer.count fast path (memory unit)", () => {
     buffer.count("n", NAMESPACE_ENTITY, T + 5, { failed: 1 });
     await buffer.flush();
 
-    expect(sorted(batches[0]!)).toEqual(
+    expect(sorted(batches[0])).toEqual(
       sorted([
         row(NAMESPACE_ENTITY, SECOND_BUCKET_MS, T, 1, 1),
         row(NAMESPACE_ENTITY, SECOND_BUCKET_MS, T + SECOND_BUCKET_MS, 1, 0),

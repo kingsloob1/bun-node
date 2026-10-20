@@ -189,7 +189,7 @@ describe("BunRunner: single mode", () => {
     expect(info.runningOn?.pid).toBe(process.pid);
     expect(info.activeRuns).toHaveLength(1);
     // The run in flight, not the runner's own id.
-    expect(info.runningOn?.runId).toBe(info.activeRuns[0]!.runId);
+    expect(info.runningOn?.runId).toBe(info.activeRuns[0].runId);
   });
 });
 

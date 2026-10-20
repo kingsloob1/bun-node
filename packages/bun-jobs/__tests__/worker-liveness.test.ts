@@ -396,10 +396,10 @@ describe("the worker record's sweeps", () => {
     await driver.registerWorker({ ns, queue: "work" }, older);
 
     const [read] = await driver.listWorkers({ ns, queue: "work" }, now);
-    expect(read!.sweeps).toBeUndefined();
-    expect("sweeps" in read!).toBe(false);
+    expect(read.sweeps).toBeUndefined();
+    expect("sweeps" in read).toBe(false);
 
-    const dto = toWorkerDto(read!, { exposeHosts: true }, now);
+    const dto = toWorkerDto(read, { exposeHosts: true }, now);
     expect("sweeps" in dto).toBe(false);
   });
 });

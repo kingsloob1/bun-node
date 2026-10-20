@@ -315,17 +315,17 @@ describe("dead-letter queues", () => {
     });
 
     const [letter] = await failures.list("waiting");
-    expect(letter!.name).toBe("charge");
-    expect(letter!.id).toBe(`work:${job.id}:${job.createdAt}`);
-    expect(letter!.data).toMatchObject({
+    expect(letter.name).toBe("charge");
+    expect(letter.id).toBe(`work:${job.id}:${job.createdAt}`);
+    expect(letter.data).toMatchObject({
       queue: "work",
       id: job.id,
       name: "charge",
       data: { failWith: "card declined" },
       attemptsMade: 2,
     });
-    expect(letter!.data.failedReason.message).toBe("card declined");
-    expect(lettered).toEqual([`${job.id} -> ${letter!.id}`]);
+    expect(letter.data.failedReason.message).toBe("card declined");
+    expect(lettered).toEqual([`${job.id} -> ${letter.id}`]);
     // The dead job is still where it died; retention is its own decision.
     expect((await queue.getJob(job.id))?.state).toBe("dead");
   });

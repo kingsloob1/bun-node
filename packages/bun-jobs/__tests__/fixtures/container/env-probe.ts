@@ -26,7 +26,7 @@ const executor = new ContainerExecutor(
     namespace: "ns",
     queue: "q",
   },
-  process.argv[2]!,
+  process.argv[2],
 );
 const handle = executor.start({
   context: {

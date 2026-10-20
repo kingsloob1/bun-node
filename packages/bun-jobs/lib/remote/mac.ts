@@ -34,7 +34,7 @@ const HEX = "0123456789abcdef";
 export function toHex(bytes: Uint8Array): string {
   let out = "";
   for (const byte of bytes) {
-    out += HEX[byte >> 4]! + HEX[byte & 15]!;
+    out += HEX[byte >> 4] + HEX[byte & 15];
   }
   return out;
 }
@@ -61,7 +61,7 @@ export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   }
   let difference = 0;
   for (let index = 0; index < a.length; index++) {
-    difference |= a[index]! ^ b[index]!;
+    difference |= a[index] ^ b[index];
   }
   return difference === 0;
 }
@@ -79,11 +79,7 @@ const keyCache = new Map<string, Promise<CryptoKey>>();
 
 /** The imported HMAC key for some bytes, from the cache when it is there. */
 async function importKey(key: Uint8Array): Promise<CryptoKey> {
-  const id = toHex(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", key as Uint8Array<ArrayBuffer>),
-    ),
-  );
+  const id = toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", key)));
   let found = keyCache.get(id);
   if (found === undefined) {
     found = crypto.subtle.importKey(
@@ -106,11 +102,7 @@ async function importKey(key: Uint8Array): Promise<CryptoKey> {
 /** HMAC-SHA256 through WebCrypto: the browser-safe default. */
 export const subtleHmacSha256: HmacSha256 = async (key, message) =>
   new Uint8Array(
-    await crypto.subtle.sign(
-      "HMAC",
-      await importKey(key),
-      message as Uint8Array<ArrayBuffer>,
-    ),
+    await crypto.subtle.sign("HMAC", await importKey(key), message),
   );
 
 /** The cache's ids, oldest first: for tests, which check what it holds. */

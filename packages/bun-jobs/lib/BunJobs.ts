@@ -43,7 +43,6 @@ import {
 } from "./drivers/index";
 import { JobsNotifier } from "./notifier";
 import { BackoffStrategies } from "./queue/backoff";
-import { addDefinedJob, splitDefinitionDefaults } from "./queue/BunQueue";
 import { MAX_TIMER_MS } from "./queue/BunQueueWorker";
 import { JobDefinitions } from "./queue/definitions";
 import {
@@ -445,9 +444,7 @@ export class BunJobs<
     this.#ownsDriver = owned;
     this.#loggerOption = options.logger;
     this.#childDriver =
-      options.driver && "type" in options.driver
-        ? (options.driver as DriverConfig)
-        : undefined;
+      options.driver && "type" in options.driver ? options.driver : undefined;
     this.#defaultJobOptions = options.defaultJobOptions;
     this.#registryQueue = options.registryQueue ?? "jobs";
     this.#publishEvents = options.publishEvents ?? false;
@@ -785,7 +782,7 @@ export class BunJobs<
                 ? {}
                 : { overrides: entry.overrides }),
             }
-          : { queue: assertSegment(entry.queues[0]!, "queue") }),
+          : { queue: assertSegment(entry.queues[0], "queue") }),
         ...(this.#loggerOption === undefined
           ? {}
           : { logger: this.#loggerOption }),
@@ -878,7 +875,7 @@ export class BunJobs<
       }
     }
 
-    return { metrics: merged as MetricsOptions };
+    return { metrics: merged };
   }
 
   /**
@@ -1368,38 +1365,6 @@ export class BunJobs<
   async drain(options?: { delayed?: boolean }): Promise<number> {
     return await this.queue<unknown, unknown>(this.#registryQueue).drain(
       options,
-    );
-  }
-
-  /** Adds a job under a defined name, with that definition's defaults. */
-  async #addDefined<TData>(
-    name: string,
-    data: TData | undefined,
-    options?: JobOptions,
-  ): Promise<Job<TData>> {
-    const definition = this.#definitions.get(name);
-
-    if (!definition) {
-      throw new ConfigError(
-        `No job is defined for "${name}"; call define() first`,
-        { name, defined: this.#definitions.names() },
-      );
-    }
-
-    // The definition's options underneath, the call's on top: a caller asking
-    // for a delay on one job should not lose the retry policy the definition
-    // gave every job of that name.
-    // Its editable options go as their own layer, under the queue's stored
-    // job defaults, so they are not recorded as explicit (see `addDefinedJob`).
-    const { concurrency: _concurrency, ...defaults } = definition.options;
-    const { definition: layer, rest } = splitDefinitionDefaults(defaults);
-
-    return await addDefinedJob(
-      this.queue<TData>(this.#registryQueue),
-      name,
-      data as TData,
-      { ...rest, ...options },
-      layer,
     );
   }
 

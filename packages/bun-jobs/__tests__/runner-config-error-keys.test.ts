@@ -105,7 +105,7 @@ describe("a runner config refusal names the refused settings", () => {
 
     // What it stored, and another process's read of it.
     const stored = JSON.parse(
-      (await driver.getState(namespace, KEY))[RUNNER_CONFIG_STATE.error]!,
+      (await driver.getState(namespace, KEY))[RUNNER_CONFIG_STATE.error],
     ) as { keys?: unknown };
     expect(stored.keys).toEqual(["executionMode"]);
     const observer = new BunRunnerManager({

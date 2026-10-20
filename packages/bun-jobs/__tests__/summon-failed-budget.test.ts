@@ -190,7 +190,7 @@ describe("onSummonFailed", () => {
       },
     ]);
     await hooksRan();
-    expect(hook.failures[0]!.at).toBeGreaterThanOrEqual(before);
+    expect(hook.failures[0].at).toBeGreaterThanOrEqual(before);
     // The same detail the event and the marker carry; the message never.
     expect(events.at(-1)!.detail).toBe("E_REFUSED");
     expect((await summon.status()).last?.detail).toBe("E_REFUSED");
@@ -229,9 +229,7 @@ describe("onSummonFailed", () => {
     await Bun.sleep(60);
     await summon.check();
     await hooksRan();
-    expect(hook.failures).toMatchObject([
-      { outcome: "lost", id: calls[0]!.id },
-    ]);
+    expect(hook.failures).toMatchObject([{ outcome: "lost", id: calls[0].id }]);
     // A lost event carries no reason, so neither does the hook's argument.
     await hooksRan();
     expect(hook.failures[0]).not.toHaveProperty("reason");
@@ -301,7 +299,7 @@ describe("onSummonFailed", () => {
     await hooksRan();
     expect(hook.failures[2]).toMatchObject({
       outcome: "circuit-open",
-      id: calls[1]!.id,
+      id: calls[1].id,
       detail: "Error",
       until: status.circuitOpenUntil,
     });
@@ -332,10 +330,10 @@ describe("onSummonFailed", () => {
     expect(await summon.check()).toMatchObject({ reason: "circuit-open" });
     await hooksRan();
     expect(hook.failures).toMatchObject([
-      { outcome: "lost", id: calls[0]!.id },
+      { outcome: "lost", id: calls[0].id },
       {
         outcome: "circuit-open",
-        id: calls[0]!.id,
+        id: calls[0].id,
         until: (await summon.status()).circuitOpenUntil,
       },
     ]);
@@ -491,9 +489,11 @@ describe("onSummonFailed", () => {
     await Bun.sleep(20);
     const warns = hookWarns(events);
     expect(warns).toHaveLength(3);
-    expect(
-      warns.map((warn) => (warn.error as Error | undefined)?.message).sort(),
-    ).toEqual(["hook broke", "hook rejected", "hook threw"]);
+    expect(warns.map((warn) => warn.error?.message).sort()).toEqual([
+      "hook broke",
+      "hook rejected",
+      "hook threw",
+    ]);
     expect(warns.every((warn) => warn.fields?.outcome === "unavailable")).toBe(
       true,
     );
@@ -1090,7 +1090,7 @@ describe("a record whose writes all lose (S3)", () => {
       },
       wrote: (value) => {
         if (claimedId === undefined && holdsPending(value)) {
-          claimedId = (value as { pending: { id: string }[] }).pending[0]!.id;
+          claimedId = (value as { pending: { id: string }[] }).pending[0].id;
           // Every one of the record's writes loses.
           toLose = 3;
         }

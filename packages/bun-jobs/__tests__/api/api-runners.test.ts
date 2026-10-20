@@ -695,7 +695,7 @@ describe("control", () => {
     expect(started.status).toBe(202);
     await runsRecorded(h.jobs, "nightly", 1);
     const [run] = await h.nightly.history(1);
-    expect(run!.result).toMatchObject({ value: 42 });
+    expect(run.result).toMatchObject({ value: 42 });
   });
 
   it("pauses and resumes local and remote runners everywhere", async () => {
@@ -978,11 +978,11 @@ describe("pruning and docs", () => {
     ] as const) {
       // Backticked, because bare `control` appears throughout unrelated
       // prose: the option's own spelling is what has to be there.
-      expect(paths[path]![method]!.description).toContain("`control: true`");
+      expect(paths[path][method].description).toContain("`control: true`");
       // And what the default now does on its own, which is the part an
       // operator reading "30s" would otherwise take as the only answer.
-      expect(paths[path]![method]!.description).toContain('`control: "auto"`');
-      expect(paths[path]![method]!.description).toContain("30s");
+      expect(paths[path][method].description).toContain('`control: "auto"`');
+      expect(paths[path][method].description).toContain("30s");
     }
   });
 });

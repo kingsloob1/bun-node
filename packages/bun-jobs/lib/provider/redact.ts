@@ -92,7 +92,7 @@ function basicRewrite(match: string, scheme: string, run: string): string {
  * `signal=` and prose such as "the sig=verified flag" are left alone).
  */
 const SIGNATURES =
-  /((?<![\w.\-])x-(?:amz|goog)-signature=|[?&]sig=)[^&\s"'#;]+/gi;
+  /((?<![\w.-])x-(?:amz|goog)-signature=|[?&]sig=)[^&\s"'#;]+/gi;
 
 /** The `X-Amz-Signature` header, `x-amz-signature: <value>`, value replaced. */
 const SIGNATURE_HEADER = /(\bx-amz-signature:[ \t]*)[^\s,;"']+/gi;

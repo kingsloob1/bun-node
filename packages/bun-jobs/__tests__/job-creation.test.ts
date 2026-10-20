@@ -329,7 +329,7 @@ for (const backend of backends) {
           },
         ]);
 
-        const series = await seriesOf(added[1]!.repeatKey);
+        const series = await seriesOf(added[1].repeatKey);
         expect(series.every).toBe(3 * 86_400_000);
         const day = calendarDay(series.startAt);
         expect(day).toEqual([2026, 12, 2]);

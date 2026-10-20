@@ -415,7 +415,7 @@ function reporting(
   return {
     worker,
     /** The record, once a report newer than heartbeat `after` has landed. */
-    async record(after = 0): Promise<WorkerInfo> {
+    record: async (after = 0): Promise<WorkerInfo> => {
       let found: WorkerInfo | undefined;
       await waitFor(
         async () => {

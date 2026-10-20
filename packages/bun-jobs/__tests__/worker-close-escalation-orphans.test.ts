@@ -182,7 +182,9 @@ async function play(
 afterAll(() => {
   if (killed.length > 0) {
     // eslint-disable-next-line no-console -- an orphan killed is worth seeing in the run's output.
-    console.warn(`worker-close-escalation-orphans killed orphans: ${killed}`);
+    console.warn(
+      `worker-close-escalation-orphans killed orphans: ${killed.join(",")}`,
+    );
   }
 });
 

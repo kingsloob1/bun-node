@@ -873,8 +873,8 @@ describe("SummonController and a provider's ready", () => {
     await add();
     await add();
     expect(await summon.check()).toMatchObject({ outcome: "started" });
-    expect(requests[0]!.count).toBe(1);
-    expect(requests[0]!.argv).toContain("--bun-jobs-summon-grace-ms=9000");
+    expect(requests[0].count).toBe(1);
+    expect(requests[0].argv).toContain("--bun-jobs-summon-grace-ms=9000");
   });
 
   it("throws a synchronous config error at construction, before any controller", async () => {
@@ -894,9 +894,7 @@ describe("SummonController and a provider's ready", () => {
         summon: async () => ({ status: "started", handles: [] }),
       }),
     });
-    expect(() =>
-      controller({ summoner: sync({} as { region: string }) }),
-    ).toThrow(ConfigError);
+    expect(() => controller({ summoner: sync({}) })).toThrow(ConfigError);
     // Valid, it is ready at construction: the summoner shows at once.
     const summon = controller({ summoner: sync({ region: "eu" }) });
     expect((await summon.status()).summoner?.provider.kind).toBe("sync");

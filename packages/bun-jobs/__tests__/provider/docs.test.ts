@@ -132,8 +132,8 @@ describe("the docs checks themselves (negative controls)", () => {
     const [excerpt] = allBlocks().filter(
       (block) => block.excerptOf !== undefined,
     );
-    expect(checkExcerpts([excerpt!])).toEqual([]);
-    const changed = { ...excerpt!, code: excerpt!.code.replace(/\S/, "#") };
+    expect(checkExcerpts([excerpt])).toEqual([]);
+    const changed = { ...excerpt, code: excerpt.code.replace(/\S/, "#") };
     expect(checkExcerpts([changed])).toHaveLength(1);
   });
 

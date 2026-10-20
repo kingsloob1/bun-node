@@ -395,8 +395,8 @@ describe("POST /queues/{queue}/summon", () => {
       }),
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toBe("manual");
-    expect(calls[0]!.id).toBe(response.body.id);
+    expect(calls[0].reason).toBe("manual");
+    expect(calls[0].id).toBe(response.body.id);
     expect(h.calls.at(-1)).toMatchObject({
       action: "queues.summon",
       mutation: true,
@@ -592,7 +592,7 @@ describe("finding the controller", () => {
       }
     }
     for (const id of ["getQueueSummon", "summonQueue", "resetQueueSummon"]) {
-      const responses = operations[id]!;
+      const responses = operations[id];
       expect({ id, codes: responses["409"] }).toMatchObject({
         id,
         codes: {
@@ -605,7 +605,7 @@ describe("finding the controller", () => {
       });
     }
     expect(
-      (operations.resetQueueSummon!["409"] as { "x-bun-jobs-codes": string[] })[
+      (operations.resetQueueSummon["409"] as { "x-bun-jobs-codes": string[] })[
         "x-bun-jobs-codes"
       ],
     ).toEqual(["SUMMON_MARKER_CONTENDED", "SUMMON_NOT_CONFIGURED"]);

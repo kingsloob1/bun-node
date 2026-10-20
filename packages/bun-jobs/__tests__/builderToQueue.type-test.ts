@@ -12,6 +12,9 @@ import { BunJobs, MemoryDriver } from "../lib/index";
  * Checked by the tests typecheck, not `bun test`. Each `@ts-expect-error` is a
  * negative control (`scripts/prove-type-controls.ts` proves each is live), and
  * each guarded call is kept to one line so the directive reaches it.
+ *
+ * The calls are type checks and are never run, so a call whose promise is
+ * not needed is marked `void` rather than awaited.
  */
 
 /** Resolves to `true` only when `A` and `B` are the same type. */
@@ -111,7 +114,7 @@ export async function builderToQueueChecks(): Promise<void> {
   type _ForeignDraft = Expect<ForeignDraft>;
 
   images.run("anything").in("5 minutes");
-  images.now("no-payload");
+  void images.now("no-payload");
 
   // A queue given its types checks them, as its add() does.
   const typedImages = jobs.queue<Resize>("typed-images");
@@ -121,7 +124,7 @@ export async function builderToQueueChecks(): Promise<void> {
   typedImages.schedule("resize", { id: 1 });
 
   // @ts-expect-error now() needs the payload Resize requires
-  typedImages.now("resize");
+  void typedImages.now("resize");
 
   /* --- jobs.queue("jobs"): the registry queue, by name ---------------- */
 
@@ -155,10 +158,10 @@ export async function builderToQueueChecks(): Promise<void> {
   registry.run("nope");
 
   // @ts-expect-error month is a string
-  registry.now("send-report", { month: 8 });
+  void registry.now("send-report", { month: 8 });
 
   // @ts-expect-error the payload is required
-  registry.now("send-report");
+  void registry.now("send-report");
 
   // @ts-expect-error a name the map does not declare
   registry.create("nope");

@@ -310,6 +310,7 @@ function attempt(
       return state.facet;
     }
     if (state.fatal !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
       throw state.fatal;
     }
     try {
@@ -369,6 +370,7 @@ function settle(state: ProviderState): Promise<SummonFacet | undefined> {
     return Promise.resolve(state.facet);
   }
   if (state.fatal !== undefined) {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the reason passes through exactly as it was given
     return Promise.reject(state.fatal);
   }
   if (state.inFlight !== undefined) {
@@ -381,6 +383,7 @@ function settle(state: ProviderState): Promise<SummonFacet | undefined> {
   try {
     result = schema["~standard"].validate(state.input);
   } catch (error) {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the reason passes through exactly as it was given
     return attempt(state, Promise.reject(error));
   }
   return attempt(
@@ -510,7 +513,7 @@ export function configure<TConfig, TInput>(
           !secrets.some(
             (secret, index) =>
               value === secret ||
-              forms[index]!.some((form) => String(value).includes(form)),
+              forms[index].some((form) => String(value).includes(form)),
           ),
       ),
     );

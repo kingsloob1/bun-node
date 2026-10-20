@@ -127,7 +127,7 @@ describe("fakePlatform", () => {
   it("stops and scales units, and counts the live ones", async () => {
     const { platform, seen } = await fake();
     await run(platform);
-    const state = seen[0]!;
+    const state = seen[0];
     expect(state.url).toBe(platform.url);
     expect(state.count).toBe(1);
     expect(state.stop("unit-1")).toBe(true);

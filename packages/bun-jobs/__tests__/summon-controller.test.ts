@@ -201,7 +201,7 @@ for (const backend of BACKENDS) {
         expect(calls).toHaveLength(1);
         expect(events.map((event) => event.outcome)).toEqual(["started"]);
 
-        const request = calls[0]!;
+        const request = calls[0];
         expect(request.id).toMatch(/^sm_[a-z2-7]{26}$/);
         expect(request.count).toBe(1);
         expect(request.argv).toContain(`${SUMMON_ARGS.id}=${request.id}`);
@@ -236,7 +236,7 @@ for (const backend of BACKENDS) {
         const summoned = worker(driver, namespace, {
           namespace,
           driver,
-          summon: { id: calls[0]!.id, kind: "rec" },
+          summon: { id: calls[0].id, kind: "rec" },
         });
         void summoned.run();
         await waitFor(
@@ -248,7 +248,7 @@ for (const backend of BACKENDS) {
         );
         expect((await summon.status()).pending).toHaveLength(0);
         expect(events.map((event) => event.outcome)).toContain("registered");
-        expect(summoned.summon?.id).toBe(calls[0]!.id);
+        expect(summoned.summon?.id).toBe(calls[0].id);
         expect(calls).toHaveLength(1);
       });
 
@@ -266,7 +266,7 @@ for (const backend of BACKENDS) {
           { name: "c", data: {} },
         ]);
         expect(await summon.check()).toMatchObject({ action: "summoned" });
-        expect(calls[0]!.count).toBe(3);
+        expect(calls[0].count).toBe(3);
 
         let release!: () => void;
         const hold = new Promise<void>((resolve) => {
@@ -277,7 +277,7 @@ for (const backend of BACKENDS) {
           const one = worker(
             driver,
             namespace,
-            { namespace, driver, concurrency: 1, summon: { id: calls[0]!.id } },
+            { namespace, driver, concurrency: 1, summon: { id: calls[0].id } },
             async () => await hold,
           );
           started.push(one);
@@ -364,8 +364,8 @@ for (const backend of BACKENDS) {
         await Bun.sleep(150);
         expect(calls).toHaveLength(0);
         await waitFor(() => calls.length === 1, { timeout: 5_000 });
-        expect(calls[0]!.reason).toBe("poll");
-        expect(calls[0]!.demand.dueNow).toBeGreaterThanOrEqual(1);
+        expect(calls[0].reason).toBe("poll");
+        expect(calls[0].demand.dueNow).toBeGreaterThanOrEqual(1);
       });
 
       it("summons for a retry coming due", async () => {
@@ -397,7 +397,7 @@ for (const backend of BACKENDS) {
             timeout: 5_000,
           },
         );
-        expect(calls[0]!.demand.dueNow).toBe(1);
+        expect(calls[0].demand.dueNow).toBe(1);
       });
 
       it("summons for an orphaned active job: work in hand, no worker alive", async () => {
@@ -631,13 +631,13 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner, scaleDown: { after: 300 } });
         const job = await queue.add("a", {});
         expect(await summon.check()).toMatchObject({ action: "summoned" });
-        expect(calls[0]!.argv).toContain(`${SUMMON_ARGS.mode}=until-stopped`);
-        expect(calls[0]!.target).toBe(1);
+        expect(calls[0].argv).toContain(`${SUMMON_ARGS.mode}=until-stopped`);
+        expect(calls[0].target).toBe(1);
 
         const summoned = worker(driver, namespace, {
           namespace,
           driver,
-          summon: { id: calls[0]!.id },
+          summon: { id: calls[0].id },
         });
         void summoned.run();
         await waitFor(
@@ -915,8 +915,8 @@ for (const backend of BACKENDS) {
         // restarted, so an id hashed from the version alone would repeat.
         expect(after!.version).toBe(before!.version);
         expect(calls).toHaveLength(2);
-        expect(calls[1]!.id).not.toBe(calls[0]!.id);
-        expect(calls[1]!.dedupeKey).not.toBe(calls[0]!.dedupeKey);
+        expect(calls[1].id).not.toBe(calls[0].id);
+        expect(calls[1].dedupeKey).not.toBe(calls[0].dedupeKey);
       });
 
       it("two controllers on one queue summon once", async () => {

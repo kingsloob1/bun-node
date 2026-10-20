@@ -313,10 +313,10 @@ describe("publishEvents on BunJobs", () => {
     // A networked driver's subscribe takes a round trip; this makes the window
     // between creating a queue and being subscribed to it wide and certain.
     const subscribe = driver.subscribe.bind(driver);
-    driver.subscribe = (async (ns, kind, target, listener) => {
+    driver.subscribe = async (ns, kind, target, listener) => {
       await Bun.sleep(50);
       return await subscribe(ns, kind, target, listener);
-    }) as typeof driver.subscribe;
+    };
 
     const jobs = new BunJobs({
       namespace: testNamespace(),
@@ -375,7 +375,7 @@ describe("follows", () => {
       open = resolve;
     });
     let live = 0;
-    driver.subscribe = (async (ns, kind, target, listener) => {
+    driver.subscribe = async (ns, kind, target, listener) => {
       await gate;
       const unsubscribe = await subscribe(ns, kind, target, listener);
       live++;
@@ -383,7 +383,7 @@ describe("follows", () => {
         live--;
         await unsubscribe();
       };
-    }) as typeof driver.subscribe;
+    };
     return { driver, open, live: () => live };
   }
 
@@ -576,12 +576,12 @@ describe("the followed event", () => {
     const namespace = testNamespace();
     // A backend slow to subscribe to worker events, as a networked one is.
     const subscribe = driver.subscribe.bind(driver);
-    driver.subscribe = (async (ns, kind, target, listener) => {
+    driver.subscribe = async (ns, kind, target, listener) => {
       if (kind === "worker") {
         await Bun.sleep(50);
       }
       return await subscribe(ns, kind, target, listener);
-    }) as typeof driver.subscribe;
+    };
     const notifier = new JobsNotifier(driver, namespace, {
       queues: [],
       runners: [],

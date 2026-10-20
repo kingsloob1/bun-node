@@ -269,7 +269,7 @@ export async function generateFrameVectors(): Promise<FrameVectors> {
       seq: input.seq,
       ack: input.ack,
     });
-    const mac = frame.split(" ")[3]!;
+    const mac = frame.split(" ")[3];
     const json = JSON.stringify(input.message);
     const macBytes = Uint8Array.from(
       atob(mac.replaceAll("-", "+").replaceAll("_", "/").padEnd(44, "=")),
@@ -295,7 +295,7 @@ export async function generateFrameVectors(): Promise<FrameVectors> {
   }
 
   const accepted = accept.find((vector) => vector.name.startsWith("accepted"))!;
-  const hello = accept[0]!;
+  const hello = accept[0];
   const lastByte = accepted.frame.length - 2;
   const reject: RejectVector[] = [
     {

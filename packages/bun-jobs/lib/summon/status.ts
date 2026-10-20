@@ -449,7 +449,7 @@ export async function readStoredSharedUnits(
       continue;
     }
     const unit = sharedUnitOf(
-      names[index]!,
+      names[index],
       readSharedMarker(stored, now).marker,
       now,
     );
@@ -489,7 +489,7 @@ function sharedUnitOf(
       ? {}
       : { lastAttemptAt: marker.lastAttemptAt }),
     status: {
-      queue: members[0]!,
+      queue: members[0],
       queues: [...members],
       local: false,
       inert: false,
@@ -650,7 +650,7 @@ export async function readStoredQueueSummon(
       : { lastAttemptAt: unit.lastAttemptAt }),
     status: {
       ...unit.status,
-      queue: members[0]!,
+      queue: members[0],
       queues: members,
       pending: await withCoverage(
         driver,

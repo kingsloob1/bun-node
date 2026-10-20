@@ -1,4 +1,3 @@
-import type { JobRecord } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -452,7 +451,7 @@ describe("catchUp", () => {
       nextJobId: repeatJobId(key, overdueAt),
     });
     await driver.addJob(ref, {
-      ...(first.toJSON() as JobRecord),
+      ...first.toJSON(),
       id: repeatJobId(key, overdueAt),
       state: "waiting",
       runAt: overdueAt,
@@ -580,7 +579,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
         // Stored namespaced so it can never equal a generated key, but shown
         // without the prefix: "legacy" contains no `|`, so it cannot be
         // mistaken for a generated key (those always do).
-        const key = (await queue.listRepeatables())[0]!.key;
+        const key = (await queue.listRepeatables())[0].key;
         expect(key).toBe("legacy");
 
         // At driver level the spelling is the stored one.

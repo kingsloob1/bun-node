@@ -52,7 +52,7 @@ function spyClient(): {
   calls: Map<string, number>;
   afterNext: (hook: () => Promise<void>) => void;
 } {
-  const real = new BunRedis(URL!);
+  const real = new BunRedis(URL);
   const calls = new Map<string, number>();
   let pending: (() => Promise<void>) | undefined;
 
@@ -270,7 +270,7 @@ describe.skipIf(!URL)("redis fix round: wake tokens (B5)", () => {
       2,
     );
     // Drop the tokens the add sent, so only the recovery's can wake anyone.
-    const raw = new BunRedis(URL!);
+    const raw = new BunRedis(URL);
     cleanups.push(async () => raw.close());
     await raw.del(producer.keys.queue(q).wake);
 
@@ -288,7 +288,7 @@ describe.skipIf(!URL)("redis fix round: wake tokens (B5)", () => {
     const ns = namespace(driver, "b5c");
     const q: QueueRef = { ns, queue: "cap" };
     const wake = driver.keys.queue(q).wake;
-    const raw = new BunRedis(URL!);
+    const raw = new BunRedis(URL);
     cleanups.push(async () => raw.close());
 
     const now = Date.now();
@@ -312,7 +312,7 @@ describe.skipIf(!URL)("redis fix round: updateProgress (B6)", () => {
     const ns = namespace(driver, "b6");
     const q: QueueRef = { ns, queue: "progress" };
     const key = `${driver.keys.queue(q).jobPrefix}p1`;
-    const raw = new BunRedis(URL!);
+    const raw = new BunRedis(URL);
     cleanups.push(async () => raw.close());
 
     await driver.addJob(q, makeJob({ id: "p1", runAt: Date.now() }));
@@ -340,7 +340,7 @@ describe.skipIf(!URL)("redis fix round: updateProgress (B6)", () => {
     expect((await driver.getJob(q, "p1"))?.progress).toEqual({ pct: 10 });
 
     expect(await driver.updateProgress(q, "missing", 1)).toBe(false);
-    const raw = new BunRedis(URL!);
+    const raw = new BunRedis(URL);
     cleanups.push(async () => raw.close());
     expect(await raw.exists(`${driver.keys.queue(q).jobPrefix}missing`)).toBe(
       false,
@@ -411,7 +411,7 @@ describe.skipIf(!URL)("redis fix round: block bounds (B2 follow-up)", () => {
   /** A spy whose `send("BLPOP", …)` block times are recorded, in seconds. */
   function blockSpy() {
     const blocks: number[] = [];
-    const real = new BunRedis(URL!);
+    const real = new BunRedis(URL);
     const wrap = (target: BunRedis): BunRedis =>
       new Proxy(target, {
         get(inner, property, receiver) {
@@ -464,7 +464,7 @@ describe.skipIf(!URL)("redis fix round: block bounds (B2 follow-up)", () => {
     await driver.waitForJob({ ns, queue: "long" }, 10_000);
 
     expect(spy.blocks.length).toBeGreaterThanOrEqual(2);
-    expect(spy.blocks[0]!).toBeLessThanOrEqual(0.3);
+    expect(spy.blocks[0]).toBeLessThanOrEqual(0.3);
     expect(Math.max(...spy.blocks)).toBeLessThanOrEqual(2);
   }, 15_000);
 

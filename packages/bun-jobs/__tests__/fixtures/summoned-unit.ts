@@ -128,7 +128,7 @@ if (closeQueue !== undefined) {
       `SUMMON_TEST_CLOSE_QUEUE names ${closeQueue}, not a queue run here`,
     );
   }
-  await workers[index]!.close();
+  await workers[index].close();
   say({ event: "closed", queue: closeQueue });
   closeDone();
 }

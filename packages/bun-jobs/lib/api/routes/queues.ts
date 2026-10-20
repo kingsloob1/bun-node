@@ -882,12 +882,12 @@ async function visibleGroups(
   const readable = new Set(all.filter((_, index) => allowed[index]));
   const shown: (SummonGroupStatus | undefined)[] = [];
   for (const [index, group] of groups.entries()) {
-    if (members[index]!.length === 0) {
+    if (members[index].length === 0) {
       shown.push((await untargeted()).allow ? group : undefined);
       continue;
     }
     shown.push(
-      members[index]!.some((queue) => readable.has(queue))
+      members[index].some((queue) => readable.has(queue))
         ? redactGroup(group, readable)
         : undefined,
     );

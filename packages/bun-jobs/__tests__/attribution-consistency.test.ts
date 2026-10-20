@@ -105,7 +105,7 @@ async function runAs(
       }
       return true;
     },
-    { timeout: 10_000, interval: 10, message: `${ids} completed` },
+    { timeout: 10_000, interval: 10, message: `${ids.join(",")} completed` },
   );
   await worker.close({ timeout: 2_000 });
 }

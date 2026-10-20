@@ -379,8 +379,8 @@ describe("connecting", () => {
       (event) => event.message === "jobs api upgrade failed",
     );
     expect(warned.map((event) => event.level)).toEqual(["warn"]);
-    expect(warned[0]!.error).toBeUndefined();
-    expect(warned[0]!.fields).toMatchObject({
+    expect(warned[0].error).toBeUndefined();
+    expect(warned[0].fields).toMatchObject({
       code: "JOBS_CLOSED",
       status: 503,
       action: "events.connect",
@@ -388,7 +388,7 @@ describe("connecting", () => {
       errorMessage: closedError.message,
       retryAfter: "1",
     });
-    expect(JSON.stringify(warned[0]!.fields)).not.toContain("    at ");
+    expect(JSON.stringify(warned[0].fields)).not.toContain("    at ");
 
     // The control: an unexpected error is still an error, with its stack.
     const broken = await served({
@@ -401,8 +401,8 @@ describe("connecting", () => {
       (event) => event.message === "jobs api upgrade failed",
     );
     expect(failed.map((event) => event.level)).toEqual(["error"]);
-    expect(failed[0]!.error?.stack).toContain("    at ");
-    expect(failed[0]!.fields).not.toHaveProperty("errorMessage");
+    expect(failed[0].error?.stack).toContain("    at ");
+    expect(failed[0].fields).not.toHaveProperty("errorMessage");
   });
 
   it("lets a plain GET of the socket path fall through to the API's JSON 404", async () => {
@@ -545,15 +545,20 @@ describe("connecting", () => {
       },
     };
     const handler = h.api.websocket!.handler;
-    handler.open!(foreign as never);
+    // Bun.serve does not await a websocket handler, so neither does this test:
+    // `void` keeps each check below reading what the call did synchronously.
+    void handler.open!(foreign as never);
     // Left alone: not made a session, not answered, and not closed — it is
     // not ours to close.
     expect(h.api.websocket!.sessions).toBe(1);
     expect(foreign.sent).toEqual([]);
     expect(foreign.closes).toEqual([]);
-    handler.message!(foreign as never, JSON.stringify({ op: "ping", id: "x" }));
-    handler.drain!(foreign as never);
-    handler.close!(foreign as never, 1000, "");
+    void handler.message(
+      foreign as never,
+      JSON.stringify({ op: "ping", id: "x" }),
+    );
+    void handler.drain!(foreign as never);
+    void handler.close!(foreign as never, 1000, "");
     expect(foreign.sent).toEqual([]);
     expect(h.api.websocket!.sessions).toBe(1);
 
@@ -575,17 +580,17 @@ describe("connecting", () => {
         ours.closes.push(code);
       },
     };
-    handler.open!(ours as never);
+    void handler.open!(ours as never);
     expect(h.api.websocket!.sessions).toBe(2);
     expect(ours.sent.map((frame) => JSON.parse(frame).type)).toEqual(["hello"]);
 
     // Leaving is bookkeeping too: a foreign close must not evict anything,
     // while ours must remove exactly one session — which is what shows the
     // counter is live rather than merely unmoved.
-    handler.close!(foreign as never, 1006, "gone");
-    handler.drain!(foreign as never);
+    void handler.close!(foreign as never, 1006, "gone");
+    void handler.drain!(foreign as never);
     expect(h.api.websocket!.sessions).toBe(2);
-    handler.close!(ours as never, 1000, "bye");
+    void handler.close!(ours as never, 1000, "bye");
     expect(h.api.websocket!.sessions).toBe(1);
 
     // And the real client is still live after the foreign traffic.
@@ -636,7 +641,7 @@ describe("connecting", () => {
     });
     cleanups.push(async () => {
       await api.close();
-      server.stop(true);
+      await server.stop(true);
     });
     const url = `ws://127.0.0.1:${server.port}/admin/jobs/ws`;
 
@@ -694,7 +699,7 @@ describe("connecting", () => {
     });
     cleanups.push(async () => {
       await api.close();
-      server.stop(true);
+      await server.stop(true);
     });
     const url = `ws://127.0.0.1:${server.port}/admin/jobs/ws`;
 
@@ -1071,7 +1076,7 @@ describe("events", () => {
     };
     expect(page.lastSeq).toBe(6);
     expect(page.items.at(-1)!.seq).toBe(6);
-    expect(page.items[0]!.message).toBe(`${marker} password=[REDACTED] 1`);
+    expect(page.items[0].message).toBe(`${marker} password=[REDACTED] 1`);
   });
 
   it("applies a subscription's event-type filter", async () => {
@@ -1223,10 +1228,8 @@ describe("resuming", () => {
     const replayed = second.frames
       .slice(0, ackIndex)
       .filter((frame) => frame.type === "event");
-    expect(replayed.map((frame) => (frame as Frame<"event">).event.id)).toEqual(
-      ["j2", "j3"],
-    );
-    const seqs = replayed.map((frame) => (frame as Frame<"event">).seq);
+    expect(replayed.map((frame) => frame.event.id)).toEqual(["j2", "j3"]);
+    const seqs = replayed.map((frame) => frame.seq);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
     expect(second.all("gap")).toEqual([]);
 
@@ -1379,8 +1382,10 @@ describe("backpressure", () => {
         },
       };
       const client = socket as unknown as WebSocketClient<JobsApiSocketData>;
-      handler.open!(client);
-      handler.message!(
+      // `void`: Bun.serve does not await a websocket handler either, and the checks
+      // below read what the call did synchronously.
+      void handler.open!(client);
+      void handler.message(
         client,
         JSON.stringify({
           op: "subscribe",
@@ -1412,12 +1417,14 @@ describe("backpressure", () => {
 
     const [first, , third] = events(healthy.socket.sent);
     slow.socket.sendResult = 64;
-    handler.drain!(slow.client);
+    // `void`: Bun.serve does not await a websocket handler either, and the checks
+    // below read what the call did synchronously.
+    void handler.drain!(slow.client);
     expect(slow.socket.sent.at(-1)).toEqual({
       type: "gap",
       epoch: expect.any(String),
-      fromSeq: first!.seq + 1,
-      toSeq: third!.seq,
+      fromSeq: first.seq + 1,
+      toSeq: third.seq,
       reason: "slow-consumer",
       channels: ["queue/mail"],
     });
@@ -1436,7 +1443,7 @@ describe("backpressure", () => {
       events(slow.socket.sent).some((frame) => frame.event.id === "5"),
     ).toBe(false);
     // A drain while the buffer is still full changes nothing.
-    handler.drain!(slow.client);
+    void handler.drain!(slow.client);
     clock.advance(4999);
     expect(slow.socket.closes).toEqual([]);
     clock.advance(1);
@@ -1456,8 +1463,8 @@ describe("close()", () => {
     await client.next("ack");
     expect(opened).toHaveBeenCalledTimes(1);
     // The mode narrows what the notifier follows.
-    expect(opened.mock.calls[0]![0]).toEqual({ runners: [] });
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    expect(opened.mock.calls[0][0]).toEqual({ runners: [] });
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
     const closeSpy = spyOn(notifier, "close");
 
     await h.api.close();
@@ -1767,7 +1774,7 @@ describe("sharing a router with other WebSocket routes", () => {
     const replacement = new BunWebSocket({
       newInstance: false,
       router: adapter.instance,
-      getServer: () => adapter.server as never,
+      getServer: () => adapter.server,
     });
     expect(adapter.instance.getBunWebsocket()).toBe(replacement);
 
@@ -1840,10 +1847,12 @@ describe("review fixes", () => {
       close() {},
     };
     const client = socket as unknown as WebSocketClient<JobsApiSocketData>;
-    handler.open!(client);
+    // `void`: Bun.serve does not await a websocket handler either, and the checks
+    // below read what the call did synchronously.
+    void handler.open!(client);
     const hello = socket.sent[0] as Frame<"hello">;
     const send = (message: unknown) =>
-      handler.message!(client, JSON.stringify(message));
+      handler.message(client, JSON.stringify(message));
     const ackOf = async (id: string) => {
       await waitFor(() =>
         socket.sent.some((frame) => frame.type === "ack" && frame.id === id),
@@ -1955,7 +1964,9 @@ describe("review fixes", () => {
 
   it("#2 a resume while lagging does not claim resumed, and the gap covers what it skipped", async () => {
     const d = await driven({ maxBufferedBytes: 1000 });
-    d.send({ op: "subscribe", id: "s1", channels: ["queue/a"] });
+    // `void`: Bun.serve does not await a websocket handler either, and the checks
+    // below read what the call did synchronously.
+    void d.send({ op: "subscribe", id: "s1", channels: ["queue/a"] });
     await d.ackOf("s1");
     // Events the client is not subscribed to yet: seq 1-4.
     await d.jobs.queue("b").add("n", {}, { jobId: "b1" });
@@ -1965,7 +1976,7 @@ describe("review fixes", () => {
     await d.jobs.queue("a").add("n", {}, { jobId: "a1" });
     await waitFor(() => seqs(d.socket.sent).includes(5));
     // While lagging, subscribes to queue/b resuming from the start.
-    d.send({
+    void d.send({
       op: "subscribe",
       id: "s2",
       channels: ["queue/b"],
@@ -1974,7 +1985,7 @@ describe("review fixes", () => {
     const ack = await d.ackOf("s2");
     expect(ack.resumed).toBe(false);
     d.socket.sendResult = 64;
-    d.handler.drain!(d.client);
+    void d.handler.drain!(d.client);
     const gap = d.socket.sent.find(
       (frame): frame is Frame<"gap"> => frame.type === "gap",
     );
@@ -2140,7 +2151,7 @@ describe("review fixes", () => {
     const doc = h.api.asyncapi() as unknown as {
       channels: Record<string, { messages: Record<string, unknown> }>;
     };
-    const job = Object.keys(doc.channels.job!.messages);
+    const job = Object.keys(doc.channels.job.messages);
     for (const present of [
       "queue.added",
       "queue.completed",
@@ -2159,7 +2170,7 @@ describe("review fixes", () => {
       expect(job).not.toContain(absent);
     }
     // The queue channel still carries every queue event.
-    expect(Object.keys(doc.channels.queue!.messages)).toContain("queue.paused");
+    expect(Object.keys(doc.channels.queue.messages)).toContain("queue.paused");
   });
 
   it("#6 negotiates bun-jobs.v1 when a client offers it among others, attached or on its own port", async () => {
@@ -2295,7 +2306,7 @@ describe("review fixes", () => {
     const doc = h.api.asyncapi() as unknown as {
       components: { schemas: Record<string, { description?: string }> };
     };
-    expect(doc.components.schemas.SubscribeMessage!.description).toContain(
+    expect(doc.components.schemas.SubscribeMessage.description).toContain(
       "the last subscribe wins",
     );
   });
@@ -2343,7 +2354,7 @@ describe("review fixes", () => {
     const limit = refusals.find((entry) => entry.code === "CONNECTION_LIMIT")!;
     expect(response.status).toBe(limit.status);
     expect(response.headers.get("retry-after")).toBe(
-      limit.headers!["Retry-After"]!,
+      limit.headers!["Retry-After"],
     );
     expect(await response.json()).toMatchObject({ code: limit.code });
   });
@@ -2401,7 +2412,7 @@ describe("review fixes", () => {
       };
     };
     expect(
-      doc.components.schemas.HeartbeatMessage!.properties!.seq!.description,
+      doc.components.schemas.HeartbeatMessage.properties!.seq.description,
     ).toContain("rely on gap frames");
   });
 
@@ -2534,7 +2545,7 @@ describe("review follow-ups", () => {
     const client = await connect(h.url);
     client.send({ op: "subscribe", id: "open", channels: ["queues"] });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
     const baseline = notifier.following;
 
     for (let index = 0; index < 1000; index++) {
@@ -2802,7 +2813,7 @@ describe("worker channels", () => {
       channels: ["queue/mail/workers"],
     });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
 
     // The notifier follows no queue's workers by default — one subscription
     // per queue is a poll per queue on a driver that cannot push — so the
@@ -2900,7 +2911,7 @@ describe("worker channels", () => {
     const client = await connect(h.url);
     client.send({ op: "subscribe", id: "s", channels: ["workers"] });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
 
     expect(notifier.following).toContain("worker:mail");
     expect(notifier.following).toContain("worker:reports");
@@ -2979,7 +2990,7 @@ describe("worker channels", () => {
     // Subscribed while the namespace has no queue at all.
     client.send({ op: "subscribe", id: "s", channels: ["workers"] });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
     expect(notifier.following.filter((k) => k.startsWith("worker:"))).toEqual(
       [],
     );
@@ -3041,7 +3052,7 @@ describe("worker channels", () => {
     const client = await connect(h.url);
     client.send({ op: "subscribe", id: "s", channels: ["workers"] });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
 
     // Another context on the same backend stands in for another process:
     // this API learns of its queues only from discovery.
@@ -3096,7 +3107,7 @@ describe("worker channels", () => {
     const client = await connect(h.url);
     client.send({ op: "subscribe", id: "s", channels: ["workers"] });
     await client.next("ack");
-    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const notifier = (await opened.mock.results[0].value) as JobsNotifier;
 
     const other = new BunJobs({
       namespace: jobs.namespace,

@@ -1386,10 +1386,10 @@ export class FileDriver implements JobsDriver {
 
     const lane = async (): Promise<void> => {
       while (next < work.length && failure === undefined) {
-        const index = work[next++]!;
+        const index = work[next++];
 
         try {
-          const result = await this.#addOne(q, jobs[index]!);
+          const result = await this.#addOne(q, jobs[index]);
           results[index] = result;
 
           if (result.added && result.job.state === "waiting") {
@@ -2114,7 +2114,7 @@ export class FileDriver implements JobsDriver {
     }
 
     for (let index = from; index < states.length; index++) {
-      const state = states[index]!;
+      const state = states[index];
       const floor = after;
       after = null;
 
@@ -2714,7 +2714,7 @@ export class FileDriver implements JobsDriver {
     // asked for is read — a maintenance pass paging through a large state
     // then costs one directory listing and `limit` reads, not every record.
     if (states.length === 1) {
-      const state = states[0]!;
+      const state = states[0];
       const markers = (await this.#list(join(dir, "index", state))).sort();
       if (opts.order === "desc") {
         markers.reverse();
@@ -2957,7 +2957,7 @@ export class FileDriver implements JobsDriver {
       // it alone. No record before the page is opened, the total is the
       // markers counted, and the page starts at the seek's own index.
       if (states.length === 1) {
-        const state = states[0]!;
+        const state = states[0];
         const markers = (await this.#list(join(index, state))).sort();
         if (query.order === "desc") {
           markers.reverse();
@@ -3023,7 +3023,7 @@ export class FileDriver implements JobsDriver {
     // One state is already in order by its markers' names, as in `listJobs`.
     // (With a range, `matchesNothing` has already answered for any other.)
     if (states.length === 1) {
-      const state = states[0]!;
+      const state = states[0];
       const markers = await markersOf(state);
       if (query.order === "desc") {
         markers.reverse();
@@ -3206,7 +3206,7 @@ export class FileDriver implements JobsDriver {
         if (worker.expiresAt > now) {
           live.push(worker);
         } else {
-          await this.#dropLapsedWorker(join(dir, chunk[index]!), now);
+          await this.#dropLapsedWorker(join(dir, chunk[index]), now);
         }
       }
     }
@@ -4542,7 +4542,7 @@ export class FileDriver implements JobsDriver {
 
     for (const name of await this.#list(dir)) {
       const match = /^\d{13}-(.+)\.jsonl$/.exec(name);
-      const runId = match ? decodeName(match[1]!) : null;
+      const runId = match ? decodeName(match[1]) : null;
 
       if (runId !== null) {
         files.push({ name, runId });
@@ -6379,7 +6379,7 @@ function seekMarkerIndex(
   while (low < high) {
     const mid = (low + high) >>> 1;
 
-    if (compareCodePoints(markers[mid]!, seek) * sign > 0) {
+    if (compareCodePoints(markers[mid], seek) * sign > 0) {
       high = mid;
     } else {
       low = mid + 1;

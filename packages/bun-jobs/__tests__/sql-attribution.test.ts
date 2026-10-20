@@ -387,7 +387,7 @@ for (const engine of ENGINES) {
       const buried = await claim();
       expect(
         (
-          await driver.buryJob!(
+          await driver.buryJob(
             q,
             "buried",
             { name: "Error", message: "y" },

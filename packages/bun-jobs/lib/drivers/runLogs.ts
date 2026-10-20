@@ -91,12 +91,12 @@ export function runLogOverflow(
   if (caps.maxBytes > 0) {
     let bytes = 0;
     for (let index = drop; index < lines.length; index++) {
-      bytes += lines[index]!.bytes;
+      bytes += lines[index].bytes;
     }
 
     // One line always survives: an empty log says less than an over-long one.
     while (bytes > caps.maxBytes && drop < lines.length - 1) {
-      bytes -= lines[drop]!.bytes;
+      bytes -= lines[drop].bytes;
       drop++;
     }
   }

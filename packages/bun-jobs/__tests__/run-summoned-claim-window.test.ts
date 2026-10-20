@@ -248,7 +248,7 @@ for (const backend of BACKENDS) {
           expect(claim.exit, all(lines)).toMatchObject(one.exit);
           // The controller's view once the holder's grace is long past, its
           // record gone: the unit's exit, never a death.
-          const holder = claim.value!.holders[0]!;
+          const holder = claim.value!.holders[0];
           expect(holder.worker).toBe(claim.worker!);
           const tally = tallySummonClaim(
             claim.value!,
@@ -284,8 +284,8 @@ for (const backend of BACKENDS) {
           expect(claim.value, all(lines)).toMatchObject({ capacity: 1 });
           expect(claim.value!.holders, all(lines)).toHaveLength(1);
           const [holder] = claim.value!.holders;
-          expect(holder!.worker).toBe("foreign-worker");
-          expect(holder!.exit, all(lines)).toBeUndefined();
+          expect(holder.worker).toBe("foreign-worker");
+          expect(holder.exit, all(lines)).toBeUndefined();
         }, 60_000);
       }
 

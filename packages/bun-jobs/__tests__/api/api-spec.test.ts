@@ -61,7 +61,7 @@ const MATRIX = (["jobs", "runner", "both"] as const).flatMap((mode) =>
 function op(document: OpenApiDocument, path: string, method: string) {
   return (
     document.paths as Record<string, Record<string, Record<string, unknown>>>
-  )[path]![method]!;
+  )[path][method];
 }
 
 describe("the generated document", () => {
@@ -162,24 +162,22 @@ describe("the generated document", () => {
       },
     });
     expect(responses["204"]).toEqual({ description: "No Content" });
-    expect(responses["400"]!["x-bun-jobs-codes"]).toEqual([
+    expect(responses["400"]["x-bun-jobs-codes"]).toEqual([
       "BULK_LIMIT",
       "INVALID_JSON",
       "VALIDATION",
     ]);
-    expect(responses["401"]!["x-bun-jobs-codes"]).toEqual(["UNAUTHORIZED"]);
-    expect(responses["403"]!["x-bun-jobs-codes"]).toEqual([
+    expect(responses["401"]["x-bun-jobs-codes"]).toEqual(["UNAUTHORIZED"]);
+    expect(responses["403"]["x-bun-jobs-codes"]).toEqual([
       "CSRF_REJECTED",
       "FORBIDDEN",
     ]);
-    expect(responses["404"]!["x-bun-jobs-codes"]).toEqual(["QUEUE_NOT_FOUND"]);
-    expect(responses["413"]!["x-bun-jobs-codes"]).toEqual([
-      "PAYLOAD_TOO_LARGE",
-    ]);
-    expect(responses["415"]!["x-bun-jobs-codes"]).toEqual([
+    expect(responses["404"]["x-bun-jobs-codes"]).toEqual(["QUEUE_NOT_FOUND"]);
+    expect(responses["413"]["x-bun-jobs-codes"]).toEqual(["PAYLOAD_TOO_LARGE"]);
+    expect(responses["415"]["x-bun-jobs-codes"]).toEqual([
       "UNSUPPORTED_MEDIA_TYPE",
     ]);
-    expect(responses["403"]!.content).toEqual({
+    expect(responses["403"].content).toEqual({
       "application/problem+json": {
         schema: { $ref: "#/components/schemas/Problem" },
       },
@@ -425,7 +423,7 @@ describe("$ref utilities", () => {
 
 describe("AsyncAPI security mapping", () => {
   it("maps each OpenAPI scheme type, with notes for browser sockets", () => {
-    expect(toAsyncApiSecurityScheme(schemes.bearer!)).toMatchObject({
+    expect(toAsyncApiSecurityScheme(schemes.bearer)).toMatchObject({
       scheme: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
       browserNote: expect.stringContaining("Authorization"),
     });
@@ -435,7 +433,7 @@ describe("AsyncAPI security mapping", () => {
       type: "http",
       scheme: "basic",
     });
-    expect(toAsyncApiSecurityScheme(schemes.apiKey!)).toEqual({
+    expect(toAsyncApiSecurityScheme(schemes.apiKey)).toEqual({
       scheme: { type: "httpApiKey", in: "header", name: "x-api-key" },
       browserNote: "A browser WebSocket cannot send the x-api-key header.",
     });
@@ -539,6 +537,7 @@ async function loadAjv(): Promise<AjvLike | undefined> {
 
 const ajv = await loadAjv();
 
+// eslint-disable-next-line @typescript-eslint/no-misused-promises -- bun:test awaits an async describe callback
 describe.skipIf(!ajv)("OpenAPI 3.1 meta-schema validation (ajv)", async () => {
   // `describe.skipIf` skips the cases, not the callback: without this the body
   // below still runs and `ajv!.compile` throws where ajv is not installed,
@@ -559,7 +558,7 @@ describe.skipIf(!ajv)("OpenAPI 3.1 meta-schema validation (ajv)", async () => {
     vendored.replaceAll('"$dynamicRef": "#meta"', '"$ref": "#/$defs/schema"'),
   ) as Record<string, unknown>;
   expect(vendored).toContain('"$dynamicRef": "#meta"');
-  const validateDocument = ajv!.compile(metaSchema);
+  const validateDocument = ajv.compile(metaSchema);
 
   for (const { name, overrides } of MATRIX) {
     it(`is a valid OpenAPI 3.1 document: ${name}`, () => {
@@ -577,12 +576,12 @@ describe.skipIf(!ajv)("OpenAPI 3.1 meta-schema validation (ajv)", async () => {
     it(`compiles every component schema: ${name}`, () => {
       const document = documentFor(overrides);
       const key = `urn:bun-jobs:test:${name.replaceAll(/\W+/g, "-")}`;
-      ajv!.addSchema({ $id: key, components: document.components }, key);
+      ajv.addSchema({ $id: key, components: document.components }, key);
       for (const component of Object.keys(
         (document.components as { schemas: object }).schemas,
       )) {
         expect(() =>
-          ajv!.compile({ $ref: `${key}#/components/schemas/${component}` }),
+          ajv.compile({ $ref: `${key}#/components/schemas/${component}` }),
         ).not.toThrow();
       }
     });
@@ -592,7 +591,7 @@ describe.skipIf(!ajv)("OpenAPI 3.1 meta-schema validation (ajv)", async () => {
     const document = documentFor();
     delete (document.info as { version?: string }).version;
     expect(validateDocument(document)).toBe(false);
-    expect(() => ajv!.compile({ type: "strnig" })).toThrow();
+    expect(() => ajv.compile({ type: "strnig" })).toThrow();
   });
 });
 

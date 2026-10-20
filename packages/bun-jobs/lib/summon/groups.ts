@@ -420,7 +420,7 @@ export function expandSummonOption(
       unit(group, where);
       entries.push({
         queues: [...queues],
-        policy: policy as unknown as SummonPolicy,
+        policy,
         shared: true,
         ...(checked === undefined ? {} : { overrides: checked }),
         at: where,

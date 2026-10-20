@@ -323,8 +323,8 @@ describe("a container attempt, end to end", () => {
       ],
     });
     const stored = await settled(queue, flow.job.id, ["completed", "dead"]);
-    const ok = flow.children[0]!.job.id;
-    const bad = flow.children[1]!.job.id;
+    const ok = flow.children[0].job.id;
+    const bad = flow.children[1].job.id;
     expect(stored.returnValue).toEqual({
       parent: null,
       values: {
@@ -383,7 +383,7 @@ describe("a container attempt, end to end", () => {
     let inFlight = 0;
     let maxInFlight = 0;
     let calls = 0;
-    const add = driver.addJobLog!.bind(driver);
+    const add = driver.addJobLog.bind(driver);
     driver.addJobLog = async (...args: Parameters<typeof add>) => {
       calls++;
       inFlight++;
@@ -477,7 +477,7 @@ describe("a container attempt, end to end", () => {
     const driver = new MemoryDriver();
     // A store that takes 200 ms per write: the output is still in flight
     // when the attempt ends, and lands within the floor.
-    const add = driver.addJobLog!.bind(driver);
+    const add = driver.addJobLog.bind(driver);
     driver.addJobLog = async (...args: Parameters<typeof add>) => {
       await Bun.sleep(200);
       return await add(...args);
@@ -630,7 +630,7 @@ describe("the start-up probe fails fast, never degrades", () => {
     await waitFor(() => fake.containers().length === 0, { timeout: 5000 });
     // Killing the CLI does not stop a container the engine already started,
     // so the probe container is removed by name, whatever the CLI got to.
-    const { args: probeArgs } = fake.callsOf("run")[0]!;
+    const { args: probeArgs } = fake.callsOf("run")[0];
     const probe = probeArgs
       .find((arg) => arg.startsWith("--name="))!
       .slice("--name=".length);
@@ -1589,14 +1589,14 @@ describe("the container entry", () => {
       protocol: 1,
     });
     reader.releaseLock();
-    proc.stdin.end();
+    await proc.stdin.end();
     expect(await proc.exited).toBe(143);
   }, 15_000);
 
   it("exits 143 without importing the processor when its stdin ends before start", async () => {
     const dir = markers();
     const { proc } = entry(fixture("import-marker"), { MARKER_DIR: dir });
-    proc.stdin.end();
+    await proc.stdin.end();
     expect(await proc.exited).toBe(143);
     expect(existsSync(join(dir, "imported"))).toBe(false);
   }, 15_000);
@@ -1656,7 +1656,7 @@ describe("the container entry", () => {
     const { proc, prefix } = entry(fixture("abortable"), { MARKER_DIR: dir });
     startRun(proc, fixture("abortable"));
     await waitFor(() => existsSync(join(dir, "started")), { timeout: 10_000 });
-    proc.stdin.end();
+    await proc.stdin.end();
     await proc.exited;
     // The processor was asked to stop, and the run ended.
     expect(existsSync(join(dir, "aborted"))).toBe(true);

@@ -1085,7 +1085,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
  * are open to augmentation and so lack the implicit index signature
  * `TypedEmitterBase`'s `Record<string, …>` constraint needs.
  */
-// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- an event map: an interface lacks the implicit index signature the Record<string, …> constraint needs
 export type BunRunnerEvents<
   TArgs = unknown,
   TResult = unknown,
