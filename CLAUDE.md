@@ -415,8 +415,11 @@ the expected credentials fails. That check connects **the way the suites do**,
 which for MySQL means taking `allowPublicKeyRetrieval` out of the URL and
 passing it as a `SQL` option: **Bun honours it as an option and ignores it in a
 URL**, so `new SQL(url)` on the configured MySQL URL fails with
-`ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED` while the driver connects fine.
-Probing that URL by hand is therefore misleading — it looks broken and is not.
+`ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED` (on a cold auth cache; once a
+full login is cached, Bun 1.4.4's fast-auth lets it through) while the driver
+connects fine. Probing that URL by hand is therefore misleading either way: it
+looks broken and is not, or works only because an earlier login warmed the
+cache.
 It also raises MariaDB's and MySQL's `max_connections` to at least
 `MAX_CONNECTIONS` (1000; `--max-connections=N` overrides it) and Postgres's to
 `POSTGRES_MAX_CONNECTIONS` (700; `--postgres-max-connections=N`), and never
