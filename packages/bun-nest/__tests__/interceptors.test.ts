@@ -1,11 +1,16 @@
 import type { UploadOptions } from "@kingsleyweb/bun-common";
-import { PayloadTooLargeError, UploadError } from "@kingsleyweb/bun-common";
+import {
+  MemoryStorage,
+  PayloadTooLargeError,
+  UploadError,
+} from "@kingsleyweb/bun-common";
 import {
   BadRequestException,
   ForbiddenException,
+  Logger,
   PayloadTooLargeException,
 } from "@nestjs/common";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { firstValueFrom } from "rxjs";
 import {
   AnyFilesInterceptor,
@@ -129,6 +134,49 @@ describe("NoFilesInterceptor", () => {
     await expect(
       new Interceptor().intercept(makeExecutionContext(req), makeCallHandler()),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe("removing an upload's files once the handler emits", () => {
+  it("logs a storage whose removeFile rejects, rather than leaving an unhandled rejection", async () => {
+    // Under Bun an unhandled rejection ends the process (and fails this run),
+    // so the removal's rejection has to be caught where it is started.
+    const failure = new Error("storage unavailable");
+    class FailingRemoval extends MemoryStorage {
+      override async removeFile(): Promise<void> {
+        throw failure;
+      }
+    }
+    const logged: unknown[][] = [];
+    const errorSpy = spyOn(Logger.prototype, "error").mockImplementation(
+      (...args: unknown[]) => {
+        logged.push(args);
+      },
+    );
+    try {
+      const req = await makeMultipartRequest((fd) => {
+        fd.set("doc", new Blob(["x"]), "x.txt");
+      });
+      const Interceptor = FileInterceptor("doc", {
+        storageType: "custom",
+        storage: new FailingRemoval(),
+      });
+      const result = await firstValueFrom(
+        await new Interceptor().intercept(
+          makeExecutionContext(req),
+          makeCallHandler("done"),
+        ),
+      );
+
+      // The response is not held for the removal.
+      expect(result).toBe("done");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(logged).toEqual([
+        ["Removing an upload's stored files failed", failure.stack],
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

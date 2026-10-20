@@ -288,7 +288,7 @@ const HTML_ESCAPES: Record<string, string> = {
 
 /** `escape-html`'s escaping, which `finalhandler` applies to its page. */
 function escapeHtml(text: string): string {
-  return text.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char]!);
+  return text.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char]);
 }
 
 /**
@@ -702,6 +702,7 @@ export class BunHttpAdapter<
         this.#routeRequest(req, nativeRequest, server),
       );
     } catch (error) {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever was thrown, unchanged, so the error handler sees the value a route threw
       return Promise.reject(error);
     }
   }
@@ -867,7 +868,7 @@ export class BunHttpAdapter<
       entries.length > 31 ? [] : undefined;
     let mask = 0;
     for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i]!;
+      const entry = entries[i];
       if (
         entry.matcher === undefined ? !underSomePrefix : entry.matcher(pathname)
       ) {
@@ -984,8 +985,7 @@ export class BunHttpAdapter<
         // stub otherwise, which reports no peer and refuses upgrades.
         // The stub is not a real server (only `requestIP`/`upgrade` exist),
         // which is exactly what this method touches.
-        this.getBunServer() ??
-          (FETCH_STUB_SERVER as BunWebSocketServerType<customWebsocketDataType>),
+        this.getBunServer() ?? FETCH_STUB_SERVER,
       );
     } catch (error) {
       // The same final error handling `Bun.serve`'s `error` callback runs.
@@ -1556,7 +1556,7 @@ export class BunHttpAdapter<
       (url) => !!url,
     );
 
-    return url as URL;
+    return url;
   }
 
   public reply(
@@ -3976,7 +3976,7 @@ export class BunHttpAdapter<
 
       // `AbstractHttpAdapter` declares the route returns `Function`; what it
       // really returns is `next()`'s result, which NestJS ignores.
-      return next() as unknown as Function;
+      return next() as Function;
     };
 
     if (

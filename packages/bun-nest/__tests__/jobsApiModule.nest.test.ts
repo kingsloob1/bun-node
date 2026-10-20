@@ -298,7 +298,7 @@ describe("the live-events socket under Nest", () => {
 
     const codes: number[] = [];
     client.socket.addEventListener("close", (event) => {
-      codes.push((event as CloseEvent).code);
+      codes.push(event.code);
     });
 
     // Shutting down runs `beforeApplicationShutdown`, which closes the API

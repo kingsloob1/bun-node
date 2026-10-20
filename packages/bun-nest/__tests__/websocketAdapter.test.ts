@@ -1,7 +1,4 @@
-import type {
-  BunWebSocketServerType,
-  WebSocketClient,
-} from "@kingsleyweb/bun-common";
+import type { WebSocketClient } from "@kingsleyweb/bun-common";
 import type { WsMessageHandler } from "@nestjs/common";
 import type {
   BunNestWebSocketClient,
@@ -161,7 +158,7 @@ describe("BunWebSocketAdapter: per-gateway routes and close()", () => {
     let connections = 0;
     const server = adapter.create(0, { transport: [] });
     adapter.bindClientConnect(server, () => connections++);
-    adapter.close(server as BunWebSocketServerType);
+    adapter.close(server);
     adapter.emit("connect", client("/"));
 
     expect(connections).toBe(0);
@@ -359,7 +356,7 @@ describe("BunWebSocketAdapter: client binding", () => {
     adapter.bindClientDisconnect(client, () => {
       disconnected = true;
     });
-    adapter.emit("disconnect", client, 1000 as never, "bye" as never);
+    adapter.emit("disconnect", client, 1000, "bye");
     expect(disconnected).toBe(true);
   });
 
@@ -374,8 +371,8 @@ describe("BunWebSocketAdapter: client binding", () => {
     adapter.bindClientDisconnect(client, (...args) => {
       calls.push(args);
     });
-    adapter.emit("disconnect", client, 4001 as never, "leaving" as never);
-    adapter.emit("disconnect", client, 4002 as never, "again" as never);
+    adapter.emit("disconnect", client, 4001, "leaving");
+    adapter.emit("disconnect", client, 4002, "again");
     expect(calls).toEqual([[4001, "leaving"]]);
   });
 });
@@ -388,7 +385,7 @@ describe("BunWebSocketAdapter: bindMessageHandlers", () => {
     adapter: BunNestWebsocketAdapter,
     client: WebSocketClient,
     packet: unknown,
-  ) => adapter.emit("message", client, JSON.stringify(packet) as never);
+  ) => adapter.emit("message", client, JSON.stringify(packet));
 
   it("dispatches an EVENT packet to the matching handler with its payload", () => {
     const adapter = newAdapter();
@@ -546,7 +543,7 @@ describe("BunWebSocketAdapter: bindMessageHandlers", () => {
       transform,
     );
 
-    adapter.emit("message", client, "not-json" as never);
+    adapter.emit("message", client, "not-json");
 
     expect(errorHandled).toBe(true);
     expect(parsed()[0]?.type).toBe(MessageEventTypes.ERROR);
@@ -826,7 +823,7 @@ describe("BunWebSocketAdapter: bindMessageHandlers", () => {
     emitMessage(adapter, client, packet);
     expect(calls).toBe(1);
 
-    adapter.emit("disconnect", client, 1000 as never, "bye" as never);
+    adapter.emit("disconnect", client, 1000, "bye");
     emitMessage(adapter, client, packet);
     expect(calls).toBe(1);
   });
@@ -863,7 +860,7 @@ describe("BunWebSocketAdapter: acks and isAckHandledManually", () => {
         type: MessageEventTypes.EVENT,
         namespace: "/",
         ...packet,
-      }) as never,
+      }),
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     return parsed();
@@ -1104,15 +1101,13 @@ describe("BunWebSocketAdapter: a packet that cannot be serialised", () => {
             wsHandler("loop", (_data, ack) => ack(circular()), true),
             wsHandler("ok", () => ({ event: "ok", data: 1 })),
           ],
-          nestTransform as Parameters<
-            BunNestWebsocketAdapter["bindMessageHandlers"]
-          >[2],
+          nestTransform,
         );
         const send = (packet: Record<string, unknown>) =>
           adapter.emit(
             "message",
             client,
-            JSON.stringify({ namespace: "/", ...packet }) as never,
+            JSON.stringify({ namespace: "/", ...packet }),
           );
         send({ type: MessageEventTypes.EVENT, data: ["big", null] });
         send({ type: MessageEventTypes.EVENT, id: 1, data: ["loop", null] });

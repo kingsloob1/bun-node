@@ -296,7 +296,7 @@ export function rawRequest(base: string, probe: Probe): Promise<Response> {
       const all = Buffer.concat(chunks);
       const split = all.indexOf("\r\n\r\n");
       const lines = all.subarray(0, split).toString("latin1").split("\r\n");
-      const status = Number(lines[0]!.split(" ")[1]);
+      const status = Number(lines[0].split(" ")[1]);
       const h = new Headers();
       for (const line of lines.slice(1)) {
         const i = line.indexOf(":");

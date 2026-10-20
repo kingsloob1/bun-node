@@ -188,7 +188,7 @@ export const GROUPS: Group[] = [
   {
     name: "prefix",
     module: PrefixModule,
-    configure: (app) => app.setGlobalPrefix("api", prefixExclude as never),
+    configure: (app) => app.setGlobalPrefix("api", prefixExclude),
     probes: [
       get("prefixed GET /api/hello", "/api/hello"),
       req("prefixed POST /api/hello", "POST", "/api/hello"),
@@ -248,7 +248,7 @@ export const GROUPS: Group[] = [
       app.enableVersioning({ type: VersioningType.URI });
       app.setGlobalPrefix("api", {
         exclude: [{ path: "hello", method: RequestMethod.GET, version: "1" }],
-      } as never);
+      });
     },
     probes: [
       get("excluded {hello,GET,v1}: /v1/hello", "/v1/hello"),
@@ -498,7 +498,7 @@ function specGroups(): Group[] {
       module: DupModule,
       when: NEST_12,
       options: { routeConflictPolicy: { duplicate: "warn", shadow: "warn" } },
-      probes: [get("duplicate GET /dupx: winner", "/dupx"), specProbes()[0]!],
+      probes: [get("duplicate GET /dupx: winner", "/dupx"), specProbes()[0]],
     },
     {
       name: "n12-conflict-error",
