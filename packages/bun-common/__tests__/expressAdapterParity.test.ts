@@ -273,8 +273,7 @@ describe("a body that does not parse: a bare router routes it, the adapter refus
     const router = new BunRouter();
     router.post("/j", (req, res) => {
       const refused = req.bodyDecodingError as
-        | (Error & { status?: number; type?: string })
-        | undefined;
+        (Error & { status?: number; type?: string }) | undefined;
       res.json({
         body: req.body ?? null,
         refused: refused ? [refused.name, refused.status, refused.type] : null,

@@ -44,8 +44,7 @@ type QueryMethodDecorator = (path?: string) => MethodDecorator;
 
 /** `@QueryMethod` (HTTP QUERY), added in 11.2.0 (#17162); undefined on 11.1.x. */
 export const QueryMethod = (common as Record<string, unknown>).QueryMethod as
-  | QueryMethodDecorator
-  | undefined;
+  QueryMethodDecorator | undefined;
 
 /** Whether this Nest has `RequestMethod.QUERY` (11.2.0 and 12). */
 export const HAS_QUERY =
@@ -273,8 +272,7 @@ export const MwQueryAll = trailMiddleware("MwQueryAll");
 export class QueryMiddlewareModule {
   configure(consumer: MiddlewareConsumer) {
     const query = (RequestMethod as Record<string, unknown>).QUERY as
-      | RequestMethod
-      | undefined;
+      RequestMethod | undefined;
     if (query === undefined) return;
     consumer.apply(MwQuery).forRoutes({ path: "q", method: query });
     consumer

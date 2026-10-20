@@ -15,10 +15,7 @@ import type { NextFunction } from "./types/general";
  *   request's origin when any entry matches it.
  */
 export type CorsStaticOrigin =
-  | boolean
-  | string
-  | RegExp
-  | (boolean | string | RegExp)[];
+  boolean | string | RegExp | (boolean | string | RegExp)[];
 
 /**
  * Decides the origin per request, as the `cors` package's `CustomOrigin`:

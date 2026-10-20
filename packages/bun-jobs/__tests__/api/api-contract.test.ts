@@ -428,8 +428,7 @@ describe("one definition of each constant", () => {
     // documented enum cannot drift from what a client is typed against.
     for (const schema of [RunRecordSchema, RunnerInfoSchema]) {
       const properties = schema.json.properties as
-        | Record<string, { enum?: unknown[] }>
-        | undefined;
+        Record<string, { enum?: unknown[] }> | undefined;
       const field = schema === RunRecordSchema ? "mode" : "executionMode";
       expect({ field, values: properties?.[field]?.enum }).toEqual({
         field,

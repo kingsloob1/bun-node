@@ -909,10 +909,9 @@ check(
 /** Stored events for one runner, in the SQLite event table. */
 const sqliteEvents: StoredEvents = async (namespace, target) => {
   const row = inspect
-    .query<
-      { n: number },
-      [string, string]
-    >(`SELECT COUNT(*) AS n FROM "${eventTable}" WHERE ns = ? AND channel = ?`)
+    .query<{ n: number }, [string, string]>(
+      `SELECT COUNT(*) AS n FROM "${eventTable}" WHERE ns = ? AND channel = ?`,
+    )
     .get(namespace, `runner:${target}`);
   return row?.n ?? 0;
 };

@@ -8,6 +8,7 @@
     "start": "bun index.ts",
     "dev": "bun --watch index.ts",
     "lint": "bun lint",
-    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
   }
 }

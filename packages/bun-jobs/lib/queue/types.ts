@@ -578,8 +578,7 @@ export type TypedJobProcessor<TJobs, TName extends JobName<TJobs>> = (
   job: TypedJob<TJobs, TName>,
   ctx: ProcessorContext,
 ) =>
-  | JobHandlerResultOf<TJobs, TName>
-  | Promise<JobHandlerResultOf<TJobs, TName>>;
+  JobHandlerResultOf<TJobs, TName> | Promise<JobHandlerResultOf<TJobs, TName>>;
 
 /**
  * The payload property of an entry that names its job: optional exactly when
@@ -671,8 +670,7 @@ export interface ForeignFlowNode extends FlowNode {
  * @typeParam TJobs The declared job map.
  */
 export type RegistryFlowChild<TJobs> =
-  | RegistryFlowNode<TJobs>
-  | ForeignFlowNode;
+  RegistryFlowNode<TJobs> | ForeignFlowNode;
 
 /**
  * What `addBulk` takes: plain entries with no declared map, exactly as
@@ -1359,8 +1357,9 @@ export type JobScopedEvent =
  * them is unaffected.
  */
 export type JobScopedEvents<TEvents, TName extends string = string> = {
-  [Event in keyof TEvents &
-    JobScopedEvent as `${Event}:${TName}`]: TEvents[Event];
+  [
+    Event in keyof TEvents & JobScopedEvent as `${Event}:${TName}`
+  ]: TEvents[Event];
 };
 
 /**
@@ -1522,7 +1521,9 @@ export type BunQueueWorkerEvents<
  * @typeParam TPerName Each declared name's own event map.
  */
 type TypedScopedEvents<TJobs, TEvents, TPerName> = {
-  [TKey in `${keyof TEvents & JobScopedEvent}:${JobName<TJobs>}`]: TKey extends `${infer TEvent extends keyof TEvents & JobScopedEvent}:${infer TName extends JobName<TJobs>}`
+  [
+    TKey in `${keyof TEvents & JobScopedEvent}:${JobName<TJobs>}`
+  ]: TKey extends `${infer TEvent extends keyof TEvents & JobScopedEvent}:${infer TName extends JobName<TJobs>}`
     ? TName extends keyof TPerName
       ? TEvent extends keyof TPerName[TName]
         ? TPerName[TName][TEvent]

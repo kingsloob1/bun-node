@@ -8493,7 +8493,8 @@ bun scripts/setup-databases.ts --print-env # just the env vars for the suites
 Then, in `packages/bun-jobs`:
 
 ```bash
-bun run lint:eslint    # lint the whole package; 0 errors
+bun run lint           # lint the whole package; 0 errors
+bun run format:check   # check the formatting
 bun run test           # tests, one worker per core
 bun run test:seeded    # the order-leak check: serial shards, no database URLs
 ```

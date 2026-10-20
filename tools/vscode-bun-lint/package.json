@@ -107,7 +107,8 @@
     "package": "bun scripts/build.ts && bunx @vscode/vsce@4.0.0 package --no-dependencies --skip-license --baseContentUrl https://github.com/kingsloob1/bun-node/blob/develop/tools/vscode-bun-lint/ --baseImagesUrl https://github.com/kingsloob1/bun-node/raw/develop/tools/vscode-bun-lint/ --out dist/vscode-bun-lint.vsix",
     "test": "bun test --check",
     "lint": "bun lint",
-    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

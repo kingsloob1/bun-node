@@ -208,7 +208,8 @@ The examples are a project of their own, held to the same bar as the packages:
 ```bash
 bun scripts/typecheck.ts        # from the repo root — includes examples/bun-jobs
 cd examples/bun-jobs
-bun run lint:eslint             # the package's lint rules, minus no-console
+bun run lint                    # the package's lint rules, minus no-console
+bun run format:check            # bun fmt --check
 bun run-all.ts                  # run them all
 ```
 

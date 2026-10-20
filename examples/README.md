@@ -27,11 +27,11 @@ cheap:
   demonstrate rather than on guessed sleeps. Anything that needs a server
   skips itself when that server's URL is unset.
 - **Each folder is its own project**, with a `tsconfig.json` checked by
-  `bun scripts/typecheck.ts` and an `eslint.legacy.config.mjs` that reuses
-  the package's rules.
+  `bun scripts/typecheck.ts`, linted by `bun lint` with the packages' rules
+  (the root `bunfig.toml`, `no-console` off) and formatted by `bun fmt`.
 
 ```bash
 bun scripts/typecheck.ts              # from the repo root: includes the examples
-cd examples/bun-jobs && bun run lint:eslint # lint (ESLint, the gate until bun-lint-fmt's PR E)
+cd examples/bun-jobs && bun run lint && bun run format:check # lint and format check
 cd examples/bun-jobs && bun run-all.ts
 ```

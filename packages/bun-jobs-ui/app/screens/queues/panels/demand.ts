@@ -19,12 +19,7 @@ import { formatNumber } from "../../../format";
 
 /** A count of a demand reading. */
 export type DemandFigure =
-  | "demand"
-  | "outstanding"
-  | "waiting"
-  | "dueNow"
-  | "stalled"
-  | "active";
+  "demand" | "outstanding" | "waiting" | "dueNow" | "stalled" | "active";
 
 /** The figures the fallback of a backend that cannot count demand approximates. */
 const APPROXIMATE: ReadonlySet<DemandFigure> = new Set<DemandFigure>([

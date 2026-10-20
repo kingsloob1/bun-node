@@ -23,7 +23,8 @@ Bun-first libraries for building servers: an Express-like HTTP layer for
 A monorepo of three published packages, managed with Bun workspaces, lerna and
 nx. Each package ships its TypeScript source (`main` and `types` point at
 `lib/index.ts`), so there is no build step. Each has its own tests
-(`bun:test`), `bun check` typecheck and ESLint configuration. The packages
+(`bun:test`), `bun check` typecheck, and `bun lint` and `bun fmt` from the
+root `bunfig.toml`. The packages
 prefer Bun and native APIs over third-party dependencies.
 
 ## Packages
@@ -105,7 +106,8 @@ Then, in each affected package directory:
 
 ```bash
 bun run check                     # bun check on the package's projects
-bun run lint:eslint               # the whole package, READMEs included; 0 errors
+bun run lint                      # bun lint over the whole package; 0 errors
+bun run format:check              # bun fmt --check; clean (bun run format formats)
 bun run test                      # type-checks the tests, then runs them; every test must pass
 ```
 

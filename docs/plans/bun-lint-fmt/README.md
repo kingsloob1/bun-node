@@ -2,8 +2,10 @@
 
 **Status:** plan of 2026-10-16, **decided 2026-10-17**: the user answered the
 eleven questions of §9 and replaced the gating of §6 (wait for a stable Bun)
-with raising the development floor to the 1.4.4 canary now. Nothing here is
-implemented yet. Written by the features (main) agent at the user's request;
+with raising the development floor to the 1.4.4 canary now. **Implemented
+through PR E**: A (#417), every B, C and D (#421) merged; with E, `bun lint` and
+`bun fmt --check` are the gate and nothing runs ESLint; PR F (removing ESLint
+and Prettier) is next, one merge window later. Written by the features (main) agent at the user's request;
 the decisions, the re-measurement and the PR slices are the Bun-Node Examples
 & Tooling Agent's, who leads the plan:
 
@@ -780,6 +782,46 @@ rebase once.
   READMEs' lint lines, and `examples/**/README.md`. The heavy-run notes'
   "lint in any directory" stays "not heavy": the type-aware run is 11 s for
   all 11 directories.
+- **As built** (2026-10-20, on develop `622a3724`, 1.4.4-canary.1+6bb5dc195):
+  - **Two commits, then a third.** The flip (scripts, `.vscode`, docs,
+    `scripts/reformat.ts` and its test, `.git-blame-ignore-revs` with a
+    placeholder); the reformat, `bun scripts/reformat.ts` and nothing else;
+    then `.git-blame-ignore-revs` filled with the reformat's full hash, which
+    the reformat commit cannot hold itself. The hash is taken after the
+    branch's last rebase and re-signing, and the PR lands as a merge commit,
+    so it survives.
+  - **One Markdown line follows the reformat**, in the reformat commit:
+    bun-jobs' `docs/providers/author-guide.md` quotes the template's
+    `src/errors.ts` verbatim (`<!-- excerpt: … -->`, checked by
+    `__tests__/provider/docs.test.ts`), and Markdown is not formatted (Q3).
+    `scripts/reformat.ts` names every such excerpt of a file it changed
+    (`UPDATE EXCERPT`, exit 1); on `622a3724` it is that one.
+  - **The scope** is `bun fmt --list-files` from the root, tracked files only
+    (`scripts/reformat.ts`), so a worktree's untracked files are never
+    formatted and the reformat is repeatable on the landing base. `[fmt]`
+    `ignorePatterns` adds the files tools write, which their tools would
+    otherwise turn back on every refresh, failing `bun fmt --check`:
+    `**/bun-timings*.json` (`--update-timings`), `**/baselines/*.json`
+    (`--save-baseline`) and `lerna.json` (`lerna version`); the template's
+    `bunfig.toml` ignores its `bun-timings.json`.
+  - **`benchmarks/`** keeps its `lint:eslint` script: it is not one of the
+    gate's directories, and `bun lint` there reports 8 errors (2026-10-20).
+    PR F decides it with the rest of ESLint.
+  - **Root scripts**: `format` and `format:check` (the whole repository),
+    `format:scripts` and `format:check:scripts` beside `lint:scripts`.
+  - **Two `--fix` rules**, in CLAUDE.md's "Lint and format": the four
+    `scripts/build-declarations.ts` and four `tsconfig.build.json` copies
+    change together or not at all (a per-package `bun lint --fix` turned
+    develop red once, #433, fixed by #436), and
+    `@typescript-eslint/no-duplicate-type-constituents` is never autofixed
+    (its fix deletes the `never`-member guards in bun-jobs'
+    `lib/api/ws/events.ts` and `protocol.ts`).
+  - **Rebasing over the reformat**: `git rebase <reformat>^`, resolving real
+    conflicts by hand; `git rebase <reformat>`, with `bun scripts/reformat.ts
+    --resolve` at each stop (the replayed commit's side, formatted, staged;
+    it refuses a rebase onto a commit `.git-blame-ignore-revs` does not list);
+    then `git rebase origin/develop`. Tested in
+    `scripts/__tests__/reformat.test.ts` and on a copy of develop.
 - **Checks**: `bun lint` and `bun fmt --check` exit 0 in all 11 directories;
   `bun scripts/typecheck.ts`; `bun scripts/generate-verb-overloads.ts
   --check`; every package's `bun run test`; the bun-jobs doc tests and both

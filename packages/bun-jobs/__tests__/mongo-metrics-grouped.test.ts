@@ -204,7 +204,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
         }
       : { find: command.find, filter: command.filter, ...hint };
 
-  const result = await (await monitoredClient())
+  const result = await (
+    await monitoredClient()
+  )
     .db()
     .command({ explain: explained, verbosity: "executionStats" });
 
@@ -472,7 +474,9 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
     await driver.flushMetrics();
 
     // The roll-up is stored as an entity like any other, in range.
-    const stored = await (await monitoredClient())
+    const stored = await (
+      await monitoredClient()
+    )
       .db()
       .collection(metrics)
       .find({ ns, entity: NAMESPACE_ENTITY, interval: MINUTE_BUCKET_MS })

@@ -297,8 +297,7 @@ function issuePaths(fn: () => unknown): string[] {
   } catch (error) {
     expect(error).toBeInstanceOf(ConfigError);
     const issues = (error as ConfigError).context?.issues as
-      | { path?: unknown }[]
-      | undefined;
+      { path?: unknown }[] | undefined;
     return (issues ?? []).map((issue) => String(issue.path));
   }
   throw new Error("expected a ConfigError");

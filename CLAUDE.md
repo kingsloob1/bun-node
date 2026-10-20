@@ -26,8 +26,9 @@ published packages under `packages/`:
   [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
-typecheck (`bun run check`), ESLint via `@antfu/eslint-config` (`eslint.legacy.config.mjs`, the
-lint gate until the [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md) flip) beside `bun lint`. Bun runs the shipped `.ts`
+typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
+the root `bunfig.toml` (the [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
+gate since PR E). Bun runs the shipped `.ts`
 source directly (`main` is `lib/index.ts`; no JS is emitted). All four
 packages also ship built declarations in `dts/` and point `types` at them —
 see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
@@ -50,7 +51,7 @@ format setup was verified on **1.4.4-canary.1+5f5799ed1** (`bun --revision`),
 and the plan's figures are as old as that build. The machine moved to
 **1.4.4-canary.1+6bb5dc195** on 2026-10-20 (the user's decision): `bun lint`
 gave the same findings, rule by rule, in all 12 linted directories,
-`bun fmt --check` flagged the same 92 files, and `scripts/typecheck.ts` stayed
+`bun fmt --check` flagged the same 92 files (before PR E's reformat), and `scripts/typecheck.ts` stayed
 clean (measured against the old binary on develop f325f269). **A later canary can change
 rule or format output**: a new finding or a reformatted file after
 `bun upgrade --canary` is the canary's, and goes to the bun-lint-fmt plan's
@@ -78,32 +79,54 @@ management API and the bun-jobs-ui app on one adapter at
 `http://localhost:4000/jobs`, with a simulation that keeps every screen
 moving (`playground/README.md`). It is a project of its own, like
 `benchmarks/`: typechecked by `scripts/typecheck.ts`, linted with
-`cd playground && bun run lint:eslint`, and outside the workspaces.
+`cd playground && bun run lint && bun run format:check`, and outside the workspaces.
 
 Then, in each affected package directory:
 
 ```bash
 bun run check              # bun check on the package's projects
-bun run lint:eslint        # ESLint, the lint gate until PR E — must have 0 errors
-bun run lint               # bun lint: runs, reports what PR B fixes, gates nothing yet
+bun run lint               # bun lint, type-aware — must have 0 errors (warnings do not fail it)
+bun run format:check       # bun fmt --check — must be clean; `bun run format` formats
 bun run test               # type-check the tests, then run them in parallel — must all pass
 ```
 
-**Lint, between PR A and PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
-§7.** ESLint is still the gate: each linted directory's config is
-`eslint.legacy.config.mjs`, a name ESLint does not discover, so run it as
-`bun run lint:eslint` (`eslint -c eslint.legacy.config.mjs .`); a bare
-`bunx eslint .` finds no config. `bun run lint` (in a `lint` script, `bun lint`
-is the linter) reads the root `bunfig.toml`, type-aware, and exits 1 until each
-owner's findings are fixed. A disable directive names the rule's canonical
-name (`@typescript-eslint/…`, `n/…`; the ESLint configs `renamePlugins` to
-match), and both tools read it. For a rule only `bun lint` runs (the
-type-aware ones), ESLint does not call the directive unused, nor delete it on
-`--fix` (`eslint.legacy.directives.mjs`); where ESLint runs the same check under
-another name, list both (`no-throw-literal, @typescript-eslint/only-throw-error`).
-There is no `format` script yet: Prettier, through
-ESLint, still formats, and it and `bun fmt` disagree on 78 files, so do
-not run `bun fmt` on a whole directory before PR E.
+**Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
+§7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
+linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
+of the 11 directories with a `lint` script, `bun run lint:scripts` and
+`bun run format:check:scripts` from the root for `scripts/`, and
+`bun run format:check` at the root for the whole repository. Both read the
+root `bunfig.toml` (the template its own), found from the working directory
+up; `[fmt]` skips Markdown (Q3), `docs/**` and the files tools write
+(`bun-timings*.json`, `baselines/*.json`, `lerna.json`). No gate runs ESLint:
+the `eslint.legacy.config.mjs` files and `eslint.legacy.directives.mjs` stay,
+unused, until PR F removes them. A disable directive names the rule's
+canonical name (`@typescript-eslint/…`, `n/…`). The editor is the in-repo
+extension (`tools/vscode-bun-lint/`, its README says how to install it), which
+`.vscode/` recommends and makes the formatter; the ESLint extension is off.
+Two rules for `bun lint --fix`, which no directory may break:
+
+- **The copied files are one file.** The four `scripts/build-declarations.ts`
+  and the four `tsconfig.build.json` change together or not at all
+  (`packages/bun-common/__tests__/buildDeclarations.test.ts`): never let a
+  per-package `--fix` edit one copy alone; make the same change to all four, or
+  revert it.
+- **`@typescript-eslint/no-duplicate-type-constituents` is never autofixed.**
+  Its fix deletes deliberate compile-time guards: unions of members that are
+  `never` while two definitions agree (bun-jobs' `lib/api/ws/events.ts` and
+  `protocol.ts`, under a disable directive that says so). Fix by hand, or
+  suppress with a reason.
+
+**The one-time reformat** is its own commit, listed in `.git-blame-ignore-revs`;
+run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone.
+`bun scripts/reformat.ts` is how it was made (tracked files in `[fmt]`'s scope;
+it verifies a second run changes nothing and the copies stay identical).
+**To rebase a branch over it**, in three steps: `git rebase <reformat>^`
+(resolve real conflicts by hand); then `git rebase <reformat>`, running
+`bun scripts/reformat.ts --resolve` at each stop (it takes the replayed
+commit's side of each conflicted file, formats it and stages it) and
+`git rebase --continue`; then `git rebase origin/develop`. Finish with
+`bun fmt --changed=origin/develop` if the branch added unformatted code.
 
 **Tests run in parallel.** Each test suite's `test` script is
 `bun test --check --parallel --timings=bun-timings.json` (`--check`: see
@@ -222,7 +245,7 @@ So plain `bun test` is still the one-process run, as is
   - **Heavy:** full suites, every bun-jobs-ui test (they drive the DOM and
     Chrome), the bun-jobs and bun-jobs-ui `run-all.ts`, `check-types.ts`,
     benches, and repeat, concurrent-copy and load loops.
-  - **Not heavy, run directly:** lint in any directory (ESLint or `bun lint`),
+  - **Not heavy, run directly:** lint and format checks in any directory (`bun lint`, `bun fmt --check`),
     `bun scripts/typecheck.ts`, `bun scripts/consumer-check.ts`, and every
     **targeted** test run in any package except bun-jobs-ui — named files,
     directories or filters, with or without database URLs
@@ -348,19 +371,19 @@ hand tests a constructor these examples never use, and it looks broken when it
 is not.
 
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
-`setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, and the heavy-run
+`setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, `reformat.ts`, and the heavy-run
 wrapper `heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to
 no package, so it has its own lint config and its own tests; after touching one,
 check it, from the root:
 
 ```bash
-bun run lint:eslint:scripts   # cd scripts && eslint -c eslint.legacy.config.mjs . — 0 errors, and 0 warnings
-bun run lint:scripts          # cd scripts && bun lint — reports, gates nothing until PR E
+bun run lint:scripts          # cd scripts && bun lint — 0 errors
+bun run format:check:scripts  # cd scripts && bun fmt --check
 bun run test:scripts          # scripts/__tests__/
 ```
 
 It is the packages' config except that `no-console` and
-`antfu/no-top-level-await` are off: every file there is a CLI entry point, whose
+`n/no-top-level-await` are off: every file there is a CLI entry point, whose
 output is its product. A script a test needs to reach exports what the test
 calls and starts only under `if (import.meta.main)`, so importing it runs
 nothing — `consumer-check.ts` is the first, for its leak scanner.
@@ -410,7 +433,7 @@ the script prints the restart command and restarts only with
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
 depend on bun-common). The `eslint.legacy.config.mjs` `TS2742`/`TS2883` portability
 hint is pre-existing noise — `scripts/typecheck.ts` filters it. There may be a
-couple of intentional `no-console` ESLint *warnings* (error logging in catch
+couple of intentional `no-console` *warnings* (error logging in catch
 blocks with no logger in scope); warnings do not fail lint.
 
 `packages/bun-jobs/bench/` is a **separate, unpublished package** with its own
@@ -419,7 +442,7 @@ blocks with no logger in scope); warnings do not fail lint.
 third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
 graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
 published package's dependency tree. `scripts/typecheck.ts` and
-`bun run lint:eslint` both cover it.
+bun-jobs' `bun run lint` both cover it.
 
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
@@ -529,9 +552,8 @@ type check. It is a standalone package like the bench ones — its own
   author's config reaches bun-jobs' source, and fails there.
 - **Lint.** `templates/eslint.legacy.config.mjs` (the packages' config, plus
   the `scripts/` exemption for the template's own `scripts/`), outside the
-  template so a copy carries none of the repo's lint dependencies; the
-  template's `lint:eslint` names it (`-c ../eslint.legacy.config.mjs`) until
-  PR E removes ESLint. `bun lint` reads the template's own
+  template so a copy carries none of the repo's lint dependencies; nothing
+  runs it since PR E, and PR F removes it. `bun lint` and `bun fmt` read the template's own
   `templates/compute-provider/bunfig.toml` (the root's rules without
   `eslint-plugin-regexp`, so it needs no dependency), found from the working
   directory up, so it wins when run from the template.
@@ -541,7 +563,7 @@ type check. It is a standalone package like the bench ones — its own
   ```bash
   cd templates/compute-provider
   bun install --frozen-lockfile && bun run test && bun scripts/check-types.ts
-  CI=1 bun run lint:eslint
+  bun run lint && bun run format:check
   ```
 
   plus `bun scripts/typecheck.ts` from the root. The test is the conformance
@@ -590,8 +612,8 @@ the only projects. There are also `packages/bun-common/bench`,
 third-party comparators from its own `node_modules`; the examples; the
 compute-provider template (`templates/tsconfig.json`); the root `scripts/`
 (`scripts/tsconfig.json`); and the VS Code extension for `bun lint` and
-`bun fmt` (`tools/vscode-bun-lint/`, opt-in until PR E of
-`docs/plans/bun-lint-fmt/`; its README says how to install it).
+`bun fmt` (`tools/vscode-bun-lint/`, the repository's editor integration
+since PR E of `docs/plans/bun-lint-fmt/`; its README says how to install it).
 
 The root `scripts/` were the last files no project claimed. The root
 `tsconfig.json` includes nothing, so an editor put them in an inferred project,
@@ -836,8 +858,8 @@ it to the examples session before merging.
 through `Bun.WebView`, against a real `createJobsApi`; they skip visibly when
 no Chrome is found (`BUN_CHROME_PATH` points at one).
 
-**Pre-merge gate:** `bun scripts/typecheck.ts`; `CI=1 bun run lint:eslint` in the
-package; `bun run test` plus `bun test --randomize` with a couple of seeds
+**Pre-merge gate:** `bun scripts/typecheck.ts`; `bun run lint` and
+`bun run format:check` in the package; `bun run test` plus `bun test --randomize` with a couple of seeds
 (serial — the only check left for order leaks, since `--parallel` isolates
 files); and
 `bun run-all.ts` in both `examples/bun-jobs-ui` and `examples/bun-nest`.
@@ -1253,9 +1275,9 @@ cannot succeed — a stub server reports both honestly rather than pretending.
 
 - Match the real framework's semantics exactly when emulating one (e.g.
   Express 5 `use`) — look up the spec, don't approximate.
-- Fix all ESLint errors with proper TypeScript types — no lazy `any`.
-- The ESLint config restores antfu's `^_` ignore pattern for
-  `unused-imports/no-unused-vars`: a leading underscore marks a deliberately
+- Fix all lint errors with proper TypeScript types — no lazy `any`.
+- The root `bunfig.toml` keeps antfu's `^_` ignore pattern for
+  `@typescript-eslint/no-unused-vars`: a leading underscore marks a deliberately
   unused binding (e.g. the mandatory 4th `next` param of an error handler).
 - Add tests for every change.
 - **Always document properties with a JSDoc description** — when creating a

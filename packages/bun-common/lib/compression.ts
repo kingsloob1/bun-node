@@ -68,8 +68,7 @@ export type CompressionEncoding = "br" | "zstd" | "gzip" | "deflate";
  * supported encoding. Typed so a misspelt encoding is a compile error.
  */
 export type CompressionEncodingsOption =
-  | "*"
-  | readonly (CompressionEncoding | "*")[];
+  "*" | readonly (CompressionEncoding | "*")[];
 
 /**
  * Decides whether a response may be compressed, as the package's `filter`.

@@ -311,8 +311,7 @@ export function createJobsApiWebSocket(
   const handler: BunWebSocketHandlerType<JobsApiSocketData> = {
     open(client) {
       const data = client.data?.custom as
-        | Partial<JobsApiSocketData>
-        | undefined;
+        Partial<JobsApiSocketData> | undefined;
       if (data?.request instanceof BunRequest) {
         release(data.request);
       }
@@ -407,8 +406,7 @@ export function createJobsApiWebSocket(
     // `getBunWebsocket()` returns whichever instance is current now, which is
     // the whole point. (`BunRequest` carries no router of its own.)
     const current = boundRouter?.getBunWebsocket() as
-      | BunWebSocket<JobsApiSocketData>
-      | undefined;
+      BunWebSocket<JobsApiSocketData> | undefined;
     const target = current ?? boundTo;
     if (!target) {
       return next(

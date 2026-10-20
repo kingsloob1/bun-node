@@ -492,8 +492,7 @@ function nestedEmission(
   path: string,
 ): { source: string; names: string[]; kinds: CaptureKind[] } | undefined {
   type Tagged =
-    | (FlatToken & { id: number })
-    | { type: "group"; tokens: Tagged[] };
+    (FlatToken & { id: number }) | { type: "group"; tokens: Tagged[] };
   let nextId = 0;
   const tag = (list: readonly ExpressPathToken[]): Tagged[] =>
     list.map((token) =>

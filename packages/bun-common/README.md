@@ -2119,7 +2119,8 @@ monorepo.
 ```bash
 bun scripts/typecheck.ts        # from the repo root: every project
 cd packages/bun-common
-bun run lint:eslint             # lint the whole package
+bun run lint                    # lint the whole package
+bun run format:check            # check the formatting
 bun test                        # tests
 ```
 

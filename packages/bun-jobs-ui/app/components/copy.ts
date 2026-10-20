@@ -84,7 +84,6 @@ export function toJsonSafe(value: unknown): unknown {
  */
 export function safeStringify(value: unknown, indent = 2): string {
   const text = JSON.stringify(toJsonSafe(value), null, indent) as
-    | string
-    | undefined;
+    string | undefined;
   return text ?? "undefined";
 }

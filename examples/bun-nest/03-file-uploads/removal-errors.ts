@@ -221,12 +221,10 @@ async function uploadThroughRejectingStorage(
   storage.hold();
   const reply = await within(
     5000,
-    send({ method: "POST", body }).then(
-      async (response): Promise<Reply> => ({
-        status: response.status,
-        body: await response.json(),
-      }),
-    ),
+    send({ method: "POST", body }).then(async (response): Promise<Reply> => ({
+      status: response.status,
+      body: await response.json(),
+    })),
   );
   show(`${how}: POST /uploads/avatar`, reply);
   checkEqual(`${how}: the handler's status and body arrive intact`, reply, {

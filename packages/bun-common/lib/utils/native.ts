@@ -33,9 +33,7 @@ export type JsonPrimitive = string | number | boolean | null;
 
 /** Any JSON document — a primitive, an array of them, or an object of them. */
 export type JsonValue =
-  | JsonPrimitive
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 /**
  * What `JSON.stringify` refuses to write: it drops such a property from an
@@ -57,11 +55,10 @@ type JsonifyProperty<V> =
     ? V
     : unknown extends V
       ? JsonValue | undefined
-      :
-          | JsonifyValue<Exclude<V, JsonUnrepresentable>>
-          | ([Extract<V, JsonUnrepresentable>] extends [never]
-              ? never
-              : undefined);
+      : | JsonifyValue<Exclude<V, JsonUnrepresentable>>
+        | ([Extract<V, JsonUnrepresentable>] extends [never]
+            ? never
+            : undefined);
 
 /** An array element after JSON: an unrepresentable element becomes `null`. */
 type JsonifyElement<E> =
@@ -2191,9 +2188,7 @@ export interface XmlElement<L extends XmlPrimitive = XmlPrimitive> {
 
 /** Any value in a parsed XML document: a leaf, an element, or repeated siblings. */
 export type XmlNode<L extends XmlPrimitive = XmlPrimitive> =
-  | L
-  | XmlElement<L>
-  | (L | XmlElement<L>)[];
+  L | XmlElement<L> | (L | XmlElement<L>)[];
 
 /** What {@link parseXmlToObject} returns: the root element's value under its name. */
 export type XmlDocument<L extends XmlPrimitive = XmlPrimitive> = Record<
@@ -2877,14 +2872,7 @@ function safeStringify(value: unknown): string {
  * `dictionaries` — `dcb` and `dcz`. `identity` is the absence of a coding.
  */
 export type SupportedContentEncoding =
-  | "identity"
-  | "gzip"
-  | "x-gzip"
-  | "deflate"
-  | "br"
-  | "zstd"
-  | "dcb"
-  | "dcz";
+  "identity" | "gzip" | "x-gzip" | "deflate" | "br" | "zstd" | "dcb" | "dcz";
 
 /**
  * The dictionary-compressed codings of RFC 9842: `dcb` (Dictionary-Compressed
@@ -2900,8 +2888,7 @@ export type DictionaryContentEncoding = "dcb" | "dcz";
  * defines `*` for `Accept-Encoding` only, so it is an unknown coding.)
  */
 export type ContentEncodingAllowlist =
-  | "*"
-  | readonly (SupportedContentEncoding | "*")[];
+  "*" | readonly (SupportedContentEncoding | "*")[];
 
 /**
  * Finds the dictionary a `dcb`/`dcz` body was compressed with, from the
@@ -2921,8 +2908,7 @@ export type CompressionDictionaryResolver = (
  * the first time it is used, so replace it rather than mutating it.
  */
 export type CompressionDictionaries =
-  | readonly Uint8Array[]
-  | CompressionDictionaryResolver;
+  readonly Uint8Array[] | CompressionDictionaryResolver;
 
 /** Options for {@link decompressBody}. */
 export interface DecompressBodyOptions {

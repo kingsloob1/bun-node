@@ -157,8 +157,8 @@ for (const backend of BACKENDS) {
         ),
       ).toEqual([0, 0]);
 
-      const records = lines.map(
-        (own) => own.find((line) => line.event === "record")!,
+      const records = lines.map((own) =>
+        own.find((line) => line.event === "record")!,
       );
       const summoned = records.filter((record) => record.summon !== null);
       const plain = records.filter((record) => record.summon === null);

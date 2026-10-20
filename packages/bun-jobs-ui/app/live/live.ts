@@ -40,11 +40,7 @@ import { LiveContext } from "./context";
  *   it will keep refusing); no more retries until reload.
  */
 export type LiveState =
-  | "off"
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "refused";
+  "off" | "connecting" | "live" | "reconnecting" | "refused";
 
 /** What the header badge and the polling fallback read. */
 export interface LiveStatus {

@@ -1,0 +1,4 @@
+{
+  "recommendations": ["kingsleyweb.vscode-bun-lint"],
+  "unwantedRecommendations": ["dbaeumer.vscode-eslint"]
+}

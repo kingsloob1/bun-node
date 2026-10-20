@@ -102,10 +102,7 @@ export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
  * {@link WorkerTargetFactory} for a target this package does not ship.
  */
 export type WorkerTarget =
-  | WorkerTargetMode
-  | LocalWorkerTarget
-  | ContainerTarget
-  | WorkerTargetFactory;
+  WorkerTargetMode | LocalWorkerTarget | ContainerTarget | WorkerTargetFactory;
 
 export type { ContainerTarget } from "./container/target";
 
@@ -116,9 +113,7 @@ export type { ContainerTarget } from "./container/target";
  * from plain JavaScript.
  */
 export type LocalWorkerTarget =
-  | InProcessTarget
-  | WorkerThreadTarget
-  | ChildProcessTarget;
+  InProcessTarget | WorkerThreadTarget | ChildProcessTarget;
 
 /** `"in-process"` as an object, so every local mode has one. */
 export interface InProcessTarget {

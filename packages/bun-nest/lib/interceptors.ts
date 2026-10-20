@@ -61,9 +61,9 @@ export const getMultipartRequest = (ctx: HttpArgumentsHost) => {
   const req = ctx.getRequest<BunMultipartRequest>();
 
   const contentType = req.headersObj.get("content-type");
-  if (
-    !(isString(contentType) && contentType.includes("multipart/form-data;"))
-  ) {
+  if (!(
+    isString(contentType) && contentType.includes("multipart/form-data;")
+  )) {
     throw new BadRequestException("Not a multipart request");
   }
 
@@ -299,8 +299,7 @@ let rejectedByPipes: ((request: unknown) => boolean) | null | undefined;
  * answer, not an error.
  */
 export function nestIsRejectedByPipes():
-  | ((request: unknown) => boolean)
-  | undefined {
+  ((request: unknown) => boolean) | undefined {
   if (rejectedByPipes === undefined) {
     try {
       const internal = requireFromHere("@nestjs/core/internal") as {

@@ -137,6 +137,7 @@ and tries every value `jobsUi()` refuses, which must throw a `ConfigError`.
 ```bash
 bun scripts/typecheck.ts        # from the repo root — includes examples/bun-jobs-ui
 cd examples/bun-jobs-ui
-bun run lint:eslint             # the package's lint rules, minus no-console
+bun run lint                    # the package's lint rules, minus no-console
+bun run format:check            # bun fmt --check
 bun run-all.ts                  # run them all
 ```

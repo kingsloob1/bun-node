@@ -1084,8 +1084,7 @@ check(
 );
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: it adds the `req` the next check reads (TS2339 without it)
 const logged = clientErrorLogs[0]?.error as
-  | (Error & { req?: unknown })
-  | undefined;
+  (Error & { req?: unknown }) | undefined;
 check(
   "…with err.req still readable, but hidden from Object.keys",
   logged?.req !== undefined && !Object.keys(logged ?? {}).includes("req"),
@@ -1569,8 +1568,7 @@ let bareRouteRan = false;
 bareRouter.post("/echo", (req, res) => {
   bareRouteRan = true;
   const refused = req.bodyDecodingError as
-    | (Error & { status: number; type: string })
-    | undefined;
+    (Error & { status: number; type: string }) | undefined;
   res.json({
     body: req.body === undefined ? "undefined" : describeBody(req),
     refused: refused ? [refused.name, refused.status, refused.type] : null,
@@ -1648,8 +1646,7 @@ const optInRan: string[] = [];
 const seeRefusal: RouterHandler = (req, res) => {
   optInRan.push(req.path);
   const refused = req.bodyDecodingError as
-    | (Error & { status: number; type?: string })
-    | undefined;
+    (Error & { status: number; type?: string }) | undefined;
   res.json({
     body: req.body === undefined ? "unset" : describeBody(req),
     refused: refused

@@ -5,13 +5,7 @@ import { STATE_LABELS } from "../../format";
 
 /** A job action whose failures get a plain-language explanation. */
 export type JobAction =
-  | "retry"
-  | "promote"
-  | "remove"
-  | "update"
-  | "add"
-  | "fail"
-  | "clearLogs";
+  "retry" | "promote" | "remove" | "update" | "add" | "fail" | "clearLogs";
 
 /** The past participle of each action, for "cannot be …". */
 const VERBS: Readonly<Record<JobAction, string>> = {

@@ -124,8 +124,7 @@ export class BunRunnerManager {
     // The registry holds runners of every declared type, so the caller names
     // the one it registered; nothing at runtime can check it.
     return this.#runners.get(id) as
-      | BunRunner<TArgs, TResult, TToHandler, TFromHandler>
-      | undefined;
+      BunRunner<TArgs, TResult, TToHandler, TFromHandler> | undefined;
   }
 
   /** Every registered runner. */

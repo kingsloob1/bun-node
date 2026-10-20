@@ -27,15 +27,15 @@ Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
 Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
 `packages/bun-jobs`, `packages/bun-jobs-ui`), from that package's directory:
 
-2. **Lint** — `CI=1 bun run lint:eslint` (ESLint over the whole package, with
-   `-c eslint.legacy.config.mjs`; a bare `bunx eslint .` finds no config).
-   Must report **0 errors**. A small number of intentional `no-console`
-   *warnings* (error logging in catch blocks with no logger in scope) are
-   acceptable — warnings do not fail the gate. Auto-fix formatting with
-   `bun run lint:eslint --fix` when only style errors remain (not `bun fmt`,
-   which disagrees with ESLint's Prettier until the bun-lint-fmt flip, PR E).
-   `bun run lint` (`bun lint`) runs too, and reports findings that each owner
-   fixes before the flip; it gates nothing yet.
+2. **Lint and format** — `bun run lint` (`bun lint`, type-aware, over the
+   whole package, against the root `bunfig.toml`) must report **0 errors**;
+   warnings do not fail the gate. Then `bun run format:check` (`bun fmt
+   --check`) must be clean; `bun run format` formats. Never let `bun lint
+   --fix` edit one of the four `scripts/build-declarations.ts` or
+   `tsconfig.build.json` copies alone (the same change to all four, or none),
+   and never autofix `@typescript-eslint/no-duplicate-type-constituents` (its
+   fix deletes compile-time guards). ESLint is no longer run (bun-lint-fmt
+   PR E).
 
 3. **Test** — `bun test`
    Every test must pass.
@@ -43,9 +43,9 @@ Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
 If you changed **`bun-common`**, always run steps 2 and 3 for **`bun-nest`**
 and **`bun-jobs`** too — both depend on bun-common at the source level.
 
-If you changed anything in the root **`scripts/`**, lint it from there:
-`bun run lint:eslint:scripts` from the root (0 errors; its config turns
-`no-console` off, so 0 warnings too). Step 1 already typechecks it.
+If you changed anything in the root **`scripts/`**, check it from the root:
+`bun run lint:scripts` (0 errors) and `bun run format:check:scripts`. Step 1
+already typechecks it.
 
 ## Conventions to uphold
 
@@ -65,5 +65,5 @@ If you changed anything in the root **`scripts/`**, lint it from there:
 ## Report
 
 Summarise the repo typecheck (clean / errors), then per package: lint (error
-count) and tests (pass/fail counts), plus `scripts/` lint when it changed.
+count, format check) and tests (pass/fail counts), plus `scripts/` lint when it changed.
 Call out any failure with the offending output.

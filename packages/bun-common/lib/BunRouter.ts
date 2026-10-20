@@ -93,8 +93,7 @@ export interface RouteSpecificityEntry {
  *   stable sort, so handlers it rates equal keep their registration order.
  */
 export type RouteSpecificityOption =
-  | boolean
-  | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
+  boolean | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
 
 /**
  * A route paired with its callbacks.
@@ -563,10 +562,7 @@ export type UnmountedRouter = Router & {
 type GroupCallback = (router: never) => void;
 
 export type FetchInput =
-  | string
-  | URL
-  | Request
-  | (RequestInit & { url: string | URL });
+  string | URL | Request | (RequestInit & { url: string | URL });
 
 /** Origin used when {@link BunRouter.fetch} is given a bare path. */
 const FETCH_DEFAULT_ORIGIN = "http://localhost";
@@ -1615,12 +1611,10 @@ export class BunRouter<
     path: string,
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
     fnOrOptions?:
-      | WebSocketRouteOptions<TCustom>
-      | WebSocketCustomDataFn<TCustom>,
+      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
   ): this {
     const bunWebSocket = this.getBunWebsocket() as
-      | BunWebSocket<TCustom>
-      | undefined;
+      BunWebSocket<TCustom> | undefined;
     if (!bunWebSocket) {
       throw new Error(
         `ws("${path}"): no BunWebSocket is attached to this router. Pass the ` +
@@ -5737,10 +5731,7 @@ export class BunRouter<
   dispatch(
     options: PipelineOptions,
   ):
-    | matchedRoute
-    | true
-    | undefined
-    | Promise<matchedRoute | true | undefined> {
+    matchedRoute | true | undefined | Promise<matchedRoute | true | undefined> {
     const state = this.#startPipeline(options, undefined);
     const result = this.#run(state);
     return result === PARKED

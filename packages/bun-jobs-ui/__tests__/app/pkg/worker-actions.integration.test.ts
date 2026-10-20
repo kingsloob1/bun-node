@@ -369,8 +369,7 @@ describe("a worker's row against a real API", () => {
     await until(
       async () => {
         const config = (await reported(queue)).config as
-          | { overridden: string[] }
-          | undefined;
+          { overridden: string[] } | undefined;
         return config?.overridden.includes("concurrency") === true;
       },
       () => "the worker never reported the override",
@@ -402,8 +401,7 @@ describe("a worker's row against a real API", () => {
     await until(
       async () => {
         const config = (await reported(queue)).config as
-          | { overridden: string[] }
-          | undefined;
+          { overridden: string[] } | undefined;
         return config?.overridden.length === 0;
       },
       () => "the worker never dropped the override",

@@ -92,8 +92,7 @@ interface SummonPolicyMap {
  * of its queues: an array entry's `queues`, or a record's one queue.
  */
 export type SummonOption =
-  | SummonPolicyMap
-  | readonly (SummonGroup | SummonPolicyRecord)[];
+  SummonPolicyMap | readonly (SummonGroup | SummonPolicyRecord)[];
 
 /** Whether `value` is a non-null, non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {

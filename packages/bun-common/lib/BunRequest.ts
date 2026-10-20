@@ -133,12 +133,7 @@ export type QueryParserOpts =
  * untouched as a raw `Buffer`.
  */
 export type ContentParserType =
-  | "json"
-  | "urlencoded"
-  | "xml"
-  | "multipart"
-  | "text"
-  | "raw";
+  "json" | "urlencoded" | "xml" | "multipart" | "text" | "raw";
 
 /**
  * The recognized {@link ContentParserType} kinds, used to filter out invalid
@@ -996,8 +991,7 @@ type SocketListener = (...args: unknown[]) => void;
 
 /** Any listener the socket accepts, typed or not. */
 type AnySocketListener =
-  | BunRequestSocketEvents[keyof BunRequestSocketEvents]
-  | SocketListener;
+  BunRequestSocketEvents[keyof BunRequestSocketEvents] | SocketListener;
 
 /** An event name that is not one of {@link BunRequestSocketEvents}. */
 type UntypedSocketEvent<E extends string> =
@@ -1710,13 +1704,8 @@ export class BunRequest<
   #method: string | undefined = undefined;
   public _route: BunRequestInterface["route"] | undefined = undefined;
   private _contentType:
-    | "json"
-    | "text"
-    | "buffer"
-    | "form"
-    | "xml"
-    | "multipart"
-    | undefined = undefined;
+    "json" | "text" | "buffer" | "form" | "xml" | "multipart" | undefined =
+    undefined;
 
   /**
    * Normalized set of body-parser kinds permitted by `allowedContentTypes` or
@@ -1762,8 +1751,7 @@ export class BunRequest<
    * present when at least one kind supplies an object config.
    */
   get #perTypeConfig():
-    | Map<ContentParserType, PerTypeParserConfig>
-    | undefined {
+    Map<ContentParserType, PerTypeParserConfig> | undefined {
     return this.#resolvedBodyConfig().perTypeConfig;
   }
 
@@ -1929,9 +1917,7 @@ export class BunRequest<
   private _buffer: Buffer | undefined = undefined;
   /** Uploaded files — lazily allocated; only multipart requests populate it. */
   get #storageFiles():
-    | StorageFile[]
-    | Record<string, StorageFile[]>
-    | undefined {
+    StorageFile[] | Record<string, StorageFile[]> | undefined {
     const holder = this.#state;
     return holder === undefined ? undefined : holder.storageFiles;
   }
@@ -4110,8 +4096,7 @@ export class BunRequest<
     kind: K,
   ): ContentTypeParserOptsMap[K] | undefined {
     return this.#perTypeConfig?.get(kind)?.opts as
-      | ContentTypeParserOptsMap[K]
-      | undefined;
+      ContentTypeParserOptsMap[K] | undefined;
   }
 
   /**

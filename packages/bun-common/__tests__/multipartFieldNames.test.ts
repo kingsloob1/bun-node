@@ -20,8 +20,7 @@ import {
 import { makeRequest } from "./helpers";
 
 type Part =
-  | [name: string, value: string]
-  | [name: string, file: Blob, filename: string];
+  [name: string, value: string] | [name: string, file: Blob, filename: string];
 
 /** A multipart request carrying `parts`, in order. */
 function form(...parts: Part[]) {

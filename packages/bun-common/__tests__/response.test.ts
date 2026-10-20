@@ -977,7 +977,9 @@ describe("BunResponse: Express parity", () => {
   });
 
   it("json() gets the automatic ETag and revalidates to 304", async () => {
-    const first = await (await makeResponse())
+    const first = await (
+      await makeResponse()
+    )
       .setEtag()
       .json({ a: 1 })
       .getNativeResponse(0);

@@ -550,13 +550,27 @@ code {
   flex: none;
 }
 
-.state-waiting { --state-color: var(--state-waiting); }
-.state-delayed { --state-color: var(--state-delayed); }
-.state-active { --state-color: var(--state-active); }
-.state-completed { --state-color: var(--state-completed); }
-.state-failed { --state-color: var(--state-failed); }
-.state-dead { --state-color: var(--state-dead); }
-.state-waiting-children { --state-color: var(--state-waiting-children); }
+.state-waiting {
+  --state-color: var(--state-waiting);
+}
+.state-delayed {
+  --state-color: var(--state-delayed);
+}
+.state-active {
+  --state-color: var(--state-active);
+}
+.state-completed {
+  --state-color: var(--state-completed);
+}
+.state-failed {
+  --state-color: var(--state-failed);
+}
+.state-dead {
+  --state-color: var(--state-dead);
+}
+.state-waiting-children {
+  --state-color: var(--state-waiting-children);
+}
 
 /* Stats */
 .overview-summary {

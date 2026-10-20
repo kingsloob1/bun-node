@@ -300,10 +300,9 @@ type PathParamsOf<Keys> = Keys extends [
         { [K in Required]: string } & {
           [K in Exclude<Optional, Required | Wildcards>]?: string;
         } & { [K in Exclude<Wildcards, Required>]: string[] } & {
-          [K in Exclude<
-            OptionalWildcards,
-            Required | Optional | Wildcards
-          >]?: string[];
+          [
+            K in Exclude<OptionalWildcards, Required | Optional | Wildcards>
+          ]?: string[];
         }
       >
   : NoParams;

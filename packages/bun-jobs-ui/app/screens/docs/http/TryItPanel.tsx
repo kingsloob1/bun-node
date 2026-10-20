@@ -310,8 +310,7 @@ function Snippets({
   request,
 }: {
   /** The request, when the form is complete. */ request:
-    | TryItRequest
-    | undefined;
+    TryItRequest | undefined;
 }) {
   const config = useUiConfig();
   const [tab, setTab] = useState<SnippetTab>("curl");

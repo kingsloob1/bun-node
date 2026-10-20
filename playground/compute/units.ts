@@ -57,11 +57,7 @@ import { ConfigError } from "@kingsleyweb/bun-jobs";
 
 /** Faults injected into a unit, through its environment (`LOCAL_COMPUTE_FAULT`). */
 export type UnitFault =
-  | "crash"
-  | "die"
-  | "slow-boot"
-  | "ignore-stop"
-  | "forget-queue";
+  "crash" | "die" | "slow-boot" | "ignore-stop" | "forget-queue";
 
 /** Faults the vault provider answers with, before any unit starts. */
 export type ProviderFault = "throttled" | "quota" | "auth" | "transient";
@@ -418,7 +414,7 @@ export class UnitBoard {
         .map((status) => status.handle),
     );
     let excess = this.#units.length - KEEP;
-    for (let index = 0; index < this.#units.length && excess > 0; ) {
+    for (let index = 0; index < this.#units.length && excess > 0;) {
       if (ended.has(this.#units[index].handle)) {
         this.#units.splice(index, 1);
         excess--;

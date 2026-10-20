@@ -190,9 +190,7 @@ const CREDENTIAL_SHAPES = textRedactor([]);
 
 /** Why a `describe()` fact is not served, by {@link factProblem}. */
 export type FactProblem =
-  | "credential-key"
-  | "url-userinfo"
-  | "credential-shape";
+  "credential-key" | "url-userinfo" | "credential-shape";
 
 /**
  * Internal: the one rule for a `describe()` fact, shared by the status

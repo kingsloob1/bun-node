@@ -363,9 +363,7 @@ export interface JobsApiPingMessage {
 
 /** Anything a client may send. */
 export type JobsApiClientMessage =
-  | JobsApiSubscribeMessage
-  | JobsApiUnsubscribeMessage
-  | JobsApiPingMessage;
+  JobsApiSubscribeMessage | JobsApiUnsubscribeMessage | JobsApiPingMessage;
 
 /** Sent once, on open. */
 export interface JobsApiHelloMessage {

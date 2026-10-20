@@ -14,7 +14,8 @@
 // `reportUnusedDisableDirectives = "warn"` still reports those directives when
 // they are unused.
 
-const UNUSED = /^Unused eslint-disable directive \(no problems were reported from '([^']+)'\)\.?$/;
+const UNUSED =
+  /^Unused eslint-disable directive \(no problems were reported from '([^']+)'\)\.?$/;
 const CODE = ["**/*.?([cm])[jt]s?(x)"];
 
 /**
