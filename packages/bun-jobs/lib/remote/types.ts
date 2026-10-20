@@ -212,9 +212,7 @@ export interface RemoteRejectedOutcome {
 
 /** One job's outcome in an `invoke-result`. A job left out is `unknown`: its lease lapses. */
 export type RemoteOutcome =
-  | RemoteResultOutcome
-  | RemoteFailOutcome
-  | RemoteRejectedOutcome;
+  RemoteResultOutcome | RemoteFailOutcome | RemoteRejectedOutcome;
 
 /** A retained outcome, as a `status-result` repeats it: the outcome without its job and attempt. */
 export type RemoteRetainedOutcome =
@@ -237,10 +235,7 @@ export interface RemoteAttemptStatus {
 
 /** Why the gateway cancels an attempt. */
 export type RemoteCancelReason =
-  | "timeout"
-  | "lock-lost"
-  | "closing"
-  | "cancelled";
+  "timeout" | "lock-lost" | "closing" | "cancelled";
 
 /** One attempt's answer in a `cancel-result`. */
 export interface RemoteCancelledJob {

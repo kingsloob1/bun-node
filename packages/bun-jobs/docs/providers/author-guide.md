@@ -487,8 +487,7 @@ export async function acmeError(
   now: number,
 ): Promise<ProviderError> {
   const body = (await response.json().catch(() => undefined)) as
-    | { error?: { code?: unknown } }
-    | undefined;
+    { error?: { code?: unknown } } | undefined;
   const platformCode = platformCodeOf(body?.error?.code);
   const kind =
     (platformCode === undefined ? undefined : BY_CODE[platformCode]) ??

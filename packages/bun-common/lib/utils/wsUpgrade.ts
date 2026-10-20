@@ -55,9 +55,7 @@ export function mergeUpgradeHeaders(
  */
 export function toUpgradeHook<TCustom>(
   fn:
-    | WebSocketUpgradeHook<TCustom>
-    | WebSocketCustomDataFn<TCustom>
-    | undefined,
+    WebSocketUpgradeHook<TCustom> | WebSocketCustomDataFn<TCustom> | undefined,
   kind: "hook" | "custom",
 ): WebSocketUpgradeHook<TCustom> | undefined {
   if (!isFunction(fn)) {
@@ -79,9 +77,7 @@ export function toUpgradeHook<TCustom>(
  */
 export function routeUpgradeHook<TCustom>(
   fnOrOptions:
-    | WebSocketRouteOptions<TCustom>
-    | WebSocketCustomDataFn<TCustom>
-    | undefined,
+    WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom> | undefined,
 ): WebSocketUpgradeHook<TCustom> | undefined {
   if (isFunction(fnOrOptions)) {
     return toUpgradeHook(fnOrOptions, "custom");

@@ -73,8 +73,7 @@ class QueuesController {
   pause(@Req() req: BunRequest, @Body() body: unknown) {
     calls.handler++;
     const refused = req.bodyDecodingError as
-      | (Error & { status: number; type?: string })
-      | undefined;
+      (Error & { status: number; type?: string }) | undefined;
     if (refused) {
       throw new BadRequestException({
         code: "INVALID_JSON",

@@ -288,7 +288,9 @@ async function explain(event: CommandStartedEvent): Promise<PlanEvidence> {
       : { projection: command.projection }),
   };
 
-  const result = await (await monitoredClient())
+  const result = await (
+    await monitoredClient()
+  )
     .db()
     .command({ explain: explained, verbosity: "executionStats" });
 

@@ -91,9 +91,7 @@ export interface Storage<T extends StorageFile = StorageFile, K = unknown> {
 }
 
 export type UploadFilterFile =
-  | DiskStorageFile
-  | MemoryStorageFile
-  | StorageFile;
+  DiskStorageFile | MemoryStorageFile | StorageFile;
 
 export type UploadFilterHandler = (
   req: BunRequest,

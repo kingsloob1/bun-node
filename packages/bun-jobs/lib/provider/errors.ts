@@ -30,12 +30,7 @@ import { ConfigError, JobsError } from "../shared/errors";
  *   `error` log saying so.
  */
 export type ProviderErrorKind =
-  | "transient"
-  | "throttled"
-  | "quota"
-  | "auth"
-  | "misconfigured"
-  | "conflict";
+  "transient" | "throttled" | "quota" | "auth" | "misconfigured" | "conflict";
 
 /** Every {@link ProviderErrorKind}, for the constructor's check. */
 const KINDS: ReadonlySet<string> = new Set<ProviderErrorKind>([

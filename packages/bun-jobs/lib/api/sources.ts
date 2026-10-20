@@ -45,11 +45,7 @@ function notConfigured(name: string): ApiError {
 
 /** Which kind of name a segment is. */
 export type SegmentKind =
-  | "queue"
-  | "runner"
-  | "worker"
-  | "worker key"
-  | "group";
+  "queue" | "runner" | "worker" | "worker key" | "group";
 
 /** What each kind is called in the message a bad segment is refused with. */
 const SEGMENT_LABELS: Record<SegmentKind, string> = {

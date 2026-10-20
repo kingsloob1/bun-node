@@ -2213,10 +2213,7 @@ export interface AnalyticsRangeQuery {
  *   records minutes only).
  */
 export type AnalyticsClampReason =
-  | "retention"
-  | "maxBuckets"
-  | "resolution"
-  | "driver";
+  "retention" | "maxBuckets" | "resolution" | "driver";
 
 /** What the request asked for, echoed in {@link AnalyticsRangeDto}. */
 export interface AnalyticsRangeRequestedDto {

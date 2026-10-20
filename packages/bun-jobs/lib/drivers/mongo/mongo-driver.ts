@@ -3555,9 +3555,10 @@ export class MongoDriver implements JobsDriver {
     // written (and whoever wrote since left the values asked for); any other
     // left the walked states or changed before its write, and is `moved`.
     const now = await jobs
-      .find<
-        Pick<JobDocument, "_id" | "opts">
-      >({ _id: { $in: [...planned.keys()] } }, { projection: { _id: 1, opts: 1 } })
+      .find<Pick<JobDocument, "_id" | "opts">>(
+        { _id: { $in: [...planned.keys()] } },
+        { projection: { _id: 1, opts: 1 } },
+      )
       .toArray();
     const stored = new Map(now.map((found) => [found._id, found.opts]));
 

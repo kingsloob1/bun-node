@@ -3,12 +3,7 @@ import { cx } from "./classNames";
 
 /** Colour of a {@link Badge}. */
 export type BadgeTone =
-  | "neutral"
-  | "info"
-  | "success"
-  | "warning"
-  | "danger"
-  | "accent";
+  "neutral" | "info" | "success" | "warning" | "danger" | "accent";
 
 /** Props of {@link Badge}. */
 export interface BadgeProps {

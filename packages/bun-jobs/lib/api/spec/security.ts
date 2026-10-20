@@ -25,8 +25,7 @@ export interface OpenApiSecurity {
  */
 export function openApiSecurity(
   docs:
-    | Pick<ResolvedJobsApiDocsOptions, "securitySchemes" | "security">
-    | false,
+    Pick<ResolvedJobsApiDocsOptions, "securitySchemes" | "security"> | false,
 ): OpenApiSecurity {
   const schemes = docs === false ? undefined : docs.securitySchemes;
   if (!schemes || Object.keys(schemes).length === 0) {

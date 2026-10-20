@@ -202,9 +202,15 @@
   pointer-events: auto;
 }
 
-.toast-success { --toast-color: var(--state-completed); }
-.toast-error { --toast-color: var(--danger); }
-.toast-info { --toast-color: var(--accent); }
+.toast-success {
+  --toast-color: var(--state-completed);
+}
+.toast-error {
+  --toast-color: var(--danger);
+}
+.toast-info {
+  --toast-color: var(--accent);
+}
 
 .toast-text {
   flex: 1;
@@ -497,15 +503,29 @@
   transform: rotate(90deg);
 }
 
-.json-key { color: var(--json-key); font-weight: 550; }
-.json-string { color: var(--json-string); }
-.json-number { color: var(--json-number); }
-.json-boolean { color: var(--json-boolean); }
+.json-key {
+  color: var(--json-key);
+  font-weight: 550;
+}
+.json-string {
+  color: var(--json-string);
+}
+.json-number {
+  color: var(--json-number);
+}
+.json-boolean {
+  color: var(--json-boolean);
+}
 .json-null,
 .json-undefined,
 .json-other,
-.json-circular { color: var(--json-null); font-style: italic; }
-.json-punct { color: var(--text-muted); }
+.json-circular {
+  color: var(--json-null);
+  font-style: italic;
+}
+.json-punct {
+  color: var(--text-muted);
+}
 
 .json-summary {
   margin: 0 var(--space-1);

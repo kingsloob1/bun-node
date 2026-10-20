@@ -15,13 +15,7 @@ import { coerceForTypes } from "./coerce";
 
 /** The JSON types a node may name. */
 export type JsonSchemaType =
-  | "string"
-  | "integer"
-  | "number"
-  | "boolean"
-  | "object"
-  | "array"
-  | "null";
+  "string" | "integer" | "number" | "boolean" | "object" | "array" | "null";
 
 /** A JSON primitive, as `const` and `enum` hold. */
 export type JsonPrimitive = string | number | boolean | null;

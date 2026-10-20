@@ -314,10 +314,7 @@ function isValidationError(error: unknown): error is ValidationError {
  * the generic title.
  */
 export type ProblemCallSite =
-  | "setLimits"
-  | "jobInput"
-  | "limitsInput"
-  | "jobDefaults";
+  "setLimits" | "jobInput" | "limitsInput" | "jobDefaults";
 
 /**
  * Narrows an error by where it was thrown. Returns an {@link ApiError} when the

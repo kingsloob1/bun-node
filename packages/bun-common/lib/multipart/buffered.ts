@@ -134,8 +134,7 @@ export interface BufferedMultipartFile {
 
 /** One part, in body order. */
 export type BufferedMultipartPart =
-  | BufferedMultipartField
-  | BufferedMultipartFile;
+  BufferedMultipartField | BufferedMultipartFile;
 
 const MAX_HEADER_PAIRS = 2000;
 const MAX_HEADER_SIZE = 16 * 1024;

@@ -287,8 +287,7 @@ export function scheduleFieldErrors(
   let other: string | undefined;
   for (const [path, message] of Object.entries(fieldErrors)) {
     const leaf = /^schedule\.(cron|tz|every|anchor|at)\b/.exec(path)?.[1] as
-      | ScheduleField
-      | undefined;
+      ScheduleField | undefined;
     const field = leaf ?? mainField(mode);
     if (field) {
       fields[field] ??= message;

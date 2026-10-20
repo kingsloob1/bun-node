@@ -2597,8 +2597,8 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
     !meta.readOnly && can(permissions, action);
   const parent = GATES.find((other) => other.name === gate.extends);
   const screen = GATES.find((other) => other.name === gate.on);
-  const needed = (gate.needsOf ?? []).map(
-    (name) => GATES.find((other: Gate) => other.name === name)!,
+  const needed = (gate.needsOf ?? []).map((name) =>
+    GATES.find((other: Gate) => other.name === name)!,
   );
   return (
     (parent === undefined || isOpen(parent, inputs)) &&
@@ -3877,8 +3877,7 @@ function wsItems(document: SpecDocument) {
           ([name, parameter]) => [
             name,
             objectOf(objectOf(parameter)?.["x-bun-jobs-schema"]) as
-              | ParameterSchema
-              | undefined,
+              ParameterSchema | undefined,
           ],
         ),
       ),
@@ -8834,15 +8833,13 @@ checkEqual(
   [providerNoValidate, providerReadOnly, providerRefuseValidate].map((host) =>
     cardElements(host),
   ),
-  [0, 1, 2].map(
-    (): Record<string, [boolean, boolean]> => ({
-      [PROVIDER_IDS.record]: [false, false],
-      [PROVIDER_IDS.ready]: [false, true],
-      [PROVIDER_IDS.failed]: [false, true],
-      [PROVIDER_IDS.pending]: [false, true],
-      [PROVIDER_IDS.plain]: [false, false],
-    }),
-  ),
+  [0, 1, 2].map((): Record<string, [boolean, boolean]> => ({
+    [PROVIDER_IDS.record]: [false, false],
+    [PROVIDER_IDS.ready]: [false, true],
+    [PROVIDER_IDS.failed]: [false, true],
+    [PROVIDER_IDS.pending]: [false, true],
+    [PROVIDER_IDS.plain]: [false, false],
+  })),
 );
 
 // Behind the buttons. The pending Cumulus is not tested: its preflight waits

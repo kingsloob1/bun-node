@@ -23,10 +23,7 @@ export type QueryScalar = string | number | boolean;
  * `null` are left out.
  */
 export type QueryValue =
-  | QueryScalar
-  | readonly QueryScalar[]
-  | null
-  | undefined;
+  QueryScalar | readonly QueryScalar[] | null | undefined;
 
 /** The query of one request. */
 export type QueryParams = Readonly<Record<string, QueryValue>>;

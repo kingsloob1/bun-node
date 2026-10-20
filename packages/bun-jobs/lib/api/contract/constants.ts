@@ -385,9 +385,7 @@ export const EVENT_TYPES = [
   "state",
   "config",
 ] as const satisfies readonly (
-  | QueueEventName
-  | RunnerEventName
-  | WorkerEventName
+  QueueEventName | RunnerEventName | WorkerEventName
 )[];
 
 /** Any event name a subscription can filter on. */

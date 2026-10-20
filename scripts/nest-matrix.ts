@@ -115,8 +115,7 @@ export interface MatrixArgs {
 
 /** {@link parseArgs}' answer: the arguments, or why they are unusable. */
 export type ParsedArgs =
-  | { ok: true; args: MatrixArgs }
-  | { ok: false; error: string };
+  { ok: true; args: MatrixArgs } | { ok: false; error: string };
 
 /** A version a matrix directory can be named after: exact, no range. */
 const VERSION = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;

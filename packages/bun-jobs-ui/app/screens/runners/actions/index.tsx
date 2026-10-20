@@ -30,13 +30,7 @@ export interface RunnerActionsProps {
 
 /** Which dialog is open. */
 type OpenDialog =
-  | "trigger"
-  | "resume"
-  | "schedule"
-  | "config"
-  | "kill"
-  | "reset"
-  | null;
+  "trigger" | "resume" | "schedule" | "config" | "kill" | "reset" | null;
 
 /**
  * The action buttons (and their dialogs) for one runner, each present only

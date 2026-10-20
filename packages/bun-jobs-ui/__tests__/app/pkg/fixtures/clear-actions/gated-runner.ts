@@ -18,8 +18,7 @@ export default defineHandler<{ hold?: string }, { held: boolean }>(
       return { held: false };
     }
     const gates = (globalThis as Record<symbol, unknown>)[GATES] as
-      | Map<string, Promise<void>>
-      | undefined;
+      Map<string, Promise<void>> | undefined;
     const gate = gates?.get(name);
     if (!gate) {
       throw new Error(`no gate named ${name}`);

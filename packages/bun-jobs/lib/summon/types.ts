@@ -31,12 +31,7 @@ export type {
 
 /** Why a check ran. */
 export type SummonReason =
-  | "add"
-  | "event"
-  | "poll"
-  | "schedule"
-  | "manual"
-  | "timer";
+  "add" | "event" | "poll" | "schedule" | "manual" | "timer";
 
 /** What one attempt ended as, as recorded on the marker and in `summon` events. */
 export type SummonOutcomeKind =

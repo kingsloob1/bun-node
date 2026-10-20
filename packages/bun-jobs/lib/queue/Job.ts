@@ -664,11 +664,7 @@ export class Job<TData = unknown, TResult = unknown> {
   /** The driver, checked to implement an optional method a caller needs. */
   #require(
     method:
-      | "updateJob"
-      | "addJobLog"
-      | "getJobLogs"
-      | "clearJobLogs"
-      | "buryJob",
+      "updateJob" | "addJobLog" | "getJobLogs" | "clearJobLogs" | "buryJob",
     what: string,
   ): JobsDriver {
     if (typeof this.#driver[method] !== "function") {

@@ -1297,8 +1297,7 @@ export interface JobPatch {
 
 /** What should happen to a job whose attempt failed. */
 export type FailOutcome =
-  | { retry: true; runAt: number }
-  | { retry: false; retention: Retention };
+  { retry: true; runAt: number } | { retry: false; retention: Retention };
 
 /** A repeatable job's definition. */
 export interface RepeatRecord {

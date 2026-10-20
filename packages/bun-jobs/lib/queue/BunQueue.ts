@@ -2640,8 +2640,7 @@ export class BunQueue<
       const now = Date.now();
       const pointer = await driver.getQueueState!(this.ref, pointerName);
       const current = pointer?.value as
-        | (DebouncePointer & { until?: number })
-        | undefined;
+        (DebouncePointer & { until?: number }) | undefined;
 
       if (current && kind === "debounce") {
         const updated = await driver.updateJob!(

@@ -228,8 +228,7 @@ describe.skipIf(!ENABLED)(
         sessionId,
       );
       const details = result.exceptionDetails as
-        | { text: string; exception?: { description?: string } }
-        | undefined;
+        { text: string; exception?: { description?: string } } | undefined;
       if (details) {
         throw new Error(
           `page threw: ${details.exception?.description ?? details.text}`,

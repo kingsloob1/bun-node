@@ -279,8 +279,7 @@ checkEqual(
   "",
 );
 const namelessInMemory = stored[0] as
-  | (StorageFile & { buffer?: Uint8Array })
-  | undefined;
+  (StorageFile & { buffer?: Uint8Array }) | undefined;
 checkEqual(
   'memory: the stored file\'s originalFilename is ""',
   namelessInMemory?.originalFilename,

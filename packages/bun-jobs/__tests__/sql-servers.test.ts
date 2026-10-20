@@ -1264,8 +1264,7 @@ describe.skipIf(!postgres)(
         await waitFor(() => locked === 1, { timeout: 5_000 });
 
         let answered:
-          | Awaited<ReturnType<SqlDriver["promoteDelayed"]>>
-          | "waited";
+          Awaited<ReturnType<SqlDriver["promoteDelayed"]>> | "waited";
         try {
           answered = await Promise.race([
             driver.promoteDelayed(q, Date.now(), 100),

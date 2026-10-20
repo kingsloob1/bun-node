@@ -55,11 +55,7 @@ const JOB_LIST_CURSOR_KIND = "jobsList";
  * names all name the same five.
  */
 export type JobOrderField =
-  | "priority"
-  | "createdAt"
-  | "runAt"
-  | "lockExpiresAt"
-  | "finishedOn";
+  "priority" | "createdAt" | "runAt" | "lockExpiresAt" | "finishedOn";
 
 /**
  * The fields a listing's order rests on, before the id tie-break — the single

@@ -37,11 +37,7 @@ import {
 
 /** Where the connection stands (see `LiveState` in `live.ts`). */
 export type LiveClientState =
-  | "off"
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "refused";
+  "off" | "connecting" | "live" | "reconnecting" | "refused";
 
 /** What {@link LiveClient.getSnapshot} returns; a new object only when something changed. */
 export interface LiveClientSnapshot {

@@ -234,8 +234,8 @@ export class BunHttpAdapter<
   private _instance!: BunRouter;
   private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
   private _serverInstance:
-    | BunServer<WebSocketClientData<customWebsocketDataType>>
-    | undefined = undefined;
+    BunServer<WebSocketClientData<customWebsocketDataType>> | undefined =
+    undefined;
 
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
@@ -890,8 +890,7 @@ export class BunHttpAdapter<
       hostname = this._serverInstance.hostname ?? hostname;
       port = Number(this._serverInstance.port);
       address = get(this._serverInstance, "address", undefined) as
-        | AddressInfo
-        | undefined;
+        AddressInfo | undefined;
     }
 
     if (address) {
@@ -941,8 +940,7 @@ export class BunHttpAdapter<
     path: string,
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
     fnOrOptions?:
-      | WebSocketRouteOptions<TCustom>
-      | WebSocketCustomDataFn<TCustom>,
+      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
   ): this {
     return super.ws(
       path,
@@ -976,8 +974,7 @@ export class BunHttpAdapter<
    * of the router requests run through, like {@link webSocketUpgradeHeaders}.
    */
   override get webSocketUpgradeData():
-    | Partial<WebSocketClientData>
-    | undefined {
+    Partial<WebSocketClientData> | undefined {
     return this.instance === this
       ? super.webSocketUpgradeData
       : this.instance.webSocketUpgradeData;
@@ -1669,8 +1666,7 @@ export class BunHttpAdapter<
             "removeAllListeners",
           ].includes(prop as string): {
             let method = get(this.eventEmitter, prop as string) as
-              | CallableFunction
-              | undefined;
+              CallableFunction | undefined;
 
             if (method) {
               method = method.bind(this.eventEmitter);

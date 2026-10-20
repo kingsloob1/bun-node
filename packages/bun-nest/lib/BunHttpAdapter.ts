@@ -724,8 +724,7 @@ export interface BunBeforeWriteErrorContext extends BunBeforeWriteContextBase {
 
 /** What a {@link BunBeforeWriteHook} is given; tell the two apart by `phase`. */
 export type BunBeforeWriteContext =
-  | BunBeforeWriteResponseContext
-  | BunBeforeWriteErrorContext;
+  BunBeforeWriteResponseContext | BunBeforeWriteErrorContext;
 
 /**
  * A hook registered with {@link BunHttpAdapter.addBeforeWriteHook}: it sees a
@@ -1019,8 +1018,7 @@ export class BunHttpAdapter<
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
   private _serverInstance:
-    | BunWebSocketServerType<customWebsocketDataType>
-    | undefined = undefined;
+    BunWebSocketServerType<customWebsocketDataType> | undefined = undefined;
 
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
@@ -2006,8 +2004,7 @@ export class BunHttpAdapter<
       return;
     }
     const carried = Reflect.get(error, CARRIED_RESPONSE) as
-      | BunResponse<customWebsocketDataType>
-      | undefined;
+      BunResponse<customWebsocketDataType> | undefined;
     if (carried !== undefined && !carried.headersSent) {
       this.#runResponseHookOnFinish(hook, req, carried);
       return;
@@ -2217,8 +2214,7 @@ export class BunHttpAdapter<
       hostname = this._serverInstance.hostname ?? hostname;
       port = Number(this._serverInstance.port);
       address = get(this._serverInstance, "address", undefined) as
-        | AddressInfo
-        | undefined;
+        AddressInfo | undefined;
     }
 
     // On a unix socket Bun's `address` is the path, a string: see `address()`.
@@ -2671,8 +2667,7 @@ export class BunHttpAdapter<
     // `req` rides only on an object, and the response with it.
     const carried = req
       ? (Reflect.get(error as object, CARRIED_RESPONSE) as
-          | BunResponse
-          | undefined)
+          BunResponse | undefined)
       : undefined;
     // One already sent is past answering on: its error handlers ran in the
     // pipeline. A fresh response then, as before one existed.
@@ -3436,8 +3431,7 @@ export class BunHttpAdapter<
               "removeAllListeners",
             ].includes(prop as string): {
               let method = get(this.eventEmitter, prop as string) as
-                | CallableFunction
-                | undefined;
+                CallableFunction | undefined;
 
               if (method) {
                 method = method.bind(this.eventEmitter);

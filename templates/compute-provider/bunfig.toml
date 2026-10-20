@@ -5,11 +5,8 @@
 # declares no lint dependencies), no repo-only globs, and the template's scripts/ exempt from
 # no-console. Keep the rest identical to the root file.
 [lint]
-typeAware = true   # Q11: the type-aware rules run in the gate, the editor and every bun lint
-ignorePatterns = [
-  "**/dist/**",
-  "**/dts/**",
-]
+typeAware = true # Q11: the type-aware rules run in the gate, the editor and every bun lint
+ignorePatterns = ["**/dist/**", "**/dts/**"]
 reportUnusedDisableDirectives = "warn"
 
 [lint.rules]
@@ -309,11 +306,7 @@ rules = { "no-console" = "off", "n/no-top-level-await" = "off" }
 
 # Q12: in tests, the type-aware rules that flag test idiom (untyped fixtures, async callbacks with no await) are off.
 [[lint.overrides]]
-files = [
-  "**/__tests__/**",
-  "**/*.spec.*",
-  "**/*.test.*",
-]
+files = ["**/__tests__/**", "**/*.spec.*", "**/*.test.*"]
 rules = { "@typescript-eslint/no-unsafe-argument" = "off", "@typescript-eslint/no-unsafe-assignment" = "off", "@typescript-eslint/no-unsafe-call" = "off", "@typescript-eslint/no-unsafe-member-access" = "off", "@typescript-eslint/no-unsafe-return" = "off", "@typescript-eslint/require-await" = "off", "@typescript-eslint/await-thenable" = "off" }
 
 # Q5: Bun's default bug rules stay on, except bun:test/no-export in the shared test helpers.

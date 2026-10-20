@@ -211,10 +211,7 @@ export interface BunResponseHeaders {
  * string or JSON body, the bytes of a binary one, or a `Blob`/`BunFile`.
  */
 export type BunResponseTransformBody =
-  | string
-  | ArrayBufferView
-  | ArrayBufferLike
-  | Blob;
+  string | ArrayBufferView | ArrayBufferLike | Blob;
 
 /** What a {@link BunResponseTransform} receives beside the `Response`. */
 export interface BunResponseTransformContext {
@@ -1178,8 +1175,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
   _webSocketUpgradeHeaders: Headers | undefined = undefined;
   /** Backs BunResponse's `_webSocketUpgradeData`; see its documentation there. */
   _webSocketUpgradeData:
-    | Partial<WebSocketClientData<customWebsocketDataType>>
-    | undefined = undefined;
+    Partial<WebSocketClientData<customWebsocketDataType>> | undefined =
+    undefined;
 
   /** Backs BunResponse's `_isLongLived`; see its documentation there. */
   _isLongLived: boolean = false;
@@ -1195,8 +1192,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
   readableStreamCloseResolve: (() => void) | undefined = undefined;
   /** Backs BunResponse's `#readableStreamEventMap`; see its documentation there. */
   readableStreamEventMap:
-    | Map<string, string | ArrayBufferView | ArrayBufferLike>
-    | undefined = undefined;
+    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined =
+    undefined;
 
   /** Backs BunResponse's `#streamWriteNotifier`; see its documentation there. */
   streamWriteNotifier: Deferred<void> | undefined = undefined;
@@ -1240,8 +1237,7 @@ export class BunResponse<
   #state: BunResponseState<customWebsocketDataType> | undefined = undefined;
 
   private get _upgradeToWsData():
-    | WebSocketClientData<customWebsocketDataType>
-    | undefined {
+    WebSocketClientData<customWebsocketDataType> | undefined {
     const holder = this.#state;
     return holder === undefined ? undefined : holder._upgradeToWsData;
   }
@@ -1283,8 +1279,7 @@ export class BunResponse<
 
   /** Per-request `ws.data` values — see {@link webSocketUpgradeData}. */
   private get _webSocketUpgradeData():
-    | Partial<WebSocketClientData<customWebsocketDataType>>
-    | undefined {
+    Partial<WebSocketClientData<customWebsocketDataType>> | undefined {
     const holder = this.#state;
     return holder === undefined ? undefined : holder._webSocketUpgradeData;
   }
@@ -1478,8 +1473,7 @@ export class BunResponse<
    * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
    */
   get #readableStreamEventMap():
-    | Map<string, string | ArrayBufferView | ArrayBufferLike>
-    | undefined {
+    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined {
     const holder = this.#state;
     return holder === undefined ? undefined : holder.readableStreamEventMap;
   }
@@ -2318,8 +2312,7 @@ export class BunResponse<
    * Stored as a shallow copy; `undefined` clears it.
    */
   public get webSocketUpgradeData():
-    | Partial<WebSocketClientData<customWebsocketDataType>>
-    | undefined {
+    Partial<WebSocketClientData<customWebsocketDataType>> | undefined {
     return this._webSocketUpgradeData;
   }
 
@@ -2388,8 +2381,7 @@ export class BunResponse<
       custom: {} as customWebsocketDataType,
       // The router-wide base carries no custom type of its own.
       ...(defaults?.webSocketUpgradeData as
-        | Partial<WebSocketClientData<customWebsocketDataType>>
-        | undefined),
+        Partial<WebSocketClientData<customWebsocketDataType>> | undefined),
       ...(inherit ? this._webSocketUpgradeData : undefined),
     } satisfies WebSocketClientData<customWebsocketDataType>;
     return this;
@@ -2556,13 +2548,11 @@ export class BunResponse<
       return this;
     }
 
-    if (
-      !(
-        body instanceof Blob ||
-        body instanceof FormData ||
-        body instanceof URLSearchParams
-      )
-    ) {
+    if (!(
+      body instanceof Blob ||
+      body instanceof FormData ||
+      body instanceof URLSearchParams
+    )) {
       // A stream, a Node `Readable`, an async iterable or generator.
       noteStreamingBody(this.req.request);
     }

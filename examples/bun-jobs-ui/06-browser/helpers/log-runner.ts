@@ -53,8 +53,7 @@ export default defineHandler<LogRunnerArgs, { logged: number }>(async (ctx) => {
   const name = ctx.args?.hold;
   if (name !== undefined) {
     const gates = (globalThis as Record<symbol, unknown>)[LOG_RUNNER_GATES] as
-      | Map<string, Promise<void>>
-      | undefined;
+      Map<string, Promise<void>> | undefined;
     const gate = gates?.get(name);
     if (!gate) {
       throw new Error(`no gate named ${name}`);

@@ -236,9 +236,7 @@ async function storedLease(set: Setup): Promise<QueueStateEntry | null> {
 /** Who the stored stalled lease names, if anyone. */
 async function leaseHolder(set: Setup): Promise<string | undefined> {
   const value = (await storedLease(set))?.value as
-    | { holder?: string }
-    | null
-    | undefined;
+    { holder?: string } | null | undefined;
   return value?.holder;
 }
 

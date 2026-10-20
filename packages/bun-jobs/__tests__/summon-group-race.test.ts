@@ -157,8 +157,7 @@ for (const backend of BACKENDS) {
                 SUMMON_MARKER,
               );
               const value = marker?.value as
-                | { budget?: { hour: number } }
-                | undefined;
+                { budget?: { hour: number } } | undefined;
               counted += value?.budget?.hour ?? 0;
             }
             expect(counted).toBe(calls.length);

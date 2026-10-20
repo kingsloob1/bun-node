@@ -7314,10 +7314,10 @@ export function driverContract(
         const scope = testNamespace("purge-inflight");
         const now = Date.now();
         const token = newToken();
-        const queues = Array.from(
-          { length: 40 },
-          (_, index): QueueRef => ({ ns: scope, queue: `q${index}` }),
-        );
+        const queues = Array.from({ length: 40 }, (_, index): QueueRef => ({
+          ns: scope,
+          queue: `q${index}`,
+        }));
 
         for (const target of queues) {
           await driver.addJob(

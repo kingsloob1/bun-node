@@ -300,8 +300,7 @@ describe.skipIf(!URL)("Redis driver: excluding names", () => {
 
     const raw = new BunRedis(URL);
     const cursors = (await raw.send("HGETALL", [keys.excludeCursors])) as
-      | Record<string, string>
-      | string[];
+      Record<string, string> | string[];
     const stored = Array.isArray(cursors)
       ? cursors[1]
       : Object.values(cursors)[0];

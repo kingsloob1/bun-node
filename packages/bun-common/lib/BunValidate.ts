@@ -92,9 +92,9 @@ type TargetResult<
  * written onto the request.
  */
 export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
-  [K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1
-    ? K
-    : never]: TargetResult<S, H, K>;
+  [
+    K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1 ? K : never
+  ]: TargetResult<S, H, K>;
 };
 
 /**
@@ -304,8 +304,7 @@ function writeTarget(
 export type StandardValidateFunction<TOutput> = (
   value: unknown,
 ) =>
-  | StandardSchemaV1.Result<TOutput>
-  | Promise<StandardSchemaV1.Result<TOutput>>;
+  StandardSchemaV1.Result<TOutput> | Promise<StandardSchemaV1.Result<TOutput>>;
 
 /** Options for {@link toStandardSchema}. */
 export interface ToStandardSchemaOptions {

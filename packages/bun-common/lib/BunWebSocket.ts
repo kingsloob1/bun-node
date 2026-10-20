@@ -258,12 +258,7 @@ export type WebSocketClient<TCustom = unknown> = ServerWebSocket<
 
 /** The lifecycle events a route's {@link BunWebSocketHandlerType} can handle. */
 export type BunWebSocketRouteEvent =
-  | "open"
-  | "close"
-  | "drain"
-  | "message"
-  | "ping"
-  | "pong";
+  "open" | "close" | "drain" | "message" | "ping" | "pong";
 
 /**
  * What a route handler for `E` receives after the client itself: `[message]`
@@ -481,8 +476,7 @@ export class BunWebSocket<
   private _serverInstance?: BunWebSocketServerType<TCustom>;
   /** Returns the shared server, when `newInstance` is `false`. */
   private _getServerInstance?: () =>
-    | BunWebSocketServerType<TCustom>
-    | undefined;
+    BunWebSocketServerType<TCustom> | undefined;
 
   /** The router upgrade routes register on; created lazily when none was given. */
   private _routerInstance: BunRouter | undefined = undefined;
@@ -1052,8 +1046,7 @@ export class BunWebSocket<
     path: string,
     handler: BunWebSocketHandlerType<TCustom>,
     fnOrOptions?:
-      | WebSocketRouteOptions<TCustom>
-      | WebSocketCustomDataFn<TCustom>,
+      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
     defaultsFrom?: WebSocketUpgradeDefaults,
   ) {
     if (!isObject(handler)) {
@@ -1163,8 +1156,7 @@ export class BunWebSocket<
 
         const defaults = upgradeRoute.defaultsFrom ?? this.router;
         const responseData = res.webSocketUpgradeData as
-          | Partial<WebSocketClientData<TCustom>>
-          | undefined;
+          Partial<WebSocketClientData<TCustom>> | undefined;
 
         let data: WebSocketClientData<TCustom>;
         if (result?.data) {
@@ -1193,8 +1185,7 @@ export class BunWebSocket<
             custom: undefined as TCustom,
             // The router-wide base carries no custom type of its own.
             ...(defaults.webSocketUpgradeData as
-              | Partial<WebSocketClientData<TCustom>>
-              | undefined),
+              Partial<WebSocketClientData<TCustom>> | undefined),
             ...responseData,
             // Dispatch keys: always the match's, whatever a layer said.
             route: path,

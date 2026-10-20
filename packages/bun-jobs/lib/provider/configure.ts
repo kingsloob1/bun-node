@@ -179,8 +179,7 @@ function checkFacet(identity: ProviderIdentity, facet: unknown): SummonFacet {
     }
   }
   const capabilities = candidate.capabilities as
-    | Partial<SummonCapabilities>
-    | undefined;
+    Partial<SummonCapabilities> | undefined;
   if (typeof capabilities !== "object" || capabilities === null) {
     throw malformed(identity, "needs capabilities");
   }

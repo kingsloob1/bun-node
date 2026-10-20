@@ -497,8 +497,7 @@ describe("remote runner configuration — validation", () => {
         logger: noopLogger,
         allowedOverrides: {
           executionModes: executionModes as (
-            | "child-process"
-            | "worker-thread"
+            "child-process" | "worker-thread"
           )[],
         },
       });

@@ -106,11 +106,7 @@ export const NOT_JOB_ID_EVENTS: ReadonlySet<QueueEventName> =
  * `RunnerController.updateConfig`/`resetConfig`).
  */
 export type RunnerControlAction =
-  | "pause"
-  | "resume"
-  | "schedule"
-  | "trigger"
-  | "config";
+  "pause" | "resume" | "schedule" | "trigger" | "config";
 
 /** What each runner event carries on the wire, by name. */
 export interface RunnerEventPayloads {
@@ -301,9 +297,7 @@ export type WorkerDriverEvent = {
 
 /** Anything a driver may be asked to publish or deliver. */
 export type DriverEvent =
-  | QueueDriverEvent
-  | RunnerDriverEvent
-  | WorkerDriverEvent;
+  QueueDriverEvent | RunnerDriverEvent | WorkerDriverEvent;
 
 /** Which subsystem an event came from. */
 export type EventKind = DriverEvent["kind"];

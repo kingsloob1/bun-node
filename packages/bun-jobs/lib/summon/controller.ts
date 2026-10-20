@@ -521,8 +521,7 @@ interface ResolvedPolicy {
   env: Readonly<Record<string, string>>;
   /** `onSummonFailed`, when set. */
   onSummonFailed:
-    | ((failure: SummonFailure) => void | Promise<void>)
-    | undefined;
+    ((failure: SummonFailure) => void | Promise<void>) | undefined;
   /**
    * Each queue's capacity, by queue, in the controller's order: the
    * policy's `jobsPerWorker` and `maxWorkers`, or a shared unit's

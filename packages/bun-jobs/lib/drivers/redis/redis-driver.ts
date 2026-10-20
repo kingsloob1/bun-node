@@ -2314,8 +2314,7 @@ export class RedisDriver implements JobsDriver {
     await this.connect();
 
     const counts = (await this.#runQueue(q, scripts.COUNT_JOBS, [])) as
-      | number[]
-      | null;
+      number[] | null;
 
     const [waiting, delayed, active, completed, failed, dead, children] =
       counts ?? [];
