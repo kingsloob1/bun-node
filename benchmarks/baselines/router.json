@@ -1,5 +1,6 @@
 {
   "recordedAt": "2026-10-20T04:08:09.765Z",
+  "source": "aa4 base side (a same-build A/B: develop given as both roots), develop 7241eeea, Bun 1.4.4-canary.1+6bb5dc195; not a --save-baseline run: both --save-baseline runs on this build failed validation, and all 7 other same-build runs pass --compare against this one",
   "bun": "1.4.4",
   "bunRevision": "6bb5dc1956505dd1113455f58d4757c924f3ad54",
   "platform": "linux-x64",

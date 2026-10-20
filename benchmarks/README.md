@@ -44,8 +44,8 @@ CLAUDE.md "Benchmark regression guard").
 
 ```bash
 bun router-guard.ts --verify            # every scenario answers right; times nothing
-bun router-guard.ts --roots base=../../wt-base,pr=../../wt-pr   # the PR gate: exit 1 regressed, 3 options changed
-bun router-guard.ts --compare           # the cross-day check against the baseline; exit 1 / 3 the same
+bun router-guard.ts --roots base=../../wt-base,pr=../../wt-pr   # the PR gate: exit 1 regressed, 3 options changed, 4 too noisy
+bun router-guard.ts --compare           # the cross-day check against the baseline; the same exit codes
 bun router-guard.ts --save-baseline     # re-record, after a deliberate change
 bun router-guard.ts --help              # every option and scenario
 ```
@@ -149,8 +149,8 @@ them. Our cells are judged net of their level's drift, and Hono's cells are
 never failed themselves. Measured: a run at a load of about 4, against a baseline
 recorded at 2.5-3, moved every Hono cell by +2% to +24% (median +7.9%), and
 before this correction failed Hono's own `routes-1000` at +24%. A drift past
-the tolerance either way fails the run as **drift**: the machine was too busy
-(or too different) to judge. A `--targets bun-nest` run measures no rival
+the tolerance either way fails the run as **drift**, with exit 4 when no cell
+of ours regressed: the machine was too busy (or too different) to judge. A `--targets bun-nest` run measures no rival
 and is judged without a correction.
 
 A comparison fails on:
@@ -163,26 +163,35 @@ A comparison fails on:
   same way).
 
 **Options changed.** A cell whose router options (its own, else its
-target's) differ from the baseline's measures another configuration, so it is
-neither passed nor failed. The comparison prints, per target, every differing
-key and how many cells it covers, then each such cell with its figures and
-`not judged`, and marks its row in the table `options changed`:
+target's) differ from the baseline's is reported, **and judged as usual**: a
+changed default is exactly the kind of change that can cost speed (an
+`i`-flag regex for `caseSensitive: false`, say), so it must not escape the
+verdict. The comparison prints, per target, every differing key and how many
+cells it covers, then each such cell with its figures and its judgement, and
+marks its row in the table `options changed`:
 
 ```text
-  OPTS  bun-common: router options differ from the baseline: caseSensitive true → false (48 cells)
-  OPTS  bun-common/fetch/static                    options changed  1595ns  ->  1617ns (+1.3%, +0.9% net of drift); not judged
+  OPTS  bun-common: router options differ from the baseline: caseSensitive true → false (45 cells)
+  OPTS  bun-common/fetch/static                    options changed  1552ns  ->  1543ns (-0.6%, -0.7% net of drift); judged: within the tolerance
   ...
-verdict: options changed (exit 3). 48 cell(s) ran with other router options than the baseline, ...
+verdict: options changed (exit 3): router options changed in 45 cell(s) (judged too), and no cell grew past 15% net of drift against the baseline. ...
 ```
 
-When nothing else regressed, the run ends with that verdict line and **exits
-3** (`EXIT_OPTIONS_CHANGED`), not 0: a PR that changes a default (say
-`caseSensitive` to `false`) is due a `--save-baseline` in the same PR, not a
-fix, and a pass would leave those cells unjudged against a stale baseline from
-then on. A real regression in any other cell still exits 1, and its summary
-says how many cells went unjudged. The cells whose options match are judged
-as before, and a file that recorded no options (Hono's cells, a run from
-before them) is compared on figures alone. Exit 2 stays a usage error.
+With every cell, those included, inside the tolerance, the run **exits 3**
+(`EXIT_OPTIONS_CHANGED`), not 0: a PR that changes a default is due a
+`--save-baseline` in the same PR. A cell slower past the tolerance is
+**exit 1** whether its options changed or not, and the verdict names both
+reasons (doctored: `caseSensitive` off on 45 cells and +20% on one of them
+gives `FAIL bun-common/fetch/static slower … +19.1% net of drift; router
+options changed: caseSensitive true → false` and `verdict: regression
+(exit 1): 1 cell(s) slower past 15% net of drift or missing; router options
+changed in 45 cell(s) (judged too)`). A file that recorded no options (Hono's
+cells, a run from before them) is compared on figures alone. Exit 2 stays a
+usage error.
+
+**Provenance.** A baseline records where its figures came from in `source`:
+`--save-baseline` writes its own (`--save-baseline, <sha>, Bun
+<version>+<revision>`), and a baseline taken from another run says which.
 
 An improvement never fails it, and a new scenario fails nothing until a
 baseline records it. A baseline holds only on the machine that recorded it:
@@ -222,7 +231,7 @@ a scratch copy of bun-common with the slowdown at the top of
 | Change | Result |
 |---|---|
 | none (the same build, two more runs) | **passes** both: drift at most 2.4% on any level, ours at most +4.8% raw |
-| none, on a busy machine (load 42 at the start; first version) | **refuses to judge**: drift +16.3% fails the run as `drift`, and no cell of ours is blamed |
+| none, on a busy machine (load 42 at the start; first version) | **refuses to judge**: drift +16.3% fails the run as `drift` (exit 4 since the A/B gate), and no cell of ours is blamed |
 | a `new RegExp` compiled per request | **fails** all 48 bun-common cells: `match` 30-90 ns to 3.0-3.6 µs, `route` +356% to +5,995%, `fetch` +160% to +301%, `served` +19% to +22% |
 | a 1,200 ns spin per request (about 2x on `fetch`) | **fails** all 45 `match`, `route` and `fetch` cells (`route` +129% to +2,318%, `fetch` +50% to +107%); the 3 `served` cells pass at +2% to +7% |
 | a 250 ns spin (it measured about +300 ns) | **fails** all 15 `match` and all 15 `route` cells (+30% to +553%) and 12 of 15 `fetch` cells (+15% to +27%); `fetch` on the two cold rotations and `head` pass at +7% to +11% |
@@ -256,14 +265,18 @@ fails on a **missing** cell (the base has it, the side does not) and on
 **noise**: Hono's code is the same on both sides, so its cells are an A = A
 pair inside every A/B, and one that moved past 5% either way means the
 session was too noisy to judge (the A/B's counterpart of `--compare`'s
-**drift**). A cell whose router options differ between the sides is not
-judged. Exit codes match `--compare`'s:
+**drift**). A cell whose router options differ between the sides is judged
+as usual and flagged `options` (the side takes its options from its own
+tree, so a PR that changes a default changes them on every cell of that
+adapter, and those are the cells the speed rule is for). Exit codes, the
+same for the A/B and `--compare`:
 
 | Exit | Verdict |
 |---|---|
-| 0 | `verdict: pass`: no cell of ours grew past 5% |
-| 1 | `verdict: regression`: a cell **slower**, **missing** or **noise**, or a problem (a wrong answer; a child that ran on another Bun build than the parent, e.g. Bun upgraded mid-run) |
-| 3 | `verdict: options changed`: nothing regressed, but some cells ran with other router options than the base (`routerOptions`, as above) and were not judged |
+| 0 | `verdict: pass`: no cell of ours grew past the tolerance, and no option changed |
+| 1 | `verdict: regression`: a cell **slower** (or **overtaken**, or **missing**), or a problem (a wrong answer; a child that ran on another Bun build than the parent, e.g. Bun upgraded mid-run), **whether or not options changed**: the verdict names every reason |
+| 3 | `verdict: options changed`: router options differ in some cells, and every cell, those included, is inside the tolerance; re-record the baseline in the same PR |
+| 4 | `verdict: too noisy to judge`: the rival's cells, whose code did not change, moved past the tolerance (A/B **noise**, `--compare` **drift**), and no cell of ours regressed; re-run on a quiet machine |
 | 2 | a usage error |
 
 **How 5% was set.** Three same-build A/Bs, the same develop checkout
@@ -295,7 +308,8 @@ over the worst A = A cell.
 | none: the three A = A runs above, and one more on Bun 1.4.4-canary.1+5f5799ed1 | **pass** all four (worst +4.0%) |
 | the 404 negative control: the bun-nest not-found fast path with PR-2's per-request `split` and `some`/`filter`/`map` put back (base: develop + the fast path; side: the same plus the control) | **fails exactly the three 404 cells** at `fetch`: `notfound` +7.6% (best +7.6%, paired +7.6%), `prefix-notfound-inside` +8.1% (+8.1%, +8.7%), `prefix-notfound-outside` +7.9% (+9.2%, +7.9%); every other cell passes (`served/notfound` +2.3%) |
 | the same control's earlier A/B (Bun +5f5799ed1, judged with `--from`) | **fails** the same three: +6.8%, +6.6%, +6.2% |
-| a side with `caseSensitive` changed (a saved run, doctored) | **exit 3**: 45 cells not judged, 32 pass; with +8% on one other cell too, **exit 1** |
+| a side with `caseSensitive` changed (a saved run, doctored) | **exit 3**: 45 cells flagged `options`, all judged inside 5%; with one of those 45 at +10% (it measured +9.4%), **exit 1**: `FAIL … slower … ; router options changed: caseSensitive true → false` and `verdict: regression (exit 1): 1 cell(s) slower past 5.0% or missing; router options changed in 45 cell(s) (judged too)` |
+| a Hono cell at +10% on one side (doctored) | **exit 4**, `noise`; with a cell of ours +10% too, **exit 1**, naming both |
 | Bun replaced mid-run (the parent on one build, the children on another) | **exit 1**, a problem per cell: `ran on Bun 6bb5dc195, but the run started on 5f5799ed1` |
 
 The same 404 control **passes** `--compare`: 6-8% is inside 15%. That is why
