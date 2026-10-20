@@ -258,6 +258,34 @@ const noSchemas = await run(validate({}), { url: "/check?page=x" });
 checkEqual("no schemas: next() and nothing touched", noSchemas.nextCalls, [[]]);
 checkEqual("…query as parsed", noSchemas.req.query, { page: "x" });
 
+// A key that is not a target (a typo, or `cookies`) throws when the
+// middleware is built, rather than being ignored. TypeScript already rejects
+// it in a literal; schemas assembled at run time, typed loosely, reach the check.
+const fromConfig: Record<string, typeof Page> = { cookies: Page };
+/** The TypeError building throws, or undefined when it does not. */
+function buildError(build: () => unknown): TypeError | undefined {
+  try {
+    build();
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return error;
+    }
+    throw error;
+  }
+  return undefined;
+}
+checkEqual(
+  "an unknown target throws a TypeError naming the targets",
+  buildError(() => validate(fromConfig))?.message,
+  'validate(): unknown target "cookies"; the targets are headers, params, query, body',
+);
+check(
+  "…from new BunValidate() and BunValidate.middleware() as well",
+  buildError(() => new BunValidate({ schemas: fromConfig })) !== undefined &&
+    buildError(() => BunValidate.middleware({ schemas: fromConfig })) !==
+      undefined,
+);
+
 /* ------------------------------------------------------------------ */
 step("Targets run in a fixed order: headers, params, query, body");
 
@@ -371,6 +399,24 @@ checkEqual(
     )
   ).status,
   422,
+);
+checkEqual(
+  "status: undefined keeps the default, 400 (an option set to undefined is an option left out)",
+  (
+    await through(
+      validate({ query: Page }, { onFailure: "respond", status: undefined }),
+      "/check?page=0",
+    )
+  ).status,
+  400,
+);
+checkEqual(
+  "onFailure: undefined keeps the default, 'next'",
+  await through(
+    validate({ query: Page }, { onFailure: undefined }),
+    "/check?page=0",
+  ),
+  { status: 599, body: { caught: "ValidationError" } },
 );
 checkEqual("status defaults to 400 on the error", nextError?.status, 400);
 checkEqual(
