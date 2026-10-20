@@ -4,8 +4,9 @@ The bun-node repository's VS Code extension for `bun lint` and `bun fmt`
 ([`docs/plans/bun-lint-fmt/`](../../docs/plans/bun-lint-fmt/README.md), §5).
 It shows `bun lint`'s findings as you type, offers its fixes and suggestions as
 quick fixes, and formats with `bun fmt`. It replaces the ESLint extension when
-the repository switches to `bun lint` (PR E of the plan); until then it is
-**opt-in**, and the repository's `.vscode` settings do not mention it.
+the repository switches to `bun lint` (PR E of the plan), which it did: the
+repository's `.vscode/` recommends it, makes it the default formatter and turns
+the ESLint extension off.
 
 It is not published. It lives here, outside the workspaces, with its own
 `package.json` and `bun.lock`, and is deleted once Bun ships an editor
@@ -43,23 +44,20 @@ nowhere else: it runs only on a file whose nearest `bunfig.toml` has a
 `[lint]` section (or `[fmt]`, to format), which is Bun's own config lookup
 (`bunLint.requireConfig`).
 
-Until PR E, the ESLint extension is still the repository's, so both report.
-To use this one alone, disable the ESLint extension for the workspace
-(Extensions view → ESLint → Disable (Workspace)). To format with `bun fmt`,
-in your user or workspace settings:
+The repository's `.vscode/settings.json` sets `editor.defaultFormatter` to
+this extension and `eslint.enable` to false. Formatting on save, and bun lint's
+fixes on save, are each developer's choice, in your user settings:
 
 ```jsonc
 {
-  "editor.defaultFormatter": "kingsleyweb.vscode-bun-lint",
   "editor.formatOnSave": true,
   // Optional: apply bun lint's automatic fixes on save.
   "editor.codeActionsOnSave": { "source.fixAll.bunLint": "explicit" }
 }
 ```
 
-Do not run `bun fmt` over whole directories, or format files on save, before
-PR E's one-time reformat: Prettier, through ESLint, is still the gate, and the
-two disagree on 78 files (plan §7, PR A).
+The repository was formatted with `bun fmt` once, in PR E (plan §7), so
+formatting on save changes only what you edit.
 
 ## What it does
 
@@ -137,7 +135,7 @@ actions. Gained: the type-aware rules, which ESLint never ran here.
 ```bash
 bun run test        # bun test --check
 bun run lint        # bun lint
-bun run lint:eslint # the gate until PR E
+bun run format:check # bun fmt --check
 bun --check         # or bun scripts/typecheck.ts from the root, which lists this project
 ```
 

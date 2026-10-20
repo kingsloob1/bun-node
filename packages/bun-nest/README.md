@@ -1826,7 +1826,8 @@ This package lives in the
 bun install                  # at the repo root
 bun scripts/typecheck.ts     # every project in the repo
 cd packages/bun-nest
-bun run lint:eslint          # lint
+bun run lint                 # lint
+bun run format:check         # check the formatting
 bun test                     # tests
 ```
 

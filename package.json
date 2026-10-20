@@ -5,7 +5,10 @@
   "private": true,
   "scripts": {
     "check": "bun scripts/typecheck.ts",
-    "lint:eslint:scripts": "cd scripts && CI=1 eslint -c eslint.legacy.config.mjs .",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check",
+    "format:check:scripts": "cd scripts && bun fmt --check",
+    "format:scripts": "cd scripts && bun fmt",
     "lint:scripts": "cd scripts && bun lint",
     "test:scripts": "cd scripts && bun test --check --parallel --timings=bun-timings.json",
     "test:scripts:timings": "cd scripts && rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",

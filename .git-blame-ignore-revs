@@ -1,0 +1,10 @@
+# Commits that `git blame` skips: changes of formatting only, made by a tool.
+# Once per clone: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub's blame view reads this file by itself.)
+#
+# One full hash per line, never a short one; a line that is not a commit makes
+# `git blame` fail (`fatal: invalid object name`), hence the comment below.
+
+# The one-time `bun fmt` reformat of docs/plans/bun-lint-fmt (PR E):
+# FILL AT LANDING: replace this line with the reformat commit's full hash
+# (`git rev-parse <commit>`), after the branch's last rebase and re-signing.

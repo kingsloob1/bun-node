@@ -9,6 +9,7 @@
     "quick-start": "bun 01-quick-start/index.ts",
     "demo": "bun 05-demo/seeded-demo.ts --serve",
     "lint": "bun lint",
-    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
   }
 }

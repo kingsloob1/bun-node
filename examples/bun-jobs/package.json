@@ -8,6 +8,7 @@
     "all": "bun run-all.ts",
     "quick-start": "bun 01-quick-start/index.ts",
     "lint": "bun lint",
-    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
   }
 }

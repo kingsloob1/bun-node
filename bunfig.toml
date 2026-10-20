@@ -389,4 +389,15 @@ rules = { "bun:test/no-export" = "off" }
 
 [fmt]
 singleAttributePerLine = true # the one option we set that is not Prettier's default
-ignorePatterns = ["**/*.md", "docs/**", "benchmarks/results/**"] # Q3: Markdown is not formatted; Q2: no sortImports
+# Q3: Markdown is not formatted; Q2: no sortImports. Files a tool writes are not
+# formatted either, so regenerating one never fails `bun fmt --check`: test
+# timings (`--update-timings`), benchmark baselines (`--save-baseline`) and
+# lerna.json (`lerna version`).
+ignorePatterns = [
+  "**/*.md",
+  "docs/**",
+  "benchmarks/results/**",
+  "**/bun-timings*.json",
+  "**/baselines/*.json",
+  "lerna.json",
+]

@@ -32,7 +32,7 @@ const bunPath = process.execPath;
 
 /** One directory of the gate, and the file opened in it (clean in the gate on 2026-10-20). */
 interface Case {
-  /** The directory, relative to the repo: `.vscode/settings.json`'s list, with the template's own directory. */
+  /** The directory, relative to the repo: one the gate lints, the template's own included. */
   dir: string;
   /** A file in it the gate reports nothing for. */
   file: string;

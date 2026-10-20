@@ -323,4 +323,4 @@ rules = { "bun:test/no-export" = "off" }
 
 [fmt]
 singleAttributePerLine = true # the one option we set that is not Prettier's default
-ignorePatterns = ["**/*.md"] # Q3: Markdown is not formatted; Q2: no sortImports
+ignorePatterns = ["**/*.md", "bun-timings.json"] # Q3: Markdown is not formatted; Q2: no sortImports; test timings are written by `--update-timings`

@@ -1,16 +1,4 @@
 {
-  "eslint.options": { "overrideConfigFile": "eslint.legacy.config.mjs" },
-  "eslint.workingDirectories": [
-    "./packages/bun-common",
-    "./packages/bun-nest",
-    "./packages/bun-jobs",
-    "./packages/bun-jobs-ui",
-    "./playground",
-    "./scripts",
-    "./templates",
-    "./examples/bun-common",
-    "./examples/bun-nest",
-    "./examples/bun-jobs",
-    "./examples/bun-jobs-ui"
-  ]
+  "editor.defaultFormatter": "kingsleyweb.vscode-bun-lint",
+  "eslint.enable": false
 }
